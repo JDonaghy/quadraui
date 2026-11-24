@@ -167,7 +167,10 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Spinner", "spinner_layout"),
     ("Scrollbar", "draw_scrollbar"),
     // Group-C ports keep these until the group's cleanup deletes them
-    // together with their wrapper files and `Surface` variants.
+    // together with their wrapper files and `Surface` variants. Each of
+    // these widgets already paints and routes through
+    // `Primitive`/`Interactive`; the bespoke methods stay only for the
+    // per-backend wrapper files still calling them.
     ("StatusBar", "draw_status_bar"),
     ("StatusBar", "draw_status_bar_interactive"),
     ("StatusBar", "draw_status_bar_interactive_scaled"),
@@ -175,6 +178,11 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("ActivityBar", "draw_activity_bar"),
     ("ActivityBar", "draw_activity_bar_with_style"),
     ("ActivityBar", "activity_bar_layout"),
+    ("Toolbar", "draw_toolbar_interactive"),
+    ("Toolbar", "draw_toolbar_with_options"),
+    ("Toolbar", "draw_toolbar_with_overflow"),
+    ("Toolbar", "toolbar_layout"),
+    ("Toolbar", "toolbar_layout_with_overflow"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

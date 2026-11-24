@@ -2176,12 +2176,20 @@ class _ToolbarFieldCommittedPayload(TypedDict):
 class _ToolbarFieldClearedPayload(TypedDict):
     id: WidgetId
 
+class _ToolbarMenuRequestedPayload(TypedDict):
+    id: WidgetId
+
+class _ToolbarOverflowRequestedPayload(TypedDict):
+    id: WidgetId
+
 class ToolbarEvent(TypedDict):
     ButtonClicked: NotRequired[_ToolbarButtonClickedPayload]
     GroupSelected: NotRequired[_ToolbarGroupSelectedPayload]
     FieldChanged: NotRequired[_ToolbarFieldChangedPayload]
     FieldCommitted: NotRequired[_ToolbarFieldCommittedPayload]
     FieldCleared: NotRequired[_ToolbarFieldClearedPayload]
+    MenuRequested: NotRequired[_ToolbarMenuRequestedPayload]
+    OverflowRequested: NotRequired[_ToolbarOverflowRequestedPayload]
 
 class CalendarDate(TypedDict):
     year: int

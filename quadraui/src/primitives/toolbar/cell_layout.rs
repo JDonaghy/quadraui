@@ -307,19 +307,7 @@ pub fn tui_toolbar_layout_with_overflow(
         ),
     };
 
-    if options.overflow == ToolbarOverflow::Wrap
-        && options.orientation == ToolbarOrientation::Horizontal
-    {
-        let area_bottom = area.y as f32 + area.height as f32;
-        for vis in &mut layout.visible_items {
-            if vis.bounds.y >= area_bottom {
-                vis.clickable = false;
-                for child in &mut vis.group_children {
-                    child.clickable = false;
-                }
-            }
-        }
-    }
+    layout.demote_lines_past(options, area.y as f32 + area.height as f32);
 
     layout
 }

@@ -14,8 +14,7 @@ use core_text::font::CTFont;
 
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
-    ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities,
-    ToolbarPaintOptions,
+    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -179,19 +178,7 @@ pub fn mac_toolbar_layout_with_overflow(
     // hit-testing must not report a hit on it either. `Vertical` wrapping
     // has no analogous "ran past the bottom" edge along this axis — same
     // scope TUI's own demotion keeps.
-    if options.overflow == ToolbarOverflow::Wrap
-        && options.orientation == ToolbarOrientation::Horizontal
-    {
-        let area_bottom = y as f32 + h as f32;
-        for vis in &mut layout.visible_items {
-            if vis.bounds.y >= area_bottom {
-                vis.clickable = false;
-                for child in &mut vis.group_children {
-                    child.clickable = false;
-                }
-            }
-        }
-    }
+    layout.demote_lines_past(options, y as f32 + h as f32);
 
     layout
 }
@@ -287,7 +274,7 @@ mod tests {
     use super::*;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::toolbar::{
-        ToolbarButton, ToolbarHit, ToolbarItemKind, TOOLBAR_OVERFLOW_ITEM_IDX,
+        ToolbarButton, ToolbarHit, ToolbarItemKind, ToolbarOrientation, TOOLBAR_OVERFLOW_ITEM_IDX,
     };
     use crate::types::WidgetId;
     use crate::Backend;

@@ -19,8 +19,7 @@ use crate::paint_surface::PaintSurface;
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{
     measure_button, native_surface_paint, Toolbar, ToolbarItemMeasure, ToolbarLayout,
-    ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities,
-    ToolbarPaintOptions,
+    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
 };
 use crate::theme::Theme;
 use crate::types::WidgetId;
@@ -219,19 +218,7 @@ pub fn gtk_toolbar_layout_with_overflow(
         |btn| ToolbarItemMeasure::new(measure_button(&measure, btn)),
     );
 
-    if options.overflow == ToolbarOverflow::Wrap
-        && options.orientation == ToolbarOrientation::Horizontal
-    {
-        let area_bottom = (y + h) as f32;
-        for vis in &mut layout.visible_items {
-            if vis.bounds.y >= area_bottom {
-                vis.clickable = false;
-                for child in &mut vis.group_children {
-                    child.clickable = false;
-                }
-            }
-        }
-    }
+    layout.demote_lines_past(options, (y + h) as f32);
 
     layout
 }
@@ -334,7 +321,7 @@ pub fn draw_toolbar_with_overflow(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::toolbar::{ToolbarButton, ToolbarHit};
+    use crate::primitives::toolbar::{ToolbarButton, ToolbarHit, ToolbarOrientation};
     use crate::types::WidgetId;
 
     fn test_toolbar() -> Toolbar {
