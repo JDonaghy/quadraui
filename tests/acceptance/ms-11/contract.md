@@ -184,20 +184,21 @@ For §3, do **not** try to drive `common::tab_group_demo::TabGroupDemo` — its 
 ```rust
 // in the slice file — public quadraui API only
 use quadraui::primitives::tab_bar::{TabBar, TabItem};
-use quadraui::{AppLogic, Backend, Reaction, Rect, UiEvent, WidgetId};
+use quadraui::{AppLogic, Backend, DrawsPrimitives, Reaction, Rect, UiEvent, WidgetId};
 
-struct WideTabFixture { /* TabBar + recorded active-tab id */ }
+struct WideTabFixture { /* TabBar + the layout the last render painted */ }
 
 impl AppLogic for WideTabFixture {
     type AreaId = ();
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        backend.draw_tab_bar(Rect::new(0.0, 0.0, 80.0, 1.0), &self.bar, None);
+        let painted = backend.draw_primitive(Rect::new(0.0, 0.0, 80.0, 1.0), &self.bar);
+        /* record painted.layout */
     }
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction { /* … */ }
 }
 ```
 
-`draw_tab_bar` returns `TabBarHits`; record them in `handle` so §3g can observe which tab a click activated. `TabBar`/`TabItem` are public, `#[serde(default)]`-heavy structs, so only `id`, `tabs`, and each item's `label`/`is_active` need setting.
+`draw_primitive` returns the `TabBar`'s resolved layout; record it in `render` and classify a click in `handle` with `TabBarLayout::hit_test`, so §3g can observe which tab a click activated. `TabBar`/`TabItem` are public, `#[serde(default)]`-heavy structs, so only `id`, `tabs`, and each item's `label`/`is_active` need setting.
 
 **Why inline rather than extending the demo fixture:** an added constructor on `TabGroupDemo` would have to land *before* the sealed slice compiles, and a slice that fails to compile breaks the whole `--test acceptance` target — including other milestones' slices — rather than failing red on its own clause. Inline keeps the slice self-contained and its redness attributable.
 

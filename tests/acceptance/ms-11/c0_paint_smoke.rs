@@ -83,6 +83,7 @@ mod ms11_492_c0_paint_smoke {
     use quadraui::gtk::testing::GtkDriver;
     use quadraui::testing::{ConformanceDriver, FrameInventory, LogicalViewport};
     use quadraui::tui::testing::TuiDriver;
+    use quadraui::DrawsPrimitives;
     use quadraui::{
         compute_hunks, AppLogic, Backend, Color, CommandLine, Decoration, DiffEditability,
         DiffMode, DiffPane, DiffView, DropOverlay, ListItem, ListView, MessageList, MessageRow,
@@ -156,7 +157,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_tab_bar",
+            method: "draw_dyn(TabBar)",
             needle: Some("c0tabs"),
             paint: |b, area| {
                 let lh = b.line_height();
@@ -176,7 +177,7 @@ mod ms11_492_c0_paint_smoke {
                     compact: false,
                     ..Default::default()
                 };
-                let _ = b.draw_tab_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None);
+                let _ = b.draw_dyn(Rect::new(0.0, 0.0, area.width, lh), &bar, &());
             },
         },
         PrimitiveCase {
