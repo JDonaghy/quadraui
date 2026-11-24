@@ -485,7 +485,7 @@ impl RichTextPopup {
     ///
     /// The shared core of [`Self::layout`] — which picks `bounds` against
     /// an anchor first — and
-    /// [`Primitive::layout`](crate::primitive::Primitive::layout), which
+    /// [`Primitive::layout`], which
     /// is handed the already-placed box by its caller.
     fn resolve_at<W>(
         &self,
@@ -624,13 +624,13 @@ impl WidgetAction for RichTextPopupEvent {
 /// [`RichTextPopupLayout`] itself.
 ///
 /// `#[non_exhaustive]`: produced by
-/// [`Primitive::layout`](crate::primitive::Primitive::layout), never
+/// [`Primitive::layout`], never
 /// built by a consumer via struct literal — same convention
 /// [`RichTextPopupLayout`] itself follows.
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct RichTextPopupPrimitiveLayout {
-    /// The rect [`Primitive::layout`](crate::primitive::Primitive::layout)
+    /// The rect [`Primitive::layout`]
     /// was called with — the popup's whole box, already placed by the
     /// host.
     pub area: Rect,

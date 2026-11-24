@@ -40,19 +40,21 @@ struct CompletionsApp {
 
 impl CompletionsApp {
     fn new() -> Self {
-        let mut popup = Completions::default();
-        popup.id = WidgetId::new("completions:editor");
-        popup.items = CANDIDATES
-            .iter()
-            .map(|label| CompletionItem {
-                label: StyledText::plain(*label),
-                detail: None,
-                documentation: None,
-                kind: CompletionKind::Function,
-                icon: None,
-            })
-            .collect();
-        popup.has_focus = true;
+        let popup = Completions {
+            id: WidgetId::new("completions:editor"),
+            items: CANDIDATES
+                .iter()
+                .map(|label| CompletionItem {
+                    label: StyledText::plain(*label),
+                    detail: None,
+                    documentation: None,
+                    kind: CompletionKind::Function,
+                    icon: None,
+                })
+                .collect(),
+            has_focus: true,
+            ..Completions::default()
+        };
         Self {
             popup,
             accepted: Vec::new(),
