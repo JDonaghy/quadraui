@@ -1095,6 +1095,11 @@ pub fn cell_layout(ti: &TextInput, rect: Rect) -> TextInputLayout {
 /// paints nothing under 2×2 cells, while a one-row or one-column input
 /// still paints a degenerate frame here, so the glyphs go down with
 /// [`crate::CellSurface::put_char`] one at a time.
+/// `#[cfg(feature = "tui")]`: `crate::tui`'s own delegate is this
+/// painter's only caller, so a pixel-only or featureless build would
+/// compile it unused — and CI's `-D warnings` legs turn that into a hard
+/// error.
+#[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
     use super::{TextInput, TextInputLayout};
     use crate::cell_surface::{CellStyle, CellSurface};
