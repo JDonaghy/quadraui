@@ -2552,6 +2552,7 @@ mod message_dialog_tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         assert_eq!(
             services.set_dock_menu(&menu),

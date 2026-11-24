@@ -97,12 +97,9 @@ pub fn draw_menu_bar_with_state(
 }
 
 // The paint↔click round-trip tests below need a real
-// `DWrite`/`HeadlessSurface` — gated the same way the whole module used
-// to be.
+// `DWrite`/`HeadlessSurface`, so they are gated on a Windows host.
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[cfg(target_os = "windows")]
     mod windows_only {
         use super::*;

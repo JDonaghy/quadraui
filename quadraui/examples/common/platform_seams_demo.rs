@@ -234,6 +234,7 @@ impl AppLogic for PlatformSeamsDemo {
                     selected_idx: 0,
                     bg: None,
                     placement: ContextMenuPlacement::AnchorPoint,
+                    glyphs: Default::default(),
                 };
                 let result = backend.services().set_dock_menu(&menu);
                 self.status = vec![Self::describe("set_dock_menu", result)];

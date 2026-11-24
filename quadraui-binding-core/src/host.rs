@@ -3032,6 +3032,7 @@ pub fn menu_for_surface(
         selected_idx: 0,
         bg: None,
         placement: quadraui::ContextMenuPlacement::AnchorPoint,
+        glyphs: Default::default(),
     };
     menu.selected_idx = menu.first_selectable();
     menu

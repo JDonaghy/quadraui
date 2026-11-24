@@ -76,6 +76,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         }
     }
 
@@ -137,6 +138,7 @@ mod tests {
             selected_idx: 2,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         }
     }
 
@@ -226,6 +228,7 @@ mod tests {
             selected_idx: 2,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         }
     }
 

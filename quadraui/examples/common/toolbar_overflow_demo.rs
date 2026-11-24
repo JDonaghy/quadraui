@@ -257,6 +257,7 @@ impl AppLogic for ToolbarOverflowDemo {
                                         selected_idx: 0,
                                         bg: None,
                                         placement: Default::default(),
+                                        glyphs: Default::default(),
                                     },
                                     *position,
                                 );

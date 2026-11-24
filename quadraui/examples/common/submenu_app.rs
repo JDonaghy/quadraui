@@ -251,6 +251,7 @@ impl SubmenuApp {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         // Push to modal stack with root bounds so clicks inside don't leak.
         let layout = menu.layout(anchor.x, anchor.y, vp, 20.0 * lh, |i| {
@@ -333,6 +334,7 @@ impl SubmenuApp {
                 selected_idx: selected,
                 bg: None,
                 placement: ContextMenuPlacement::AnchorPoint,
+                glyphs: Default::default(),
             };
             let sub_layout = sub_menu.layout(anchor_x, anchor_y, vp, menu_w, |i| {
                 ContextMenuItemMeasure::new(if sub_items[i].is_separator() {
@@ -463,6 +465,7 @@ impl SubmenuApp {
                             selected_idx: 0,
                             bg: None,
                             placement: ContextMenuPlacement::AnchorPoint,
+                            glyphs: Default::default(),
                         }
                         .layout(px, py, vp, menu_w, |i| {
                             ContextMenuItemMeasure::new(if sub_items[i].is_separator() {
@@ -486,6 +489,7 @@ impl SubmenuApp {
                         selected_idx: 0,
                         bg: None,
                         placement: ContextMenuPlacement::AnchorPoint,
+                        glyphs: Default::default(),
                     };
                     let layout = menu.layout(*ax, *ay, vp, menu_w, |i| {
                         ContextMenuItemMeasure::new(if items[i].is_separator() {
@@ -576,6 +580,7 @@ impl SubmenuApp {
                         selected_idx: 0,
                         bg: None,
                         placement: ContextMenuPlacement::AnchorPoint,
+                        glyphs: Default::default(),
                     };
                     let sub_layout = sub_menu.layout(px, py, vp, menu_w, |i| {
                         ContextMenuItemMeasure::new(if sub_items[i].is_separator() {

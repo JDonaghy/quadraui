@@ -6012,6 +6012,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: Default::default(),
+            glyphs: Default::default(),
         };
         let handle = std::thread::spawn(move || {
             let mut backend = MacBackend::new();

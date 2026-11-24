@@ -22,17 +22,20 @@ use crate::theme::Theme;
 /// [`crate::tui::backend::TuiBackend`] reports as its
 /// [`crate::Backend::context_menu_border_inset`], so the reservation a
 /// caller makes and the chrome this rasteriser paints come from one
-/// constant.
-///
-/// Re-exported as `quadraui::tui::CONTEXT_MENU_BORDER_INSET` for callers
-/// that drive this rasteriser without a [`crate::Backend`] handle: inset
-/// the viewport by it on all four sides before laying the menu out, the
-/// way [`crate::Backend::context_menu_viewport`] does.
+/// constant. Re-exported as `quadraui::tui::CONTEXT_MENU_BORDER_INSET`
+/// for callers with no [`crate::Backend`] handle: inset the viewport by
+/// it on all four sides before laying the menu out, the way
+/// [`crate::Backend::context_menu_viewport`] does.
 pub const BORDER_INSET: f32 = CELL_BORDER_INSET;
 
 /// Draw a [`ContextMenu`] popup at its resolved layout. `layout` must be
 /// the same [`ContextMenuLayout`] the host hit-tests against, so paint
 /// and click-routing can never disagree.
+///
+/// Paints the menu's own [`ContextMenu::glyphs`] at the ASCII half of
+/// each [`crate::types::Icon`]; a caller holding a live
+/// [`crate::Backend::nerd_fonts_enabled`] calls
+/// [`draw_context_menu_with_glyphs`] instead.
 pub fn draw_context_menu(
     buf: &mut Buffer,
     menu: &ContextMenu,
@@ -42,18 +45,17 @@ pub fn draw_context_menu(
     draw_context_menu_with_glyphs(buf, menu, layout, theme, None, false);
 }
 
-/// [`draw_context_menu`] with an optional app-supplied
-/// [`ContextMenuGlyphs`] override for the checked-item check-mark and the
-/// submenu pull-right arrow.
+/// [`draw_context_menu`] with a caller-supplied [`ContextMenuGlyphs`]
+/// in place of the menu's own [`ContextMenu::glyphs`], plus the live
+/// [`crate::Backend::nerd_fonts_enabled`] flag.
 ///
-/// `glyphs: None` reproduces [`draw_context_menu`] cell for cell — the
-/// default `✓`/`▶` glyphs are unchanged. Passing `Some` only overrides
-/// the glyphs it sets; any field left `None` keeps the default for that
-/// mark. Each slot is a single cell, so only the override glyph's first
-/// character is used, mirroring the tab strip's close/dirty glyph
+/// `glyphs: None` falls back to that descriptor field, so a menu naming
+/// no glyphs renders the default `✓`/`▶` marks unchanged. A `Some` set
+/// overrides only the glyphs it names; any slot left `None` keeps its
+/// default. Each slot is a single cell, so only the override glyph's
+/// first character is used, mirroring the tab strip's close/dirty
 /// overrides. `nerd_fonts_enabled` selects which half of each override
-/// [`crate::types::Icon`] is used, matching
-/// [`crate::Backend::nerd_fonts_enabled`].
+/// [`crate::types::Icon`] — and of each item's own `icon` — renders.
 pub fn draw_context_menu_with_glyphs(
     buf: &mut Buffer,
     menu: &ContextMenu,
@@ -99,12 +101,9 @@ pub fn draw_context_menu_with_glyphs(
 ///
 /// Each child popup is anchored through
 /// [`ContextMenuLayout::submenu_anchor`], the shared pull-right /
-/// flip-left rule every menu in this crate positions a nested popup with.
-///
-/// Does not take a [`ContextMenuGlyphs`] override — every level always
-/// paints the default check-mark and submenu-arrow glyphs. An
-/// app-supplied override only reaches a production menu through
-/// `Backend::draw_context_menu_with_glyphs`.
+/// flip-left rule every menu in this crate positions a nested popup
+/// with, and carries a clone of the root's own [`ContextMenu::glyphs`],
+/// so one override set paints the whole cascade.
 pub fn draw_context_menu_with_submenus(
     buf: &mut Buffer,
     root_menu: &ContextMenu,
@@ -157,6 +156,7 @@ pub fn draw_context_menu_with_submenus(
             selected_idx: selected,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: root_menu.glyphs.clone(),
         };
 
         let sub_layout = sub_menu.layout(anchor.x, anchor.y, vp, MENU_WIDTH, |_| {

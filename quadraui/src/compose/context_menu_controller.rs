@@ -451,6 +451,10 @@ impl ContextMenuController {
                 selected_idx: selected,
                 bg: None,
                 placement: ContextMenuPlacement::AnchorPoint,
+                // A child popup paints the root's own marks, so a
+                // glyph override set once on the opened menu applies
+                // to every level of the cascade.
+                glyphs: open.menu.glyphs.clone(),
             };
             let sub_layout = sub_menu.layout(anchor.x, anchor.y, vp, menu_width, |i| {
                 if sub_items[i].is_separator() {
@@ -571,6 +575,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         }
     }
 
@@ -736,6 +741,7 @@ mod tests {
             selected_idx: 1,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         ctl.open(m.clone(), Point::new(0.0, 0.0), &mut backend);
         ctl.handle(&key_pressed(NamedKey::Down), &mut backend);
@@ -816,6 +822,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         }
     }
 
@@ -909,6 +916,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         ctl.open(menu, Point::new(0.0, 0.0), &mut backend);
 

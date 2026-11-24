@@ -63,6 +63,7 @@ pub type MenuItem = ContextMenuItem;
 ///     selected_idx: 0,
 ///     bg: None,
 ///     placement: Default::default(),
+///     glyphs: Default::default(),
 /// };
 ///
 /// let viewport = Rect::new(0.0, 0.0, 80.0, 24.0);
@@ -90,26 +91,38 @@ pub struct ContextMenu {
     /// auto-flip placement.
     #[serde(default)]
     pub placement: ContextMenuPlacement,
+    /// Check-mark / submenu-arrow glyph overrides for this popup.
+    /// [`ContextMenuGlyphs::default`] keeps the crate's own marks, so a
+    /// menu that names no glyphs renders exactly as it does without the
+    /// field.
+    #[serde(default)]
+    pub glyphs: ContextMenuGlyphs,
 }
 
-/// Optional app-supplied override for the glyphs [`native_surface_paint`]
-/// paints in place of the default codicon check mark and submenu
-/// pull-right arrow.
+/// Optional app-supplied override for the glyphs a context menu paints
+/// in place of the default codicon check mark and submenu pull-right
+/// arrow.
 ///
-/// A separate, `#[non_exhaustive]` type rather than fields on
-/// [`ContextMenu`]/[`ContextMenuItem`] — those two stay exhaustive for
-/// downstream struct literals, so a glyph slot can only ever be added
-/// here, where a new field can never break an existing construction
-/// site. Passed as an extra argument to
-/// [`native_surface_paint::paint_with_glyphs`]; the plain
-/// [`native_surface_paint::paint`] every existing backend call site
-/// already uses keeps calling it with `None`, so today's codicon
-/// glyphs render byte-for-byte unchanged until an app opts in.
+/// Lives on the descriptor, as [`ContextMenu::glyphs`], so every paint
+/// path reaches it from the menu alone — the widget-contract
+/// [`Primitive::paint`]/[`Primitive::paint_cells`] entry points take no
+/// glyph argument, and a popup painted as a `Surface::Widget` renders
+/// the same marks as one painted through a backend wrapper.
+/// [`Self::default`] means "no overrides", so today's codicon glyphs
+/// render byte-for-byte unchanged until an app opts in.
+///
+/// `#[non_exhaustive]`, so a future glyph slot is an additive change
+/// here rather than a required field on the exhaustive [`ContextMenu`]
+/// descriptor. On the wire both entries are optional: `{}`
+/// deserialises to [`Self::new`] and `{"checked": {"glyph": "V",
+/// "fallback": "v"}}` overrides only the check mark.
 ///
 /// Each slot is an [`Icon`] — `glyph` for when
 /// [`crate::Backend::nerd_fonts_enabled`] is set, `fallback` otherwise
 /// — rather than a bare string. A bare `&str`/`String` still works via
-/// `Icon`'s blanket `From` impls.
+/// `Icon`'s blanket `From` impls. Which half is taken comes from
+/// [`crate::primitive::LayoutCtx::nerd_fonts_enabled`], carried onto
+/// [`ContextMenuPrimitiveLayout::nerd_fonts_enabled`] at layout time.
 ///
 /// The TUI rasteriser paints a single cell per glyph: it resolves the
 /// `Icon` to a `&str` and takes only its first `char`, so a
@@ -118,21 +131,22 @@ pub struct ContextMenu {
 /// always uses the surrounding theme foreground, never the `Icon`'s own
 /// colour.
 ///
-/// `crate::tui::draw_context_menu_with_submenus` (`#[doc(hidden)]`, so not
-/// linked here) does not take a `glyphs` argument and always paints the
-/// default submenu-arrow glyph; only
-/// [`native_surface_paint::paint_with_glyphs`] honours this override.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Both entries are boxed: an override is rare, while this registry is
+/// a by-value field of the [`ContextMenu`] descriptor every frame
+/// carries, so the empty case costs two pointers rather than two whole
+/// [`Icon`]s.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct ContextMenuGlyphs {
-    checked: Option<Icon>,
-    submenu_arrow: Option<Icon>,
+    #[serde(default)]
+    checked: Option<Box<Icon>>,
+    #[serde(default)]
+    submenu_arrow: Option<Box<Icon>>,
 }
 
 impl ContextMenuGlyphs {
-    /// An empty override set — [`native_surface_paint::paint_with_glyphs`]
-    /// painted with `Some(&Self::new())` is byte-identical to
-    /// [`native_surface_paint::paint`].
+    /// An empty override set — a menu whose [`ContextMenu::glyphs`] is
+    /// `Self::new()` paints the crate's own default marks.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -142,7 +156,7 @@ impl ContextMenuGlyphs {
     /// check glyph on GUI).
     #[must_use]
     pub fn with_checked_glyph(mut self, glyph: impl Into<Icon>) -> Self {
-        self.checked = Some(glyph.into());
+        self.checked = Some(Box::new(glyph.into()));
         self
     }
 
@@ -150,20 +164,20 @@ impl ContextMenuGlyphs {
     /// codicon chevron-right glyph on GUI).
     #[must_use]
     pub fn with_submenu_arrow_glyph(mut self, glyph: impl Into<Icon>) -> Self {
-        self.submenu_arrow = Some(glyph.into());
+        self.submenu_arrow = Some(Box::new(glyph.into()));
         self
     }
 
     /// The overridden check-mark glyph, if set.
     #[must_use]
     pub fn checked_glyph(&self) -> Option<&Icon> {
-        self.checked.as_ref()
+        self.checked.as_deref()
     }
 
     /// The overridden submenu-arrow glyph, if set.
     #[must_use]
     pub fn submenu_arrow_glyph(&self) -> Option<&Icon> {
-        self.submenu_arrow.as_ref()
+        self.submenu_arrow.as_deref()
     }
 }
 
@@ -827,6 +841,12 @@ pub struct ContextMenuPrimitiveLayout {
     /// Height one separator row was resolved at — [`item_heights`]'s
     /// second value.
     pub separator_height: f32,
+    /// [`crate::primitive::LayoutCtx::nerd_fonts_enabled`] as the host
+    /// reported it at layout time, carried through to paint so both
+    /// [`ContextMenu::glyphs`] and an item's own
+    /// [`ContextMenuItem::icon`] resolve to the same half of their
+    /// [`Icon`] the surrounding chrome does.
+    pub nerd_fonts_enabled: bool,
     /// The resolved popup layout. Its `bounds`/`visible_items`/
     /// `hit_regions` are in the same absolute space as [`Self::area`].
     pub layout: ContextMenuLayout,
@@ -1072,13 +1092,16 @@ impl Primitive for ContextMenu {
             viewport,
             item_height,
             separator_height,
+            nerd_fonts_enabled: ctx.nerd_fonts_enabled,
             layout,
         }
     }
 
-    /// The shared pixel painter — the same `native_surface_paint::paint`
-    /// every pixel backend's `draw_context_menu` wrapper calls, rendering
-    /// shortcut hints for the host platform.
+    /// The shared pixel painter — the same
+    /// `native_surface_paint::paint_with_glyphs` every pixel backend's
+    /// `draw_context_menu` wrapper reaches, rendering shortcut hints for
+    /// the host platform, [`Self::glyphs`]'s marks and each item's own
+    /// icon resolved at [`ContextMenuPrimitiveLayout::nerd_fonts_enabled`].
     fn paint(
         &self,
         layout: &ContextMenuPrimitiveLayout,
@@ -1092,13 +1115,15 @@ impl Primitive for ContextMenu {
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            native_surface_paint::paint(
+            native_surface_paint::paint_with_glyphs(
                 self,
                 &layout.layout,
                 host_platform(),
                 surface,
                 theme,
                 style,
+                Some(&self.glyphs),
+                layout.nerd_fonts_enabled,
             );
         }
         #[cfg(not(any(
@@ -1110,8 +1135,12 @@ impl Primitive for ContextMenu {
     }
 
     /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_context_menu`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`crate::tui::draw_context_menu_with_glyphs`] because the
+    /// `Buffer` → [`crate::CellSurface`] adapter is private to
+    /// `crate::tui`. [`Self::glyphs`] and
+    /// [`ContextMenuPrimitiveLayout::nerd_fonts_enabled`] are the two
+    /// glyph inputs, so the cell path resolves the same marks the pixel
+    /// path does.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1119,7 +1148,14 @@ impl Primitive for ContextMenu {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_context_menu(buf, self, &layout.layout, theme);
+        crate::tui::draw_context_menu_with_glyphs(
+            buf,
+            self,
+            &layout.layout,
+            theme,
+            Some(&self.glyphs),
+            layout.nerd_fonts_enabled,
+        );
     }
 }
 
@@ -1305,7 +1341,10 @@ pub(crate) mod native_surface_paint {
     /// `platform` selects the key-equivalent render form (`⌘S` vs.
     /// `Ctrl+S`) — see [`shortcut_text`]. `style` supplies
     /// the corner radius/border width/shadow elevation the popup box
-    /// paints with — callers pass `&self.style()`.
+    /// paints with — callers pass `&self.style()`. The menu's own
+    /// [`ContextMenu::glyphs`] supplies the check-mark / submenu-arrow
+    /// marks; [`paint_with_glyphs`] additionally takes a caller-supplied
+    /// override set and the `nerd_fonts_enabled` flag that resolves it.
     pub(crate) fn paint(
         menu: &ContextMenu,
         menu_layout: &ContextMenuLayout,
@@ -1355,12 +1394,13 @@ pub(crate) mod native_surface_paint {
         )
     }
 
-    /// Identical to [`paint`], plus an optional [`ContextMenuGlyphs`]
+    /// Identical to [`paint`], plus an explicit [`ContextMenuGlyphs`]
     /// override for the check-mark / submenu-arrow glyphs and the
     /// `nerd_fonts_enabled` flag (see [`crate::Backend::nerd_fonts_enabled`])
     /// that selects each override [`Icon`]'s `glyph` vs. `fallback` form.
-    /// `glyphs: None` (what [`paint`] passes) renders byte-for-byte the
-    /// same as today's codicon defaults.
+    /// `glyphs: None` (what [`paint`] passes) falls back to the menu's
+    /// own [`ContextMenu::glyphs`], so an unset descriptor field renders
+    /// byte-for-byte the same as today's codicon defaults.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint_with_glyphs(
         menu: &ContextMenu,
@@ -1429,6 +1469,11 @@ pub(crate) mod native_surface_paint {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return Vec::new();
         }
+
+        // An explicit argument wins; with none, the menu's own
+        // descriptor field is the override set, so every paint path
+        // honours it without threading an extra parameter.
+        let glyphs = Some(glyphs.unwrap_or(&menu.glyphs));
 
         // Resolved once, outside the per-item loop below — these two
         // values are constant across the whole popup, not per-item.
@@ -1660,9 +1705,10 @@ pub(crate) mod native_surface_paint {
 ///   every other row's trailing columns show [`shortcut_text`]'s hint,
 ///   right-aligned.
 ///
-/// `glyphs` optionally overrides the check-mark and submenu-arrow marks;
-/// each slot is a single cell, so only an override's first `char`
-/// renders, and `nerd_fonts_enabled` picks which half of each override
+/// `glyphs` optionally overrides the check-mark and submenu-arrow marks
+/// the menu's own [`ContextMenu::glyphs`] otherwise supplies; each slot
+/// is a single cell, so only an override's first `char` renders, and
+/// `nerd_fonts_enabled` picks which half of each override
 /// [`Icon`] is used. The same content
 /// [`native_surface_paint::paint`] puts on a pixel surface, degraded onto
 /// the cell grid (see [`crate::paint_surface`]'s module doc, "Why TUI
@@ -1712,6 +1758,11 @@ pub(crate) mod cell_paint {
         glyphs: Option<&ContextMenuGlyphs>,
         nerd_fonts_enabled: bool,
     ) {
+        // An explicit argument wins; with none, the menu's own
+        // descriptor field is the override set, so every paint path
+        // honours it without threading an extra parameter.
+        let glyphs = Some(glyphs.unwrap_or(&menu.glyphs));
+
         let bg = theme.tab_bar_bg;
         let fg = theme.foreground;
         let sep_fg = theme.muted_fg;
@@ -1920,6 +1971,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         }
     }
 
@@ -1968,6 +2020,7 @@ mod cell_paint_tests {
             selected_idx: 2, // neither row selected
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let layout = menu.layout(
             2.0,
@@ -2109,6 +2162,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let layout = menu.layout(
@@ -2151,6 +2205,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let layout = menu.layout(
@@ -2163,11 +2218,14 @@ mod cell_paint_tests {
         draw_context_menu(&mut buf, &menu, &layout, &Theme::default());
         let inner_x = layout.bounds.x.round() as u16;
         let row_y = layout.visible_items[0].bounds.y.round() as u16;
-        // `draw_context_menu` always resolves with `nerd_fonts_enabled =
-        // false`, so the icon resolves to its ASCII fallback "F", not the
-        // glyph "G". `item_icon_paints_nerd_font_glyph_when_enabled` below
-        // pins the `nerd_fonts_enabled = true` path through
-        // `draw_context_menu_with_glyphs`.
+        // `draw_context_menu` resolves with `nerd_fonts_enabled = false`,
+        // so the icon resolves to its ASCII fallback "F", not the glyph
+        // "G". `item_icon_paints_nerd_font_glyph_when_enabled` below pins
+        // the `nerd_fonts_enabled = true` path through
+        // `draw_context_menu_with_glyphs`, and
+        // `widget_contract_paint_resolves_nerd_font_item_icon` pins it
+        // through `Primitive::paint_cells`, where the flag comes from the
+        // `LayoutCtx`.
         assert_eq!(
             cell_char(&buf, inner_x, row_y),
             'F',
@@ -2196,6 +2254,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let layout = menu.layout(
@@ -2242,6 +2301,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let layout = menu.layout(
@@ -2278,6 +2338,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let layout = menu.layout(
@@ -2315,6 +2376,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let layout = menu.layout(
@@ -2358,6 +2420,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let layout = menu.layout(
@@ -2409,6 +2472,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
         let layout = menu.layout(
@@ -2479,6 +2543,7 @@ mod cell_paint_tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         }
     }
 
@@ -2873,6 +2938,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::Below,
+            glyphs: Default::default(),
         }
     }
 
@@ -3005,6 +3071,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let layout = menu.layout(100.0, 100.0, viewport, 160.0, |_| {
@@ -3045,6 +3112,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let layout = menu.layout(100.0, 590.0, viewport, 160.0, |_| {
@@ -3076,6 +3144,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let layout = menu.layout(780.0, 590.0, viewport, 160.0, |_| {
@@ -3097,6 +3166,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
         // Anchor at x=180, menu_width=100 → right edge would be 280 > 200.
@@ -3114,6 +3184,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
         // Anchor at y=80, 2 items × 20 = 40, bottom would be 120 > 100.
@@ -3132,6 +3203,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::Below,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
         let layout = menu.layout_at(Rect::new(10.0, 10.0, 80.0, 20.0), viewport, 100.0, |_| {
@@ -3154,6 +3226,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::Below,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
         // Trigger at y=180, height=20 → bottom=200. Menu height = 6×20 = 120.
@@ -3183,6 +3256,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::Above,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
         // Trigger at y=99 (last row, status bar). Menu height = 60.
@@ -3207,6 +3281,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::Above,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
         let layout = menu.layout_at(Rect::new(10.0, 5.0, 80.0, 1.0), viewport, 100.0, |_| {
@@ -3236,6 +3311,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::Below,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
         let layout = menu.layout_at(Rect::new(10.0, 55.0, 80.0, 5.0), viewport, 100.0, |_| {
@@ -3263,6 +3339,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::Below,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 200.0, 200.0);
         let layout = menu.layout_at(Rect::new(180.0, 180.0, 20.0, 10.0), viewport, 100.0, |_| {
@@ -3286,6 +3363,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         menu.items[0].disabled = true;
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -3306,6 +3384,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         }
     }
 
@@ -4211,6 +4290,7 @@ mod widget_contract_tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         }
     }
 
@@ -4606,6 +4686,7 @@ mod widget_contract_tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         assert_eq!(Interactive::focus(&empty), FocusSpec::None);
         assert!(Interactive::a11y_actions(&empty, &ContextMenuState::default()).is_empty());
@@ -4661,5 +4742,101 @@ mod widget_contract_tests {
             crate::frame::OwnedContent::ContextMenu(captured) => assert_eq!(captured, menu),
             other => panic!("expected OwnedContent::ContextMenu, got {other:?}"),
         }
+    }
+
+    /// The host's live Nerd Font flag rides the resolved layout, so both
+    /// `paint` entry points resolve a glyph the same way the surrounding
+    /// chrome does.
+    #[test]
+    fn layout_carries_the_ctxs_nerd_font_flag() {
+        assert!(!resolved(&menu()).nerd_fonts_enabled);
+        let on = LayoutCtx::new(1.0, 1.0, true);
+        assert!(Primitive::layout(&menu(), &on, AREA).nerd_fonts_enabled);
+    }
+
+    /// [`ContextMenu::glyphs`] round-trips through the descriptor's own
+    /// wire shape: an absent key means "no override", and an override
+    /// deserialises back to the same registry.
+    #[test]
+    fn glyphs_default_when_absent_from_the_wire_shape() {
+        let bare: ContextMenu = serde_json::from_value(
+            serde_json::json!({ "id": "m", "items": [], "selected_idx": 0 }),
+        )
+        .unwrap();
+        assert_eq!(bare.glyphs, ContextMenuGlyphs::new());
+
+        let overridden: ContextMenu = serde_json::from_value(serde_json::json!({
+            "id": "m",
+            "items": [],
+            "selected_idx": 0,
+            "glyphs": { "checked": { "glyph": "V", "fallback": "v" } },
+        }))
+        .unwrap();
+        assert_eq!(
+            overridden.glyphs,
+            ContextMenuGlyphs::new().with_checked_glyph(Icon::new("V", "v"))
+        );
+    }
+
+    /// The whole point of the descriptor field: a menu carrying its own
+    /// [`ContextMenu::glyphs`] paints those marks through
+    /// [`Primitive::paint_cells`], which takes no glyph argument.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn paint_cells_paints_the_descriptors_glyph_overrides() {
+        let checked_row = ContextMenuItem {
+            checked: Some(true),
+            ..leaf("copy", "Copy")
+        };
+        let mut menu = menu();
+        menu.items[0] = checked_row;
+        menu.glyphs = ContextMenuGlyphs::new()
+            .with_checked_glyph("V")
+            .with_submenu_arrow_glyph(">");
+
+        let layout = resolved(&menu);
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 30, 10));
+        Primitive::paint_cells(&menu, &layout, &mut buf, &crate::theme::Theme::default());
+
+        let inner_x = layout.layout.bounds.x.round() as u16;
+        let right = inner_x + layout.layout.bounds.width.round() as u16;
+        let checked_y = layout.layout.visible_items[0].bounds.y.round() as u16;
+        let share_y = layout.layout.visible_items[4].bounds.y.round() as u16;
+        assert_eq!(
+            buf[(inner_x, checked_y)].symbol(),
+            "V",
+            "the descriptor's checked glyph must reach the cell painter"
+        );
+        assert_eq!(
+            buf[(right - 1, share_y)].symbol(),
+            ">",
+            "the descriptor's submenu-arrow glyph must reach the cell painter"
+        );
+    }
+
+    /// An item's own icon resolves to its Nerd Font half when the host's
+    /// [`LayoutCtx`] says the face is registered — the input the
+    /// widget-contract path takes from the layout rather than hardcoding.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn widget_contract_paint_resolves_nerd_font_item_icon() {
+        let mut menu = menu();
+        menu.items[0] = ContextMenuItem {
+            icon: Some(Icon::new("G", "F")),
+            ..leaf("copy", "Copy")
+        };
+        let theme = crate::theme::Theme::default();
+
+        let glyph_at = |nerd: bool| {
+            let ctx = LayoutCtx::new(1.0, 1.0, nerd);
+            let layout = Primitive::layout(&menu, &ctx, AREA);
+            let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 30, 10));
+            Primitive::paint_cells(&menu, &layout, &mut buf, &theme);
+            let x = layout.layout.bounds.x.round() as u16;
+            let y = layout.layout.visible_items[0].bounds.y.round() as u16;
+            buf[(x, y)].symbol().to_string()
+        };
+        assert_eq!(glyph_at(false), "F", "no Nerd Font face: ASCII fallback");
+        assert_eq!(glyph_at(true), "G", "Nerd Font face registered: the glyph");
     }
 }

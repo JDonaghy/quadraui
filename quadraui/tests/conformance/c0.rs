@@ -847,6 +847,7 @@ pub const CASES: &[Case] = &[
                 selected_idx: 0,
                 bg: None,
                 placement: ContextMenuPlacement::AnchorPoint,
+                glyphs: Default::default(),
             };
             let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
                 ContextMenuItemMeasure::new(lh)
@@ -880,6 +881,7 @@ pub const CASES: &[Case] = &[
                 selected_idx: 0,
                 bg: None,
                 placement: ContextMenuPlacement::AnchorPoint,
+                glyphs: Default::default(),
             };
             let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
                 ContextMenuItemMeasure::new(lh)
@@ -1703,6 +1705,7 @@ pub const CASES: &[Case] = &[
                 selected_idx: 0,
                 bg: None,
                 placement: ContextMenuPlacement::AnchorPoint,
+                glyphs: Default::default(),
             };
             let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
                 ContextMenuItemMeasure::new(lh)

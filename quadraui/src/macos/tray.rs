@@ -332,6 +332,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
         };
         let result = set_menu(&mut state, events(), &menu, None);
         assert_eq!(result, Err(BackendError::Unsupported));
