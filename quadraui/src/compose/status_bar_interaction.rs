@@ -1,4 +1,4 @@
-//! Lightweight hover/press state tracker for [`crate::StatusBar`].
+//! `UiEvent` adapter for [`crate::StatusBar`]'s own hover/press state.
 //!
 //! Consumers store a [`StatusBarInteraction`] alongside their status bar,
 //! call [`StatusBarInteraction::handle_event`] with each mouse event and
@@ -6,22 +6,28 @@
 //! and [`pressed_id`](StatusBarInteraction::pressed_id) when calling
 //! `Backend::draw_status_bar`.
 //!
-//! This eliminates per-backend mouse routing code for status bar hover —
-//! backends just forward `UiEvent`s uniformly.
+//! The state machine itself is the widget's own
+//! ([`StatusBarState::hover`]/[`press`](StatusBarState::press)/
+//! [`release`](StatusBarState::release), hit-tested by
+//! [`crate::StatusBar::segment_at`]), the same one
+//! [`crate::StatusBar`]'s [`crate::interactive::Interactive`] impl drives
+//! from a [`crate::interactive::RoutedEvent`]. This type only translates
+//! raw [`UiEvent`]s and a bar rect into those calls, for a host that
+//! paints its bar through `Backend::draw_status_bar` rather than reaching
+//! the frame as a widget.
 
 use std::cell::RefCell;
 
 use crate::compose::Handled;
 use crate::event::{MouseButton, Point, Rect, UiEvent};
-use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
+use crate::primitives::status_bar::{StatusBar, StatusBarLayout, StatusBarRelease, StatusBarState};
 use crate::types::WidgetId;
 
 /// Tracks hover and pressed state for a status bar's clickable segments.
 #[derive(Debug, Clone, Default)]
 pub struct StatusBarInteraction {
     layout: RefCell<Option<StatusBarLayout>>,
-    hovered: Option<WidgetId>,
-    pressed: Option<WidgetId>,
+    state: StatusBarState,
 }
 
 /// What happened after [`StatusBarInteraction::handle`] processed an event.
@@ -52,11 +58,11 @@ impl StatusBarInteraction {
     }
 
     pub fn hovered_id(&self) -> Option<&WidgetId> {
-        self.hovered.as_ref()
+        self.state.hovered.as_ref()
     }
 
     pub fn pressed_id(&self) -> Option<&WidgetId> {
-        self.pressed.as_ref()
+        self.state.pressed.as_ref()
     }
 
     /// Process a mouse event relative to the status bar's rect.
@@ -77,9 +83,8 @@ impl StatusBarInteraction {
     pub fn handle_event(&mut self, event: &UiEvent, bar_rect: Rect) -> Handled<WidgetId> {
         match event {
             UiEvent::MouseMoved { position, .. } => {
-                let new_hover = self.hit_test(bar_rect, *position);
-                if new_hover != self.hovered {
-                    self.hovered = new_hover;
+                let hit = self.hit_test(bar_rect, *position);
+                if self.state.hover(hit) {
                     Handled::Consumed
                 } else {
                     Handled::Ignored
@@ -91,8 +96,7 @@ impl StatusBarInteraction {
                 ..
             } => {
                 let hit = self.hit_test(bar_rect, *position);
-                if hit.is_some() {
-                    self.pressed = hit;
+                if self.state.press(hit) {
                     Handled::Consumed
                 } else {
                     Handled::Ignored
@@ -103,17 +107,11 @@ impl StatusBarInteraction {
                 position,
                 ..
             } => {
-                let was_pressed = self.pressed.take();
-                if let Some(ref pressed_id) = was_pressed {
-                    let hit = self.hit_test(bar_rect, *position);
-                    if hit.as_ref() == Some(pressed_id) {
-                        return Handled::Event(*pressed_id);
-                    }
-                }
-                if was_pressed.is_some() {
-                    Handled::Consumed
-                } else {
-                    Handled::Ignored
+                let hit = self.hit_test(bar_rect, *position);
+                match self.state.release(hit) {
+                    StatusBarRelease::Clicked(id) => Handled::Event(id),
+                    StatusBarRelease::Dropped => Handled::Consumed,
+                    StatusBarRelease::Idle => Handled::Ignored,
                 }
             }
             _ => Handled::Ignored,
@@ -135,6 +133,8 @@ impl StatusBarInteraction {
         }
     }
 
+    /// Which clickable segment `position` lands on, translated into the
+    /// bar-local space [`crate::StatusBar::segment_at`] answers in.
     fn hit_test(&self, bar_rect: Rect, position: Point) -> Option<WidgetId> {
         if position.x < bar_rect.x
             || position.x >= bar_rect.x + bar_rect.width
@@ -146,16 +146,16 @@ impl StatusBarInteraction {
         let local_x = position.x - bar_rect.x;
         let local_y = position.y - bar_rect.y;
         let guard = self.layout.borrow();
-        match guard.as_ref().map(|l| l.hit_test(local_x, local_y)) {
-            Some(StatusBarHit::Segment(id)) => Some(id),
-            _ => None,
-        }
+        guard
+            .as_ref()
+            .and_then(|l| StatusBar::segment_at(l, local_x, local_y))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::primitives::status_bar::StatusBarHit;
 
     fn bar_rect() -> Rect {
         Rect::new(0.0, 100.0, 80.0, 1.0)
