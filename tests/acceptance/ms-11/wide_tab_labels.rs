@@ -27,7 +27,10 @@ mod ms11_554_wide_tab_labels {
 
     use quadraui::testing::ConformanceDriver;
     use quadraui::tui::testing::TuiDriver;
-    use quadraui::{AppLogic, Backend, Color, Reaction, Rect, TabBar, TabItem, UiEvent, WidgetId};
+    use quadraui::{
+        AppLogic, Backend, Color, DrawsPrimitives, Reaction, Rect, TabBar, TabBarHit, TabBarLayout,
+        TabItem, UiEvent, WidgetId,
+    };
 
     /// Tab 0 — 11 `char`s, **14 display columns** (contract §3b).
     const WIDE_LABEL: &str = " 1: 日本語.rs ";
@@ -61,9 +64,9 @@ mod ms11_554_wide_tab_labels {
     struct WideTabFixture {
         labels: Vec<String>,
         active: usize,
-        /// `(start_x, end_x)` per tab, as reported by the last
-        /// `draw_tab_bar`. `render` takes `&self`, hence the `RefCell`.
-        slots: RefCell<Vec<(f64, f64)>>,
+        /// The tab-strip layout the last `render` painted.
+        /// `render` takes `&self`, hence the `RefCell`.
+        painted: RefCell<Option<TabBarLayout>>,
     }
 
     impl WideTabFixture {
@@ -71,7 +74,7 @@ mod ms11_554_wide_tab_labels {
             Self {
                 labels: labels.iter().map(|s| (*s).to_string()).collect(),
                 active,
-                slots: RefCell::new(Vec::new()),
+                painted: RefCell::new(None),
             }
         }
 
@@ -104,6 +107,7 @@ mod ms11_554_wide_tab_labels {
                 // presence cannot move any asserted number.
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             }
         }
     }
@@ -113,21 +117,18 @@ mod ms11_554_wide_tab_labels {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let bar = self.bar();
-            let hits = backend.draw_tab_bar(Rect::new(0.0, 0.0, COLS as f32, 1.0), &bar, None);
-            *self.slots.borrow_mut() = hits.slot_positions;
+            let painted = backend.draw_primitive(Rect::new(0.0, 0.0, COLS as f32, 1.0), &bar);
+            *self.painted.borrow_mut() = Some(painted.layout);
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
             if let UiEvent::MouseDown { position, .. } = event {
-                let x = position.x as f64;
                 let hit = self
-                    .slots
+                    .painted
                     .borrow()
-                    .iter()
-                    // Tabs before `scroll_offset` carry zero-width
-                    // `(0.0, 0.0)` sentinels; `end > start` skips them.
-                    .position(|&(start, end)| end > start && x >= start && x < end);
-                if let Some(idx) = hit {
+                    .as_ref()
+                    .map(|layout| layout.hit_test(position.x, position.y));
+                if let Some(TabBarHit::Tab(idx)) = hit {
                     if idx != self.active {
                         self.active = idx;
                         return Reaction::Redraw;

@@ -290,14 +290,9 @@ mod tests {
                 modifiers: crate::types::Modifiers::default(),
                 repeat: false,
             }),
-            &*found.widget.layout(
-                &LayoutCtx {
-                    line_height: 1.0,
-                    char_width: 1.0,
-                    nerd_fonts_enabled: false,
-                },
-                found.rect,
-            ),
+            &*found
+                .widget
+                .layout(&LayoutCtx::new(1.0, 1.0, false), found.rect),
             &mut cx,
         );
         assert_eq!(

@@ -21,19 +21,19 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use crate::primitives::tab_bar::{
-    cell_paint, SegmentMeasure, TabBar, TabBarHits, TabBarLayout, TabChrome, TabIcon, TabMeasure,
+    cell_paint, TabBar, TabBarHits, TabBarLayout, TabChrome, TabIcon,
 };
-use crate::text_util::display_width;
 use crate::theme::Theme;
 
 pub use cell_paint::paint as draw_tab_bar_icons_with_chrome_and_glyphs;
 
 /// Compute the TUI cell-unit layout for a [`TabBar`] without painting —
-/// the same char-cell measurer every `TuiBackend::draw_tab_bar*`/
-/// `draw_tab_bar*_layout` entry point builds before calling
-/// [`TabBar::layout`], and the one [`crate::primitives::tab_bar`]'s own
-/// `Primitive::layout` TUI branch calls too, so no caller can drift from
-/// what TUI actually paints (`PRIMITIVE_RULES.md` rule 5).
+/// the chrome-less entry point into
+/// [`crate::primitives::tab_bar::cell_tab_bar_layout`], the one char-cell
+/// measurer every `TuiBackend::draw_tab_bar*`/`draw_tab_bar*_layout`
+/// method and [`crate::primitives::tab_bar`]'s own `Primitive::layout`
+/// TUI branch resolve through, so no caller can drift from what TUI
+/// actually paints (`PRIMITIVE_RULES.md` rule 5).
 ///
 /// `icons` is the sidecar slice parallel to `bar.tabs` (see
 /// [`crate::Backend::draw_tab_bar_icons`]); pass `&[]` for an icon-less
@@ -44,54 +44,12 @@ pub use cell_paint::paint as draw_tab_bar_icons_with_chrome_and_glyphs;
 /// (origin at `(0, 0)`, matching every other `*PrimitiveLayout`'s own
 /// `layout` field) — `area`'s width/height size it, not its origin.
 pub fn tui_tab_bar_layout(area: Rect, bar: &TabBar, icons: &[Option<TabIcon>]) -> TabBarLayout {
-    // Respect per-tab `is_closable`: non-closable tabs get no close-column
-    // reservation even when `show_tab_close` is set on the bar.
-    let close_cols = if bar.show_tab_close {
-        crate::tui::TAB_CLOSE_COLS as usize
-    } else {
-        0
-    };
-    // Measure in display columns, not `char`s — a CJK/emoji glyph
-    // occupies two columns, and the shared cell-paint painter paints with
-    // `char_cell_width` strides, so the budget must agree. Also add
-    // `tab_icon_cols` so a tab's optional icon glyph + gap is reserved the
-    // same way the GTK rasteriser reserves its own Pango-measured icon
-    // width.
-    let tab_widths: Vec<usize> = bar
-        .tabs
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let tab_close = if bar.show_tab_close && t.is_closable {
-                close_cols
-            } else {
-                0
-            };
-            // No close button to reserve? Reserve a separator column
-            // instead, so adjacent labels on a bar with
-            // `show_tab_close: false` (or a non-closable tab) paint with a
-            // visible boundary rather than running together.
-            let sep = if tab_close == 0 {
-                crate::tui::TAB_SEPARATOR_COLS as usize
-            } else {
-                0
-            };
-            display_width(&t.label) + tab_close + sep + crate::tab_icon_cols(icons, i) as usize
-        })
-        .collect();
-    bar.layout(
+    crate::primitives::tab_bar::cell_tab_bar_layout(
+        bar,
         area.width as f32,
         area.height as f32,
-        0.0, // no scroll arrows in TUI
-        |i| {
-            let tab_close_cols = if bar.show_tab_close && bar.tabs[i].is_closable {
-                close_cols
-            } else {
-                0
-            };
-            TabMeasure::new(tab_widths[i] as f32, tab_close_cols as f32)
-        },
-        |i| SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+        icons,
+        &TabChrome::default(),
     )
 }
 
@@ -196,6 +154,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -395,6 +354,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let layout = bar.layout(
             30.0,
@@ -444,6 +404,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
         // Measure with the same `display_width` function the `TuiBackend`
         // measure side uses, so the label's budget covers every column it
@@ -540,6 +501,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
 
         let icon_cols = crate::tab_icon_cols(&icons, 0);
@@ -641,6 +603,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let chrome = TabChrome::new(TabFrame::Brackets);
         // Tab 0 (active, bracketed): '[' + "main.rs"(7) + ×(1) + ']' = 10.
@@ -722,6 +685,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
         let layout = bar.layout(
             40.0,
@@ -852,6 +816,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: false,
             compact: true,
+            ..Default::default()
         };
         // Mirrors `TuiBackend`'s measurer: no close button reserved, so each
         // tab's width is its label plus one `TAB_SEPARATOR_COLS` column.
@@ -933,6 +898,7 @@ mod tests {
             scroll_offset: 3,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
         let layout = bar.layout(
             20.0,
@@ -994,6 +960,7 @@ mod tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         // Every tab is pinned to 14 cells total (12-cell label budget + a
         // 2-cell close button) no matter how long its label is — unlike

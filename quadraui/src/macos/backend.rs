@@ -2569,7 +2569,7 @@ impl Backend for MacBackend {
     /// has been called.
     fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
         let font = match role {
-            crate::FontRole::Chrome => &self.chrome_font,
+            crate::FontRole::Chrome | crate::FontRole::Icon => &self.chrome_font,
             crate::FontRole::Editor => self.current_font.as_ref().unwrap_or(&self.chrome_font),
         };
         let (w, h) = super::text::measure_text(font, text);
@@ -5980,7 +5980,7 @@ impl PaintSurface for MacBackend {
             "MacBackend::surface_draw_text_run_with_role called outside enter_frame_scope",
         );
         let font = match role {
-            crate::FontRole::Chrome => &self.chrome_font,
+            crate::FontRole::Chrome | crate::FontRole::Icon => &self.chrome_font,
             // Falls back to `chrome_font` — never `None` — instead of
             // panicking when a host draws `FontRole::Editor` text before
             // calling `set_current_font`.
@@ -11083,6 +11083,7 @@ mod tests {
             active_accent: None,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
 
         backend.set_painted_text_recording(true);

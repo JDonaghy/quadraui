@@ -123,11 +123,7 @@
 //! // `DrawsPrimitives::draw_primitive`'s default body does internally, against
 //! // whatever `Backend::paint_surface` hands back.
 //! let swatch = Swatch { color: Color::rgb(255, 0, 0) };
-//! let ctx = LayoutCtx {
-//!     line_height: 16.0,
-//!     char_width: 8.0,
-//!     nerd_fonts_enabled: false,
-//! };
+//! let ctx = LayoutCtx::new(16.0, 8.0, false);
 //! let mut surface = NullSurface::default();
 //! let layout = swatch.layout(&ctx, Rect::new(0.0, 0.0, 10.0, 10.0));
 //! swatch.paint(&layout, &mut surface, &Theme::default(), &Style::default());
@@ -143,17 +139,29 @@ use crate::theme::Theme;
 use crate::types::WidgetId;
 use crate::Handled;
 
+/// The text measurer [`LayoutCtx`] carries — a borrowed closure over
+/// the calling backend's [`crate::Backend::measure_text`], spelled once
+/// here rather than inline on the field and on
+/// [`LayoutCtx::with_measurer`]'s parameter.
+type TextMeasurer<'a> = &'a dyn Fn(&str, crate::FontRole) -> f32;
+
 /// Backend-measured geometry a [`Primitive::layout`] call needs that a
 /// bare [`Rect`] doesn't carry.
 ///
 /// Mirrors the handful of [`crate::Backend`] measurement methods every
 /// pixel backend already exposes (`chrome_line_height`, `char_width`,
-/// `nerd_fonts_enabled`) — [`crate::DrawsPrimitives::draw_primitive`]'s default
-/// body builds one of these from `self` before calling
-/// [`Primitive::layout`], so a `Primitive` impl never has to reach for
-/// `&dyn Backend` itself.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct LayoutCtx {
+/// `nerd_fonts_enabled`, `measure_text`) —
+/// [`crate::DrawsPrimitives::draw_primitive`]'s default body builds one of
+/// these from `self` before calling [`Primitive::layout`], so a
+/// `Primitive` impl never has to reach for `&dyn Backend` itself.
+///
+/// Built with [`Self::new`], never a struct literal: the text measurer
+/// behind [`Self::text_width`] is a private field, so a caller with a
+/// live backend attaches it with [`Self::with_measurer`] and a caller
+/// without one (a script-widget seam, a unit test) gets the
+/// `char_width` approximation by construction.
+#[derive(Clone, Copy)]
+pub struct LayoutCtx<'a> {
     /// One standard row's height, in the backend's native units — see
     /// [`crate::Backend::chrome_line_height`]. Already run through
     /// [`Self::resolve_row_height`] against the calling backend's
@@ -163,14 +171,133 @@ pub struct LayoutCtx {
     /// itself.
     pub line_height: f32,
     /// Approximate character advance, in the backend's native units —
-    /// see [`crate::Backend::char_width`].
+    /// see [`crate::Backend::char_width`]. One nominal advance for every
+    /// glyph; [`Self::text_width`] is the proportional-font-correct
+    /// measurement a layout that positions text should ask for instead.
     pub char_width: f32,
     /// Whether the backend has a Nerd Font icon face registered — see
     /// [`crate::Backend::nerd_fonts_enabled`].
     pub nerd_fonts_enabled: bool,
+    /// The calling backend's [`crate::Backend::measure_text`], bound to
+    /// that backend — see [`Self::with_measurer`] and
+    /// [`Self::text_width`]. `None` when no backend is in reach.
+    measurer: Option<TextMeasurer<'a>>,
+    /// The calling backend's [`crate::Backend::style`] — see
+    /// [`Self::with_style`] and [`Self::style`]. `None` when no backend is
+    /// in reach.
+    style: Option<&'a crate::Style>,
 }
 
-impl LayoutCtx {
+/// Prints the three scalar metrics plus whether a text measurer is
+/// attached — a `&dyn Fn` has no useful `Debug`, and the closure's
+/// identity is not part of this value's meaning.
+impl std::fmt::Debug for LayoutCtx<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LayoutCtx")
+            .field("line_height", &self.line_height)
+            .field("char_width", &self.char_width)
+            .field("nerd_fonts_enabled", &self.nerd_fonts_enabled)
+            .field("measurer", &self.measurer.map(|_| "<fn>"))
+            .field("style", &self.style.is_some())
+            .finish()
+    }
+}
+
+/// Compares the three scalar metrics only. The measurer is excluded:
+/// two function pointers to the same backend's
+/// [`crate::Backend::measure_text`] are not reliably equal, and a
+/// `Primitive` caching "did this frame's metrics change?" asks about the
+/// metrics, not about the closure that carried them.
+impl PartialEq for LayoutCtx<'_> {
+    fn eq(&self, other: &Self) -> bool {
+        self.line_height == other.line_height
+            && self.char_width == other.char_width
+            && self.nerd_fonts_enabled == other.nerd_fonts_enabled
+    }
+}
+
+impl LayoutCtx<'static> {
+    /// A ctx with no text measurer attached: [`Self::text_width`] falls
+    /// back to `char_width * chars`.
+    ///
+    /// [`crate::DrawsPrimitives::draw_primitive`] builds its ctx this way
+    /// and then attaches the calling backend's own measurer with
+    /// [`Self::with_measurer`]; a caller with no backend in reach
+    /// (`quadraui-binding-core`'s script-widget seam, a `Primitive`
+    /// layout unit test) uses this directly and lays out against the
+    /// approximation.
+    pub fn new(line_height: f32, char_width: f32, nerd_fonts_enabled: bool) -> Self {
+        Self {
+            line_height,
+            char_width,
+            nerd_fonts_enabled,
+            measurer: None,
+            style: None,
+        }
+    }
+}
+
+impl<'a> LayoutCtx<'a> {
+    /// This ctx with `m` attached as its text measurer, so
+    /// [`Self::text_width`] reports real glyph widths.
+    ///
+    /// `m` is a closure rather than a `&dyn Backend`:
+    /// [`crate::DrawsPrimitives`] is blanket-implemented over
+    /// `B: Backend + ?Sized`, so a generic `&B` cannot be coerced to
+    /// another trait object there — `|t, r| backend.measure_text(t, r).0`
+    /// can, and keeps this type free of any `Backend` bound.
+    pub fn with_measurer<'b>(self, m: &'b dyn Fn(&str, crate::FontRole) -> f32) -> LayoutCtx<'b>
+    where
+        'a: 'b,
+    {
+        LayoutCtx {
+            measurer: Some(m),
+            ..self
+        }
+    }
+
+    /// This ctx with `style` attached, so a layout that sizes itself off a
+    /// [`crate::Style`] token (a tab's [`crate::Style::tab_padding_x`])
+    /// reads the calling backend's live value — the one its own
+    /// rasteriser paints with.
+    pub fn with_style<'b>(self, style: &'b crate::Style) -> LayoutCtx<'b>
+    where
+        'a: 'b,
+    {
+        LayoutCtx {
+            style: Some(style),
+            ..self
+        }
+    }
+
+    /// The style attached with [`Self::with_style`], else
+    /// [`crate::Style::default`].
+    pub fn style(&self) -> &crate::Style {
+        static DEFAULT: std::sync::LazyLock<crate::Style> =
+            std::sync::LazyLock::new(crate::Style::default);
+        self.style.unwrap_or(&DEFAULT)
+    }
+
+    /// Width of `text` in `role`'s font, in the same units as
+    /// [`Self::char_width`] — the calling backend's real
+    /// [`crate::Backend::measure_text`] when a measurer is attached (see
+    /// [`Self::with_measurer`]), else the `char_width * chars`
+    /// approximation.
+    ///
+    /// A `Primitive::layout` that positions text must measure through
+    /// this rather than scaling [`Self::char_width`] itself: on a
+    /// proportional chrome font the error runs in both directions (GTK's
+    /// Pango measures `alpha` and `beta` *narrower* than
+    /// `chars * char_width` and `gamma` *wider*), so no scalar
+    /// correction closes it and a shared layout built on the
+    /// approximation ellipsises labels the rasteriser fits.
+    pub fn text_width(&self, text: &str, role: crate::FontRole) -> f32 {
+        match self.measurer {
+            Some(m) => m(text, role),
+            None => self.char_width * text.chars().count() as f32,
+        }
+    }
+
     /// Floor `line_height` at `style.row_height`, the same row-pitch
     /// resolution every pixel backend's own private `resolved_row_height`
     /// helper already applies on its bespoke `draw_list`/`draw_tree`/
@@ -692,6 +819,16 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// [`Interactive::focus`].
     fn focus(&self) -> FocusSpec;
 
+    /// This widget's addressable sub-parts for `layout`, in widget-local
+    /// coordinates — see [`Interactive::sub_regions`]. Returns an empty
+    /// `Vec` when `layout` isn't this widget's own layout type, matching
+    /// [`Self::handle`]'s "wrong pairing is a programmer error reported
+    /// as nothing, not a panic" convention.
+    fn sub_regions(
+        &self,
+        layout: &dyn PrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)>;
+
     /// A fresh, default-valued interaction state for this widget — the
     /// type-erased counterpart of [`Interactive::State::default`].
     fn new_state(&self) -> Box<dyn std::any::Any>;
@@ -788,6 +925,16 @@ where
         Interactive::focus(self)
     }
 
+    fn sub_regions(
+        &self,
+        layout: &dyn PrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        match layout.downcast_ref::<W::Layout>() {
+            Some(layout) => Interactive::sub_regions(self, layout),
+            None => Vec::new(),
+        }
+    }
+
     fn new_state(&self) -> Box<dyn std::any::Any> {
         Box::new(W::State::default())
     }
@@ -833,6 +980,224 @@ impl dyn DynWidget {
     }
 }
 
+// ── Painted-layout record ───────────────────────────────────────────────
+
+/// One widget's geometry as [`crate::DrawsPrimitives::draw_dyn`] painted
+/// it this frame — the entry [`PaintedWidgets`] stores per identified
+/// widget.
+///
+/// `rect` and `sub_regions` are **target-surface absolute** (the same
+/// space a [`crate::UiEvent::MouseDown`] position arrives in), so a
+/// driver or binding layer hit-tests them without knowing where the
+/// widget sits. `layout` stays exactly as [`DynWidget::layout`] produced
+/// it — in the widget's own local space — and downcasts back to the
+/// widget's concrete layout type through
+/// [`dyn PrimitiveLayout::downcast_ref`][dyn@PrimitiveLayout::downcast_ref].
+pub struct PaintedWidget {
+    /// The widget's own id — [`DynWidget::id`], which is `Some` for every
+    /// recorded entry (an anonymous widget is never recorded, since
+    /// nothing could address it afterwards).
+    pub id: WidgetId,
+    /// The absolute rect the widget was painted into.
+    pub rect: Rect,
+    /// The layout that painted, erased behind [`PrimitiveLayout`].
+    pub layout: Box<dyn PrimitiveLayout>,
+    /// This widget's addressable sub-parts, most-specific first — see
+    /// [`Interactive::sub_regions`], whose widget-local rects are
+    /// translated into absolute space here.
+    pub sub_regions: Vec<(Rect, crate::interactive::SubTarget)>,
+}
+
+/// Every widget [`crate::DrawsPrimitives::draw_dyn`] painted in the
+/// current frame, in paint order.
+///
+/// # Why this exists
+///
+/// A widget painted through the widget contract has no per-backend layout
+/// cache to read back: `draw_dyn` resolves `w.layout(&ctx, rect)`, paints
+/// it and drops it. Drivers that need to click one *sub-part* of a widget
+/// (`TuiDriver::tab_center`, the GTK equivalent) and binding layers that
+/// need the sub-part under a point therefore had nothing generic to ask.
+/// This is that record: one store, filled by `draw_dyn` for every widget
+/// whose [`DynWidget::id`] is `Some`, cleared at the start of every frame.
+///
+/// Deliberately widget-agnostic — a widget names its own sub-parts
+/// through [`Interactive::sub_regions`], so adding a widget to the
+/// contract never adds a field here.
+///
+/// [`crate::DrawsPrimitives::draw_primitive`] does not fill this: it
+/// paints a bare [`Primitive`], which carries no [`Interactive`] half to
+/// name sub-parts with, and its caller already holds the concrete
+/// `P::Layout` it returned. The record is for the type-erased path, where
+/// the layout is dropped as soon as the frame is painted.
+#[derive(Default)]
+pub struct PaintedWidgets {
+    entries: Vec<PaintedWidget>,
+}
+
+impl PaintedWidgets {
+    /// Drop every entry — called once per frame, before anything paints.
+    pub fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    /// Append one painted widget, in paint order.
+    pub fn record(&mut self, widget: PaintedWidget) {
+        self.entries.push(widget);
+    }
+
+    /// Every entry, in paint order (back to front).
+    pub fn iter(&self) -> impl Iterator<Item = &PaintedWidget> {
+        self.entries.iter()
+    }
+
+    /// How many widgets painted this frame.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether nothing painted through the widget contract this frame.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The absolute rect and layout `id` painted with this frame, or
+    /// `None` if it didn't paint.
+    ///
+    /// The *last* entry wins when one id painted twice in a frame (a
+    /// two-pass paint that corrects its own scroll offset, as
+    /// [`crate::compose::WorkspaceController::render`] does), so a caller
+    /// always reads the geometry that is actually on screen.
+    pub fn painted_layout(&self, id: &WidgetId) -> Option<(Rect, &dyn PrimitiveLayout)> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| &e.id == id)
+            .map(|e| (e.rect, e.layout.as_ref()))
+    }
+
+    /// The widget under `(x, y)` and, when its layout names one, the
+    /// sub-part under that same point.
+    ///
+    /// Topmost wins: entries are searched in reverse paint order, so a
+    /// widget painted over another one answers first. `Some((id, None))`
+    /// means the point landed inside the widget but on no addressable
+    /// sub-part (dead space, or a widget that names no sub-parts at all).
+    pub fn painted_hit(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(WidgetId, Option<crate::interactive::SubTarget>)> {
+        let entry = self.entries.iter().rev().find(|e| contains(e.rect, x, y))?;
+        let sub = entry
+            .sub_regions
+            .iter()
+            .find(|(r, _)| contains(*r, x, y))
+            .map(|(_, sub)| *sub);
+        Some((entry.id, sub))
+    }
+
+    /// The absolute rect of `id`'s `sub` sub-part, as painted this frame.
+    ///
+    /// Same last-entry-wins rule as [`Self::painted_layout`].
+    pub fn painted_sub_rect(
+        &self,
+        id: &WidgetId,
+        sub: crate::interactive::SubTarget,
+    ) -> Option<Rect> {
+        self.entries
+            .iter()
+            .rev()
+            .find(|e| &e.id == id)?
+            .sub_regions
+            .iter()
+            .find(|(_, s)| *s == sub)
+            .map(|(r, _)| *r)
+    }
+
+    /// The center of [`Self::painted_sub_rect`], the point a driver
+    /// clicks to land on that sub-part.
+    pub fn painted_sub_center(
+        &self,
+        id: &WidgetId,
+        sub: crate::interactive::SubTarget,
+    ) -> Option<(f32, f32)> {
+        self.painted_sub_rect(id, sub)
+            .map(|r| (r.x + r.width / 2.0, r.y + r.height / 2.0))
+    }
+}
+
+/// Half-open containment, matching [`crate::TabBarLayout::hit_test`]'s own
+/// convention: the right/bottom edge belongs to the next rect along.
+fn contains(rect: Rect, x: f32, y: f32) -> bool {
+    x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
+}
+
+thread_local! {
+    /// The current frame's [`PaintedWidgets`].
+    ///
+    /// A `thread_local!` rather than a [`crate::Backend`] field reached
+    /// through a trait method, for two reasons. The store has to be
+    /// writable from [`crate::DrawsPrimitives::draw_dyn`]'s blanket impl
+    /// (which only ever has `&mut dyn Backend`-shaped access, so it can
+    /// reach backend state through `Backend` methods alone) *and*
+    /// readable from a shared `&TuiBackend`/`&GtkBackend` in a driver —
+    /// two accessors, on a trait whose method count this repo ratchets
+    /// strictly downwards (`tests/backend_method_ratchet.rs`). And the
+    /// record is per-frame, per-painting-thread state with exactly one
+    /// writer: every backend paints its own frames on the thread that
+    /// owns its event loop, so thread-local storage is the same scope the
+    /// data already has. [`crate::gtk`]'s own font-override store and
+    /// [`crate::testing`]'s scenario hooks use the same shape.
+    static PAINTED_WIDGETS: std::cell::RefCell<PaintedWidgets> =
+        std::cell::RefCell::new(PaintedWidgets::default());
+}
+
+/// Drop the previous frame's painted-layout record.
+///
+/// Called once per frame from `BackendCore::begin_frame` — the shared
+/// begin-frame step every backend already runs — so a widget that stops
+/// painting stops being addressable, exactly like each backend's own
+/// per-frame caches.
+pub fn clear_painted_widgets() {
+    PAINTED_WIDGETS.with(|p| p.borrow_mut().clear());
+}
+
+/// Record one widget painted by [`crate::DrawsPrimitives::draw_dyn`].
+pub fn record_painted_widget(widget: PaintedWidget) {
+    PAINTED_WIDGETS.with(|p| p.borrow_mut().record(widget));
+}
+
+/// Read this frame's [`PaintedWidgets`].
+///
+/// A closure rather than a returned reference: the store lives in
+/// thread-local storage, so a borrow cannot outlive the call. Every query
+/// helper ([`PaintedWidgets::painted_layout`],
+/// [`PaintedWidgets::painted_hit`], …) is a method on the store itself, so
+/// a caller reads one of them inside `f`.
+///
+/// `f` reads geometry; it must not paint. The store is borrowed for the
+/// duration of the call, so a [`crate::DrawsPrimitives::draw_dyn`] call
+/// from inside `f` — which records into that same store — panics on the
+/// conflicting borrow. Copy out what is needed (a rect, a point) and
+/// paint after the call returns.
+pub fn with_painted_widgets<R>(f: impl FnOnce(&PaintedWidgets) -> R) -> R {
+    PAINTED_WIDGETS.with(|p| f(&p.borrow()))
+}
+
+/// The widget-contract widget under `(x, y)` this frame, and the sub-part
+/// under that same point — [`PaintedWidgets::painted_hit`] against the
+/// live record.
+pub fn painted_hit(x: f32, y: f32) -> Option<(WidgetId, Option<crate::interactive::SubTarget>)> {
+    with_painted_widgets(|p| p.painted_hit(x, y))
+}
+
+/// The absolute center of `id`'s `sub` sub-part this frame —
+/// [`PaintedWidgets::painted_sub_center`] against the live record.
+pub fn painted_sub_center(id: &WidgetId, sub: crate::interactive::SubTarget) -> Option<(f32, f32)> {
+    with_painted_widgets(|p| p.painted_sub_center(id, sub))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -870,16 +1235,8 @@ mod tests {
     /// doc.
     #[test]
     fn layout_ctx_units_discriminates_cells_from_pixels() {
-        let cells = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
-        let pixels = LayoutCtx {
-            line_height: 22.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let cells = LayoutCtx::new(1.0, 1.0, false);
+        let pixels = LayoutCtx::new(22.0, 8.0, false);
         assert_eq!(cells.units(), Units::Cells);
         assert_eq!(pixels.units(), Units::Pixels);
     }
@@ -889,11 +1246,7 @@ mod tests {
     /// recomputation of either field.
     #[test]
     fn layout_ctx_measure_bundles_its_own_fields_verbatim() {
-        let ctx = LayoutCtx {
-            line_height: 22.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: true,
-        };
+        let ctx = LayoutCtx::new(22.0, 8.0, true);
         let measure = ctx.measure(Units::Pixels);
         assert_eq!(
             measure,
@@ -915,16 +1268,8 @@ mod tests {
     /// metric) reports [`Units::Pixels`].
     #[test]
     fn layout_ctx_units_follows_the_line_height_convention() {
-        let cells = LayoutCtx {
-            line_height: 1.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
-        let pixels = LayoutCtx {
-            line_height: 22.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let cells = LayoutCtx::new(1.0, 8.0, false);
+        let pixels = LayoutCtx::new(22.0, 8.0, false);
         assert_eq!(cells.units(), Units::Cells);
         assert_eq!(pixels.units(), Units::Pixels);
     }
@@ -1120,5 +1465,81 @@ mod tests {
         // A mismatched concrete type downcasts to `None` rather than
         // panicking.
         assert!(erased.as_ref().downcast_ref::<crate::Spinner>().is_none());
+    }
+
+    /// Two overlapping widgets: the one painted last is the one on
+    /// screen, so a point inside both resolves to it.
+    #[test]
+    fn painted_hit_prefers_the_widget_painted_last() {
+        let under = WidgetId::new("under");
+        let over = WidgetId::new("over");
+        let mut painted = PaintedWidgets::default();
+        painted.record(PaintedWidget {
+            id: under,
+            rect: Rect::new(0.0, 0.0, 20.0, 10.0),
+            layout: Box::new(()),
+            sub_regions: Vec::new(),
+        });
+        painted.record(PaintedWidget {
+            id: over,
+            rect: Rect::new(5.0, 0.0, 20.0, 10.0),
+            layout: Box::new(()),
+            sub_regions: Vec::new(),
+        });
+
+        assert_eq!(painted.painted_hit(6.0, 1.0), Some((over, None)));
+        assert_eq!(painted.painted_hit(1.0, 1.0), Some((under, None)));
+        assert_eq!(painted.painted_hit(40.0, 1.0), None);
+    }
+
+    /// Sub-regions are answered in the order the widget listed them, so a
+    /// widget that lists its most specific part first wins the overlap —
+    /// and a point on no sub-region still resolves the widget itself.
+    #[test]
+    fn painted_hit_answers_the_first_matching_sub_region() {
+        let id = WidgetId::new("composite");
+        let specific = crate::interactive::SubTarget(1);
+        let broad = crate::interactive::SubTarget(2);
+        let mut painted = PaintedWidgets::default();
+        painted.record(PaintedWidget {
+            id,
+            rect: Rect::new(0.0, 0.0, 20.0, 2.0),
+            layout: Box::new(()),
+            sub_regions: vec![
+                (Rect::new(8.0, 0.0, 2.0, 2.0), specific),
+                (Rect::new(0.0, 0.0, 10.0, 2.0), broad),
+            ],
+        });
+
+        assert_eq!(painted.painted_hit(8.5, 1.0), Some((id, Some(specific))));
+        assert_eq!(painted.painted_hit(1.0, 1.0), Some((id, Some(broad))));
+        assert_eq!(painted.painted_hit(15.0, 1.0), Some((id, None)));
+        assert_eq!(
+            painted.painted_sub_center(&id, specific),
+            Some((9.0, 1.0)),
+            "a sub-part's center is what a driver clicks"
+        );
+        assert_eq!(
+            painted.painted_sub_center(&WidgetId::new("other"), specific),
+            None
+        );
+    }
+
+    /// The right/bottom edge belongs to whatever sits next along, so a
+    /// point exactly on a widget's far edge is outside it.
+    #[test]
+    fn painted_hit_is_half_open_on_the_far_edges() {
+        let id = WidgetId::new("edges");
+        let mut painted = PaintedWidgets::default();
+        painted.record(PaintedWidget {
+            id,
+            rect: Rect::new(0.0, 0.0, 4.0, 2.0),
+            layout: Box::new(()),
+            sub_regions: Vec::new(),
+        });
+
+        assert_eq!(painted.painted_hit(0.0, 0.0), Some((id, None)));
+        assert_eq!(painted.painted_hit(4.0, 0.0), None);
+        assert_eq!(painted.painted_hit(0.0, 2.0), None);
     }
 }

@@ -60,6 +60,7 @@ use ratatui::Terminal;
 pub use ratatui::style::{Color, Modifier};
 
 use crate::backend::Backend;
+use crate::primitives::tab_bar::{tab_part_center, TabBarSubPart};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};
 use crate::testing::driver_core::DriverCore;
@@ -233,7 +234,7 @@ impl<A: AppLogic> TuiDriver<A> {
     /// Resize the underlying `TestBackend`'s physical cell buffer to
     /// `width`×`height` — **without** touching [`TuiBackend`]'s cached
     /// [`crate::Viewport`] or any layout state a previous [`Self::render`]
-    /// cached (e.g. [`Self::tab_center`]'s `cached_tab_bar_layout`). Those
+    /// cached (e.g. [`Self::tab_center`]'s painted geometry). Those
     /// stay exactly as they were after the last repaint, at whatever size
     /// the driver last actually painted.
     ///
@@ -826,15 +827,15 @@ impl<A: AppLogic> TuiDriver<A> {
     ///
     /// `find` can't do this job: every tab paints the same chrome (and a
     /// closed/active tab's label may repeat elsewhere on screen), so there
-    /// is no needle that disambiguates "tab 3" from "tab 0". This instead
-    /// resolves against the [`crate::TabBarLayout`] `TuiBackend::draw_tab_bar`
-    /// cached the last time `bar` painted — `None` if `bar` didn't paint
-    /// this frame, or if `tab_idx` is scrolled out of view behind the
-    /// bar's `scroll_offset`.
+    /// is no needle that disambiguates "tab 3" from "tab 0". This resolves
+    /// through [`tab_part_center`]: the frame's painted-layout record for a
+    /// bar painted through the widget contract, falling back to the
+    /// `TuiBackend::draw_tab_bar` layout cache while that legacy rasteriser
+    /// still exists. `None` if `bar` didn't paint this frame, or if
+    /// `tab_idx` is scrolled out of view behind the bar's `scroll_offset`.
     pub fn tab_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let (rect, layout) = self.core.backend().cached_tab_bar_layout(bar)?;
-        let (cx, cy) = layout.tab_center(tab_idx)?;
-        Some((rect.x + cx, rect.y + cy))
+        let cached = self.core.backend().cached_tab_bar_layout(bar);
+        tab_part_center(bar, TabBarSubPart::Tab(tab_idx), cached)
     }
 
     /// Cell coordinates of tab `tab_idx`'s close-button center in the tab
@@ -845,9 +846,8 @@ impl<A: AppLogic> TuiDriver<A> {
     /// drew no close button this frame (`is_closable: false` on the tab,
     /// or `show_tab_close: false` on the bar).
     pub fn tab_close_center(&self, bar: &WidgetId, tab_idx: usize) -> Option<(f32, f32)> {
-        let (rect, layout) = self.core.backend().cached_tab_bar_layout(bar)?;
-        let (cx, cy) = layout.tab_close_center(tab_idx)?;
-        Some((rect.x + cx, rect.y + cy))
+        let cached = self.core.backend().cached_tab_bar_layout(bar);
+        tab_part_center(bar, TabBarSubPart::TabClose(tab_idx), cached)
     }
 }
 
@@ -1592,6 +1592,7 @@ mod tests {
                     active_accent: None,
                     show_tab_close: false,
                     compact: false,
+                    ..Default::default()
                 },
                 None,
             );
@@ -1749,6 +1750,7 @@ mod tests {
                 active_accent: None,
                 show_tab_close: false,
                 compact: true,
+                ..Default::default()
             }
         }
     }
@@ -1842,6 +1844,7 @@ mod tests {
                 active_accent: None,
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             }
         }
     }
@@ -1978,6 +1981,87 @@ mod tests {
         );
     }
 
+    /// A bar painted through the widget contract
+    /// ([`crate::DrawsPrimitives::draw_dyn`]) is just as targetable as one
+    /// painted by `draw_tab_bar`: `draw_dyn` records
+    /// the resolved geometry, so [`TuiDriver::tab_center`] /
+    /// [`TuiDriver::tab_close_center`] keep resolving and a click on
+    /// either point lands on the matching region of the painted strip.
+    #[test]
+    fn tab_center_resolves_for_a_bar_painted_through_the_widget_contract() {
+        use crate::primitives::tab_bar::TabBarHit;
+
+        struct WidgetContractTabBarApp;
+
+        impl WidgetContractTabBarApp {
+            const RECT: Rect = Rect::new(3.0, 2.0, 24.0, 1.0);
+
+            fn bar() -> TabBar {
+                TabBar {
+                    id: QWidgetId::new("widget-tabs"),
+                    tabs: (0..3)
+                        .map(|i| TabItem {
+                            label: format!("tab{i}"),
+                            is_active: i == 0,
+                            is_dirty: false,
+                            is_preview: false,
+                            is_closable: true,
+                        })
+                        .collect(),
+                    scroll_offset: 0,
+                    right_segments: vec![],
+                    active_accent: None,
+                    show_tab_close: true,
+                    compact: false,
+                    ..Default::default()
+                }
+            }
+        }
+
+        impl AppLogic for WidgetContractTabBarApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                crate::DrawsPrimitives::draw_dyn(backend, Self::RECT, &Self::bar(), &());
+            }
+
+            fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+                Reaction::Continue
+            }
+        }
+
+        let driver = TuiDriver::new(WidgetContractTabBarApp, 30, 4);
+        let bar_id = QWidgetId::new("widget-tabs");
+
+        let (bx, by) = driver
+            .tab_center(&bar_id, 1)
+            .expect("draw_dyn must record the painted geometry for tab_center");
+        let (cx, cy) = driver
+            .tab_close_center(&bar_id, 1)
+            .expect("draw_dyn must record the painted geometry for tab_close_center");
+
+        // Both points are absolute screen coordinates inside the painted
+        // strip, and each lands on its own region of the authoritative
+        // layout — body on the body, close glyph on the close glyph.
+        let rect = WidgetContractTabBarApp::RECT;
+        let layout = crate::primitive::Primitive::layout(
+            &WidgetContractTabBarApp::bar(),
+            &crate::primitive::LayoutCtx::new(1.0, 1.0, driver.core.backend().nerd_fonts_enabled()),
+            rect,
+        )
+        .layout;
+        assert_eq!(
+            layout.hit_test(bx - rect.x, by - rect.y),
+            TabBarHit::Tab(1),
+            "tab_center must land on tab 1's body"
+        );
+        assert_eq!(
+            layout.hit_test(cx - rect.x, cy - rect.y),
+            TabBarHit::TabClose(1),
+            "tab_close_center must land on tab 1's close glyph"
+        );
+    }
+
     /// Acceptance criterion: `tab_close_center` returns `None` for a tab
     /// rendered with `is_closable: false`.
     #[test]
@@ -2004,6 +2088,7 @@ mod tests {
                         active_accent: None,
                         show_tab_close: true,
                         compact: false,
+                        ..Default::default()
                     },
                     None,
                 );
@@ -2073,6 +2158,7 @@ mod tests {
                         active_accent: None,
                         show_tab_close: true,
                         compact: false,
+                        ..Default::default()
                     },
                     None,
                 );

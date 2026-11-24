@@ -2963,8 +2963,8 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         {
             let dwrite = match role {
-                crate::FontRole::Chrome => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
                 crate::FontRole::Editor => self.dwrite.as_ref(),
+                _ => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
             };
             if let Some(dwrite) = dwrite {
                 if let Ok((w, h)) = dwrite.measure_text(text) {
@@ -6987,8 +6987,8 @@ impl PaintSurface for WinBackend {
             // live chrome one exists yet — same "degrade, don't panic"
             // convention as `WinBackend::draw_tree`'s doc describes.
             let dwrite = match role {
-                crate::FontRole::Chrome => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
                 crate::FontRole::Editor => self.dwrite.as_ref(),
+                _ => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
             };
             if let Some(dwrite) = dwrite {
                 let _ = dwrite.draw_text(&surface.target, text, rect, color);
@@ -9780,6 +9780,7 @@ mod tests {
             active_accent: None,
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         };
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
@@ -9827,6 +9828,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -12229,6 +12231,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let diff = chrome_font_diff_pixel_count(
             300,
@@ -13268,6 +13271,7 @@ mod tests {
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             let _ = backend.draw_tab_bar(rect, &tab_bar, None);
         }

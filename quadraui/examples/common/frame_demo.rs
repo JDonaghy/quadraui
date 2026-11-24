@@ -110,6 +110,7 @@ impl FrameDemo {
             active_accent: Some(Color::rgb(80, 160, 240)),
             show_tab_close: false,
             compact: false,
+            ..Default::default()
         }
     }
 

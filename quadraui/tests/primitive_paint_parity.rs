@@ -83,12 +83,8 @@ fn cell_area() -> CellRect {
 /// cell, the runtime discriminator every `Primitive::layout` impl in this
 /// crate uses to pick its TUI branch over a pixel-backend one (see e.g.
 /// `ListView`'s own `Primitive::layout` doc).
-fn ctx() -> LayoutCtx {
-    LayoutCtx {
-        line_height: 1.0,
-        char_width: 1.0,
-        nerd_fonts_enabled: true,
-    }
+fn ctx() -> LayoutCtx<'static> {
+    LayoutCtx::new(1.0, 1.0, true)
 }
 
 fn sample_list() -> ListView {

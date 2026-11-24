@@ -2945,14 +2945,14 @@ impl InteractionEngine {
             }
         }
         let style = backend.style();
-        let ctx = quadraui::primitive::LayoutCtx {
-            line_height: quadraui::primitive::LayoutCtx::resolve_row_height(
+        let ctx = quadraui::primitive::LayoutCtx::new(
+            quadraui::primitive::LayoutCtx::resolve_row_height(
                 backend.chrome_line_height(),
                 &style,
             ),
-            char_width: backend.char_width(),
-            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-        };
+            backend.char_width(),
+            backend.nerd_fonts_enabled(),
+        );
         let widget: Rc<dyn DynWidget> = Rc::new(grid.clone());
         let layout = widget.layout(&ctx, area);
         let layout = layout.downcast_ref::<CellGridPrimitiveLayout>()?;
@@ -3511,14 +3511,14 @@ impl InteractionEngine {
         sink: &mut dyn EventSink,
     ) -> DynWidgetClickOutcome {
         let style = backend.style();
-        let ctx = quadraui::primitive::LayoutCtx {
-            line_height: quadraui::primitive::LayoutCtx::resolve_row_height(
+        let ctx = quadraui::primitive::LayoutCtx::new(
+            quadraui::primitive::LayoutCtx::resolve_row_height(
                 backend.chrome_line_height(),
                 &style,
             ),
-            char_width: backend.char_width(),
-            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-        };
+            backend.char_width(),
+            backend.nerd_fonts_enabled(),
+        );
         let layout = widget.layout(&ctx, area);
 
         let mut intents = DynWidgetIntents::default();
@@ -10505,6 +10505,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let resolved = resolve_tab_bar_active(engine.widget_state(), &tab_bar);
         assert!(
@@ -10543,6 +10544,7 @@ mod tests {
                 active_accent: None,
                 show_tab_close: false,
                 compact: false,
+                ..Default::default()
             };
             let entries = (0..self.tab_count)
                 .map(|i| LayoutTabEntry {

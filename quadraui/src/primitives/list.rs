@@ -2974,11 +2974,7 @@ mod interactive_tests {
     }
 
     fn layout_for(list: &ListView) -> ListViewPrimitiveLayout {
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
         Primitive::layout(list, &ctx, Rect::new(0.0, 0.0, 20.0, 10.0))
     }
 
@@ -3815,11 +3811,7 @@ mod primitive_parity_tests {
     fn list_primitive_paint_matches_native_surface_paint() {
         let list = sample_list();
         let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
-        let ctx = LayoutCtx {
-            line_height: 16.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: true,
-        };
+        let ctx = LayoutCtx::new(16.0, 8.0, true);
         let theme = Theme::default();
         let style = Style::default();
 
@@ -3885,11 +3877,7 @@ mod primitive_parity_tests {
             ..sample_list()
         };
         let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
-        let ctx = LayoutCtx {
-            line_height: 16.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: true,
-        };
+        let ctx = LayoutCtx::new(16.0, 8.0, true);
         let theme = Theme::default();
         let style = Style::default();
 
@@ -3951,11 +3939,7 @@ mod primitive_parity_tests {
     fn primitive_layout_hit_test_is_relative_to_area_origin() {
         let list = sample_list();
         let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
-        let ctx = LayoutCtx {
-            line_height: 16.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
 
         let layout = Primitive::layout(&list, &ctx, rect);
         assert_eq!(

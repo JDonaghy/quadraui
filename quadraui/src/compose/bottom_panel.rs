@@ -71,9 +71,13 @@ use serde::{Serialize, Serializer};
 
 pub use crate::backend::BackendWidget;
 use crate::compose::Handled;
-// This controller caches exactly what `Backend::draw_tab_bar` returns for
-// click dispatch — see `TabBarHits`'s own doc for its stability contract.
-use crate::primitives::tab_bar::{TabBar, TabBarHits, TabBarSegment, TabItem};
+// This controller caches the `TabBar` primitive's own resolved
+// `TabBarLayout` for click dispatch, and routes every strip click through
+// that layout's `hit_test` rather than comparing x-ranges itself.
+use crate::primitives::tab_bar::{
+    draw_tab_strip, strip_layout_from_tab_slots, TabBar, TabBarHit, TabBarLayout, TabBarSegment,
+    TabItem,
+};
 use crate::types::WidgetId;
 use crate::{Backend, Rect};
 
@@ -211,11 +215,14 @@ pub struct BottomPanelController {
     pub height_fraction: f32,
     // ── Internal hit-test cache ─────────────────────────────────────
     tab_scroll_offset: usize,
-    /// Hit map from the last `render()` — the authoritative regions the
-    /// backend's `draw_tab_bar` actually painted against, so paint and click
-    /// agree on tab / close-button / maximise positions. Positions are in
-    /// target-surface (viewport-absolute) coordinates, matching the click.
-    last_hits: Option<TabBarHits>,
+    /// The tab strip's own resolved geometry from the last `render()` —
+    /// the authoritative regions the painted `TabBar` primitive measured,
+    /// so paint and click agree on tab / close-button / maximise
+    /// positions. Regions are **strip-relative** (origin at
+    /// `last_strip_bounds`'s top-left), the shape `TabBar`'s
+    /// `Primitive::layout` produces, so a click is classified by
+    /// [`TabBarLayout::hit_test`] on `(x - strip.x, y - strip.y)`.
+    last_layout: Option<TabBarLayout>,
     last_strip_bounds: Option<Rect>,
 }
 
@@ -245,7 +252,7 @@ impl BottomPanelController {
             tabs: config.tabs,
             height_fraction: config.height_fraction,
             tab_scroll_offset: 0,
-            last_hits: None,
+            last_layout: None,
             last_strip_bounds: None,
         }
     }
@@ -320,13 +327,18 @@ impl BottomPanelController {
         // Build the TabBar primitive for this frame.
         let tab_bar = self.build_tab_bar();
 
-        // Paint the tab strip and capture the authoritative hit map the
-        // rasteriser actually used. Hit-testing against this (rather than a
-        // re-derived layout with a guessed measurer) guarantees the close-button
-        // and maximise regions line up with the painted glyphs on every backend.
-        let hits = backend.draw_tab_bar(strip, &tab_bar, None);
-        self.tab_scroll_offset = hits.correct_scroll_offset;
-        self.last_hits = Some(hits);
+        // Paint the tab strip through the widget contract — `TabBar` is a
+        // `Primitive`, so `draw_dyn` resolves its layout and paints it on
+        // whichever surface this backend exposes — and cache the layout
+        // it actually painted from. Hit-testing against this (rather than
+        // a re-derived layout with a guessed measurer) guarantees the
+        // close-button and maximise regions line up with the painted
+        // glyphs on every backend. A `None` means nothing measured a tab
+        // bar, so there is no geometry to classify clicks against.
+        let (layout, corrected_scroll_offset) = draw_tab_strip(backend, strip, &tab_bar)
+            .unwrap_or_else(|| (strip_layout_from_tab_slots(strip, &[]), 0));
+        self.tab_scroll_offset = corrected_scroll_offset;
+        self.last_layout = Some(layout);
         self.last_strip_bounds = Some(strip);
 
         // Render active tab content.
@@ -372,42 +384,33 @@ impl BottomPanelController {
         if x < strip.x || x >= strip.x + strip.width {
             return Handled::Ignored;
         }
-        let Some(hits) = self.last_hits.as_ref() else {
+        let Some(layout) = self.last_layout.as_ref() else {
             return Handled::Ignored;
         };
 
-        // `TabBarHits` positions are in target-surface (viewport-absolute)
-        // coordinates — the same space as the incoming click — so compare
-        // the click `x` directly without re-subtracting the strip origin.
-        let click_x = x as f64;
-        let in_range = |range: (f64, f64)| click_x >= range.0 && click_x < range.1;
-
-        // Close buttons take precedence over tab bodies — the × sits at the
-        // tab's right edge, inside the body region.
-        for (idx, cb) in hits.close_bounds.iter().enumerate() {
-            if let Some(range) = cb {
-                if in_range(*range) {
-                    if let Some(tab) = self.tabs.get(idx) {
-                        if tab.closable {
-                            let id = tab.id.clone();
-                            self.close_tab(&id);
-                            return Handled::Event(BottomPanelEvent::TabClosed(id));
-                        }
+        // The cached regions are strip-relative — see `last_layout` — so
+        // rebase the viewport-absolute click onto the strip origin first.
+        // Classification order (close glyph before tab body — the × sits
+        // at the tab's right edge, inside the body region) is the strip
+        // layout's own; see `TabBarLayout::hit_test`.
+        match layout.hit_test(x - strip.x, y - strip.y) {
+            TabBarHit::TabClose(idx) => {
+                if let Some(tab) = self.tabs.get(idx) {
+                    if tab.closable {
+                        let id = tab.id.clone();
+                        self.close_tab(&id);
+                        return Handled::Event(BottomPanelEvent::TabClosed(id));
                     }
-                    return Handled::Consumed;
                 }
+                Handled::Consumed
             }
-        }
-
-        // Right segments — the only one we emit is the maximise toggle.
-        if hits.right_segment_bounds.iter().copied().any(in_range) {
-            self.toggle_maximised();
-            return Handled::Event(BottomPanelEvent::MaximiseToggled);
-        }
-
-        // Tab bodies.
-        for (idx, range) in hits.slot_positions.iter().enumerate() {
-            if in_range(*range) {
+            // The only right segment this panel declares is its maximise
+            // toggle — see `Self::build_tab_bar`.
+            TabBarHit::RightSegment(_) => {
+                self.toggle_maximised();
+                Handled::Event(BottomPanelEvent::MaximiseToggled)
+            }
+            TabBarHit::Tab(idx) => {
                 if let Some(tab) = self.tabs.get(idx) {
                     let id = tab.id.clone();
                     if id != self.active_tab_id {
@@ -415,10 +418,10 @@ impl BottomPanelController {
                         return Handled::Event(BottomPanelEvent::TabActivated(id));
                     }
                 }
-                return Handled::Consumed;
+                Handled::Consumed
             }
+            TabBarHit::ScrollLeft | TabBarHit::ScrollRight | TabBarHit::Empty => Handled::Consumed,
         }
-        Handled::Consumed
     }
 
     /// Resolve a mouse click at `(x, y)` in viewport coordinates.
@@ -479,6 +482,7 @@ impl BottomPanelController {
             // measurement function so non-closable tabs get no close region.
             show_tab_close: self.tabs.iter().any(|t| t.closable),
             compact: true,
+            ..Default::default()
         }
     }
 }
@@ -520,12 +524,11 @@ mod tests {
 
     // ── Layout pre-loading helper ─────────────────────────────────────────────
 
-    /// Prime a controller's hit map + strip bounds so handle_click works
+    /// Prime a controller's strip layout + bounds so handle_click works
     /// without a real backend render. Measurement: each tab = 6 cells total
-    /// (4 label + 2 padding/close), maximise segment = 3 cells. Converted to
-    /// `TabBarHits` exactly as a backend's `draw_tab_bar` would return them.
+    /// (4 label + 2 padding/close), maximise segment = 3 cells — the same
+    /// strip-relative `TabBarLayout` a painted `TabBar` primitive resolves.
     fn prime_layout(ctrl: &mut BottomPanelController, strip_x: f32, strip_y: f32, bar_w: f32) {
-        use crate::backend::tab_bar_hits_from_layout;
         use crate::primitives::tab_bar::{SegmentMeasure, TabMeasure};
 
         let tab_bar = ctrl.build_tab_bar();
@@ -543,25 +546,7 @@ mod tests {
             },
             |_| SegmentMeasure::new(3.0),
         );
-        // Mirror the backends: `TabBarHits` are returned in target-surface
-        // (absolute) coordinates, i.e. offset by the strip's x origin.
-        let mut hits = tab_bar_hits_from_layout(&layout, &tab_bar);
-        let ox = strip_x as f64;
-        for sp in &mut hits.slot_positions {
-            if *sp != (0.0, 0.0) {
-                sp.0 += ox;
-                sp.1 += ox;
-            }
-        }
-        for cb in hits.close_bounds.iter_mut().flatten() {
-            cb.0 += ox;
-            cb.1 += ox;
-        }
-        for rb in &mut hits.right_segment_bounds {
-            rb.0 += ox;
-            rb.1 += ox;
-        }
-        ctrl.last_hits = Some(hits);
+        ctrl.last_layout = Some(layout);
         ctrl.last_strip_bounds = Some(Rect::new(strip_x, strip_y, bar_w, 1.0));
     }
 
@@ -920,6 +905,79 @@ mod tests {
         backend.set_style(crate::Style::default().with_tab_height(50.0));
         let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
         assert_eq!(layout.tab_strip_bounds.height, 1.0);
+    }
+
+    /// A real `render` caches the strip-relative layout the painted
+    /// `TabBar` primitive resolved, so a click on tab 1's own close glyph
+    /// closes *that* tab even when the panel is docked away from the
+    /// viewport origin.
+    #[test]
+    fn a_close_glyph_click_after_a_real_render_closes_that_tab() {
+        let mut ctrl = BottomPanelController::new(make_config(
+            vec![
+                tab("t0", "TERMINAL", true),
+                tab("t1", "OUTPUT", true),
+                tab("t2", "PROBLEMS", true),
+            ],
+            "t0",
+        ));
+        let mut backend = crate::testing::RecordingBackend::new();
+        let strip = ctrl
+            .render(&mut backend, Rect::new(5.0, 18.0, 60.0, 6.0))
+            .tab_strip_bounds;
+
+        let (cx, cy) = ctrl
+            .last_layout
+            .as_ref()
+            .expect("render cached a layout")
+            .tab_close_center(1)
+            .expect("tab 1 painted a close glyph");
+
+        assert_eq!(
+            ctrl.handle_click_event(strip.x + cx, strip.y + cy),
+            Handled::Event(BottomPanelEvent::TabClosed("t1".to_string()))
+        );
+        assert_eq!(
+            ctrl.tabs()
+                .iter()
+                .map(|t| t.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["t0", "t2"]
+        );
+    }
+
+    /// Same real-paint path on a tab body: the click activates that tab.
+    #[test]
+    fn a_tab_body_click_after_a_real_render_activates_that_tab() {
+        let mut ctrl = BottomPanelController::new(make_config(
+            vec![
+                tab("t0", "TERMINAL", true),
+                tab("t1", "OUTPUT", true),
+                tab("t2", "PROBLEMS", true),
+            ],
+            "t0",
+        ));
+        let mut backend = crate::testing::RecordingBackend::new();
+        let strip = ctrl
+            .render(&mut backend, Rect::new(5.0, 18.0, 60.0, 6.0))
+            .tab_strip_bounds;
+
+        let (body_x, body_y) = {
+            let layout = ctrl.last_layout.as_ref().expect("render cached a layout");
+            let bounds = layout
+                .visible_tabs
+                .iter()
+                .find(|vt| vt.tab_idx == 2)
+                .expect("tab 2 is visible")
+                .bounds;
+            (bounds.x + 0.5, bounds.y + bounds.height / 2.0)
+        };
+
+        assert_eq!(
+            ctrl.handle_click_event(strip.x + body_x, strip.y + body_y),
+            Handled::Event(BottomPanelEvent::TabActivated("t2".to_string()))
+        );
+        assert_eq!(ctrl.active_tab_id, "t2");
     }
 
     /// Golden shape for every [`BottomPanelEvent`] variant's [`Serialize`]

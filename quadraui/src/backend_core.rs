@@ -238,10 +238,19 @@ impl BackendCore {
     // `Backend`/`PreprocessBackend` impl reads as a one-line delegation
     // to `self.core.foo()`, matching the accelerator methods above.
 
-    /// Clear the per-frame region registry. Call at the start of every
-    /// frame (same lifecycle as a backend's other per-frame caches).
+    /// Clear the per-frame region registry and the painted-layout record.
+    /// Call at the start of every frame (same lifecycle as a backend's
+    /// other per-frame caches).
+    ///
+    /// The painted-layout record
+    /// ([`crate::primitive::clear_painted_widgets`]) is cleared here, in
+    /// the one begin-frame step all four backends already share, so a
+    /// widget that stops painting through
+    /// [`crate::DrawsPrimitives::draw_dyn`] stops being addressable —
+    /// and no backend has to remember to clear it itself.
     pub(crate) fn begin_frame(&mut self) {
         self.text_selection.begin_frame();
+        crate::primitive::clear_painted_widgets();
     }
 
     /// Register `region` for the current frame.

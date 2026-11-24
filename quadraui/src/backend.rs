@@ -4708,7 +4708,9 @@ pub trait DrawsPrimitives: Backend {
     ///
     /// `ctx`'s `line_height`/`char_width`/`nerd_fonts_enabled` come from
     /// [`Backend::chrome_line_height`], [`Backend::char_width`] and
-    /// [`Backend::nerd_fonts_enabled`] — the same chrome-oriented
+    /// [`Backend::nerd_fonts_enabled`], and
+    /// [`crate::primitive::LayoutCtx::text_width`] measures through this
+    /// backend's own [`Backend::measure_text`] — the same chrome-oriented
     /// metrics [`Backend::draw_list`]'s own backend wrappers resolve
     /// before calling into
     /// [`crate::primitives::list::native_surface_paint::paint`] — with
@@ -4743,8 +4745,7 @@ pub trait DrawsPrimitives: Backend {
     /// if layout.hit_test(click_x, click_y) { /* ... */ }
     /// ```
     fn draw_primitive<P: Primitive>(&mut self, rect: Rect, primitive: &P) -> P::Layout {
-        let ctx = primitive_layout_ctx(self);
-        let layout = primitive.layout(&ctx, rect);
+        let layout = self.layout_primitive(rect, primitive);
         let style = self.style();
         let theme = self.theme();
         if let Some(surface) = self.paint_surface() {
@@ -4764,6 +4765,24 @@ pub trait DrawsPrimitives: Backend {
         layout
     }
 
+    /// Resolve `primitive`'s [`Primitive::Layout`] for `rect` exactly as
+    /// [`Self::draw_primitive`] and [`Self::draw_dyn`] do — this backend's
+    /// row height and char width, text measured through its own
+    /// [`Backend::measure_text`] — without painting. A caller that
+    /// hit-tests a click against a widget it painted reads back the same
+    /// geometry the paint used.
+    fn layout_primitive<P: Primitive>(&self, rect: Rect, primitive: &P) -> P::Layout {
+        // A closure over `self`, not a `&dyn Backend`: this blanket impl
+        // is generic over `B: Backend + ?Sized`, so `&B` can't be coerced
+        // to another trait object here.
+        let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
+        let style = self.style();
+        let ctx = primitive_layout_ctx(self)
+            .with_measurer(&measurer)
+            .with_style(&style);
+        primitive.layout(&ctx, rect)
+    }
+
     /// The [`DynWidget`] counterpart of [`Self::draw_primitive`] —
     /// resolves `w`'s layout for `rect` and, when this backend implements
     /// [`crate::PaintSurface`] or [`Backend::cell_surface`], paints it
@@ -4778,6 +4797,25 @@ pub trait DrawsPrimitives: Backend {
     /// one method taking a [`PaintTarget`] — there is exactly one paint
     /// call to make here regardless of which target [`Backend::paint_surface`]/
     /// [`Backend::cell_surface`] resolved.
+    ///
+    /// # Painted-layout record
+    ///
+    /// When `w` carries an id ([`DynWidget::id`]), this also records
+    /// `(id, rect, layout, sub-regions)` into the frame's
+    /// [`crate::primitive::PaintedWidgets`] — the backend-neutral store
+    /// drivers and binding layers read back to target a contract widget,
+    /// or the sub-part under a point, without any widget keeping a
+    /// per-backend layout cache of its own. The record is dropped at the
+    /// start of every frame (`BackendCore::begin_frame`), so it always
+    /// describes the frame currently on screen.
+    ///
+    /// The recorded layout is a second [`DynWidget::layout`] resolution
+    /// for the same `ctx` and `rect`, not the painted value itself: the
+    /// painted one is owned by this method's caller (hit-testing against
+    /// the return value is the whole point of returning it), and
+    /// [`Primitive::layout`] is pure by contract — same `ctx`, same
+    /// `rect`, same layout — so the two agree. Only identified widgets
+    /// pay for it.
     fn draw_dyn(
         &mut self,
         rect: Rect,
@@ -4785,8 +4823,14 @@ pub trait DrawsPrimitives: Backend {
         state: &dyn PaintState,
     ) -> Box<dyn PrimitiveLayout> {
         let ctx = primitive_layout_ctx(self);
-        let layout = w.layout(&ctx, rect);
         let style = self.style();
+        let layout = {
+            // See `layout_primitive`'s own measurer comment: a closure over
+            // `self`, scoped so its shared borrow ends before the
+            // `&mut self` paint calls below.
+            let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
+            w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect)
+        };
         let theme = self.theme();
         let env = PaintEnv {
             services: PaintServices {
@@ -4809,6 +4853,26 @@ pub trait DrawsPrimitives: Backend {
             );
             w.paint(layout.as_ref(), PaintTarget::Cells(buf), &env, state);
         }
+        if let Some(id) = w.id() {
+            let sub_regions = w
+                .sub_regions(layout.as_ref())
+                .into_iter()
+                .map(|(r, sub)| {
+                    (
+                        Rect::new(r.x + rect.x, r.y + rect.y, r.width, r.height),
+                        sub,
+                    )
+                })
+                .collect();
+            let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
+            let recorded = w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect);
+            crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
+                id: *id,
+                rect,
+                layout: recorded,
+                sub_regions,
+            });
+        }
         layout
     }
 }
@@ -4820,13 +4884,22 @@ pub trait DrawsPrimitives: Backend {
 /// the active [`Backend::style`]'s row-height token via
 /// [`LayoutCtx::resolve_row_height`] — see [`DrawsPrimitives::draw_primitive`]'s
 /// own doc for why that floor matters.
-fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCtx {
+///
+/// Carries no text measurer: this is generic over `B: Backend + ?Sized`,
+/// so `&B` can't be coerced to the `&dyn Fn` [`LayoutCtx::with_measurer`]
+/// takes. Both callers build that closure over their own `self` and
+/// attach it before handing the ctx to a widget.
+///
+/// Also the ctx a widget hit-test resolves its layout against
+/// (`crate::runtime`), so that routing runs against the same geometry
+/// the paint pass produced rather than a separately-built ctx.
+pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCtx<'static> {
     let style = backend.style();
-    LayoutCtx {
-        line_height: LayoutCtx::resolve_row_height(backend.chrome_line_height(), &style),
-        char_width: backend.char_width(),
-        nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-    }
+    LayoutCtx::new(
+        LayoutCtx::resolve_row_height(backend.chrome_line_height(), &style),
+        backend.char_width(),
+        backend.nerd_fonts_enabled(),
+    )
 }
 
 impl<B: Backend + ?Sized> DrawsPrimitives for B {}

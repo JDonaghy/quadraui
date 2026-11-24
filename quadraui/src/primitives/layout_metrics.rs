@@ -43,6 +43,14 @@ use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure
 use crate::primitives::tab_bar::{
     SegmentMeasure, TabBar, TabBarLayout, TabChrome, TabFrame, TabMeasure,
 };
+// Named only by `pixel_tab_icon_extras`, which carries the same gate.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+use crate::primitives::tab_bar::{tab_icon_at, TabIcon};
 use crate::primitives::toast::{ToastMeasure, ToastOverlay, ToastStackLayout};
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::primitives::tree_table::{TreeTable, TreeTableLayout, TreeTableNode};
@@ -60,18 +68,44 @@ pub trait TextMeasure {
 }
 
 /// Approximates every glyph as `char_w` wide — the
-/// [`crate::primitive::Primitive::layout`] no-live-font fallback for any
-/// [`TextMeasure`] consumer here, since [`crate::primitive::LayoutCtx`]
-/// carries only a flat `char_width`, not a live [`TextMeasure`]. Needs no
-/// backend to evaluate, so it carries no feature gate of its own — its
-/// callers ([`crate::TabBar`]'s, [`crate::DataTable`]'s and
-/// [`crate::TreeTable`]'s `Primitive` impls) decide which feature sets
-/// compile them in.
+/// [`crate::primitive::Primitive::layout`] fallback for a [`TextMeasure`]
+/// consumer here that hasn't been ported onto
+/// [`crate::primitive::LayoutCtx::text_width`] (see [`LayoutCtxMeasure`],
+/// which routes through the calling backend's real
+/// [`crate::Backend::measure_text`] instead). Needs no backend to
+/// evaluate, so it carries no feature gate of its own — its callers
+/// decide which feature sets compile them in.
 pub(crate) struct CharWidthMeasure(pub f32);
 
 impl TextMeasure for CharWidthMeasure {
     fn width_of(&self, text: &str) -> f32 {
         text.chars().count() as f32 * self.0
+    }
+}
+
+/// Measures through a [`crate::primitive::LayoutCtx`]'s own text
+/// measurer — the [`TextMeasure`] a
+/// [`crate::primitive::Primitive::layout`] hands to the shared layout
+/// math in this module so one pixel layout serves every backend at that
+/// backend's real font widths.
+///
+/// With a measurer attached (every
+/// [`crate::DrawsPrimitives::draw_primitive`]/`draw_dyn` call) this is
+/// the calling backend's [`crate::Backend::measure_text`] for `role`;
+/// without one it degrades to [`CharWidthMeasure`]'s approximation,
+/// since that is what [`crate::primitive::LayoutCtx::text_width`] falls
+/// back to.
+pub(crate) struct LayoutCtxMeasure<'a, 'c> {
+    /// The ctx whose [`crate::primitive::LayoutCtx::text_width`] answers
+    /// every [`TextMeasure::width_of`] call.
+    pub ctx: &'a crate::primitive::LayoutCtx<'c>,
+    /// Which font the measured text is painted in.
+    pub role: crate::FontRole,
+}
+
+impl TextMeasure for LayoutCtxMeasure<'_, '_> {
+    fn width_of(&self, text: &str) -> f32 {
+        self.ctx.text_width(text, self.role)
     }
 }
 
@@ -1179,6 +1213,38 @@ pub fn pixel_minimap_layout_scaled(
 
 // ── TabBar ───────────────────────────────────────────────────────────
 
+/// Per-tab extra width (px) an icon sidecar reserves, indexed like
+/// `bar.tabs` and shaped for [`pixel_tab_bar_layout`]'s own
+/// `tab_icon_extras` argument: the glyph's width through `measure` plus
+/// [`pixel::TAB_ICON_GAP`], or `0.0` for a tab with no icon.
+///
+/// This is the single-font form, for a caller whose only measurer is one
+/// [`TextMeasure`] — [`crate::primitive::Primitive::layout`]'s pixel
+/// branch. A rasteriser that swaps to a Nerd-Font family to measure icon
+/// glyphs (GTK, macOS) computes the same array through its own font
+/// instead; both agree on the `+ TAB_ICON_GAP` convention.
+///
+/// Gated to the feature set its only caller — `impl Primitive for TabBar`
+/// — is defined on.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn pixel_tab_icon_extras(
+    measure: &dyn TextMeasure,
+    tab_count: usize,
+    icons: &[Option<TabIcon>],
+) -> Vec<f32> {
+    (0..tab_count)
+        .map(|i| match tab_icon_at(icons, i) {
+            Some(icon) => measure.width_of(&icon.glyph) + pixel::TAB_ICON_GAP,
+            None => 0.0,
+        })
+        .collect()
+}
+
 /// Compute a [`TabBar`]'s pixel-unit layout. Backends still do their own
 /// **text measurement** — Pango / Core Text / DirectWrite each need to
 /// switch fonts mid-tab (italic for a preview label, a Nerd-Font family
@@ -1345,7 +1411,6 @@ pub fn pixel_tab_bar_layout(
 /// unmodified result: every tab fit at full width, there was no boundary
 /// tab left to shrink, or shrinking it didn't actually help (see the
 /// scroll/geometry-stability guard below).
-#[cfg(all(feature = "macos", target_os = "macos"))]
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn pixel_tab_bar_layout_fitting_boundary(
     bar: &TabBar,
@@ -2099,6 +2164,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 

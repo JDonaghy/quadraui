@@ -118,10 +118,10 @@ impl AppLogic for MarkdownDemo {
         // goes through `draw_rich_text_popup_with_font_role` so this
         // demo visually exercises both paint paths.
         match self.font_role {
-            FontRole::Chrome => backend.draw_rich_text_popup(&popup, &layout),
             FontRole::Editor => {
                 backend.draw_rich_text_popup_with_font_role(&popup, &layout, FontRole::Editor)
             }
+            FontRole::Chrome | FontRole::Icon => backend.draw_rich_text_popup(&popup, &layout),
         }
     }
 
@@ -139,7 +139,7 @@ impl AppLogic for MarkdownDemo {
                 }
                 Key::Char('f') => {
                     self.font_role = match self.font_role {
-                        FontRole::Chrome => FontRole::Editor,
+                        FontRole::Chrome | FontRole::Icon => FontRole::Editor,
                         FontRole::Editor => FontRole::Chrome,
                     };
                     Reaction::Redraw

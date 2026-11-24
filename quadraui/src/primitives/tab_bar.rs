@@ -144,11 +144,7 @@ use crate::Handled;
 ///         is_active: true,
 ///         ..Default::default()
 ///     }],
-///     scroll_offset: 0,
-///     right_segments: vec![],
-///     active_accent: None,
-///     show_tab_close: true,
-///     compact: false,
+///     ..Default::default()
 /// };
 ///
 /// let layout = bar.layout(
@@ -191,10 +187,47 @@ pub struct TabBar {
     /// provide that boundary instead.
     #[serde(default)]
     pub compact: bool,
+    /// Active-tab framing and keyboard-focus request for this bar — the
+    /// decoration [`crate::primitive::Primitive::paint`] /
+    /// [`crate::primitive::Primitive::paint_cells`] draw around the
+    /// active tab, and the tab index they paint the focus-visible
+    /// treatment on. [`TabChrome::default`] asks for no frame and no
+    /// focus ring.
+    #[serde(default)]
+    pub chrome: TabChrome,
+    /// Optional per-tab leading icons, index-aligned with [`Self::tabs`].
+    /// A `None` entry — or an `icons` shorter than `tabs` — means "no
+    /// icon" for that tab, so an empty `icons` paints a plain bar.
+    #[serde(default)]
+    pub icons: Vec<Option<TabIcon>>,
+    /// Close / dirty glyph overrides for every tab in this bar.
+    /// [`TabBarGlyphs::default`] keeps the crate's own `×` / `●`.
+    #[serde(default)]
+    pub glyphs: TabBarGlyphs,
 }
 
 fn default_true() -> bool {
     true
+}
+
+/// An empty bar with the same field values a deserialised `{}` gets, so a
+/// struct literal can name only the fields it cares about and end in
+/// `..Default::default()`.
+impl Default for TabBar {
+    fn default() -> Self {
+        Self {
+            id: WidgetId::new("tab-bar"),
+            tabs: Vec::new(),
+            scroll_offset: 0,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+            chrome: TabChrome::default(),
+            icons: Vec::new(),
+            glyphs: TabBarGlyphs::new(),
+        }
+    }
 }
 
 /// Optional per-tab icon drawn before the label — the coloured
@@ -205,23 +238,16 @@ fn default_true() -> bool {
 /// glyph and is independent of the tab's active/inactive foreground, so
 /// the icon keeps its identity colour even on an inactive tab.
 ///
-/// # Why icons ride *beside* the bar, not inside [`TabItem`]
+/// # Where icons live: on the bar, not inside [`TabItem`]
 ///
-/// Icons are supplied as a **sidecar slice** parallel to [`TabBar::tabs`]
-/// — see [`Backend::draw_tab_bar_icons`] — rather than as a
-/// `TabItem::icon` field. `TabItem` is a plain (non-`#[non_exhaustive]`)
-/// struct that both downstream consumers and this repo's sealed
-/// acceptance slices build with **exhaustive literals**, so a new field
-/// is a hard break for every one of them (CLAUDE.md rule 8 / the
-/// `PRIMITIVE_RULES.md` rule-8 blast-radius table: *"new field on a
-/// public struct a consumer constructs"* ⇒ breaking; *"new `Backend`
-/// method, no default"* ⇒ not breaking, keep doing this). The sidecar
-/// buys the same capability at zero migration cost: callers that want
-/// icons pass a slice, callers that don't keep calling
-/// [`Backend::draw_tab_bar`] unchanged.
+/// Icons are a list *parallel to* [`TabBar::tabs`] rather than a
+/// `TabItem::icon` field: [`TabBar::icons`] for anything drawn through
+/// [`crate::primitive::Primitive`], or the equivalent sidecar slice
+/// argument for the [`Backend::draw_tab_bar_icons`] family. Both shapes
+/// index the same way — entry `i` decorates tab `i`, a short list leaves
+/// the remaining tabs plain — so [`tab_icon_at`] resolves either one.
 ///
 /// [`Backend::draw_tab_bar_icons`]: crate::Backend::draw_tab_bar_icons
-/// [`Backend::draw_tab_bar`]: crate::Backend::draw_tab_bar
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct TabIcon {
     /// Icon glyph — usually a single Nerd Font character.
@@ -663,6 +689,140 @@ pub enum TabBarHit {
     Empty,
 }
 
+/// Which tab-bar sub-part a [`crate::interactive::SubTarget`] names —
+/// [`TabBarHit`] re-expressed as the borrow-less, widget-agnostic tag the
+/// widget contract addresses sub-parts with.
+///
+/// [`TabBarHit`] itself can't be that tag: it carries a [`WidgetId`] for
+/// a right segment (not expressible in a `SubTarget`'s `u64`) and has an
+/// `Empty` variant, which is the *absence* of a sub-part rather than one
+/// of them. This enum carries the segment's index instead, and has no
+/// `Empty`: "no sub-part under the point" is
+/// [`crate::primitive::PaintedWidgets::painted_hit`]'s `None`.
+///
+/// Round-trips through [`Self::sub_target`]/[`Self::from_sub_target`], so
+/// a driver asks for `TabBarSubPart::TabClose(2)`'s painted rect and a
+/// binding layer turns a hit back into a part it can name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TabBarSubPart {
+    /// A tab body (not its close button). Index is into `TabBar.tabs`.
+    Tab(usize),
+    /// A tab's close button. Index is into `TabBar.tabs`.
+    TabClose(usize),
+    /// The scroll-left affordance.
+    ScrollLeft,
+    /// The scroll-right affordance.
+    ScrollRight,
+    /// A right-aligned clickable segment, by index into
+    /// `TabBar.right_segments`.
+    RightSegment(usize),
+}
+
+impl TabBarSubPart {
+    /// This part's [`crate::interactive::SubTarget`] tag: an 8-bit kind
+    /// in the high bits, the index in the low 32 — the same
+    /// pack-a-pair-into-one-`u64` convention
+    /// [`crate::interactive::FocusStop`]'s own cell-packing example uses.
+    pub fn sub_target(self) -> crate::interactive::SubTarget {
+        let (kind, idx) = match self {
+            Self::Tab(i) => (1u64, i as u64),
+            Self::TabClose(i) => (2, i as u64),
+            Self::ScrollLeft => (3, 0),
+            Self::ScrollRight => (4, 0),
+            Self::RightSegment(i) => (5, i as u64),
+        };
+        crate::interactive::SubTarget((kind << 32) | (idx & 0xffff_ffff))
+    }
+
+    /// Decode a [`Self::sub_target`] tag back into a part, or `None` for
+    /// a tag this widget never produced (another widget's sub-target).
+    pub fn from_sub_target(sub: crate::interactive::SubTarget) -> Option<Self> {
+        let idx = (sub.0 & 0xffff_ffff) as usize;
+        match sub.0 >> 32 {
+            1 => Some(Self::Tab(idx)),
+            2 => Some(Self::TabClose(idx)),
+            3 => Some(Self::ScrollLeft),
+            4 => Some(Self::ScrollRight),
+            5 => Some(Self::RightSegment(idx)),
+            _ => None,
+        }
+    }
+}
+
+/// Every addressable sub-part of a resolved [`TabBarLayout`], paired with
+/// the [`crate::interactive::SubTarget`] that names it, in the layout's
+/// own bar-relative space.
+///
+/// Most-specific first: close buttons before the tab bodies that contain
+/// them, so the first rect containing a point is the right answer — the
+/// same ordering [`TabBarLayout::hit_test`] walks its own `hit_regions`
+/// in. Only *clickable* right segments are listed; a decorative one
+/// addresses nothing.
+///
+/// Shared by [`crate::interactive::Interactive::sub_regions`] (the
+/// painted-layout record's source) and [`tab_part_center`]'s legacy
+/// fallback, so both describe the same geometry.
+pub fn tab_bar_sub_regions(layout: &TabBarLayout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+    let mut out = Vec::new();
+    for vt in &layout.visible_tabs {
+        if let Some(close) = vt.close_bounds {
+            out.push((close, TabBarSubPart::TabClose(vt.tab_idx).sub_target()));
+        }
+    }
+    for vt in &layout.visible_tabs {
+        out.push((vt.bounds, TabBarSubPart::Tab(vt.tab_idx).sub_target()));
+    }
+    if let Some(r) = layout.scroll_left {
+        out.push((r, TabBarSubPart::ScrollLeft.sub_target()));
+    }
+    if let Some(r) = layout.scroll_right {
+        out.push((r, TabBarSubPart::ScrollRight.sub_target()));
+    }
+    for vs in &layout.visible_segments {
+        if vs.clickable {
+            out.push((
+                vs.bounds,
+                TabBarSubPart::RightSegment(vs.segment_idx).sub_target(),
+            ));
+        }
+    }
+    out
+}
+
+/// The absolute center of one tab-bar sub-part in the bar `bar` — the
+/// point a click must land on to hit it.
+///
+/// Resolves against the frame's painted-layout record first
+/// ([`crate::primitive::PaintedWidgets`]), which every bar painted
+/// through [`crate::DrawsPrimitives::draw_dyn`] registers itself in. A
+/// bar still painted by a legacy `Backend::draw_tab_bar*` rasteriser
+/// isn't in that record, so `legacy` is the per-backend
+/// `(bar rect, resolved layout)` cache those rasterisers fill — pass
+/// `None` to query the record alone.
+///
+/// `None` when `bar` didn't paint this frame, or when the named part
+/// isn't on screen (a tab scrolled out of view behind the bar's
+/// `scroll_offset`, a tab that drew no close button, an absent scroll
+/// chevron).
+pub fn tab_part_center(
+    bar: &WidgetId,
+    part: TabBarSubPart,
+    legacy: Option<(Rect, &TabBarLayout)>,
+) -> Option<(f32, f32)> {
+    let sub = part.sub_target();
+    if let Some(center) = crate::primitive::painted_sub_center(bar, sub) {
+        return Some(center);
+    }
+    let (rect, layout) = legacy?;
+    let (part_rect, _) = tab_bar_sub_regions(layout)
+        .into_iter()
+        .find(|(_, s)| *s == sub)?;
+    Some((
+        rect.x + part_rect.x + part_rect.width / 2.0,
+        rect.y + part_rect.y + part_rect.height / 2.0,
+    ))
+}
+
 /// Fully-resolved tab-bar layout. Backends iterate `visible_tabs` /
 /// `visible_segments` for painting; call [`Self::hit_test`] for clicks.
 ///
@@ -773,17 +933,11 @@ pub enum TabFrame {
 }
 
 /// Per-bar chrome request: which active-tab frame a backend should
-/// paint. Passed alongside a [`TabBar`] to
-/// [`crate::Backend::draw_tab_bar_with_chrome`] /
-/// [`crate::Backend::tab_bar_layout_with_chrome`].
-///
-/// A separate sidecar value rather than a field on [`TabBar`] itself,
-/// to avoid requiring a new field on the plain struct `TabBar` which
-/// is built with exhaustive literals throughout this repo. Threading
-/// the vocabulary through a new value + new trait methods (both given
-/// default bodies that ignore chrome and delegate to the plain
-/// `draw_tab_bar` / `tab_bar_layout`) adds no required field and breaks
-/// no existing `Backend` implementor or call site.
+/// paint. Carried by [`TabBar::chrome`] for anything drawn through
+/// [`crate::primitive::Primitive`], and passed alongside a [`TabBar`]
+/// to [`crate::Backend::draw_tab_bar_with_chrome`] /
+/// [`crate::Backend::tab_bar_layout_with_chrome`], which take it as an
+/// explicit argument and ignore the field.
 ///
 /// `#[non_exhaustive]`: a future chrome knob (e.g. a frame colour
 /// override) is additive. Construct with [`TabChrome::new`] /
@@ -809,12 +963,6 @@ pub struct TabChrome {
     /// An index `>= tabs.len()` paints nothing (no reverse-video, no
     /// panic) on TUI — see `tui::tab_bar::draw_tab_bar_with_chrome_*`,
     /// which only ever compares against an actually-visible tab's index.
-    ///
-    /// A sidecar field rather than one on [`TabBar`] itself, for the same
-    /// reason [`Self::active_frame`] is: `TabBar` is built with
-    /// exhaustive literals throughout this repo (including the sealed
-    /// acceptance slices), so a new field there is breaking everywhere at
-    /// once; a new [`TabChrome`] knob is additive.
     ///
     /// [`Toolbar::focused_index`]: crate::primitives::toolbar::Toolbar::focused_index
     #[serde(default)]
@@ -847,13 +995,11 @@ impl TabChrome {
 /// Optional app-supplied override for the close and dirty (unsaved)
 /// marks a tab bar paints.
 ///
-/// A standalone, `#[non_exhaustive]` registry — not fields on
-/// [`TabBar`]/[`TabItem`], which stay exhaustive — so a consumer that
-/// wants its own iconography (e.g. a Nerd Font glyph) passes a
-/// `TabBarGlyphs` to the rasteriser without the crate taking on a
-/// breaking field addition. Leaving a field `None`, or passing no
-/// `TabBarGlyphs` at all, keeps today's default (`×` for close, `●` for
-/// dirty) byte-for-byte unchanged.
+/// A standalone, `#[non_exhaustive]` registry a consumer builds with the
+/// `with_*` setters and either hands to a rasteriser directly or stores
+/// on [`TabBar::glyphs`]. Leaving a field `None`, or passing no
+/// `TabBarGlyphs` at all, keeps the crate's own default (`×` for close,
+/// `●` for dirty) byte-for-byte unchanged.
 ///
 /// Each glyph is an [`Icon`], so a consumer can hand it a
 /// Nerd Font form and a plain-Unicode fallback; the TUI rasteriser
@@ -862,11 +1008,22 @@ impl TabChrome {
 /// `char` — a multi-character override silently degrades to its
 /// leading character. `Icon::color` is resolved but not painted on
 /// TUI: the glyph cell always uses the surrounding theme foreground.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+///
+/// On the wire both entries are optional, so `{}` deserialises to
+/// [`Self::new`] and `{"close": {"glyph": "X", "fallback": "x"}}`
+/// overrides just the close mark.
+///
+/// Both entries are boxed: an override is rare, while this registry is a
+/// by-value field of the [`TabBar`] descriptor every frame carries (and
+/// that descriptor rides inside the binding layer's own frame enums), so
+/// the empty case costs two pointers rather than two whole [`Icon`]s.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TabBarGlyphs {
-    close: Option<Icon>,
-    dirty: Option<Icon>,
+    #[serde(default)]
+    close: Option<Box<Icon>>,
+    #[serde(default)]
+    dirty: Option<Box<Icon>>,
 }
 
 impl TabBarGlyphs {
@@ -879,27 +1036,27 @@ impl TabBarGlyphs {
     /// Override the close-button glyph (default `×`).
     #[must_use]
     pub fn with_close_glyph(mut self, glyph: impl Into<Icon>) -> Self {
-        self.close = Some(glyph.into());
+        self.close = Some(Box::new(glyph.into()));
         self
     }
 
     /// Override the dirty (unsaved) mark (default `●`).
     #[must_use]
     pub fn with_dirty_glyph(mut self, glyph: impl Into<Icon>) -> Self {
-        self.dirty = Some(glyph.into());
+        self.dirty = Some(Box::new(glyph.into()));
         self
     }
 
     /// The overridden close-button glyph, or `None` to keep the default.
     #[must_use]
     pub fn close_glyph(&self) -> Option<&Icon> {
-        self.close.as_ref()
+        self.close.as_deref()
     }
 
     /// The overridden dirty-mark glyph, or `None` to keep the default.
     #[must_use]
     pub fn dirty_glyph(&self) -> Option<&Icon> {
-        self.dirty.as_ref()
+        self.dirty.as_deref()
     }
 }
 
@@ -1715,6 +1872,7 @@ pub(crate) mod native_surface_paint {
                 active_accent: None,
                 show_tab_close: true,
                 compact: false,
+                ..Default::default()
             }
         }
 
@@ -2835,52 +2993,115 @@ pub mod cell_paint {
 // the measure-then-layout logic out of `Backend::tab_bar_layout*` (the
 // TUI branch mirrors `TuiBackend::draw_tab_bar_icons`'s own char-cell
 // measurer; the pixel branch is `layout_metrics::pixel_tab_bar_layout`
-// fed by `LayoutCtx::measure`'s `CharWidthMeasure` approximation, the
-// same convention `DataTable`/`TreeTable`'s own `Primitive::layout`
-// pixel branches already use). `paint`/`paint_cells` call the two
+// fed by `LayoutCtx::text_width`, i.e. the calling backend's own
+// `Backend::measure_text`, so the shared layout places tabs at the same
+// glyph widths each pixel rasteriser paints them at).
+// `paint`/`paint_cells` call the two
 // painters this module already shares with every per-backend
 // rasteriser — `native_surface_paint::paint` / `cell_paint::paint` —
 // unchanged. `Interactive::handle` folds `TabBar::handle_focus_key`'s
 // keyboard model in directly.
 //
 // Every `Backend::draw_tab_bar*`/`tab_bar_layout*` method and the four
-// per-backend `tui|gtk|macos|win/tab_bar.rs` files are untouched by this
-// slice — they stay the production path for every existing caller until
-// a sibling slice migrates callers onto `Surface::Widget`/`draw_dyn`.
+// per-backend `tui|gtk|macos|win/tab_bar.rs` files still exist alongside
+// this seam: `compose::WorkspaceController` paints its strip through
+// `draw_dyn`, and the remaining callers stay on those rasterisers until
+// each is migrated onto `Surface::Widget`/`draw_dyn` too.
+//
+// Chrome, icons and glyph overrides reach this seam as the descriptor
+// fields `TabBar::chrome`, `TabBar::icons` and `TabBar::glyphs`, since
+// `Primitive::layout`/`paint`/`paint_cells` only ever see `&self` and
+// `DynWidget::paint`'s `&dyn PaintState` carries no paint-time sidecar.
+// `layout` reserves the icon column widths, and both painters forward the
+// three fields to the same shared painters the `Backend` chrome/icon/glyph
+// methods feed from their explicit arguments — those methods read only
+// their arguments and ignore the fields.
 //
 // # Scope gaps against the full widget-contract recipe
 //
-// - **No icon/glyph/chrome sidecar.** `TabChrome`, `TabBarGlyphs` and the
-//   `icons: &[Option<TabIcon>]` sidecar are backend-call parameters
-//   today, not fields on `TabBar` (see that struct's own "why icons ride
-//   beside the bar" doc) — `Primitive::layout`/`paint`/`paint_cells` only
-//   ever see `&self`, so this seam always paints with
-//   `TabChrome::default()`, no icons, and no glyph overrides. Turning
-//   them into descriptor fields needs a new field on the plain,
-//   exhaustively-constructed `TabBar` struct, which breaks every
-//   existing literal — including `tests/acceptance/ms-11/*.rs`, the
-//   sealed oracle slice a work leg cannot edit — so it stays out of this
-//   slice.
 // - **`focus()` is `FocusSpec::Stop`, not `Children`.** Matches
 //   `ListView`/`CellGrid`'s own precedent for a composite widget with
 //   internal keyboard navigation (one Tab stop; arrow keys move an
-//   internal cursor) rather than one `SubTarget` stop per tab. The
+//   internal cursor) rather than one keyboard stop per tab. The pointer
+//   side is separate and does name every part: `Interactive::sub_regions`
+//   publishes each tab body, close button, scroll chevron and clickable
+//   right segment as a `TabBarSubPart` tag, which is what the painted-
+//   layout record hit-tests. `handle` still resolves a click through
+//   `TabBarLayout::hit_test` against the `local` point, since the
 //   runtime's own mouse routing
-//   (`crate::runtime::route_widget_pointer_down`) always delivers
-//   `RoutedEvent::Pointer { sub: None, .. }`, so a `SubTarget` per tab
-//   body/close button/scroll chevron would have no live caller to
-//   address it yet; `TabBarHit::{Tab, TabClose, ScrollLeft, ScrollRight}`
-//   already name those parts by index for `handle`'s own hit-testing.
+//   (`crate::runtime::route_widget_pointer_down`) delivers
+//   `RoutedEvent::Pointer { sub: None, .. }`.
+/// Resolve a [`TabBar`]'s layout in **character cells** — the cell-grid
+/// counterpart of [`crate::primitives::layout_metrics::pixel_tab_bar_layout`],
+/// and the one measurer behind every TUI tab-bar entry point
+/// ([`crate::tui::tui_tab_bar_layout`], `TuiBackend`'s chrome methods and
+/// [`crate::primitive::Primitive::layout`]'s cell branch), so a bar drawn
+/// through any of them can never disagree about where a tab starts.
+///
+/// `width`/`height` are the bar's own cell extent. Per tab it reserves, on
+/// top of the label's display width:
+///
+/// - the icon glyph and its gap ([`tab_icon_cols`]) when `icons` has an
+///   entry for that tab;
+/// - `[` and `]` around the active tab when `chrome` requests
+///   [`TabFrame::Brackets`] — one column each, with the close glyph
+///   itself inside the frame;
+/// - [`TAB_CLOSE_COLS`] for a closable tab on a bar with
+///   [`TabBar::show_tab_close`];
+/// - [`TAB_SEPARATOR_COLS`] for a tab with neither a close glyph nor
+///   bracket framing, so adjacent labels still paint with a visible
+///   boundary (`cell_paint::paint` fills that column with
+///   [`crate::tui::TAB_SEPARATOR_CHAR`]).
+///
+/// The returned [`TabBarLayout`] is bar-relative, with no scroll arrows
+/// (TUI paints none).
 #[cfg(feature = "tui")]
-fn tui_tab_bar_primitive_layout(bar: &TabBar, width: f32, height: f32) -> TabBarLayout {
-    // Route through the exact resolver `crate::tui::backend::TuiBackend`'s
-    // own `draw_tab_bar_icons`/`draw_tab_bar_icons_layout` call
-    // (`crate::tui::tui_tab_bar_layout`) so this layout can never drift
-    // from what TUI actually paints — see this section's own "No
-    // icon/glyph/chrome sidecar" doc for why the icon sidecar here is
-    // always empty.
-    let area = ratatui::layout::Rect::new(0, 0, width as u16, height as u16);
-    crate::tui::tui_tab_bar_layout(area, bar, &[])
+pub(crate) fn cell_tab_bar_layout(
+    bar: &TabBar,
+    width: f32,
+    height: f32,
+    icons: &[Option<TabIcon>],
+    chrome: &TabChrome,
+) -> TabBarLayout {
+    let close_cols = if bar.show_tab_close {
+        TAB_CLOSE_COLS as usize
+    } else {
+        0
+    };
+    let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
+    let reservation = |i: usize| -> (bool, bool) {
+        let tab = &bar.tabs[i];
+        (
+            brackets && tab.is_active,
+            bar.show_tab_close && tab.is_closable,
+        )
+    };
+    let tab_widths: Vec<usize> = (0..bar.tabs.len())
+        .map(|i| {
+            let base = crate::text_util::display_width(&bar.tabs[i].label)
+                + tab_icon_cols(icons, i) as usize;
+            match reservation(i) {
+                // `[` + close glyph + `]`, replacing the plain
+                // glyph + separator reservation.
+                (true, true) => base + 3,
+                // `[` + `]` around a label with no close glyph.
+                (true, false) => base + 2,
+                (false, true) => base + close_cols,
+                (false, false) => base + TAB_SEPARATOR_COLS as usize,
+            }
+        })
+        .collect();
+    bar.layout(
+        width,
+        height,
+        0.0,
+        |i| match reservation(i) {
+            (true, true) => TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0),
+            (_, true) => TabMeasure::new(tab_widths[i] as f32, close_cols as f32),
+            _ => TabMeasure::new(tab_widths[i] as f32, 0.0),
+        },
+        |i| SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
+    )
 }
 
 /// Translate every `Rect` inside a bar-relative [`TabBarLayout`] by
@@ -2957,6 +3178,72 @@ pub struct TabBarPrimitiveLayout {
     pub corrected_scroll_offset: usize,
 }
 
+/// Paint `tab_bar` into `strip` through
+/// [`crate::backend::DrawsPrimitives::draw_dyn`] and return the
+/// strip-relative [`TabBarLayout`] it resolved, paired with
+/// [`TabBarPrimitiveLayout::corrected_scroll_offset`] — the offset that
+/// keeps the active tab visible under this frame's real measurements,
+/// *not* `layout.resolved_scroll_offset` (merely clamped, see that
+/// field's own doc).
+///
+/// `None` when `draw_dyn` hands back a layout of some other concrete
+/// type, which means nothing measured a tab bar at all. Each caller
+/// picks its own fallback for that: an empty layout classifies every
+/// strip click as [`TabBarHit::Empty`], the only coherent answer when
+/// the strip was never measured.
+///
+/// This is the one call shape every compose-layer tab strip shares, so
+/// no controller reaches for a `Backend::draw_tab_bar*` method of its
+/// own.
+pub(crate) fn draw_tab_strip(
+    backend: &mut dyn crate::Backend,
+    strip: Rect,
+    tab_bar: &TabBar,
+) -> Option<(TabBarLayout, usize)> {
+    use crate::backend::DrawsPrimitives;
+    backend
+        .draw_dyn(strip, tab_bar, &())
+        .downcast_ref::<TabBarPrimitiveLayout>()
+        .map(|l| (l.layout.clone(), l.corrected_scroll_offset))
+}
+
+/// A strip layout carrying only tab-body hit regions, synthesised from
+/// absolute `(start_x, end_x)` tab slots relative to a `strip` of
+/// `strip.width` x `strip.height`.
+///
+/// Callers that hold slot x-pairs and no close/segment geometry at all
+/// need it — a drag-geometry primer that never rendered — as does any
+/// [`draw_tab_strip`] caller filling in its `None` fallback.
+///
+/// `slots` uses the `(0.0, 0.0)` sentinel convention for a tab scrolled
+/// off the left edge: a sentinel entry contributes no visible tab, but
+/// the entries after it keep their original tab indices.
+pub(crate) fn strip_layout_from_tab_slots(strip: Rect, slots: &[(f32, f32)]) -> TabBarLayout {
+    let visible_tabs: Vec<VisibleTab> = slots
+        .iter()
+        .enumerate()
+        .filter(|(_, (s, e))| *s != 0.0 || *e != 0.0)
+        .map(|(tab_idx, (s, e))| VisibleTab {
+            tab_idx,
+            bounds: Rect::new(s - strip.x, 0.0, (e - s).max(0.0), strip.height),
+            close_bounds: None,
+        })
+        .collect();
+    TabBarLayout {
+        bar_width: strip.width,
+        bar_height: strip.height,
+        hit_regions: visible_tabs
+            .iter()
+            .map(|vt| (vt.bounds, TabBarHit::Tab(vt.tab_idx)))
+            .collect(),
+        visible_tabs,
+        visible_segments: vec![],
+        scroll_left: None,
+        scroll_right: None,
+        resolved_scroll_offset: 0,
+    }
+}
+
 impl crate::primitive::Primitive for TabBar {
     type Layout = TabBarPrimitiveLayout;
     type Event = TabBarEvent;
@@ -2982,7 +3269,12 @@ impl crate::primitive::Primitive for TabBar {
         #[cfg(feature = "tui")]
         {
             if matches!(ctx.units(), crate::primitive::Units::Cells) {
-                let layout = tui_tab_bar_primitive_layout(self, rect.width, rect.height);
+                // The same measurer every `TuiBackend::draw_tab_bar*`
+                // entry point resolves its own layout through, so this
+                // seam can never drift from what TUI paints — fed the
+                // descriptor's own icon list and chrome request.
+                let layout =
+                    cell_tab_bar_layout(self, rect.width, rect.height, &self.icons, &self.chrome);
                 let corrected_scroll_offset = layout.resolved_scroll_offset;
                 return TabBarPrimitiveLayout {
                     area: rect,
@@ -2992,7 +3284,23 @@ impl crate::primitive::Primitive for TabBar {
                 };
             }
         }
-        let measure = crate::primitives::layout_metrics::CharWidthMeasure(ctx.char_width);
+        // Tab labels, close glyphs and right segments are chrome —
+        // painted in the backend's UI font by every
+        // `draw_tab_bar*` rasteriser — so this measures them through the
+        // calling backend's own `Backend::measure_text` for
+        // `FontRole::Chrome`, the same font those rasterisers resolve.
+        // Without a measurer in reach (`LayoutCtx::new`) it degrades to
+        // the `ctx.char_width` approximation.
+        //
+        // Known gap: a preview tab (`TabItem::is_preview`) is rasterised
+        // in an *italic* variant of the chrome font, and `FontRole` has
+        // no italic member, so its label is measured here in the upright
+        // face. Widths for a bar containing preview tabs can therefore
+        // still drift slightly from what the pixel rasteriser paints.
+        let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+            ctx,
+            role: crate::FontRole::Chrome,
+        };
         let (tab_pad, tab_inner_gap, tab_outer_gap) = if self.compact {
             (
                 crate::primitives::layout_metrics::pixel::TAB_PAD_COMPACT,
@@ -3000,27 +3308,37 @@ impl crate::primitive::Primitive for TabBar {
                 crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP_COMPACT,
             )
         } else {
+            // The same `Style::tab_padding_x` every pixel rasteriser reads
+            // for a non-compact bar.
             (
-                crate::primitives::layout_metrics::pixel::TAB_PAD,
+                ctx.style().tab_padding_x,
                 crate::primitives::layout_metrics::pixel::TAB_INNER_GAP,
                 crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP,
             )
         };
-        // No live font reaches this far (see this section's own doc) —
-        // `CharWidthMeasure` approximates every glyph as `ctx.char_width`
-        // wide, the same fallback `DataTable`/`TreeTable`'s pixel-branch
-        // `Primitive::layout` already uses.
         let tab_name_widths: Vec<f32> = self
             .tabs
             .iter()
             .map(|t| crate::primitives::layout_metrics::TextMeasure::width_of(&measure, &t.label))
             .collect();
-        // No icon sidecar reaches this far either (see this section's own
-        // doc) — every tab's icon-extra width is `0.0`.
-        let tab_icon_extras = vec![0.0f32; self.tabs.len()];
-        let chrome = TabChrome::default();
-        let (layout, corrected_scroll_offset, _available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // Icon glyphs are measured in the font the rasteriser paints them
+        // in, which is not always the chrome font: GTK appends a Nerd Font
+        // fallback family for this pass (`gtk::tab_bar::tab_icon_font`).
+        let icon_measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+            ctx,
+            role: crate::FontRole::Icon,
+        };
+        let tab_icon_extras = crate::primitives::layout_metrics::pixel_tab_icon_extras(
+            &icon_measure,
+            self.tabs.len(),
+            &self.icons,
+        );
+        // A boundary tab that doesn't fit at full width shrinks to an
+        // ellipsised label rather than disappearing — the same composition
+        // the GTK and macOS rasterisers lay out with; the shared painter
+        // ellipsises the label to the narrowed bounds.
+        let (layout, corrected_scroll_offset, _available_cols, _fitted) =
+            crate::primitives::layout_metrics::pixel_tab_bar_layout_fitting_boundary(
                 self,
                 rect.width,
                 rect.height,
@@ -3029,7 +3347,7 @@ impl crate::primitive::Primitive for TabBar {
                 tab_outer_gap,
                 &tab_name_widths,
                 &tab_icon_extras,
-                &chrome,
+                &self.chrome,
                 &measure,
             );
         TabBarPrimitiveLayout {
@@ -3060,14 +3378,22 @@ impl crate::primitive::Primitive for TabBar {
             // rect lines up with it too.
             let translated =
                 translate_tab_bar_layout(layout.layout.clone(), layout.area.x, layout.area.y);
-            let state = native_surface_paint::TabBarPaintState::default();
+            // The descriptor's focus request is the one piece of paint
+            // state that is not pointer-derived, so it comes from
+            // `chrome` here exactly as it does in every
+            // `Backend::draw_tab_bar_with_chrome*` rasteriser; hover and
+            // press have no paint-time sidecar on this path.
+            let state = native_surface_paint::TabBarPaintState {
+                focused_index: self.chrome.focused_index,
+                ..Default::default()
+            };
             native_surface_paint::paint(
                 self,
                 &translated,
-                &[],
-                None,
+                &self.icons,
+                Some(&self.glyphs),
                 layout.nerd_fonts_enabled,
-                &TabChrome::default(),
+                &self.chrome,
                 state,
                 surface,
                 theme,
@@ -3105,11 +3431,11 @@ impl crate::primitive::Primitive for TabBar {
             buf,
             area,
             self,
-            &[],
-            &TabChrome::default(),
+            &self.icons,
+            &self.chrome,
             &layout.layout,
             theme,
-            None,
+            Some(&self.glyphs),
             layout.nerd_fonts_enabled,
         );
     }
@@ -3225,6 +3551,18 @@ impl Interactive for TabBar {
         }
     }
 
+    /// Every tab body, close button, scroll chevron and clickable right
+    /// segment this layout resolved — [`tab_bar_sub_regions`], which also
+    /// backs [`tab_part_center`]'s legacy fallback.
+    ///
+    /// [`TabBarPrimitiveLayout::layout`] is already bar-relative (see
+    /// that field's doc), which is exactly the widget-local space
+    /// [`Interactive::sub_regions`] asks for — no translation needed
+    /// here.
+    fn sub_regions(&self, layout: &Self::Layout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        tab_bar_sub_regions(&layout.layout)
+    }
+
     fn handle(
         &self,
         state: &mut TabBarState,
@@ -3334,6 +3672,7 @@ mod interactive_tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -3341,13 +3680,9 @@ mod interactive_tests {
     /// [`LayoutCtx::units`] reports [`Units::Cells`], so
     /// [`Primitive::layout`] resolves its TUI branch.
     #[cfg(feature = "tui")]
-    fn cell_regime() -> (LayoutCtx, Rect) {
+    fn cell_regime() -> (LayoutCtx<'static>, Rect) {
         (
-            LayoutCtx {
-                line_height: 1.0,
-                char_width: 1.0,
-                nerd_fonts_enabled: false,
-            },
+            LayoutCtx::new(1.0, 1.0, false),
             Rect::new(0.0, 0.0, 40.0, 1.0),
         )
     }
@@ -3358,13 +3693,9 @@ mod interactive_tests {
     /// [`crate::primitives::layout_metrics::pixel`]'s own tab padding and
     /// gaps, so the resolved layout has real tab and close-glyph bounds
     /// to hit-test against.
-    fn pixel_regime() -> (LayoutCtx, Rect) {
+    fn pixel_regime() -> (LayoutCtx<'static>, Rect) {
         (
-            LayoutCtx {
-                line_height: 24.0,
-                char_width: 8.0,
-                nerd_fonts_enabled: false,
-            },
+            LayoutCtx::new(24.0, 8.0, false),
             Rect::new(0.0, 0.0, 400.0, 24.0),
         )
     }
@@ -3402,6 +3733,66 @@ mod interactive_tests {
             modifiers: Modifiers::default(),
             repeat: false,
         })
+    }
+
+    /// Per-label widths a fake [`LayoutCtx::with_measurer`] measurer
+    /// reports, deliberately unrelated to [`pixel_regime`]'s
+    /// `char_width: 8.0`: `alpha` (5 chars) measures *wider* than its
+    /// approximation and `beta` (4 chars) *narrower*, the same
+    /// both-directions error a real proportional chrome font produces.
+    /// Anything else (the `×` close glyph) falls through to the same
+    /// `char_width` the approximation uses, so only the label widths
+    /// differ between the two layouts below.
+    fn fake_text_width(text: &str) -> f32 {
+        match text {
+            "alpha" => 100.0,
+            "beta" => 20.0,
+            other => other.chars().count() as f32 * 8.0,
+        }
+    }
+
+    /// Each visible tab's `(x, x + width)` span.
+    fn tab_spans(layout: &TabBarPrimitiveLayout) -> Vec<(f32, f32)> {
+        layout
+            .layout
+            .visible_tabs
+            .iter()
+            .map(|vt| (vt.bounds.x, vt.bounds.x + vt.bounds.width))
+            .collect()
+    }
+
+    /// `Primitive::layout`'s pixel branch sizes tabs from
+    /// [`LayoutCtx::text_width`] — the calling backend's real font
+    /// measurement — not from `char_width * chars`.
+    ///
+    /// Expected spans come straight from `pixel_tab_bar_layout`'s own
+    /// `TabMeasure::total` arithmetic at
+    /// non-compact metrics — `Style::default().tab_padding_x` 10, and
+    /// [`crate::primitives::layout_metrics::pixel`]'s `TAB_INNER_GAP` 10
+    /// and `TAB_OUTER_GAP` 1 — plus an 8px `×`: each tab's slot is
+    /// `10 + name_w + (10 + 8) + 10 + 1` wide, so only `name_w` differs
+    /// between the two layouts.
+    #[test]
+    fn primitive_layout_sizes_tabs_from_the_ctx_text_measurer() {
+        let bar = bar(&["alpha", "beta"], 0);
+        let (base, rect) = pixel_regime();
+        let measurer = |text: &str, _role: crate::FontRole| fake_text_width(text);
+
+        let measured = Primitive::layout(&bar, &base.with_measurer(&measurer), rect);
+        assert_eq!(
+            tab_spans(&measured),
+            vec![(0.0, 139.0), (139.0, 198.0)],
+            "tab widths must come from the ctx's text measurer (alpha 100px, beta 20px), \
+             not from char_width * chars"
+        );
+
+        let approximated = Primitive::layout(&bar, &base, rect);
+        assert_eq!(
+            tab_spans(&approximated),
+            vec![(0.0, 79.0), (79.0, 150.0)],
+            "with no measurer attached the same layout falls back to char_width * chars \
+             (alpha 40px, beta 32px)"
+        );
     }
 
     /// `Surface::Widget` and `FrameTree::push` both take a
@@ -3666,11 +4057,7 @@ mod interactive_tests {
         let mut tree = crate::frame_tree::FrameTree::new();
         tree.push(id, Rect::new(0.0, 0.0, 40.0, 1.0), Box::new(b.clone()));
         let mut states = crate::widget_state::WidgetStateStore::new();
-        let ctx = LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
 
         let events =
             crate::a11y::route_widget_action(&tree, &mut states, &ctx, id, A11yAction::Click);
@@ -3783,6 +4170,7 @@ mod hit_test_diff_tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -3892,10 +4280,74 @@ mod tests {
             active_accent: Some(Color::rgb(100, 200, 255)),
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         let json = serde_json::to_string(&bar).unwrap();
         let back: TabBar = serde_json::from_str(&json).unwrap();
         assert_eq!(bar, back);
+    }
+
+    #[test]
+    fn tab_bar_round_trips_chrome_icons_and_glyph_overrides() {
+        let bar = TabBar {
+            id: WidgetId::new("tabbar:wire"),
+            tabs: vec![TabItem {
+                label: "main.rs".to_string(),
+                is_active: true,
+                is_closable: true,
+                ..Default::default()
+            }],
+            chrome: TabChrome::new(TabFrame::Brackets).with_focused_index(Some(0)),
+            icons: vec![Some(TabIcon {
+                glyph: "R".to_string(),
+                color: Color::rgb(222, 165, 132),
+            })],
+            glyphs: TabBarGlyphs::new()
+                .with_close_glyph("X")
+                .with_dirty_glyph("*"),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&bar).unwrap();
+        let back: TabBar = serde_json::from_str(&json).unwrap();
+        assert_eq!(bar, back);
+    }
+
+    /// A payload written before the three fields existed still decodes:
+    /// each is `#[serde(default)]`, so an absent one means "no chrome, no
+    /// icons, the crate's own glyphs".
+    #[test]
+    fn tab_bar_wire_payload_without_chrome_icons_or_glyphs_decodes_to_the_defaults() {
+        let bar: TabBar = serde_json::from_str(
+            r#"{"id": "tabbar:legacy", "tabs": [{"label": "main.rs", "is_active": true,
+                "is_dirty": false, "is_preview": false, "is_closable": true}]}"#,
+        )
+        .unwrap();
+        assert_eq!(bar.chrome, TabChrome::default());
+        assert!(bar.icons.is_empty());
+        assert_eq!(bar.glyphs, TabBarGlyphs::new());
+        assert_eq!(bar, {
+            let mut expected = TabBar {
+                tabs: bar.tabs.clone(),
+                ..Default::default()
+            };
+            expected.id = WidgetId::new("tabbar:legacy");
+            expected
+        });
+    }
+
+    /// Each glyph slot is independently optional on the wire, matching
+    /// the builder's own "leave a field `None`" contract.
+    #[test]
+    fn tab_bar_glyphs_wire_payload_overrides_only_the_slots_it_names() {
+        let glyphs: TabBarGlyphs =
+            serde_json::from_str(r#"{"close": {"glyph": "X", "fallback": "x"}}"#).unwrap();
+        assert_eq!(
+            glyphs.close_glyph().map(|icon| icon.glyph.as_str()),
+            Some("X")
+        );
+        assert!(glyphs.dirty_glyph().is_none());
+        let empty: TabBarGlyphs = serde_json::from_str("{}").unwrap();
+        assert_eq!(empty, TabBarGlyphs::new());
     }
 
     #[test]
@@ -3963,6 +4415,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -4164,6 +4617,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         // Bar 100 wide. Tab 10 wide. Right segments: 6 wide total.
         let layout = bar.layout(
@@ -4203,6 +4657,7 @@ mod tests {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         };
         // Bar 50 wide. Segment is 60 wide; literally doesn't fit → drop.
         let layout = bar.layout(
@@ -4761,6 +5216,7 @@ mod primitive_parity_tests {
             scroll_offset: 0,
             show_tab_close: true,
             compact: false,
+            ..Default::default()
         }
     }
 
@@ -4775,11 +5231,7 @@ mod primitive_parity_tests {
     fn tab_bar_primitive_paint_matches_native_surface_paint_at_a_nonzero_rect_x() {
         let bar = sample_bar();
         let rect = Rect::new(37.0, 5.0, 220.0, 24.0);
-        let ctx = LayoutCtx {
-            line_height: 24.0,
-            char_width: 8.0,
-            nerd_fonts_enabled: false,
-        };
+        let ctx = LayoutCtx::new(24.0, 8.0, false);
         let theme = Theme::default();
         let style = Style::default();
 
@@ -4806,7 +5258,7 @@ mod primitive_parity_tests {
                 &bar,
                 rect.width,
                 rect.height,
-                crate::primitives::layout_metrics::pixel::TAB_PAD,
+                style.tab_padding_x,
                 crate::primitives::layout_metrics::pixel::TAB_INNER_GAP,
                 crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP,
                 &tab_name_widths,
@@ -4848,6 +5300,141 @@ mod primitive_parity_tests {
             bg_fill.contains(&format!("x: {:?}", rect.x)),
             "the background fill must start at rect.x ({}); call was {bg_fill:?}",
             rect.x,
+        );
+    }
+}
+
+/// GTK-backed proof that the shared `Primitive::layout` and the GTK
+/// rasteriser agree on where each tab sits — the whole point of
+/// `LayoutCtx::text_width`: both measure the same labels with the same
+/// Pango font instead of one guessing from `char_width`.
+#[cfg(all(test, feature = "gtk"))]
+mod gtk_measure_parity_tests {
+    use super::*;
+    use crate::backend::{Backend, DrawsPrimitives};
+    use crate::gtk::backend::GtkBackend;
+    use crate::primitive::Primitive;
+    use crate::style::Style;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+    use pangocairo::pango;
+
+    /// Labels whose Pango widths diverge from `char_width * chars` in
+    /// *both* directions, so the comparison below cannot pass on a
+    /// scalar-corrected approximation.
+    fn parity_bar() -> TabBar {
+        TabBar {
+            id: WidgetId::new("tabs:gtk-parity"),
+            tabs: ["alpha", "beta", "gamma"]
+                .iter()
+                .enumerate()
+                .map(|(i, label)| TabItem {
+                    label: (*label).to_string(),
+                    is_active: i == 0,
+                    ..Default::default()
+                })
+                .collect(),
+            right_segments: vec![],
+            active_accent: None,
+            scroll_offset: 0,
+            show_tab_close: true,
+            compact: false,
+            ..Default::default()
+        }
+    }
+
+    fn spans(tabs: &[VisibleTab]) -> Vec<(usize, f32, f32)> {
+        tabs.iter()
+            .map(|vt| (vt.tab_idx, vt.bounds.x, vt.bounds.x + vt.bounds.width))
+            .collect()
+    }
+
+    /// `draw_primitive` → `TabBar::layout` must resolve the same per-tab
+    /// x-ranges as `Backend::draw_tab_bar_layout` for the same bar and
+    /// rect on a live Pango context.
+    ///
+    /// `tab_padding_x` is set to `pixel::TAB_PAD` because the two paths
+    /// read that one metric from different places — the rasteriser from
+    /// `Style::tab_padding_x`, the shared layout from the
+    /// `layout_metrics::pixel` constant, since `LayoutCtx` carries no
+    /// `Style` — and this test is about the glyph widths, not that gap.
+    #[test]
+    fn primitive_layout_tab_spans_match_the_gtk_rasteriser() {
+        let bar = parity_bar();
+        let rect = Rect::new(0.0, 0.0, 600.0, 35.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 600, 35).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        // The measurer `draw_primitive` attaches reads this context, not
+        // the per-frame one, so `Backend::measure_text` resolves real
+        // Pango advances here instead of its pre-realise estimate.
+        backend.set_pango_context(pango_ctx.clone());
+        Backend::set_style(
+            &mut backend,
+            Style::default().with_tab_padding_x(crate::primitives::layout_metrics::pixel::TAB_PAD),
+        );
+
+        let (rasterised, widget) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let rasterised = Backend::draw_tab_bar_layout(b, rect, &bar, None);
+            let widget = b.draw_primitive(rect, &bar);
+            (rasterised, widget)
+        });
+
+        assert_eq!(
+            spans(&widget.layout.visible_tabs),
+            spans(&rasterised.visible_tabs),
+            "TabBar::layout through draw_primitive must place tabs where the GTK \
+             rasteriser places them — both measure labels with Backend::measure_text"
+        );
+        assert_eq!(
+            widget.layout.visible_tabs.len(),
+            bar.tabs.len(),
+            "all three tabs must fit in a 600px strip for the comparison to cover them"
+        );
+    }
+
+    /// The parity above is not vacuous: the same layout built from a
+    /// measurer-free `LayoutCtx` (the `char_width` approximation) does
+    /// *not* match the rasteriser on these labels.
+    #[test]
+    fn the_char_width_approximation_disagrees_with_the_gtk_rasteriser() {
+        let bar = parity_bar();
+        let rect = Rect::new(0.0, 0.0, 600.0, 35.0);
+
+        let surface = ImageSurface::create(Format::ARgb32, 600, 35).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_ctx = pangocairo::functions::create_context(&cr);
+        let pango_layout = pango::Layout::new(&pango_ctx);
+
+        let mut backend = GtkBackend::new();
+        backend.set_pango_context(pango_ctx.clone());
+        Backend::set_style(
+            &mut backend,
+            Style::default().with_tab_padding_x(crate::primitives::layout_metrics::pixel::TAB_PAD),
+        );
+
+        let (rasterised, approximated) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let rasterised = Backend::draw_tab_bar_layout(b, rect, &bar, None);
+            let ctx = crate::primitive::LayoutCtx::new(
+                crate::primitive::LayoutCtx::resolve_row_height(
+                    Backend::chrome_line_height(b),
+                    &Backend::style(b),
+                ),
+                Backend::char_width(b),
+                Backend::nerd_fonts_enabled(b),
+            );
+            let approximated = Primitive::layout(&bar, &ctx, rect);
+            (rasterised, approximated)
+        });
+
+        assert_ne!(
+            spans(&approximated.layout.visible_tabs),
+            spans(&rasterised.visible_tabs),
+            "if the char_width approximation already matched Pango on these labels, the \
+             parity test above would prove nothing"
         );
     }
 }

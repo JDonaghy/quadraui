@@ -261,14 +261,11 @@ impl Demo for CellGridDemo {
                 ..
             } => {
                 let tree: FrameTree = self.screen(backend, area).into_frame_tree();
-                let ctx = LayoutCtx {
-                    line_height: LayoutCtx::resolve_row_height(
-                        backend.chrome_line_height(),
-                        &backend.style(),
-                    ),
-                    char_width: backend.char_width(),
-                    nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-                };
+                let ctx = LayoutCtx::new(
+                    LayoutCtx::resolve_row_height(backend.chrome_line_height(), &backend.style()),
+                    backend.char_width(),
+                    backend.nerd_fonts_enabled(),
+                );
                 // Route the click through the same `FrameTree` node
                 // `Self::screen`'s `Surface::Widget` paints —
                 // confirming the position actually lands in the grid's
@@ -435,11 +432,11 @@ mod tui_tests {
         let mut backend = quadraui::tui::TuiBackend::new();
         let area = Rect::new(0.0, 0.0, 60.0, 20.0);
         let rect = CellGridDemo::grid_rect(area, &backend);
-        let ctx = LayoutCtx {
-            line_height: backend.chrome_line_height(),
-            char_width: backend.char_width(),
-            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-        };
+        let ctx = LayoutCtx::new(
+            backend.chrome_line_height(),
+            backend.char_width(),
+            backend.nerd_fonts_enabled(),
+        );
         let grid = demo.grid(&backend);
         let layout = Primitive::layout(&grid, &ctx, rect);
         // Row 1 ("Widget", the first data row) is a frozen-plus-scrolled

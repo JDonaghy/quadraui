@@ -1059,12 +1059,8 @@ mod tests {
         }
     }
 
-    fn widget_ctx() -> LayoutCtx {
-        LayoutCtx {
-            line_height: 1.0,
-            char_width: 1.0,
-            nerd_fonts_enabled: false,
-        }
+    fn widget_ctx() -> LayoutCtx<'static> {
+        LayoutCtx::new(1.0, 1.0, false)
     }
 
     #[test]

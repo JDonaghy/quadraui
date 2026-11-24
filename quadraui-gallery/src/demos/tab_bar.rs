@@ -1,25 +1,12 @@
 //! `TabBar` demo — adapted from `quadraui/examples/common/tab_chrome_demo.rs`,
 //! `tab_icons_demo.rs` and `wide_tab_bar_demo.rs`.
 //!
-//! Three variants: bracket chrome around the active tab (`TabChrome`) and
-//! per-tab colour icons (`TabIcon`), both sidecar decorations requested
-//! through a `Backend::draw_tab_bar_*` call rather than baked into the
-//! `TabBar` descriptor, plus a plain CJK double-width label (a vt100
-//! conformance fixture) painted through the widget contract — the `TabBar`
-//! primitive's own `draw_dyn`/`Primitive::layout` pair.
-//!
-//! Only the plain variant can use the widget contract, and only because
-//! this demo is read on a cell grid. A sidecar has no route through the
-//! contract at all: `TabBar` carries neither a `TabChrome` nor a
-//! `TabIcon` field, and `Primitive::paint` takes no paint-time state, so
-//! chrome and icons reach a rasteriser only through the dedicated
-//! `Backend` methods the other two variants call. On a pixel backend
-//! even the plain variant measures differently from the rasteriser —
-//! `Primitive::layout` approximates every glyph at `LayoutCtx::char_width`
-//! because the contract carries no text measurer, while the GTK
-//! rasteriser feeds `pixel_tab_bar_layout` real Pango widths.
+//! Three variants, each painted through the `TabBar` primitive's own
+//! widget contract (`draw_dyn`, hit-tested through
+//! `DrawsPrimitives::layout_primitive`): bracket chrome around the active
+//! tab (`TabBar::chrome`), per-tab colour icons (`TabBar::icons`), and a
+//! plain CJK double-width label (a vt100 conformance fixture).
 
-use quadraui::primitive::{LayoutCtx, Primitive};
 use quadraui::{
     Backend, BackendCaps, Color, DrawsPrimitives, Reaction, Rect, Style, TabBar, TabBarHit,
     TabChrome, TabFrame, TabIcon, TabItem, UiEvent, WidgetId,
@@ -90,6 +77,8 @@ impl TabBarDemo {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            chrome: self.chrome(),
+            ..Default::default()
         }
     }
 
@@ -133,6 +122,8 @@ impl TabBarDemo {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            icons: if self.icons_on { self.icons() } else { vec![] },
+            ..Default::default()
         }
     }
 
@@ -160,6 +151,16 @@ impl TabBarDemo {
             active_accent: Some(Color::rgb(80, 160, 240)),
             show_tab_close: true,
             compact: false,
+            ..Default::default()
+        }
+    }
+
+    /// The bar `variant` paints and hit-tests.
+    fn bar(&self, variant: usize) -> TabBar {
+        match variant {
+            0 => self.chrome_bar(),
+            1 => self.icons_bar(),
+            _ => self.wide_bar(),
         }
     }
 
@@ -208,23 +209,7 @@ impl Demo for TabBarDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = Self::rect(area, backend);
-        match variant {
-            0 => {
-                backend.draw_tab_bar_with_chrome_layout(
-                    rect,
-                    &self.chrome_bar(),
-                    None,
-                    &self.chrome(),
-                );
-            }
-            1 => {
-                let icons = if self.icons_on { self.icons() } else { vec![] };
-                backend.draw_tab_bar_icons_layout(rect, &self.icons_bar(), &icons, None);
-            }
-            _ => {
-                backend.draw_dyn(rect, &self.wide_bar(), &());
-            }
-        }
+        backend.draw_dyn(rect, &self.bar(variant), &());
     }
 
     fn handle(
@@ -242,58 +227,28 @@ impl Demo for TabBarDemo {
                 }
                 let local_x = position.x - rect.x;
                 let local_y = position.y - rect.y;
-                match variant {
-                    0 => {
-                        let layout = backend.resolve_tab_bar_layout_with_chrome(
-                            rect,
-                            &self.chrome_bar(),
-                            &self.chrome(),
-                        );
-                        match layout.hit_test(local_x, local_y) {
-                            TabBarHit::TabClose(i) => {
-                                self.close_chrome_tab(i);
-                                Reaction::Redraw
-                            }
-                            TabBarHit::Tab(i) => {
-                                self.activate_chrome_tab(i);
-                                Reaction::Redraw
-                            }
-                            _ => Reaction::Continue,
-                        }
+                // Resolved through the same `Primitive::layout` `draw_dyn`
+                // runs in `render`, so the hit test reads exactly the
+                // geometry that was painted, without repainting here.
+                let layout = backend.layout_primitive(rect, &self.bar(variant)).layout;
+                match (variant, layout.hit_test(local_x, local_y)) {
+                    (0, TabBarHit::TabClose(i)) => {
+                        self.close_chrome_tab(i);
+                        Reaction::Redraw
                     }
-                    1 => {
-                        let icons = if self.icons_on { self.icons() } else { vec![] };
-                        let layout =
-                            backend.resolve_tab_bar_layout_icons(rect, &self.icons_bar(), &icons);
-                        if let TabBarHit::Tab(i) = layout.hit_test(local_x, local_y) {
-                            self.icons_active = i;
-                            Reaction::Redraw
-                        } else {
-                            Reaction::Continue
-                        }
+                    (0, TabBarHit::Tab(i)) => {
+                        self.activate_chrome_tab(i);
+                        Reaction::Redraw
                     }
-                    _ => {
-                        // Resolved through the same `Primitive::layout`
-                        // `draw_dyn` calls in `render`, from a `LayoutCtx`
-                        // built off this backend's own metrics — so the
-                        // hit test reads exactly the geometry that was
-                        // painted, without repainting here.
-                        let ctx = LayoutCtx {
-                            line_height: LayoutCtx::resolve_row_height(
-                                backend.chrome_line_height(),
-                                &backend.style(),
-                            ),
-                            char_width: backend.char_width(),
-                            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-                        };
-                        let layout = Primitive::layout(&self.wide_bar(), &ctx, rect);
-                        if let TabBarHit::Tab(i) = layout.layout.hit_test(local_x, local_y) {
-                            self.wide_active = i;
-                            Reaction::Redraw
-                        } else {
-                            Reaction::Continue
-                        }
+                    (1, TabBarHit::Tab(i)) => {
+                        self.icons_active = i;
+                        Reaction::Redraw
                     }
+                    (2.., TabBarHit::Tab(i)) => {
+                        self.wide_active = i;
+                        Reaction::Redraw
+                    }
+                    _ => Reaction::Continue,
                 }
             }
             UiEvent::KeyPressed {
