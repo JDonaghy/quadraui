@@ -1498,6 +1498,21 @@ pub(crate) mod native_surface_paint {
 
 // ── Cell-grid measurement ────────────────────────────────────────────────────
 
+/// The cell-grid [`DialogLayout`] — [`cell_measure`] for the box, and
+/// [`crate::primitives::toolbar::cell_item_width`] for a
+/// [`DialogInput::Toolbar`] body slot's item widths.
+///
+/// The single cell-units entry point: [`Primitive::layout`] on a
+/// [`crate::primitive::Units::Cells`] context and `tui::tui_dialog_layout`
+/// both resolve through here, so a feature set with no terminal backend
+/// compiled in lays a dialog out exactly as a terminal does — including
+/// the body toolbar's hit regions.
+pub(crate) fn cell_layout(dialog: &Dialog, viewport: Rect) -> DialogLayout {
+    Dialog::layout(dialog, viewport, cell_measure(dialog, viewport), |btn| {
+        ToolbarItemMeasure::new(crate::primitives::toolbar::cell_item_width(btn))
+    })
+}
+
 /// The cell-grid [`DialogMeasure`] a terminal paints a [`Dialog`] at:
 /// one row per body line (capped at [`CELL_MAX_BODY_ROWS`] so a long
 /// body can't fill the whole viewport), a one-row title/button row, and
@@ -2031,18 +2046,7 @@ impl crate::primitive::Primitive for Dialog {
     /// [`Style::control_height`] tall.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> DialogPrimitiveLayout {
         let layout = match ctx.units() {
-            crate::primitive::Units::Cells => {
-                #[cfg(feature = "tui")]
-                {
-                    crate::tui::tui_dialog_layout(self, rect)
-                }
-                #[cfg(not(feature = "tui"))]
-                {
-                    Dialog::layout(self, rect, cell_measure(self, rect), |_| {
-                        ToolbarItemMeasure::new(0.0)
-                    })
-                }
-            }
+            crate::primitive::Units::Cells => cell_layout(self, rect),
             _ => {
                 let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
                     ctx,
@@ -4103,18 +4107,17 @@ mod interactive_tests {
         }
     }
 
-    #[test]
-    fn a_body_toolbar_click_reports_the_toolbars_own_event() {
-        use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarEvent};
+    /// [`dialog`] with a single-action [`DialogInput::Toolbar`] body
+    /// slot: toolbar id `body-toolbar`, action id `preview`.
+    fn dialog_with_body_toolbar() -> Dialog {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
 
         let mut d = dialog();
-        let toolbar_id = WidgetId::new("body-toolbar");
-        let preview = WidgetId::new("preview");
         d.input = Some(DialogInput::Toolbar(Toolbar {
-            id: toolbar_id,
+            id: WidgetId::new("body-toolbar"),
             buttons: vec![ToolbarButton::Action {
                 spec: None,
-                id: preview,
+                id: WidgetId::new("preview"),
                 label: "Preview".into(),
                 icon: None,
                 key_hint: None,
@@ -4125,6 +4128,45 @@ mod interactive_tests {
             bg: None,
             focused_index: None,
         }));
+        d
+    }
+
+    /// A cell-units [`Primitive::layout`] resolves through
+    /// [`cell_layout`] whatever backend features are compiled in, so a
+    /// body toolbar's slots are measured by `cell_item_width` rather
+    /// than collapsing to zero width.
+    #[test]
+    fn a_cell_units_layout_is_the_shared_cell_layout() {
+        let d = dialog_with_body_toolbar();
+        assert_eq!(layout_of(&d).layout, cell_layout(&d, viewport()));
+    }
+
+    #[test]
+    fn a_cell_units_body_toolbar_slot_is_as_wide_as_its_bracketed_label() {
+        let d = dialog_with_body_toolbar();
+        let layout = layout_of(&d);
+        let toolbar_layout = layout
+            .layout
+            .body_toolbar_layout
+            .as_ref()
+            .expect("body toolbar laid out");
+        let item = toolbar_layout
+            .visible_items
+            .iter()
+            .find(|item| item.action_id == Some(WidgetId::new("preview")))
+            .expect("a laid-out slot for the Preview button");
+        // `[ Preview ]` — "Preview" plus `cell_item_width`'s 4 cells of
+        // bracket chrome.
+        assert_eq!(item.bounds.width, "Preview".len() as f32 + 4.0);
+    }
+
+    #[test]
+    fn a_body_toolbar_click_reports_the_toolbars_own_event() {
+        use crate::primitives::toolbar::ToolbarEvent;
+
+        let d = dialog_with_body_toolbar();
+        let toolbar_id = WidgetId::new("body-toolbar");
+        let preview = WidgetId::new("preview");
 
         let layout = layout_of(&d);
         let toolbar_layout = layout

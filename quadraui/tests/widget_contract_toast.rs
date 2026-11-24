@@ -140,9 +140,9 @@ fn right_edge(driver: &TuiDriver<ToastApp>, y: usize) -> usize {
         .nth(y)
         .expect("row on screen")
         .char_indices()
-        .filter(|(_, c)| !c.is_whitespace())
+        .rev()
+        .find(|(_, c)| !c.is_whitespace())
         .map(|(i, _)| i)
-        .last()
         .expect("a painted cell on the row")
 }
 

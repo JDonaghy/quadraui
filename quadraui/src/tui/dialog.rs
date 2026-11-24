@@ -9,16 +9,16 @@ use ratatui::buffer::Buffer;
 
 use super::cell_surface::TuiCellSurface;
 use crate::backend::ColorDepth;
-use crate::primitives::dialog::{cell_measure, cell_paint, Dialog, DialogLayout};
-use crate::primitives::toolbar::ToolbarItemMeasure;
+use crate::primitives::dialog::{cell_layout, cell_paint, Dialog, DialogLayout};
 use crate::theme::Theme;
 
 /// Compute the TUI dialog layout using cell metrics.
 ///
-/// Uses the same `tui_item_width` measurer as the toolbar rasteriser so
-/// toolbar button positions agree between paint and hit-test; the box's
-/// own cell measurements come from
-/// [`crate::primitives::dialog::cell_measure`].
+/// Delegates to [`crate::primitives::dialog::cell_layout`], the one
+/// cell-units layout every cell-grid caller shares: the box's own cell
+/// measurements come from `cell_measure`, and a body toolbar is measured
+/// by the same `cell_item_width` the toolbar rasteriser uses, so toolbar
+/// button positions agree between paint and hit-test.
 ///
 /// This function is TUI's own internal default measurer for dialogs painted
 /// without a caller-supplied `DialogMeasure`. `Dialog` is an overlay-with-caller-anchor
@@ -26,11 +26,7 @@ use crate::theme::Theme;
 /// `DialogMeasure` from portable `Backend::line_height()` and call
 /// `dialog.layout(...)` directly. See `quadraui/docs/decisions/DECISIONS.md` D-007.
 pub fn tui_dialog_layout(dialog: &Dialog, viewport: crate::event::Rect) -> DialogLayout {
-    use super::toolbar::tui_item_width;
-
-    dialog.layout(viewport, cell_measure(dialog, viewport), |btn| {
-        ToolbarItemMeasure::new(tui_item_width(btn))
-    })
+    cell_layout(dialog, viewport)
 }
 
 /// Draw a [`Dialog`] at its resolved layout.
