@@ -1907,6 +1907,14 @@ pub struct DialogPrimitiveLayout {
     pub area: Rect,
     /// The modal's own resolved layout, in absolute coordinates.
     pub layout: DialogLayout,
+    /// Whether the laying-out backend had a Nerd Font icon face
+    /// registered — see [`crate::primitive::LayoutCtx::nerd_fonts_enabled`].
+    ///
+    /// Baked into the layout because [`crate::primitive::Primitive::paint_cells`]
+    /// takes no [`crate::primitive::LayoutCtx`] of its own, and a
+    /// [`DialogButton::spec`] carrying a [`crate::ButtonSpec::icon`]
+    /// resolves a different glyph with and without one.
+    pub nerd_fonts: bool,
 }
 
 impl DialogPrimitiveLayout {
@@ -2055,7 +2063,11 @@ impl crate::primitive::Primitive for Dialog {
                 })
             }
         };
-        DialogPrimitiveLayout { area: rect, layout }
+        DialogPrimitiveLayout {
+            area: rect,
+            layout,
+            nerd_fonts: ctx.nerd_fonts_enabled,
+        }
     }
 
     /// The shared pixel painter, with the surface's own line height as
@@ -2089,8 +2101,11 @@ impl crate::primitive::Primitive for Dialog {
     }
 
     /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_dialog`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`crate::tui::draw_dialog_with_nerd_fonts`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`, and
+    /// carrying [`DialogPrimitiveLayout::nerd_fonts`] so a
+    /// [`crate::ButtonSpec::icon`] resolves the same glyph the legacy
+    /// path picks.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -2098,7 +2113,13 @@ impl crate::primitive::Primitive for Dialog {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_dialog(buf, self, &layout.layout, theme);
+        crate::tui::draw_dialog_with_nerd_fonts(
+            buf,
+            self,
+            &layout.layout,
+            theme,
+            layout.nerd_fonts,
+        );
     }
 }
 
@@ -3871,5 +3892,323 @@ mod cell_paint_tests {
         let json = serde_json::to_string(&input).unwrap();
         let back: DialogInput = serde_json::from_str(&json).unwrap();
         assert_eq!(input, back);
+    }
+}
+
+/// The `Interactive` half's own unit coverage, for the paths a headless
+/// `TuiDriver` test cannot reach: the assistive-technology action route
+/// and a host-driven `FocusIn`.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::event::{MouseButton, NamedKey, Point};
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::types::{StyledSpan, StyledText};
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock — the same shape
+    /// `crate::primitives::tab_bar`'s own module tests use.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn button(id: &str, label: &str, is_default: bool, is_cancel: bool) -> DialogButton {
+        DialogButton {
+            id: WidgetId::new(id),
+            label: label.into(),
+            is_default,
+            is_cancel,
+            tint: None,
+            spec: None,
+        }
+    }
+
+    fn dialog() -> Dialog {
+        Dialog {
+            id: WidgetId::new("dlg"),
+            title: StyledText {
+                spans: vec![StyledSpan::plain("Confirm")],
+            },
+            body: vec![StyledText {
+                spans: vec![StyledSpan::plain("Unsaved edits remain.")],
+            }],
+            buttons: vec![
+                button("ok", "Save", true, false),
+                button("no", "Cancel", false, true),
+            ],
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        }
+    }
+
+    fn viewport() -> Rect {
+        Rect::new(0.0, 0.0, 60.0, 20.0)
+    }
+
+    fn layout_of(d: &Dialog) -> DialogPrimitiveLayout {
+        Primitive::layout(d, &LayoutCtx::new(1.0, 1.0, false), viewport())
+    }
+
+    fn run(
+        d: &Dialog,
+        state: &mut DialogState,
+        event: RoutedEvent,
+    ) -> (Handled<DialogAction>, MockHost) {
+        let layout = layout_of(d);
+        let mut host = MockHost::default();
+        let outcome = {
+            let mut cx = EventCx::new(d.id, &mut host);
+            d.handle(state, &event, &layout, &mut cx)
+        };
+        (outcome, host)
+    }
+
+    #[test]
+    fn focus_declares_one_stop_per_button() {
+        let d = dialog();
+        match d.focus() {
+            FocusSpec::Children(stops) => {
+                assert_eq!(stops.len(), 2);
+                assert_eq!(stops[0].sub, SubTarget(0));
+                assert_eq!(stops[1].sub, SubTarget(1));
+            }
+            other => panic!("expected per-button stops, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_button_less_dialog_takes_no_focus() {
+        let mut d = dialog();
+        d.buttons.clear();
+        assert_eq!(d.focus(), FocusSpec::None);
+    }
+
+    #[test]
+    fn a11y_click_activates_the_default_button_when_nothing_holds_focus() {
+        let d = dialog();
+        let mut state = DialogState::default();
+        let (outcome, _) = run(&d, &mut state, RoutedEvent::Action(A11yAction::Click));
+        assert_eq!(
+            outcome,
+            Handled::Event(DialogAction::ButtonActivated(WidgetId::new("ok")))
+        );
+    }
+
+    #[test]
+    fn a11y_click_activates_whichever_button_holds_focus() {
+        let d = dialog();
+        let mut state = DialogState {
+            focused_button: Some(1),
+        };
+        let (outcome, _) = run(&d, &mut state, RoutedEvent::Action(A11yAction::Click));
+        assert_eq!(
+            outcome,
+            Handled::Event(DialogAction::ButtonActivated(WidgetId::new("no")))
+        );
+    }
+
+    #[test]
+    fn focus_in_names_the_stop_the_host_moved_to() {
+        let d = dialog();
+        let mut state = DialogState::default();
+        let (outcome, _) = run(&d, &mut state, RoutedEvent::FocusIn(Some(SubTarget(1))));
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(state.focused_button, Some(1));
+    }
+
+    #[test]
+    fn a_focus_in_naming_no_button_is_ignored() {
+        let d = dialog();
+        let mut state = DialogState::default();
+        let (outcome, _) = run(&d, &mut state, RoutedEvent::FocusIn(Some(SubTarget(7))));
+        assert_eq!(outcome, Handled::Ignored);
+        assert_eq!(state.focused_button, None);
+    }
+
+    #[test]
+    fn escape_reports_the_declared_cancel_button() {
+        let d = dialog();
+        let mut state = DialogState::default();
+        let (outcome, _) = run(
+            &d,
+            &mut state,
+            RoutedEvent::Key(KeyEvent {
+                key: Key::Named(NamedKey::Escape),
+                modifiers: crate::types::Modifiers::default(),
+                repeat: false,
+            }),
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(DialogAction::Cancelled {
+                button: Some(WidgetId::new("no")),
+            })
+        );
+    }
+
+    #[test]
+    fn escape_on_a_dialog_with_no_cancel_button_reports_none() {
+        let mut d = dialog();
+        d.buttons = vec![button("ok", "OK", true, false)];
+        let mut state = DialogState::default();
+        let (outcome, _) = run(
+            &d,
+            &mut state,
+            RoutedEvent::Key(KeyEvent {
+                key: Key::Named(NamedKey::Escape),
+                modifiers: crate::types::Modifiers::default(),
+                repeat: false,
+            }),
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(DialogAction::Cancelled { button: None })
+        );
+    }
+
+    #[test]
+    fn sub_regions_are_reported_in_widget_local_space() {
+        let d = dialog();
+        let layout = layout_of(&d);
+        let regions = d.sub_regions(&layout);
+        assert_eq!(regions.len(), 2);
+        for ((rect, sub), vis) in regions.iter().zip(layout.layout.visible_buttons.iter()) {
+            assert_eq!(*sub, SubTarget(vis.button_idx as u64));
+            assert_eq!(rect.x, vis.bounds.x - layout.area.x);
+            assert_eq!(rect.y, vis.bounds.y - layout.area.y);
+        }
+    }
+
+    #[test]
+    fn a_body_toolbar_click_reports_the_toolbars_own_event() {
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarEvent};
+
+        let mut d = dialog();
+        let toolbar_id = WidgetId::new("body-toolbar");
+        let preview = WidgetId::new("preview");
+        d.input = Some(DialogInput::Toolbar(Toolbar {
+            id: toolbar_id,
+            buttons: vec![ToolbarButton::Action {
+                spec: None,
+                id: preview,
+                label: "Preview".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            }],
+            bg: None,
+            focused_index: None,
+        }));
+
+        let layout = layout_of(&d);
+        let toolbar_layout = layout
+            .layout
+            .body_toolbar_layout
+            .as_ref()
+            .expect("body toolbar laid out");
+        let hit = toolbar_layout
+            .visible_items
+            .iter()
+            .find(|item| item.action_id == Some(preview))
+            .map(|item| item.bounds)
+            .expect("a laid-out slot for the Preview button");
+
+        let mut state = DialogState::default();
+        let (outcome, _) = run(
+            &d,
+            &mut state,
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(
+                    hit.x + hit.width * 0.5 - layout.area.x,
+                    hit.y + hit.height * 0.5 - layout.area.y,
+                ),
+                mods: crate::types::Modifiers::default(),
+            },
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(DialogAction::BodyToolbar {
+                toolbar: toolbar_id,
+                event: ToolbarEvent::ButtonClicked {
+                    id: preview,
+                    is_active: true,
+                },
+            })
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_box_parks_focus_on_the_default_button() {
+        let d = dialog();
+        let layout = layout_of(&d);
+        let body = layout.layout.body_bounds;
+        let mut state = DialogState::default();
+        let (outcome, host) = run(
+            &d,
+            &mut state,
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(body.x - layout.area.x, body.y - layout.area.y),
+                mods: crate::types::Modifiers::default(),
+            },
+        );
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(state.focused_button, Some(0));
+        assert_eq!(host.focus_requests, vec![Some(SubTarget(0))]);
+    }
+
+    #[test]
+    fn a_click_outside_the_box_bubbles() {
+        let d = dialog();
+        let mut state = DialogState::default();
+        let (outcome, _) = run(
+            &d,
+            &mut state,
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(0.0, 0.0),
+                mods: crate::types::Modifiers::default(),
+            },
+        );
+        assert_eq!(outcome, Handled::Ignored);
+    }
+
+    #[test]
+    fn layout_carries_the_backends_nerd_font_state() {
+        let d = dialog();
+        let with = Primitive::layout(&d, &LayoutCtx::new(1.0, 1.0, true), viewport());
+        let without = Primitive::layout(&d, &LayoutCtx::new(1.0, 1.0, false), viewport());
+        assert!(with.nerd_fonts);
+        assert!(!without.nerd_fonts);
     }
 }

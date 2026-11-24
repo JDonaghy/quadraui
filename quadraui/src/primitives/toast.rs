@@ -3310,3 +3310,313 @@ mod cell_paint_tests {
         assert_eq!(layout.hit_test(0.0, 0.0), ToastHit::Empty);
     }
 }
+
+/// The `Interactive` half's own unit coverage, for the paths a headless
+/// `TuiDriver` test cannot reach: the assistive-technology action route,
+/// a host-driven `FocusIn`/`FocusOut`, and the stale-focus resync.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::event::{MouseButton, Point};
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock — the same shape
+    /// `crate::primitives::tab_bar`'s own module tests use.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn toast_with(id: &str, actions: &[&str]) -> Toast {
+        Toast {
+            id: WidgetId::new(id),
+            title: id.into(),
+            body: String::new(),
+            severity: ToastSeverity::Info,
+            actions: actions
+                .iter()
+                .map(|a| ToastButton {
+                    id: WidgetId::new(*a),
+                    label: (*a).into(),
+                    primary: false,
+                    spec: None,
+                })
+                .collect(),
+            accent: None,
+        }
+    }
+
+    fn stack() -> ToastOverlay {
+        ToastOverlay {
+            id: WidgetId::new("toasts"),
+            corner: ToastCorner::BottomRight,
+            toasts: vec![toast_with("older", &[]), toast_with("newest", &["undo"])],
+            focus: None,
+        }
+    }
+
+    fn area() -> Rect {
+        Rect::new(0.0, 0.0, 60.0, 16.0)
+    }
+
+    fn layout_of(s: &ToastOverlay) -> ToastOverlayPrimitiveLayout {
+        Primitive::layout(s, &LayoutCtx::new(1.0, 1.0, false), area())
+    }
+
+    fn run(
+        s: &ToastOverlay,
+        state: &mut ToastOverlayState,
+        event: RoutedEvent,
+    ) -> (Handled<ToastOverlayAction>, MockHost) {
+        let layout = layout_of(s);
+        let mut host = MockHost::default();
+        let outcome = {
+            let mut cx = EventCx::new(s.id, &mut host);
+            s.handle(state, &event, &layout, &mut cx)
+        };
+        (outcome, host)
+    }
+
+    #[test]
+    fn focus_declares_one_stop_per_control() {
+        let s = stack();
+        match s.focus() {
+            // `older` has only its dismiss `×`; `newest` has `×` plus one
+            // action.
+            FocusSpec::Children(stops) => {
+                assert_eq!(stops.len(), 3);
+                assert_eq!(stops[0].sub, pack_sub(0, 0));
+                assert_eq!(stops[1].sub, pack_sub(1, 0));
+                assert_eq!(stops[2].sub, pack_sub(1, 1));
+            }
+            other => panic!("expected per-control stops, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_empty_stack_takes_no_focus() {
+        let mut s = stack();
+        s.toasts.clear();
+        assert_eq!(s.focus(), FocusSpec::None);
+    }
+
+    #[test]
+    fn sub_regions_are_reported_in_widget_local_space() {
+        let s = stack();
+        let layout = layout_of(&s);
+        let regions = s.sub_regions(&layout);
+        // Two dismiss glyphs plus the one action button.
+        assert_eq!(regions.len(), 3);
+        let newest = layout
+            .layout
+            .visible_toasts
+            .iter()
+            .find(|vt| vt.id == WidgetId::new("newest"))
+            .expect("newest toast laid out");
+        let dismiss = newest.dismiss_bounds.expect("dismiss bounds");
+        let (rect, sub) = regions
+            .iter()
+            .find(|(_, sub)| *sub == pack_sub(newest.toast_idx, 0))
+            .expect("a region for the newest toast's dismiss");
+        assert_eq!(*sub, pack_sub(newest.toast_idx, 0));
+        assert_eq!(rect.x, dismiss.x - layout.area.x);
+        assert_eq!(rect.y, dismiss.y - layout.area.y);
+    }
+
+    #[test]
+    fn a11y_click_activates_whichever_control_holds_focus() {
+        let mut s = stack();
+        s.focus = Some(ToastFocus {
+            toast_id: WidgetId::new("newest"),
+            target: ToastFocusTarget::Action(0),
+        });
+        let mut state = ToastOverlayState {
+            focus: s.focus.clone(),
+        };
+        let (outcome, _) = run(&s, &mut state, RoutedEvent::Action(A11yAction::Click));
+        assert_eq!(
+            outcome,
+            Handled::Event(ToastOverlayAction::ActionActivated(WidgetId::new("undo")))
+        );
+    }
+
+    #[test]
+    fn a11y_click_with_nothing_focused_is_ignored() {
+        let s = stack();
+        let mut state = ToastOverlayState::default();
+        let (outcome, _) = run(&s, &mut state, RoutedEvent::Action(A11yAction::Click));
+        assert_eq!(outcome, Handled::Ignored);
+        assert!(s.a11y_actions(&state).is_empty());
+    }
+
+    #[test]
+    fn a_key_for_a_toast_that_left_the_descriptor_clears_focus_instead_of_acting() {
+        let s = stack();
+        let mut focus = Some(ToastFocus {
+            toast_id: WidgetId::new("expired"),
+            target: ToastFocusTarget::Dismiss,
+        });
+        let outcome = s.handle_focus_key(
+            &mut focus,
+            &Key::Named(NamedKey::Enter),
+            &Modifiers::default(),
+        );
+        assert_eq!(outcome, Handled::Ignored);
+        assert_eq!(focus, None);
+    }
+
+    #[test]
+    fn focus_in_and_focus_out_track_the_hosts_focus_cursor() {
+        let s = stack();
+        let mut state = ToastOverlayState::default();
+        let (outcome, _) = run(&s, &mut state, RoutedEvent::FocusIn(Some(pack_sub(1, 1))));
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(
+            state.focus,
+            Some(ToastFocus {
+                toast_id: WidgetId::new("newest"),
+                target: ToastFocusTarget::Action(0),
+            })
+        );
+
+        let (outcome, _) = run(&s, &mut state, RoutedEvent::FocusOut);
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(state.focus, None);
+    }
+
+    #[test]
+    fn a_focus_in_naming_no_control_is_ignored() {
+        let s = stack();
+        let mut state = ToastOverlayState::default();
+        let (outcome, _) = run(&s, &mut state, RoutedEvent::FocusIn(Some(pack_sub(0, 4))));
+        assert_eq!(outcome, Handled::Ignored);
+        assert_eq!(state.focus, None);
+    }
+
+    #[test]
+    fn a_dismiss_click_reports_the_toasts_own_id() {
+        let s = stack();
+        let layout = layout_of(&s);
+        let newest = layout
+            .layout
+            .visible_toasts
+            .iter()
+            .find(|vt| vt.id == WidgetId::new("newest"))
+            .expect("newest toast laid out");
+        let dismiss = newest.dismiss_bounds.expect("dismiss bounds");
+        let mut state = ToastOverlayState::default();
+        let (outcome, _) = run(
+            &s,
+            &mut state,
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(dismiss.x - layout.area.x, dismiss.y - layout.area.y),
+                mods: Modifiers::default(),
+            },
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(ToastOverlayAction::Dismissed(WidgetId::new("newest")))
+        );
+    }
+
+    #[test]
+    fn a_click_on_no_toast_at_all_bubbles() {
+        let s = stack();
+        let mut state = ToastOverlayState::default();
+        let (outcome, _) = run(
+            &s,
+            &mut state,
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(0.0, 0.0),
+                mods: Modifiers::default(),
+            },
+        );
+        assert_eq!(outcome, Handled::Ignored);
+    }
+
+    #[test]
+    fn a_body_click_parks_focus_on_that_toasts_dismiss_glyph() {
+        let s = stack();
+        let layout = layout_of(&s);
+        let newest = layout
+            .layout
+            .visible_toasts
+            .iter()
+            .find(|vt| vt.id == WidgetId::new("newest"))
+            .expect("newest toast laid out");
+        let mut state = ToastOverlayState::default();
+        let (outcome, host) = run(
+            &s,
+            &mut state,
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(
+                    newest.bounds.x - layout.area.x,
+                    newest.bounds.y - layout.area.y,
+                ),
+                mods: Modifiers::default(),
+            },
+        );
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(
+            state.focus,
+            Some(ToastFocus {
+                toast_id: WidgetId::new("newest"),
+                target: ToastFocusTarget::Dismiss,
+            })
+        );
+        assert_eq!(
+            host.focus_requests,
+            vec![Some(pack_sub(newest.toast_idx, 0))]
+        );
+    }
+
+    #[test]
+    fn the_cell_layout_and_the_widget_contract_layout_agree() {
+        let s = stack();
+        assert_eq!(layout_of(&s).layout, cell_toast_stack_layout(&s, area()));
+    }
+
+    #[test]
+    fn a_key_with_no_focus_is_never_claimed() {
+        let s = stack();
+        let mut state = ToastOverlayState::default();
+        let (outcome, _) = run(
+            &s,
+            &mut state,
+            RoutedEvent::Key(KeyEvent {
+                key: Key::Named(NamedKey::Tab),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            }),
+        );
+        assert_eq!(outcome, Handled::Ignored);
+    }
+}
