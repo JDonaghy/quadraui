@@ -6,13 +6,19 @@
 //! [`crate::frame::Surface::Widget`] without a `Backend` method pair of
 //! its own.
 //!
-//! ## One layout, both unit regimes
+//! ## One layout, overflow included
 //!
 //! [`Primitive::layout`] branches on [`crate::primitive::Units`]: a cell
 //! grid resolves through [`super::cell_layout`] (the exact resolver the
 //! TUI rasteriser paints from), a pixel surface through
 //! [`super::measure_button`] fed by the calling backend's own
-//! [`crate::Backend::measure_text`]. Both produce the same
+//! [`crate::Backend::measure_text`]. Neither arm takes a per-call
+//! options argument: overflow, orientation, the trailing-group clip
+//! anchor and the vertical text alignment are all descriptor fields
+//! ([`Toolbar::layout_options`], [`Toolbar::overflow_priorities`],
+//! [`Toolbar::valign`]), so one `layout` call covers what the legacy
+//! `_with_options`/`_with_overflow` entry-point family covers between
+//! them. Both produce the same
 //! [`ToolbarLayout`], in the widget's **own local space** (origin at the
 //! painted rect) — the space [`Interactive::sub_regions`] and
 //! [`crate::interactive::RoutedEvent::Pointer`]'s `local` both use, so
@@ -68,10 +74,9 @@ pub struct ToolbarPrimitiveLayout {
     /// origin at `area`'s own origin, not at the surface origin.
     pub layout: ToolbarLayout,
     /// Where button/label text paints within a slot taller than one text
-    /// row. [`ToolbarVAlign::Top`] — the declarative default — until the
-    /// descriptor carries a valign of its own; a host that wants another
-    /// one paints through `crate::tui::draw_toolbar_with_options` /
-    /// `gtk::toolbar::draw_toolbar_with_options`.
+    /// row — the resolving descriptor's own [`Toolbar::valign`], carried
+    /// here so [`Primitive::paint`]/[`Primitive::paint_cells`] need no
+    /// options argument of their own.
     pub valign: ToolbarVAlign,
     /// Main-axis extent of a [`ToolbarButton::MenuButton`]'s trailing
     /// `▾` affordance in the unit this layout was resolved in —
@@ -118,6 +123,22 @@ fn translate_toolbar_layout(mut layout: ToolbarLayout, dx: f32, dy: f32) -> Tool
     layout
 }
 
+/// `rect`'s size as a zero-origin cell area, through the same
+/// [`crate::tui::backend::q_rect_to_ratatui`] rounding
+/// [`Primitive::paint_cells`] converts the absolute rect with — so the
+/// layout a hit test reads and the cells a paint writes can't disagree
+/// about the bar's width by a rounding step on a fractional rect.
+#[cfg(feature = "tui")]
+fn cell_area(rect: Rect) -> ratatui::layout::Rect {
+    let absolute = crate::tui::backend::q_rect_to_ratatui(rect);
+    ratatui::layout::Rect {
+        x: 0,
+        y: 0,
+        width: absolute.width,
+        height: absolute.height,
+    }
+}
+
 impl Primitive for Toolbar {
     type Layout = ToolbarPrimitiveLayout;
     type Event = ToolbarEvent;
@@ -128,11 +149,17 @@ impl Primitive for Toolbar {
 
     /// Round-trips through [`crate::frame::OwnedContent::Toolbar`] — the
     /// same owned snapshot [`crate::frame::Surface::Toolbar`] captures
-    /// into, so a bar reached through [`crate::frame::Surface::Widget`]
-    /// replays byte-identically: that variant's own replay paints
-    /// through [`crate::Backend::draw_toolbar_interactive`], which
-    /// reaches this module's own painter with the same resting
-    /// hover/press/valign state [`Self::paint_cells`] passes it.
+    /// into. The replay paints through
+    /// [`crate::Backend::draw_toolbar_interactive`], which reaches this
+    /// module's own painter with the same resting hover/press state
+    /// [`Self::paint_cells`] passes it, and resolves the bar's geometry
+    /// from the method's own fixed `Clip`/`Horizontal`/`Top` arguments
+    /// rather than from the descriptor's [`Toolbar::layout_options`] /
+    /// [`Toolbar::valign`] — so a replay is byte-identical for a
+    /// default-options descriptor, and a wrapping, vertical or
+    /// bottom-aligned one replays as the clipped horizontal bar that
+    /// method paints, until `Surface::Toolbar` itself is retired in
+    /// favour of [`crate::frame::Surface::Widget`].
     ///
     /// The replayed bar reports
     /// [`crate::frame::FrameZone::Toolbar`] rather than
@@ -174,7 +201,19 @@ impl Primitive for Toolbar {
 
     /// Resolve the bar-relative layout for `rect`, in whichever unit the
     /// caller measures in — see this module's own doc.
+    ///
+    /// Overflow, orientation and the trailing-group clip anchor all come
+    /// off the descriptor ([`Toolbar::layout_options`] plus
+    /// [`Toolbar::overflow_priorities`]), so this is the only layout a
+    /// bar needs: a [`super::ToolbarOverflow::Wrap`] descriptor wraps
+    /// here, a [`super::ToolbarOverflow::Menu`] one grows the trailing
+    /// `»` affordance, and a [`super::ToolbarOrientation::Vertical`] one
+    /// stacks — with no per-call options argument and no second entry
+    /// point. A default descriptor resolves byte-identically to the
+    /// plain `Clip`/`Horizontal` path, which both overflow resolvers
+    /// delegate to for [`super::ToolbarOverflow::Clip`].
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout {
+        let options = self.layout_options();
         // `ctx.units()` is a reliable *runtime* discriminator between a
         // TUI caller and a pixel-backend one even when both features are
         // compiled into the same binary — see `LayoutCtx::units`'s own
@@ -183,18 +222,20 @@ impl Primitive for Toolbar {
         {
             if matches!(ctx.units(), Units::Cells) {
                 // The same resolver the cell rasteriser paints from
-                // (group degrade tiers included), fed a zero-origin
-                // area so the result is already bar-relative.
-                let area = ratatui::layout::Rect {
-                    x: 0,
-                    y: 0,
-                    width: rect.width.max(0.0) as u16,
-                    height: rect.height.max(0.0) as u16,
-                };
+                // (group degrade tiers included, wrapped rows past the
+                // bar's own height demoted to un-clickable), fed a
+                // zero-origin area so the result is already
+                // bar-relative.
+                let area = cell_area(rect);
                 return ToolbarPrimitiveLayout {
                     area: rect,
-                    layout: super::cell_layout::tui_toolbar_layout(self, area),
-                    valign: ToolbarVAlign::default(),
+                    layout: super::cell_layout::tui_toolbar_layout_with_overflow(
+                        self,
+                        area,
+                        options,
+                        &self.overflow_priorities,
+                    ),
+                    valign: self.valign,
                     caret_extent: MENU_BUTTON_CARET_CELLS,
                 };
             }
@@ -210,13 +251,32 @@ impl Primitive for Toolbar {
             ctx,
             role: crate::FontRole::Chrome,
         };
-        let layout = self.layout(0.0, 0.0, rect.width, rect.height, |btn| {
-            ToolbarItemMeasure::new(super::measure_button(&measure, btn))
-        });
+        // A `Wrap` bar measures each line at one text row; the other two
+        // keep the whole rect as the single line's height — the same
+        // split every pixel wrapper's own `*_layout_with_overflow` makes.
+        let line_height = if options.overflow == super::ToolbarOverflow::Wrap {
+            ctx.line_height
+        } else {
+            rect.height
+        };
+        let mut layout = self.layout_with_overflow(
+            0.0,
+            0.0,
+            rect.width,
+            line_height,
+            options,
+            &self.overflow_priorities,
+            |btn| ToolbarItemMeasure::new(super::measure_button(&measure, btn)),
+        );
+        // Rows a `Wrap` layout placed past the requested height are kept
+        // in `visible_items` (so a host can read `cross_extent` and grow
+        // its rect) but marked un-clickable, matching what `paint`'s own
+        // clip actually puts on screen.
+        layout.demote_lines_past(options, rect.height);
         ToolbarPrimitiveLayout {
             area: rect,
             layout,
-            valign: ToolbarVAlign::default(),
+            valign: self.valign,
             caret_extent: MENU_BUTTON_CARET_PX,
         }
     }
@@ -271,12 +331,20 @@ impl Primitive for Toolbar {
         }
     }
 
-    /// Delegates straight to [`super::cell_paint::draw_toolbar_with_options`]
-    /// — the exact function `crate::tui::draw_toolbar_with_options` and
-    /// `TuiBackend::draw_toolbar_with_options` themselves call — so
-    /// painting a `Toolbar` through this contract is byte-for-byte
-    /// identical to painting it through the legacy `Backend` pair by
-    /// construction, not by separately maintained parity.
+    /// Delegates to the same `super::cell_paint` entry point the legacy
+    /// `crate::tui::draw_toolbar*` wrappers and
+    /// `TuiBackend::draw_toolbar_with_options` themselves call, picked by
+    /// what the descriptor asks for — so painting a `Toolbar` through
+    /// this contract is byte-for-byte identical to painting it through
+    /// the legacy `Backend` pair by construction, not by separately
+    /// maintained parity.
+    ///
+    /// A plain `Clip`/`Horizontal` bar goes through
+    /// [`super::cell_paint::draw_toolbar_with_options`], the only cell
+    /// painter that honours [`Toolbar::valign`]; a wrapping, menu-overflow
+    /// or vertical bar goes through
+    /// [`super::cell_paint::draw_toolbar_with_overflow`], where every
+    /// line is one row tall and `valign` has nothing to resolve.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -286,17 +354,35 @@ impl Primitive for Toolbar {
     ) {
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         let state = ToolbarState::default();
-        let _ = super::cell_paint::draw_toolbar_with_options(
-            buf,
-            area,
-            self,
-            theme,
-            state.hovered_id(self),
-            state.pressed_id(self),
-            super::ToolbarPaintOptions {
-                valign: layout.valign,
-            },
-        );
+        let options = self.layout_options();
+        let hovered = state.hovered_id(self);
+        let pressed = state.pressed_id(self);
+        if options.overflow == super::ToolbarOverflow::Clip
+            && options.orientation == super::ToolbarOrientation::Horizontal
+        {
+            let _ = super::cell_paint::draw_toolbar_with_options(
+                buf,
+                area,
+                self,
+                theme,
+                hovered,
+                pressed,
+                super::ToolbarPaintOptions {
+                    valign: layout.valign,
+                },
+            );
+        } else {
+            let _ = super::cell_paint::draw_toolbar_with_overflow(
+                buf,
+                area,
+                self,
+                theme,
+                hovered,
+                pressed,
+                options,
+                &self.overflow_priorities,
+            );
+        }
     }
 }
 
@@ -1291,35 +1377,34 @@ mod tests {
 
     /// The overflow chevron is the one layout entry with no
     /// `Toolbar::buttons` index of its own, and it answers
-    /// `OverflowRequested` rather than a per-button event.
+    /// `OverflowRequested` rather than a per-button event. The layout
+    /// comes from `Primitive::layout` reading
+    /// `Toolbar::overflow`/`Toolbar::overflow_priorities` off the
+    /// descriptor, which is the only input a host gives it.
     #[test]
     fn the_overflow_chevron_requests_the_overflow_menu() {
-        let crowded = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
-            action("tb:a", "Alpha", true),
-            action("tb:b", "Bravo", true),
-            action("tb:c", "Charlie", true),
-        ]);
-        let layout = crowded.layout_with_overflow(
-            0.0,
-            0.0,
-            24.0,
-            1.0,
-            super::super::ToolbarLayoutOptions::new()
-                .with_overflow(super::super::ToolbarOverflow::Menu),
-            &super::super::ToolbarOverflowPriorities::new(),
-            |btn| ToolbarItemMeasure::new(super::super::cell_item_width(btn)),
+        let crowded = Toolbar::new(WidgetId::new("tb"))
+            .with_buttons(vec![
+                action("tb:a", "Alpha", true),
+                action("tb:b", "Bravo", true),
+                action("tb:c", "Charlie", true),
+            ])
+            .with_overflow(super::super::ToolbarOverflow::Menu);
+        // Whole-cell metrics: 24 cells is too narrow for the three
+        // bracketed labels in either unit regime, so the `Menu` ladder
+        // drops one and grows the affordance.
+        let primitive_layout = Primitive::layout(
+            &crowded,
+            &LayoutCtx::new(1.0, 1.0, false),
+            Rect::new(0.0, 0.0, 24.0, 1.0),
         );
-        let chevron = layout
+        let chevron = primitive_layout
+            .layout
             .visible_items
             .iter()
             .find(|v| v.kind == ToolbarItemKind::Overflow)
-            .expect("a `Menu` overflow layout that dropped items paints the chevron");
-        let primitive_layout = ToolbarPrimitiveLayout {
-            area: Rect::new(0.0, 0.0, 24.0, 1.0),
-            layout: layout.clone(),
-            valign: ToolbarVAlign::default(),
-            caret_extent: MENU_BUTTON_CARET_CELLS,
-        };
+            .expect("a `Menu` overflow layout that dropped items paints the chevron")
+            .clone();
         let regions = Interactive::sub_regions(&crowded, &primitive_layout);
         assert!(regions
             .iter()
@@ -1344,5 +1429,83 @@ mod tests {
                 id: super::super::toolbar_overflow_widget_id(),
             }),
         );
+    }
+
+    /// Three bracketed labels too wide for the strip, so an overflow
+    /// knob on the descriptor has something to do.
+    fn crowded_bar() -> Toolbar {
+        Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            action("tb:a", "Alpha", true),
+            action("tb:b", "Bravo", true),
+            action("tb:c", "Charlie", true),
+        ])
+    }
+
+    /// `Toolbar::overflow` is honoured by `Primitive::layout`: a `Wrap`
+    /// descriptor reports more cross-axis room than the default `Clip`
+    /// one, because the items that don't fit went onto a second line
+    /// instead of being dropped. Whole-cell metrics plus a strip too
+    /// narrow for the three labels, so both unit regimes overflow.
+    #[test]
+    fn a_wrap_descriptor_lays_out_a_second_line() {
+        let horizontal = super::super::ToolbarOrientation::Horizontal;
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let narrow = Rect::new(0.0, 0.0, 24.0, 1.0);
+        let clipped = Primitive::layout(&crowded_bar(), &ctx, narrow);
+        let wrapped = Primitive::layout(
+            &crowded_bar().with_overflow(super::super::ToolbarOverflow::Wrap),
+            &ctx,
+            narrow,
+        );
+        assert!(
+            wrapped.layout.cross_extent(horizontal) > clipped.layout.cross_extent(horizontal),
+            "a wrapped bar reports more cross-axis room than a clipped one: {} vs {}",
+            wrapped.layout.cross_extent(horizontal),
+            clipped.layout.cross_extent(horizontal),
+        );
+    }
+
+    /// `Toolbar::orientation` reaches `Primitive::layout` too: a vertical
+    /// bar stacks its items along the cross axis instead of the main one.
+    #[test]
+    fn a_vertical_descriptor_stacks_items_through_the_contract() {
+        let vertical = crowded_bar().with_orientation(super::super::ToolbarOrientation::Vertical);
+        for layout in layouts(&vertical) {
+            let ys: Vec<f32> = layout
+                .layout
+                .visible_items
+                .iter()
+                .map(|v| v.bounds.y)
+                .collect();
+            assert!(
+                ys.windows(2).all(|w| w[1] > w[0]),
+                "every item starts below the one before it: {ys:?}"
+            );
+        }
+    }
+
+    /// `Toolbar::valign` lands on the resolved layout, which is what both
+    /// painters read it from.
+    #[test]
+    fn the_descriptor_valign_reaches_the_resolved_layout() {
+        let bottom = bar().with_valign(ToolbarVAlign::Bottom);
+        for layout in layouts(&bottom) {
+            assert_eq!(layout.valign, ToolbarVAlign::Bottom);
+        }
+        for layout in layouts(&bar()) {
+            assert_eq!(layout.valign, ToolbarVAlign::Top);
+        }
+    }
+
+    /// The options a host used to pass per call round-trip through the
+    /// descriptor, so a caller holding a `ToolbarLayoutOptions` can hand
+    /// it over whole.
+    #[test]
+    fn layout_options_round_trip_through_the_descriptor() {
+        let options = super::super::ToolbarLayoutOptions::new()
+            .with_orientation(super::super::ToolbarOrientation::Vertical)
+            .with_overflow(super::super::ToolbarOverflow::Menu)
+            .with_pin_trailing_overflow_to_origin(true);
+        assert_eq!(bar().with_layout_options(options).layout_options(), options);
     }
 }

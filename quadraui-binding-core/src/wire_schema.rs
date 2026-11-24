@@ -1039,7 +1039,17 @@ pub fn schema() -> Vec<DefJson> {
     let toolbar_overflow = b.define(alias_doc(
         "ToolbarOverflow",
         lit(&["Clip", "Wrap", "Menu"]),
-        "How a `\"toolbar\"` extra's buttons behave once they don't fit: \"Clip\" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `\"overflow\"` key; \"Wrap\" flows overflow onto additional lines/columns; \"Menu\" drops lowest-\"overflow_priorities\"-first items behind a trailing \u{00bb} affordance.",
+        "How a `\"toolbar\"`'s buttons behave once they don't fit: \"Clip\" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `\"overflow\"` key; \"Wrap\" flows overflow onto additional lines/columns; \"Menu\" drops lowest-\"overflow_priorities\"-first items behind a trailing \u{00bb} affordance.",
+    ));
+    let toolbar_orientation = b.define(alias_doc(
+        "ToolbarOrientation",
+        lit(&["Horizontal", "Vertical"]),
+        "Main-axis direction a `\"toolbar\"`'s buttons flow along: \"Horizontal\" (default) left-to-right, \"Vertical\" top-to-bottom, one item per line.",
+    ));
+    let toolbar_valign = b.define(alias_doc(
+        "ToolbarVAlign",
+        lit(&["Top", "Center", "Bottom"]),
+        "Where a `\"toolbar\"`'s button/label text sits within a slot taller than one text row: \"Top\" (default), \"Center\" or \"Bottom\". No effect on a single-row bar.",
     ));
     let toolbar_overflow_priority_entry = b.define(obj(
         "ToolbarOverflowPriorityEntry",
@@ -1052,8 +1062,11 @@ pub fn schema() -> Vec<DefJson> {
             field("buttons", list(toolbar_button_descriptor)),
             field_opt("bg", nullable(color.clone())),
             field_opt("focused_index", nullable(int_())),
+            field_opt("orientation", toolbar_orientation),
             field_opt("overflow", toolbar_overflow),
+            field_opt("pin_trailing_overflow_to_origin", bool_()),
             field_opt("overflow_priorities", list(toolbar_overflow_priority_entry)),
+            field_opt("valign", toolbar_valign),
         ],
     ));
     // ── Layout tree node wire shapes ─────────────────────────────────────
@@ -6260,7 +6273,17 @@ mod coverage {
             "Toolbar",
             "ToolbarDescriptor",
             Toolbar::new(WidgetId::new("test")),
-            ["id", "buttons", "bg", "focused_index"]
+            [
+                "id",
+                "buttons",
+                "bg",
+                "focused_index",
+                "orientation",
+                "overflow",
+                "pin_trailing_overflow_to_origin",
+                "overflow_priorities",
+                "valign",
+            ]
         );
 
         value_shape_test!(

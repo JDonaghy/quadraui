@@ -339,6 +339,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         }
     }
 
@@ -411,6 +412,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
 
         // Row (from the top) of the first pixel that differs from the
@@ -491,6 +493,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         }
     }
 
@@ -707,6 +710,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
 
         const W: i32 = 300;
@@ -805,6 +809,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = gtk_toolbar_layout(&bar, None, 8.0, 0.0, 0.0, 300.0, 24.0);
         let field_vis = layout

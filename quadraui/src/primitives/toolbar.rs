@@ -108,11 +108,10 @@ fn default_true() -> bool {
 
 /// Declarative description of a horizontal toolbar.
 ///
-/// **Adding a field here used to be a breaking change** — see issue
-/// #1251 (the v0.1.0 breaking batch, phase 2), which made this struct
-/// `#[non_exhaustive]` for real once both known consumers had migrated
-/// off exhaustive literals onto [`Toolbar::new`] plus the `with_*`
-/// builder per field below (and a `Default` impl).
+/// `#[non_exhaustive]`, so adding a `#[serde(default)]` field here is
+/// additive: consumers build a `Toolbar` through [`Toolbar::new`] plus
+/// the `with_*` builder per field below (or `Default`), never an
+/// exhaustive struct literal.
 ///
 /// # Examples
 ///
@@ -162,6 +161,37 @@ pub struct Toolbar {
     /// or disabled item.
     #[serde(default)]
     pub focused_index: Option<usize>,
+    /// Main-axis direction the buttons flow along. See
+    /// [`ToolbarOrientation`].
+    ///
+    /// Read by [`Self::layout_options`], so the widget-contract path
+    /// ([`crate::primitive::Primitive::layout`]) resolves a vertical bar
+    /// without a per-call argument.
+    #[serde(default)]
+    pub orientation: ToolbarOrientation,
+    /// How items that don't fit the bar are handled. See
+    /// [`ToolbarOverflow`]; [`ToolbarOverflow::Clip`] is the default.
+    ///
+    /// Read by [`Self::layout_options`].
+    #[serde(default)]
+    pub overflow: ToolbarOverflow,
+    /// Which edge an over-long trailing group (the buttons after a
+    /// [`ToolbarButton::Spacer`]) packs from — see
+    /// [`ToolbarLayoutOptions::pin_trailing_overflow_to_origin`].
+    ///
+    /// Read by [`Self::layout_options`].
+    #[serde(default)]
+    pub pin_trailing_overflow_to_origin: bool,
+    /// Per-item drop order for [`ToolbarOverflow::Menu`], keyed by the
+    /// owning `Action`/`Group`'s id. Empty — every item at priority `0` —
+    /// by default, and read only when [`Self::overflow`] is
+    /// [`ToolbarOverflow::Menu`].
+    #[serde(default)]
+    pub overflow_priorities: ToolbarOverflowPriorities,
+    /// Where button/label text sits within a slot taller than one text
+    /// row. See [`ToolbarVAlign`]; only visible on a multi-row bar.
+    #[serde(default)]
+    pub valign: ToolbarVAlign,
 }
 
 /// Vertical alignment of button/label text within a toolbar slot taller
@@ -169,7 +199,7 @@ pub struct Toolbar {
 ///
 /// On a 1-row slot every variant resolves to the same painted position,
 /// so this is purely a multi-row concern — see each rasteriser's
-/// `text_row`/`ty` resolution (`tui::toolbar::tui_text_row`,
+/// `text_row`/`ty` resolution (`cell_layout::tui_text_row`,
 /// [`native_surface_paint::paint`]) for the exact per-backend formula.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum ToolbarVAlign {
@@ -183,13 +213,16 @@ pub enum ToolbarVAlign {
     Bottom,
 }
 
-/// Per-call paint options for [`Toolbar`] rasterisers that don't have a
-/// home directly on the [`Toolbar`] snapshot itself.
+/// Per-call paint options the legacy `draw_toolbar*` entry points take,
+/// for a host that paints a bar through [`crate::Backend`] rather than
+/// through the widget contract.
 ///
-/// `Toolbar` is an all-`pub`-field paint-time snapshot. To allow adding
-/// fields in the future without breaking exhaustive struct literals in
-/// downstream code, a separate options struct provides independent growth.
-/// This is the same pattern used by [`crate::primitives::editor::EditorPaintOptions`].
+/// The widget contract reads the same choice off the descriptor instead
+/// ([`Toolbar::valign`]), so [`crate::primitive::Primitive::paint`] and
+/// [`crate::primitive::Primitive::paint_cells`] need no options argument
+/// of their own. This struct stays as the per-call channel for the
+/// `Backend` methods whose signatures predate that field — same pattern
+/// as [`crate::primitives::editor::EditorPaintOptions`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct ToolbarPaintOptions {
     /// Vertical alignment of button/label text within the toolbar's
@@ -901,16 +934,16 @@ impl ToolbarIcons {
         if self.is_empty() {
             return bar.clone();
         }
-        Toolbar {
-            id: bar.id,
-            buttons: bar
-                .buttons
-                .iter()
-                .map(|btn| self.resolve_button(btn, nerd_fonts_enabled).into_owned())
-                .collect(),
-            bg: bar.bg,
-            focused_index: bar.focused_index,
-        }
+        // Every field other than `buttons` carries over verbatim, so
+        // clone and swap that one rather than re-listing a struct this
+        // widget grows knobs on.
+        let mut resolved = bar.clone();
+        resolved.buttons = bar
+            .buttons
+            .iter()
+            .map(|btn| self.resolve_button(btn, nerd_fonts_enabled).into_owned())
+            .collect();
+        resolved
     }
 }
 
@@ -929,9 +962,48 @@ impl ToolbarIcons {
 /// the `»` affordance drops first) — the same left-to-right reading order
 /// [`ToolbarLayoutOptions::pin_trailing_overflow_to_origin`]'s `false` arm
 /// already uses for `Spacer` collisions.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+///
+/// Serialises as a flat list of `{"id": …, "priority": …}` objects — the
+/// shape [`Toolbar::overflow_priorities`] carries on the bindings wire,
+/// a list rather than an `{id: priority}` map because the wire schema
+/// DSL has objects with a fixed field set and lists of them, no record
+/// type.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ToolbarOverflowPriorities {
     entries: Vec<(WidgetId, i32)>,
+}
+
+/// One [`ToolbarOverflowPriorities`] registration, as it appears on the
+/// wire. Private: [`ToolbarOverflowPriorities`] keeps its own
+/// `(WidgetId, i32)` pair storage, and this is only the serde shape it
+/// maps each pair through.
+#[derive(Serialize, Deserialize)]
+struct ToolbarOverflowPriorityEntry {
+    id: WidgetId,
+    priority: i32,
+}
+
+impl Serialize for ToolbarOverflowPriorities {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let mut seq = serializer.serialize_seq(Some(self.entries.len()))?;
+        for (id, priority) in &self.entries {
+            seq.serialize_element(&ToolbarOverflowPriorityEntry {
+                id: *id,
+                priority: *priority,
+            })?;
+        }
+        seq.end()
+    }
+}
+
+impl<'de> Deserialize<'de> for ToolbarOverflowPriorities {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let wire = Vec::<ToolbarOverflowPriorityEntry>::deserialize(deserializer)?;
+        Ok(Self {
+            entries: wire.into_iter().map(|e| (e.id, e.priority)).collect(),
+        })
+    }
 }
 
 impl ToolbarOverflowPriorities {
@@ -1569,6 +1641,11 @@ impl Toolbar {
             buttons: Vec::new(),
             bg: None,
             focused_index: None,
+            orientation: ToolbarOrientation::default(),
+            overflow: ToolbarOverflow::default(),
+            pin_trailing_overflow_to_origin: false,
+            overflow_priorities: ToolbarOverflowPriorities::new(),
+            valign: ToolbarVAlign::default(),
         }
     }
 
@@ -1594,6 +1671,70 @@ impl Toolbar {
     pub fn with_focused_index(mut self, focused_index: Option<usize>) -> Self {
         self.focused_index = focused_index;
         self
+    }
+
+    /// Set [`Self::orientation`].
+    #[must_use]
+    pub fn with_orientation(mut self, orientation: ToolbarOrientation) -> Self {
+        self.orientation = orientation;
+        self
+    }
+
+    /// Set [`Self::overflow`].
+    #[must_use]
+    pub fn with_overflow(mut self, overflow: ToolbarOverflow) -> Self {
+        self.overflow = overflow;
+        self
+    }
+
+    /// Set [`Self::pin_trailing_overflow_to_origin`].
+    #[must_use]
+    pub fn with_pin_trailing_overflow_to_origin(mut self, pin: bool) -> Self {
+        self.pin_trailing_overflow_to_origin = pin;
+        self
+    }
+
+    /// Set [`Self::overflow_priorities`].
+    #[must_use]
+    pub fn with_overflow_priorities(mut self, priorities: ToolbarOverflowPriorities) -> Self {
+        self.overflow_priorities = priorities;
+        self
+    }
+
+    /// Set [`Self::valign`].
+    #[must_use]
+    pub fn with_valign(mut self, valign: ToolbarVAlign) -> Self {
+        self.valign = valign;
+        self
+    }
+
+    /// Set [`Self::orientation`], [`Self::overflow`] and
+    /// [`Self::pin_trailing_overflow_to_origin`] from one
+    /// [`ToolbarLayoutOptions`] — the inverse of [`Self::layout_options`],
+    /// for a host that already holds the options struct the per-call
+    /// `layout_with_options`/`layout_with_overflow` entry points take.
+    #[must_use]
+    pub fn with_layout_options(mut self, options: ToolbarLayoutOptions) -> Self {
+        self.orientation = options.orientation;
+        self.overflow = options.overflow;
+        self.pin_trailing_overflow_to_origin = options.pin_trailing_overflow_to_origin;
+        self
+    }
+
+    /// This bar's own [`ToolbarLayoutOptions`], assembled from
+    /// [`Self::orientation`], [`Self::overflow`] and
+    /// [`Self::pin_trailing_overflow_to_origin`].
+    ///
+    /// [`Self::layout_with_overflow`] — and
+    /// [`crate::primitive::Primitive::layout`], which calls it — take
+    /// their options from here, so a descriptor is self-describing: a
+    /// bar reached through the widget contract wraps, goes vertical or
+    /// grows a `»` affordance purely from what the descriptor says.
+    pub fn layout_options(&self) -> ToolbarLayoutOptions {
+        ToolbarLayoutOptions::new()
+            .with_orientation(self.orientation)
+            .with_overflow(self.overflow)
+            .with_pin_trailing_overflow_to_origin(self.pin_trailing_overflow_to_origin)
     }
 
     /// The semantic event a click on the `Action` button `id` stands for
@@ -2047,12 +2188,11 @@ impl Toolbar {
             }
             let line_buttons: Vec<ToolbarButton> =
                 indices.iter().map(|&i| self.buttons[i].clone()).collect();
-            let sub = Toolbar {
-                id: self.id,
-                buttons: line_buttons,
-                bg: None,
-                focused_index: None,
-            };
+            // One line's worth of buttons, laid out as a bar of its own
+            // through `line_options` — the sub-bar carries no layout
+            // knobs of its own, since this method already resolved them
+            // into `line_options`.
+            let sub = Toolbar::new(self.id).with_buttons(line_buttons);
             let line_cross = cross_origin + line_idx as f32 * cross_len;
             let (sub_x, sub_y, sub_w, sub_h) = match options.orientation {
                 ToolbarOrientation::Horizontal => (main_origin, line_cross, main_len, cross_len),
@@ -2172,12 +2312,10 @@ impl Toolbar {
         let mut index_map: Vec<usize> = kept_indices;
         index_map.push(TOOLBAR_OVERFLOW_ITEM_IDX);
 
-        let sub = Toolbar {
-            id: self.id,
-            buttons: sub_buttons,
-            bg: None,
-            focused_index: None,
-        };
+        // The kept items plus the `»` affordance, laid out as a bar of
+        // its own through `sub_options` — the sub-bar carries no layout
+        // knobs, since this method already resolved them there.
+        let sub = Toolbar::new(self.id).with_buttons(sub_buttons);
         let sub_options = ToolbarLayoutOptions::new()
             .with_orientation(options.orientation)
             .with_pin_trailing_overflow_to_origin(options.pin_trailing_overflow_to_origin);
@@ -3058,6 +3196,7 @@ pub(crate) mod native_surface_paint {
                 buttons: vec![mk_spec_action("tb:delete", "Delete", spec)],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             };
             let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
                 ToolbarItemMeasure::new(match btn {
@@ -3108,6 +3247,7 @@ pub(crate) mod native_surface_paint {
                 buttons: vec![mk_spec_action("tb:refresh", "Refresh", spec)],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             };
             let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
                 ToolbarItemMeasure::new(match btn {
@@ -3149,6 +3289,7 @@ pub(crate) mod native_surface_paint {
                 buttons: vec![mk_spec_action("tb:refresh", "Refresh", spec)],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             };
             let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
                 ToolbarItemMeasure::new(match btn {
@@ -3196,6 +3337,7 @@ pub(crate) mod native_surface_paint {
                 buttons: vec![action],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             };
             let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
                 ToolbarItemMeasure::new(match btn {
@@ -3251,6 +3393,7 @@ pub(crate) mod native_surface_paint {
                 buttons: vec![action],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             };
             let layout = bar.layout(0.0, 0.0, 80.0, 1.0, |btn| {
                 ToolbarItemMeasure::new(match btn {
@@ -3319,6 +3462,7 @@ pub(crate) mod native_surface_paint {
                 }],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             };
             let measure = |btn: &ToolbarButton| {
                 ToolbarItemMeasure::new(match btn {
@@ -3529,6 +3673,7 @@ mod tests {
             buttons: vec![],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert!(layout.visible_items.is_empty());
@@ -3542,6 +3687,7 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert_eq!(layout.visible_items.len(), 2);
@@ -3559,6 +3705,7 @@ mod tests {
             buttons: vec![mk_action("refine", "Refine", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         let r = layout.visible_items[0].bounds;
@@ -3576,6 +3723,7 @@ mod tests {
             buttons: vec![mk_action("refine", "Refine", false)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert!(!layout.visible_items[0].clickable);
@@ -3596,6 +3744,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         assert!(!layout.visible_items[0].clickable);
@@ -3625,6 +3774,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = bar.layout(0.0, 0.0, 80.0, 1.0, cell_measure());
         let group = &layout.visible_items[0];
@@ -3667,6 +3817,7 @@ mod tests {
             buttons: vec![mk_wide("a"), mk_wide("b")],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         // Use a fixed 6-cell measurer so the second button is clipped.
         let measure = |_: &ToolbarButton| ToolbarItemMeasure::new(6.0);
@@ -3687,6 +3838,7 @@ mod tests {
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = bar.layout(0.0, 0.0, 0.0, 1.0, cell_measure());
         assert_eq!(layout.visible_items.len(), 1);
@@ -3703,6 +3855,7 @@ mod tests {
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = bar.layout(10.0, 5.0, 80.0, 1.0, cell_measure());
         assert_eq!(layout.bar_bounds.x, 10.0);
@@ -3947,6 +4100,7 @@ mod tests {
             ],
             bg: Some(Color::rgb(40, 40, 40)),
             focused_index: None,
+            ..Default::default()
         };
         let json = serde_json::to_string(&bar).unwrap();
         let back: Toolbar = serde_json::from_str(&json).unwrap();
@@ -4097,6 +4251,7 @@ mod tests {
             buttons,
             bg: None,
             focused_index: None,
+            ..Default::default()
         }
     }
 
@@ -4279,6 +4434,7 @@ mod tests {
                 buttons: vec![mk_action("sidebar:refresh", "Refresh", true)],
                 bg: Some(Color::rgb(10, 20, 30)),
                 focused_index: Some(0),
+                ..Default::default()
             }
         );
     }

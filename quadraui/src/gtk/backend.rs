@@ -7007,6 +7007,7 @@ mod tests {
                     ],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 hint: StyledText::default(),
                 disabled: false,
@@ -9558,6 +9559,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         }
     }
 

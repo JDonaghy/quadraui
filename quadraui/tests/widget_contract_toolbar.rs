@@ -17,7 +17,8 @@
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
     AppLogic, Backend, FrameTree, NamedKey, Reaction, Rect, ScreenLayout, Surface, Toolbar,
-    ToolbarButton, ToolbarEvent, UiEvent, WidgetId,
+    ToolbarButton, ToolbarEvent, ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities,
+    ToolbarVAlign, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 48;
@@ -42,12 +43,17 @@ fn action(id: &str, label: &str, enabled: bool) -> ToolbarButton {
 /// of every event the host was told to apply.
 struct ToolbarApp {
     bar: Toolbar,
+    /// The strip the bar is pushed and routed at. A field rather than a
+    /// constant so a wrapping / vertical / multi-row-valign case can ask
+    /// for the taller strip its own shape needs.
+    rect: Rect,
     applied: Vec<String>,
 }
 
 impl ToolbarApp {
     fn new() -> Self {
         Self {
+            rect: BAR,
             bar: Toolbar::new(WidgetId::new("tb:main")).with_buttons(vec![
                 action("tb:new", "New", true),
                 ToolbarButton::Separator,
@@ -70,7 +76,7 @@ impl AppLogic for ToolbarApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut frame = ScreenLayout::new();
         frame.push(Surface::Widget {
-            rect: BAR,
+            rect: self.rect,
             widget: Box::new(self.bar.clone()),
         });
         frame.draw(backend);
@@ -78,7 +84,7 @@ impl AppLogic for ToolbarApp {
 
     fn frame_tree(&self, _area: ()) -> FrameTree {
         let mut tree = FrameTree::new();
-        tree.push(self.bar.id, BAR, Box::new(self.bar.clone()));
+        tree.push(self.bar.id, self.rect, Box::new(self.bar.clone()));
         tree
     }
 
@@ -235,22 +241,24 @@ fn hovering_a_button_tints_it_without_routing_an_event() {
     assert!(driver.screen_contains("[ New ]"), "{}", driver.screen());
 }
 
-/// A bar wider than its strip clips against the trailing edge, and the
-/// clipped button is not clickable. `Toolbar`'s `ToolbarOverflow::Menu`
-/// ladder (the `»` affordance, whose click answers
-/// `ToolbarEvent::OverflowRequested` — covered in
-/// `primitives::toolbar::contract`'s own tests) needs an overflow
-/// request on the descriptor itself, which a host still passes through
-/// `crate::tui::draw_toolbar_with_overflow`.
-#[test]
-fn a_bar_too_wide_for_the_strip_clips_its_trailing_button() {
-    let mut driver = driver();
-    driver.app_mut().bar = Toolbar::new(WidgetId::new("tb:main")).with_buttons(vec![
+/// Four buttons wider than the 40-cell strip, the shape every overflow
+/// case below starts from.
+fn overlong_bar() -> Toolbar {
+    Toolbar::new(WidgetId::new("tb:main")).with_buttons(vec![
         action("tb:alpha", "Alphabetical", true),
         action("tb:beta", "By modified", true),
         action("tb:gamma", "By size", true),
         action("tb:delta", "By kind", true),
-    ]);
+    ])
+}
+
+/// A bar wider than its strip clips against the trailing edge — the
+/// default `ToolbarOverflow::Clip` — and the clipped button is not
+/// clickable.
+#[test]
+fn a_bar_too_wide_for_the_strip_clips_its_trailing_button() {
+    let mut driver = driver();
+    driver.app_mut().bar = overlong_bar();
     driver.render();
 
     let visible = driver.find("Alphabetical");
@@ -261,4 +269,119 @@ fn a_bar_too_wide_for_the_strip_clips_its_trailing_button() {
         "the trailing button does not fit a 40-cell strip: {}",
         driver.screen()
     );
+}
+
+/// `Toolbar::with_overflow(Menu)` is read straight off the descriptor by
+/// the widget contract, so a bar pushed as `Surface::Widget` grows the
+/// trailing `»` affordance and a click on it routes
+/// `ToolbarEvent::OverflowRequested` — no per-call options argument and
+/// no second entry point anywhere in the host.
+#[test]
+fn a_menu_overflow_descriptor_paints_the_chevron_and_routes_its_click() {
+    let mut driver = driver();
+    driver.app_mut().bar = overlong_bar().with_overflow(ToolbarOverflow::Menu);
+    driver.render();
+
+    let (x, y) = driver
+        .find("»")
+        .unwrap_or_else(|| panic!("the overflow affordance paints: {}", driver.screen()));
+    driver.click(x, y);
+    assert_eq!(
+        driver.app().applied.len(),
+        1,
+        "{:?} / {}",
+        driver.app().applied,
+        driver.screen()
+    );
+    assert!(
+        driver.app().applied[0].starts_with("overflow("),
+        "{:?} / {}",
+        driver.app().applied,
+        driver.screen()
+    );
+}
+
+/// `Toolbar::with_overflow_priorities` decides *which* item the `Menu`
+/// ladder drops: the highest priority survives, so pinning the trailing
+/// button keeps it on the bar and drops a leading one instead.
+#[test]
+fn overflow_priorities_on_the_descriptor_pick_which_button_survives() {
+    let mut driver = driver();
+    driver.app_mut().bar = overlong_bar()
+        .with_overflow(ToolbarOverflow::Menu)
+        .with_overflow_priorities(
+            ToolbarOverflowPriorities::new().with(WidgetId::new("tb:delta"), 10),
+        );
+    driver.render();
+
+    assert!(
+        driver.find("By kind").is_some(),
+        "the pinned trailing button survives: {}",
+        driver.screen()
+    );
+    assert!(driver.find("»").is_some(), "{}", driver.screen());
+}
+
+/// `Toolbar::with_overflow(Wrap)` flows the buttons that don't fit onto
+/// a second row of a two-row strip, and the wrapped button is clickable
+/// there — the routed hit test reads the same wrapped layout the paint
+/// did.
+#[test]
+fn a_wrap_overflow_descriptor_paints_and_routes_a_second_row() {
+    let mut driver = driver();
+    driver.app_mut().rect = Rect::new(0.0, 0.0, 40.0, 2.0);
+    driver.app_mut().bar = overlong_bar().with_overflow(ToolbarOverflow::Wrap);
+    driver.render();
+
+    let (x, y) = driver
+        .find("By kind")
+        .unwrap_or_else(|| panic!("the wrapped button paints: {}", driver.screen()));
+    assert_eq!(
+        y.floor(),
+        1.0,
+        "it wrapped onto the second row: {}",
+        driver.screen()
+    );
+
+    driver.click(x, y);
+    assert_eq!(
+        driver.app().applied,
+        vec!["clicked(tb:delta, true)".to_string()],
+        "{}",
+        driver.screen()
+    );
+}
+
+/// `Toolbar::with_orientation(Vertical)` stacks one button per row,
+/// again purely from the descriptor.
+#[test]
+fn a_vertical_descriptor_stacks_one_button_per_row() {
+    let mut driver = driver();
+    driver.app_mut().rect = Rect::new(0.0, 0.0, 20.0, 4.0);
+    driver.app_mut().bar = overlong_bar().with_orientation(ToolbarOrientation::Vertical);
+    driver.render();
+
+    let (_, first) = driver
+        .find("Alphabetical")
+        .unwrap_or_else(|| panic!("the first item paints: {}", driver.screen()));
+    let (_, second) = driver
+        .find("By modified")
+        .unwrap_or_else(|| panic!("the second item paints: {}", driver.screen()));
+    assert_eq!(first.floor(), 0.0, "{}", driver.screen());
+    assert_eq!(second.floor(), 1.0, "{}", driver.screen());
+}
+
+/// `Toolbar::with_valign(Bottom)` moves the button text to the bottom
+/// row of a strip taller than one text row.
+#[test]
+fn a_bottom_valign_descriptor_paints_text_on_the_last_row() {
+    let mut driver = driver();
+    driver.app_mut().rect = Rect::new(0.0, 0.0, 40.0, 3.0);
+    driver.app_mut().bar = driver.app().bar.clone().with_valign(ToolbarVAlign::Bottom);
+    driver.render();
+
+    let (_, row) = driver
+        .find("New")
+        .unwrap_or_else(|| panic!("the first button paints: {}", driver.screen()));
+    assert_eq!(row.floor(), 2.0, "{}", driver.screen());
 }

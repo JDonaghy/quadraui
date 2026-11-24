@@ -441,8 +441,14 @@ class _ToolbarButtonMenuButtonWrapper(TypedDict):
 # One `Toolbar::buttons` entry: `"Separator"`/`"Spacer"` (bare strings), `{"Action": {...}}`, `{"Label": {...}}`, `{"Group": {...}}`, `{"Field": {...}}` (an embedded `TextFieldDescriptor`), or `{"MenuButton": {...}}` (a pull-down; `menu` is a list of `ContextMenuItem`).
 ToolbarButtonDescriptor = Union[Literal['Separator', 'Spacer'], _ToolbarButtonActionWrapper, _ToolbarButtonLabelWrapper, _ToolbarButtonGroupWrapper, _ToolbarButtonFieldWrapper, _ToolbarButtonMenuButtonWrapper]
 
-# How a `"toolbar"` extra's buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance.
+# How a `"toolbar"`'s buttons behave once they don't fit: "Clip" (default) drops overflow against the trailing edge, identical to a `ToolbarDescriptor` with no `"overflow"` key; "Wrap" flows overflow onto additional lines/columns; "Menu" drops lowest-"overflow_priorities"-first items behind a trailing » affordance.
 ToolbarOverflow = Literal['Clip', 'Wrap', 'Menu']
+
+# Main-axis direction a `"toolbar"`'s buttons flow along: "Horizontal" (default) left-to-right, "Vertical" top-to-bottom, one item per line.
+ToolbarOrientation = Literal['Horizontal', 'Vertical']
+
+# Where a `"toolbar"`'s button/label text sits within a slot taller than one text row: "Top" (default), "Center" or "Bottom". No effect on a single-row bar.
+ToolbarVAlign = Literal['Top', 'Center', 'Bottom']
 
 class ToolbarOverflowPriorityEntry(TypedDict):
     id: WidgetId
@@ -453,8 +459,11 @@ class ToolbarDescriptor(TypedDict):
     buttons: List[ToolbarButtonDescriptor]
     bg: NotRequired[Optional[Color]]
     focused_index: NotRequired[Optional[int]]
+    orientation: NotRequired[ToolbarOrientation]
     overflow: NotRequired[ToolbarOverflow]
+    pin_trailing_overflow_to_origin: NotRequired[bool]
     overflow_priorities: NotRequired[List[ToolbarOverflowPriorityEntry]]
+    valign: NotRequired[ToolbarVAlign]
 
 class PaddingAxis(TypedDict):
     x: NotRequired[float]

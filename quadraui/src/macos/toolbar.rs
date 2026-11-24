@@ -311,6 +311,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         }
     }
 
@@ -493,6 +494,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let (surface, layout) = paint_via_backend(&bar);
         let theme = Theme::default();
@@ -559,6 +561,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let theme = Theme::default();
 
@@ -600,6 +603,7 @@ mod tests {
             buttons: vec![mk_action("tb:refine", "Refine", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let theme = Theme::default();
         let interaction =
@@ -631,6 +635,7 @@ mod tests {
             buttons: vec![mk_action("tb:refine", "Refine", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let theme = Theme::default();
         let interaction =
@@ -679,6 +684,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let f = font();
         let row_h = 20.0_f64;
@@ -784,6 +790,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let f = font();
         let row_h = 20.0_f64;
@@ -877,6 +884,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let f = font();
         let h = 20.0_f64;

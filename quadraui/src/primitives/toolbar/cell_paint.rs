@@ -1076,6 +1076,7 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // First two cells should be `[` then ` `.
@@ -1097,6 +1098,7 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // Click inside the first button.
@@ -1185,6 +1187,7 @@ mod tests {
             )],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &theme, None, None);
 
@@ -1263,6 +1266,7 @@ mod tests {
             )],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout2 = draw_toolbar(&mut buf2, area, &bar_active, &theme, None, None);
         let columns2 = &layout2.visible_items[0].group_children[2];
@@ -1288,6 +1292,7 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", false)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         let b = layout.visible_items[0].bounds;
@@ -1303,6 +1308,7 @@ mod tests {
             buttons: vec![ToolbarButton::Separator],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // First cell is space, second is the pipe char.
@@ -1322,6 +1328,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), '2');
@@ -1339,6 +1346,7 @@ mod tests {
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), ' ');
@@ -1360,6 +1368,7 @@ mod tests {
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert!(layout.visible_items.is_empty());
@@ -1381,6 +1390,7 @@ mod tests {
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
 
@@ -1414,6 +1424,7 @@ mod tests {
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let options = ToolbarPaintOptions {
             valign: ToolbarVAlign::Center,
@@ -1438,6 +1449,7 @@ mod tests {
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(cell_char(&buf, 0, 0), '[');
@@ -1455,6 +1467,7 @@ mod tests {
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let options = ToolbarPaintOptions {
             valign: ToolbarVAlign::Bottom,
@@ -1483,6 +1496,7 @@ mod tests {
                 buttons: vec![mk_action("a", "Go", true)],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             };
             let _ = draw_toolbar_with_options(
                 &mut buf,
@@ -1524,6 +1538,7 @@ mod tests {
             buttons: vec![mk_action("a", "Go", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         let r = layout.visible_items[0].bounds;
@@ -1547,6 +1562,7 @@ mod tests {
             buttons: vec![ToolbarButton::Separator],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // The │ glyph should appear on every row at column 1.
@@ -1578,6 +1594,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         assert_eq!(layout.visible_items[0].bounds.width, 5.0);
@@ -1610,6 +1627,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
         // "[ " (2) + icon (2 cells) + " " (1) + "Go" (2) + " ]" (2) = 9
@@ -1648,6 +1666,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
 
         draw_toolbar(&mut buf, area, &bar, &theme, None, None);
@@ -1668,6 +1687,7 @@ mod tests {
             buttons: vec![mk_action("a", "Delete", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
 
         draw_toolbar(&mut buf, area, &bar, &theme, None, None);
@@ -1688,6 +1708,7 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
 
         let mut plain_buf = Buffer::empty(area);
@@ -1720,6 +1741,7 @@ mod tests {
             buttons: vec![mk_action("a", "Run", true), mk_action("b", "Stop", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
 
@@ -1759,6 +1781,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
 
@@ -1791,6 +1814,7 @@ mod tests {
             )],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
 
         // Full width (26 cells needed): both children keep their labels
@@ -1852,6 +1876,7 @@ mod tests {
             buttons: vec![mk_action("a", "X", true)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
 
@@ -1879,6 +1904,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
         let priorities = ToolbarOverflowPriorities::new();
@@ -1928,6 +1954,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap);
         let priorities = ToolbarOverflowPriorities::new();
@@ -1974,6 +2001,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let options = ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Menu);
         let priorities = ToolbarOverflowPriorities::new();

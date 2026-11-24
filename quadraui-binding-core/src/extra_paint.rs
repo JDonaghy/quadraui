@@ -1692,15 +1692,12 @@ pub struct ToolbarOverflowPriorityEntry {
 /// Wire-decoded shape of the `"toolbar"` extra when its dict carries an
 /// `"overflow"` and/or `"overflow_priorities"` key — reached via the same
 /// `"toolbar"` kind [`Toolbar`] itself decodes, see
-/// [`Self::deserialize`]. Neither knob has anywhere to live on
-/// [`quadraui::Toolbar`] directly: `overflow`
-/// ([`quadraui::ToolbarOverflow`]) is a per-call
-/// [`quadraui::ToolbarLayoutOptions`] argument to
-/// [`quadraui::Backend::draw_toolbar_with_overflow`], not a `Toolbar`
-/// field, and per-button drop priority
-/// ([`quadraui::ToolbarOverflowPriorities`]) is a side table keyed by
-/// [`WidgetId`], not a [`ToolbarButton`] field — so a dict/object wire
-/// payload has nowhere else to carry either one. Both are
+/// [`Self::deserialize`]. Both knobs are decoded here, rather than read
+/// off the [`quadraui::Toolbar`] fields of the same names, because
+/// [`Self::paint_chrome`] hands them to
+/// [`quadraui::Backend::draw_toolbar_with_overflow`] as the per-call
+/// [`quadraui::ToolbarLayoutOptions`]/[`quadraui::ToolbarOverflowPriorities`]
+/// arguments that method takes. Both are
 /// `#[serde(default)]` on the wire (`Self::deserialize`'s `Wire` shape):
 /// a payload with neither key decodes to `overflow:
 /// ToolbarOverflow::Clip` and empty `overflow_priorities`, which

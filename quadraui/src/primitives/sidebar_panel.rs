@@ -586,6 +586,7 @@ pub(crate) mod native_surface_paint {
                     buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 toolbar_height: None,
             }
@@ -703,6 +704,7 @@ pub(crate) mod native_surface_paint {
                     buttons: vec![mk_action("a", "Refine", false)],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 toolbar_height: None,
             };
@@ -733,6 +735,7 @@ pub(crate) mod native_surface_paint {
                     buttons: vec![mk_action("a", "Refine", true)],
                     bg: None,
                     focused_index: Some(0),
+                    ..Default::default()
                 }),
                 toolbar_height: None,
             };
@@ -760,6 +763,7 @@ pub(crate) mod native_surface_paint {
                     buttons: vec![mk_action("a", "Refine", true), ToolbarButton::Separator],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 toolbar_height: None,
             };
@@ -790,6 +794,7 @@ pub(crate) mod native_surface_paint {
                     }],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 toolbar_height: None,
             };
@@ -863,6 +868,7 @@ mod tests {
                 buttons: vec![mk_action("a", "Refine"), mk_action("b", "Drop")],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             }),
             toolbar_height: None,
         }
@@ -916,6 +922,7 @@ mod tests {
                 buttons: vec![], // empty!
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             }),
             toolbar_height: None,
         };

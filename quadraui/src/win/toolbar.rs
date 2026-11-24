@@ -280,6 +280,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         }
     }
 
@@ -364,6 +365,7 @@ mod tests {
             buttons: vec![mk_action("a", "Refine", false)],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = paint_via_backend_at(&bar, 0.0, 0.0);
         let r = layout.visible_items[0].bounds;
@@ -387,6 +389,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let layout = paint_via_backend_at(&bar, 0.0, 0.0);
         assert!(!layout.visible_items[0].clickable);
@@ -448,6 +451,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let rect = Rect::new(0.0, 0.0, W, H);
         let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
@@ -537,6 +541,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let theme = Theme::default();
         let rect = Rect::new(0.0, 0.0, W, H);
@@ -590,6 +595,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         }
     }
 

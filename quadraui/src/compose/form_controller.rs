@@ -3237,6 +3237,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         });
 
         // Clicking the first button should emit ToolbarButtonClicked with
@@ -3285,6 +3286,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         });
 
         // form_click_event matches by id, not by enabled state.
@@ -3412,6 +3414,7 @@ mod tests {
                 ],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             });
             form
         });
@@ -3500,6 +3503,7 @@ mod tests {
                 ],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             });
             form
         });
@@ -3554,6 +3558,7 @@ mod tests {
                 }],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             });
             form
         });
@@ -5926,6 +5931,7 @@ mod tests {
                     .collect(),
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             }),
             hint: StyledText::default(),
             disabled: false,

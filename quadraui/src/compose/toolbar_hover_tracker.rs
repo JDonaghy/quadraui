@@ -260,6 +260,7 @@ mod tests {
             buttons: vec![mk_action("a", "A"), mk_action("b", "B")],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         bar.layout(0.0, 0.0, 40.0, 1.0, |_| ToolbarItemMeasure::new(6.0))
     }

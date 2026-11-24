@@ -65,6 +65,7 @@ mod tests {
                 }],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             }),
             toolbar_height: None,
         }
@@ -238,6 +239,7 @@ mod tests {
                 }],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             }),
             toolbar_height: None,
         };

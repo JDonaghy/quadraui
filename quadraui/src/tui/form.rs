@@ -2955,6 +2955,7 @@ mod tests {
                     ],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 hint: label(""),
                 disabled: false,
@@ -3083,6 +3084,7 @@ mod tests {
             ],
             bg: None,
             focused_index: None,
+            ..Default::default()
         });
         let json = serde_json::to_string(&kind).unwrap();
         let back: FieldKind = serde_json::from_str(&json).unwrap();

@@ -9700,6 +9700,7 @@ mod tests {
                 buttons: Vec::new(),
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             }),
             toolbar_height: Some(24.0),
         };
@@ -10713,6 +10714,7 @@ mod tests {
                 }],
                 bg: None,
                 focused_index: None,
+                ..Default::default()
             }),
             toolbar_height: None,
         };
@@ -11100,6 +11102,7 @@ mod tests {
                     }],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 hint: crate::types::StyledText::default(),
                 disabled: false,
@@ -11458,6 +11461,7 @@ mod tests {
                     }],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 hint: crate::types::StyledText::default(),
                 disabled: false,
@@ -11658,6 +11662,7 @@ mod tests {
             }],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let interaction = crate::interaction::InteractionState::new();
         let diff = chrome_font_diff_pixel_count(
@@ -12753,6 +12758,7 @@ mod tests {
             buttons: Vec::new(),
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let interaction = crate::interaction::InteractionState::default();
         let _ = backend.draw_toolbar_interactive(rect, &toolbar, &interaction);
@@ -13366,6 +13372,7 @@ mod tests {
             buttons: vec![action("a"), action("b"), action("c")],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
         let options = crate::primitives::toolbar::ToolbarLayoutOptions::new()
             .with_overflow(crate::primitives::toolbar::ToolbarOverflow::Wrap);

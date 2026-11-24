@@ -1643,6 +1643,7 @@ mod tests {
             buttons: vec![ToolbarButton::Separator],
             bg: None,
             focused_index: None,
+            ..Default::default()
         };
 
         // Empty label → Toolbar's special case: 6px inset, no +label_w+12.
@@ -1870,6 +1871,7 @@ mod tests {
                     buttons: vec![],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
             ),
             (

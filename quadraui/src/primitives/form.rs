@@ -3612,6 +3612,7 @@ mod native_surface_paint {
                     buttons: vec![ToolbarButton::Separator],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 hint: StyledText::default(),
                 disabled: false,
@@ -3703,6 +3704,7 @@ mod native_surface_paint {
                     buttons: vec![ToolbarButton::Separator],
                     bg: None,
                     focused_index: None,
+                    ..Default::default()
                 }),
                 hint: StyledText::default(),
                 disabled: false,
