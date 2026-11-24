@@ -61,12 +61,12 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::accelerator::KeyBinding;
 use crate::backend::PointerShape;
 use crate::behaviour::scroll::ensure_visible;
-use crate::event::{Key, NamedKey, Point, Rect};
+use crate::behaviour::text_edit;
+use crate::event::{Point, Rect};
 use crate::style::Style;
-use crate::types::{Modifiers, WidgetId};
+use crate::types::WidgetId;
 use crate::undo::UndoStack;
 
 /// Multi-line text input. Text is stored as one entry per line — empty
@@ -215,127 +215,9 @@ impl Default for TextInput {
     }
 }
 
-/// An edit intent for [`TextEditor::apply`] — see the module doc.
-///
-/// Every variant that moves the cursor (`Move*`, `SetCursor`) carries an
-/// `extend` flag: `false` collapses any active selection and moves the
-/// cursor normally (a plain arrow-key press); `true` starts a selection
-/// at the cursor's pre-move position if none is active yet, then moves
-/// only the cursor (a shift-held arrow key, or a mouse drag).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum EditOp {
-    /// Insert one character at the cursor. `'\n'` splits the current
-    /// line. If a selection is active, it is deleted first (so this also
-    /// implements "type over the selection").
-    InsertChar(char),
-    /// Insert a (possibly multi-line) string at the cursor — e.g. a
-    /// clipboard paste. Same selection-replace behaviour as
-    /// [`Self::InsertChar`].
-    InsertText(String),
-    /// Backspace: delete the selection if one is active, else the one
-    /// character before the cursor (merging with the previous line at
-    /// column 0).
-    DeleteBackward,
-    /// Delete (forward-delete): delete the selection if one is active,
-    /// else the one character after the cursor (merging with the next
-    /// line at end-of-line).
-    DeleteForward,
-    /// Delete the active selection with no replacement. A no-op (returns
-    /// `false` from [`TextEditor::apply`]) when no selection is active —
-    /// callers doing "Cut" should read [`TextEditor::selected_text`]
-    /// first, then apply this.
-    DeleteSelection,
-    /// Move the cursor one character left (or to the end of the previous
-    /// line, if already at column 0).
-    MoveLeft { extend: bool },
-    /// Move the cursor one character right (or to the start of the next
-    /// line, if already at end-of-line).
-    MoveRight { extend: bool },
-    /// Move the cursor up one line, clamping the column to the target
-    /// line's length.
-    MoveUp { extend: bool },
-    /// Move the cursor down one line, clamping the column to the target
-    /// line's length.
-    MoveDown { extend: bool },
-    /// Move the cursor to column 0 of the current line.
-    MoveLineStart { extend: bool },
-    /// Move the cursor to the end of the current line.
-    MoveLineEnd { extend: bool },
-    /// Move the cursor to `(0, 0)`.
-    MoveDocStart { extend: bool },
-    /// Move the cursor to the end of the last line.
-    MoveDocEnd { extend: bool },
-    /// Jump the cursor to an arbitrary `(line, col)` — e.g. from
-    /// [`TextInputLayout::hit_test`] resolving a mouse click, or a drag
-    /// extending a selection to the drag position.
-    SetCursor {
-        line: usize,
-        col: usize,
-        extend: bool,
-    },
-    /// Select the entire buffer.
-    SelectAll,
-    /// Undo the last content-mutating op. No-op if there's nothing to
-    /// undo.
-    Undo,
-    /// Redo the last undone op. No-op if there's nothing to redo (or a
-    /// new edit was made since the last undo).
-    Redo,
-}
-
-impl EditOp {
-    /// Map a plain keypress to the [`EditOp`] it means, for widgets
-    /// wiring [`crate::event::UiEvent::KeyPressed`] straight into
-    /// [`TextEditor::apply`]. Returns `None` for keys `TextEditor` doesn't
-    /// interpret (function keys, Escape, Tab, ...) — callers handle
-    /// those themselves (Escape to blur, Tab to move focus, etc.).
-    ///
-    /// `Ctrl+Home`/`Ctrl+End` map to [`EditOp::MoveDocStart`]/
-    /// [`EditOp::MoveDocEnd`]; plain `Home`/`End` map to
-    /// [`EditOp::MoveLineStart`]/[`EditOp::MoveLineEnd`]. `modifiers.shift`
-    /// becomes every movement op's `extend` flag.
-    pub fn from_key(key: &Key, modifiers: Modifiers) -> Option<EditOp> {
-        let extend = modifiers.shift;
-        match key {
-            Key::Char(c) => Some(EditOp::InsertChar(*c)),
-            Key::Named(NamedKey::Enter) => Some(EditOp::InsertChar('\n')),
-            Key::Named(NamedKey::Backspace) => Some(EditOp::DeleteBackward),
-            Key::Named(NamedKey::Delete) => Some(EditOp::DeleteForward),
-            Key::Named(NamedKey::Left) => Some(EditOp::MoveLeft { extend }),
-            Key::Named(NamedKey::Right) => Some(EditOp::MoveRight { extend }),
-            Key::Named(NamedKey::Up) => Some(EditOp::MoveUp { extend }),
-            Key::Named(NamedKey::Down) => Some(EditOp::MoveDown { extend }),
-            Key::Named(NamedKey::Home) if modifiers.ctrl => Some(EditOp::MoveDocStart { extend }),
-            Key::Named(NamedKey::End) if modifiers.ctrl => Some(EditOp::MoveDocEnd { extend }),
-            Key::Named(NamedKey::Home) => Some(EditOp::MoveLineStart { extend }),
-            Key::Named(NamedKey::End) => Some(EditOp::MoveLineEnd { extend }),
-            _ => None,
-        }
-    }
-
-    /// Map a universal [`KeyBinding`] accelerator to the [`EditOp`] it
-    /// represents — wires [`KeyBinding::Undo`]/[`KeyBinding::Redo`]/
-    /// [`KeyBinding::SelectAll`] to real `TextInput` behaviour. Apps register
-    /// an [`crate::accelerator::Accelerator`] with one of these bindings and,
-    /// on the matching [`crate::event::UiEvent::Accelerator`], call
-    /// `text_input.apply(op)` with the result.
-    ///
-    /// Returns `None` for every other binding: `Copy`/`Cut`/`Paste` need
-    /// clipboard content that arrives via
-    /// [`crate::event::UiEvent::ClipboardPaste`]/`TextCopied`, not the
-    /// accelerator alone, so they're not represented as an `EditOp` — callers
-    /// wire `Cut`/`Copy` through [`TextEditor::selected_text`] plus
-    /// (for `Cut`) [`EditOp::DeleteSelection`], and `Paste` through
-    /// [`EditOp::InsertText`] fed by `ClipboardPaste`'s payload.
-    pub fn from_key_binding(binding: &KeyBinding) -> Option<EditOp> {
-        match binding {
-            KeyBinding::Undo => Some(EditOp::Undo),
-            KeyBinding::Redo => Some(EditOp::Redo),
-            KeyBinding::SelectAll => Some(EditOp::SelectAll),
-            _ => None,
-        }
-    }
-}
+/// Re-exported from [`crate::behaviour::text_edit`], where the editing
+/// core every editable text widget shares lives — see that module's doc.
+pub use crate::behaviour::text_edit::EditOp;
 
 /// Snapshot of the editable state — everything [`EditOp::Undo`]/
 /// [`EditOp::Redo`] restore. Deliberately excludes `id`/`placeholder`/
@@ -349,148 +231,6 @@ struct TextInputSnapshot {
     selection_anchor: Option<(usize, usize)>,
 }
 
-/// Byte offset of the `col`-th char boundary in `line` (`col` in char
-/// columns), clamped to `line.len()` if `col` exceeds the line's char
-/// count.
-fn byte_offset_for_col(line: &str, col: usize) -> usize {
-    line.char_indices()
-        .nth(col)
-        .map(|(b, _)| b)
-        .unwrap_or(line.len())
-}
-
-/// Buffer-level primitives shared by [`TextEditor`]'s [`EditOp`]
-/// handling.
-///
-/// These are deliberately **private** and selection-unaware: they rewrite
-/// `lines` and move the cursor, and leave everything to do with the
-/// selection anchor or the undo history to [`TextEditor`], which is where
-/// that state lives (see this module's *Why the editing state is a
-/// wrapper* section). Keeping them on `TextInput` means each one operates
-/// on exactly the fields it mutates; keeping them private means they add
-/// nothing to `TextInput`'s public surface.
-impl TextInput {
-    fn line_len(&self, line: usize) -> usize {
-        self.lines.get(line).map_or(0, |l| l.chars().count())
-    }
-
-    fn clamp_pos(&self, line: usize, col: usize) -> (usize, usize) {
-        let line = line.min(self.lines.len().saturating_sub(1));
-        let col = col.min(self.line_len(line));
-        (line, col)
-    }
-
-    fn text_in_range(&self, start: (usize, usize), end: (usize, usize)) -> String {
-        let (sl, sc) = start;
-        let (el, ec) = end;
-        if sl == el {
-            let line = self.lines.get(sl).map(String::as_str).unwrap_or("");
-            let sb = byte_offset_for_col(line, sc);
-            let eb = byte_offset_for_col(line, ec);
-            return line[sb.min(eb)..sb.max(eb)].to_string();
-        }
-        let mut out = String::new();
-        let first = self.lines.get(sl).map(String::as_str).unwrap_or("");
-        out.push_str(&first[byte_offset_for_col(first, sc)..]);
-        for line in &self.lines[sl + 1..el] {
-            out.push('\n');
-            out.push_str(line);
-        }
-        out.push('\n');
-        let last = self.lines.get(el).map(String::as_str).unwrap_or("");
-        out.push_str(&last[..byte_offset_for_col(last, ec)]);
-        out
-    }
-
-    /// Delete `start..end` and leave the cursor at `start`. Clearing the
-    /// selection anchor is the caller's job — this type has no anchor.
-    fn delete_range(&mut self, start: (usize, usize), end: (usize, usize)) {
-        let (sl, sc) = start;
-        let (el, ec) = end;
-        if sl == el {
-            if let Some(line) = self.lines.get_mut(sl) {
-                let sb = byte_offset_for_col(line, sc);
-                let eb = byte_offset_for_col(line, ec);
-                line.replace_range(sb..eb, "");
-            }
-        } else {
-            let head = {
-                let line = self.lines.get(sl).map(String::as_str).unwrap_or("");
-                line[..byte_offset_for_col(line, sc)].to_string()
-            };
-            let tail = {
-                let line = self.lines.get(el).map(String::as_str).unwrap_or("");
-                line[byte_offset_for_col(line, ec)..].to_string()
-            };
-            self.lines.splice(sl..=el, [format!("{head}{tail}")]);
-        }
-        self.cursor_line = sl;
-        self.cursor_col = sc;
-    }
-
-    fn insert_char_raw(&mut self, ch: char) {
-        if self.lines.is_empty() {
-            self.lines.push(String::new());
-        }
-        if ch == '\n' {
-            let line = self.lines[self.cursor_line].as_str();
-            let byte = byte_offset_for_col(line, self.cursor_col);
-            let rest = self.lines[self.cursor_line][byte..].to_string();
-            self.lines[self.cursor_line].truncate(byte);
-            self.lines.insert(self.cursor_line + 1, rest);
-            self.cursor_line += 1;
-            self.cursor_col = 0;
-        } else {
-            let line = &mut self.lines[self.cursor_line];
-            let byte = byte_offset_for_col(line, self.cursor_col);
-            line.insert(byte, ch);
-            self.cursor_col += 1;
-        }
-    }
-
-    fn insert_text_raw(&mut self, text: &str) {
-        for ch in text.chars() {
-            self.insert_char_raw(ch);
-        }
-    }
-
-    fn delete_backward_raw(&mut self) -> bool {
-        if self.cursor_col > 0 {
-            let line = &mut self.lines[self.cursor_line];
-            let end = byte_offset_for_col(line, self.cursor_col);
-            let start = byte_offset_for_col(line, self.cursor_col - 1);
-            line.replace_range(start..end, "");
-            self.cursor_col -= 1;
-            true
-        } else if self.cursor_line > 0 {
-            let current = self.lines.remove(self.cursor_line);
-            self.cursor_line -= 1;
-            let prev_len = self.line_len(self.cursor_line);
-            self.lines[self.cursor_line].push_str(&current);
-            self.cursor_col = prev_len;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn delete_forward_raw(&mut self) -> bool {
-        let len = self.line_len(self.cursor_line);
-        if self.cursor_col < len {
-            let line = &mut self.lines[self.cursor_line];
-            let start = byte_offset_for_col(line, self.cursor_col);
-            let end = byte_offset_for_col(line, self.cursor_col + 1);
-            line.replace_range(start..end, "");
-            true
-        } else if self.cursor_line + 1 < self.lines.len() {
-            let next = self.lines.remove(self.cursor_line + 1);
-            self.lines[self.cursor_line].push_str(&next);
-            true
-        } else {
-            false
-        }
-    }
-}
 
 /// Bounded so a long-lived editor (e.g. a persistent chat input, or a
 /// large commit-message buffer) doesn't accumulate unbounded history —
@@ -566,16 +306,10 @@ impl TextEditor {
     /// positions, or `None` if no selection is active (the anchor is
     /// `None`, or equals the current cursor position).
     pub fn selection_range(&self) -> Option<((usize, usize), (usize, usize))> {
-        let anchor = self.selection_anchor?;
-        let cursor = (self.input.cursor_line, self.input.cursor_col);
-        if anchor == cursor {
-            return None;
-        }
-        Some(if anchor <= cursor {
-            (anchor, cursor)
-        } else {
-            (cursor, anchor)
-        })
+        text_edit::selection_range(
+            (self.input.cursor_line, self.input.cursor_col),
+            self.selection_anchor,
+        )
     }
 
     /// The text currently selected, or `None` if no selection is active.
@@ -583,7 +317,7 @@ impl TextEditor {
     /// [`EditOp::InsertText`] would re-insert the same text verbatim.
     pub fn selected_text(&self) -> Option<String> {
         let (start, end) = self.selection_range()?;
-        Some(self.input.text_in_range(start, end))
+        Some(text_edit::text_in_range(&self.input.lines, start, end))
     }
 
     fn snapshot(&self) -> TextInputSnapshot {
@@ -602,35 +336,18 @@ impl TextEditor {
         self.selection_anchor = snap.selection_anchor;
     }
 
-    /// Delete the active selection, if any. Returns whether anything was
-    /// deleted. Does **not** record undo itself — that's [`Self::apply`]'s
-    /// job, so a delete-then-insert op pair stays one undo step.
-    fn delete_selection(&mut self) -> bool {
-        match self.selection_range() {
-            Some((start, end)) => {
-                self.input.delete_range(start, end);
-                self.selection_anchor = None;
-                true
-            }
-            None => false,
+    /// A borrowed [`text_edit::EditView`] over this editor's buffer,
+    /// caret and selection anchor — the single mutator every [`EditOp`]
+    /// runs through, shared with [`crate::TextField`] and
+    /// [`crate::CommandLine`] (those two via
+    /// [`text_edit::apply_flat_edit_op`]).
+    fn view(&mut self) -> text_edit::EditView<'_> {
+        text_edit::EditView {
+            lines: &mut self.input.lines,
+            cursor_line: &mut self.input.cursor_line,
+            cursor_col: &mut self.input.cursor_col,
+            anchor: &mut self.selection_anchor,
         }
-    }
-
-    /// Move the cursor to `pos`, updating (or clearing) the selection
-    /// anchor per `extend`. Returns whether anything actually changed.
-    fn move_cursor_to(&mut self, pos: (usize, usize), extend: bool) -> bool {
-        let before = (self.input.cursor_line, self.input.cursor_col);
-        let anchor_before = self.selection_anchor;
-        if extend {
-            if self.selection_anchor.is_none() {
-                self.selection_anchor = Some(before);
-            }
-        } else {
-            self.selection_anchor = None;
-        }
-        self.input.cursor_line = pos.0;
-        self.input.cursor_col = pos.1;
-        before != pos || self.selection_anchor != anchor_before
     }
 
     /// Apply one [`EditOp`], mutating the wrapped [`TextInput`] in place.
@@ -638,11 +355,11 @@ impl TextEditor {
     /// whether a redraw is needed).
     ///
     /// `Undo`/`Redo` are served from this editor's history. Every other
-    /// op mutates the buffer/cursor/selection, with a pre-mutation
-    /// snapshot recorded first for content-mutating ops (insert/delete)
-    /// so undo can restore it. Pure cursor/selection movement is not
-    /// recorded, so moving the cursor between two edits doesn't split
-    /// them into separate undo steps.
+    /// op goes to [`text_edit::EditView::apply`], with a pre-mutation
+    /// snapshot recorded first for the content-mutating ones
+    /// ([`text_edit::mutates_content`]) so undo can restore them. Pure
+    /// cursor/selection movement is not recorded, so moving the cursor
+    /// between two edits doesn't split them into separate undo steps.
     pub fn apply(&mut self, op: EditOp) -> bool {
         match op {
             EditOp::Undo => {
@@ -666,145 +383,17 @@ impl TextEditor {
                 }
             }
             other => {
-                let content_mutating = matches!(
-                    other,
-                    EditOp::InsertChar(_)
-                        | EditOp::InsertText(_)
-                        | EditOp::DeleteBackward
-                        | EditOp::DeleteForward
-                        | EditOp::DeleteSelection
-                );
-                if content_mutating {
+                if text_edit::mutates_content(&other) {
                     let snap = self.snapshot();
-                    let changed = self.apply_edit(other);
+                    let changed = self.view().apply(&other);
                     if changed {
                         self.undo_stack.record(snap);
                     }
                     changed
                 } else {
-                    self.apply_edit(other)
+                    self.view().apply(&other)
                 }
             }
-        }
-    }
-
-    /// Every [`EditOp`] except `Undo`/`Redo`, with no history
-    /// bookkeeping — [`Self::apply`] wraps this.
-    fn apply_edit(&mut self, op: EditOp) -> bool {
-        match op {
-            EditOp::InsertChar(ch) => {
-                self.delete_selection();
-                self.input.insert_char_raw(ch);
-                true
-            }
-            EditOp::InsertText(text) => {
-                self.delete_selection();
-                self.input.insert_text_raw(&text);
-                true
-            }
-            EditOp::DeleteBackward => {
-                if self.delete_selection() {
-                    true
-                } else {
-                    self.input.delete_backward_raw()
-                }
-            }
-            EditOp::DeleteForward => {
-                if self.delete_selection() {
-                    true
-                } else {
-                    self.input.delete_forward_raw()
-                }
-            }
-            EditOp::DeleteSelection => self.delete_selection(),
-            EditOp::MoveLeft { extend } => {
-                // An unmodified arrow press while a selection is active
-                // collapses to the selection's near edge instead of also
-                // taking a step from the cursor's (moving-end) position —
-                // otherwise a single Left press after a rightward
-                // shift-selection would visually jump two characters.
-                if !extend {
-                    if let Some((start, _end)) = self.selection_range() {
-                        return self.move_cursor_to(start, false);
-                    }
-                }
-                let (line, col) = (self.input.cursor_line, self.input.cursor_col);
-                let target = if col > 0 {
-                    (line, col - 1)
-                } else if line > 0 {
-                    (line - 1, self.input.line_len(line - 1))
-                } else {
-                    (line, col)
-                };
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::MoveRight { extend } => {
-                // See `MoveLeft`: collapses to the selection's far edge.
-                if !extend {
-                    if let Some((_start, end)) = self.selection_range() {
-                        return self.move_cursor_to(end, false);
-                    }
-                }
-                let (line, col) = (self.input.cursor_line, self.input.cursor_col);
-                let len = self.input.line_len(line);
-                let target = if col < len {
-                    (line, col + 1)
-                } else if line + 1 < self.input.lines.len() {
-                    (line + 1, 0)
-                } else {
-                    (line, col)
-                };
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::MoveUp { extend } => {
-                let target = if self.input.cursor_line > 0 {
-                    self.input
-                        .clamp_pos(self.input.cursor_line - 1, self.input.cursor_col)
-                } else {
-                    (self.input.cursor_line, self.input.cursor_col)
-                };
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::MoveDown { extend } => {
-                let target = if self.input.cursor_line + 1 < self.input.lines.len() {
-                    self.input
-                        .clamp_pos(self.input.cursor_line + 1, self.input.cursor_col)
-                } else {
-                    (self.input.cursor_line, self.input.cursor_col)
-                };
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::MoveLineStart { extend } => {
-                self.move_cursor_to((self.input.cursor_line, 0), extend)
-            }
-            EditOp::MoveLineEnd { extend } => {
-                let len = self.input.line_len(self.input.cursor_line);
-                self.move_cursor_to((self.input.cursor_line, len), extend)
-            }
-            EditOp::MoveDocStart { extend } => self.move_cursor_to((0, 0), extend),
-            EditOp::MoveDocEnd { extend } => {
-                let last = self.input.lines.len().saturating_sub(1);
-                let len = self.input.line_len(last);
-                self.move_cursor_to((last, len), extend)
-            }
-            EditOp::SetCursor { line, col, extend } => {
-                let target = self.input.clamp_pos(line, col);
-                self.move_cursor_to(target, extend)
-            }
-            EditOp::SelectAll => {
-                let last = self.input.lines.len().saturating_sub(1);
-                let end = (last, self.input.line_len(last));
-                if end == (0, 0) {
-                    false
-                } else {
-                    self.selection_anchor = Some((0, 0));
-                    self.input.cursor_line = end.0;
-                    self.input.cursor_col = end.1;
-                    true
-                }
-            }
-            // Handled by `apply`, which never forwards them here.
-            EditOp::Undo | EditOp::Redo => false,
         }
     }
 }
@@ -1087,87 +676,13 @@ impl TextInput {
 }
 
 // ── Flat-value `EditOp` bridge ──────────────────────────────────────────
-//
-// `TextEditor` works in `(line, char_column)` coordinates, but every flat
-// `value: String` + byte-offset `cursor`/`selection_anchor` field
-// (`FieldKind::TextInput`/`TextArea`/`PasswordInput`, and
-// `crate::primitives::text_field::TextField`) needs the same intent
-// applied against that shape instead. [`apply_flat_edit_op`] is the one
-// bridge every such caller shares, so none of them re-derive
-// `TextEditor`'s cursor math or keep a second editor.
 
-/// Byte offset `byte_offset` into `value` (which may contain `'\n'`,
-/// e.g. a `TextArea`) → `(line, char_column)`, the coordinate space
-/// [`TextEditor`]/[`EditOp`] operate in.
-fn byte_offset_to_line_col(value: &str, byte_offset: usize) -> (usize, usize) {
-    let byte_offset = byte_offset.min(value.len());
-    let prefix = &value[..byte_offset];
-    let line = prefix.matches('\n').count();
-    let line_start = prefix.rfind('\n').map(|i| i + 1).unwrap_or(0);
-    let col = prefix[line_start..].chars().count();
-    (line, col)
-}
-
-/// Inverse of [`byte_offset_to_line_col`]: `(line, char_column)` →
-/// byte offset into `value`.
-fn line_col_to_byte_offset(value: &str, line: usize, col: usize) -> usize {
-    let mut offset = 0usize;
-    for (i, l) in value.split('\n').enumerate() {
-        if i == line {
-            let take: usize = l.chars().take(col).map(char::len_utf8).sum();
-            return offset + take.min(l.len());
-        }
-        offset += l.len() + 1; // +1 for the '\n' separator consumed between lines
-    }
-    value.len()
-}
-
-/// Route one [`EditOp`] through [`TextEditor::apply`] against a flat
-/// `value` + byte-offset `cursor`/`selection_anchor` and hand back the
-/// resulting `(value, cursor, selection_anchor)`.
-///
-/// `TextEditor` itself works in `(line, char_column)` coordinates, so
-/// this wraps `value` in a throwaway single-use [`TextInput`] for the
-/// one `apply` call and converts back via
-/// [`byte_offset_to_line_col`]/[`line_col_to_byte_offset`] — the
-/// conversion this function owns so every caller keeps working in the
-/// byte-offset space its own field already documents.
-pub(crate) fn apply_flat_edit_op(
-    value: &str,
-    cursor: usize,
-    selection_anchor: Option<usize>,
-    op: EditOp,
-) -> (String, usize, Option<usize>) {
-    let lines: Vec<String> = if value.is_empty() {
-        vec![String::new()]
-    } else {
-        value.split('\n').map(str::to_string).collect()
-    };
-    let (line, col) = byte_offset_to_line_col(value, cursor);
-    let input = TextInput::new(WidgetId::new("flat-text-edit"))
-        .with_lines(lines)
-        .with_cursor_line(line)
-        .with_cursor_col(col);
-    let mut editor = TextEditor::new(input);
-    if let Some(anchor_byte) = selection_anchor {
-        // `selection_anchor` is app-owned public data and isn't
-        // guaranteed to land on a char boundary — snap and clamp it the
-        // same way `cursor` already is above, so a bogus byte offset
-        // (e.g. an app computing it in char counts) clamps the
-        // selection instead of panicking on a mid-char slice.
-        let anchor_byte =
-            crate::text_util::snap_to_char_boundary(value, anchor_byte.min(value.len()));
-        editor.set_selection_anchor(Some(byte_offset_to_line_col(value, anchor_byte)));
-    }
-    editor.apply(op);
-
-    let new_value = editor.lines.join("\n");
-    let new_cursor = line_col_to_byte_offset(&new_value, editor.cursor_line, editor.cursor_col);
-    let new_anchor = editor
-        .selection_anchor()
-        .map(|(l, c)| line_col_to_byte_offset(&new_value, l, c));
-    (new_value, new_cursor, new_anchor)
-}
+/// Re-exported from [`crate::behaviour::text_edit`]: the one bridge
+/// every flat `value: String` + byte-offset cursor/anchor field
+/// ([`crate::primitives::form::FieldKind::TextInput`],
+/// [`crate::TextField`], [`crate::CommandLine`]) applies an [`EditOp`]
+/// through, so none of them keeps a second editor.
+pub(crate) use crate::behaviour::text_edit::apply_flat_edit_op;
 
 // ── PaintSurface paint ─────────────────────────────────────────────────
 //
@@ -1556,6 +1071,9 @@ pub(crate) use native_surface_paint::paint;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::accelerator::KeyBinding;
+    use crate::event::{Key, NamedKey};
+    use crate::types::Modifiers;
 
     fn input(lines: Vec<&str>) -> TextInput {
         let mut ti = TextInput::new(WidgetId::new("ti"));

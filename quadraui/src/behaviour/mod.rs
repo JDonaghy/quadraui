@@ -16,6 +16,8 @@
 //!   navigation intent.
 //! - [`typeahead`] — buffered, debounced "type letters to jump to a
 //!   matching item" behaviour.
+//! - [`text_edit`] — the one text-editing core (caret, selection, word
+//!   motion, buffer mutation) every editable text widget shares.
 //!
 //! Every function here is pure arithmetic over caller-supplied state (an
 //! offset, a `len`, a `current` index, a row/path list passed by
@@ -25,4 +27,5 @@
 
 pub mod nav;
 pub mod scroll;
+pub mod text_edit;
 pub mod typeahead;
