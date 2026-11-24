@@ -211,21 +211,13 @@ mod wrap {
     /// context available" approximation
     /// [`crate::backend::Backend::char_width`] exists for (used by
     /// hit-testing layout helpers that run outside a paint pass). Pixel
-    /// backends (GTK/macOS/Windows) use this so their wrap column budget is
-    /// computed identically whether or not a live rendering surface is on
-    /// hand — see [`wrap_row_count`]'s doc on why paint and layout must
-    /// agree.
-    ///
-    /// `cfg`-gated one level narrower than the enclosing module: TUI cells
-    /// are already a 1:1 column unit (no conversion needed), so under a
-    /// bare `--features tui` build this function has no caller — and CI's
-    /// tui leg runs with `-D warnings`, so an ungated `pub(crate) fn` here
-    /// would fail that leg on unused-function, not just warn.
-    #[cfg(any(
-        feature = "gtk",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    ))]
+    /// backends (GTK/macOS/Windows) use this directly, and
+    /// [`super::pixel_layout`] uses it through the same path, so their
+    /// wrap column budget is computed identically whether or not a live
+    /// rendering surface is on hand, and a degenerate `char_width` (`<=
+    /// 0.0`) resolves to a `0` column budget everywhere rather than a
+    /// locally re-derived division — see [`wrap_row_count`]'s doc on why
+    /// paint and layout must agree.
     pub(crate) fn px_to_cols(width_px: f32, char_width: f32) -> usize {
         if char_width <= 0.0 || width_px <= 0.0 {
             0
@@ -290,11 +282,6 @@ mod wrap {
         }
 
         #[test]
-        #[cfg(any(
-            feature = "gtk",
-            feature = "win",
-            all(feature = "macos", target_os = "macos")
-        ))]
         fn px_to_cols_floors_and_handles_degenerate_input() {
             assert_eq!(px_to_cols(100.0, 8.0), 12);
             assert_eq!(px_to_cols(100.0, 0.0), 0);
@@ -304,9 +291,7 @@ mod wrap {
 }
 
 // Re-exported at the old `primitives::text_display::*` paths so every
-// backend call site keeps its existing import. Two `use`s, not one: the
-// pixel-only `px_to_cols` keeps the narrower gate it carries inside
-// `wrap` (see its doc).
+// backend call site keeps its existing import.
 #[cfg(any(
     feature = "tui",
     feature = "gtk",
@@ -314,15 +299,8 @@ mod wrap {
     all(feature = "macos", target_os = "macos")
 ))]
 pub(crate) use wrap::{
-    content_budget_cols, wrap_display_line, wrap_row_count, WRAP_CONTINUATION_MARKER,
+    content_budget_cols, px_to_cols, wrap_display_line, wrap_row_count, WRAP_CONTINUATION_MARKER,
 };
-
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-pub(crate) use wrap::px_to_cols;
 
 /// One line in a `TextDisplay`. Carries styled spans plus an optional
 /// decoration tag (Error/Warning/Muted/Header) for log-level styling and
@@ -1247,8 +1225,7 @@ pub fn pixel_layout(
     } else {
         area.width
     };
-    let advance = char_width.max(1.0);
-    let col_budget = (body_width / advance).floor().max(0.0) as usize;
+    let col_budget = pixel_col_budget(body_width, char_width);
     let measure = |i: usize| {
         TextDisplayLineMeasure::new(layout_row_count(&display.lines[i], col_budget) as f32 * row_h)
     };
@@ -1264,6 +1241,37 @@ pub fn pixel_layout(
         display.layout(area.width, body.height, measure)
     };
     TextDisplayPrimitiveLayout { area, body, layout }
+}
+
+/// The display-cell column budget [`pixel_layout`] wraps against for a
+/// `body_width_px`-wide body at `char_width`.
+///
+/// A rasteriser feature compiled in gets the real [`wrap::px_to_cols`]
+/// (same mirror as [`layout_row_count`]'s own fork), so every pixel
+/// backend's wrap decision and [`pixel_layout`]'s hit-testing agree on a
+/// degenerate `char_width` the same way they agree on a normal one. A
+/// build with no rasteriser at all has no [`wrap`] module to call into
+/// and also no caller that ever observes the result, so it keeps the
+/// plain floored division as a self-contained fallback.
+fn pixel_col_budget(body_width_px: f32, char_width: f32) -> usize {
+    #[cfg(any(
+        feature = "tui",
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    {
+        px_to_cols(body_width_px, char_width)
+    }
+    #[cfg(not(any(
+        feature = "tui",
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )))]
+    {
+        (body_width_px / char_width.max(1.0)).floor().max(0.0) as usize
+    }
 }
 
 /// The body strip inside `area`: the whole of it, or everything below

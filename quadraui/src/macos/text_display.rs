@@ -7,15 +7,7 @@
 //! (`MacBackend::draw_text_display`, via `Backend::text_display_layout`).
 
 use crate::event::Rect as QRect;
-use crate::primitives::text_display::{TextDisplay, TextDisplayLayout, TextDisplayLineMeasure};
-
-/// Scrollbar gutter width in points. Matches the GTK rasteriser's
-/// 12-pt gutter so the body width — and therefore the resolved
-/// layout — stays parity-equivalent across the two pixel backends.
-const SCROLLBAR_GUTTER_PT: f32 = 12.0;
-
-/// Minimum scrollbar thumb length in points.
-const SCROLLBAR_MIN_THUMB_PT: f32 = 8.0;
+use crate::primitives::text_display::{TextDisplay, TextDisplayLayout};
 
 /// Compute the layout the macOS rasteriser produces for
 /// `display` at `rect` with the supplied `line_height` (font's
@@ -40,35 +32,11 @@ pub fn mac_text_display_layout(
     line_height: f64,
     char_width: f64,
 ) -> TextDisplayLayout {
-    let body_h = if display.title.is_some() {
-        (rect.height as f64 - line_height).max(0.0)
-    } else {
-        rect.height as f64
-    };
-    if body_h <= 0.0 {
-        return display.layout(0.0, 0.0, |_| {
-            TextDisplayLineMeasure::new(line_height as f32)
-        });
-    }
-    let body_width_px = if display.show_scrollbar {
-        (rect.width - SCROLLBAR_GUTTER_PT).max(0.0)
-    } else {
-        rect.width
-    };
-    let col_budget = crate::primitives::text_display::px_to_cols(body_width_px, char_width as f32);
-    let measure = |i: usize| {
-        let rows = crate::primitives::text_display::wrap_row_count(&display.lines[i], col_budget);
-        TextDisplayLineMeasure::new(rows as f32 * line_height as f32)
-    };
-    if display.show_scrollbar {
-        display.layout_with_scrollbar(
-            rect.width,
-            body_h as f32,
-            SCROLLBAR_GUTTER_PT,
-            SCROLLBAR_MIN_THUMB_PT,
-            measure,
-        )
-    } else {
-        display.layout(rect.width, body_h as f32, measure)
-    }
+    crate::primitives::text_display::pixel_layout(
+        display,
+        rect,
+        line_height as f32,
+        char_width as f32,
+    )
+    .layout
 }
