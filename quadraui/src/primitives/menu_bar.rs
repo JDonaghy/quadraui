@@ -18,7 +18,14 @@
 //! using the returned `hit_regions` position. Keyboard Alt+key
 //! activates the item whose label starts with that character.
 
-use crate::event::Rect;
+use crate::a11y::A11yAction;
+use crate::behaviour::nav::{FlatNav, NavKey};
+use crate::compose::Handled;
+use crate::event::{Key, MouseButton, NamedKey, Rect};
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget, WidgetAction,
+};
+use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
 
@@ -280,6 +287,455 @@ impl MenuBar {
     }
 }
 
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+
+/// Total horizontal padding a pixel surface reserves around one
+/// top-level item's label — half either side, so an item's hit slot is
+/// its measured label plus this. One metric for GTK, macOS and Windows:
+/// all three reserved 8 units a side before the strip became one
+/// [`Primitive`].
+pub const ITEM_H_PADDING: f32 = 16.0;
+
+/// Columns a cell grid reserves around one item's label — one blank
+/// column either side of the glyphs.
+pub const CELL_ITEM_PADDING: f32 = 2.0;
+
+/// Strip `&` markers from a label for display: the text a rasteriser
+/// actually paints, and the string [`MenuBar::pixel_layout`] measures.
+pub fn display_text(label: &str) -> String {
+    label.chars().filter(|&c| c != '&').collect()
+}
+
+/// The **char index** into [`display_text`]'s output of the Alt-activation
+/// character (the one immediately after `&`), or `None` when `label`
+/// carries no `&` at all — there is no implicit "underline the first
+/// char" fallback, unrelated to [`MenuBar::find_alt_target`]'s keyboard
+/// lookup, which does fall back.
+///
+/// A char index, not a byte index: both painters address the display
+/// string by glyph (`chars().nth`, and a cell grid's own column
+/// accounting), never by byte range.
+pub fn alt_char_index(label: &str) -> Option<usize> {
+    let marker_byte = label.find('&')?;
+    Some(label[..marker_byte].chars().count())
+}
+
+/// Columns one item occupies on a cell grid: its display glyphs — wide
+/// (CJK, emoji) glyphs claiming two columns each, per
+/// [`crate::text_util::display_width`] — plus [`CELL_ITEM_PADDING`].
+pub fn cell_item_width(label: &str) -> f32 {
+    crate::text_util::display_width(&display_text(label)) as f32 + CELL_ITEM_PADDING
+}
+
+impl MenuBar {
+    /// Lay the strip out on a pixel surface: each item's slot is
+    /// `measure(label)` (its display text in the surface's own chrome
+    /// font) plus [`ITEM_H_PADDING`].
+    ///
+    /// The one measurement rule GTK, macOS and Windows share, so a
+    /// backend's `*_menu_bar_layout` twin passes its own text measurer
+    /// here instead of re-deriving the padding.
+    pub fn pixel_layout(&self, bounds: Rect, measure: impl Fn(&str) -> f32) -> MenuBarLayout {
+        self.layout(bounds, |i| {
+            MenuBarItemMeasure::new(measure(&display_text(&self.items[i].label)) + ITEM_H_PADDING)
+        })
+    }
+
+    /// Lay the strip out on a cell grid: each item's slot is
+    /// [`cell_item_width`] columns.
+    pub fn cell_layout(&self, bounds: Rect) -> MenuBarLayout {
+        self.layout(bounds, |i| {
+            MenuBarItemMeasure::new(cell_item_width(&self.items[i].label))
+        })
+    }
+
+    /// The item a keyboard move starts from: [`Self::focused_item`], else
+    /// [`Self::open_item`], else nothing (so a first `Right` seeds at the
+    /// leading item and a first `Left` at the trailing one).
+    fn nav_cursor(&self) -> Option<usize> {
+        self.focused_item.or(self.open_item)
+    }
+
+    /// Resolve one keystroke against the strip — the single key→meaning
+    /// rule [`Interactive::handle`] dispatches through, so every host
+    /// driving a menu bar agrees on what a key does.
+    fn handle_key(&self, key: &KeyEvent) -> Handled<MenuBarEvent> {
+        let enabled = |i: usize| !self.items[i].disabled;
+        match key.key {
+            // Alt+<mnemonic> opens that item's menu wherever the strip's
+            // own focus currently sits — the Windows/GTK convention.
+            // macOS paints no underline for it (see
+            // `native_surface_paint::paint_without_mnemonics`) but still
+            // honours the keystroke if a host delivers one.
+            Key::Char(ch) if key.modifiers.alt => match self.find_alt_target(ch) {
+                Some(idx) => self.open_event(idx),
+                None => Handled::Ignored,
+            },
+            // F10 is the keyboard route *into* the strip: it parks the
+            // cursor on the leading enabled item without opening it.
+            Key::Named(NamedKey::F(10)) => {
+                match FlatNav::mv(self.items.len(), None, NavKey::Down, false, enabled) {
+                    Some(idx) if Some(idx) != self.focused_item => {
+                        Handled::Event(MenuBarEvent::FocusMoved { idx })
+                    }
+                    Some(_) => Handled::Consumed,
+                    None => Handled::Ignored,
+                }
+            }
+            Key::Named(NamedKey::Escape) => {
+                if self.open_item.is_some() || self.focused_item.is_some() {
+                    Handled::Event(MenuBarEvent::Closed)
+                } else {
+                    Handled::Ignored
+                }
+            }
+            // Down opens the focused item's menu; Enter does the same, so
+            // a strip reached by F10 opens without the user guessing
+            // which of the two this widget wanted.
+            Key::Named(NamedKey::Down) | Key::Named(NamedKey::Enter) => match self.nav_cursor() {
+                Some(idx) if idx < self.items.len() && !self.items[idx].disabled => {
+                    self.open_event(idx)
+                }
+                _ => Handled::Ignored,
+            },
+            Key::Named(NamedKey::Left) | Key::Named(NamedKey::Right) => {
+                let nav = if matches!(key.key, Key::Named(NamedKey::Left)) {
+                    NavKey::Up
+                } else {
+                    NavKey::Down
+                };
+                // Wrapping: a strip is a short, closed ring of menus, so
+                // Right past the last menu lands back on the first —
+                // the same traversal every desktop menu bar offers.
+                match FlatNav::mv(self.items.len(), self.nav_cursor(), nav, true, enabled) {
+                    // A move while a menu is open carries the open state
+                    // with it, which is what makes Left/Right feel like
+                    // "walk the menus" rather than "walk the labels".
+                    Some(idx) if self.open_item.is_some() => self.open_event(idx),
+                    Some(idx) if Some(idx) != self.focused_item => {
+                        Handled::Event(MenuBarEvent::FocusMoved { idx })
+                    }
+                    Some(_) => Handled::Consumed,
+                    None => Handled::Ignored,
+                }
+            }
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// Ask the host to open item `idx`'s menu, or report nothing when it
+    /// is already the open one — a second Enter on an open menu is the
+    /// keystroke the dropdown itself should see, not a re-open.
+    fn open_event(&self, idx: usize) -> Handled<MenuBarEvent> {
+        if self.open_item == Some(idx) {
+            return Handled::Consumed;
+        }
+        match self.items.get(idx) {
+            Some(item) if !item.disabled => {
+                Handled::Event(MenuBarEvent::MenuOpened { idx, item: item.id })
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+/// The semantic outcomes a [`MenuBar`] strip reports — its
+/// [`Interactive::Action`].
+///
+/// [`MenuBar`] stays purely declarative: no variant below mutates the
+/// strip. Each names the state the host writes back onto its own
+/// `MenuBar` before the next frame — the same contract
+/// [`crate::ListViewEvent`] carries for a list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MenuBarEvent {
+    /// The keyboard cursor (or the pointer, which the strip tracks the
+    /// same way) moved to item `idx` without opening it. The host writes
+    /// it onto [`MenuBar::focused_item`].
+    FocusMoved { idx: usize },
+    /// Item `idx` asked for its menu: the host writes
+    /// `open_item = Some(idx)` (and, conventionally,
+    /// `focused_item = Some(idx)`) and paints the dropdown —
+    /// `item` is that top-level entry's own [`MenuBarItem::id`], which
+    /// a native installer reports under the same identity.
+    MenuOpened { idx: usize, item: WidgetId },
+    /// Escape left the strip: the host clears both
+    /// [`MenuBar::open_item`] and [`MenuBar::focused_item`].
+    Closed,
+}
+
+impl WidgetAction for MenuBarEvent {
+    /// [`Self::MenuOpened`] is the one strip outcome the crate's
+    /// [`crate::UiEvent`] vocabulary names directly
+    /// ([`crate::UiEvent::MenuActivated`], under the opened item's own
+    /// id — the same identity a native menu installer reports, so an app
+    /// routes both through one handler).
+    ///
+    /// The other two ride [`crate::UiEvent::List`] under the strip's own
+    /// [`MenuBar::id`], the channel [`crate::Completions`] already uses
+    /// for the same two shapes: a moved cursor is exactly
+    /// [`crate::ListViewEvent::SelectionChanged`]'s `{ idx }`, and a
+    /// close is the Escape keystroke the strip saw but did not act on
+    /// itself, which [`crate::ListViewEvent::KeyPressed`] carries.
+    /// Reusing that channel keeps both outcomes loss-free under one id
+    /// rather than mapping them onto an unrelated event an existing
+    /// handler could act on.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            MenuBarEvent::MenuOpened { item, .. } => crate::UiEvent::MenuActivated(item),
+            MenuBarEvent::FocusMoved { idx } => {
+                crate::UiEvent::List(id, crate::ListViewEvent::SelectionChanged { idx })
+            }
+            MenuBarEvent::Closed => crate::UiEvent::List(
+                id,
+                crate::ListViewEvent::KeyPressed {
+                    key: NamedKey::Escape.name().into_owned(),
+                    modifiers: crate::Modifiers::default(),
+                },
+            ),
+        }
+    }
+}
+
+/// [`MenuBar`]'s fully-resolved widget-contract layout: the absolute
+/// `area` the strip was laid out in, the row height its items were
+/// resolved at, and the strip-local [`MenuBarLayout`] itself.
+///
+/// `#[non_exhaustive]`: produced by [`Primitive::layout`], never built by
+/// a consumer via struct literal.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct MenuBarPrimitiveLayout {
+    /// The rect [`Primitive::layout`] was called with.
+    pub area: Rect,
+    /// Row height the items were resolved at — [`resolve_bar_height`]
+    /// applied to the host's own line height on a pixel surface, one
+    /// cell on a cell grid.
+    pub bar_height: f32,
+    /// The resolved strip layout. Its `bounds`/`visible_items`/
+    /// `hit_regions` are in the same absolute space as [`Self::area`].
+    pub layout: MenuBarLayout,
+}
+
+impl MenuBarPrimitiveLayout {
+    /// Hit-test at a position relative to [`Self::area`]'s own origin —
+    /// the space [`crate::interactive::RoutedEvent::Pointer`]'s `local`
+    /// field uses.
+    pub fn hit_test_local(&self, x: f32, y: f32) -> MenuBarHit {
+        self.layout.hit_test(self.area.x + x, self.area.y + y)
+    }
+}
+
+impl Primitive for MenuBar {
+    type Layout = MenuBarPrimitiveLayout;
+    type Event = MenuBarEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::MenuBar(self.clone())
+    }
+
+    /// The strip's own content width — every item's slot laid end to end
+    /// — and one [`resolve_bar_height`] row tall. A strip wider than its
+    /// container simply drops the items that do not fit (see
+    /// [`MenuBar::layout`]), so this is a natural size, not a minimum.
+    fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
+        let width: f32 = match ctx.units() {
+            Units::Cells => self
+                .items
+                .iter()
+                .map(|item| cell_item_width(&item.label))
+                .sum(),
+            _ => self
+                .items
+                .iter()
+                .map(|item| {
+                    ctx.text_width(&display_text(&item.label), crate::FontRole::Chrome)
+                        + ITEM_H_PADDING
+                })
+                .sum(),
+        };
+        crate::NaturalSize::new(Some(width), Some(resolve_bar_height(ctx.line_height)))
+    }
+
+    /// `rect` is the whole strip: items start at its leading edge and
+    /// each claims one row of its full height, through
+    /// [`MenuBar::cell_layout`] on a cell grid and
+    /// [`MenuBar::pixel_layout`] (measuring through
+    /// [`LayoutCtx::text_width`]) on a pixel surface — so paint and
+    /// hit-testing resolve one derivation, in `rect`'s own absolute
+    /// space.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> MenuBarPrimitiveLayout {
+        let layout = match ctx.units() {
+            Units::Cells => self.cell_layout(rect),
+            _ => self.pixel_layout(rect, |text| ctx.text_width(text, crate::FontRole::Chrome)),
+        };
+        MenuBarPrimitiveLayout {
+            area: rect,
+            bar_height: rect.height,
+            layout,
+        }
+    }
+
+    /// The shared pixel painter — the same
+    /// `native_surface_paint::paint` every pixel backend's
+    /// `draw_menu_bar` wrapper calls, in its no-mnemonic form on macOS
+    /// (that platform has no Alt-mnemonic convention, so underlining a
+    /// character nothing responds to would be a visual lie).
+    fn paint(
+        &self,
+        layout: &MenuBarPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        let _ = style;
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            if cfg!(target_os = "macos") {
+                native_surface_paint::paint_without_mnemonics(self, &layout.layout, surface, theme);
+            } else {
+                native_surface_paint::paint(self, &layout.layout, surface, theme);
+            }
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, theme);
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_menu_bar`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &MenuBarPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_menu_bar_layout(buf, self, &layout.layout, theme);
+    }
+}
+
+impl Interactive for MenuBar {
+    /// Nothing: the cursor lives on [`MenuBar::focused_item`] and the
+    /// open menu on [`MenuBar::open_item`], both of which the host writes
+    /// from [`MenuBarEvent`] — including the pointer's own hover, which
+    /// this strip reports as a cursor move rather than keeping a second,
+    /// paint-only hover field the descriptor would contradict.
+    type State = ();
+    type Action = MenuBarEvent;
+
+    /// One focus stop as a whole: the strip navigates internally through
+    /// [`Self::handle`]'s own key dispatch rather than declaring a stop
+    /// per menu. [`FocusSpec::None`] for an empty strip.
+    fn focus(&self) -> FocusSpec {
+        if self.items.is_empty() {
+            FocusSpec::None
+        } else {
+            FocusSpec::Stop
+        }
+    }
+
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &RoutedEvent,
+        layout: &MenuBarPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<MenuBarEvent> {
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                local,
+                ..
+            } => match layout.hit_test_local(local.x, local.y) {
+                MenuBarHit::Item(idx) => {
+                    cx.request_focus(None);
+                    // Click to open, click again to close: the toggle
+                    // every desktop menu bar offers on its own label.
+                    if self.open_item == Some(idx) {
+                        Handled::Event(MenuBarEvent::Closed)
+                    } else {
+                        self.open_event(idx)
+                    }
+                }
+                // The strip's own background: a click there belongs to
+                // the strip (it must not fall through to whatever is
+                // behind the chrome row), but changes nothing.
+                MenuBarHit::Bar => {
+                    cx.request_focus(None);
+                    Handled::Consumed
+                }
+                MenuBarHit::Outside => Handled::Ignored,
+            },
+            // Hover tracks the cursor, and — while a menu is open —
+            // drags the open menu with it, the "slide along the bar"
+            // behaviour a mouse-driven menu bar has.
+            RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                local,
+                ..
+            } => match layout.hit_test_local(local.x, local.y) {
+                MenuBarHit::Item(idx) if self.open_item.is_some() => self.open_event(idx),
+                MenuBarHit::Item(idx) if Some(idx) != self.focused_item => {
+                    Handled::Event(MenuBarEvent::FocusMoved { idx })
+                }
+                MenuBarHit::Item(_) => Handled::Consumed,
+                MenuBarHit::Bar | MenuBarHit::Outside => Handled::Ignored,
+            },
+            RoutedEvent::Key(key) => self.handle_key(key),
+            // `A11yAction` carries no item index through this generic
+            // seam, so `Click` opens whichever menu the cursor sits on —
+            // the same one Enter opens, matching the assistive-technology
+            // default-action convention.
+            RoutedEvent::Action(A11yAction::Click) => match self.nav_cursor() {
+                Some(idx) => self.open_event(idx),
+                None => Handled::Ignored,
+            },
+            _ => Handled::Ignored,
+        }
+    }
+
+    fn a11y_actions(&self, _state: &()) -> Vec<A11yAction> {
+        if self.items.is_empty() {
+            Vec::new()
+        } else {
+            vec![A11yAction::Click]
+        }
+    }
+
+    /// One sub-part per visible item, addressed by its index into
+    /// [`MenuBar::items`], in [`Self::handle`]'s own local space.
+    fn sub_regions(&self, layout: &MenuBarPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        layout
+            .layout
+            .visible_items
+            .iter()
+            .map(|vi| {
+                (
+                    Rect::new(
+                        vi.bounds.x - layout.area.x,
+                        vi.bounds.y - layout.area.y,
+                        vi.bounds.width,
+                        vi.bounds.height,
+                    ),
+                    SubTarget(vi.item_idx as u64),
+                )
+            })
+            .collect()
+    }
+}
+
 // Shared paint implementation, written against
 // [`crate::paint_surface::PaintSurface`] instead of any one backend's
 // API. Manual-rectangle underline approach for the Alt-activation
@@ -295,33 +751,15 @@ impl MenuBar {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{MenuBar, MenuBarLayout};
+    use super::{alt_char_index, display_text, MenuBar, MenuBarLayout};
     use crate::event::Rect;
     use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
     /// Thickness (surface-native units) of the Alt-key underline
-    /// rectangle — mirrors `win::menu_bar`'s pre-migration
-    /// `UNDERLINE_HEIGHT_DIP`.
+    /// rectangle.
     const UNDERLINE_HEIGHT: f32 = 2.0;
-
-    /// Strip `&` markers from a label for display — mirrors each
-    /// pre-migration backend's own `display_text`.
-    pub(super) fn display_text(label: &str) -> String {
-        label.chars().filter(|&c| c != '&').collect()
-    }
-
-    /// The **char index** (not byte index — [`PaintSurface::surface_measure_text`]
-    /// works over substrings, not byte ranges) into the display string
-    /// of the Alt-activation character (the character immediately after
-    /// `&`), or `None` when `label` carries no `&` at all — mirrors
-    /// `win::menu_bar`'s pre-migration `alt_char_index`'s "no implicit
-    /// fallback" contract.
-    pub(super) fn alt_char_index(label: &str) -> Option<usize> {
-        let marker_byte = label.find('&')?;
-        Some(label[..marker_byte].chars().count())
-    }
 
     /// Paint a [`MenuBar`] at its caller-resolved `layout` onto
     /// `surface`.
@@ -888,6 +1326,120 @@ pub(crate) mod native_surface_paint {
     }
 }
 
+/// The cell-grid painter for [`MenuBar`], written against
+/// [`crate::CellSurface`].
+///
+/// One row: the strip's background in [`crate::Theme::tab_bar_bg`], then
+/// each visible item's label painted one column in from its own slot.
+/// An open or keyboard-focused item fills its whole slot with
+/// [`crate::Theme::tab_active_bg`]/`tab_active_fg`; a disabled item's
+/// label is [`crate::Theme::muted_fg`]; every other label is
+/// [`crate::Theme::tab_inactive_fg`]. The Alt-activation character — the
+/// one after `&` in the raw label, per [`alt_char_index`] — is
+/// underlined, and a label with no `&` is never underlined. Wide (CJK,
+/// emoji) glyphs claim two columns, so a label's painted columns match
+/// the width [`cell_item_width`] measured.
+///
+/// The same content `native_surface_paint::paint` puts on a pixel
+/// surface, degraded onto the cell grid (see [`crate::paint_surface`]'s
+/// module doc, "Why TUI stays out").
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{alt_char_index, MenuBar, MenuBarLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// An opaque single-cell style — colours only, no modifier.
+    fn solid(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `bar` at its caller-resolved `layout`. `layout.bounds` is
+    /// the strip's own row in the surface's absolute cell space, so the
+    /// painted glyph columns and the columns
+    /// [`MenuBarLayout::hit_test`] reports are the same.
+    pub(crate) fn paint(
+        bar: &MenuBar,
+        layout: &MenuBarLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let bounds = layout.bounds;
+        let width = bounds.width.round() as u16;
+        let height = bounds.height.round() as u16;
+        if width == 0 || height == 0 {
+            return;
+        }
+        let x0 = bounds.x.round() as u16;
+        let y = bounds.y.round() as u16;
+        let right = x0.saturating_add(width);
+
+        let bar_bg = theme.tab_bar_bg;
+        for col in 0..width {
+            surface.put_char(x0 + col, y, ' ', solid(bar_bg, bar_bg));
+        }
+
+        for vi in &layout.visible_items {
+            let item = &bar.items[vi.item_idx];
+            let is_active =
+                bar.open_item == Some(vi.item_idx) || bar.focused_item == Some(vi.item_idx);
+
+            let (fg, bg) = if is_active {
+                (theme.tab_active_fg, theme.tab_active_bg)
+            } else if item.disabled {
+                (theme.muted_fg, bar_bg)
+            } else {
+                (theme.tab_inactive_fg, bar_bg)
+            };
+
+            // `vi.bounds.x` is absolute — `MenuBar::layout` starts its
+            // cursor at the bounds' own origin — so the painted glyph
+            // position and the hit-test bounds share one frame.
+            let start_x = vi.bounds.x.round() as u16;
+            let end_x = start_x + vi.bounds.width.round() as u16;
+
+            if is_active {
+                for col in start_x..end_x.min(right) {
+                    surface.put_char(col, y, ' ', solid(fg, bg));
+                }
+            }
+
+            let underline_pos = alt_char_index(&item.label);
+            let mut cx = start_x + 1; // one column of left padding
+            let mut char_idx: usize = 0;
+            for ch in item.label.chars() {
+                if ch == '&' {
+                    continue;
+                }
+                if cx >= right {
+                    break;
+                }
+                let w = crate::text_util::char_cell_width(ch);
+                let mut style = solid(fg, bg);
+                if underline_pos == Some(char_idx) {
+                    // The underline takes the glyph's own colour: a
+                    // `CellStyle` has no "underline in the default
+                    // colour" state, and matching the foreground is what
+                    // every terminal draws for a plain SGR 4 anyway.
+                    style.underline = Some(fg);
+                }
+                if w == 2 && cx + 1 < right {
+                    surface.put_wide(cx, y, ch, style);
+                } else {
+                    surface.put_char(cx, y, ch, style);
+                }
+                cx += w;
+                char_idx += 1;
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1099,5 +1651,619 @@ mod tests {
         let layout = bar(2).layout(bounds, |_| MenuBarItemMeasure::new(50.0));
         assert_eq!(layout.bounds.height, BAR_HEIGHT);
         assert_eq!(layout.visible_items[0].bounds.height, BAR_HEIGHT);
+    }
+}
+
+/// The cell painter's own paint↔click round trips, run against a real
+/// ratatui buffer through [`crate::tui::draw_menu_bar`] — the thin
+/// delegate that adapts a `Buffer` into the [`crate::CellSurface`]
+/// [`cell_paint::paint`] takes.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use super::*;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect as TuiRect;
+    use ratatui::style::Modifier;
+
+    use crate::theme::Theme;
+    use crate::tui::{draw_menu_bar, ratatui_color};
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    fn make_bar() -> MenuBar {
+        MenuBar {
+            id: WidgetId::new("menu"),
+            items: ["&File", "&Edit", "&View"]
+                .iter()
+                .map(|label| MenuBarItem {
+                    id: WidgetId::new(label.trim_start_matches('&').to_lowercase()),
+                    label: (*label).into(),
+                    disabled: false,
+                    submenu: None,
+                })
+                .collect(),
+            open_item: None,
+            focused_item: None,
+        }
+    }
+
+    /// Shared body for the paint↔click round trip, run at both the origin
+    /// and a non-zero `area` origin: the layout bakes `area.x`/`area.y`
+    /// straight into the returned bounds (absolute frame), so both the
+    /// painted glyph position and the `hit_test` coordinates shift
+    /// together with the origin.
+    fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = TuiRect::new(origin_x, origin_y, 40, 1);
+        let mut buf = Buffer::empty(TuiRect::new(0, 0, origin_x + 40, origin_y + 1));
+        let bar = make_bar();
+        let layout = draw_menu_bar(&mut buf, area, &bar, &Theme::default());
+
+        for vi in &layout.visible_items {
+            let mid_x = vi.bounds.x + vi.bounds.width / 2.0;
+            let mid_y = vi.bounds.y + 0.5;
+            assert_eq!(
+                layout.hit_test(mid_x, mid_y),
+                MenuBarHit::Item(vi.item_idx),
+                "hit_test at painted item {}'s centre should return Item({})",
+                vi.item_idx,
+                vi.item_idx,
+            );
+
+            let label = &bar.items[vi.item_idx].label;
+            let first_display_char = label.chars().find(|&c| c != '&').unwrap();
+            let start_col = vi.bounds.x.round() as u16 + 1; // after padding
+            assert_eq!(
+                cell_char(&buf, start_col, area.y),
+                first_display_char,
+                "first display char of item {} should be '{first_display_char}' at col {start_col}",
+                vi.item_idx,
+            );
+        }
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        paint_and_click_round_trip_at(0, 0);
+    }
+
+    /// Non-zero-origin guard: same round trip at a shifted `area`
+    /// origin, proving `hit_test` resolves against the absolute (not
+    /// local) bounds the painter wrote into.
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        paint_and_click_round_trip_at(7, 13);
+    }
+
+    #[test]
+    fn disabled_item_not_clickable() {
+        let area = TuiRect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let mut bar = make_bar();
+        bar.items[1].disabled = true;
+        let layout = draw_menu_bar(&mut buf, area, &bar, &Theme::default());
+
+        let vi = &layout.visible_items[1];
+        let mid_x = vi.bounds.x + vi.bounds.width / 2.0;
+        assert_eq!(layout.hit_test(mid_x, 0.5), MenuBarHit::Bar);
+    }
+
+    #[test]
+    fn open_item_has_active_bg() {
+        let area = TuiRect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let mut bar = make_bar();
+        bar.open_item = Some(1);
+        let layout = draw_menu_bar(&mut buf, area, &bar, &theme);
+
+        let vi = &layout.visible_items[1];
+        let col = vi.bounds.x.round() as u16 + 1;
+        assert_eq!(buf[(col, 0)].bg, ratatui_color(theme.tab_active_bg));
+
+        let vi0 = &layout.visible_items[0];
+        let col0 = vi0.bounds.x.round() as u16 + 1;
+        assert_eq!(buf[(col0, 0)].bg, ratatui_color(theme.tab_bar_bg));
+    }
+
+    #[test]
+    fn zero_size_is_a_no_op() {
+        let mut buf = Buffer::empty(TuiRect::new(0, 0, 10, 1));
+        let area = TuiRect::new(0, 0, 0, 1);
+        let _layout = draw_menu_bar(&mut buf, area, &make_bar(), &Theme::default());
+        assert_eq!(cell_char(&buf, 0, 0), ' ', "buffer should be untouched");
+    }
+
+    #[test]
+    fn alt_char_underlined() {
+        let area = TuiRect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        draw_menu_bar(&mut buf, area, &make_bar(), &Theme::default());
+
+        // 'F' in "&File" is at col 1 (after one cell of left padding).
+        assert!(
+            buf[(1, 0)].modifier.contains(Modifier::UNDERLINED),
+            "alt-key char 'F' should be underlined"
+        );
+        assert_eq!(cell_char(&buf, 1, 0), 'F');
+        assert!(
+            !buf[(2, 0)].modifier.contains(Modifier::UNDERLINED),
+            "non-alt char 'i' should not be underlined"
+        );
+    }
+
+    /// A label with no `&` is never underlined — no cell in the item's
+    /// slot carries the modifier, and the label still paints.
+    #[test]
+    fn no_ampersand_label_is_never_underlined() {
+        let area = TuiRect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let mut bar = make_bar();
+        bar.items[0].label = "File".into();
+        let layout = draw_menu_bar(&mut buf, area, &bar, &Theme::default());
+
+        let vi = &layout.visible_items[0];
+        let start_x = vi.bounds.x.round() as u16;
+        let end_x = start_x + vi.bounds.width.round() as u16;
+        for x in start_x..end_x {
+            assert!(
+                !buf[(x, area.y)].modifier.contains(Modifier::UNDERLINED),
+                "label with no '&' must not underline any cell (col {x})"
+            );
+        }
+        assert_eq!(cell_char(&buf, start_x + 1, area.y), 'F');
+    }
+
+    /// A wide (CJK) label glyph leaves its continuation cell as the
+    /// wide-char marker (empty symbol), not a stale space.
+    #[test]
+    fn wide_glyph_label_leaves_continuation_cell_empty() {
+        let area = TuiRect::new(0, 0, 40, 1);
+        let mut buf = Buffer::empty(area);
+        let mut bar = make_bar();
+        bar.items[0].label = "&文件".into();
+        let layout = draw_menu_bar(&mut buf, area, &bar, &Theme::default());
+
+        let vi = &layout.visible_items[0];
+        let start_x = vi.bounds.x.round() as u16;
+        assert_eq!(cell_char(&buf, start_x + 1, area.y), '文');
+        assert_eq!(
+            buf[(start_x + 2, area.y)].symbol(),
+            "",
+            "the cell after a wide glyph must be the empty continuation marker"
+        );
+        assert_eq!(cell_char(&buf, start_x + 3, area.y), '件');
+    }
+
+    #[test]
+    fn cell_item_width_measures_cjk_as_double_width_not_char_count() {
+        // "&文件" strips to "文件" — two CJK chars, 2 cells each, plus
+        // the one-column padding either side.
+        assert_eq!(cell_item_width("&文件"), 6.0);
+    }
+}
+
+/// The widget contract's own unit coverage: [`Primitive::layout`]'s two
+/// unit branches, [`Primitive::measure`], and every key/pointer gesture
+/// [`Interactive::handle`] resolves.
+#[cfg(test)]
+mod widget_contract_tests {
+    use super::*;
+    use crate::interactive::{EventHost, SubTarget};
+    use crate::types::Modifiers;
+    use crate::{Point, PointerShape, UiEvent};
+
+    /// Records what `handle` asked the host for, so a test can assert on
+    /// the focus request a click makes.
+    #[derive(Default)]
+    struct RecordingHost {
+        focused: Vec<Option<SubTarget>>,
+        emitted: Vec<UiEvent>,
+    }
+
+    impl EventHost for RecordingHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focused.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, event: UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn bar() -> MenuBar {
+        MenuBar {
+            id: WidgetId::new("menubar:main"),
+            items: vec![
+                MenuBarItem {
+                    id: WidgetId::new("menu:file"),
+                    label: "&File".into(),
+                    disabled: false,
+                    submenu: None,
+                },
+                MenuBarItem {
+                    id: WidgetId::new("menu:edit"),
+                    label: "&Edit".into(),
+                    disabled: false,
+                    submenu: None,
+                },
+                MenuBarItem {
+                    id: WidgetId::new("menu:view"),
+                    label: "&View".into(),
+                    disabled: false,
+                    submenu: None,
+                },
+            ],
+            open_item: None,
+            focused_item: None,
+        }
+    }
+
+    const AREA: Rect = Rect::new(0.0, 0.0, 40.0, 1.0);
+
+    fn cell_ctx() -> LayoutCtx<'static> {
+        LayoutCtx::new(1.0, 1.0, false)
+    }
+
+    fn resolved(bar: &MenuBar) -> MenuBarPrimitiveLayout {
+        Primitive::layout(bar, &cell_ctx(), AREA)
+    }
+
+    fn key(key: Key) -> KeyEvent {
+        KeyEvent {
+            key,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }
+    }
+
+    fn press(bar: &MenuBar, event: KeyEvent) -> Handled<MenuBarEvent> {
+        let layout = resolved(bar);
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+        Interactive::handle(bar, &mut (), &RoutedEvent::Key(event), &layout, &mut cx)
+    }
+
+    fn pointer(bar: &MenuBar, kind: PointerKind, x: f32, y: f32) -> Handled<MenuBarEvent> {
+        let layout = resolved(bar);
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+        Interactive::handle(
+            bar,
+            &mut (),
+            &RoutedEvent::Pointer {
+                kind,
+                sub: None,
+                local: Point::new(x, y),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
+        )
+    }
+
+    #[test]
+    fn cell_layout_gives_every_item_its_label_plus_one_column_a_side() {
+        let layout = resolved(&bar());
+        assert_eq!(layout.layout.visible_items.len(), 3);
+        // "File" is four columns wide, plus one padding column a side.
+        assert_eq!(layout.layout.visible_items[0].bounds.width, 6.0);
+        assert_eq!(layout.layout.visible_items[1].bounds.x, 6.0);
+    }
+
+    #[test]
+    fn pixel_layout_measures_through_the_ctx_and_adds_the_shared_padding() {
+        // No measurer attached: `text_width` falls back to
+        // `char_width * chars`, so "File" is 4 * 7.0 wide.
+        let ctx = LayoutCtx::new(18.0, 7.0, false);
+        let layout = Primitive::layout(&bar(), &ctx, Rect::new(0.0, 0.0, 400.0, 30.0));
+        assert_eq!(
+            layout.layout.visible_items[0].bounds.width,
+            4.0 * 7.0 + ITEM_H_PADDING
+        );
+    }
+
+    #[test]
+    fn measure_reports_the_whole_strips_content_width_and_one_bar_row() {
+        let natural = Primitive::measure(&bar(), &cell_ctx(), Size::new(80.0, 24.0));
+        // "File" + "Edit" + "View", six columns each.
+        assert_eq!(natural.width, Some(18.0));
+        assert_eq!(natural.height, Some(1.0));
+    }
+
+    #[test]
+    fn a_pixel_measure_floors_the_bar_at_the_fixed_strip_height() {
+        let natural = Primitive::measure(
+            &bar(),
+            &LayoutCtx::new(18.0, 7.0, false),
+            Size::new(400.0, 40.0),
+        );
+        assert_eq!(natural.height, Some(BAR_HEIGHT));
+    }
+
+    #[test]
+    fn hit_test_local_resolves_against_the_areas_own_origin() {
+        let bar = bar();
+        let layout = Primitive::layout(&bar, &cell_ctx(), Rect::new(10.0, 4.0, 40.0, 1.0));
+        assert_eq!(layout.hit_test_local(1.0, 0.0), MenuBarHit::Item(0));
+        assert_eq!(layout.hit_test_local(7.0, 0.0), MenuBarHit::Item(1));
+    }
+
+    #[test]
+    fn a_click_on_an_item_asks_the_host_to_open_that_menu() {
+        let bar = bar();
+        assert_eq!(
+            pointer(&bar, PointerKind::Down(MouseButton::Left), 7.0, 0.0),
+            Handled::Event(MenuBarEvent::MenuOpened {
+                idx: 1,
+                item: WidgetId::new("menu:edit"),
+            })
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_already_open_menu_closes_it() {
+        let mut bar = bar();
+        bar.open_item = Some(1);
+        assert_eq!(
+            pointer(&bar, PointerKind::Down(MouseButton::Left), 7.0, 0.0),
+            Handled::Event(MenuBarEvent::Closed)
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_strips_own_background_is_swallowed_not_ignored() {
+        let bar = bar();
+        assert_eq!(
+            pointer(&bar, PointerKind::Down(MouseButton::Left), 30.0, 0.0),
+            Handled::Consumed
+        );
+    }
+
+    #[test]
+    fn a_click_claims_focus_for_the_strip() {
+        let bar = bar();
+        let layout = resolved(&bar);
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+        let _ = Interactive::handle(
+            &bar,
+            &mut (),
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(1.0, 0.0),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(host.focused, vec![None]);
+    }
+
+    #[test]
+    fn hover_moves_the_cursor_and_drags_an_open_menu_with_it() {
+        let bar = bar();
+        assert_eq!(
+            pointer(&bar, PointerKind::Move, 7.0, 0.0),
+            Handled::Event(MenuBarEvent::FocusMoved { idx: 1 })
+        );
+
+        let mut open = bar.clone();
+        open.open_item = Some(0);
+        open.focused_item = Some(0);
+        assert_eq!(
+            pointer(&open, PointerKind::Move, 7.0, 0.0),
+            Handled::Event(MenuBarEvent::MenuOpened {
+                idx: 1,
+                item: WidgetId::new("menu:edit"),
+            })
+        );
+    }
+
+    #[test]
+    fn right_and_left_walk_the_menus_and_wrap() {
+        let mut bar = bar();
+        assert_eq!(
+            press(&bar, key(Key::Named(NamedKey::Right))),
+            Handled::Event(MenuBarEvent::FocusMoved { idx: 0 })
+        );
+        bar.focused_item = Some(2);
+        assert_eq!(
+            press(&bar, key(Key::Named(NamedKey::Right))),
+            Handled::Event(MenuBarEvent::FocusMoved { idx: 0 })
+        );
+        bar.focused_item = Some(0);
+        assert_eq!(
+            press(&bar, key(Key::Named(NamedKey::Left))),
+            Handled::Event(MenuBarEvent::FocusMoved { idx: 2 })
+        );
+    }
+
+    #[test]
+    fn arrow_keys_skip_a_disabled_menu() {
+        let mut bar = bar();
+        bar.items[1].disabled = true;
+        bar.focused_item = Some(0);
+        assert_eq!(
+            press(&bar, key(Key::Named(NamedKey::Right))),
+            Handled::Event(MenuBarEvent::FocusMoved { idx: 2 })
+        );
+    }
+
+    #[test]
+    fn walking_with_a_menu_open_opens_the_one_moved_onto() {
+        let mut bar = bar();
+        bar.open_item = Some(0);
+        bar.focused_item = Some(0);
+        assert_eq!(
+            press(&bar, key(Key::Named(NamedKey::Right))),
+            Handled::Event(MenuBarEvent::MenuOpened {
+                idx: 1,
+                item: WidgetId::new("menu:edit"),
+            })
+        );
+    }
+
+    #[test]
+    fn down_and_enter_open_the_focused_menu() {
+        let mut bar = bar();
+        bar.focused_item = Some(2);
+        let expected = Handled::Event(MenuBarEvent::MenuOpened {
+            idx: 2,
+            item: WidgetId::new("menu:view"),
+        });
+        assert_eq!(press(&bar, key(Key::Named(NamedKey::Down))), expected);
+        assert_eq!(press(&bar, key(Key::Named(NamedKey::Enter))), expected);
+    }
+
+    #[test]
+    fn down_with_nothing_focused_is_left_for_the_host() {
+        assert_eq!(
+            press(&bar(), key(Key::Named(NamedKey::Down))),
+            Handled::Ignored
+        );
+    }
+
+    #[test]
+    fn f10_parks_the_cursor_on_the_leading_menu_without_opening_it() {
+        assert_eq!(
+            press(&bar(), key(Key::Named(NamedKey::F(10)))),
+            Handled::Event(MenuBarEvent::FocusMoved { idx: 0 })
+        );
+    }
+
+    #[test]
+    fn alt_plus_a_mnemonic_opens_that_menu_from_anywhere() {
+        let event = KeyEvent {
+            key: Key::Char('v'),
+            modifiers: Modifiers {
+                alt: true,
+                ..Modifiers::default()
+            },
+            repeat: false,
+        };
+        assert_eq!(
+            press(&bar(), event),
+            Handled::Event(MenuBarEvent::MenuOpened {
+                idx: 2,
+                item: WidgetId::new("menu:view"),
+            })
+        );
+    }
+
+    #[test]
+    fn a_plain_character_is_not_a_mnemonic() {
+        assert_eq!(press(&bar(), key(Key::Char('v'))), Handled::Ignored);
+    }
+
+    #[test]
+    fn escape_closes_an_open_or_focused_strip_and_is_otherwise_ignored() {
+        let mut bar = bar();
+        assert_eq!(
+            press(&bar, key(Key::Named(NamedKey::Escape))),
+            Handled::Ignored
+        );
+        bar.open_item = Some(1);
+        assert_eq!(
+            press(&bar, key(Key::Named(NamedKey::Escape))),
+            Handled::Event(MenuBarEvent::Closed)
+        );
+    }
+
+    #[test]
+    fn an_a11y_click_opens_the_menu_the_cursor_sits_on() {
+        let mut bar = bar();
+        bar.focused_item = Some(1);
+        let layout = resolved(&bar);
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &bar,
+                &mut (),
+                &RoutedEvent::Action(A11yAction::Click),
+                &layout,
+                &mut cx,
+            ),
+            Handled::Event(MenuBarEvent::MenuOpened {
+                idx: 1,
+                item: WidgetId::new("menu:edit"),
+            })
+        );
+        assert_eq!(
+            Interactive::a11y_actions(&bar, &()),
+            vec![A11yAction::Click]
+        );
+    }
+
+    #[test]
+    fn an_empty_strip_is_no_focus_stop_and_offers_no_a11y_action() {
+        let empty = MenuBar {
+            id: WidgetId::new("menubar:empty"),
+            items: Vec::new(),
+            open_item: None,
+            focused_item: None,
+        };
+        assert_eq!(Interactive::focus(&empty), FocusSpec::None);
+        assert!(Interactive::a11y_actions(&empty, &()).is_empty());
+        assert_eq!(Interactive::focus(&bar()), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn sub_regions_name_every_visible_item_in_local_space() {
+        let bar = bar();
+        let layout = Primitive::layout(&bar, &cell_ctx(), Rect::new(10.0, 4.0, 40.0, 1.0));
+        let regions = Interactive::sub_regions(&bar, &layout);
+        assert_eq!(regions.len(), 3);
+        assert_eq!(regions[0].0.x, 0.0);
+        assert_eq!(regions[0].1, SubTarget(0));
+        assert_eq!(regions[1].0.x, 6.0);
+    }
+
+    #[test]
+    fn each_event_rides_a_ui_event_under_the_right_id() {
+        let id = WidgetId::new("menubar:main");
+        assert_eq!(
+            MenuBarEvent::MenuOpened {
+                idx: 1,
+                item: WidgetId::new("menu:edit"),
+            }
+            .into_ui_event(id),
+            UiEvent::MenuActivated(WidgetId::new("menu:edit"))
+        );
+        assert_eq!(
+            MenuBarEvent::FocusMoved { idx: 2 }.into_ui_event(id),
+            UiEvent::List(id, crate::ListViewEvent::SelectionChanged { idx: 2 })
+        );
+        assert_eq!(
+            MenuBarEvent::Closed.into_ui_event(id),
+            UiEvent::List(
+                id,
+                crate::ListViewEvent::KeyPressed {
+                    key: "Escape".to_string(),
+                    modifiers: Modifiers::default(),
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn capture_round_trips_the_strip_as_its_own_owned_content() {
+        let bar = bar();
+        match Primitive::capture(&bar) {
+            crate::frame::OwnedContent::MenuBar(captured) => assert_eq!(captured, bar),
+            other => panic!("expected OwnedContent::MenuBar, got {other:?}"),
+        }
     }
 }

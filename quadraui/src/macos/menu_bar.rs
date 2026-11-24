@@ -19,13 +19,8 @@ use core_text::font::CTFont;
 use super::text::measure_text;
 use crate::event::Rect as QRect;
 use crate::interaction::InteractionState;
-use crate::primitives::menu_bar::{
-    native_surface_paint, MenuBar, MenuBarItemMeasure, MenuBarLayout,
-};
+use crate::primitives::menu_bar::{native_surface_paint, MenuBar, MenuBarLayout};
 use crate::theme::Theme;
-
-/// 8-pt padding each side of the menu label inside its hit slot.
-const ITEM_PAD: f32 = 8.0;
 
 /// Compute the macOS pixel-unit layout for `bar` without painting.
 /// Mirrors `crate::gtk::gtk_menu_bar_layout`. Apps call this to route
@@ -39,11 +34,7 @@ pub fn mac_menu_bar_layout(
     bar: &MenuBar,
 ) -> MenuBarLayout {
     let bounds = QRect::new(x as f32, y as f32, width as f32, height as f32);
-    bar.layout(bounds, |i| {
-        let text = display_text(&bar.items[i].label);
-        let (w, _) = measure_text(font, &text);
-        MenuBarItemMeasure::new(w as f32 + ITEM_PAD * 2.0)
-    })
+    bar.pixel_layout(bounds, |text| measure_text(font, text).0 as f32)
 }
 
 /// Paint `bar` into `(x, y, width, height)` on `ctx`. Returns the
@@ -118,11 +109,6 @@ pub unsafe fn draw_menu_bar_with_state(
 
     CGContextRestoreGState(ctx);
     layout
-}
-
-/// Strip `&` markers from a label for display.
-fn display_text(label: &str) -> String {
-    label.chars().filter(|&c| c != '&').collect()
 }
 
 extern "C" {
@@ -329,7 +315,7 @@ mod tests {
         // File ("&File") is the open item; its mnemonic is the first
         // display character, "F".
         let file = &layout.visible_items[0];
-        let text = display_text(&bar.items[0].label);
+        let text = crate::primitives::menu_bar::display_text(&bar.items[0].label);
         let mnemonic = text.chars().next().expect("File has a label");
         let x0 = file.bounds.x.floor() as u32;
         let x1 = ((file.bounds.x + file.bounds.width).ceil() as u32).min(W);
