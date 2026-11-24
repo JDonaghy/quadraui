@@ -56,8 +56,8 @@ use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FieldKind, Form,
-    GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
+    Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FieldKind, FontRole,
+    Form, GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
     Rect as QRect, ResizeEdge, Split, StatusBar, SystemTheme, TabBar, TabBarLayout, TabChrome,
     TabFrame, Terminal as TerminalPrim, TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
 };
@@ -2356,6 +2356,16 @@ fn resolve_generic_families_gtk(desc: &str) -> String {
 
 impl crate::backend::sealed::Sealed for GtkBackend {}
 
+/// The Pango font a `role` paints and measures in on this backend.
+fn role_font_description(b: &GtkBackend, role: FontRole) -> pango::FontDescription {
+    let chrome = crate::gtk::chrome_font_description(&b.ui_font);
+    match role {
+        FontRole::Chrome => chrome,
+        FontRole::Icon => crate::gtk::tab_bar::tab_icon_font(&chrome),
+        FontRole::Editor => pango::FontDescription::from_string(&b.editor_font_pango_string()),
+    }
+}
+
 impl Backend for GtkBackend {
     fn viewport(&self) -> Viewport {
         self.viewport
@@ -2986,8 +2996,8 @@ impl Backend for GtkBackend {
         let _test_render_guard = super::test_render_guard();
         let Some(ctx) = self.pango_ctx.as_ref() else {
             let char_w = match role {
-                crate::FontRole::Chrome => self.current_chrome_char_width as f32,
                 crate::FontRole::Editor => self.current_char_width as f32,
+                _ => self.current_chrome_char_width as f32,
             };
             return (
                 (text.chars().count() as f32 * char_w).ceil() + 2.0,
@@ -2995,12 +3005,7 @@ impl Backend for GtkBackend {
             );
         };
         let layout = pango::Layout::new(ctx);
-        let desc = match role {
-            crate::FontRole::Chrome => crate::gtk::chrome_font_description(&self.ui_font),
-            crate::FontRole::Editor => {
-                pango::FontDescription::from_string(&self.editor_font_pango_string())
-            }
-        };
+        let desc = role_font_description(self, role);
         layout.set_font_description(Some(&desc));
         layout.set_text(text);
         let (w, h) = layout.pixel_size();
@@ -6820,12 +6825,7 @@ impl PaintSurface for GtkBackend {
             .current_frame_refs()
             .expect("GtkBackend::surface_draw_text_run_with_role called outside enter_frame_scope");
         let saved = layout.font_description();
-        let desc = match role {
-            crate::FontRole::Chrome => crate::gtk::chrome_font_description(&self.ui_font),
-            crate::FontRole::Editor => {
-                pango::FontDescription::from_string(&self.editor_font_pango_string())
-            }
-        };
+        let desc = role_font_description(self, role);
         layout.set_font_description(Some(&desc));
         layout.set_text(text);
         if italic {

@@ -2963,8 +2963,8 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         {
             let dwrite = match role {
-                crate::FontRole::Chrome => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
                 crate::FontRole::Editor => self.dwrite.as_ref(),
+                _ => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
             };
             if let Some(dwrite) = dwrite {
                 if let Ok((w, h)) = dwrite.measure_text(text) {
@@ -6987,8 +6987,8 @@ impl PaintSurface for WinBackend {
             // live chrome one exists yet — same "degrade, don't panic"
             // convention as `WinBackend::draw_tree`'s doc describes.
             let dwrite = match role {
-                crate::FontRole::Chrome => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
                 crate::FontRole::Editor => self.dwrite.as_ref(),
+                _ => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
             };
             if let Some(dwrite) = dwrite {
                 let _ = dwrite.draw_text(&surface.target, text, rect, color);

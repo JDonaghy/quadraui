@@ -49,6 +49,13 @@ pub enum FontRole {
     Chrome,
     /// The user's configured editor font — [`crate::Backend::set_editor_font`].
     Editor,
+    /// An icon glyph painted beside chrome text, such as a tab's file icon.
+    /// A backend whose rasteriser paints icons in a font of their own
+    /// (GTK appends a Nerd Font fallback family to the chrome font)
+    /// measures this role in that font, so a layout sized through
+    /// [`crate::Backend::measure_text`] reserves the width the icon
+    /// actually paints at. Everywhere else it is the chrome font.
+    Icon,
 }
 
 /// Every primitive family with a `Backend::draw_*` entry point that
