@@ -1,8 +1,12 @@
 //! `NumberInput` primitive: a bounded numeric field with stepper
-//! buttons — layout, hit-test, keyboard/wheel handling, validation, and
-//! its event. Shared logic only; no backend painter lives here (see
-//! `docs/PRIMITIVE_RULES.md`'s cross-backend commitment — a rasteriser
-//! follows in a later, backend-scoped issue).
+//! buttons — layout, hit-test, keyboard/wheel handling, validation, its
+//! event, and both rasterisers.
+//!
+//! The whole widget contract lives here: [`Primitive`] resolves the
+//! layout and paints it ([`native_surface_paint`] on a pixel surface,
+//! [`cell_paint`] on a cell grid), and [`Interactive`] answers pointer,
+//! wheel, keyboard and assistive-technology input. A host reaches all of
+//! it type-erased through [`crate::frame::Surface::Widget`].
 //!
 //! Additive alongside [`crate::TextInput`], which is untouched — a
 //! `NumberInput` isn't a constrained `TextInput`, it's a separate
@@ -40,8 +44,14 @@
 //! [`NumberInput::focused`] is the host's job, same division of
 //! responsibility as every other primitive here.
 
+use crate::a11y::A11yAction;
 use crate::event::{Key, NamedKey, Point, Rect, ScrollDelta};
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
+};
+use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::types::{Modifiers, WidgetId};
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 /// Width (in the backend's layout units) reserved for the
@@ -129,6 +139,23 @@ impl NumberInput {
             draft: None,
             disabled: false,
             focused: false,
+        }
+    }
+
+    /// The text the field currently shows: the in-progress
+    /// [`NumberInput::draft`] verbatim when one is pending, otherwise
+    /// `value` formatted to [`NumberInput::precision`] decimal places.
+    ///
+    /// The single source of this formula — every painter
+    /// ([`native_surface_paint::paint`], [`cell_paint::paint`]),
+    /// [`Primitive::measure`] and
+    /// [`crate::primitives::layout_metrics`]'s form-row measurement all
+    /// read it here rather than re-deriving it, so a field can never
+    /// measure wider or narrower than the text actually painted into it.
+    pub fn display_text(&self) -> String {
+        match &self.draft {
+            Some(draft) => draft.clone(),
+            None => format!("{:.*}", self.precision as usize, self.value),
         }
     }
 
@@ -323,6 +350,408 @@ pub enum NumberInputEvent {
     Cancelled { id: WidgetId },
 }
 
+impl WidgetAction for NumberInputEvent {
+    /// Every outcome rides [`crate::UiEvent::Form`] under the field's own
+    /// id: [`crate::FormEvent`]'s four `Number*` variants name exactly
+    /// this primitive's four outcomes, one for one, with the same
+    /// "stepper/arrow steps immediately, a typed draft waits for
+    /// Enter" split. A standalone `NumberInput` therefore reaches an app
+    /// through the same event vocabulary an embedded one does, so a host
+    /// that already applies [`crate::FormEvent::NumberCommitted`] needs
+    /// no second handler.
+    ///
+    /// `id` from the contract is the id the host registered this widget
+    /// under; each variant already carries its own, and the two agree
+    /// for a widget reached through [`crate::frame::Surface::Widget`],
+    /// so the payload's own id is preserved and the parameter names the
+    /// [`crate::UiEvent::Form`] envelope.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        let event = match self {
+            NumberInputEvent::ValueChanged { id, value } => {
+                crate::FormEvent::NumberChanged { id, value }
+            }
+            NumberInputEvent::DraftChanged { id, draft } => {
+                crate::FormEvent::NumberDraftChanged { id, draft }
+            }
+            NumberInputEvent::Committed { id, value } => {
+                crate::FormEvent::NumberCommitted { id, value }
+            }
+            NumberInputEvent::Cancelled { id } => crate::FormEvent::NumberCancelled { id },
+        };
+        crate::UiEvent::Form(id, event)
+    }
+}
+
+/// [`NumberInput`]'s fully-resolved widget-contract layout: the absolute
+/// `area` the field was laid out in plus the field-local
+/// [`NumberInputLayout`] itself.
+///
+/// `#[non_exhaustive]`: produced by [`Primitive::layout`], never built by
+/// a consumer via struct literal — the same convention
+/// [`crate::primitives::completions::CompletionsPrimitiveLayout`]
+/// follows.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct NumberInputPrimitiveLayout {
+    /// The rect [`Primitive::layout`] was called with — the whole
+    /// control, text area plus stepper column.
+    pub area: Rect,
+    /// The resolved field layout. Its rects are in the same absolute
+    /// space as [`Self::area`].
+    pub layout: NumberInputLayout,
+}
+
+impl NumberInputPrimitiveLayout {
+    /// Hit-test at a position relative to [`Self::area`]'s own origin —
+    /// the space [`RoutedEvent::Pointer`]'s `local` field uses.
+    pub fn hit_test_local(&self, x: f32, y: f32) -> NumberInputHit {
+        self.layout
+            .hit_test(Point::new(self.area.x + x, self.area.y + y))
+    }
+}
+
+impl Primitive for NumberInput {
+    type Layout = NumberInputPrimitiveLayout;
+    type Event = NumberInputEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// One row of [`NumberInput::display_text`] plus the fixed-width
+    /// stepper column, plus the chrome the painters frame the field
+    /// with.
+    ///
+    /// The chrome is units-dependent because the border is: on a cell
+    /// grid it costs two whole columns and two whole rows (the box-drawing
+    /// frame [`cell_paint::paint`] draws), while a pixel surface strokes
+    /// it inside the row it already occupies, so it costs one row of
+    /// `line_height` and two character advances of width.
+    fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
+        let text = self.display_text();
+        let cells = matches!(ctx.units(), Units::Cells);
+        let (text_w, chrome_w, rows) = if cells {
+            (crate::text_util::display_width(&text) as f32, 2.0, 3.0_f32)
+        } else {
+            (
+                ctx.text_width(&text, crate::FontRole::Chrome),
+                2.0 * ctx.char_width,
+                1.0_f32,
+            )
+        };
+        crate::NaturalSize::new(
+            Some(text_w + chrome_w + STEPPER_WIDTH),
+            Some(rows * ctx.line_height),
+        )
+    }
+
+    /// `rect` is the whole control. The split into text area and stacked
+    /// stepper buttons is [`NumberInput::layout`]'s own, so paint,
+    /// hit-testing and the legacy `Backend::draw_number_input` path can
+    /// never disagree about where the `+`/`-` cells are.
+    fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> NumberInputPrimitiveLayout {
+        NumberInputPrimitiveLayout {
+            area: rect,
+            layout: self.layout(rect),
+        }
+    }
+
+    /// The shared pixel painter — the same
+    /// [`native_surface_paint::paint`] every pixel backend's
+    /// `draw_number_input` wrapper calls.
+    fn paint(
+        &self,
+        layout: &NumberInputPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(self, &layout.layout, surface, theme);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_number_input`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &NumberInputPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_number_input(buf, self, &layout.layout, theme);
+    }
+}
+
+impl NumberInput {
+    /// One wheel notch's worth of stepping — [`NumberInput::handle_wheel`]
+    /// against this field's own [`NumberInput::step`], which is what a
+    /// standalone field steps by when no host supplies a coarser
+    /// per-notch amount.
+    fn wheel(&self, dy: f32) -> Handled<NumberInputEvent> {
+        match self.handle_wheel(ScrollDelta::new(0.0, dy), self.step) {
+            Some(event) => Handled::Event(event),
+            None => Handled::Ignored,
+        }
+    }
+
+    /// Resolve a keystroke through [`NumberInput::handle_key`], reporting
+    /// a recognised-but-inert key (`Escape` with no pending draft) as
+    /// [`Handled::Ignored`] so a host's own Escape handling still runs.
+    fn key(&self, key: &KeyEvent) -> Handled<NumberInputEvent> {
+        match self.handle_key(&key.key, &key.modifiers) {
+            Some(event) => Handled::Event(event),
+            None => Handled::Ignored,
+        }
+    }
+}
+
+impl Interactive for NumberInput {
+    /// Nothing: the committed value, the in-progress draft and the focus
+    /// flag all live on the descriptor, which the host updates from the
+    /// events below — so this widget has no interaction state the
+    /// descriptor doesn't already carry.
+    type State = ();
+    type Action = NumberInputEvent;
+
+    /// One focus stop, like [`crate::Switch`] — the field navigates no
+    /// internal cursor, so there is nothing to declare a stop per.
+    /// [`FocusSpec::None`] while [`NumberInput::disabled`], matching the
+    /// "disabled means inert, not hidden" contract every method here
+    /// follows.
+    fn focus(&self) -> FocusSpec {
+        if self.disabled {
+            FocusSpec::None
+        } else {
+            FocusSpec::Stop
+        }
+    }
+
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &RoutedEvent,
+        layout: &NumberInputPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<NumberInputEvent> {
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                local,
+                ..
+            } => {
+                let hit = layout.hit_test_local(local.x, local.y);
+                if matches!(hit, NumberInputHit::TextArea) {
+                    // Clicking the text area only moves focus there, the
+                    // same division of responsibility `NumberInput::click`
+                    // documents — but the field still owns the click
+                    // rather than letting it fall through to whatever is
+                    // painted behind it.
+                    cx.request_focus(None);
+                    return Handled::Consumed;
+                }
+                match self.click(hit) {
+                    Some(event) => {
+                        cx.request_focus(None);
+                        Handled::Event(event)
+                    }
+                    None => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Wheel { dy, .. } => self.wheel(*dy),
+            RoutedEvent::Key(key) => self.key(key),
+            // `A11yAction` carries no stepper side through this generic
+            // seam, so the two ranged-control actions map onto the two
+            // stepper buttons — the assistive-technology equivalent of
+            // clicking `+`/`-`.
+            RoutedEvent::Action(A11yAction::Increment) => match self.increment() {
+                Some(event) => Handled::Event(event),
+                None => Handled::Ignored,
+            },
+            RoutedEvent::Action(A11yAction::Decrement) => match self.decrement() {
+                Some(event) => Handled::Event(event),
+                None => Handled::Ignored,
+            },
+            _ => Handled::Ignored,
+        }
+    }
+
+    fn a11y_actions(&self, _state: &()) -> Vec<A11yAction> {
+        if self.disabled {
+            Vec::new()
+        } else {
+            vec![A11yAction::Increment, A11yAction::Decrement]
+        }
+    }
+
+    /// Three sub-parts — the text area and the two stepper buttons, in
+    /// [`Self::handle`]'s own local space, most-specific first so the
+    /// stepper cells win over the body they sit beside.
+    fn sub_regions(
+        &self,
+        layout: &NumberInputPrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let local =
+            |r: Rect| Rect::new(r.x - layout.area.x, r.y - layout.area.y, r.width, r.height);
+        vec![
+            (
+                local(layout.layout.increment),
+                crate::interactive::SubTarget(SUB_INCREMENT),
+            ),
+            (
+                local(layout.layout.decrement),
+                crate::interactive::SubTarget(SUB_DECREMENT),
+            ),
+            (
+                local(layout.layout.text_area),
+                crate::interactive::SubTarget(SUB_TEXT_AREA),
+            ),
+        ]
+    }
+}
+
+/// [`Interactive::sub_regions`]'s tag for the editable text area.
+const SUB_TEXT_AREA: u64 = 0;
+/// [`Interactive::sub_regions`]'s tag for the `+` stepper button.
+const SUB_INCREMENT: u64 = 1;
+/// [`Interactive::sub_regions`]'s tag for the `-` stepper button.
+const SUB_DECREMENT: u64 = 2;
+
+/// The cell-grid painter for [`NumberInput`], written against
+/// [`crate::CellSurface`].
+///
+/// A 1-cell box-drawing border around the whole control, the text area's
+/// [`NumberInput::display_text`] on its first row, and `+`/`-` glyphs in
+/// their own bordered stepper cells. The same content
+/// [`native_surface_paint::paint`] puts on a pixel surface, degraded onto
+/// the cell grid (see [`crate::paint_surface`]'s module doc, "Why TUI
+/// stays out").
+///
+/// Colours follow [`native_surface_paint::paint`]'s own rules:
+/// [`crate::Theme::input_bg`] washes the text area,
+/// [`crate::Theme::accent_fg`] replaces [`crate::Theme::border_fg`] on a
+/// focused field, and [`crate::Theme::muted_fg`] replaces
+/// [`crate::Theme::surface_fg`] on a disabled one.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{NumberInput, NumberInputLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Rect;
+
+    fn style(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint a single-cell box-drawing frame around `rect`.
+    ///
+    /// Not [`CellSurface::draw_border`]: that verb paints nothing for a
+    /// box under 2×2 cells, while a stepper cell collapses to a single
+    /// row whenever the control is only two rows tall, and the frame it
+    /// draws there (`┌─┐`) is the affordance that makes the `+`/`-`
+    /// glyph read as a button at all.
+    fn stroke_rect(surface: &mut dyn CellSurface, rect: Rect, fg: Color, bg: Color) {
+        let st = style(fg, bg);
+        let x0 = rect.x.round() as u16;
+        let y0 = rect.y.round() as u16;
+        let w = rect.width.round() as u16;
+        let h = rect.height.round() as u16;
+        if w == 0 || h == 0 {
+            return;
+        }
+        let x1 = x0 + w.saturating_sub(1);
+        let y1 = y0 + h.saturating_sub(1);
+        for x in x0..=x1 {
+            surface.put_char(x, y0, '─', st);
+            if y1 != y0 {
+                surface.put_char(x, y1, '─', st);
+            }
+        }
+        for y in y0..=y1 {
+            surface.put_char(x0, y, '│', st);
+            if x1 != x0 {
+                surface.put_char(x1, y, '│', st);
+            }
+        }
+        surface.put_char(x0, y0, '┌', st);
+        if x1 != x0 {
+            surface.put_char(x1, y0, '┐', st);
+        }
+        if y1 != y0 {
+            surface.put_char(x0, y1, '└', st);
+            if x1 != x0 {
+                surface.put_char(x1, y1, '┘', st);
+            }
+        }
+    }
+
+    /// Draw `text` on `rect`'s first row, clipped to its width.
+    fn draw_text(surface: &mut dyn CellSurface, rect: Rect, text: &str, fg: Color, bg: Color) {
+        let x0 = rect.x.round() as u16;
+        let y0 = rect.y.round() as u16;
+        let w = rect.width.round() as u16;
+        surface.put_str_clipped(x0, y0, text, w, style(fg, bg));
+    }
+
+    /// Paint `number_input` at its resolved `layout` onto `surface`.
+    pub(crate) fn paint(
+        number_input: &NumberInput,
+        layout: &NumberInputLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        if layout.bounds.width <= 0.0 || layout.bounds.height <= 0.0 {
+            return;
+        }
+
+        let bg = theme.background;
+        let input_bg = theme.input_bg;
+        let border = if number_input.disabled || !number_input.focused {
+            theme.border_fg
+        } else {
+            theme.accent_fg
+        };
+        let fg = if number_input.disabled {
+            theme.muted_fg
+        } else {
+            theme.surface_fg
+        };
+
+        surface.fill(layout.text_area, style(fg, input_bg));
+        stroke_rect(surface, layout.bounds, border, bg);
+
+        let text = number_input.display_text();
+        if !text.is_empty() {
+            draw_text(surface, layout.text_area, &text, fg, input_bg);
+        }
+
+        stroke_rect(surface, layout.increment, border, bg);
+        stroke_rect(surface, layout.decrement, border, bg);
+        draw_text(surface, layout.increment, "+", fg, bg);
+        draw_text(surface, layout.decrement, "-", fg, bg);
+    }
+}
+
 /// Shared-paint executor for [`NumberInput`] — a rasteriser calls into
 /// this (never re-deriving geometry) instead of walking the fields
 /// itself, matching every other primitive's `native_surface_paint`
@@ -340,21 +769,8 @@ pub(crate) mod native_surface_paint {
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
-    /// The text currently shown in the field: the in-progress
-    /// [`NumberInput::draft`] verbatim when one is pending, otherwise
-    /// `value` formatted to `precision` decimal places. `pub(crate)` so
-    /// [`crate::primitives::form`]'s embedded `FieldKind::NumberInput`
-    /// painter sizes its control column from the same text this module's
-    /// own [`paint`] draws, instead of a second copy of this formula.
-    pub(crate) fn display_text(number_input: &NumberInput) -> String {
-        match &number_input.draft {
-            Some(draft) => draft.clone(),
-            None => format!("{:.*}", number_input.precision as usize, number_input.value),
-        }
-    }
-
     /// Paint a [`NumberInput`] onto `surface`: a bordered text area
-    /// showing [`display_text`], plus the increment/decrement stepper
+    /// showing [`NumberInput::display_text`], plus the increment/decrement stepper
     /// buttons stacked in their own bordered cells. `disabled` and
     /// `focused` recolour the border/text, mirroring
     /// [`crate::primitives::text_input`]'s own disabled/focus
@@ -387,7 +803,7 @@ pub(crate) mod native_surface_paint {
         surface.surface_fill_rect(layout.text_area, theme.input_bg);
         surface.surface_stroke_rect(layout.bounds, border, 1.0);
 
-        let text = display_text(number_input);
+        let text = number_input.display_text();
         if !text.is_empty() {
             surface.surface_draw_text_run(layout.text_area, &text, fg);
         }
@@ -798,5 +1214,353 @@ mod tests {
         assert_eq!(n.draft, None);
         assert!(!n.disabled);
         assert!(!n.focused);
+    }
+
+    // ── Cell-path paint (`cell_paint::paint`) ───────────────────────────
+
+    #[cfg(feature = "tui")]
+    mod cells {
+        use super::*;
+        use crate::theme::Theme;
+        use crate::tui::draw_number_input;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+            buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+        }
+
+        fn mk_number_input() -> NumberInput {
+            NumberInput {
+                id: WidgetId::new("num"),
+                value: 3.0,
+                min: 0.0,
+                max: 10.0,
+                step: 1.0,
+                precision: 0,
+                draft: None,
+                disabled: false,
+                focused: true,
+            }
+        }
+
+        fn paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+            let bounds = Rect::new(origin_x as f32, origin_y as f32, 10.0, 3.0);
+            let number_input = mk_number_input();
+            let layout = number_input.layout(bounds);
+
+            let rect = RRect::new(origin_x, origin_y, 10, 3);
+            let mut buf = Buffer::empty(rect);
+            draw_number_input(&mut buf, &number_input, &layout, &Theme::default());
+
+            // The value renders inside the text area, painted on top of
+            // the border (matching `native_surface_paint`'s fill ->
+            // stroke -> text layering, where the text run is drawn last).
+            let text_x = layout.text_area.x as u16;
+            let text_y = layout.text_area.y as u16;
+            assert_eq!(cell_char(&buf, text_x, text_y), '3');
+
+            // The border itself is still visible on an edge the text
+            // never reaches (the bottom-left corner, one row below the
+            // text).
+            let border_y = origin_y + layout.bounds.height.round() as u16 - 1;
+            assert_eq!(cell_char(&buf, origin_x, border_y), '└');
+
+            // hit_test: a click inside the increment sub-rect resolves to
+            // the Increment variant at the absolute screen position.
+            let p = Point::new(
+                layout.increment.x + layout.increment.width / 2.0,
+                layout.increment.y + layout.increment.height / 2.0,
+            );
+            assert_eq!(layout.hit_test(p), NumberInputHit::Increment);
+
+            let p = Point::new(
+                layout.decrement.x + layout.decrement.width / 2.0,
+                layout.decrement.y + layout.decrement.height / 2.0,
+            );
+            assert_eq!(layout.hit_test(p), NumberInputHit::Decrement);
+        }
+
+        #[test]
+        fn paint_and_click_round_trip() {
+            paint_and_click_round_trip_at(0, 0);
+        }
+
+        /// Paint and hit-test must work correctly when the control is not
+        /// at the screen origin.
+        #[test]
+        fn paint_and_click_round_trip_at_nonzero_origin() {
+            paint_and_click_round_trip_at(7, 13);
+        }
+
+        #[test]
+        fn stepper_cells_carry_their_glyphs() {
+            let n = mk_number_input();
+            let layout = n.layout(Rect::new(0.0, 0.0, 10.0, 4.0));
+            let mut buf = Buffer::empty(RRect::new(0, 0, 10, 4));
+            draw_number_input(&mut buf, &n, &layout, &Theme::default());
+
+            assert_eq!(
+                cell_char(&buf, layout.increment.x as u16, layout.increment.y as u16),
+                '+'
+            );
+            assert_eq!(
+                cell_char(&buf, layout.decrement.x as u16, layout.decrement.y as u16),
+                '-'
+            );
+        }
+
+        #[test]
+        fn an_in_progress_draft_paints_instead_of_the_committed_value() {
+            let mut n = mk_number_input();
+            n.draft = Some("42".into());
+            let layout = n.layout(Rect::new(0.0, 0.0, 10.0, 3.0));
+            let mut buf = Buffer::empty(RRect::new(0, 0, 10, 3));
+            draw_number_input(&mut buf, &n, &layout, &Theme::default());
+
+            let x = layout.text_area.x as u16;
+            let y = layout.text_area.y as u16;
+            assert_eq!(cell_char(&buf, x, y), '4');
+            assert_eq!(cell_char(&buf, x + 1, y), '2');
+        }
+
+        #[test]
+        fn zero_size_bounds_paints_nothing() {
+            let n = mk_number_input();
+            let layout = n.layout(Rect::new(0.0, 0.0, 0.0, 0.0));
+            let mut buf = Buffer::empty(RRect::new(0, 0, 10, 3));
+            draw_number_input(&mut buf, &n, &layout, &Theme::default());
+            assert_eq!(cell_char(&buf, 0, 0), ' ');
+        }
+    }
+}
+
+/// [`Interactive`] dispatch, driven directly the way an out-of-process
+/// binding host reaches a widget — the in-runtime leg is
+/// `tests/widget_contract_number_input.rs`.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::interactive::{EventHost, SubTarget};
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock: records every call so a test can
+    /// assert on what [`Interactive::handle`] asked for.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn input() -> NumberInput {
+        let mut n = NumberInput::new(WidgetId::new("settings:volume"), 0.0, 100.0);
+        n.focused = true;
+        n
+    }
+
+    fn layout_for(n: &NumberInput) -> NumberInputPrimitiveLayout {
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        Primitive::layout(n, &ctx, Rect::new(4.0, 2.0, 10.0, 4.0))
+    }
+
+    fn dispatch(n: &NumberInput, event: &RoutedEvent) -> Handled<NumberInputEvent> {
+        let layout = layout_for(n);
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(n.id, &mut host);
+        n.handle(&mut (), event, &layout, &mut cx)
+    }
+
+    fn pointer_down(local_x: f32, local_y: f32) -> RoutedEvent {
+        RoutedEvent::Pointer {
+            kind: PointerKind::Down(crate::MouseButton::Left),
+            sub: None,
+            local: Point::new(local_x, local_y),
+            mods: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn an_enabled_field_is_one_focus_stop_and_a_disabled_one_is_none() {
+        assert_eq!(input().focus(), FocusSpec::Stop);
+        let mut disabled = input();
+        disabled.disabled = true;
+        assert_eq!(disabled.focus(), FocusSpec::None);
+    }
+
+    #[test]
+    fn a_click_on_the_stepper_cells_steps_the_value() {
+        let n = input();
+        let layout = layout_for(&n);
+        // Local coordinates: the increment cell's own centre, relative to
+        // the widget's painted rect.
+        let inc = layout.layout.increment;
+        let local_x = inc.x + inc.width / 2.0 - layout.area.x;
+        let local_y = inc.y + inc.height / 2.0 - layout.area.y;
+        assert_eq!(
+            dispatch(&n, &pointer_down(local_x, local_y)),
+            Handled::Event(NumberInputEvent::ValueChanged {
+                id: n.id,
+                value: 1.0
+            })
+        );
+
+        let dec = layout.layout.decrement;
+        let local_y = dec.y + dec.height / 2.0 - layout.area.y;
+        assert_eq!(
+            dispatch(&n, &pointer_down(local_x, local_y)),
+            Handled::Event(NumberInputEvent::ValueChanged {
+                id: n.id,
+                value: -0.0
+            })
+        );
+    }
+
+    #[test]
+    fn a_click_on_the_text_area_only_takes_focus() {
+        let n = input();
+        let layout = layout_for(&n);
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(n.id, &mut host);
+        let handled = n.handle(&mut (), &pointer_down(1.0, 1.0), &layout, &mut cx);
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    #[test]
+    fn a_wheel_notch_steps_by_the_fields_own_step() {
+        let mut n = input();
+        n.step = 5.0;
+        let wheel = |dy: f32| RoutedEvent::Wheel {
+            dx: 0.0,
+            dy,
+            local: Point::new(1.0, 1.0),
+            mods: Modifiers::default(),
+        };
+        assert_eq!(
+            dispatch(&n, &wheel(1.0)),
+            Handled::Event(NumberInputEvent::ValueChanged {
+                id: n.id,
+                value: 5.0
+            })
+        );
+        assert_eq!(dispatch(&n, &wheel(0.0)), Handled::Ignored);
+    }
+
+    #[test]
+    fn arrow_keys_and_typed_digits_route_through_handle_key() {
+        let n = input();
+        let key = |key: Key| {
+            RoutedEvent::Key(KeyEvent {
+                key,
+                modifiers: Modifiers::default(),
+                repeat: false,
+            })
+        };
+        assert_eq!(
+            dispatch(&n, &key(Key::Named(NamedKey::Up))),
+            Handled::Event(NumberInputEvent::ValueChanged {
+                id: n.id,
+                value: 1.0
+            })
+        );
+        assert_eq!(
+            dispatch(&n, &key(Key::Char('7'))),
+            Handled::Event(NumberInputEvent::DraftChanged {
+                id: n.id,
+                draft: "7".into()
+            })
+        );
+        // An unrecognised key stays unhandled, so a host's own binding
+        // still sees it.
+        assert_eq!(
+            dispatch(&n, &key(Key::Named(NamedKey::Tab))),
+            Handled::Ignored
+        );
+    }
+
+    #[test]
+    fn the_a11y_increment_and_decrement_actions_step_the_value() {
+        let n = input();
+        assert_eq!(
+            dispatch(&n, &RoutedEvent::Action(A11yAction::Increment)),
+            Handled::Event(NumberInputEvent::ValueChanged {
+                id: n.id,
+                value: 1.0
+            })
+        );
+        assert_eq!(
+            n.a11y_actions(&()),
+            vec![A11yAction::Increment, A11yAction::Decrement]
+        );
+    }
+
+    #[test]
+    fn a_disabled_field_answers_nothing_and_offers_no_a11y_actions() {
+        let mut n = input();
+        n.disabled = true;
+        let layout = layout_for(&n);
+        let inc = layout.layout.increment;
+        let local_x = inc.x + inc.width / 2.0 - layout.area.x;
+        let local_y = inc.y + inc.height / 2.0 - layout.area.y;
+        assert_eq!(
+            dispatch(&n, &pointer_down(local_x, local_y)),
+            Handled::Ignored
+        );
+        assert!(n.a11y_actions(&()).is_empty());
+    }
+
+    #[test]
+    fn every_outcome_rides_the_form_event_channel_under_the_fields_id() {
+        let id = WidgetId::new("settings:volume");
+        assert_eq!(
+            NumberInputEvent::Committed { id, value: 4.0 }.into_ui_event(id),
+            crate::UiEvent::Form(id, crate::FormEvent::NumberCommitted { id, value: 4.0 })
+        );
+        assert_eq!(
+            NumberInputEvent::Cancelled { id }.into_ui_event(id),
+            crate::UiEvent::Form(id, crate::FormEvent::NumberCancelled { id })
+        );
+    }
+
+    #[test]
+    fn sub_regions_name_the_stepper_cells_before_the_text_area() {
+        let n = input();
+        let layout = layout_for(&n);
+        let regions = n.sub_regions(&layout);
+        assert_eq!(
+            regions.iter().map(|(_, s)| s.0).collect::<Vec<_>>(),
+            vec![SUB_INCREMENT, SUB_DECREMENT, SUB_TEXT_AREA]
+        );
+        // Local space: every rect sits inside the widget's own area.
+        for (rect, _) in &regions {
+            assert!(rect.x >= 0.0 && rect.y >= 0.0, "{rect:?} is not local");
+        }
+    }
+
+    #[test]
+    fn measure_reports_the_display_text_plus_chrome_and_the_stepper_column() {
+        let n = input();
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let size = Primitive::measure(&n, &ctx, Size::new(40.0, 10.0));
+        // "0" is one column wide, plus two border columns and the
+        // three-column stepper.
+        assert_eq!(size.width, Some(1.0 + 2.0 + STEPPER_WIDTH));
+        assert_eq!(size.height, Some(3.0));
     }
 }
