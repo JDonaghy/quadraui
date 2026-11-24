@@ -2,13 +2,13 @@
 //! [`TabIcon`] glyphs — VS Code's coloured
 //! language/file-type badge ahead of each tab label.
 //!
-//! The point of the demo is the **sidecar**: icons are passed to
-//! [`Backend::draw_tab_bar_icons`] as a slice parallel to `bar.tabs`
-//! rather than as a `TabItem` field, so the same `TabBar` value paints
-//! with or without decoration. Pressing `i` toggles the sidecar between
-//! the real icon list and `&[]`, which is exactly the comparison a human
-//! wants to eyeball: label positions shift right by the icon reservation
-//! and nothing else moves.
+//! The point of the demo is the **sidecar**: icons ride on
+//! [`TabBar::icons`] as a list parallel to `bar.tabs` rather than as a
+//! [`TabItem`] field, so the same tabs paint with or without decoration.
+//! Pressing `i` toggles the sidecar between the real icon list and an
+//! empty one, which is exactly the comparison a human wants to eyeball:
+//! label positions shift right by the icon reservation and nothing else
+//! moves.
 //!
 //! Glyphs are ASCII on purpose (`R`, `T`, `M`) — a Nerd Font codepoint
 //! renders as a blank box in a terminal without a patched font, which
@@ -26,8 +26,8 @@
 //! click first.
 
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TabBar, TabIcon, TabItem, UiEvent, WidgetId,
+    AppLogic, Backend, Color, DrawsPrimitives, InteractionState, Key, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, TabBar, TabBarHit, TabIcon, TabItem, UiEvent, WidgetId,
 };
 
 /// Tab labels, paired index-for-index with [`TabIconsDemo::icons`].
@@ -132,6 +132,7 @@ impl TabIconsDemo {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            icons: self.visible_icons(),
             ..Default::default()
         }
     }
@@ -149,10 +150,8 @@ impl AppLogic for TabIconsDemo {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let viewport = backend.viewport();
         let lh = backend.line_height();
-        let bar = self.bar();
-        // The `TabBar` is painted with or without the sidecar.
-        let icons = self.visible_icons();
-        backend.draw_tab_bar_icons(Rect::new(0.0, 0.0, viewport.width, lh), &bar, &icons, None);
+        // The bar carries its icons, or none while they're toggled off.
+        backend.draw_dyn(Rect::new(0.0, 0.0, viewport.width, lh), &self.bar(), &());
         backend.draw_status_bar_interactive(
             Rect::new(0.0, viewport.height - lh, viewport.width, lh),
             &self.hint_bar(),
@@ -160,57 +159,44 @@ impl AppLogic for TabIconsDemo {
         );
     }
 
-    #[allow(deprecated)] // `Backend::tab_bar_layout_icons` returns `TabBarHits` — issue #823
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
-            // Click routing goes through the **no-paint twin**
-            // (`tab_bar_layout_icons`) with the same sidecar the paint
-            // used, which is the whole reason that twin exists: the
-            // icon-less `tab_bar_layout` would report every slot shifted
-            // left by the icon reservation, so clicking the third tab
-            // would activate the second.
+            // Clicks resolve against the same `Primitive::layout` the
+            // paint used, icons included: a layout without them would
+            // report every slot shifted left by the icon reservation, so
+            // clicking the third tab would activate the second.
             UiEvent::MouseDown { position, .. } => {
                 let viewport = backend.viewport();
                 let lh = backend.line_height();
                 let (x, y) = (position.x, position.y);
                 if y <= lh {
-                    let icons = self.visible_icons();
-                    let hits = backend.tab_bar_layout_icons(
-                        Rect::new(0.0, 0.0, viewport.width, lh),
-                        &self.bar(),
-                        &icons,
-                    );
+                    let strip = backend
+                        .layout_primitive(Rect::new(0.0, 0.0, viewport.width, lh), &self.bar());
                     let open = self.open_indices();
-                    // Close buttons take precedence over tab-body
-                    // activation, so a click on the `×` never also
-                    // registers as an activation click on the tab under it.
-                    for (vis_i, close) in hits.close_bounds.iter().enumerate() {
-                        if let Some((start, end)) = close {
-                            if end > start && (*start..*end).contains(&(x as f64)) {
-                                let orig = open[vis_i];
-                                self.closed[orig] = true;
-                                if self.active == orig {
-                                    // Close-neighbour rule (see
-                                    // `compose::WorkspaceController::close`'s
-                                    // doc): the tab that slides into the
-                                    // closed one's visible slot — its right
-                                    // neighbour — takes over; when the
-                                    // closed tab was last, clamp onto the
-                                    // new last tab instead.
-                                    let new_open = self.open_indices();
-                                    if let Some(last) = new_open.len().checked_sub(1) {
-                                        self.active = new_open[vis_i.min(last)];
-                                    }
+                    match strip.layout.hit_test(x, y) {
+                        TabBarHit::TabClose(vis_i) => {
+                            let orig = open[vis_i];
+                            self.closed[orig] = true;
+                            if self.active == orig {
+                                // Close-neighbour rule (see
+                                // `compose::WorkspaceController::close`'s
+                                // doc): the tab that slides into the
+                                // closed one's visible slot — its right
+                                // neighbour — takes over; when the closed
+                                // tab was last, clamp onto the new last
+                                // tab instead.
+                                let new_open = self.open_indices();
+                                if let Some(last) = new_open.len().checked_sub(1) {
+                                    self.active = new_open[vis_i.min(last)];
                                 }
-                                return Reaction::Redraw;
                             }
+                            return Reaction::Redraw;
                         }
-                    }
-                    for (vis_i, (start, end)) in hits.slot_positions.iter().enumerate() {
-                        if (*start..*end).contains(&(x as f64)) && end > start {
+                        TabBarHit::Tab(vis_i) => {
                             self.active = open[vis_i];
                             return Reaction::Redraw;
                         }
+                        _ => {}
                     }
                 }
                 Reaction::Continue

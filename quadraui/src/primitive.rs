@@ -182,6 +182,10 @@ pub struct LayoutCtx<'a> {
     /// that backend — see [`Self::with_measurer`] and
     /// [`Self::text_width`]. `None` when no backend is in reach.
     measurer: Option<TextMeasurer<'a>>,
+    /// The calling backend's [`crate::Backend::style`] — see
+    /// [`Self::with_style`] and [`Self::style`]. `None` when no backend is
+    /// in reach.
+    style: Option<&'a crate::Style>,
 }
 
 /// Prints the three scalar metrics plus whether a text measurer is
@@ -194,6 +198,7 @@ impl std::fmt::Debug for LayoutCtx<'_> {
             .field("char_width", &self.char_width)
             .field("nerd_fonts_enabled", &self.nerd_fonts_enabled)
             .field("measurer", &self.measurer.map(|_| "<fn>"))
+            .field("style", &self.style.is_some())
             .finish()
     }
 }
@@ -227,6 +232,7 @@ impl LayoutCtx<'static> {
             char_width,
             nerd_fonts_enabled,
             measurer: None,
+            style: None,
         }
     }
 }
@@ -240,13 +246,36 @@ impl<'a> LayoutCtx<'a> {
     /// `B: Backend + ?Sized`, so a generic `&B` cannot be coerced to
     /// another trait object there — `|t, r| backend.measure_text(t, r).0`
     /// can, and keeps this type free of any `Backend` bound.
-    pub fn with_measurer<'b>(self, m: &'b dyn Fn(&str, crate::FontRole) -> f32) -> LayoutCtx<'b> {
+    pub fn with_measurer<'b>(self, m: &'b dyn Fn(&str, crate::FontRole) -> f32) -> LayoutCtx<'b>
+    where
+        'a: 'b,
+    {
         LayoutCtx {
-            line_height: self.line_height,
-            char_width: self.char_width,
-            nerd_fonts_enabled: self.nerd_fonts_enabled,
             measurer: Some(m),
+            ..self
         }
+    }
+
+    /// This ctx with `style` attached, so a layout that sizes itself off a
+    /// [`crate::Style`] token (a tab's [`crate::Style::tab_padding_x`])
+    /// reads the calling backend's live value — the one its own
+    /// rasteriser paints with.
+    pub fn with_style<'b>(self, style: &'b crate::Style) -> LayoutCtx<'b>
+    where
+        'a: 'b,
+    {
+        LayoutCtx {
+            style: Some(style),
+            ..self
+        }
+    }
+
+    /// The style attached with [`Self::with_style`], else
+    /// [`crate::Style::default`].
+    pub fn style(&self) -> &crate::Style {
+        static DEFAULT: std::sync::LazyLock<crate::Style> =
+            std::sync::LazyLock::new(crate::Style::default);
+        self.style.unwrap_or(&DEFAULT)
     }
 
     /// Width of `text` in `role`'s font, in the same units as

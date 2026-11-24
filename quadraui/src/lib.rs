@@ -780,16 +780,12 @@ pub use primitives::tab_bar::{
     TabBarHits, TabBarLayout, TabBarSegment, TabChrome, TabFrame, TabIcon, TabItem, TabMeasure,
     VisibleSegment, VisibleTab,
 };
-// `TabBar`'s `Primitive::Layout` — defined on every feature set `impl
-// Primitive for TabBar` itself is (see that impl's own `cfg`): the three
-// pixel backends via `native_surface_paint`, plus `tui` via
-// `Primitive::paint_cells`/`cell_paint::paint`.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
+// `TabBar`'s `Primitive::Layout` — unconditional, like `impl Primitive
+// for TabBar` itself: the three pixel backends paint it via
+// `native_surface_paint`, `tui` via
+// `Primitive::paint_cells`/`cell_paint::paint`, and a build with no
+// rasteriser at all still resolves the pixel-measured layout so a
+// backend-generic `AppLogic` type-checks.
 pub use primitives::tab_bar::TabBarPrimitiveLayout;
 pub use primitives::terminal::{
     Terminal, TerminalCell, TerminalCellSize, TerminalCursorShape, TerminalEvent, TerminalHit,

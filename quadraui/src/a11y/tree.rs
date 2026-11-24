@@ -1283,7 +1283,6 @@ fn describe(content: &OwnedContent) -> Described {
         OwnedContent::ListWidget(list) => Described::from_primitive(list),
         OwnedContent::Toolbar(bar) => Described::from_primitive(bar),
         OwnedContent::TabBar(bar) => Described::from_primitive(bar),
-        OwnedContent::TabBarWidget(bar) => Described::from_primitive(bar),
         OwnedContent::ActivityBar(bar) => Described::from_primitive(bar),
         OwnedContent::MenuBar(bar) => Described::from_primitive(bar),
         OwnedContent::ContextMenu(menu) => Described::from_primitive(menu),
@@ -1358,7 +1357,6 @@ fn content_kind(content: &OwnedContent) -> &'static str {
     match content {
         OwnedContent::Editor(_) => "Editor",
         OwnedContent::TabBar(_) => "Tab bar",
-        OwnedContent::TabBarWidget(_) => "Tab bar",
         OwnedContent::StatusBar(_) => "Status bar",
         OwnedContent::ActivityBar(_) => "Activity bar",
         OwnedContent::CommandLine(_) => "Command line",

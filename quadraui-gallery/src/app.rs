@@ -22,10 +22,11 @@
 //! running — including `Theme::light_default()`.
 
 use quadraui::{
-    AppShellEvent, AppShellLayout, Backend, Decoration, Icon, InteractionState, Key, ListItem,
-    ListView, ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect, ShellApp,
-    ShellConfig, ShellContext, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText, TabBar,
-    TabBarHit, TabItem, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
+    AppShellEvent, AppShellLayout, Backend, Decoration, DrawsPrimitives, Icon, InteractionState,
+    Key, ListItem, ListView, ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect,
+    ShellApp, ShellConfig, ShellContext, StatusBar, StatusBarSegment, Style, StyledSpan,
+    StyledText, TabBar, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextDisplayLine, UiEvent,
+    WidgetId,
 };
 
 use crate::registry::registry;
@@ -281,6 +282,14 @@ impl GalleryApp {
         }
     }
 
+    /// Resolve the main-pane tab strip's geometry exactly as the paint in
+    /// `render_content` does ([`DrawsPrimitives::layout_primitive`]), so
+    /// paint and click can never disagree about which tab a click landed
+    /// on.
+    fn main_tab_layout(backend: &dyn Backend, tab_rect: Rect, bar: &TabBar) -> TabBarLayout {
+        backend.layout_primitive(tab_rect, bar).layout
+    }
+
     /// Build the sidebar's [`ListView`] for `rows` (the demo indices in
     /// the active group, in display order) — shared by `render_content`
     /// (paint) and `handle_inner` (click hit-test via
@@ -509,7 +518,10 @@ impl ShellApp for GalleryApp {
             let tab_h = Self::main_tab_strip_height(backend);
             let tab_rect = Rect::new(main.x, main.y, main.width, tab_h);
             let bar = self.tab_bar(backend);
-            backend.draw_tab_bar_layout(tab_rect, &bar, None);
+            // Painted through the widget contract: `TabBar` is a
+            // `Primitive`, so `draw_dyn` resolves its layout and paints it
+            // on whichever surface this backend exposes.
+            backend.draw_dyn(tab_rect, &bar, &());
 
             let body = Rect::new(
                 main.x,
@@ -772,7 +784,7 @@ impl GalleryApp {
                 && position.y < tab_rect.y + tab_rect.height
             {
                 let bar = self.tab_bar(backend);
-                let layout = backend.resolve_tab_bar_layout(tab_rect, &bar);
+                let layout = Self::main_tab_layout(backend, tab_rect, &bar);
                 let local_x = position.x - tab_rect.x;
                 let local_y = position.y - tab_rect.y;
                 if let TabBarHit::Tab(idx) = layout.hit_test(local_x, local_y) {

@@ -10,9 +10,10 @@
 
 use std::cell::Cell;
 
+use quadraui::primitives::tab_bar::TabBarPrimitiveLayout;
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TabBar, TabBarSegment, TabItem, UiEvent, WidgetId,
+    AppLogic, Backend, Color, DrawsPrimitives, InteractionState, Key, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, TabBar, TabBarSegment, TabItem, UiEvent, WidgetId,
 };
 
 // ─── App state ───────────────────────────────────────────────────────────────
@@ -245,20 +246,23 @@ pub fn handle_status_action(state: &mut AppState, id: &str) {
 impl AppLogic for AppState {
     type AreaId = ();
 
-    #[allow(deprecated)] // `Backend::draw_tab_bar` returns `TabBarHits` — issue #823
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let viewport = backend.viewport();
-        // Tab bar at the top.
+        // Tab bar at the top, painted through the widget contract:
+        // `TabBar` is a `Primitive`, so `draw_dyn` resolves its layout and
+        // paints it on whichever surface this backend exposes.
         let tab_bar = build_tab_bar(self);
         let tab_h = 28.0; // hint — actual paint height = backend.current_line_height
         let tab_rect = Rect::new(0.0, 0.0, viewport.width, tab_h);
-        let hits = backend.draw_tab_bar(tab_rect, &tab_bar, None);
+        let painted = backend.draw_dyn(tab_rect, &tab_bar, &());
         // Per the TabBar contract, write the corrected scroll offset
         // back so the next frame paints with the right starting tab.
         // Differs from this frame's input only on resize / tab open /
         // tab close transitions.
-        if hits.correct_scroll_offset != self.tab_scroll_offset.get() {
-            self.tab_scroll_offset.set(hits.correct_scroll_offset);
+        if let Some(resolved) = painted.downcast_ref::<TabBarPrimitiveLayout>() {
+            if resolved.corrected_scroll_offset != self.tab_scroll_offset.get() {
+                self.tab_scroll_offset.set(resolved.corrected_scroll_offset);
+            }
         }
         // Status bar at the bottom — mirrors the placement in the
         // minimal apps and the established vim convention.

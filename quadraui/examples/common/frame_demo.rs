@@ -190,10 +190,9 @@ impl AppLogic for FrameDemo {
         let status = self.status_bar();
 
         let mut frame = ScreenLayout::new();
-        frame.push(Surface::TabBar {
+        frame.push(Surface::Widget {
             rect: tab_rect,
-            bar: tab_bar,
-            hovered_close: None,
+            widget: Box::new(tab_bar),
         });
         frame.push(Surface::List {
             rect: list_rect,

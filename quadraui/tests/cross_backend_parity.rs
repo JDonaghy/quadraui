@@ -1775,3 +1775,93 @@ mod gtk_tab_bar_descriptor_fields {
         );
     }
 }
+
+// ─── TabBar: the widget contract reproduces each rasteriser's geometry ───
+//
+// `TabBar`'s whole geometry is label widths, so the strip a caller gets
+// depends entirely on who measured the labels. Both tests below drive the
+// same bar at the same size through the widget contract and through the
+// backend's own `draw_tab_bar` layout, and require the two to agree tab for
+// tab — the condition for a tab-strip caller painting through
+// `DrawsPrimitives::draw_dyn` instead of a `Backend` tab-bar method.
+
+/// Three short lowercase labels, one closable tab each — the shape a
+/// sidebar document strip paints.
+fn parity_tab_bar() -> quadraui::TabBar {
+    quadraui::TabBar {
+        id: WidgetId::new("parity:tabs"),
+        tabs: ["alpha", "beta", "gamma"]
+            .iter()
+            .enumerate()
+            .map(|(i, label)| quadraui::TabItem {
+                label: (*label).to_string(),
+                is_active: i == 0,
+                is_dirty: false,
+                is_preview: false,
+                is_closable: true,
+            })
+            .collect(),
+        scroll_offset: 0,
+        right_segments: vec![],
+        active_accent: None,
+        show_tab_close: true,
+        compact: false,
+        ..Default::default()
+    }
+}
+
+/// The layout `draw_dyn` resolves `bar` to on `backend`.
+fn layout_with_backend_ctx<B: Backend + ?Sized>(
+    backend: &B,
+    bar: &quadraui::TabBar,
+    rect: Rect,
+) -> quadraui::TabBarLayout {
+    quadraui::DrawsPrimitives::layout_primitive(backend, rect, bar).layout
+}
+
+fn tab_spans(l: &quadraui::TabBarLayout) -> Vec<(f32, f32)> {
+    l.visible_tabs
+        .iter()
+        .map(|t| (t.bounds.x, t.bounds.x + t.bounds.width))
+        .collect()
+}
+
+/// On a **cell grid** both paths count display columns.
+#[test]
+fn tab_bar_widget_contract_matches_the_tui_rasteriser_geometry() {
+    let bar = parity_tab_bar();
+    let rect = Rect::new(0.0, 0.0, 30.0, 1.0);
+    let backend = quadraui::tui::backend::TuiBackend::new();
+
+    let native = Backend::resolve_tab_bar_layout(&backend, rect, &bar);
+    let contract = layout_with_backend_ctx(&backend, &bar, rect);
+    assert_eq!(
+        tab_spans(&contract),
+        tab_spans(&native),
+        "a cell grid's widget-contract layout must match its rasteriser's, \
+         tab for tab — contract={contract:?} native={native:?}"
+    );
+}
+
+/// On a **pixel** backend the contract measures labels through the same
+/// `Backend::measure_text` font the GTK rasteriser paints with, so a narrow
+/// strip — where an approximated width would ellipsise or scroll
+/// differently — resolves to the same tabs at the same spans.
+#[test]
+fn tab_bar_widget_contract_matches_the_gtk_rasteriser_geometry() {
+    let bar = parity_tab_bar();
+    let driver = gtk_driver_with_shell(AppShellDemo::new(), AppShellDemo::config(), 800, 480);
+    let backend = driver.backend();
+
+    for width in [160.0, 200.0, 700.0] {
+        let rect = Rect::new(0.0, 0.0, width, 35.0);
+        let native = Backend::resolve_tab_bar_layout(backend, rect, &bar);
+        let contract = layout_with_backend_ctx(backend, &bar, rect);
+        assert_eq!(
+            tab_spans(&contract),
+            tab_spans(&native),
+            "at {width}px the widget contract must lay out the same tabs at the \
+             same spans as the GTK rasteriser — contract={contract:?} native={native:?}"
+        );
+    }
+}

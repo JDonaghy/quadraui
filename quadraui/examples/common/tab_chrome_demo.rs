@@ -4,10 +4,13 @@
 //! label.
 //!
 //! The point of the demo is the **sidecar + declarative click routing**:
-//! the bracket framing is requested via [`Backend::draw_tab_bar_with_chrome`]
-//! (never baked into [`TabItem::label`] as a string), and a click still
-//! resolves through [`Backend::tab_bar_layout_with_chrome`]'s `close_bounds` /
-//! `slot_positions`, never a hand-rolled character scan for `×`.
+//! the bracket framing is requested through the descriptor's own
+//! [`TabBar::chrome`] field (never baked into [`TabItem::label`] as a
+//! string) and painted by [`quadraui::DrawsPrimitives::draw_dyn`], and a
+//! click resolves through the same primitive layout that paint used —
+//! [`quadraui::DrawsPrimitives::layout_primitive`] plus
+//! [`quadraui::TabBarLayout::hit_test`] — never a hand-rolled character
+//! scan for `×`.
 //!
 //! Only the active tab is closable (`is_closable` tracks `is_active`), so
 //! its `×` — and, since chrome frames it, its `]` — are the only
@@ -28,8 +31,9 @@
 //! convention [`quadraui::focus::FocusTree::set_focus`] documents.
 
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TabBar, TabBarEvent, TabChrome, TabFrame, TabItem, UiEvent, WidgetId,
+    AppLogic, Backend, Color, DrawsPrimitives, InteractionState, Key, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, TabBar, TabBarEvent, TabBarHit, TabChrome, TabFrame, TabItem,
+    UiEvent, WidgetId,
 };
 
 /// Tab labels, index-stable across activation (only `is_active` /
@@ -78,6 +82,7 @@ impl TabChromeDemo {
             active_accent: None,
             show_tab_close: true,
             compact: false,
+            chrome: self.chrome(),
             ..Default::default()
         }
     }
@@ -128,12 +133,7 @@ impl AppLogic for TabChromeDemo {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let viewport = backend.viewport();
         let lh = backend.line_height();
-        backend.draw_tab_bar_with_chrome(
-            Rect::new(0.0, 0.0, viewport.width, lh),
-            &self.bar(),
-            None,
-            &self.chrome(),
-        );
+        backend.draw_dyn(Rect::new(0.0, 0.0, viewport.width, lh), &self.bar(), &());
         backend.draw_status_bar_interactive(
             Rect::new(0.0, viewport.height - lh, viewport.width, lh),
             &self.hint_bar(),
@@ -141,7 +141,6 @@ impl AppLogic for TabChromeDemo {
         );
     }
 
-    #[allow(deprecated)] // `Backend::tab_bar_layout_with_chrome` returns `TabBarHits`.
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
             // Close buttons take precedence over tab-body activation —
@@ -154,33 +153,26 @@ impl AppLogic for TabChromeDemo {
                 if y > lh {
                     return Reaction::Continue;
                 }
-                let hits = backend.tab_bar_layout_with_chrome(
-                    Rect::new(0.0, 0.0, viewport.width, lh),
-                    &self.bar(),
-                    &self.chrome(),
-                );
-                for (i, close) in hits.close_bounds.iter().enumerate() {
-                    if let Some((start, end)) = close {
-                        if end > start && (*start..*end).contains(&(x as f64)) {
-                            // A click always suppresses the focus ring, even
-                            // when it lands on the close glyph rather than
-                            // the tab body — see the module doc.
-                            self.focus_visible = false;
-                            self.last_action = format!("closed {}", LABELS[i]);
-                            return Reaction::Redraw;
-                        }
+                let strip =
+                    backend.layout_primitive(Rect::new(0.0, 0.0, viewport.width, lh), &self.bar());
+                match strip.layout.hit_test(x, y) {
+                    TabBarHit::TabClose(i) => {
+                        // A click always suppresses the focus ring, even
+                        // when it lands on the close glyph rather than
+                        // the tab body — see the module doc.
+                        self.focus_visible = false;
+                        self.last_action = format!("closed {}", LABELS[i]);
+                        Reaction::Redraw
                     }
-                }
-                for (i, (start, end)) in hits.slot_positions.iter().enumerate() {
-                    if end > start && (*start..*end).contains(&(x as f64)) {
+                    TabBarHit::Tab(i) => {
                         self.active = i;
                         self.focused = Some(i);
                         self.focus_visible = false;
                         self.last_action = format!("activated {}", LABELS[i]);
-                        return Reaction::Redraw;
+                        Reaction::Redraw
                     }
+                    _ => Reaction::Continue,
                 }
-                Reaction::Continue
             }
             UiEvent::KeyPressed {
                 key: Key::Char('q'),

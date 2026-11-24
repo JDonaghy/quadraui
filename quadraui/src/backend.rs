@@ -4745,15 +4745,7 @@ pub trait DrawsPrimitives: Backend {
     /// if layout.hit_test(click_x, click_y) { /* ... */ }
     /// ```
     fn draw_primitive<P: Primitive>(&mut self, rect: Rect, primitive: &P) -> P::Layout {
-        let layout = {
-            // A closure over `self`, not a `&dyn Backend`: this blanket
-            // impl is generic over `B: Backend + ?Sized`, so `&B` can't
-            // be coerced to another trait object here. Scoped so the
-            // closure's shared borrow of `*self` ends before the
-            // `&mut self` paint calls below.
-            let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
-            primitive.layout(&primitive_layout_ctx(self).with_measurer(&measurer), rect)
-        };
+        let layout = self.layout_primitive(rect, primitive);
         let style = self.style();
         let theme = self.theme();
         if let Some(surface) = self.paint_surface() {
@@ -4771,6 +4763,24 @@ pub trait DrawsPrimitives: Backend {
             primitive.paint_cells(&layout, buf, &theme);
         }
         layout
+    }
+
+    /// Resolve `primitive`'s [`Primitive::Layout`] for `rect` exactly as
+    /// [`Self::draw_primitive`] and [`Self::draw_dyn`] do — this backend's
+    /// row height and char width, text measured through its own
+    /// [`Backend::measure_text`] — without painting. A caller that
+    /// hit-tests a click against a widget it painted reads back the same
+    /// geometry the paint used.
+    fn layout_primitive<P: Primitive>(&self, rect: Rect, primitive: &P) -> P::Layout {
+        // A closure over `self`, not a `&dyn Backend`: this blanket impl
+        // is generic over `B: Backend + ?Sized`, so `&B` can't be coerced
+        // to another trait object here.
+        let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
+        let style = self.style();
+        let ctx = primitive_layout_ctx(self)
+            .with_measurer(&measurer)
+            .with_style(&style);
+        primitive.layout(&ctx, rect)
     }
 
     /// The [`DynWidget`] counterpart of [`Self::draw_primitive`] —
@@ -4813,14 +4823,14 @@ pub trait DrawsPrimitives: Backend {
         state: &dyn PaintState,
     ) -> Box<dyn PrimitiveLayout> {
         let ctx = primitive_layout_ctx(self);
+        let style = self.style();
         let layout = {
-            // See `draw_primitive`'s own measurer comment: a closure over
+            // See `layout_primitive`'s own measurer comment: a closure over
             // `self`, scoped so its shared borrow ends before the
             // `&mut self` paint calls below.
             let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
-            w.layout(&ctx.with_measurer(&measurer), rect)
+            w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect)
         };
-        let style = self.style();
         let theme = self.theme();
         let env = PaintEnv {
             services: PaintServices {
@@ -4855,7 +4865,7 @@ pub trait DrawsPrimitives: Backend {
                 })
                 .collect();
             let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
-            let recorded = w.layout(&ctx.with_measurer(&measurer), rect);
+            let recorded = w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect);
             crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
                 id: *id,
                 rect,

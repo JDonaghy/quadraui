@@ -13,12 +13,13 @@ use serde::{Deserialize, Deserializer};
 use quadraui::{
     Backend, Button, DataRow, DataTable, Decoration, FontRole, InteractionState, ListItem,
     ListView, ListViewHit, ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize,
-    Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar, TabChrome,
-    TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme, TreePath,
-    TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
+    Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar, TabBarLayout,
+    TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme,
+    TreePath, TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
+use quadraui::primitives::tab_bar::TabBarPrimitiveLayout;
 use quadraui::DrawsPrimitives;
 
 use crate::extra_paint::{extra_as, ExtraPaint};
@@ -42,6 +43,16 @@ pub struct RenderFrame {
     pub list: Option<ListView>,
     pub tree: Option<TreeView>,
     pub data_table: Option<DataTable>,
+    // TODO(#2977): fold this slot, its [`draw_bands`] paint arm, `host.rs`'s
+    // `SLOT_TAB_BAR` arms and `semantic.rs`'s per-kind routing into the
+    // generic `widgets` map below, with every other fixed slot. The paint
+    // already goes through the widget contract ([`paint_tab_bar`]); what
+    // the fixed slot still carries that the generic arm cannot is the
+    // *hit*: it records [`PaintedHit::TabBar`] with the resolved
+    // [`TabBarLayout`], so a click resolves to a tab index or a close
+    // glyph, where the `widgets` arm records [`PaintedHit::Widget`] with
+    // an area and no sub-region detail. Folding needs a hit seam on
+    // [`DynWidget`] first, which is that issue's own first deliverable.
     pub tab_bar: Option<TabBar>,
     /// Additive primitive slots present in this frame, keyed by kind name.
     pub extra: HashMap<String, Rc<dyn ExtraPaint>>,
@@ -157,6 +168,39 @@ pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
             Box::leak(Box::new(HashMap::new()));
     }
     NO_WIDGETS.with(|map| *map)
+}
+
+/// Paint `tab_bar` into `rect` through the widget contract —
+/// [`quadraui::DrawsPrimitives::draw_dyn`], since [`TabBar`] is a
+/// [`quadraui::primitive::Primitive`] — and return the **bar-relative**
+/// [`quadraui::TabBarLayout`] it resolved, the space
+/// [`PaintedHit::TabBar`]'s own hit test subtracts `area`'s origin from.
+///
+/// All three tab-bar paint paths here (the fixed `"tab_bar"` slot in
+/// [`draw_bands`], [`LayoutNode::Tabs`]'s strip in [`paint_layout`] and
+/// [`LeafDescriptor::TabBar`] in [`paint_leaf`]) share this one call, so
+/// none reaches for a `Backend::draw_tab_bar*` method of its own.
+///
+/// An empty layout is the fallback when `draw_dyn` hands back a layout of
+/// some other concrete type, which means nothing measured a tab bar: the
+/// hit test then classifies every click in `rect` as
+/// [`quadraui::TabBarHit::Empty`], the only coherent answer when the bar
+/// was never measured.
+fn paint_tab_bar(backend: &mut dyn Backend, rect: Rect, tab_bar: &TabBar) -> TabBarLayout {
+    backend
+        .draw_dyn(rect, tab_bar, &())
+        .downcast_ref::<TabBarPrimitiveLayout>()
+        .map(|resolved| resolved.layout.clone())
+        .unwrap_or_else(|| TabBarLayout {
+            bar_width: rect.width,
+            bar_height: rect.height,
+            visible_tabs: Vec::new(),
+            visible_segments: Vec::new(),
+            scroll_left: None,
+            scroll_right: None,
+            hit_regions: Vec::new(),
+            resolved_scroll_offset: 0,
+        })
 }
 
 /// Allocates the next `lines`-tall band (scaled by `line_height`),
@@ -302,7 +346,7 @@ pub fn draw_bands(
     }
     if let Some(tab_bar) = refs.tab_bar {
         if let Some(rect) = band(3.0) {
-            let layout = backend.draw_tab_bar_layout(rect, tab_bar, None);
+            let layout = paint_tab_bar(backend, rect, tab_bar);
             hits.push(PaintedHit::TabBar {
                 id: tab_bar.id,
                 area: rect,
@@ -486,7 +530,7 @@ fn text_display_region(
 /// (the same divider paint/hit-test every backend already shares for the
 /// Rust-side `Split` primitive) and recurses into each with its resolved
 /// bounds. A `Tabs` reserves a top band for its tab strip (painted via
-/// `Backend::draw_tab_bar_layout`, the same strip every backend already
+/// [`paint_tab_bar`], the `TabBar` widget contract every backend already
 /// shares for the Rust-side `TabBar` primitive) and recurses into the
 /// remaining area with the selected tab's content, so a tab group is just a
 /// `Split` whose panes are each a `Tabs`. A `SidebarPanel` paints its
@@ -648,23 +692,14 @@ pub fn paint_layout_windowed(
             let area = tabs.spacing.inset(area, char_width, line_height);
             let strip_height = (3.0 * backend.line_height()).min(area.height);
             let strip_rect = Rect::new(area.x, area.y, area.width, strip_height);
-            // `focused_index` threads through `TabChrome` rather than
-            // `tabs.tab_bar` itself, so `None` (the common case) composes
-            // to `TabChrome::default()`. Neither `Backend` the bindings
-            // actually render with (`TuiBackend`, `GtkBackend`) takes the
-            // trait-default `draw_tab_bar_with_chrome_layout` passthrough
-            // to `draw_tab_bar_layout` — both override it with their own
-            // measurer and paint call. `TuiBackend`'s override reproduces
-            // plain `draw_tab_bar_layout` exactly for `TabChrome::default()`
-            // — see `tui::backend::tests::draw_tab_bar_with_chrome_layout_default_chrome_matches_draw_tab_bar_layout`,
-            // which asserts this at the trait-method level this call site
-            // uses, not just at the free-function level.
-            // `GtkBackend`'s equivalent is unverified by an equivalent
-            // test; its own `draw_tab_bar_with_chrome_layout` is at
-            // `gtk/backend.rs`.
-            let chrome = TabChrome::default().with_focused_index(tabs.focused_index);
-            let layout =
-                backend.draw_tab_bar_with_chrome_layout(strip_rect, &tabs.tab_bar, None, &chrome);
+            // `focused_index` threads through the bar's `TabChrome`
+            // rather than the wire `tabs.tab_bar` itself, so `None` (the
+            // common case) composes to `TabChrome::default()`.
+            let bar = TabBar {
+                chrome: TabChrome::default().with_focused_index(tabs.focused_index),
+                ..tabs.tab_bar.clone()
+            };
+            let layout = paint_tab_bar(backend, strip_rect, &bar);
             hits.push(PaintedHit::TabBar {
                 id: tabs.tab_bar.id,
                 area: strip_rect,
@@ -3034,7 +3069,7 @@ pub fn paint_leaf_windowed(
             });
         }
         LeafDescriptor::TabBar(tab_bar) => {
-            let layout = backend.draw_tab_bar_layout(area, tab_bar, None);
+            let layout = paint_tab_bar(backend, area, tab_bar);
             hits.push(PaintedHit::TabBar {
                 id,
                 area,

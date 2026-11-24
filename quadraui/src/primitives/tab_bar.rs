@@ -120,39 +120,14 @@
 //! `src/gtk/mod.rs::set_draw_func` for the GTK reference implementation,
 //! and `src/tui_main/mod.rs` (post-`terminal.draw` block) for TUI.
 
-use crate::event::Rect;
+use crate::event::{Key, MouseButton, NamedKey, Rect};
 use crate::types::{Color, Icon, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 use crate::a11y::A11yAction;
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-use crate::event::{Key, MouseButton, NamedKey};
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
 };
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 use crate::Handled;
 
 /// Declarative description of a tab bar.
@@ -3175,12 +3150,6 @@ fn translate_tab_bar_layout(mut layout: TabBarLayout, dx: f32, dy: f32) -> TabBa
 /// `#[non_exhaustive]`: backend-returned, never constructed by a
 /// consumer via struct literal, same convention as [`TabBarLayout`]
 /// itself.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TabBarPrimitiveLayout {
@@ -3193,14 +3162,88 @@ pub struct TabBarPrimitiveLayout {
     pub nerd_fonts_enabled: bool,
     /// The bar-relative layout itself.
     pub layout: TabBarLayout,
+    /// The scroll offset that keeps the active tab visible under this
+    /// frame's real measurements — [`crate::primitives::layout_metrics::
+    /// pixel_tab_bar_layout`]'s own `corrected_scroll_offset` on the pixel
+    /// branch, computed via [`TabBar::fit_active_scroll_offset`]. `layout
+    /// .resolved_scroll_offset` is `self.scroll_offset` merely clamped to
+    /// a valid index (see that field's own doc); a caller that wants the
+    /// *next* frame's strip to keep the active tab in view writes this
+    /// field back to its stored scroll state instead, the "two-pass
+    /// paint" pattern [`TabBar::layout`]'s own doc describes. On the TUI
+    /// branch this equals `layout.resolved_scroll_offset` — a cell-grid
+    /// char-based fit needs no further correction, the same contract
+    /// `crate::primitives::tab_bar::cell_paint::paint`'s own `TabBarHits
+    /// ::correct_scroll_offset` field documents.
+    pub corrected_scroll_offset: usize,
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
+/// Paint `tab_bar` into `strip` through
+/// [`crate::backend::DrawsPrimitives::draw_dyn`] and return the
+/// strip-relative [`TabBarLayout`] it resolved, paired with
+/// [`TabBarPrimitiveLayout::corrected_scroll_offset`] — the offset that
+/// keeps the active tab visible under this frame's real measurements,
+/// *not* `layout.resolved_scroll_offset` (merely clamped, see that
+/// field's own doc).
+///
+/// `None` when `draw_dyn` hands back a layout of some other concrete
+/// type, which means nothing measured a tab bar at all. Each caller
+/// picks its own fallback for that: an empty layout classifies every
+/// strip click as [`TabBarHit::Empty`], the only coherent answer when
+/// the strip was never measured.
+///
+/// This is the one call shape every compose-layer tab strip shares, so
+/// no controller reaches for a `Backend::draw_tab_bar*` method of its
+/// own.
+pub(crate) fn draw_tab_strip(
+    backend: &mut dyn crate::Backend,
+    strip: Rect,
+    tab_bar: &TabBar,
+) -> Option<(TabBarLayout, usize)> {
+    use crate::backend::DrawsPrimitives;
+    backend
+        .draw_dyn(strip, tab_bar, &())
+        .downcast_ref::<TabBarPrimitiveLayout>()
+        .map(|l| (l.layout.clone(), l.corrected_scroll_offset))
+}
+
+/// A strip layout carrying only tab-body hit regions, synthesised from
+/// absolute `(start_x, end_x)` tab slots relative to a `strip` of
+/// `strip.width` x `strip.height`.
+///
+/// Callers that hold slot x-pairs and no close/segment geometry at all
+/// need it — a drag-geometry primer that never rendered — as does any
+/// [`draw_tab_strip`] caller filling in its `None` fallback.
+///
+/// `slots` uses the `(0.0, 0.0)` sentinel convention for a tab scrolled
+/// off the left edge: a sentinel entry contributes no visible tab, but
+/// the entries after it keep their original tab indices.
+pub(crate) fn strip_layout_from_tab_slots(strip: Rect, slots: &[(f32, f32)]) -> TabBarLayout {
+    let visible_tabs: Vec<VisibleTab> = slots
+        .iter()
+        .enumerate()
+        .filter(|(_, (s, e))| *s != 0.0 || *e != 0.0)
+        .map(|(tab_idx, (s, e))| VisibleTab {
+            tab_idx,
+            bounds: Rect::new(s - strip.x, 0.0, (e - s).max(0.0), strip.height),
+            close_bounds: None,
+        })
+        .collect();
+    TabBarLayout {
+        bar_width: strip.width,
+        bar_height: strip.height,
+        hit_regions: visible_tabs
+            .iter()
+            .map(|vt| (vt.bounds, TabBarHit::Tab(vt.tab_idx)))
+            .collect(),
+        visible_tabs,
+        visible_segments: vec![],
+        scroll_left: None,
+        scroll_right: None,
+        resolved_scroll_offset: 0,
+    }
+}
+
 impl crate::primitive::Primitive for TabBar {
     type Layout = TabBarPrimitiveLayout;
     type Event = TabBarEvent;
@@ -3209,16 +3252,13 @@ impl crate::primitive::Primitive for TabBar {
         Some(&self.id)
     }
 
-    /// Round-trips through [`crate::frame::OwnedContent::TabBarWidget`] —
-    /// distinct from [`crate::frame::OwnedContent::TabBar`] (which
-    /// [`crate::frame::capture_surface`] produces for the legacy
-    /// [`crate::frame::Surface::TabBar`] instead) so a `TabBar` reached
-    /// through [`crate::frame::Surface::Widget`] replays through
-    /// [`crate::backend::DrawsPrimitives::draw_primitive`] and
+    /// Round-trips through [`crate::frame::OwnedContent::TabBar`], so a
+    /// `TabBar` reached through [`crate::frame::Surface::Widget`] replays
+    /// through [`crate::backend::DrawsPrimitives::draw_primitive`] and
     /// hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
     /// exactly as it does live — see that variant's own doc.
     fn capture(&self) -> crate::frame::OwnedContent {
-        crate::frame::OwnedContent::TabBarWidget(self.clone())
+        crate::frame::OwnedContent::TabBar(self.clone())
     }
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
@@ -3235,10 +3275,12 @@ impl crate::primitive::Primitive for TabBar {
                 // descriptor's own icon list and chrome request.
                 let layout =
                     cell_tab_bar_layout(self, rect.width, rect.height, &self.icons, &self.chrome);
+                let corrected_scroll_offset = layout.resolved_scroll_offset;
                 return TabBarPrimitiveLayout {
                     area: rect,
                     nerd_fonts_enabled: ctx.nerd_fonts_enabled,
                     layout,
+                    corrected_scroll_offset,
                 };
             }
         }
@@ -3266,8 +3308,10 @@ impl crate::primitive::Primitive for TabBar {
                 crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP_COMPACT,
             )
         } else {
+            // The same `Style::tab_padding_x` every pixel rasteriser reads
+            // for a non-compact bar.
             (
-                crate::primitives::layout_metrics::pixel::TAB_PAD,
+                ctx.style().tab_padding_x,
                 crate::primitives::layout_metrics::pixel::TAB_INNER_GAP,
                 crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP,
             )
@@ -3289,8 +3333,12 @@ impl crate::primitive::Primitive for TabBar {
             self.tabs.len(),
             &self.icons,
         );
-        let (layout, _corrected_scroll_offset, _available_cols) =
-            crate::primitives::layout_metrics::pixel_tab_bar_layout(
+        // A boundary tab that doesn't fit at full width shrinks to an
+        // ellipsised label rather than disappearing — the same composition
+        // the GTK and macOS rasterisers lay out with; the shared painter
+        // ellipsises the label to the narrowed bounds.
+        let (layout, corrected_scroll_offset, _available_cols, _fitted) =
+            crate::primitives::layout_metrics::pixel_tab_bar_layout_fitting_boundary(
                 self,
                 rect.width,
                 rect.height,
@@ -3306,6 +3354,7 @@ impl crate::primitive::Primitive for TabBar {
             area: rect,
             nerd_fonts_enabled: ctx.nerd_fonts_enabled,
             layout,
+            corrected_scroll_offset,
         }
     }
 
@@ -3399,12 +3448,6 @@ impl crate::primitive::Primitive for TabBar {
 // free function took, moved by Left/Right and activated by Enter/Space,
 // exactly as that function's own doc describes.
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl WidgetAction for TabBarEvent {
     fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
         crate::UiEvent::TabBar(id, self)
@@ -3417,12 +3460,6 @@ impl WidgetAction for TabBarEvent {
 ///
 /// `#[non_exhaustive]`: a future field add here is additive, same
 /// convention as [`TabBarLayout`].
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 #[non_exhaustive]
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TabBarState {
@@ -3438,12 +3475,6 @@ pub struct TabBarState {
 /// spelling [`NamedKey::name`] already promises, mirroring
 /// `crate::primitives::list`'s own identically-named private helper so
 /// every `KeyPressed` event in the crate agrees on one spelling.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 fn tab_bar_key_to_event_string(key: &Key) -> String {
     match key {
         Key::Char(c) => c.to_string(),
@@ -3451,12 +3482,6 @@ fn tab_bar_key_to_event_string(key: &Key) -> String {
     }
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl TabBar {
     /// Dispatch one keystroke against live [`TabBarState`] — the
     /// `Interactive::handle` counterpart of the static
@@ -3510,12 +3535,6 @@ impl TabBar {
     }
 }
 
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 impl Interactive for TabBar {
     type State = TabBarState;
     type Action = TabBarEvent;
@@ -3601,15 +3620,7 @@ impl Interactive for TabBar {
     }
 }
 
-#[cfg(all(
-    test,
-    any(
-        feature = "gtk",
-        feature = "tui",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    )
-))]
+#[cfg(test)]
 mod interactive_tests {
     use super::*;
     use crate::event::{NamedKey, Point};
@@ -3756,10 +3767,11 @@ mod interactive_tests {
     ///
     /// Expected spans come straight from `pixel_tab_bar_layout`'s own
     /// `TabMeasure::total` arithmetic at
-    /// [`crate::primitives::layout_metrics::pixel`]'s non-compact
-    /// metrics (`TAB_PAD` 14, `TAB_INNER_GAP` 10, `TAB_OUTER_GAP` 1) plus
-    /// an 8px `×`: each tab's slot is `14 + name_w + (10 + 8) + 14 + 1`
-    /// wide, so only `name_w` differs between the two layouts.
+    /// non-compact metrics — `Style::default().tab_padding_x` 10, and
+    /// [`crate::primitives::layout_metrics::pixel`]'s `TAB_INNER_GAP` 10
+    /// and `TAB_OUTER_GAP` 1 — plus an 8px `×`: each tab's slot is
+    /// `10 + name_w + (10 + 8) + 10 + 1` wide, so only `name_w` differs
+    /// between the two layouts.
     #[test]
     fn primitive_layout_sizes_tabs_from_the_ctx_text_measurer() {
         let bar = bar(&["alpha", "beta"], 0);
@@ -3769,7 +3781,7 @@ mod interactive_tests {
         let measured = Primitive::layout(&bar, &base.with_measurer(&measurer), rect);
         assert_eq!(
             tab_spans(&measured),
-            vec![(0.0, 147.0), (147.0, 214.0)],
+            vec![(0.0, 139.0), (139.0, 198.0)],
             "tab widths must come from the ctx's text measurer (alpha 100px, beta 20px), \
              not from char_width * chars"
         );
@@ -3777,10 +3789,23 @@ mod interactive_tests {
         let approximated = Primitive::layout(&bar, &base, rect);
         assert_eq!(
             tab_spans(&approximated),
-            vec![(0.0, 87.0), (87.0, 166.0)],
+            vec![(0.0, 79.0), (79.0, 150.0)],
             "with no measurer attached the same layout falls back to char_width * chars \
              (alpha 40px, beta 32px)"
         );
+    }
+
+    /// `Surface::Widget` and `FrameTree::push` both take a
+    /// `Box<dyn DynWidget>`, and the blanket impl behind that bound needs
+    /// `TabBar: Interactive`. This module carries no feature gate, so the
+    /// coercion below is checked in every configuration the crate builds
+    /// in — including a backend-free one, the regime a backend-generic
+    /// `AppLogic` type-checks against.
+    #[test]
+    fn tab_bar_boxes_as_a_dyn_widget() {
+        let boxed: Box<dyn crate::primitive::DynWidget> = Box::new(bar(&["main.rs"], 0));
+        assert_eq!(boxed.id(), Some(&WidgetId::new("tabs:test")));
+        assert_eq!(boxed.focus(), FocusSpec::Stop);
     }
 
     #[test]
@@ -3791,6 +3816,50 @@ mod interactive_tests {
     #[test]
     fn non_empty_bar_is_one_focus_stop() {
         assert_eq!(bar(&["a.rs"], 0).focus(), FocusSpec::Stop);
+    }
+
+    /// `TabBarPrimitiveLayout::corrected_scroll_offset` on the pixel
+    /// branch is `fit_active_scroll_offset`'s real correction, distinct
+    /// from `layout.resolved_scroll_offset` (which stays `0`, merely the
+    /// starting `scroll_offset` clamped) — a caller that reads the latter
+    /// instead never scrolls an overflowing strip into view.
+    #[test]
+    fn corrected_scroll_offset_keeps_the_active_tab_visible_on_a_pixel_layout() {
+        let labels: Vec<String> = (0..20).map(|i| format!("tab-label-{i}")).collect();
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let b = bar(&label_refs, 19);
+
+        let (ctx, rect) = pixel_regime();
+        let layout = Primitive::layout(&b, &ctx, rect);
+
+        assert_eq!(
+            layout.layout.resolved_scroll_offset, 0,
+            "the pixel branch's own `resolved_scroll_offset` is only clamped"
+        );
+        assert!(
+            layout.corrected_scroll_offset > 0,
+            "expected a non-zero correction to keep tab 19 visible, got 0"
+        );
+    }
+
+    /// On the TUI branch, `corrected_scroll_offset` equals
+    /// `resolved_scroll_offset` — a cell-grid char-based fit leaves scroll
+    /// correction to the caller (`TabBar::layout`'s own "Two-pass-paint
+    /// pattern" doc), so there is no further correction to compute here.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn corrected_scroll_offset_echoes_resolved_offset_on_a_cell_layout() {
+        let labels: Vec<String> = (0..20).map(|i| format!("tab-label-{i}")).collect();
+        let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+        let b = bar(&label_refs, 19);
+
+        let (ctx, rect) = cell_regime();
+        let layout = Primitive::layout(&b, &ctx, rect);
+
+        assert_eq!(
+            layout.corrected_scroll_offset,
+            layout.layout.resolved_scroll_offset
+        );
     }
 
     #[test]
@@ -5189,7 +5258,7 @@ mod primitive_parity_tests {
                 &bar,
                 rect.width,
                 rect.height,
-                crate::primitives::layout_metrics::pixel::TAB_PAD,
+                style.tab_padding_x,
                 crate::primitives::layout_metrics::pixel::TAB_INNER_GAP,
                 crate::primitives::layout_metrics::pixel::TAB_OUTER_GAP,
                 &tab_name_widths,
