@@ -69,7 +69,9 @@
 //! `src/tui_main/quadraui_tui.rs::draw_status_bar` for reference
 //! implementations.
 
+use crate::compose::Handled;
 use crate::event::Rect;
+use crate::style::Style;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -365,6 +367,12 @@ pub const PIXEL_EDGE_INSET: f32 = 10.0;
 /// width, VS Code-like. See [`PIXEL_EDGE_INSET`]'s doc.
 pub const PIXEL_SEGMENT_PADDING: f32 = 5.0;
 
+/// Minimum gap (surface-native units — px on every pixel backend)
+/// reserved between the left and right segment groups. See
+/// [`PIXEL_EDGE_INSET`]'s doc; [`MIN_GAP_CELLS`] is the cell-grid
+/// counterpart.
+pub const PIXEL_MIN_GAP: f32 = 16.0;
+
 impl StatusBar {
     /// Compute the full rendering + hit-test layout for this status bar.
     ///
@@ -596,6 +604,161 @@ impl StatusBar {
     }
 }
 
+/// Minimum gap, in character cells, reserved between the left and right
+/// segment groups on a cell grid — the cell-unit counterpart of
+/// `native_surface_paint`'s own pixel `MIN_GAP`. Both exist because
+/// [`StatusBar::layout`]'s `min_gap` is expressed in the caller's own
+/// unit, so each unit system names its own value.
+pub const MIN_GAP_CELLS: f32 = 2.0;
+
+/// The cell-units [`StatusBarLayout`] every cell-grid caller shares: one
+/// cell per character, [`MIN_GAP_CELLS`] between the two groups, and a
+/// single-row bar.
+///
+/// No edge inset and no per-segment padding — a monospace grid has no
+/// sub-cell space to spend on either, and cell-grid callers already
+/// reserve visual breathing room with literal space characters inside
+/// segment text (see [`StatusBar::layout`]).
+pub fn cell_layout(bar: &StatusBar, area: Rect) -> StatusBarLayout {
+    bar.layout(area.width, 1.0, MIN_GAP_CELLS, |seg| {
+        StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+    })
+}
+
+/// Cell-grid rasteriser for [`StatusBar`], written against
+/// [`crate::CellSurface`]'s verbs.
+///
+/// Consumes a pre-resolved [`StatusBarLayout`] (built by
+/// [`cell_layout`], or by any caller with its own cell-width measurer)
+/// and paints the resolved `visible_segments`. No layout decisions live
+/// here; any policy change (priority drop, gap rules, …) belongs in
+/// [`StatusBar::layout_padded`]. The one adjustment made at paint time is
+/// ellipsis-truncating a segment's text to the `bounds.width` cells the
+/// layout already resolved for it — a rendering detail, not a layout
+/// decision, since the width itself came from the layout.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{StatusBar, StatusBarLayout, StatusSegmentSide};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
+    use crate::Rect;
+
+    /// A foreground/background pair plus the one modifier bit a segment
+    /// can carry — the only [`CellStyle`] shape this painter builds.
+    fn ink(fg: Color, bg: Color, bold: bool) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            bold,
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `bar` at `layout` into `area`'s first row on `surface`, and
+    /// hand back the layout the caller's click dispatch should use — the
+    /// same **bar-local** hit regions `layout` already carries (relative
+    /// to `area.x`/`area.y`).
+    ///
+    /// The bar is washed with the first segment's `bg` (so it looks
+    /// continuous even where a gap separates the two halves), falling
+    /// back to [`Theme::background`] for a bar with no segments at all.
+    /// Each visible segment's text is painted at the `bounds.x` the
+    /// layout assigned, in the segment's own `fg`/`bg`, with `bold`
+    /// honoured.
+    ///
+    /// `hovered_id`/`pressed_id` tint the matching *clickable* segment's
+    /// background (lighten on hover, darken on press) — the descriptor
+    /// itself carries no mouse state.
+    ///
+    /// A degenerate `area` short-circuits to the no-paint layout without
+    /// touching `surface`.
+    pub(crate) fn paint(
+        bar: &StatusBar,
+        layout: &StatusBarLayout,
+        area: Rect,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+        hovered_id: Option<&WidgetId>,
+        pressed_id: Option<&WidgetId>,
+    ) -> StatusBarLayout {
+        if area.width < 1.0 || area.height < 1.0 {
+            return StatusBarLayout {
+                bar_width: 0.0,
+                bar_height: 0.0,
+                visible_segments: Vec::new(),
+                hit_regions: Vec::new(),
+                resolved_right_start: 0,
+            };
+        }
+
+        let x0 = area.x.max(0.0).round() as u16;
+        let y = area.y.max(0.0).round() as u16;
+        let width = area.width.round() as u16;
+        let bar_end = x0.saturating_add(width);
+
+        let fill = bar
+            .left_segments
+            .first()
+            .or(bar.right_segments.first())
+            .map(|s| s.bg)
+            .unwrap_or(theme.background);
+        surface.fill(
+            Rect::new(x0 as f32, y as f32, width as f32, 1.0),
+            ink(fill, fill, false),
+        );
+
+        for vs in &layout.visible_segments {
+            let seg = match vs.side {
+                StatusSegmentSide::Left => &bar.left_segments[vs.segment_idx],
+                StatusSegmentSide::Right => &bar.right_segments[vs.segment_idx],
+            };
+            // Hover/press tint — applied only to interactive segments,
+            // press winning over hover.
+            let effective_bg = if seg
+                .action_id
+                .as_ref()
+                .is_some_and(|id| Some(id) == pressed_id)
+            {
+                seg.bg.darken(0.05)
+            } else if seg
+                .action_id
+                .as_ref()
+                .is_some_and(|id| Some(id) == hovered_id)
+            {
+                seg.bg.lighten(0.05)
+            } else {
+                seg.bg
+            };
+            let start_x = x0.saturating_add(vs.bounds.x.max(0.0).round() as u16);
+            if start_x >= bar_end {
+                continue;
+            }
+            // `vs.bounds.width` is already the priority-drop-resolved
+            // budget (see `StatusBar::layout_padded`) in the same
+            // char-count unit this painter measures in — ellipsis-truncate
+            // to it so an over-long segment (most often the always-kept
+            // first left segment) never paints past its own reserved cells
+            // into a neighbouring segment. A segment that overflows only by
+            // the trailing space a consumer padded it with is clipped
+            // instead, keeping the character the `…` would have eaten.
+            let paint_text =
+                crate::text_util::truncate_padded_with_ellipsis(&seg.text, vs.bounds.width, |s| {
+                    s.chars().count() as f32
+                });
+            surface.put_str_clipped(
+                start_x,
+                y,
+                &paint_text,
+                bar_end - start_x,
+                ink(seg.fg, effective_bg, seg.bold),
+            );
+        }
+
+        layout.clone()
+    }
+}
+
 // Shared implementation for painting status bars across GTK, Windows,
 // and macOS. Each backend's `draw_status_bar` calls [`paint`] with its
 // native [`PaintSurface`], measuring and rendering text with backend-
@@ -622,16 +785,12 @@ impl StatusBar {
 pub(crate) mod native_surface_paint {
     use super::{
         StatusBar, StatusBarLayout, StatusSegmentMeasure, StatusSegmentSide, PIXEL_EDGE_INSET,
-        PIXEL_SEGMENT_PADDING,
+        PIXEL_MIN_GAP as MIN_GAP, PIXEL_SEGMENT_PADDING,
     };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::types::WidgetId;
-
-    /// Minimum gap (surface-native units — px on every pixel backend)
-    /// reserved between the left and right segment groups.
-    const MIN_GAP: f32 = 16.0;
 
     /// Sub-pixel tolerance on the text-fits check: far below anything
     /// visible, far above f32 round-off on a status-bar-sized width.
@@ -1382,6 +1541,386 @@ pub(crate) mod native_surface_paint {
     }
 }
 
+// ── Widget contract ─────────────────────────────────────────────────────────
+
+/// [`StatusBar`]'s fully-resolved widget-contract layout: the absolute
+/// area the bar was laid out into, plus the [`StatusBarLayout`] resolved
+/// inside it.
+///
+/// `layout`'s rects are **bar-local** — [`StatusBarLayout::hit_test`] has
+/// always taken coordinates relative to the bar's own origin — so
+/// [`Self::hit_test`] takes bar-local coordinates too, which is already
+/// the space [`crate::interactive::RoutedEvent::Pointer`]'s `local` field
+/// and [`crate::interactive::Interactive::sub_regions`] answer in.
+///
+/// `#[non_exhaustive]`: produced by
+/// [`Primitive::layout`](crate::primitive::Primitive::layout), never built
+/// by a consumer via struct literal.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct StatusBarPrimitiveLayout {
+    /// The rect [`Primitive::layout`](crate::primitive::Primitive::layout)
+    /// received — the bar's own absolute area.
+    pub area: Rect,
+    /// The bar's resolved layout, in bar-local coordinates.
+    pub layout: StatusBarLayout,
+}
+
+impl StatusBarPrimitiveLayout {
+    /// Classify a bar-local point against this bar — see
+    /// [`StatusBarLayout::hit_test`].
+    pub fn hit_test(&self, x: f32, y: f32) -> StatusBarHit {
+        self.layout.hit_test(x, y)
+    }
+}
+
+/// [`crate::interactive::Interactive::State`] for [`StatusBar`]: which
+/// clickable segment the pointer is over, and which one it is pressing.
+///
+/// Keyed by [`StatusBarSegment::action_id`] rather than by segment index
+/// because that id is what the bar's own hit test resolves and what
+/// [`StatusBarEvent::SegmentClicked`] carries — an index would have to be
+/// re-resolved against a layout that may have dropped segments since.
+/// That is also why this type implements no
+/// [`crate::primitive::PaintState`]: its hover/press targets are ids, not
+/// the row indices that trait's `hovered_idx`/`pressed_idx` describe.
+///
+/// `#[non_exhaustive]`: a future field add here is additive.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct StatusBarState {
+    /// The clickable segment under the pointer, if any.
+    pub hovered: Option<WidgetId>,
+    /// The clickable segment a left button is held down on, if any.
+    pub pressed: Option<WidgetId>,
+}
+
+/// What releasing the pointer resolved to — see
+/// [`StatusBarState::release`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusBarRelease {
+    /// The release landed on the same segment the press armed: a click on
+    /// that segment.
+    Clicked(WidgetId),
+    /// A press was armed, but the release landed somewhere else — the
+    /// press is forgotten and nothing is activated, matching every
+    /// desktop button.
+    Dropped,
+    /// No press was armed, so the release resolved nothing at all.
+    Idle,
+}
+
+impl StatusBarState {
+    /// Record which clickable segment the pointer is over, reporting
+    /// whether that changed — callers turn `true` into a repaint.
+    pub fn hover(&mut self, hovered: Option<WidgetId>) -> bool {
+        if self.hovered == hovered {
+            return false;
+        }
+        self.hovered = hovered;
+        true
+    }
+
+    /// Arm `hit` as the pressed segment, reporting whether the press
+    /// landed on a clickable segment at all. A press also pulls hover
+    /// onto the same segment, so the pressed tint doesn't depend on a
+    /// hover event having arrived first.
+    pub fn press(&mut self, hit: Option<WidgetId>) -> bool {
+        self.pressed = hit;
+        if hit.is_some() {
+            self.hovered = hit;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Resolve a release over `hit` against whatever [`Self::press`]
+    /// armed, clearing the press either way.
+    pub fn release(&mut self, hit: Option<WidgetId>) -> StatusBarRelease {
+        match self.pressed.take() {
+            Some(pressed) if hit == Some(pressed) => StatusBarRelease::Clicked(pressed),
+            Some(_) => StatusBarRelease::Dropped,
+            None => StatusBarRelease::Idle,
+        }
+    }
+}
+
+/// What a [`StatusBar`]'s own [`crate::interactive::Interactive::handle`]
+/// resolves one gesture to.
+///
+/// Named for the segment it carries rather than for the bar, so it reads
+/// unambiguously alongside [`crate::compose::StatusBarAction`] — the
+/// pre-widget-contract hover/press tracker's own outcome enum.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StatusBarSegmentAction {
+    /// A clickable segment was activated: the pointer went down and came
+    /// back up on the same segment. Carries that segment's
+    /// [`StatusBarSegment::action_id`].
+    SegmentClicked(WidgetId),
+}
+
+impl crate::interactive::WidgetAction for StatusBarSegmentAction {
+    /// Rides [`crate::UiEvent::StatusBar`] under the bar's own id,
+    /// carrying [`StatusBarEvent::SegmentClicked`] — the one channel every
+    /// existing status-bar host already routes a segment click through.
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            StatusBarSegmentAction::SegmentClicked(segment) => {
+                crate::UiEvent::StatusBar(id, StatusBarEvent::SegmentClicked { id: segment })
+            }
+        }
+    }
+}
+
+impl crate::primitive::Primitive for StatusBar {
+    type Layout = StatusBarPrimitiveLayout;
+    type Event = StatusBarHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::StatusBar(self.clone())
+    }
+
+    /// A status bar stretches to its container's width and is one row
+    /// tall: one cell on a cell grid, [`crate::Style::status_bar_height`]
+    /// on a pixel surface.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let height = match ctx.units() {
+            crate::primitive::Units::Cells => 1.0,
+            _ => ctx.style().status_bar_height,
+        };
+        crate::NaturalSize::new(None, Some(height))
+    }
+
+    /// On a cell grid the bar is measured one cell per character by
+    /// [`cell_layout`]; on a pixel surface segment widths come from the
+    /// calling backend's own [`crate::Backend::measure_text`] (through
+    /// [`crate::primitive::LayoutCtx::text_width`]) and the bar reserves
+    /// [`PIXEL_EDGE_INSET`]/[`PIXEL_SEGMENT_PADDING`], the same insets
+    /// every pixel rasteriser paints with.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> StatusBarPrimitiveLayout {
+        let layout = match ctx.units() {
+            crate::primitive::Units::Cells => cell_layout(self, rect),
+            _ => {
+                let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+                    ctx,
+                    role: crate::FontRole::Chrome,
+                };
+                self.layout_padded(
+                    rect.width,
+                    rect.height,
+                    PIXEL_MIN_GAP,
+                    PIXEL_EDGE_INSET,
+                    PIXEL_SEGMENT_PADDING,
+                    |seg| {
+                        StatusSegmentMeasure::new(
+                            crate::primitives::layout_metrics::TextMeasure::width_of(
+                                &measure, &seg.text,
+                            ),
+                        )
+                    },
+                )
+            }
+        };
+        StatusBarPrimitiveLayout { area: rect, layout }
+    }
+
+    /// The shared pixel painter, at the area [`Self::layout`] resolved.
+    ///
+    /// Hover and press tints are painted untinted here: the pointer state
+    /// that drives them lives in [`StatusBarState`], and the type-erased
+    /// [`crate::primitive::DynWidget::paint`] seam does not yet hand a
+    /// widget's own [`crate::primitive::PaintState`] to
+    /// [`Primitive::paint`](crate::primitive::Primitive::paint). Callers
+    /// that need the tint reach `native_surface_paint::paint` with their
+    /// own `hovered_id`/`pressed_id`.
+    fn paint(
+        &self,
+        layout: &StatusBarPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let _ = style;
+            native_surface_paint::paint(
+                self,
+                surface,
+                theme,
+                layout.area.x,
+                layout.area.y,
+                layout.area.width,
+                layout.area.height,
+                None,
+                None,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_status_bar`] because the `Buffer` →
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &StatusBarPrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = ratatui::layout::Rect::new(
+            layout.area.x.max(0.0).round() as u16,
+            layout.area.y.max(0.0).round() as u16,
+            layout.area.width.max(0.0).round() as u16,
+            layout.area.height.max(0.0).round() as u16,
+        );
+        crate::tui::draw_status_bar(buf, area, self, &layout.layout, theme, None, None);
+    }
+}
+
+impl StatusBar {
+    /// The clickable segment at bar-local `(x, y)`, or `None` for a
+    /// non-clickable segment or the gap between the groups — the one
+    /// pointer-to-segment resolution both this widget's
+    /// [`crate::interactive::Interactive`] impl and
+    /// [`crate::compose::StatusBarInteraction`] route through.
+    pub fn segment_at(layout: &StatusBarLayout, x: f32, y: f32) -> Option<WidgetId> {
+        match layout.hit_test(x, y) {
+            StatusBarHit::Segment(id) => Some(id),
+            StatusBarHit::Empty => None,
+        }
+    }
+}
+
+impl crate::interactive::Interactive for StatusBar {
+    type State = StatusBarState;
+    type Action = StatusBarSegmentAction;
+
+    /// A status bar never takes keyboard focus: every segment is reached
+    /// by pointer, and a host that wants a keyboard route to one of its
+    /// actions binds that action's own accelerator instead.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::None
+    }
+
+    /// Every visible segment's own rect, in bar-local coordinates and in
+    /// the layout's own order (left group, then the visible right group) —
+    /// the segments never overlap, so there is no most-specific-first
+    /// ordering to impose.
+    fn sub_regions(
+        &self,
+        layout: &StatusBarPrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        layout
+            .layout
+            .visible_segments
+            .iter()
+            .enumerate()
+            .map(|(i, vs)| (vs.bounds, crate::interactive::SubTarget(i as u64)))
+            .collect()
+    }
+
+    /// Pointer-only: hover tracks which clickable segment the pointer is
+    /// over, a left press arms that segment, and a release over the same
+    /// segment activates it — a press that drifts off its segment before
+    /// release activates nothing, matching every desktop button.
+    ///
+    /// The press captures the pointer so the release reaches this bar even
+    /// when it lands outside the bar's own rect, and so intra-bar moves
+    /// keep the hover tint current while the button is held.
+    fn handle(
+        &self,
+        state: &mut StatusBarState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &StatusBarPrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<StatusBarSegmentAction> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Enter | PointerKind::Move,
+                local,
+                ..
+            } => {
+                let hit = Self::segment_at(&layout.layout, local.x, local.y);
+                if state.hover(hit) {
+                    cx.request_redraw();
+                    Handled::Consumed
+                } else {
+                    Handled::Ignored
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Leave,
+                ..
+            } => {
+                if state.hover(None) {
+                    cx.request_redraw();
+                    Handled::Consumed
+                } else {
+                    Handled::Ignored
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::event::MouseButton::Left),
+                local,
+                ..
+            } => {
+                let hit = Self::segment_at(&layout.layout, local.x, local.y);
+                if state.press(hit) {
+                    cx.capture_pointer();
+                    cx.request_redraw();
+                    Handled::Consumed
+                } else {
+                    Handled::Ignored
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Up(crate::event::MouseButton::Left),
+                local,
+                ..
+            } => {
+                let hit = Self::segment_at(&layout.layout, local.x, local.y);
+                match state.release(hit) {
+                    StatusBarRelease::Clicked(id) => {
+                        cx.release_pointer();
+                        cx.request_redraw();
+                        Handled::Event(StatusBarSegmentAction::SegmentClicked(id))
+                    }
+                    StatusBarRelease::Dropped => {
+                        cx.release_pointer();
+                        cx.request_redraw();
+                        Handled::Consumed
+                    }
+                    StatusBarRelease::Idle => Handled::Ignored,
+                }
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1959,5 +2498,896 @@ mod tests {
         let via_layout = bar.layout(80.0, 1.0, 2.0, measure);
         let via_padded = bar.layout_padded(80.0, 1.0, 2.0, 0.0, 0.0, measure);
         assert_eq!(via_layout, via_padded);
+    }
+}
+
+/// The cell painter's own paint coverage, driven through
+/// [`crate::tui::draw_status_bar`] — the delegate that wraps a ratatui
+/// `Buffer` in the [`crate::CellSurface`] [`cell_paint::paint`] takes.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use super::{
+        cell_layout, StatusBar, StatusBarHit, StatusBarLayout, StatusBarSegment,
+        StatusSegmentMeasure, StatusSegmentSide,
+    };
+    use crate::theme::Theme;
+    use crate::tui::{draw_status_bar, ratatui_color};
+    use crate::types::{Color, WidgetId};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Modifier;
+
+    fn make_bar() -> StatusBar {
+        StatusBar {
+            id: WidgetId::new("test-bar"),
+            left_segments: vec![
+                StatusBarSegment {
+                    text: "NORMAL".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(40, 80, 120),
+                    bold: true,
+                    action_id: None,
+                },
+                StatusBarSegment {
+                    text: " main.rs ".into(),
+                    fg: Color::rgb(220, 220, 220),
+                    bg: Color::rgb(40, 80, 120),
+                    bold: false,
+                    action_id: None,
+                },
+            ],
+            right_segments: vec![StatusBarSegment {
+                text: " 1:1 ".into(),
+                fg: Color::rgb(220, 220, 220),
+                bg: Color::rgb(40, 80, 120),
+                bold: false,
+                action_id: None,
+            }],
+        }
+    }
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    /// `cell_layout`'s own measurer, spelled out so a test can lay out a
+    /// bar at a width that differs from the painted area.
+    fn layout_at(bar: &StatusBar, width: f32, min_gap: f32) -> StatusBarLayout {
+        bar.layout(width, 1.0, min_gap, |seg| {
+            StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+        })
+    }
+
+    #[test]
+    fn paints_left_then_right_segments() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        let bar = make_bar();
+        let layout = layout_at(&bar, 40.0, 2.0);
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            None,
+            None,
+        );
+
+        // Left side starts at column 0: "NORMAL main.rs "
+        let row: String = (0..15).map(|x| cell_char(&buf, x, 0)).collect();
+        assert_eq!(row, "NORMAL main.rs ");
+
+        // Right side ends at column 40: last cell is the space after "1:1 ".
+        let right: String = (35..40).map(|x| cell_char(&buf, x, 0)).collect();
+        assert_eq!(right, " 1:1 ");
+    }
+
+    #[test]
+    fn empty_bar_falls_back_to_theme_background() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        let bar = StatusBar {
+            id: WidgetId::new("empty"),
+            left_segments: vec![],
+            right_segments: vec![],
+        };
+        let layout = layout_at(&bar, 10.0, 2.0);
+        let theme = Theme {
+            background: Color::rgb(1, 2, 3),
+            foreground: Color::rgb(255, 255, 255),
+            ..Theme::default()
+        };
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 10, 1),
+            &bar,
+            &layout,
+            &theme,
+            None,
+            None,
+        );
+
+        // Whole bar painted with theme.background as bg.
+        for x in 0..10 {
+            let bg = buf[(x, 0)].bg;
+            assert_eq!(
+                bg,
+                ratatui::style::Color::Rgb(1, 2, 3),
+                "expected theme.background at column {x}, got {bg:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn bold_segment_sets_bold_modifier() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        let bar = make_bar();
+        let layout = layout_at(&bar, 20.0, 2.0);
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            None,
+            None,
+        );
+
+        // "NORMAL" was the bold segment — first 6 cells should carry BOLD.
+        for x in 0..6 {
+            assert!(
+                buf[(x, 0)].modifier.contains(Modifier::BOLD),
+                "expected BOLD at column {x}",
+            );
+        }
+        // " main.rs " (non-bold) should not carry BOLD.
+        for x in 6..15 {
+            assert!(
+                !buf[(x, 0)].modifier.contains(Modifier::BOLD),
+                "did not expect BOLD at column {x}",
+            );
+        }
+    }
+
+    #[test]
+    fn zero_size_area_is_a_no_op() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
+        let bar = make_bar();
+        let layout = layout_at(&bar, 10.0, 2.0);
+        // Zero-width area: the painter must return without panicking,
+        // without touching the buffer, and with an empty layout.
+        let result = draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 0, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            None,
+            None,
+        );
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+        assert!(result.hit_regions.is_empty());
+    }
+
+    // Parametrized over the area's origin — LESSONS.md "Layout helpers
+    // must return coords in the same frame across backends".
+    // `hit_regions` are bar-local by construction (`cell_layout` only
+    // reads the rect's width), but the painter puts each segment's text at
+    // `area.x + vs.bounds.x` — so the only way to prove painting is
+    // correct at a non-zero origin is a full round trip: lay out, paint,
+    // and check the glyph lands at the *absolute* screen position while
+    // the returned hit region stays bar-local.
+    fn round_trip_at(origin_x: u16, origin_y: u16) {
+        // Bar with an action_id'd segment in the middle of the left half.
+        let bar = StatusBar {
+            id: WidgetId::new("test-bar"),
+            left_segments: vec![
+                StatusBarSegment {
+                    text: "AAA".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(0, 0, 0),
+                    bold: false,
+                    action_id: None,
+                },
+                StatusBarSegment {
+                    text: "BBBB".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(0, 0, 0),
+                    bold: false,
+                    action_id: Some(WidgetId::new("middle-action")),
+                },
+            ],
+            right_segments: vec![],
+        };
+        let layout = layout_at(&bar, 20.0, 0.0);
+        let mut buf = Buffer::empty(Rect::new(0, 0, origin_x + 20, origin_y + 1));
+        let result = draw_status_bar(
+            &mut buf,
+            Rect::new(origin_x, origin_y, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            None,
+            None,
+        );
+
+        // One hit region for the segment with action_id.
+        assert_eq!(result.hit_regions.len(), 1);
+        match &result.hit_regions[0].1 {
+            StatusBarHit::Segment(id) => assert_eq!(id.as_str(), "middle-action"),
+            other => panic!("expected Segment, got {:?}", other),
+        }
+        // Region starts after "AAA" (x=3.0) and is 4 cells wide ("BBBB") —
+        // bar-local, independent of `origin_x`/`origin_y`.
+        let r = &result.hit_regions[0].0;
+        assert_eq!(r.x, 3.0);
+        assert_eq!(r.width, 4.0);
+
+        // Painting must land at the *absolute* screen position
+        // (area.x + bounds.x, area.y), not at the bar-local coordinates.
+        let painted_x = origin_x + r.x as u16;
+        assert_eq!(
+            cell_char(&buf, painted_x, origin_y),
+            'B',
+            "segment text should paint at area.x ({origin_x}) + bounds.x ({}), area.y ({origin_y})",
+            r.x
+        );
+    }
+
+    #[test]
+    fn returns_hit_regions_for_action_segments() {
+        round_trip_at(0, 0);
+    }
+
+    /// The same hit-region + paint round trip must hold when the bar
+    /// isn't painted at the screen origin.
+    #[test]
+    fn returns_hit_regions_for_action_segments_at_nonzero_origin() {
+        round_trip_at(7, 13);
+    }
+
+    fn make_clickable_bar() -> StatusBar {
+        StatusBar {
+            id: WidgetId::new("click-bar"),
+            left_segments: vec![StatusBarSegment {
+                text: "BTN".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: false,
+                action_id: Some(WidgetId::new("btn")),
+            }],
+            right_segments: vec![],
+        }
+    }
+
+    #[test]
+    fn hovered_segment_uses_lightened_bg() {
+        let bar = make_clickable_bar();
+        let base_bg = bar.left_segments[0].bg;
+        let hover_id = WidgetId::new("btn");
+        let layout = layout_at(&bar, 20.0, 0.0);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            Some(&hover_id),
+            None,
+        );
+
+        let expected = ratatui_color(base_bg.lighten(0.05));
+        assert_eq!(
+            buf[(0, 0)].bg,
+            expected,
+            "hovered segment bg should be lightened"
+        );
+    }
+
+    #[test]
+    fn pressed_segment_uses_darkened_bg() {
+        let bar = make_clickable_bar();
+        let base_bg = bar.left_segments[0].bg;
+        let press_id = WidgetId::new("btn");
+        let layout = layout_at(&bar, 20.0, 0.0);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            None,
+            Some(&press_id),
+        );
+
+        let expected = ratatui_color(base_bg.darken(0.05));
+        assert_eq!(
+            buf[(0, 0)].bg,
+            expected,
+            "pressed segment bg should be darkened"
+        );
+    }
+
+    #[test]
+    fn pressed_takes_precedence_over_hovered() {
+        let bar = make_clickable_bar();
+        let base_bg = bar.left_segments[0].bg;
+        let id = WidgetId::new("btn");
+        let layout = layout_at(&bar, 20.0, 0.0);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 20, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            Some(&id),
+            Some(&id),
+        );
+
+        let expected = ratatui_color(base_bg.darken(0.05));
+        assert_eq!(buf[(0, 0)].bg, expected, "pressed should win over hovered");
+    }
+
+    #[test]
+    fn non_clickable_segment_ignores_hover() {
+        let bar = make_bar();
+        let base_bg = bar.left_segments[0].bg;
+        let fake_id = WidgetId::new("no-match");
+        let layout = layout_at(&bar, 40.0, 2.0);
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 40, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, 40, 1),
+            &bar,
+            &layout,
+            &Theme::default(),
+            Some(&fake_id),
+            None,
+        );
+
+        let expected = ratatui_color(base_bg);
+        assert_eq!(
+            buf[(0, 0)].bg,
+            expected,
+            "non-clickable segment bg should be unchanged"
+        );
+    }
+
+    fn plain_right_seg(text: &str) -> StatusBarSegment {
+        StatusBarSegment {
+            text: text.to_string(),
+            fg: Color::rgb(220, 220, 220),
+            bg: Color::rgb(40, 80, 120),
+            bold: false,
+            action_id: None,
+        }
+    }
+
+    fn row_text(buf: &Buffer, width: u16) -> String {
+        (0..width).map(|x| cell_char(buf, x, 0)).collect()
+    }
+
+    /// Paints through [`cell_layout`] itself — the measurement every
+    /// cell-grid caller shares — rather than a hand-rolled measurer.
+    fn paint_at_width(bar: &StatusBar, width: u16) -> (Buffer, StatusBarLayout) {
+        let area = crate::event::Rect::new(0.0, 0.0, width as f32, 1.0);
+        let layout = cell_layout(bar, area);
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
+        draw_status_bar(
+            &mut buf,
+            Rect::new(0, 0, width, 1),
+            bar,
+            &layout,
+            &Theme::default(),
+            None,
+            None,
+        );
+        (buf, layout)
+    }
+
+    /// Reproduces the bugbash shape exactly — a left segment growing by 4
+    /// characters (the "[+]" dirty badge) tips a 37-column bar from
+    /// "everything fits" to "one right segment must drop" — and proves
+    /// that when `right_segments` follows the documented convention
+    /// (cursor-position segment *last*), only the lowest-priority segment
+    /// ("Spaces: 4") is dropped. "Ln 1, Col 1" keeps painting through the
+    /// dirty transition.
+    #[test]
+    fn priority_drop_keeps_painting_the_last_segment_once_a_left_segment_grows() {
+        let mut bar = StatusBar {
+            id: WidgetId::new("editor-status"),
+            left_segments: vec![StatusBarSegment {
+                text: "NORMAL".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: true,
+                action_id: None,
+            }],
+            right_segments: vec![
+                plain_right_seg("Spaces: 4"),
+                plain_right_seg("UTF-8"),
+                plain_right_seg("LF"),
+                plain_right_seg("Ln 1, Col 1"), // cursor position: last = highest priority
+            ],
+        };
+
+        // Clean: "NORMAL" (6) + gap(2) + right total(27) = 35 <= 37. Nothing dropped.
+        let (clean_buf, clean_layout) = paint_at_width(&bar, 37);
+        assert_eq!(clean_layout.resolved_right_start, 0);
+        let clean_row = row_text(&clean_buf, 37);
+        assert!(clean_row.contains("Ln 1, Col 1"));
+        assert!(clean_row.contains("Spaces: 4"));
+
+        // Dirty: "[+]" badge grows the left segment by exactly 4 chars,
+        // same as the bugbash repro ("i X Esc"). 10 + gap(2) = 12,
+        // max_right = 25 < 27, so the front (lowest-priority) segment —
+        // "Spaces: 4" — must drop. The cursor segment must NOT.
+        bar.left_segments[0].text = "NORMAL [+]".into();
+        let (dirty_buf, dirty_layout) = paint_at_width(&bar, 37);
+        assert_eq!(
+            dirty_layout.resolved_right_start, 1,
+            "only the lowest-priority segment should be dropped for a 4-char deficit"
+        );
+        let dirty_row = row_text(&dirty_buf, 37);
+        assert!(
+            dirty_row.contains("Ln 1, Col 1"),
+            "cursor-position segment must keep painting once dirtied: {dirty_row:?}"
+        );
+        assert!(
+            !dirty_row.contains("Spaces: 4"),
+            "the dropped segment must not still be painted: {dirty_row:?}"
+        );
+        assert!(dirty_row.contains("UTF-8"));
+        assert!(dirty_row.contains("LF"));
+    }
+
+    /// Companion to the test above: if the call site puts the
+    /// cursor-position segment *first* in `right_segments` instead of
+    /// last — e.g. because that reads naturally next to
+    /// "Spaces"/"UTF-8"/"LF" — the shared drop algorithm (correctly, per
+    /// its documented contract) treats it as the lowest-priority segment
+    /// and drops it first, under the exact same 4-character deficit that
+    /// the test above shows is recoverable by dropping a *different*
+    /// segment. This demonstrates the call-site ordering convention, not
+    /// a `fit_right_start`/`layout` defect — swapping this segment to the
+    /// end of the vector (as above) is the available fix, with no
+    /// primitive change. This test only asserts which *index* is dropped;
+    /// it intentionally does not assert which segment's *text* must or
+    /// must not survive, so it stays agnostic to any future primitive-
+    /// level affordance (e.g. an always-visible flag) that might change
+    /// which segment that index names.
+    #[test]
+    fn ordering_the_cursor_segment_first_instead_of_last_makes_it_the_one_dropped() {
+        let mut bar = StatusBar {
+            id: WidgetId::new("editor-status"),
+            left_segments: vec![StatusBarSegment {
+                text: "NORMAL".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: true,
+                action_id: None,
+            }],
+            right_segments: vec![
+                plain_right_seg("Ln 1, Col 1"), // cursor position placed first — the anti-pattern
+                plain_right_seg("Spaces: 4"),
+                plain_right_seg("UTF-8"),
+                plain_right_seg("LF"),
+            ],
+        };
+
+        let (clean_buf, clean_layout) = paint_at_width(&bar, 37);
+        assert_eq!(clean_layout.resolved_right_start, 0);
+        assert!(row_text(&clean_buf, 37).contains("Ln 1, Col 1"));
+
+        bar.left_segments[0].text = "NORMAL [+]".into();
+        let (_dirty_buf, dirty_layout) = paint_at_width(&bar, 37);
+        assert_eq!(
+            dirty_layout.resolved_right_start, 1,
+            "the front segment (cursor position, in this mis-ordered bar) is dropped"
+        );
+    }
+
+    /// Reproduces the gallery Status Bar demo's "Dirty (priority drop)"
+    /// variant: the left segment grows far past anything a priority-drop
+    /// of the *right* side alone can accommodate. The left segment must
+    /// still paint — ellipsis-truncated to its own reserved cells — and
+    /// the cursor-position segment must keep painting undisturbed,
+    /// rather than the left segment's overflow bleeding into (or past)
+    /// it.
+    #[test]
+    fn dirty_variant_ellipsizes_the_left_segment_without_corrupting_the_right_side() {
+        let bar = StatusBar {
+            id: WidgetId::new("gallery:status-bar"),
+            left_segments: vec![StatusBarSegment {
+                text: format!("NORMAL{}", " [+]".repeat(60)),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: true,
+                action_id: None,
+            }],
+            right_segments: vec![
+                plain_right_seg("Spaces: 4"),
+                plain_right_seg("UTF-8"),
+                plain_right_seg("LF"),
+                plain_right_seg("Ln 1, Col 1"),
+            ],
+        };
+        let (buf, layout) = paint_at_width(&bar, 60);
+        let row = row_text(&buf, 60);
+
+        assert!(
+            row.contains('…'),
+            "the massively overflowing left segment must ellipsize: {row:?}"
+        );
+        assert!(
+            row.contains("Ln 1, Col 1"),
+            "the cursor-position segment must survive, undisturbed: {row:?}"
+        );
+
+        let left = layout
+            .visible_segments
+            .iter()
+            .find(|v| v.side == StatusSegmentSide::Left)
+            .expect("the always-kept left segment must still be visible");
+        let right = layout
+            .visible_segments
+            .iter()
+            .find(|v| v.side == StatusSegmentSide::Right)
+            .expect("at least the cursor segment must survive on the right");
+        assert!(
+            left.bounds.x + left.bounds.width <= right.bounds.x,
+            "the left segment's reserved cells must end at or before the right \
+             group starts: left ends at {}, right starts at {}",
+            left.bounds.x + left.bounds.width,
+            right.bounds.x
+        );
+    }
+
+    /// A consumer that pads a segment as `format!(" {label} ")` — the
+    /// conventional shape — must not lose the last character of `label`
+    /// to an ellipsis when the only thing that overflows is the padding
+    /// space itself. `quadraui-gallery`'s Code/Data/log panes paint one
+    /// source line per bar this way, so a single-cell overflow there is
+    /// the difference between a readable line and a mangled one.
+    #[test]
+    fn a_segment_overflowing_only_by_its_trailing_pad_clips_instead_of_ellipsizing() {
+        let bar = StatusBar {
+            id: WidgetId::new("padded"),
+            // 14 cells: a 12-char label between two pad spaces.
+            left_segments: vec![plain_right_seg(" padded label ")],
+            right_segments: vec![],
+        };
+        // 13 cells of budget: one short of the padded text, exactly the
+        // width of its trimmed form.
+        let (buf, _) = paint_at_width(&bar, 13);
+        let row = row_text(&buf, 13);
+        assert_eq!(
+            row, " padded label",
+            "the trailing pad should be clipped, keeping the whole label"
+        );
+    }
+
+    #[test]
+    fn a_segment_overflowing_past_its_trailing_pad_still_ellipsizes() {
+        let bar = StatusBar {
+            id: WidgetId::new("padded"),
+            left_segments: vec![plain_right_seg(" padded label ")],
+            right_segments: vec![],
+        };
+        // 12 cells: too narrow for even the trimmed text, so a real
+        // character has to go and the run must say so with an ellipsis.
+        let (buf, _) = paint_at_width(&bar, 12);
+        let row = row_text(&buf, 12);
+        assert_eq!(row, " padded lab…");
+    }
+}
+
+/// [`StatusBar`]'s own `Primitive`/`Interactive` impls, exercised
+/// directly: layout in both unit regimes, and every pointer gesture the
+/// widget resolves.
+#[cfg(test)]
+mod widget_contract_tests {
+    use super::{
+        StatusBar, StatusBarSegment, StatusBarSegmentAction, StatusBarState, PIXEL_EDGE_INSET,
+    };
+    use crate::compose::Handled;
+    use crate::event::{MouseButton, Point};
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::types::{Color, WidgetId};
+    use crate::Rect;
+
+    /// Records every [`EventHost`] intent a `handle` call makes, so a
+    /// test can assert the capture/redraw side effects the runtime would
+    /// have applied.
+    #[derive(Default)]
+    struct RecordingHost {
+        captured: Option<WidgetId>,
+        released: usize,
+        redraws: usize,
+    }
+
+    impl EventHost for RecordingHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, _sub: Option<SubTarget>) {}
+        fn capture_pointer(&mut self, id: &WidgetId) {
+            self.captured = Some(*id);
+        }
+        fn release_pointer(&mut self) {
+            self.released += 1;
+        }
+        fn set_cursor(&mut self, _cursor: crate::PointerShape) {}
+        fn request_redraw(&mut self) {
+            self.redraws += 1;
+        }
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn seg(text: &str, action: Option<&str>) -> StatusBarSegment {
+        StatusBarSegment {
+            text: text.to_string(),
+            fg: Color::rgb(255, 255, 255),
+            bg: Color::rgb(40, 80, 120),
+            bold: false,
+            action_id: action.map(WidgetId::new),
+        }
+    }
+
+    fn bar() -> StatusBar {
+        StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![seg("MODE", Some("mode")), seg("plain", None)],
+            right_segments: vec![seg("1:1", Some("cursor"))],
+        }
+    }
+
+    const AREA: Rect = Rect::new(0.0, 0.0, 40.0, 1.0);
+
+    fn cell_ctx() -> LayoutCtx<'static> {
+        LayoutCtx::new(1.0, 1.0, false)
+    }
+
+    fn pointer(kind: PointerKind, x: f32, y: f32) -> RoutedEvent {
+        RoutedEvent::Pointer {
+            kind,
+            sub: None,
+            local: Point::new(x, y),
+            mods: Default::default(),
+        }
+    }
+
+    #[test]
+    fn cell_layout_resolves_one_row_and_bar_local_hit_regions() {
+        let bar = bar();
+        let layout = Primitive::layout(&bar, &cell_ctx(), Rect::new(5.0, 9.0, 40.0, 1.0));
+
+        assert_eq!(layout.area, Rect::new(5.0, 9.0, 40.0, 1.0));
+        assert_eq!(layout.layout.bar_height, 1.0);
+        // "MODE" is four cells from the bar's own left edge — bar-local,
+        // not offset by the area's origin.
+        let mode = layout.layout.visible_segments[0];
+        assert_eq!(mode.bounds.x, 0.0);
+        assert_eq!(mode.bounds.width, 4.0);
+        assert_eq!(
+            layout.hit_test(1.0, 0.5),
+            super::StatusBarHit::Segment(WidgetId::new("mode"))
+        );
+    }
+
+    /// A pixel ctx lays out through `layout_padded`, so the left-most
+    /// segment starts `PIXEL_EDGE_INSET` in from the bar's own edge
+    /// rather than flush against it.
+    #[test]
+    fn pixel_layout_reserves_the_pixel_edge_inset() {
+        let bar = bar();
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
+        assert_eq!(ctx.units(), Units::Pixels);
+        let layout = Primitive::layout(&bar, &ctx, Rect::new(0.0, 0.0, 600.0, 22.0));
+
+        assert_eq!(layout.layout.visible_segments[0].bounds.x, PIXEL_EDGE_INSET);
+        assert_eq!(layout.layout.bar_height, 22.0);
+    }
+
+    #[test]
+    fn measure_reports_one_row_on_a_cell_grid() {
+        let bar = bar();
+        let natural =
+            Primitive::measure(&bar, &cell_ctx(), crate::primitive::Size::new(40.0, 10.0));
+        assert_eq!(natural.width, None, "a status bar stretches horizontally");
+        assert_eq!(natural.height, Some(1.0));
+    }
+
+    #[test]
+    fn a_status_bar_is_not_a_keyboard_focus_stop() {
+        assert_eq!(Interactive::focus(&bar()), FocusSpec::None);
+    }
+
+    #[test]
+    fn sub_regions_name_every_visible_segment_in_bar_local_space() {
+        let bar = bar();
+        let layout = Primitive::layout(&bar, &cell_ctx(), AREA);
+        let regions = Interactive::sub_regions(&bar, &layout);
+
+        assert_eq!(regions.len(), layout.layout.visible_segments.len());
+        assert_eq!(regions[0].0, layout.layout.visible_segments[0].bounds);
+        assert_eq!(regions[0].1, SubTarget(0));
+    }
+
+    #[test]
+    fn hover_tracks_the_clickable_segment_under_the_pointer() {
+        let bar = bar();
+        let layout = Primitive::layout(&bar, &cell_ctx(), AREA);
+        let mut state = StatusBarState::default();
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+
+        let handled = Interactive::handle(
+            &bar,
+            &mut state,
+            &pointer(PointerKind::Enter, 1.0, 0.5),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(state.hovered, Some(WidgetId::new("mode")));
+
+        // Moving onto the non-clickable segment clears the hover.
+        let handled = Interactive::handle(
+            &bar,
+            &mut state,
+            &pointer(PointerKind::Move, 5.0, 0.5),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(state.hovered, None);
+
+        // A second move with nothing changing asks for no redraw.
+        let handled = Interactive::handle(
+            &bar,
+            &mut state,
+            &pointer(PointerKind::Move, 6.0, 0.5),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(handled, Handled::Ignored);
+    }
+
+    #[test]
+    fn leaving_the_bar_clears_the_hover() {
+        let bar = bar();
+        let layout = Primitive::layout(&bar, &cell_ctx(), AREA);
+        let mut state = StatusBarState {
+            hovered: Some(WidgetId::new("mode")),
+            ..StatusBarState::default()
+        };
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+
+        let handled = Interactive::handle(
+            &bar,
+            &mut state,
+            &pointer(PointerKind::Leave, 1.0, 0.5),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(handled, Handled::Consumed);
+        assert_eq!(state.hovered, None);
+        assert_eq!(host.redraws, 1);
+    }
+
+    #[test]
+    fn press_then_release_on_the_same_segment_clicks_it() {
+        let bar = bar();
+        let layout = Primitive::layout(&bar, &cell_ctx(), AREA);
+        let mut state = StatusBarState::default();
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+
+        let down = Interactive::handle(
+            &bar,
+            &mut state,
+            &pointer(PointerKind::Down(MouseButton::Left), 2.0, 0.5),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(down, Handled::Consumed);
+        assert_eq!(state.pressed, Some(WidgetId::new("mode")));
+
+        let up = Interactive::handle(
+            &bar,
+            &mut state,
+            &pointer(PointerKind::Up(MouseButton::Left), 2.0, 0.5),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            up,
+            Handled::Event(StatusBarSegmentAction::SegmentClicked(WidgetId::new(
+                "mode"
+            )))
+        );
+        assert_eq!(state.pressed, None);
+        assert_eq!(
+            host.captured,
+            Some(bar.id),
+            "the press must capture the pointer so the release reaches the bar"
+        );
+        assert_eq!(host.released, 1);
+    }
+
+    #[test]
+    fn a_press_released_off_its_segment_clicks_nothing() {
+        let bar = bar();
+        let layout = Primitive::layout(&bar, &cell_ctx(), AREA);
+        let mut state = StatusBarState::default();
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+
+        let _ = Interactive::handle(
+            &bar,
+            &mut state,
+            &pointer(PointerKind::Down(MouseButton::Left), 2.0, 0.5),
+            &layout,
+            &mut cx,
+        );
+        let up = Interactive::handle(
+            &bar,
+            &mut state,
+            &pointer(PointerKind::Up(MouseButton::Left), 6.0, 0.5),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(up, Handled::Consumed);
+        assert_eq!(state.pressed, None);
+    }
+
+    #[test]
+    fn a_press_on_a_non_clickable_segment_is_ignored() {
+        let bar = bar();
+        let layout = Primitive::layout(&bar, &cell_ctx(), AREA);
+        let mut state = StatusBarState::default();
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+
+        let down = Interactive::handle(
+            &bar,
+            &mut state,
+            &pointer(PointerKind::Down(MouseButton::Left), 6.0, 0.5),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(down, Handled::Ignored);
+        assert_eq!(state.pressed, None);
+        assert_eq!(host.captured, None);
+    }
+
+    #[test]
+    fn the_segment_action_rides_the_status_bar_ui_event() {
+        use crate::interactive::WidgetAction;
+        let event = StatusBarSegmentAction::SegmentClicked(WidgetId::new("mode"))
+            .into_ui_event(WidgetId::new("status"));
+        assert_eq!(
+            event,
+            crate::UiEvent::StatusBar(
+                WidgetId::new("status"),
+                super::StatusBarEvent::SegmentClicked {
+                    id: WidgetId::new("mode")
+                }
+            )
+        );
     }
 }
