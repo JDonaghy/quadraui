@@ -40,17 +40,10 @@ use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout, Pipelin
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
 use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout, SplitTreeMeasure};
+use crate::primitives::tab_bar::{tab_icon_at, TabIcon};
 use crate::primitives::tab_bar::{
     SegmentMeasure, TabBar, TabBarLayout, TabChrome, TabFrame, TabMeasure,
 };
-// Named only by `pixel_tab_icon_extras`, which carries the same gate.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-use crate::primitives::tab_bar::{tab_icon_at, TabIcon};
 use crate::primitives::toast::{ToastMeasure, ToastOverlay, ToastStackLayout};
 use crate::primitives::tree::{TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::primitives::tree_table::{TreeTable, TreeTableLayout, TreeTableNode};
@@ -73,10 +66,23 @@ pub trait TextMeasure {
 /// [`crate::primitive::LayoutCtx::text_width`] (see [`LayoutCtxMeasure`],
 /// which routes through the calling backend's real
 /// [`crate::Backend::measure_text`] instead). Needs no backend to
-/// evaluate, so it carries no feature gate of its own — its callers
-/// decide which feature sets compile them in.
+/// evaluate — gated to the same feature set as its only callers
+/// ([`crate::DataTable`]'s and [`crate::TreeTable`]'s `Primitive` impls),
+/// not to any particular pixel-backend feature.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub(crate) struct CharWidthMeasure(pub f32);
 
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 impl TextMeasure for CharWidthMeasure {
     fn width_of(&self, text: &str) -> f32 {
         text.chars().count() as f32 * self.0
@@ -1223,15 +1229,6 @@ pub fn pixel_minimap_layout_scaled(
 /// branch. A rasteriser that swaps to a Nerd-Font family to measure icon
 /// glyphs (GTK, macOS) computes the same array through its own font
 /// instead; both agree on the `+ TAB_ICON_GAP` convention.
-///
-/// Gated to the feature set its only caller — `impl Primitive for TabBar`
-/// — is defined on.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 pub(crate) fn pixel_tab_icon_extras(
     measure: &dyn TextMeasure,
     tab_count: usize,
