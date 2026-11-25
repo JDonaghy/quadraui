@@ -344,13 +344,15 @@ const INLINE_LEAF_CASES: Array<{
     // `paint_leaf` keys the painted hit by the leaf id specifically
     // because a render callback may reuse the same descriptor id across
     // leaves, so both the click-to-focus `FocusChanged` and the
-    // `ToggleChanged` it emits must agree on "leaf:1".
+    // `SwitchToggled` it emits must agree on "leaf:1". `switch` rides the
+    // generic `WIDGET_KINDS` seam, not `ExtraPaint`, so its click resolves
+    // to a bare `SwitchToggled` event rather than a `Form`-wrapped one.
     name: "switch",
     tree: { row: [{ id: "leaf:1", switch: { id: "sw:embedded", value: false } }] },
     events: [{ MouseDown: { button: "Left", position: { x: 1.0, y: 1.0 }, modifiers: {} } }],
     expected: [
       { FocusChanged: "leaf:1" },
-      ["leaf:1", { ToggleChanged: { id: "leaf:1", value: true } }],
+      { SwitchToggled: { widget: "leaf:1", value: true } },
     ],
   },
   {
