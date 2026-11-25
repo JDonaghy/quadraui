@@ -1175,20 +1175,6 @@ impl crate::Backend for RecordingBackend {
             crate::primitives::list::ListItemMeasure::new(1.0)
         })
     }
-    fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {
-        self.record("draw_form");
-    }
-    fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {
-        self.record("draw_palette");
-    }
-    fn palette_layout(&self, r: Rect, p: &crate::Palette) -> crate::PaletteLayout {
-        let lh = self.line_height;
-        let title_h = lh;
-        let query_h = if p.show_query { lh } else { 0.0 };
-        p.layout(r.width, r.height, title_h, query_h, 0.0, 1.0, |_| {
-            crate::PaletteItemMeasure::new(lh)
-        })
-    }
     fn draw_settings_chrome(
         &mut self,
         _r: Rect,
@@ -1382,9 +1368,6 @@ impl crate::Backend for RecordingBackend {
         {
             false
         }
-    }
-    fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
-        unimplemented!("RecordingBackend has no Form layout algorithm")
     }
     fn draw_editor(
         &mut self,

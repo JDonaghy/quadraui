@@ -86,10 +86,6 @@ mod editor;
 /// its module docs. `WM_SIZE`/`WM_DPICHANGED`/`WM_CLOSE` translation
 /// is handled in `msg` + `run` — see this module's docs.
 pub mod events;
-/// Direct2D / DirectWrite rasteriser for [`crate::Form`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod form;
 /// Direct2D + WIC rasteriser for [`crate::primitives::image::Image`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -125,10 +121,6 @@ mod multi_section_view;
 /// via [`crate::Backend::draw_number_input`], so this module carries no
 /// production code of its own — see its module docs.
 mod number_input;
-/// Direct2D / DirectWrite rasteriser for [`crate::Palette`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod palette;
 /// Direct2D / DirectWrite rasteriser for
 /// [`crate::primitives::pipeline_view::PipelineView`]. Windows-only
 /// in full — see its module docs.
@@ -295,9 +287,6 @@ pub use dialog::draw_dialog;
 pub use editor::draw_editor;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
-pub use form::{draw_settings_chrome, win_form_layout};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
 pub use image::draw_image;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
@@ -318,9 +307,6 @@ pub use minimap::{draw_minimap, win_minimap_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_metrics};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use palette::{draw_palette, win_palette_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use pipeline_view::win_pipeline_view_layout;

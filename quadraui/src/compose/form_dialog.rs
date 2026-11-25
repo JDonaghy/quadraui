@@ -351,7 +351,8 @@ impl FormDialogController {
         }
         let content_w = (dialog_width - padding * 2.0).max(0.0);
         let probe_rect = Rect::new(0.0, 0.0, content_w, f32::MAX / 4.0);
-        let probe = backend.form_layout(probe_rect, form);
+        let probe =
+            crate::backend::DrawsPrimitives::layout_primitive(backend, probe_rect, form).layout;
         let content_h = probe
             .visible_fields
             .iter()

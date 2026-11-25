@@ -298,7 +298,7 @@ impl FormController {
         let (form_rect, sb_rect) = split_rect_lh(self.field_count(), lh, rect);
         let theme = backend.theme();
         let form = self.build_form(form_rect, Some(&theme));
-        backend.draw_form(form_rect, &form);
+        crate::backend::DrawsPrimitives::draw_dyn(backend, form_rect, &form, &());
         self.draw_item_focus_ring(backend, form_rect, &form);
         if let Some(sb_rect) = sb_rect {
             let sb = build_scrollbar_lh(
@@ -417,7 +417,8 @@ impl FormController {
         let lh = backend.line_height();
         let (form_rect, _sb_rect) = split_rect_lh(self.field_count(), lh, rect);
         let form = self.build_form(form_rect, None);
-        let layout = backend.form_layout(form_rect, &form);
+        let layout =
+            crate::backend::DrawsPrimitives::layout_primitive(backend, form_rect, &form).layout;
         layout.visible_fields.iter().find(|f| f.id == id).map(|f| {
             Rect::new(
                 form_rect.x + f.bounds.x,
@@ -608,7 +609,8 @@ impl FormController {
         let Some((item_id, _)) = items.get(idx).copied() else {
             return;
         };
-        let layout = backend.form_layout(form_rect, form);
+        let layout =
+            crate::backend::DrawsPrimitives::layout_primitive(&*backend, form_rect, form).layout;
         let Some(vf) = layout.visible_fields.iter().find(|vf| {
             form.fields
                 .get(vf.field_idx)
@@ -663,7 +665,7 @@ impl FormController {
             // geometry identical to what a themed render would produce.
             let form = self.build_form(form_rect, None);
             let layout = if let Some(be) = backend {
-                be.form_layout(form_rect, &form)
+                crate::backend::DrawsPrimitives::layout_primitive(&*be, form_rect, &form).layout
             } else {
                 let row_h = row_height(lh);
                 let char_w = lh * 0.6;
@@ -767,7 +769,7 @@ impl FormController {
         let (form_rect, _sb_rect) = split_rect_lh(self.field_count(), lh, rect);
         let form = self.build_form(form_rect, None);
         let layout = if let Some(be) = backend {
-            be.form_layout(form_rect, &form)
+            crate::backend::DrawsPrimitives::layout_primitive(&*be, form_rect, &form).layout
         } else {
             let row_h = row_height(lh);
             let char_w = lh * 0.6;

@@ -67,7 +67,6 @@ use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::editor::{CursorShape as EditorCursorShape, Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::float::{Float, FloatLayout};
-use crate::primitives::form::FormLayout;
 use crate::primitives::image::{Image, ImageSource};
 use crate::primitives::list::{ListPaintState, ListViewLayout};
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
@@ -99,8 +98,8 @@ use crate::primitives::tree_table::TreeTableLayout;
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
-    PaletteLayout, StatusBar, TabBar, TextDisplay, TreeTable, TreeView,
+    Accelerator, AcceleratorId, ActivityBar, GlobalShortcutId, ListView, StatusBar, TabBar,
+    TextDisplay, TreeTable, TreeView,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2794,60 +2793,17 @@ pub trait Backend: sealed::Sealed {
         note = "use DrawsPrimitives::draw_primitive with ListView; removal tracked in #2609"
     )]
     fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
-    fn draw_form(&mut self, rect: Rect, form: &Form);
-    fn draw_palette(&mut self, rect: Rect, palette: &Palette);
-
-    /// [`Self::draw_palette`], reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`]: a backend that
-    /// implements this tints [`Palette`]'s pinned create-action row
-    /// (the one row in a `Palette` with a stable id — `palette.id`
-    /// itself, since [`crate::PaletteItem`] carries none; see
-    /// `primitives::palette::native_surface_paint`'s module doc) when
-    /// `interaction.is_hovered(&palette.id)` / `is_pressed(&palette.id)` —
-    /// see [`crate::Theme::menu_item_hover_bg`] /
-    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
-    /// colours.
-    ///
-    /// Additive over [`Self::draw_palette`], not a replacement — the
-    /// default forwards to it (ignoring `interaction`), so this method
-    /// is the one new backends/hosts adopt for hover feedback while
-    /// every existing call site and implementor keeps compiling
-    /// unchanged.
-    fn draw_palette_with_state(
-        &mut self,
-        rect: Rect,
-        palette: &Palette,
-        _interaction: &InteractionState,
-    ) {
-        self.draw_palette(rect, palette)
-    }
-
-    /// Compute the palette layout without painting — the no-paint twin
-    /// of [`Self::draw_palette`]. Every backend's `palette_layout` shares
-    /// its row/column arithmetic with its own `draw_palette`
-    /// (`tui_palette_layout`, `gtk_palette_layout`, `mac_palette_layout`,
-    /// `win_palette_layout`), so paint and no-paint can't drift apart —
-    /// see `docs/decisions/DECISIONS.md` D-007 "Palette: deferred, not
-    /// missed" for the rationale.
-    ///
-    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin, `(0, 0)`
-    /// at `rect`'s top-left, matching [`Palette::layout`]'s native
-    /// contract. Callers subtract `rect.x` / `rect.y` from an absolute
-    /// click coordinate before calling [`PaletteLayout::hit_test`]
-    /// (`PRIMITIVE_RULES.md`'s coordinate-frame convention).
-    ///
-    /// TUI's implementation never reports [`PaletteLayout::scrollbar`]
-    /// (always `None`) — see `tui::palette::tui_palette_layout`'s doc for
-    /// why reporting one would invent a second thumb-position formula
-    /// disagreeing with what TUI actually paints.
-    fn palette_layout(&self, rect: Rect, palette: &Palette) -> PaletteLayout;
 
     /// Draw settings-panel chrome: a header row and, when `rect.height`
     /// leaves room for it, a search input row beneath it, designed to
-    /// sit immediately above a [`Form`] body. See
-    /// `tui::draw_settings_chrome` / `gtk::draw_settings_chrome` for the
-    /// exact row layout, `" / "`-prefixed prompt construction, and
-    /// placeholder logic.
+    /// sit immediately above a [`crate::Form`] body. Every backend
+    /// forwards to the one shared painter in
+    /// [`crate::compose::sidebar_panel_body`] —
+    /// [`crate::compose::sidebar_panel_body::paint_settings_chrome`] on a
+    /// pixel surface,
+    /// [`crate::compose::sidebar_panel_body::paint_settings_chrome_cells`]
+    /// on a cell grid — which documents the exact row layout, prompt
+    /// construction and placeholder logic.
     ///
     /// **Height contract:** the header row always paints at one
     /// `line_height`. The search row paints only when `rect.height`
@@ -3425,15 +3381,6 @@ pub trait Backend: sealed::Sealed {
     fn tree_paints_own_scrollbar(&self) -> bool {
         false
     }
-
-    /// Compute the form layout the rasteriser would produce for `form`
-    /// in `rect`, using the backend's native metrics. Hosts call this
-    /// to drive hit-testing — especially for `ToggleGroup` and
-    /// `ButtonRow` fields where per-item hit regions depend on
-    /// backend-specific text measurement.
-    ///
-    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin.
-    fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout;
 
     /// Draw an [`Editor`]. Returns paint-side data the host needs
     /// for chrome alignment (cursor pixel position for caret blink
@@ -4330,6 +4277,9 @@ pub trait DrawsPrimitives: Backend {
             w.paint(layout.as_ref(), PaintTarget::Cells(buf), &env, state);
         }
         if let Some(id) = w.id() {
+            // A modal widget (a palette, a menu) registered on the modal
+            // stack counts as painted this frame; any other id is a no-op.
+            self.modal_stack_handle().borrow_mut().mark_painted(id);
             let sub_regions = w
                 .sub_regions(layout.as_ref())
                 .into_iter()

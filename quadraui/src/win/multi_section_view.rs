@@ -340,7 +340,8 @@ fn paint_body(
 /// painting goes through the shared [`crate::primitives::form::paint`]
 /// via [`super::surface::D2dSurface`] (this call site has only a raw
 /// `target`/`dwrite`, not a live [`super::WinBackend`]). `FieldKind::Toolbar`
-/// is painted separately below, same as `WinBackend::draw_form`.
+/// is painted separately below, because the shared form painter leaves it
+/// to the caller.
 fn draw_form_body(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -349,7 +350,10 @@ fn draw_form_body(
     theme: &Theme,
     line_height: f32,
 ) {
-    let flayout = super::form::win_form_layout(dwrite, bounds, form, line_height);
+    let row_h = crate::primitives::layout_metrics::form_row_height(line_height as f64);
+    let flayout = form.layout(bounds.width, bounds.height, |i| {
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, dwrite)
+    });
     let origin = crate::Point::new(bounds.x, bounds.y);
     let mut surface = super::surface::D2dSurface {
         target,
@@ -371,7 +375,7 @@ fn draw_form_body(
         };
         for (item_id, item_rect) in &vf.item_bounds {
             let btn = toolbar.buttons.iter().find_map(|b| {
-                super::form::toolbar_item(&field.id, b)
+                toolbar_item(&field.id, b)
                     .filter(|(id, _)| id == item_id)
                     .map(|_| b)
             });
@@ -491,6 +495,27 @@ fn paint_panel_scrollbar(
         thumb_bounds,
         theme,
     );
+}
+
+/// The `(id, text)` pair a plain-text toolbar row paints for `btn`:
+/// an `Action` paints its label under its own id, a `Label` its text
+/// under the field's id. A `Group`, an editable `Field`, a `MenuButton`,
+/// a `Separator` and a `Spacer` have no single such pair and paint
+/// nothing here.
+fn toolbar_item(
+    field_id: &crate::types::WidgetId,
+    btn: &crate::primitives::toolbar::ToolbarButton,
+) -> Option<(crate::types::WidgetId, String)> {
+    use crate::primitives::toolbar::ToolbarButton;
+    match btn {
+        ToolbarButton::Action { id, label, .. } => Some((*id, label.clone())),
+        ToolbarButton::Label { text, .. } => Some((*field_id, text.clone())),
+        ToolbarButton::Separator
+        | ToolbarButton::Spacer
+        | ToolbarButton::Group { .. }
+        | ToolbarButton::Field { .. }
+        | ToolbarButton::MenuButton { .. } => None,
+    }
 }
 
 #[cfg(test)]

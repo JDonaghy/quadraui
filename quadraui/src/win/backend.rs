@@ -3346,223 +3346,6 @@ impl Backend for WinBackend {
         )
     }
 
-    /// See [`Self::draw_tree`]'s doc.
-    ///
-    /// Shared field-kind painting lives in
-    /// [`crate::primitives::form::paint`] now — see that fn's doc for
-    /// why `FieldKind::Toolbar` is painted here instead (as plain
-    /// per-button text, matching this backend's behaviour —
-    /// `win::toolbar`'s full chrome isn't wired into `Form` fields; see
-    /// `win::form`'s module doc), after `paint` releases its exclusive
-    /// borrow of `self`.
-    fn draw_form(&mut self, rect: Rect, form: &Form) {
-        #[cfg(target_os = "windows")]
-        if self.dwrite.is_some() && self.surface.is_some() {
-            // `Form` is chrome, not editor content (it's not in
-            // `crate::font_role::EditorClassPrimitive::ALL`) — prefer
-            // `chrome_dwrite`, falling back to the editor `dwrite` handle
-            // if no live chrome one exists yet, same "degrade, don't
-            // panic" convention as `Self::surface_draw_text_run_with_role`.
-            // `crate::primitives::form::paint` below paints through
-            // `self` (now chrome-resolving by default — see
-            // `impl PaintSurface for WinBackend`'s doc), so this layout
-            // must measure against the same handle or field widths would
-            // disagree with what the paint actually fits.
-            let dwrite = self
-                .chrome_dwrite
-                .as_ref()
-                .or(self.dwrite.as_ref())
-                .expect("checked Some by the `if` guard above");
-            let flayout =
-                super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
-            let theme = Theme::default();
-            let origin = Point::new(rect.x, rect.y);
-            crate::primitives::form::paint(form, &flayout, self, &theme, origin);
-
-            // A toolbar button's label is chrome too — read through
-            // `chrome_dwrite` (falling back to `dwrite`) directly rather
-            // than the inherent `Self::measure_text`/`Self::draw_text`
-            // helpers, which always resolve the editor handle. Hoisted
-            // above the loop (rather than re-derived per `vf`): the `if`
-            // guard above already proved both `self.surface` and
-            // `self.dwrite` are `Some` for the whole method body, so
-            // re-checking per-iteration can never actually fail.
-            let surface = self
-                .surface
-                .as_ref()
-                .expect("checked Some by the `if` guard above");
-            let dwrite = self
-                .chrome_dwrite
-                .as_ref()
-                .or(self.dwrite.as_ref())
-                .expect("checked Some by the `if` guard above");
-            let line_height = self.current_line_height;
-            let char_width = self.current_char_width;
-
-            for vf in &flayout.visible_fields {
-                let Some(field) = form.fields.get(vf.field_idx) else {
-                    continue;
-                };
-                let FieldKind::Toolbar(toolbar) = &field.kind else {
-                    continue;
-                };
-                let field_fg = if field.disabled {
-                    theme.muted_fg
-                } else {
-                    theme.foreground
-                };
-                for (item_id, item_rect) in &vf.item_bounds {
-                    let btn = toolbar.buttons.iter().find_map(|b| {
-                        super::form::toolbar_item(&field.id, b)
-                            .filter(|(id, _)| id == item_id)
-                            .map(|_| b)
-                    });
-                    let r = Rect::new(
-                        origin.x + item_rect.x,
-                        origin.y + item_rect.y,
-                        item_rect.width,
-                        item_rect.height,
-                    );
-                    // Degrade to the same nominal char-width estimate
-                    // every other font-role call site in this impl falls
-                    // back to on a measurement failure (see
-                    // `Self::surface_measure_text`'s doc) rather than a
-                    // zero size, which would collapse the label to a
-                    // zero-width paint instead of a plausible guess.
-                    match btn {
-                        Some(ToolbarButton::Action { label, enabled, .. }) => {
-                            let fg = if *enabled { field_fg } else { theme.muted_fg };
-                            let (tw, th) = dwrite.measure_text(label).unwrap_or_else(|_| {
-                                (nominal_text_width(label, char_width), line_height)
-                            });
-                            let ty = r.y + (r.height - th) / 2.0;
-                            let _ = dwrite.draw_text(
-                                &surface.target,
-                                label,
-                                Rect::new(r.x, ty, tw, th),
-                                fg,
-                            );
-                        }
-                        Some(ToolbarButton::Label { text, fg }) => {
-                            let color = fg.unwrap_or(field_fg);
-                            let (tw, th) = dwrite.measure_text(text).unwrap_or_else(|_| {
-                                (nominal_text_width(text, char_width), line_height)
-                            });
-                            let ty = r.y + (r.height - th) / 2.0;
-                            let _ = dwrite.draw_text(
-                                &surface.target,
-                                text,
-                                Rect::new(r.x, ty, tw, th),
-                                color,
-                            );
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, form);
-    }
-
-    /// Real Direct2D/DirectWrite rasteriser via `win::palette` once a
-    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
-    /// "surface not attached yet" fallback posture.
-    fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
-        // `Palette` is chrome — `with_chrome_surface` degrades to a
-        // no-op `None` when no surface is attached yet.
-        let line_height = self.current_line_height;
-        let theme = crate::theme::Theme::default();
-        let style = self.style();
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        self.with_chrome_surface(|surf| {
-            if rect.width < 20.0 || rect.height < line_height * 4.0 {
-                return;
-            }
-            let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
-                rect.width,
-                rect.height,
-                palette,
-                line_height,
-            );
-            // Calls the shared paint directly so this live backend
-            // path honours `Self::set_style` overrides.
-            crate::primitives::palette::native_surface_paint::paint(
-                palette,
-                rect,
-                &palette_layout,
-                rows_h,
-                line_height,
-                nerd_fonts_enabled,
-                surf,
-                &theme,
-                &style,
-            );
-        });
-    }
-
-    /// [`Self::draw_palette`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_palette_with_state`]'s own
-    /// doc. Routes through
-    /// [`crate::primitives::palette::native_surface_paint::paint_interactive`],
-    /// the interactive twin of the plain `paint` [`Self::draw_palette`]
-    /// calls.
-    fn draw_palette_with_state(
-        &mut self,
-        rect: Rect,
-        palette: &Palette,
-        interaction: &crate::InteractionState,
-    ) {
-        let line_height = self.current_line_height;
-        let theme = crate::theme::Theme::default();
-        let style = self.style();
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        self.with_chrome_surface(|surf| {
-            if rect.width < 20.0 || rect.height < line_height * 4.0 {
-                return;
-            }
-            let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
-                rect.width,
-                rect.height,
-                palette,
-                line_height,
-            );
-            crate::primitives::palette::native_surface_paint::paint_interactive(
-                palette,
-                rect,
-                &palette_layout,
-                rows_h,
-                line_height,
-                nerd_fonts_enabled,
-                surf,
-                &theme,
-                &style,
-                interaction,
-            );
-        });
-    }
-
-    /// Pure geometry — needs no live surface, unlike
-    /// [`Self::draw_palette`], so this doesn't gate on one being attached.
-    /// `win::palette` itself is Windows-only (real `Direct2D`/`DirectWrite`
-    /// types), same `#[cfg(target_os = "windows")]` split every other
-    /// method on this impl uses to stay a type-check-only stub elsewhere —
-    /// so this calls the shared, target-agnostic
-    /// [`crate::primitives::palette::native_surface_paint::layout`]
-    /// directly rather than reaching into that Windows-only
-    /// module.
-    fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
-        crate::primitives::palette::native_surface_paint::layout(
-            rect.width,
-            rect.height,
-            palette,
-            self.current_line_height,
-        )
-        .0
-    }
-
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     fn draw_settings_chrome(
@@ -3573,26 +3356,18 @@ impl Backend for WinBackend {
         placeholder: &str,
         active: bool,
     ) {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            // The settings header/search box is chrome — same
-            // `chrome_dwrite`-preferring swap as `Self::draw_palette`.
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            super::form::draw_settings_chrome(
-                &surface.target,
-                dwrite,
-                rect,
-                self.current_line_height,
-                header_text,
-                query,
-                placeholder,
-                active,
-            );
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, header_text, query, placeholder, active);
+        let theme = self.current_theme;
+        let line_height = self.current_line_height;
+        crate::compose::sidebar_panel_body::paint_settings_chrome(
+            self,
+            &theme,
+            rect,
+            line_height,
+            header_text,
+            query,
+            placeholder,
+            active,
+        );
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::status_bar`
@@ -4422,29 +4197,6 @@ impl Backend for WinBackend {
 
     fn tree_paints_own_scrollbar(&self) -> bool {
         true
-    }
-
-    /// Pure measurement — only needs `self.dwrite`, not a live
-    /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
-    /// `chrome_dwrite`, matching [`Self::draw_form`]'s paint font — both
-    /// must resolve the same handle or field widths measured here would
-    /// disagree with what the paint actually fits.
-    fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::form::win_form_layout(dwrite, rect, form, self.current_line_height);
-        }
-        // No live DWrite handle — nominal char-width estimate instead;
-        // real per-glyph measurement resumes once
-        // `attach_surface`/`attach_headless` builds one.
-        let row_h =
-            crate::primitives::layout_metrics::form_row_height(self.current_line_height as f64);
-        let measure = NominalTextMeasure {
-            char_width: self.current_char_width,
-        };
-        form.layout(rect.width, rect.height, |i| {
-            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
-        })
     }
 
     /// See [`Self::draw_status_bar`]'s doc for the "surface not

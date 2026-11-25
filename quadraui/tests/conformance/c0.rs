@@ -37,18 +37,18 @@ use quadraui::{
     CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
     ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration, Dialog, DialogButton,
     DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, Editor, EditorCursor,
-    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind,
-    FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit, ImageSource,
+    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan,
+    FindReplacePanel, Float, FloatMeasure, FontRole, Image, ImageFit, ImageSource,
     InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
-    MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette, PaletteItem, PaletteMode,
-    PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
-    RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
-    SectionSize, SelectionMode, Series, Side, Spinner, Split, SplitDirection, SplitTree,
-    StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TextDisplay, TextDisplayLine,
-    TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton,
-    ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities,
-    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
-    TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
+    MinimapLine, MsvAxis, MultiSectionView, NumberInput, PipelineStage, PipelineView,
+    PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis,
+    ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series,
+    Side, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment,
+    StyledSpan, StyledText, TextDisplay, TextDisplayLine, TextField, TextInput, Toast, ToastCorner,
+    ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayoutOptions,
+    ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions, ToolbarVAlign, Tooltip,
+    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeTable,
+    TreeTableNode, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -587,93 +587,6 @@ pub const CASES: &[Case] = &[
                 &table,
                 &quadraui::DataTablePaintState::default().with_hovered_idx(Some(0)),
             );
-        },
-    },
-    Case {
-        method: "draw_form",
-        needle: Some("c0form"),
-        paint: |b, area| {
-            let form = Form {
-                id: id("form"),
-                fields: vec![FormField {
-                    id: id("form-field"),
-                    label: StyledText::plain("c0form"),
-                    kind: FieldKind::ReadOnly {
-                        value: StyledText::plain("value"),
-                    },
-                    hint: StyledText::default(),
-                    disabled: false,
-                    validation: None,
-                    label_position: None,
-                    label_align: None,
-                    label_width: None,
-                    tab_index: None,
-                    control_width: None,
-                    min_control_width: None,
-                    row_align: None,
-                }],
-                focused_field: None,
-                scroll_offset: 0,
-                has_focus: false,
-                label_position: Default::default(),
-                label_align: Default::default(),
-                label_width: None,
-                control_width: Default::default(),
-                min_control_width: None,
-                spacing: Default::default(),
-            };
-            b.draw_form(area, &form);
-        },
-    },
-    Case {
-        method: "draw_palette",
-        needle: Some("c0palt"),
-        paint: |b, area| {
-            let mut palette = Palette::default();
-            palette.id = id("palette");
-            palette.title = "Palette".to_string();
-            palette.items = vec![PaletteItem {
-                text: StyledText::plain("c0palt"),
-                detail: None,
-                icon: None,
-                match_positions: vec![],
-                depth: 0,
-                expandable: false,
-                expanded: false,
-            }];
-            palette.show_query = true;
-            palette.mode = PaletteMode::List;
-            b.draw_palette(area, &palette);
-        },
-    },
-    Case {
-        // `InteractionState`-carrying counterpart to `draw_palette`. The
-        // state names the palette's own id — the one stable id a
-        // `Palette` carries — as hovered, so a backend that honours the
-        // seam tints its pinned create-action row.
-        method: "draw_palette_with_state",
-        needle: Some("c0paltstate"),
-        paint: |b, area| {
-            let palette_id = id("palette-state");
-            let palette = Palette {
-                id: palette_id,
-                title: "Palette".to_string(),
-                items: vec![PaletteItem {
-                    text: StyledText::plain("c0paltstate"),
-                    detail: None,
-                    icon: None,
-                    match_positions: vec![],
-                    depth: 0,
-                    expandable: false,
-                    expanded: false,
-                }],
-                show_query: true,
-                mode: PaletteMode::List,
-                create_label: Some("Create".to_string()),
-                ..Default::default()
-            };
-            let interaction = InteractionState::from_parts(Some(palette_id), None);
-            b.draw_palette_with_state(area, &palette, &interaction);
         },
     },
     Case {

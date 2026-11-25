@@ -72,7 +72,6 @@ use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
-use crate::primitives::form::FormLayout;
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
@@ -94,8 +93,8 @@ use crate::transition::{lerp, Transition};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, FieldKind, Form, Key, ListView, Modifiers, Palette,
-    ParsedBinding, PlatformServices, StatusBar, TextDisplay, Theme, TreeView,
+    Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, ParsedBinding,
+    PlatformServices, StatusBar, TextDisplay, Theme, TreeView,
 };
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this
@@ -2922,146 +2921,6 @@ impl Backend for MacBackend {
             self.chrome_char_width,
         )
     }
-    /// Shared field-kind painting lives in
-    /// [`crate::primitives::form::paint`] now — see that fn's doc for why
-    /// `FieldKind::Toolbar` is the one variant painted here instead,
-    /// after `paint` releases its exclusive borrow of `self`.
-    fn draw_form(&mut self, rect: Rect, form: &Form) {
-        debug_assert!(
-            !self.current_cg().is_null(),
-            "MacBackend::draw_form called outside enter_frame_scope",
-        );
-        // `Form` is chrome, not editor content — see `draw_data_table`'s
-        // comment. `crate::primitives::form::paint` below paints through
-        // `self` as `&mut dyn PaintSurface`, which defaults to
-        // `chrome_font` too (see `MacBackend`'s own `PaintSurface` impl),
-        // so this `font` variable — used only for layout/measurement
-        // here — has to agree with it.
-        let font = self.chrome_font.clone();
-        let theme = self.current_theme;
-        let flayout = super::form::mac_form_layout(form, rect, self.current_line_height, &font);
-        let origin = Point::new(rect.x, rect.y);
-        crate::primitives::form::paint(form, &flayout, self, &theme, origin);
-
-        for vf in &flayout.visible_fields {
-            let Some(field) = form.fields.get(vf.field_idx) else {
-                continue;
-            };
-            let FieldKind::Toolbar(toolbar) = &field.kind else {
-                continue;
-            };
-            let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-            let no_label = label_text.is_empty();
-            let (label_w, _) = super::text::measure_text(&font, &label_text);
-            let row_x = (origin.x + vf.bounds.x) as f64;
-            let row_y = (origin.y + vf.bounds.y) as f64;
-            let row_w = vf.bounds.width as f64;
-            let row_h = vf.bounds.height as f64;
-            // Starts at the form's shared control column (`FormLayout::toolbar_field_rect`).
-            let (toolbar_x, toolbar_w) =
-                flayout.toolbar_field_rect(row_x, row_w, label_w, no_label);
-            if toolbar_w > 0.0 {
-                let ctx = self.current_cg();
-                debug_assert!(
-                    !ctx.is_null(),
-                    "MacBackend::draw_form called outside enter_frame_scope",
-                );
-                // SAFETY: ctx is non-null inside the frame scope.
-                unsafe {
-                    super::toolbar::draw_toolbar(
-                        ctx, &font, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
-                    );
-                }
-            }
-        }
-    }
-    fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
-        // See `modal_stack.rs`'s "Paint-consistency detection" docs —
-        // records that this palette's surface was actually painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        // `Palette` is chrome, not editor content — see
-        // `draw_data_table`'s comment.
-        let theme = self.current_theme;
-        let style = self.style();
-        let line_height = self.current_line_height;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
-            return;
-        }
-        let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
-            rect.width,
-            rect.height,
-            palette,
-            line_height as f32,
-        );
-        // Calls the shared paint directly (rather than through
-        // `super::palette::draw_palette`, whose public signature stays
-        // additive-only and so cannot take a live `&Style`) so this live
-        // backend path honours `Self::set_style` overrides.
-        let mut surface = self.chrome_surface("draw_palette");
-        crate::primitives::palette::native_surface_paint::paint(
-            palette,
-            rect,
-            &palette_layout,
-            rows_h,
-            line_height as f32,
-            nerd_fonts_enabled,
-            &mut surface,
-            &theme,
-            &style,
-        );
-    }
-    /// [`Self::draw_palette`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_palette_with_state`]'s own
-    /// doc. Routes through
-    /// [`crate::primitives::palette::native_surface_paint::paint_interactive`],
-    /// the interactive twin of the plain `paint` [`Self::draw_palette`]
-    /// calls.
-    fn draw_palette_with_state(
-        &mut self,
-        rect: Rect,
-        palette: &Palette,
-        interaction: &crate::InteractionState,
-    ) {
-        self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        let theme = self.current_theme;
-        let style = self.style();
-        let line_height = self.current_line_height;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
-            return;
-        }
-        let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
-            rect.width,
-            rect.height,
-            palette,
-            line_height as f32,
-        );
-        let mut surface = self.chrome_surface("draw_palette_with_state");
-        crate::primitives::palette::native_surface_paint::paint_interactive(
-            palette,
-            rect,
-            &palette_layout,
-            rows_h,
-            line_height as f32,
-            nerd_fonts_enabled,
-            &mut surface,
-            &theme,
-            &style,
-            interaction,
-        );
-    }
-
-    fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
-        super::palette::mac_palette_layout(
-            palette,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.current_line_height,
-        )
-    }
 
     fn draw_settings_chrome(
         &mut self,
@@ -3071,33 +2930,18 @@ impl Backend for MacBackend {
         placeholder: &str,
         active: bool,
     ) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_settings_chrome called outside enter_frame_scope",
-        );
-        // The settings header/search bar is chrome (part of `Form`),
-        // not editor content — see `draw_data_table`'s comment.
-        let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::form::draw_settings_chrome(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                line_height,
-                header_text,
-                query,
-                placeholder,
-                active,
-                &theme,
-            );
-        }
+        let line_height = self.current_line_height as f32;
+        crate::compose::sidebar_panel_body::paint_settings_chrome(
+            self,
+            &theme,
+            rect,
+            line_height,
+            header_text,
+            query,
+            placeholder,
+            active,
+        );
     }
 
     fn draw_status_bar_interactive(
@@ -3696,12 +3540,6 @@ impl Backend for MacBackend {
     }
     fn tree_paints_own_scrollbar(&self) -> bool {
         true
-    }
-    fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
-        // No-paint twin of `draw_form` — must agree with what that
-        // method painted.
-        let font = &self.chrome_font;
-        super::form::mac_form_layout(form, rect, self.current_line_height, font)
     }
     fn draw_editor(&mut self, _rect: Rect, editor: &Editor) -> EditorPaintResult {
         let ctx = self.current_cg();
@@ -8020,17 +7858,16 @@ mod tests {
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
-        // From `Backend::form_layout`, the no-paint twin `draw_form` is
-        // contractually required to agree with, rather than a local
-        // `mac_form_layout` call with a font of this test's own
-        // choosing: a `Form` is chrome, so the paint measures its
-        // per-field rows in `chrome_font`, and re-deriving them here
-        // against the editor face installed above would drift every
-        // row-relative probe below by the two advances' difference.
-        // Same reasoning as `macos::form::tests::paint_via_backend`.
-        let flayout = backend.form_layout(rect, &form);
+        // From the widget contract's own no-paint layout, which the
+        // paint is contractually required to agree with, rather than a
+        // local layout call with a font of this test's own choosing: a
+        // `Form` is chrome, so the paint measures its per-field rows in
+        // `chrome_font`, and re-deriving them here against the editor
+        // face installed above would drift every row-relative probe
+        // below by the two advances' difference.
+        let flayout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &form).layout;
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_form(rect, &form);
+            crate::DrawsPrimitives::draw_dyn(b, rect, &form, &());
         });
         backend.end_frame();
 

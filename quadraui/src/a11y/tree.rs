@@ -3594,9 +3594,9 @@ mod tests {
             preview: None,
             mode: PaletteMode::default(),
         };
-        let frame = frame_with(vec![Surface::Palette {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            palette,
+            widget: Box::new(palette),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(

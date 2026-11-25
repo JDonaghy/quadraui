@@ -35,7 +35,6 @@
 
 use crate::behaviour::scroll::ensure_visible;
 use crate::compose::Handled;
-use crate::interaction::InteractionState;
 use crate::{
     Backend, Key, Modifiers, MouseButton, NamedKey, Palette, PaletteHit, PaletteItem, PaletteMode,
     Rect, UiEvent, WidgetId,
@@ -228,16 +227,10 @@ impl DualModePaletteController {
     /// Paint the palette modal inside `rect`.
     ///
     /// Call this from `AppLogic::render` while the controller is open.
-    /// Routes through [`Backend::draw_palette_with_state`] (an empty
-    /// [`InteractionState`] today, since this controller has no pinned
-    /// create row of its own to hover) rather than
-    /// [`Backend::draw_palette`] directly — the same seam
-    /// [`crate::compose::ContextMenuController`]/[`crate::compose::MenuSystem`]
-    /// render through, so a future create-row hover only needs feeding a
-    /// non-empty `InteractionState` here, not a new paint call site.
+    /// Paints the built [`crate::Palette`] through its widget contract.
     pub fn render(&self, rect: Rect, backend: &mut dyn Backend) {
         let palette = self.build_palette();
-        backend.draw_palette_with_state(rect, &palette, &InteractionState::new());
+        crate::backend::DrawsPrimitives::draw_dyn(backend, rect, &palette, &());
     }
 
     // ── Handle ────────────────────────────────────────────────────────
@@ -322,7 +315,8 @@ impl DualModePaletteController {
         };
 
         let palette = self.build_palette();
-        let layout = backend.palette_layout(rect, &palette);
+        let layout =
+            crate::backend::DrawsPrimitives::layout_primitive(backend, rect, &palette).layout;
         let hit = layout.hit_test(position.x - rect.x, position.y - rect.y);
 
         let result = match hit {
@@ -365,7 +359,8 @@ impl DualModePaletteController {
         };
 
         let palette = self.build_palette();
-        let layout = backend.palette_layout(rect, &palette);
+        let layout =
+            crate::backend::DrawsPrimitives::layout_primitive(backend, rect, &palette).layout;
         let hit = layout.hit_test(position.x - rect.x, position.y - rect.y);
 
         let result = match hit {

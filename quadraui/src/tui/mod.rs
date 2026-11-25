@@ -58,7 +58,6 @@ pub mod events;
 mod find_replace;
 mod float;
 mod focus_ring;
-mod form;
 mod image;
 // Decode + downscale for the Kitty graphics protocol.
 // Gated separately from `kitty_graphics` below: this module alone needs
@@ -80,7 +79,6 @@ mod message_list;
 mod minimap;
 mod multi_section_view;
 mod number_input;
-mod palette;
 mod pipeline_view;
 mod progress;
 mod rich_text_popup;
@@ -160,9 +158,6 @@ pub use find_replace::draw_find_replace;
 pub use float::draw_float;
 #[doc(hidden)]
 pub use focus_ring::draw_focus_ring;
-pub use form::draw_form;
-#[doc(hidden)]
-pub use form::{draw_settings_chrome, tui_form_layout};
 #[doc(hidden)]
 pub use image::draw_image;
 #[doc(hidden)]
@@ -184,9 +179,6 @@ pub use minimap::{
 pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
 #[doc(hidden)]
 pub use number_input::draw_number_input;
-pub(crate) use palette::draw_palette_with_style;
-#[doc(hidden)]
-pub use palette::{draw_palette, tui_palette_layout};
 #[doc(hidden)]
 pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
 pub(crate) use progress::draw_progress_layout;

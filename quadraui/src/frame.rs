@@ -299,10 +299,6 @@ pub enum Surface {
         rect: Rect,
         list: ListView,
     },
-    Form {
-        rect: Rect,
-        form: Form,
-    },
     MenuBar {
         rect: Rect,
         bar: MenuBar,
@@ -314,10 +310,6 @@ pub enum Surface {
     Scrollbar {
         rect: Rect,
         sb: Scrollbar,
-    },
-    Palette {
-        rect: Rect,
-        palette: Palette,
     },
     Tooltip {
         tooltip: Tooltip,
@@ -505,9 +497,6 @@ pub enum FrameZone {
     List {
         idx: usize,
     },
-    Form {
-        idx: usize,
-    },
     MenuBar {
         idx: usize,
     },
@@ -515,9 +504,6 @@ pub enum FrameZone {
         idx: usize,
     },
     Scrollbar {
-        idx: usize,
-    },
-    Palette {
         idx: usize,
     },
     Tooltip {
@@ -866,9 +852,6 @@ impl ScreenLayout {
                 Surface::List { rect, list } => {
                     backend.draw_list(*rect, list);
                 }
-                Surface::Form { rect, form } => {
-                    backend.draw_form(*rect, form);
-                }
                 Surface::MenuBar { rect, bar } => {
                     backend.draw_menu_bar(*rect, bar);
                 }
@@ -877,9 +860,6 @@ impl ScreenLayout {
                 }
                 Surface::Scrollbar { rect, sb } => {
                     backend.draw_scrollbar(*rect, sb);
-                }
-                Surface::Palette { rect, palette } => {
-                    backend.draw_palette(*rect, palette);
                 }
                 Surface::Tooltip { tooltip, layout } => {
                     backend.draw_tooltip(tooltip, layout);
@@ -1057,9 +1037,7 @@ impl ScreenLayout {
                 Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
                 Surface::Tree { rect, tree } => vec![(tree.id, *rect)],
                 Surface::List { rect, list } => vec![(list.id, *rect)],
-                Surface::Form { rect, form } => vec![(form.id, *rect)],
                 Surface::MenuBar { rect, bar } => vec![(bar.id, *rect)],
-                Surface::Palette { rect, palette } => vec![(palette.id, *rect)],
                 Surface::DataTable { rect, table, .. } => vec![(table.id, *rect)],
                 Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
                 Surface::Chart { rect, chart, .. } => vec![(chart.id, *rect)],
@@ -1135,11 +1113,9 @@ impl ScreenLayout {
             Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
             Surface::Tree { rect, .. } => (*rect, FrameZone::Tree { idx }),
             Surface::List { rect, .. } => (*rect, FrameZone::List { idx }),
-            Surface::Form { rect, .. } => (*rect, FrameZone::Form { idx }),
             Surface::MenuBar { rect, .. } => (*rect, FrameZone::MenuBar { idx }),
             Surface::Split { rect, .. } => (*rect, FrameZone::Split { idx }),
             Surface::Scrollbar { rect, .. } => (*rect, FrameZone::Scrollbar { idx }),
-            Surface::Palette { rect, .. } => (*rect, FrameZone::Palette { idx }),
             Surface::Tooltip { layout, .. } => (layout.bounds, FrameZone::Tooltip { idx }),
             Surface::ContextMenu { layout, .. } => (layout.bounds, FrameZone::ContextMenu { idx }),
             Surface::Dialog { layout, .. } => (layout.bounds, FrameZone::Dialog { idx }),
@@ -1401,7 +1377,9 @@ impl OwnedContent {
                     let _ = (rect, list, backend);
                 }
             }
-            OwnedContent::Form(form) => backend.draw_form(rect, form),
+            OwnedContent::Form(form) => {
+                backend.draw_primitive(rect, form);
+            }
             OwnedContent::MenuBar(bar) => {
                 backend.draw_menu_bar(rect, bar);
             }
@@ -1409,7 +1387,9 @@ impl OwnedContent {
                 backend.draw_split(rect, split);
             }
             OwnedContent::Scrollbar(sb) => backend.draw_scrollbar(rect, sb),
-            OwnedContent::Palette(palette) => backend.draw_palette(rect, palette),
+            OwnedContent::Palette(palette) => {
+                backend.draw_primitive(rect, palette);
+            }
             OwnedContent::Toast(stack) => {
                 backend.draw_toast_overlay(rect, stack);
             }
@@ -1531,11 +1511,17 @@ impl OwnedContent {
                 idx,
                 id: Some(list.id),
             },
-            OwnedContent::Form(_) => FrameZone::Form { idx },
+            OwnedContent::Form(form) => FrameZone::Widget {
+                idx,
+                id: Some(form.id),
+            },
             OwnedContent::MenuBar(_) => FrameZone::MenuBar { idx },
             OwnedContent::Split(_) => FrameZone::Split { idx },
             OwnedContent::Scrollbar(_) => FrameZone::Scrollbar { idx },
-            OwnedContent::Palette(_) => FrameZone::Palette { idx },
+            OwnedContent::Palette(palette) => FrameZone::Widget {
+                idx,
+                id: Some(palette.id),
+            },
             OwnedContent::Tooltip(_) => FrameZone::Tooltip { idx },
             OwnedContent::ContextMenu(_) => FrameZone::ContextMenu { idx },
             OwnedContent::Dialog(_) => FrameZone::Dialog { idx },
@@ -1824,15 +1810,9 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         ),
         Surface::Tree { rect, tree } => (*rect, Some(tree.id), OwnedContent::Tree(tree.clone())),
         Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List(list.clone())),
-        Surface::Form { rect, form } => (*rect, Some(form.id), OwnedContent::Form(form.clone())),
         Surface::MenuBar { rect, bar } => (*rect, Some(bar.id), OwnedContent::MenuBar(bar.clone())),
         Surface::Split { rect, split } => (*rect, None, OwnedContent::Split(split.clone())),
         Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar(sb.clone())),
-        Surface::Palette { rect, palette } => (
-            *rect,
-            Some(palette.id),
-            OwnedContent::Palette(palette.clone()),
-        ),
         Surface::Tooltip { tooltip, layout } => {
             (layout.bounds, None, OwnedContent::Tooltip(tooltip.clone()))
         }
@@ -2044,11 +2024,11 @@ mod tests {
         // Overlay covers top-left quadrant.
         map.push(
             Rect::new(0.0, 0.0, 50.0, 50.0),
-            FrameZone::Palette { idx: 1 },
+            FrameZone::Dialog { idx: 1 },
         );
 
         // Point in the overlay → highest-z wins.
-        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::Palette { idx: 1 });
+        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::Dialog { idx: 1 });
         // Point outside the overlay but inside editor.
         assert_eq!(map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.
@@ -2291,9 +2271,9 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
             editor,
         });
-        layout.push(Surface::Palette {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 50.0, 50.0),
-            palette,
+            widget: Box::new(palette),
         });
 
         // No `&mut dyn Backend` in scope anywhere in this test — proves
@@ -2303,7 +2283,13 @@ mod tests {
 
         assert_eq!(hit_map.len(), 2);
         // Point in the overlay → highest-z (last-pushed) wins.
-        assert_eq!(hit_map.hit_test(25.0, 25.0), FrameZone::Palette { idx: 1 });
+        assert_eq!(
+            hit_map.hit_test(25.0, 25.0),
+            FrameZone::Widget {
+                idx: 1,
+                id: Some("pal".into())
+            }
+        );
         // Point outside the overlay but inside the editor.
         assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.
@@ -2432,9 +2418,9 @@ mod tests {
             rect: editor.rect,
             editor,
         });
-        layout.push(Surface::Palette {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 50.0, 5.0),
-            palette,
+            widget: Box::new(palette),
         });
         // Structural chrome: must not appear in tab order at all.
         layout.push(Surface::Split {
@@ -3386,9 +3372,9 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
             editor,
         });
-        layout.push(Surface::Palette {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 50.0, 50.0),
-            palette,
+            widget: Box::new(palette),
         });
 
         let captured = OwnedFrame::from_layout(&layout);
@@ -3402,7 +3388,13 @@ mod tests {
         assert_eq!(hit_map.len(), 2);
         // Point in the overlay → highest-z (last-pushed) wins, same as
         // `ScreenLayout::hit_map` would have reported for the source.
-        assert_eq!(hit_map.hit_test(25.0, 25.0), FrameZone::Palette { idx: 1 });
+        assert_eq!(
+            hit_map.hit_test(25.0, 25.0),
+            FrameZone::Widget {
+                idx: 1,
+                id: Some("pal".into())
+            }
+        );
         // Point outside the overlay but inside the editor.
         assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.
