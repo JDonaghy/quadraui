@@ -102,9 +102,12 @@ pub fn draw_menu_bar_with_state(
 mod tests {
     #[cfg(target_os = "windows")]
     mod windows_only {
-        use super::*;
         use crate::primitives::menu_bar::{MenuBarHit, MenuBarItem};
         use crate::types::{Color, WidgetId};
+        // The module's own items (`MenuBar`, `Rect`, `Theme`, `DWrite`,
+        // `draw_menu_bar`, `win_menu_bar_layout`) reached by path rather
+        // than `super::*`, which resolves to the enclosing `tests`.
+        use crate::win::menu_bar::*;
         use crate::win::testing::HeadlessSurface;
 
         const W: f32 = 300.0;

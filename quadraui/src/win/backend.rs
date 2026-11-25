@@ -8979,6 +8979,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
         let layout = menu.layout(4.0, 4.0, viewport, 60.0, |_| {
@@ -9544,6 +9545,7 @@ mod tests {
             selected_idx: 99,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
         let menu_layout = menu.layout_at(Rect::new(0.0, 0.0, 0.0, 0.0), viewport, 200.0, |_| {
@@ -10601,6 +10603,7 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
+            glyphs: Default::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
         let layout = menu.layout(10.0, 10.0, viewport, 120.0, |_| {

@@ -273,12 +273,11 @@ impl ContextMenuController {
                 let Some((menu, layout)) = stack.last() else {
                     return ContextMenuOutcome::Ignored;
                 };
-                // `menu_stack` stops at the first path entry that no
-                // longer names a submenu parent, so the depth of the
-                // level it actually built is what a selection move
-                // applies to — reading `submenu_path.len()` instead
-                // would address a level that is not there and drop the
-                // move.
+                // `menu_stack` stops at the first path entry that does
+                // not name a submenu parent, so the depth of the level
+                // it actually built is what a selection move applies
+                // to — reading `submenu_path.len()` instead would
+                // address a level that is not there and drop the move.
                 let depth = stack.len() - 1;
                 let page = layout.visible_items.len().max(1);
                 let event = KeyEvent {
