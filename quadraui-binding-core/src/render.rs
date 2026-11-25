@@ -223,7 +223,7 @@ fn paint_sidebar_panel(
     if let Some(header) = layout.toolbar_bounds {
         // The recorded widget is re-laid-out against `header` alone at
         // click time, so it carries the painted header height explicitly
-        // rather than re-deriving it from a style the click path lacks.
+        // and the click layout's toolbar matches the painted one exactly.
         hits.push(PaintedHit::Widget {
             id: panel.id,
             area: header,

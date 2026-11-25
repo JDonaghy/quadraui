@@ -280,7 +280,7 @@ mod tests {
         );
     }
 
-    /// Mirrors `gtk::terminal`'s `narrow_wide_glyph_is_stretched_to_fill_two_cells`
+    /// Mirrors `terminal_style`'s `narrow_wide_glyph_is_stretched_to_fill_two_cells`
     /// — every backend now shares `wide_glyph_x_scale`, so a CJK glyph
     /// measuring 15px in an 18px (2 × 9px) box scales 1.2x here too.
     #[test]
@@ -294,13 +294,13 @@ mod tests {
         assert!((15.0 * scale - cell_w).abs() < 1e-9);
     }
 
-    /// Mirrors `gtk::terminal`'s `exact_fit_wide_glyph_is_not_scaled`.
+    /// Mirrors `terminal_style`'s `exact_fit_wide_glyph_is_not_scaled`.
     #[test]
     fn exact_fit_wide_glyph_is_not_scaled() {
         assert_eq!(wide_glyph_x_scale(18.0, 18.0), 1.0);
     }
 
-    /// Mirrors `gtk::terminal`'s `over_wide_glyph_is_shrunk_into_box`.
+    /// Mirrors `terminal_style`'s `over_wide_glyph_is_shrunk_into_box`.
     #[test]
     fn over_wide_glyph_is_shrunk_into_box() {
         let scale = wide_glyph_x_scale(24.0, 18.0);
@@ -311,7 +311,7 @@ mod tests {
         assert!((24.0 * scale - 18.0).abs() < 1e-9);
     }
 
-    /// Companion regression, mirroring `gtk`/`macos::terminal`'s
+    /// Companion regression, mirroring the `gtk`/`macos` surface tests'
     /// `narrow_cells_advance_by_single_char_width`: ordinary narrow
     /// (single-width) cells must still advance by exactly `char_width` —
     /// the wide-cell fix must not widen unrelated cells.

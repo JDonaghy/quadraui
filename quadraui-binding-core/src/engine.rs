@@ -3449,6 +3449,41 @@ impl InteractionEngine {
         self.dyn_widget_dispatch(id, &widget, area, routed, backend, sink)
     }
 
+    /// Routes a wheel notch at `position` to the topmost
+    /// `PaintedHit::Widget` whose area contains it, through that leaf's
+    /// own [`DynWidget::handle`] as a [`RoutedEvent::Wheel`]. An empty
+    /// [`DynWidgetClickOutcome`] (no-op) when no painted widget is under
+    /// the pointer.
+    fn dispatch_dyn_widget_wheel(
+        &self,
+        position: Point,
+        delta: quadraui::ScrollDelta,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> DynWidgetClickOutcome {
+        let hit = self
+            .hit_map
+            .borrow()
+            .iter()
+            .rev()
+            .find_map(|hit| match hit {
+                PaintedHit::Widget { id, area, widget } if area.contains(position) => {
+                    Some((*id, *area, Rc::clone(widget)))
+                }
+                _ => None,
+            });
+        let Some((id, area, widget)) = hit else {
+            return DynWidgetClickOutcome::default();
+        };
+        let routed = RoutedEvent::Wheel {
+            dx: delta.x,
+            dy: delta.y,
+            local: Point::new(position.x - area.x, position.y - area.y),
+            mods: Modifiers::default(),
+        };
+        self.dyn_widget_dispatch(id, &widget, area, routed, backend, sink)
+    }
+
     /// Routes a `KeyPressed`/`CharTyped`/`ClipboardPaste` to whichever
     /// [`crate::layout::LeafDescriptor::Widget`] leaf currently holds
     /// engine focus, through that leaf's own [`DynWidget::handle`] — the
@@ -3544,23 +3579,34 @@ impl InteractionEngine {
         backend: &mut dyn Backend,
         sink: &mut dyn EventSink,
     ) -> DynWidgetClickOutcome {
+        // The same ctx `DrawsPrimitives::draw_dyn` lays the widget out
+        // with at paint time (editor line height, the backend's text
+        // measurer and its style), so a click resolves against the
+        // geometry that was actually painted on pixel backends.
         let style = backend.style();
-        let ctx = quadraui::primitive::LayoutCtx::new(
-            quadraui::primitive::LayoutCtx::resolve_row_height(
-                backend.chrome_line_height(),
-                &style,
-            ),
-            backend.char_width(),
-            backend.nerd_fonts_enabled(),
-        );
-        let layout = widget.layout(&ctx, area);
+        let (units, layout) = {
+            let backend_ref: &dyn Backend = backend;
+            let measurer =
+                |text: &str, role: quadraui::FontRole| backend_ref.measure_text(text, role).0;
+            let ctx = quadraui::primitive::LayoutCtx::new(
+                quadraui::primitive::LayoutCtx::resolve_row_height(
+                    backend_ref.chrome_line_height(),
+                    &style,
+                ),
+                backend_ref.char_width(),
+                backend_ref.nerd_fonts_enabled(),
+            )
+            .with_editor_line_height(backend_ref.line_height());
+            let ctx = ctx.with_measurer(&measurer).with_style(&style);
+            (ctx.units(), widget.layout(&ctx, area))
+        };
 
         let mut intents = DynWidgetIntents::default();
         let handled = {
             let mut states = self.dyn_widget_state.borrow_mut();
             let state = states.state_for(id, widget.as_ref());
             let mut host = DynWidgetEventHost {
-                units: ctx.units(),
+                units,
                 intents: &mut intents,
             };
             let mut cx = EventCx::new(id, &mut host);
@@ -4247,6 +4293,32 @@ impl InteractionEngine {
                         return Reaction::Redraw;
                     }
                 }
+            }
+        }
+
+        // A wheel `Scroll` over a [`crate::extra_paint::WIDGET_KINDS`]
+        // leaf goes to the topmost painted widget under the pointer as a
+        // [`RoutedEvent::Wheel`], the same hit-under-cursor rule the Rust
+        // runtime's widget wheel routing follows. A widget that ignores
+        // the wheel falls through to the scroll handling below.
+        if let UiEvent::Scroll {
+            position, delta, ..
+        } = &event
+        {
+            let outcome = self.dispatch_dyn_widget_wheel(*position, *delta, backend, sink);
+            if matches!(outcome.reaction, Reaction::Exit) {
+                return outcome.reaction;
+            }
+            if let Some(replacement) = outcome.event {
+                let reaction = sink.dispatch(&replacement, Some(&HitDetail::WidgetBody));
+                return outcome
+                    .reaction
+                    .merge(reaction)
+                    .merge(continue_or_tooltip_redraw(tooltip_dismissed));
+            } else if outcome.consumed {
+                return outcome
+                    .reaction
+                    .merge(continue_or_tooltip_redraw(tooltip_dismissed));
             }
         }
 
@@ -7057,6 +7129,167 @@ mod tests {
             self.engine
                 .handle(event, backend, &mut *self.sink.borrow_mut())
         }
+    }
+
+    /// Mirrors [`MinimalLogic`], painting one `"terminal"` widget leaf.
+    struct TerminalLogic {
+        term: quadraui::Terminal,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl TerminalLogic {
+        fn new(rows: usize, cols: usize) -> Self {
+            let cell = quadraui::TerminalCell {
+                text: "x".into(),
+                fg: quadraui::Color::rgb(200, 200, 200),
+                bg: quadraui::Color::rgb(20, 20, 20),
+                bold: false,
+                italic: false,
+                underline: false,
+                dim: false,
+                selected: false,
+                is_cursor: false,
+                is_find_match: false,
+                is_find_active: false,
+                cursor_shape: quadraui::TerminalCursorShape::Block,
+                cursor_blinking: false,
+            };
+            Self {
+                term: quadraui::Terminal {
+                    id: WidgetId::new("term"),
+                    cells: vec![vec![cell; cols]; rows],
+                    scrollbar: None,
+                },
+                engine: InteractionEngine::new(),
+                sink: RefCell::new(RecordingSink::default()),
+            }
+        }
+
+        fn terminal_area(&self) -> Rect {
+            self.engine
+                .hit_map()
+                .iter()
+                .find_map(|hit| match hit {
+                    PaintedHit::Widget { id, area, .. } if *id == self.term.id => Some(*area),
+                    _ => None,
+                })
+                .expect("the terminal records a widget hit for its painted area")
+        }
+    }
+
+    impl AppLogic for TerminalLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert("terminal".to_string(), Rc::new(self.term.clone()));
+            draw_bands(
+                backend,
+                RenderRefs {
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    widgets: &widgets,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.render_overlays(backend);
+            self.engine.set_hits(hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// The binding-host leg of `Terminal`'s event parity: one upward
+    /// wheel notch over a `"terminal"` leaf resolves through
+    /// [`InteractionEngine::handle`] to the same `Scroll { delta: -1 }`
+    /// the `TuiDriver` leg (`quadraui/tests/widget_contract_terminal.rs`)
+    /// and the `a11y::route_widget_action` leg produce.
+    #[test]
+    fn wheel_over_a_terminal_dispatches_terminal_scroll() {
+        let mut driver = TuiDriver::new(TerminalLogic::new(5, 10), 40, 20);
+        let area = driver.app().terminal_area();
+
+        driver.dispatch(UiEvent::Scroll {
+            widget: None,
+            delta: ScrollDelta::new(0.0, 1.0),
+            position: Point::new(area.x + 1.0, area.y + 1.0),
+        });
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| *event
+                == UiEvent::Terminal(
+                    WidgetId::new("term"),
+                    quadraui::TerminalEvent::Scroll { delta: -1 }
+                )),
+            "expected Terminal Scroll {{ delta: -1 }}: {dispatched:?}"
+        );
+    }
+
+    /// On a pixel backend whose editor line height differs from the
+    /// chrome row height, a click on a terminal row resolves against the
+    /// row geometry the terminal was painted with: the click path lays
+    /// the widget out with the same editor line height, measurer and
+    /// style `draw_dyn` uses.
+    #[test]
+    fn a_terminal_click_on_a_pixel_backend_hits_the_painted_row() {
+        let mut backend = quadraui::testing::RecordingBackend {
+            viewport: quadraui::Viewport {
+                width: 400.0,
+                height: 400.0,
+                scale: 1.0,
+            },
+            line_height: 16.0,
+            char_width: 8.0,
+            chrome_line_height: Some(16.0),
+            ..Default::default()
+        };
+        backend.current_style.row_height = 22.0;
+        let mut logic = TerminalLogic::new(10, 20);
+        logic.render(&mut backend, ());
+        let area = logic.terminal_area();
+
+        // The band is three chrome lines tall: painted rows are 16px, so
+        // y = 40 is the middle of painted row 2 (a 22px row would put it
+        // in row 1).
+        let row = 2.0;
+        logic.handle(
+            UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(area.x + 8.0 * 3.0 + 4.0, area.y + 16.0 * row + 8.0),
+                modifiers: Modifiers::default(),
+            },
+            &mut backend,
+        );
+
+        let dispatched = &logic.sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| *event
+                == UiEvent::Terminal(
+                    WidgetId::new("term"),
+                    quadraui::TerminalEvent::SelectStart { row: 2, col: 3 }
+                )),
+            "expected SelectStart at the painted row 2: {dispatched:?}"
+        );
     }
 
     /// The binding-host leg of `CommandCenter`'s event parity: a

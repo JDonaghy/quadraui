@@ -3,9 +3,9 @@
 //! Provides [`TerminalSession`] (single pane) and [`TerminalManager`]
 //! (multi-tab) that own the PTY process, background reader thread,
 //! vt100 screen parser, and scrollback ring buffer. Paint output is a
-//! [`crate::Terminal`] snapshot — directly consumable by the existing
-//! `crate::tui::draw_terminal` (`#[doc(hidden)]`, so not linked here) /
-//! `Backend::draw_terminal` rasterisers.
+//! [`crate::Terminal`] snapshot — a widget-contract value a host paints
+//! with [`crate::DrawsPrimitives::draw_dyn`] or places as a
+//! `Surface::Widget` leaf.
 //!
 //! # Feature gate
 //!
@@ -27,7 +27,7 @@
 //! if session.poll() {
 //!     let sb = session.scrollbar_state(None);
 //!     let snapshot = session.to_terminal(WidgetId::new("term:0"), Some(sb));
-//!     // pass snapshot to Backend::draw_terminal(rect, &snapshot)
+//!     // paint it: backend.draw_dyn(rect, &snapshot, &())
 //! }
 //!
 //! // Forward keyboard input:
@@ -1734,7 +1734,8 @@ impl TerminalSession {
 
     // ── Snapshot ──────────────────────────────────────────────────────────────
 
-    /// Build a paint snapshot for [`Backend::draw_terminal`].
+    /// Build a [`crate::Terminal`] paint snapshot for the widget contract
+    /// ([`crate::DrawsPrimitives::draw_dyn`]).
     ///
     /// Pass `Some(scrollbar)` (e.g. from [`scrollbar_state`](Self::scrollbar_state))
     /// to show a scrollbar when the history is non-empty.

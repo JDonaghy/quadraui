@@ -4008,7 +4008,7 @@ impl Backend for TuiBackend {
         let layout = crate::tui::draw_split_tree(frame.buffer_mut(), area, tree, &theme);
         // Dividers only, and `SplitTree` (unlike `Split`) carries no
         // id of its own — register a fixed chrome id, same pattern as
-        // `draw_solid_fill` / `draw_drop_overlay`.
+        // `draw_solid_fill` and the `DropOverlay` widget's host.
         self.register_zone(WidgetId::new("chrome:split-tree"), rect);
         layout
     }

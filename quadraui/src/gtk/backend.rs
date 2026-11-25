@@ -4242,7 +4242,7 @@ impl Backend for GtkBackend {
         crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
         // Dividers only, and `SplitTree` (unlike `Split`) carries no
         // id of its own — register a fixed chrome id, same pattern as
-        // `draw_solid_fill` / `draw_drop_overlay`.
+        // `draw_solid_fill` and the `DropOverlay` widget's host.
         self.register_zone(WidgetId::new("chrome:split-tree"), rect);
         layout
     }
