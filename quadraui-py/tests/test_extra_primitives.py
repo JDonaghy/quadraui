@@ -213,7 +213,9 @@ def test_render_callback_tree_leaf_rejects_two_extra_descriptors_together():
 # `{"row": [{"id": ..., "<kind>": {...}}]}` dict, the exact shape a render
 # callback writes. Each case pushes the events a real app would dispatch (a
 # focusing click, then a key/char where the kind needs one) and asserts the
-# final dispatched event the handler receives.
+# final dispatched event the handler receives. `radio_group` rides the
+# generic `WIDGET_KINDS` seam rather than `ExtraPaint`, but is kept here too
+# for parity coverage of the same literal-leaf shape.
 _INLINE_LEAF_CASES = [
     pytest.param(
         {"row": [{"id": "ni:1", "number_input": {"id": "ni:1", "min": 0.0, "max": 100.0, "value": 42.0}}]},
@@ -246,8 +248,17 @@ _INLINE_LEAF_CASES = [
         ],
         [
             {"FocusChanged": "rg:1"},
-            None,  # the focusing click itself falls through unclaimed
-            ("rg:1", {"SegmentedControlChanged": {"id": "rg:1", "selected_idx": 0}}),
+            # `RadioGroup::select` resolves a click straight to the
+            # clicked option -- no `Form` wrapper, since `RadioGroup` is a
+            # `WIDGET_KINDS` member, not an `EXTRA_PRIMITIVE_KINDS` one.
+            {"RadioGroupSelectionChanged": {"widget": "rg:1", "index": 1}},
+            # The arrow key routes through `InteractionEngine`'s own
+            # dyn-widget-key dispatch, which attaches a `hit` dict even to
+            # a non-`MouseDown` event.
+            {
+                "RadioGroupSelectionChanged": {"widget": "rg:1", "index": 0},
+                "hit": {"kind": "widget_body"},
+            },
         ],
         id="radio_group",
     ),
@@ -384,9 +395,10 @@ _INLINE_LEAF_CASES = [
         ],
         [
             {"FocusChanged": "se:1"},
-            # Unlike `radio_group`'s click (unclaimed), a click on a
-            # standalone `select` leaf steps the selection itself, so it
-            # reaches the handler as `DropdownChanged` too, not `None`.
+            # Unlike `slider`'s focusing click above, which only focuses, a
+            # click on a standalone `select` leaf steps the selection
+            # itself, so it reaches the handler as `DropdownChanged` too,
+            # not `None`.
             ("se:1", {"DropdownChanged": {"id": "se:1", "selected_idx": 1}}),
             ("se:1", {"DropdownChanged": {"id": "se:1", "selected_idx": 1}}),
         ],
@@ -621,9 +633,9 @@ def test_number_input_up_key_increments_the_focused_value():
 
 
 def test_radio_group_arrow_key_changes_the_selection():
-    # `RadioGroupEvent::SelectionChanged` has no `FormEvent` slot of its
-    # own either -- it's translated into `SegmentedControlChanged`, which
-    # carries the exact same `{ id, selected_idx }` shape.
+    # `RadioGroup` is a `WIDGET_KINDS` member, not an `EXTRA_PRIMITIVE_KINDS`
+    # one, so `RadioGroupEvent::SelectionChanged` reaches Python as a bare
+    # `RadioGroupSelectionChanged` event rather than a `Form`-wrapped one.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
@@ -649,9 +661,7 @@ def test_radio_group_arrow_key_changes_the_selection():
     app.run(1)
 
     assert len(received) == 1
-    widget_id, form_event = received[0]["Form"]
-    assert widget_id == "rg:1"
-    assert form_event == {"SegmentedControlChanged": {"id": "rg:1", "selected_idx": 0}}
+    assert received[0]["RadioGroupSelectionChanged"] == {"widget": "rg:1", "index": 0}
 
 
 def test_combo_box_typing_filters_then_enter_commits():
@@ -1569,19 +1579,24 @@ def test_controlled_form_focused_field_keeps_app_set_focus_despite_a_click():
 
 
 def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
-    # Acceptance criterion: `form`/`number_input`/`combo_box`/`date_picker`/
-    # `radio_group` all newly return `tab_stop() -> true`
-    # (`ExtraPaint::tab_stop`), which changes `Tab` behaviour for any app
-    # painting them -- `runtime::preprocess_event`'s own step 3 cycles
-    # `app.tab_stops()`, built from `InteractionEngine::tab_stops`'s own
-    # paint-order traversal of the hit map. One `Tab` per extra, in
-    # `EXTRA_PRIMITIVE_KINDS`' registration order (`form` < `number_input`
-    # < `combo_box` < `date_picker` < `radio_group`), must focus it -- plus
-    # one extra `Tab` for `form` itself: a render callback's `frame` is
-    # resynced against the engine's own tracked state every frame
-    # (`resolve_render_frame_state`), so once `settings` has engine focus,
-    # the next `Tab` moves `FormController`'s own cursor onto its first
-    # field before a further `Tab` yields back to the engine's cycle.
+    # Acceptance criterion: `form`/`number_input`/`combo_box`/`date_picker`
+    # all newly return `tab_stop() -> true` (`ExtraPaint::tab_stop`), which
+    # changes `Tab` behaviour for any app painting them --
+    # `runtime::preprocess_event`'s own step 3 cycles `app.tab_stops()`,
+    # built from `InteractionEngine::tab_stops`'s own paint-order traversal
+    # of the hit map. One `Tab` per extra, in `EXTRA_PRIMITIVE_KINDS`'
+    # registration order (`form` < `number_input` < `combo_box` <
+    # `date_picker`), must focus it -- plus one extra `Tab` for `form`
+    # itself: a render callback's `frame` is resynced against the engine's
+    # own tracked state every frame (`resolve_render_frame_state`), so once
+    # `settings` has engine focus, the next `Tab` moves `FormController`'s
+    # own cursor onto its first field before a further `Tab` yields back to
+    # the engine's cycle. A sixth `Tab` then wraps the whole lap back to
+    # `settings`, proving the cycle is closed. `radio_group` is a
+    # `WIDGET_KINDS` member now, not an `EXTRA_PRIMITIVE_KINDS` one, and a
+    # flat render-callback dict's generic-widget slots (`WIDGET_KINDS`) are
+    # not wired into this `tab_stops()` traversal, so it is left out of this
+    # render tree entirely rather than asserted as an untested no-op.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
@@ -1603,10 +1618,6 @@ def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
                 "focused": {"year": 2024, "month": 3, "day": 15},
                 "locale": {"first_weekday": "Sunday", "format": "Iso8601"},
             },
-            "radio_group": {
-                "id": "rg:1",
-                "options": [{"id": "opt:a", "label": "Alpha"}],
-            },
         }
     )
     app.screen()
@@ -1625,7 +1636,7 @@ def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
         {"FocusChanged": "ni:1"},
         {"FocusChanged": "combo:1"},
         {"FocusChanged": "date:1"},
-        {"FocusChanged": "rg:1"},
+        {"FocusChanged": "settings"},
     ]
 
 
