@@ -1309,6 +1309,7 @@ mod tests {
             id: WidgetId::new("above"),
             layout: ButtonLayout {
                 bounds: Rect::new(0.0, 0.0, 20.0, 1.0),
+                nerd_fonts_enabled: false,
             },
         };
         let scroll = PaintedHit::Scroll {
@@ -1355,6 +1356,7 @@ mod tests {
             id: WidgetId::new("far-above"),
             layout: ButtonLayout {
                 bounds: Rect::new(0.0, 0.0, 20.0, 1.0),
+                nerd_fonts_enabled: false,
             },
         }];
         clip_hits_to_viewport(&mut hits, 0, viewport);

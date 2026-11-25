@@ -12263,6 +12263,7 @@ mod tests {
             id: WidgetId::new("btn"),
             layout: quadraui::ButtonLayout {
                 bounds: Rect::new(0.0, 0.0, 10.0, 1.0),
+                nerd_fonts_enabled: false,
             },
         }]);
 

@@ -3772,6 +3772,14 @@ pub fn schema() -> Vec<DefJson> {
         "_ScrollbarMovedPayload",
         vec![field("widget", re("WidgetId")), field("fraction", float_())],
     ));
+    let switch_toggled_payload = b.define(obj(
+        "_SwitchToggledPayload",
+        vec![field("widget", re("WidgetId")), field("value", bool_())],
+    ));
+    let radio_group_selection_changed_payload = b.define(obj(
+        "_RadioGroupSelectionChangedPayload",
+        vec![field("widget", re("WidgetId")), field("index", int_())],
+    ));
     let text_selection_changed_payload = b.define(obj(
         "_TextSelectionChangedPayload",
         vec![
@@ -3833,7 +3841,7 @@ pub fn schema() -> Vec<DefJson> {
             ("MouseUp", mouse_up_payload),
             ("MouseMoved", mouse_moved_payload),
             ("MouseEntered", widget_payload.clone()),
-            ("MouseLeft", widget_payload),
+            ("MouseLeft", widget_payload.clone()),
             ("DoubleClick", double_click_payload),
             ("Scroll", ui_scroll_payload),
             ("WindowResized", window_resized_payload),
@@ -3849,6 +3857,9 @@ pub fn schema() -> Vec<DefJson> {
             ("PowerStateChanged", power_state_changed_payload),
             ("ScrollOffsetChanged", scroll_offset_changed_payload),
             ("ScrollbarMoved", scrollbar_moved_payload),
+            ("SwitchToggled", switch_toggled_payload),
+            ("RadioGroupSelectionChanged", radio_group_selection_changed_payload),
+            ("ButtonActivated", widget_payload),
             ("TextSelectionChanged", text_selection_changed_payload),
             ("SplitDividerDragged", split_divider_dragged_payload),
             ("MenuActivated", re("WidgetId")),
@@ -4024,6 +4035,15 @@ mod coverage {
                 widget: _,
                 fraction: _,
             } => {}
+            UiEvent::SwitchToggled {
+                widget: _,
+                value: _,
+            } => {}
+            UiEvent::RadioGroupSelectionChanged {
+                widget: _,
+                index: _,
+            } => {}
+            UiEvent::ButtonActivated { widget: _ } => {}
             UiEvent::TextSelectionChanged {
                 region: _,
                 anchor: _,
@@ -6178,7 +6198,7 @@ mod coverage {
         use quadraui::{
             Button, ButtonVariant, CalendarDate, CellGrid, ComboBox, DatePicker, Editor,
             NumberInput, RadioGroup, RadioOption, Rect, ScrollView, Scrollbar, Switch, TextInput,
-            Toolbar, WidgetId,
+            Toolbar, UiEvent, WidgetId,
         };
 
         fn keys(v: &serde_json::Value) -> BTreeSet<String> {
@@ -6485,6 +6505,62 @@ mod coverage {
                 "editing",
             ]
         );
+
+        /// The three standalone-control events serialize as an
+        /// externally-tagged `{"<Tag>": {payload}}` map, so it is the
+        /// *payload's* key set -- not the one-key wrapper's -- that
+        /// [`super::super::schema`]'s `_SwitchToggledPayload`,
+        /// `_RadioGroupSelectionChangedPayload` and `_WidgetPayload`
+        /// entries describe. Unwrap the tag first, then apply the same
+        /// key-set check [`value_shape_test!`] applies to a descriptor.
+        #[test]
+        fn standalone_control_event_payload_keys_match_the_schema_field_lists() {
+            let cases: [(UiEvent, &str, &[&str]); 3] = [
+                (
+                    UiEvent::SwitchToggled {
+                        widget: WidgetId::new("switch"),
+                        value: true,
+                    },
+                    "SwitchToggled",
+                    &["widget", "value"],
+                ),
+                (
+                    UiEvent::RadioGroupSelectionChanged {
+                        widget: WidgetId::new("radio"),
+                        index: 2,
+                    },
+                    "RadioGroupSelectionChanged",
+                    &["widget", "index"],
+                ),
+                (
+                    UiEvent::ButtonActivated {
+                        widget: WidgetId::new("button"),
+                    },
+                    "ButtonActivated",
+                    &["widget"],
+                ),
+            ];
+
+            for (event, tag, fields) in cases {
+                let value = serde_json::to_value(&event)
+                    .unwrap_or_else(|e| panic!("`UiEvent::{tag}` must serialize: {e}"));
+                assert_eq!(
+                    keys(&value),
+                    set(&[tag]),
+                    "`UiEvent::{tag}` must serialize externally tagged, under its own \
+                     variant name -- that tag is the `_UiEventDict` key bindings \
+                     narrow on"
+                );
+                let payload = value.get(tag).expect("the tag's payload");
+                assert_eq!(
+                    keys(payload),
+                    set(fields),
+                    "a field was added to or removed from `UiEvent::{tag}` without a \
+                     matching update to its `schema()` payload entry -- the key-set \
+                     check is the guard that catches it"
+                );
+            }
+        }
     }
 
     /// Runtime variant-set guards for every `#[non_exhaustive]` **enum** a
@@ -6709,6 +6785,9 @@ mod coverage {
                 "PowerStateChanged",
                 "ScrollOffsetChanged",
                 "ScrollbarMoved",
+                "SwitchToggled",
+                "RadioGroupSelectionChanged",
+                "ButtonActivated",
                 "TextSelectionChanged",
                 "SplitDividerDragged",
                 "MenuActivated",

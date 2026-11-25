@@ -4588,6 +4588,7 @@ mod tests {
             id,
             layout: ButtonLayout {
                 bounds: Rect::new(0.0, 0.0, 10.0, 1.0),
+                nerd_fonts_enabled: false,
             },
         }]);
         engine.handle(
