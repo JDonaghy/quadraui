@@ -291,3 +291,59 @@ fn no_overlay_and_no_zone_without_a_drag() {
         }
     }
 }
+
+// ── Observability on every registered driver ──────────────────────────────
+
+/// A host that paints one overlay with `draw_dyn` and registers its zone,
+/// exactly as `TabGroupController::render` does, in a fixture-sized
+/// frame. The overlay hands the backend no text, so the zone is the only
+/// thing in the frame inventory that attributes it.
+struct ZoneFixture;
+
+impl AppLogic for ZoneFixture {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        use quadraui::DrawsPrimitives;
+        let cw = backend.char_width();
+        let lh = backend.line_height();
+        let overlay = DropOverlay {
+            highlight: Some(Rect::new(cw * 2.0, lh * 2.0, cw * 20.0, lh * 6.0)),
+            insertion_bar: None,
+            ghost_position: None,
+        };
+        let bounds = overlay.bounds();
+        let _ = backend.draw_dyn(bounds, &overlay, &());
+        backend.register_zone(WidgetId::new(DROP_OVERLAY_ZONE_ID), bounds);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+fn overlay_zone<D: ConformanceDriver<App = ZoneFixture>>() -> Option<Rect> {
+    let inventory =
+        D::new_fixture(ZoneFixture, quadraui::testing::LogicalViewport::new(80, 24)).inventory();
+    inventory
+        .zones()
+        .iter()
+        .find(|z| z.id.as_str() == DROP_OVERLAY_ZONE_ID)
+        .map(|z| z.bounds)
+}
+
+#[test]
+fn tui_driver_inventory_attributes_a_painted_overlay() {
+    assert_eq!(
+        overlay_zone::<TuiDriver<_>>(),
+        Some(Rect::new(2.0, 2.0, 20.0, 6.0))
+    );
+}
+
+#[cfg(feature = "gtk")]
+#[test]
+fn gtk_driver_inventory_attributes_a_painted_overlay() {
+    let zone = overlay_zone::<quadraui::gtk::testing::GtkDriver<_>>()
+        .expect("the GTK frame inventory reports the overlay zone");
+    assert!(zone.width > 0.0 && zone.height > 0.0, "{zone:?}");
+}
