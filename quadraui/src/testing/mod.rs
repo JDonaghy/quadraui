@@ -1499,21 +1499,6 @@ impl crate::Backend for RecordingBackend {
     fn spinner_layout(&self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
         crate::SpinnerLayout { bounds: r }
     }
-    fn draw_command_center(
-        &mut self,
-        _r: Rect,
-        _c: &crate::CommandCenter,
-    ) -> crate::CommandCenterLayout {
-        self.record("draw_command_center");
-        unimplemented!("RecordingBackend has no CommandCenter layout algorithm")
-    }
-    fn command_center_layout(
-        &self,
-        _r: Rect,
-        _c: &crate::CommandCenter,
-    ) -> crate::CommandCenterLayout {
-        unimplemented!("RecordingBackend has no CommandCenter layout algorithm")
-    }
     fn draw_chart(
         &mut self,
         _r: Rect,

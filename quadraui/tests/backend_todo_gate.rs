@@ -307,11 +307,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_command_center",
-        "\"Direct2D command center rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_toolbar_with_options",
         "\"Direct2D toolbar rasteriser (no surface attached yet)\"",
     ),

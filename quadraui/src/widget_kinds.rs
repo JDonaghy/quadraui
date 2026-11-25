@@ -223,6 +223,10 @@ widget_kinds! {
     "switch" => crate::Switch,
     "radio_group" => crate::RadioGroup,
     "button" => crate::Button,
+    // Ungated like `Button`: `CommandCenter`'s `Primitive`/`Interactive`
+    // impls carry no feature gate. The kind string matches the one
+    // `quadraui-binding-core`'s wire schema already publishes for it.
+    "command_center" => crate::CommandCenter,
 }
 
 #[cfg(test)]
@@ -460,6 +464,30 @@ mod tests {
         )
         .expect("button decodes");
         assert_eq!(button.id().map(|id| id.as_str()), Some("dialog:ok"));
+    }
+
+    #[test]
+    fn decodes_the_command_center_kind() {
+        let widget = decode_widget(
+            "command_center",
+            serde_json::json!({
+                "id": "command_center:main",
+                "back_enabled": true,
+                "forward_enabled": false,
+                "search_label": "my-project",
+            }),
+        )
+        .expect("command_center decodes");
+        assert_eq!(
+            widget.id().map(|id| id.as_str()),
+            Some("command_center:main")
+        );
+        assert_eq!(
+            widget
+                .downcast_ref::<crate::CommandCenter>()
+                .map(|cc| cc.search_label.as_str()),
+            Some("my-project")
+        );
     }
 
     #[test]

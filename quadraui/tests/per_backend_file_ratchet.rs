@@ -102,23 +102,23 @@ struct BackendBaseline {
 const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "tui",
-        file_count: 61,
-        non_test_lines: 22689,
+        file_count: 60,
+        non_test_lines: 22520,
     },
     BackendBaseline {
         dir: "gtk",
-        file_count: 52,
-        non_test_lines: 19548,
+        file_count: 51,
+        non_test_lines: 19342,
     },
     BackendBaseline {
         dir: "macos",
-        file_count: 52,
-        non_test_lines: 18187,
+        file_count: 51,
+        non_test_lines: 17892,
     },
     BackendBaseline {
         dir: "win",
-        file_count: 51,
-        non_test_lines: 23284,
+        file_count: 50,
+        non_test_lines: 23042,
     },
 ];
 

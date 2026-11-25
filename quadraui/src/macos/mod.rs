@@ -52,8 +52,6 @@ mod cg;
 #[doc(hidden)]
 pub mod chart;
 #[doc(hidden)]
-pub mod command_center;
-#[doc(hidden)]
 pub mod command_line;
 #[doc(hidden)]
 pub mod completions;
@@ -159,8 +157,6 @@ pub use backend::MacBackend;
 pub use board::mac_board_layout;
 #[doc(hidden)]
 pub use chart::mac_chart_layout;
-#[doc(hidden)]
-pub use command_center::{draw_command_center, mac_command_center_layout};
 #[doc(hidden)]
 pub use command_line::draw_command_line;
 #[doc(hidden)]

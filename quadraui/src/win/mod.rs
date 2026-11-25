@@ -46,10 +46,6 @@ mod chart;
 /// [`crate::Backend::draw_combo_box`], so this module carries no
 /// production code of its own — see its module docs.
 mod combo_box;
-/// Direct2D / DirectWrite rasteriser for [`crate::CommandCenter`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod command_center;
 /// Direct2D / DirectWrite rasteriser for
 /// [`crate::primitives::command_line::CommandLine`]. Windows-only
 /// in full — see its module docs.
@@ -291,9 +287,6 @@ pub use board::win_board_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use chart::win_chart_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use command_center::{draw_command_center, win_command_center_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use command_line::{draw_command_line, draw_command_line_selection, win_command_line_layout};

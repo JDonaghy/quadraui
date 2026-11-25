@@ -65,7 +65,6 @@ use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::CommandLine;
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
@@ -4207,46 +4206,6 @@ impl Backend for MacBackend {
         // method painted.
         let font = &self.chrome_font;
         super::spinner::mac_spinner_layout(spinner, font, rect.x as f64, rect.y as f64)
-    }
-    fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_command_center called outside enter_frame_scope",
-        );
-        // Chrome primitives are drawn through `chrome_font` —
-        // `draw_tree`'s comment explains the swap. `line_height` stays
-        // the editor pitch (used only for vertical centring).
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx non-null inside frame scope.
-        unsafe {
-            super::command_center::draw_command_center(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                cc,
-                &theme,
-                line_height,
-            )
-        }
-    }
-    fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        // No-paint twin of `draw_command_center` — must agree with what
-        // that method painted.
-        let font = &self.chrome_font;
-        super::command_center::mac_command_center_layout(
-            cc,
-            font,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
     }
     /// Shared chart painting lives in
     /// [`crate::primitives::chart::paint`] now — see that fn's doc for
