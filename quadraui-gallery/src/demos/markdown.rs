@@ -10,6 +10,7 @@
 //! picks between them based on whether the host wants a popup overlay
 //! or an inline scrollable list.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     render_markdown_to_styled, render_markdown_to_styled_wrapped, Backend, BackendCaps, Decoration,
     FontRole, Key, ListItem, ListView, NamedKey, PopupPlacement, Reaction, Rect, RichTextPopup,
@@ -126,7 +127,10 @@ impl MarkdownDemo {
             padding: 1.0,
             fg: None,
             bg: None,
-            font_role: Default::default(),
+            // `f` toggles this; the descriptor carries the role, so one
+            // call exercises both the chrome-font and editor-font
+            // measure/paint paths.
+            font_role: self.popup.font_role,
         };
 
         let anchor_x = area.x + area.width * 0.05;
@@ -136,12 +140,7 @@ impl MarkdownDemo {
         let layout = popup.layout(anchor_x, anchor_y, area, measure, |_, start, end| {
             (end - start) as f32 * col_w
         });
-        match self.popup.font_role {
-            FontRole::Editor => {
-                backend.draw_rich_text_popup_with_font_role(&popup, &layout, FontRole::Editor)
-            }
-            FontRole::Chrome | FontRole::Icon => backend.draw_rich_text_popup(&popup, &layout),
-        }
+        backend.draw_dyn(layout.bounds, &popup, &());
     }
 
     fn content_cols(area: Rect, backend: &dyn Backend) -> usize {

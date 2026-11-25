@@ -2,10 +2,10 @@
 //! `quadraui/examples/common/command_line_selection_demo.rs`.
 //!
 //! Two variants show the vim-style `:`/`/` command-line bar in its two
-//! paint modes: plain text (`Backend::draw_command_line`) and with a
-//! selection highlight behind part of the text
-//! (`Backend::draw_command_line_selection`).
+//! paint modes: plain text, and with a selection highlight behind part
+//! of the text (`CommandLine::selection`).
 
+use quadraui::DrawsPrimitives;
 use quadraui::{Backend, BackendCaps, CommandLine, Reaction, Rect, UiEvent, WidgetId};
 
 use crate::demo::{extract_region, Demo};
@@ -29,12 +29,16 @@ impl CommandLineDemo {
         Self { text, word_range }
     }
 
-    fn command_line(&self) -> CommandLine {
+    /// The descriptor for `variant`: the "Selection highlight" variant
+    /// carries `self.word_range` in `CommandLine::selection`, the plain
+    /// one carries `None`.
+    fn command_line(&self, variant: usize) -> CommandLine {
         CommandLine {
             id: WidgetId::new("gallery:command-line"),
             text: self.text.clone(),
             cursor_offset: Some(self.text.len()),
             right_align: false,
+            selection: (variant == 1).then_some(self.word_range),
         }
     }
 }
@@ -61,12 +65,7 @@ impl Demo for CommandLineDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = backend.line_height();
         let rect = Rect::new(area.x, area.y, area.width, lh);
-        let cmd = self.command_line();
-        if variant == 1 {
-            backend.draw_command_line_selection(rect, &cmd, Some(self.word_range));
-        } else {
-            backend.draw_command_line(rect, &cmd);
-        }
+        backend.draw_dyn(rect, &self.command_line(variant), &());
     }
 
     fn handle(
@@ -85,12 +84,7 @@ impl Demo for CommandLineDemo {
 
     fn data(&self, variant: usize) -> serde_json::Value {
         serde_json::json!({
-            "command_line": self.command_line(),
-            "selection": if variant == 1 {
-                Some(self.word_range)
-            } else {
-                None
-            },
+            "command_line": self.command_line(variant),
         })
     }
 

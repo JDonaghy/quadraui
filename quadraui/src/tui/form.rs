@@ -47,9 +47,7 @@ fn left_label_column_width(form: &Form) -> usize {
 /// (only meaningful for fields with an actual input row — a bare
 /// `FieldKind::Label` header has no separate input to split from).
 fn is_top_label(form: &Form, field: &FormField) -> bool {
-    !matches!(field.kind, FieldKind::Label)
-        && form.resolved_label_position(field) == LabelPosition::Top
-        && field.label.visible_width() > 0
+    form.label_takes_its_own_row(field)
 }
 
 /// Whether `field` is the form's current keyboard focus. Shared by the
@@ -57,11 +55,7 @@ fn is_top_label(form: &Form, field: &FormField) -> bool {
 /// [`build_row_ctx`] (to pick focused-row colours), so both agree on
 /// exactly when a `Dropdown`'s popup list is visible.
 fn field_is_focused(form: &Form, field: &FormField) -> bool {
-    form.has_focus
-        && form
-            .focused_field
-            .as_ref()
-            .is_some_and(|id| id == &field.id)
+    form.field_has_focus(field)
 }
 
 /// `field`'s control column at its own natural, unstretched size (in
@@ -180,6 +174,9 @@ fn tui_form_layout_with_label_width(
     form.layout(area.width as f32, area.height as f32, |i| {
         let field = &form.fields[i];
         let extra_row = if is_top_label(form, field) { 1.0 } else { 0.0 };
+        // Every arm below sizes its own row count through
+        // `Form::field_rows`, the one place the per-kind row math lives.
+        let rows = form.field_rows(field);
         match &field.kind {
             FieldKind::ToggleGroup { toggles } => {
                 let start_x = field_items_start_x(form, field, left_label_width, 1);
@@ -190,7 +187,7 @@ fn tui_form_layout_with_label_width(
                         width: t.label.chars().count() as f32,
                     })
                     .collect();
-                FormFieldMeasure::with_items(1.0 + extra_row, start_x, 1.0, items)
+                FormFieldMeasure::with_items(rows, start_x, 1.0, items)
             }
             FieldKind::ButtonRow { buttons } => {
                 let start_x = field_items_start_x(form, field, left_label_width, 1);
@@ -215,18 +212,16 @@ fn tui_form_layout_with_label_width(
                         }
                     })
                     .collect();
-                FormFieldMeasure::with_items(1.0 + extra_row, start_x, 1.0, items)
+                FormFieldMeasure::with_items(rows, start_x, 1.0, items)
             }
-            FieldKind::TextArea { visible_rows, .. } => {
-                FormFieldMeasure::new(*visible_rows as f32 + extra_row)
-            }
+            FieldKind::TextArea { .. } => FormFieldMeasure::new(rows),
             // A focused `Dropdown` grows to fit its open option list (one
             // row per option) below the compact row; unfocused, it's the
             // same single row as every other field.
             FieldKind::Dropdown { options, .. }
                 if field_is_focused(form, field) && !options.is_empty() =>
             {
-                FormFieldMeasure::new(options.len() as f32 + 1.0 + extra_row)
+                FormFieldMeasure::new(rows)
             }
             FieldKind::Toolbar(toolbar) => {
                 use super::toolbar::tui_item_width;
@@ -251,7 +246,7 @@ fn tui_form_layout_with_label_width(
                     .collect();
                 // item_gap = 0: toolbar buttons pack edge-to-edge, same as
                 // how `Toolbar::layout` places items.
-                FormFieldMeasure::with_items(1.0 + extra_row, start_x, 0.0, items)
+                FormFieldMeasure::with_items(rows, start_x, 0.0, items)
             }
             FieldKind::SegmentedControl { options, .. } => {
                 let start_x = field_items_start_x(form, field, left_label_width, 1);
@@ -263,7 +258,7 @@ fn tui_form_layout_with_label_width(
                         width: opt.chars().count() as f32,
                     })
                     .collect();
-                FormFieldMeasure::with_items(1.0 + extra_row, start_x, 1.0, items)
+                FormFieldMeasure::with_items(rows, start_x, 1.0, items)
             }
             // Unlike every compact `FieldKind` above, `NumberInput`'s row
             // reuses the real standalone `tui::draw_number_input` box
@@ -281,7 +276,7 @@ fn tui_form_layout_with_label_width(
                     id: field.id,
                     width,
                 }];
-                FormFieldMeasure::with_items(3.0 + extra_row, start_x, 0.0, items)
+                FormFieldMeasure::with_items(rows, start_x, 0.0, items)
                     .with_items_start_y(extra_row)
             }
             // One item, the track alone (no brackets/value text): both
@@ -296,7 +291,7 @@ fn tui_form_layout_with_label_width(
                     id: field.id,
                     width,
                 }];
-                FormFieldMeasure::with_items(1.0 + extra_row, start_x + 1.0, 0.0, items)
+                FormFieldMeasure::with_items(rows, start_x + 1.0, 0.0, items)
                     .with_items_start_y(extra_row)
             }
             // `RadioGroup` is the one `FieldKind` whose row spans one
@@ -317,11 +312,10 @@ fn tui_form_layout_with_label_width(
                         width: 1.0,
                     })
                     .collect();
-                let rows = group.options.len().max(1) as f32;
-                FormFieldMeasure::with_vertical_items(rows + extra_row, start_x, items)
+                FormFieldMeasure::with_vertical_items(rows, start_x, items)
                     .with_items_start_y(extra_row)
             }
-            _ => FormFieldMeasure::new(1.0 + extra_row),
+            _ => FormFieldMeasure::new(rows),
         }
     })
 }

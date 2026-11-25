@@ -2553,12 +2553,13 @@ mod tests {
         assert_eq!(stops[0].0.as_str(), "pb");
     }
 
-    /// `Surface::Float` dispatches to `Backend::draw_float` and is
-    /// excluded from Tab order — same transient-overlay treatment as
-    /// `Tooltip`/`ContextMenu`/`Dialog` (see this module's
-    /// `tab_stops` doc).
+    /// A `Float` pushed as `Surface::Widget` paints through
+    /// `DrawsPrimitives::draw_dyn`, gets a `FrameZone::Widget` hit region
+    /// at its resolved bounds, and stays out of Tab order — the same
+    /// transient-overlay treatment `Tooltip`/`ContextMenu`/`Dialog` get
+    /// (see this module's `tab_stops` doc).
     #[test]
-    fn surface_float_dispatches_to_draw_float_and_is_excluded_from_tab_stops() {
+    fn a_float_widget_surface_paints_and_is_excluded_from_tab_stops() {
         use crate::layout::{Anchor, Side};
         use crate::testing::RecordingBackend;
         use crate::{Float, FloatMeasure};
@@ -2609,8 +2610,15 @@ mod tests {
         });
 
         let mut backend = RecordingBackend::new();
-        layout.draw(&mut backend);
-        assert!(backend.calls.contains(&"draw_float"));
+        let hit_map = layout.draw(&mut backend);
+        assert_eq!(hit_map.zones()[1].0, float_layout.bounds);
+        assert_eq!(
+            hit_map.zones()[1].1,
+            FrameZone::Widget {
+                idx: 1,
+                id: Some(WidgetId::new("f")),
+            }
+        );
 
         let stops = layout.tab_stops();
         assert_eq!(
@@ -2622,14 +2630,15 @@ mod tests {
         assert_eq!(stops[0].0.as_str(), "ed");
     }
 
-    /// `Surface::TextField` dispatches to `Backend::draw_text_field`,
-    /// produces a `FrameZone::TextField` hit region at the field's own
-    /// rect, and is a Tab stop — the same `Surface`/`FrameZone`/
-    /// `zone_for`/`tab_stops` wiring every other focusable primitive
-    /// gets, so a `TextField` dropped into a `ScreenLayout` (a Finder-
-    /// style search box above a list, say) is reachable the same way.
+    /// A `TextField` pushed as `Surface::Widget` paints through
+    /// `DrawsPrimitives::draw_dyn`, produces a `FrameZone::Widget` hit
+    /// region at the field's own rect, and is a Tab stop — the same
+    /// `Surface`/`FrameZone`/`zone_for`/`tab_stops` wiring every other
+    /// focusable widget gets, so a `TextField` dropped into a
+    /// `ScreenLayout` (a Finder-style search box above a list, say) is
+    /// reachable the same way.
     #[test]
-    fn surface_text_field_dispatches_to_draw_text_field_and_is_a_tab_stop() {
+    fn a_text_field_widget_surface_paints_and_is_a_tab_stop() {
         use crate::testing::RecordingBackend;
         use crate::TextField;
 
@@ -2785,9 +2794,16 @@ mod tests {
         };
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::Widget {
+        layout.push(Surface::Progress {
             rect: Rect::new(0.0, 10.0, 20.0, 1.0),
-            widget: Box::new(TextField::new(Id::new("status"))),
+            bar: ProgressBar {
+                id: Id::new("status"),
+                label: String::new(),
+                value: None,
+                frame_idx: 0,
+                cancellable: false,
+                accent: None,
+            },
         });
         layout.push(Surface::Widget {
             rect: widget_rect,

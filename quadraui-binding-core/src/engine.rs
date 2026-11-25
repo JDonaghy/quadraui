@@ -22,6 +22,7 @@ use quadraui::compose::{
 use quadraui::primitive::DynWidget;
 use quadraui::primitives::form::focus_order;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
+use quadraui::DrawsPrimitives;
 use quadraui::{
     wheel_row_delta, Backend, Button, CanvasEvent, CellGrid, CellGridEvent,
     CellGridPrimitiveLayout, Column, CompletionItemMeasure, Completions, CompletionsHit,
@@ -853,9 +854,10 @@ enum FloatContent {
 
 /// A modal [`Dialog`] whose body hosts an arbitrary [`LayoutNode`] subtree
 /// — opened via [`InteractionEngine::open_layout_dialog`]. The dialog's
-/// own title/button chrome is painted by [`Backend::draw_dialog`] exactly
-/// as for any other dialog; the subtree is painted into the slot
-/// [`Self::content_bounds`] reserves inside [`quadraui::DialogLayout::body_bounds`].
+/// own title/button chrome paints through the widget contract exactly as
+/// for any other dialog; the subtree is painted into the
+/// [`quadraui::DialogInput::ContentSlot`] hole the dialog reserves for it
+/// (see [`Self::content_bounds`]).
 struct LayoutDialog {
     /// The chrome descriptor: title, body text lines above the content
     /// slot, buttons, severity.
@@ -903,70 +905,51 @@ enum LayoutDialogOutcome {
 }
 
 impl LayoutDialog {
-    /// The dialog's full layout for `backend`'s current viewport, with a
-    /// body slot tall enough for the body text lines *plus* the content
-    /// subtree. Mirrors [`FormDialogController`]'s own `layout` — the
-    /// "one layout fn, two callers" pattern, so paint and hit-test can
-    /// never disagree.
-    fn layout(&self, backend: &dyn Backend) -> quadraui::DialogLayout {
-        let m = backend.measure();
-        let lh = m.line_height;
-        let char_w = m.char_width;
-        let viewport = backend.viewport();
-        let has_title = self.dialog.title.spans.iter().any(|s| !s.text.is_empty());
-        let button_width = self
-            .dialog
-            .buttons
-            .iter()
-            .map(|b| b.resolved_button_spec().min_cell_width() * char_w)
-            .fold(char_w * 10.0, f32::max);
-        let width = self
-            .size
-            .width
-            .unwrap_or_else(|| (viewport.width * 0.5).clamp(char_w * 30.0, char_w * 64.0));
-        let content_height = self.size.height.unwrap_or(viewport.height / 3.0);
-        let measure = quadraui::DialogMeasure {
-            width,
-            title_height: if has_title { lh } else { 0.0 },
-            body_height: lh * self.dialog.body.len() as f32 + content_height,
-            table_height: 0.0,
-            input_height: 0.0,
-            button_row_height: lh,
-            button_width,
-            button_gap: char_w * 2.0,
-            padding: lh,
-        };
-        self.dialog.layout(viewport_rect(backend), measure, |_| {
-            quadraui::ToolbarItemMeasure::new(0.0)
-        })
+    /// The chrome descriptor with the content subtree's slot filled in:
+    /// a [`quadraui::DialogInput::ContentSlot`] carrying this dialog's
+    /// requested width/height, so the widget contract reserves the hole
+    /// the subtree paints into and sizes the box around it.
+    fn paint_descriptor(&self) -> Dialog {
+        Dialog {
+            input: Some(quadraui::DialogInput::ContentSlot(
+                quadraui::DialogContentSlot {
+                    height: self.size.height,
+                    width: self.size.width,
+                },
+            )),
+            ..self.dialog.clone()
+        }
     }
 
-    /// The slot inside [`quadraui::DialogLayout::body_bounds`] the content
-    /// subtree paints into: everything below the dialog's own body text
-    /// lines, which [`Backend::draw_dialog`] paints from the top of that
-    /// rect downward.
-    fn content_bounds(&self, backend: &dyn Backend, layout: &quadraui::DialogLayout) -> Rect {
-        let text_height = backend.measure().line_height * self.dialog.body.len() as f32;
-        let body = layout.body_bounds;
-        Rect::new(
-            body.x,
-            body.y + text_height,
-            body.width,
-            (body.height - text_height).max(0.0),
-        )
+    /// The dialog's full layout for `backend`'s current viewport, with a
+    /// body slot tall enough for the body text lines *plus* the content
+    /// subtree. Resolved through the widget contract, the "one layout fn,
+    /// two callers" pattern, so paint and hit-test can never disagree.
+    fn layout(&self, backend: &dyn Backend) -> quadraui::DialogLayout {
+        backend
+            .layout_primitive(viewport_rect(backend), &self.paint_descriptor())
+            .layout
+    }
+
+    /// The slot the content subtree paints into — the
+    /// [`quadraui::DialogInput::ContentSlot`] hole
+    /// [`Self::paint_descriptor`] reserves, which the dialog itself
+    /// leaves blank.
+    fn content_bounds(&self, layout: &quadraui::DialogLayout) -> Rect {
+        layout.input_bounds.unwrap_or(layout.body_bounds)
     }
 
     /// Paints the dialog chrome and then the content subtree, caching
     /// this frame's button rects for [`InteractionEngine::tab_stops`].
     fn render(&self, backend: &mut dyn Backend) {
         let layout = self.layout(backend);
-        backend.draw_dialog(&self.dialog, &layout);
+        backend.draw_dyn(viewport_rect(backend), &self.paint_descriptor(), &());
         let stops: Vec<(WidgetId, Rect)> = layout
             .visible_buttons
             .iter()
             .map(|b| (b.id, b.bounds))
             .collect();
-        let content_area = self.content_bounds(backend, &layout);
+        let content_area = self.content_bounds(&layout);
         self.content.render(backend, content_area, &stops);
         *self.button_stops.borrow_mut() = stops;
     }
@@ -1848,7 +1831,9 @@ impl InteractionEngine {
     /// routing — the "one layout fn, two callers" pattern
     /// [`MessageDialogController::layout`] already follows for `Dialog`.
     fn toast_layout(&self, backend: &dyn Backend) -> ToastStackLayout {
-        backend.toast_stack_layout(viewport_rect(backend), &self.toast_overlay())
+        backend
+            .layout_primitive(viewport_rect(backend), &self.toast_overlay())
+            .layout
     }
 
     // ── Tooltip ──────────────────────────────────────────────────────
@@ -2289,7 +2274,7 @@ impl InteractionEngine {
                 Overlay::ContextMenu(controller) => controller.render(backend),
                 Overlay::Float(float, measure, content) => {
                     let layout = self.float_layout(backend, float, *measure);
-                    backend.draw_float(float, &layout);
+                    backend.draw_dyn(layout.bounds, float, &());
                     match content {
                         Some(FloatContent::Form(controller)) => {
                             controller.render(backend, layout.content_bounds);
@@ -2302,18 +2287,18 @@ impl InteractionEngine {
                 }
                 Overlay::RichTextPopup(popup, anchor) => {
                     let layout = self.rich_text_popup_layout(backend, popup, *anchor);
-                    backend.draw_rich_text_popup(popup, &layout);
+                    backend.draw_dyn(layout.bounds, popup, &());
                 }
                 Overlay::Completions(completions, cursor) => {
                     let layout = self.completions_layout(backend, completions, *cursor);
-                    backend.draw_completions(completions, &layout);
+                    backend.draw_dyn(layout.bounds, completions, &());
                 }
                 Overlay::Dialog(dialog) => dialog.render(backend),
                 Overlay::FormDialog(_, dialog) => dialog.render(backend),
                 Overlay::LayoutDialog(embedded) => embedded.render(backend),
                 Overlay::Tooltip(tooltip, anchor) => {
                     let layout = self.tooltip_layout(backend, tooltip, *anchor);
-                    backend.draw_tooltip(tooltip, &layout);
+                    backend.draw_dyn(layout.bounds, tooltip, &());
                 }
                 // A toast stack paints as one group, after this loop —
                 // see the call below.
@@ -2322,7 +2307,7 @@ impl InteractionEngine {
         }
         if self.overlays.iter().any(|o| matches!(o, Overlay::Toast(_))) {
             let overlay = self.toast_overlay();
-            backend.draw_toast_overlay(viewport_rect(backend), &overlay);
+            backend.draw_dyn(viewport_rect(backend), &overlay, &());
         }
     }
 
@@ -2897,7 +2882,7 @@ impl InteractionEngine {
             let mut repainted = text_input.clone();
             repainted.cursor_line = live.0;
             repainted.cursor_col = live.1;
-            backend.draw_text_input(*area, &repainted);
+            backend.draw_dyn(*area, &repainted, &());
         }
     }
 

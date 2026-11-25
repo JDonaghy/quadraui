@@ -457,7 +457,8 @@ fn text_display_viewport_lines(backend: &mut dyn Backend, rect: Rect, td: &TextD
     shadow.scroll_offset = 0;
     shadow.auto_scroll = false;
     backend
-        .text_display_layout(rect, &shadow)
+        .layout_primitive(rect, &shadow)
+        .layout
         .visible_lines
         .len()
 }
@@ -473,8 +474,8 @@ fn draw_text_display_hit(
     area: Rect,
     td: &TextDisplay,
 ) -> PaintedHit {
-    backend.draw_text_display(area, td);
-    let layout = backend.text_display_layout(area, td);
+    backend.draw_dyn(area, td, &());
+    let layout = backend.layout_primitive(area, td).layout;
     let viewport_lines = text_display_viewport_lines(backend, area, td);
     let body_offset = if td.title.is_some() {
         backend.line_height()

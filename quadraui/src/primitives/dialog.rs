@@ -233,18 +233,42 @@ pub enum DialogInput {
     /// [`DialogHit::BodyToolbarButton`].
     Toolbar(Toolbar),
     /// A multi-field form (e.g. Name + Description), for dialogs that need
-    /// more than one input. Unlike [`Self::Toolbar`] (which every
-    /// backend's `draw_dialog` paints inline, inside the input slot),
-    /// **no** backend's `draw_dialog` paints this variant at all — a
-    /// bare `Dialog::layout` + `draw_dialog` caller gets a blank
-    /// reserved hole where the form would go.
-    /// [`crate::compose::form_dialog::FormDialogController`] is the
-    /// intended (and today, only) way to use this variant: it paints
+    /// more than one input. Unlike [`Self::Toolbar`] (which the dialog
+    /// paints inline, inside the input slot), the dialog paints **no**
+    /// part of this variant — it reserves a blank hole where the form
+    /// goes. [`crate::compose::form_dialog::FormDialogController`] is
+    /// the intended (and today, only) way to use this variant: it paints
     /// the form separately via [`crate::Backend::draw_form`] — the same
-    /// cross-backend path every other `Form` host uses — after calling
-    /// `draw_dialog`, and owns the Tab/Shift-Tab focus hand-off between
-    /// the form's fields and this dialog's buttons.
+    /// cross-backend path every other `Form` host uses — and owns the
+    /// Tab/Shift-Tab focus hand-off between the form's fields and this
+    /// dialog's buttons.
     Form(Form),
+    /// A reserved hole the *host* paints into, sized by the slot itself
+    /// rather than by any descriptor the dialog can measure — for a
+    /// modal that frames an arbitrary subtree (a nested layout, a
+    /// preview pane). Like [`Self::Form`], the dialog paints nothing
+    /// inside it; [`DialogLayout::input_bounds`] is the rect to paint
+    /// into. Unlike every other variant it also carries the dialog's own
+    /// box width, so a host that frames wide content can widen the modal
+    /// without a second layout pass of its own.
+    ContentSlot(DialogContentSlot),
+}
+
+/// Size of a [`DialogInput::ContentSlot`], in the laying-out backend's
+/// own units — cells on a terminal, pixels/DIP on a GUI surface, the
+/// same units [`DialogMeasure`] uses.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+pub struct DialogContentSlot {
+    /// Height reserved for the host's content, between the body text and
+    /// the button row. `None` reserves a third of the viewport's height.
+    #[serde(default)]
+    pub height: Option<f32>,
+    /// Full box width, replacing the dialog's own
+    /// half-the-viewport-clamped default. Still bounded by the viewport,
+    /// so an over-wide request can't paint off-screen. `None` keeps the
+    /// default.
+    #[serde(default)]
+    pub width: Option<f32>,
 }
 
 /// Single-line text input embedded in a dialog body slot.
@@ -741,17 +765,26 @@ impl Dialog {
             0.0
         };
         let body_h = self.body.len() as f32 * line_height;
-        // A `Form` input needs one row per field, not the single row
-        // every other `DialogInput` variant occupies.
+        // A `Form` input needs one row per field, and a `ContentSlot`
+        // whatever height the host asked for, not the single row every
+        // other `DialogInput` variant occupies.
         let input_h = match &self.input {
-            Some(DialogInput::Form(form)) => line_height * form.fields.len().max(1) as f32,
+            Some(DialogInput::Form(form)) => {
+                line_height * form.total_field_rows().max(1.0) + form.spacing.padding
+            }
+            Some(DialogInput::ContentSlot(slot)) => {
+                slot.height.unwrap_or(viewport.height / 3.0).max(0.0)
+            }
             Some(_) => line_height,
             None => 0.0,
         };
 
         let min_w = char_width * 30.0; // ≈ 30 char-widths
         let max_w = char_width * 60.0; // ≈ 60 char-widths
-        let default_w = (viewport.width * 0.5).clamp(min_w, max_w);
+        let default_w = match &self.input {
+            Some(DialogInput::ContentSlot(DialogContentSlot { width: Some(w), .. })) => *w,
+            _ => (viewport.width * 0.5).clamp(min_w, max_w),
+        };
         let dialog_w = default_w
             .max(table_preferred_w)
             .min(viewport.width - char_width * 4.0 - border_chrome_inset * 2.0);
@@ -1507,10 +1540,34 @@ pub(crate) mod native_surface_paint {
 /// both resolve through here, so a feature set with no terminal backend
 /// compiled in lays a dialog out exactly as a terminal does — including
 /// the body toolbar's hit regions.
+/// The box origin is snapped to a whole cell: [`Dialog::layout`] centres
+/// with `(viewport_dim - box_dim) / 2`, which only lands on a whole cell
+/// when the two share parity. A half-cell origin is invisible on a pixel
+/// surface but breaks a terminal outright — the glyph still paints on a
+/// whole cell while the hit rect stays half a cell off, so a real click
+/// on a button resolves to [`DialogHit::Body`]. Trimming at most one
+/// cell off each axis of `viewport` restores the parity without moving
+/// the box more than that cell.
 pub(crate) fn cell_layout(dialog: &Dialog, viewport: Rect) -> DialogLayout {
-    Dialog::layout(dialog, viewport, cell_measure(dialog, viewport), |btn| {
+    let measure = cell_measure(dialog, viewport);
+    let item_measure = |btn: &crate::primitives::toolbar::ToolbarButton| {
         ToolbarItemMeasure::new(crate::primitives::toolbar::cell_item_width(btn))
-    })
+    };
+    let centred = Dialog::layout(dialog, viewport, measure, &item_measure);
+    let trim_w = (viewport.width - centred.bounds.width).rem_euclid(2.0);
+    let trim_h = (viewport.height - centred.bounds.height).rem_euclid(2.0);
+    if trim_w == 0.0 && trim_h == 0.0 {
+        return centred;
+    }
+    // Same `measure` as the first pass, so the box keeps the width whose
+    // parity the trim was computed against.
+    let snapped = Rect::new(
+        viewport.x,
+        viewport.y,
+        viewport.width - trim_w,
+        viewport.height - trim_h,
+    );
+    Dialog::layout(dialog, snapped, measure, &item_measure)
 }
 
 /// The cell-grid [`DialogMeasure`] a terminal paints a [`Dialog`] at:
@@ -1536,15 +1593,22 @@ pub(crate) fn cell_measure(dialog: &Dialog, viewport: Rect) -> DialogMeasure {
         None => (0.0, 0.0),
     };
 
-    // A `Form` input needs one row per field, not the single row every
-    // other `DialogInput` variant occupies.
+    // A `Form` input needs one row per field, and a `ContentSlot`
+    // whatever height the host asked for, not the single row every other
+    // `DialogInput` variant occupies.
     let input_h = match &dialog.input {
-        Some(DialogInput::Form(form)) => form.fields.len().max(1) as f32,
+        Some(DialogInput::Form(form)) => form.total_field_rows().max(1.0) + form.spacing.padding,
+        Some(DialogInput::ContentSlot(slot)) => {
+            slot.height.unwrap_or(viewport.height / 3.0).max(0.0)
+        }
         Some(_) => 1.0,
         None => 0.0,
     };
 
-    let default_w = (viewport.width * 0.5).clamp(30.0, 60.0);
+    let default_w = match &dialog.input {
+        Some(DialogInput::ContentSlot(DialogContentSlot { width: Some(w), .. })) => *w,
+        _ => (viewport.width * 0.5).clamp(30.0, 60.0),
+    };
     let dialog_w = default_w.max(table_preferred_w).min(viewport.width - 4.0);
 
     // Floored at an 8-cell estimate so a row of short labels ("OK" /
@@ -1850,8 +1914,9 @@ pub(crate) mod cell_paint {
                 // the embedded form separately, through
                 // `Backend::draw_form` inside `input_bounds`, the same
                 // cross-backend path every other `Form` host uses —
-                // nothing to draw here.
-                DialogInput::Form(_) => {}
+                // nothing to draw here. A `ContentSlot` is likewise the
+                // host's own hole to fill.
+                DialogInput::Form(_) | DialogInput::ContentSlot(_) => {}
             }
         }
 
@@ -3419,13 +3484,15 @@ mod tests {
         assert_eq!(input, back);
     }
 
-    /// A `Form` input reserves one row per field, not a single row like
-    /// every other `DialogInput` variant.
+    /// A `Form` input reserves every field's own row count
+    /// ([`crate::Form::total_field_rows`]) — here a 1-row `TextInput`
+    /// plus a 3-row `TextArea` — not one row per field, and not the
+    /// single row every other `DialogInput` variant occupies.
     #[test]
     fn measure_generic_sizes_input_height_per_form_field() {
         let d = base_dialog(Some(DialogInput::Form(two_field_form())));
         let measure = d.measure_generic(1.0, 1.0, viewport(), 0.0);
-        assert_eq!(measure.input_height, 2.0);
+        assert_eq!(measure.input_height, 4.0);
     }
 
     /// `layout` reserves `input_bounds` tall enough for every field when

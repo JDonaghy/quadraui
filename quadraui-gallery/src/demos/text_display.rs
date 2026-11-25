@@ -7,6 +7,7 @@
 //! severity tint + timestamp, manual scroll disabling auto-scroll) and
 //! an over-wide line that must word-wrap rather than silently truncate.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, Color, Decoration, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
     StatusBarSegment, Style, StyledSpan, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
@@ -146,7 +147,7 @@ impl Demo for TextDisplayDemo {
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let body = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
         let display = self.build(variant);
-        backend.draw_text_display(body, &display);
+        backend.draw_dyn(body, &display, &());
 
         let status_rect = Rect::new(area.x, area.y + body.height, area.width, lh);
         let text = format!(

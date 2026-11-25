@@ -18,6 +18,7 @@
 //! trait has no deactivate hook to pop on, so this is a known gap rather
 //! than a fixed one.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Anchor, Backend, BackendCaps, Color, Float, FloatLayout, FloatMeasure, InteractionState, Key,
     NamedKey, Reaction, Rect, Side, StatusBar, StatusBarSegment, UiEvent, WidgetId,
@@ -235,13 +236,13 @@ impl Demo for FloatDemo {
         if self.menu_open {
             let layout = self.menu_layout(variant, area, backend);
             let float = self.menu_float(variant, area, backend);
-            backend.draw_float(&float, &layout);
+            backend.draw_dyn(layout.bounds, &float, &());
             self.paint_menu_content(backend, &layout);
         }
         if self.hint_open {
             let layout = self.hint_layout(area, backend);
             let float = self.hint_float(area, backend);
-            backend.draw_float(&float, &layout);
+            backend.draw_dyn(layout.bounds, &float, &());
             self.paint_hint_content(backend, &layout);
         }
     }

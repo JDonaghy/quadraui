@@ -10,6 +10,7 @@
 use std::rc::Rc;
 
 use quadraui::primitive::DynWidget;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     render_markdown_to_styled, ActivityBar, ActivityBarStyle, Backend, BoardModel, Canvas, Chart,
     Column, ComboBox, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor,
@@ -312,7 +313,7 @@ impl ExtraPaint for Form {
 
 impl ExtraPaint for TextInput {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_text_input(area, self);
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -349,7 +350,7 @@ impl ExtraPaint for TextInput {
 
 impl ExtraPaint for TextField {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_text_field(area, self);
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -380,8 +381,7 @@ impl ExtraPaint for TextField {
 
 impl ExtraPaint for NumberInput {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let layout = self.layout(area);
-        backend.draw_number_input(self, &layout);
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -429,7 +429,8 @@ impl ExtraPaint for ComboBox {
             max_popup_height,
             |_| CompletionItemMeasure::new(line_height),
         );
-        backend.draw_combo_box(self, &layout);
+        let _ = layout;
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -493,7 +494,8 @@ impl ExtraPaint for DatePicker {
             header_height,
             time_height,
         );
-        backend.draw_date_picker(self, &layout);
+        let _ = layout;
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -1107,7 +1109,8 @@ impl Markdown {
         let mut shadow = td;
         shadow.scroll_offset = 0;
         let viewport_lines = backend
-            .text_display_layout(area, &shadow)
+            .layout_primitive(area, &shadow)
+            .layout
             .visible_lines
             .len();
         (total_lines, viewport_lines)
@@ -1118,7 +1121,7 @@ impl ExtraPaint for Markdown {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         let theme = backend.theme();
         let (td, _) = self.render(&theme);
-        backend.draw_text_display(area, &td);
+        backend.draw_dyn(area, &td, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -1150,12 +1153,14 @@ impl ExtraPaint for Markdown {
     ) -> Vec<(Rect, WidgetId)> {
         let theme = backend.theme();
         let (td, rendered) = self.render(&theme);
-        backend.draw_text_display(area, &td);
+        backend.draw_dyn(area, &td, &());
         if rendered.links.is_empty() {
             return Vec::new();
         }
-        let layout = backend.text_display_layout(area, &td);
+        let layout = backend.layout_primitive(area, &td);
+        let body = layout.body;
         layout
+            .layout
             .visible_lines
             .iter()
             .filter_map(|visible| {
@@ -1164,8 +1169,8 @@ impl ExtraPaint for Markdown {
                     .iter()
                     .position(|(line_idx, _, _)| *line_idx == visible.line_idx)?;
                 let bounds = Rect::new(
-                    area.x + visible.bounds.x,
-                    area.y + visible.bounds.y,
+                    body.x + visible.bounds.x,
+                    body.y + visible.bounds.y,
                     visible.bounds.width,
                     visible.bounds.height,
                 );
@@ -1748,7 +1753,7 @@ impl ExtraPaint for StatusBar {
 
 impl ExtraPaint for CommandLine {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_command_line(area, self);
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {

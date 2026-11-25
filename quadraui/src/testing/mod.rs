@@ -666,12 +666,11 @@ impl Drop for TreePaintsOwnScrollbar {
 /// rather than panicking, so a controller under test can call them
 /// without the test needing to know it did. A handful of primitives this
 /// crate's own controllers never exercise through a bare `Backend` still
-/// `unimplemented!()` — most notably `modal_stack_handle`,
-/// `drag_state_handle`, and `services()`, which real backends back with
-/// actual shared state / platform services that a headless mock cannot
-/// honestly fabricate. If your test needs one of those, `RecordingBackend`
-/// is the wrong tool — drive a real backend (`quadraui::tui::testing::
-/// TuiDriver`) instead.
+/// `unimplemented!()` — most notably `drag_state_handle` and
+/// `services()`, which real backends back with platform services a
+/// headless mock cannot honestly fabricate. If your test needs one of
+/// those, `RecordingBackend` is the wrong tool — drive a real backend
+/// (`quadraui::tui::testing::TuiDriver`) instead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordingBackend {
     /// Method name of every `draw_*` call made against this backend, in
@@ -696,10 +695,9 @@ pub struct RecordingBackend {
     /// field directly, the same two ways a real backend's own
     /// `current_style` field is written.
     pub current_style: crate::Style,
-    /// Backs [`Backend::focus_tree`] — unlike `modal_stack_handle`/
-    /// `drag_state_handle`, this one *is* real state a headless mock can
-    /// honestly fabricate, so it's included rather than
-    /// `unimplemented!()`.
+    /// Backs [`Backend::focus_tree`] — unlike `drag_state_handle`, this
+    /// one *is* real state a headless mock can honestly fabricate, so
+    /// it's included rather than `unimplemented!()`.
     pub focus_tree: crate::focus::FocusTree,
     /// Backs [`Backend::invalidate_rect`]/[`Backend::invalidation_log`] —
     /// pure bookkeeping, same shape every real backend's `BackendCore`
@@ -741,6 +739,13 @@ pub struct RecordingBackend {
     /// without a real rasteriser, mirroring what [`Self::calls`] does for
     /// the method name alone.
     pub multi_section_view_calls: Vec<crate::MultiSectionView>,
+    /// Backs [`Backend::modal_stack_handle`] — like
+    /// [`Self::focus_tree`], a real `ModalStack` is bookkeeping a
+    /// headless recorder can honestly own, so a controller that pushes a
+    /// modal (or a widget-contract paint that marks one painted) works
+    /// against this backend without a live event loop. Empty on a fresh
+    /// recorder.
+    pub modal_stack: std::rc::Rc<std::cell::RefCell<crate::ModalStack>>,
 }
 
 impl Default for RecordingBackend {
@@ -763,6 +768,7 @@ impl Default for RecordingBackend {
             notification_send_result: Ok(()),
             font_families: std::collections::HashSet::new(),
             multi_section_view_calls: Vec::new(),
+            modal_stack: std::rc::Rc::new(std::cell::RefCell::new(crate::ModalStack::default())),
         }
     }
 }
@@ -1047,10 +1053,7 @@ impl crate::Backend for RecordingBackend {
         &self.invalidation_log
     }
     fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
-        unimplemented!(
-            "RecordingBackend has no shared ModalStack — drive a real backend \
-             (quadraui::tui::testing::TuiDriver) if your test needs one"
-        )
+        std::rc::Rc::clone(&self.modal_stack)
     }
     fn focus_tree(&self) -> &crate::focus::FocusTree {
         &self.focus_tree

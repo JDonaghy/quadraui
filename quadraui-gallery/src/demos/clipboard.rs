@@ -12,6 +12,7 @@
 //! clipboard-encoding paths: plain ASCII, multi-line text, and Unicode
 //! (accents, CJK, emoji).
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, Color, EditOp, InteractionState, Key, NamedKey, Reaction, Rect,
     StatusBar, StatusBarSegment, Style, TextEditor, TextInput, UiEvent, WidgetId,
@@ -136,7 +137,7 @@ impl Demo for ClipboardDemo {
             (area.width - pad * 2.0).max(0.0),
             (area.height - pad * 2.0 - status_h).max(lh),
         );
-        backend.draw_text_input(input_rect, &self.editors[variant].input);
+        backend.draw_dyn(input_rect, &self.editors[variant].input, &());
     }
 
     fn handle(

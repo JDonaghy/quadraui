@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 ///     text: ":wq".to_string(),
 ///     cursor_offset: Some(3),
 ///     right_align: false,
+///     selection: None,
 /// };
 ///
 /// let rect = Rect::new(0.0, 23.0, 80.0, 1.0);
@@ -356,6 +357,7 @@ pub(crate) mod native_surface_paint {
                 text: text.into(),
                 cursor_offset: cursor,
                 right_align,
+                selection: None,
             }
         }
 

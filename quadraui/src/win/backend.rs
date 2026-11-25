@@ -19,9 +19,7 @@ use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
-use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
-use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::{Form, FormLayout};
@@ -37,21 +35,17 @@ use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
-use crate::primitives::text_display::{TextDisplayLayout, TextDisplayLineMeasure};
-use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 #[cfg(target_os = "windows")]
 use crate::primitives::toolbar::ToolbarButton;
-use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, Palette, StatusBar,
-    TextDisplay, TooltipChrome, TreeView, UserPayload,
+    TreeView, UserPayload,
 };
 // `TabBar` is only named by `#[cfg(test)]` code below — a tab strip
 // paints through its widget contract, not a method on this backend.
