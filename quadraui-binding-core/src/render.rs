@@ -11,12 +11,11 @@ use std::rc::Rc;
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataRow, DataTable, Decoration, FontRole, InteractionState,
-    ListItem, ListView, ListViewHit, ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar,
-    SectionSize, Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar,
-    TabBarLayout, TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine,
-    TextRegion, Theme, TreePath, TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout,
-    WidgetId,
+    Backend, Button, DataRow, DataTable, Decoration, FontRole, InteractionState, ListItem,
+    ListView, ListViewHit, ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize,
+    Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar, TabBarLayout,
+    TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme,
+    TreePath, TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
