@@ -82,7 +82,6 @@ use crate::primitives::multi_section_view::{
 use crate::primitives::number_input::{NumberInput, NumberInputLayout};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::radio_group::{RadioGroup, RadioGroupLayout};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::sidebar_panel::{SidebarPanel, SidebarPanelLayout};
@@ -3973,22 +3972,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout;
-
-    /// Draw a [`RadioGroup`] (a vertical list of mutually-exclusive
-    /// options). Returns the [`RadioGroupLayout`] so hosts can route
-    /// clicks. A backend that tints hover/pressed state reads it
-    /// straight off each [`RadioOption::hovered`]/[`RadioOption::pressed`]
-    /// — the host sets those before calling, the same convention
-    /// [`RadioGroup::focused`] already follows. Same coordinate frame
-    /// as [`Self::radio_group_layout`] (ABSOLUTE).
-    fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
-
-    /// Compute radio-group layout without painting. Each backend
-    /// supplies its own per-option measure (text extents, cell counts,
-    /// or a nominal fallback) — see the implementation for the shape.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn radio_group_layout(&self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
 
     /// Draw a [`CommandCenter`] (nav arrows + search box). Returns the
     /// [`CommandCenterLayout`] so hosts can route clicks. Same

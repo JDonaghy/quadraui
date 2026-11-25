@@ -41,15 +41,15 @@ use quadraui::{
     EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
     Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
     MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
-    PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, RadioGroup,
-    RadioOption, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode,
-    Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side,
-    SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
-    StatusBarSegment, StyledSpan, StyledText, Terminal, TerminalCell, TextDisplay, TextDisplayLine,
-    TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton,
-    ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities,
-    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
-    TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
+    PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction,
+    Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section,
+    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, SidebarPanel, Spinner,
+    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
+    StyledText, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextField, TextInput, Toast,
+    ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
+    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
+    ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
+    TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -1291,36 +1291,6 @@ pub const CASES: &[Case] = &[
                 &button,
                 &interaction,
             );
-        },
-    },
-    Case {
-        method: "draw_radio_group",
-        needle: Some("c0radio"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let group = RadioGroup::new(
-                id("radio-group"),
-                vec![RadioOption::new(id("radio-option"), "c0radio")],
-            );
-            let _ = b.draw_radio_group(Rect::new(0.0, 0.0, area.width, lh * 2.0), &group);
-        },
-    },
-    // A hovered-and-pressed group: `RadioOption::hovered`/`pressed` are
-    // ordinary descriptor fields, so `draw_radio_group` is the only entry
-    // point. This row proves a tinted option still paints observable
-    // content on every backend.
-    Case {
-        method: "draw_radio_group",
-        needle: Some("c0radiohv"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let mut group = RadioGroup::new(
-                id("radio-group-hover"),
-                vec![RadioOption::new(id("radio-option-hover"), "c0radiohv")],
-            );
-            group.options[0].hovered = true;
-            group.options[0].pressed = true;
-            let _ = b.draw_radio_group(Rect::new(0.0, 0.0, area.width, lh * 2.0), &group);
         },
     },
     Case {

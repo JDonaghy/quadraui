@@ -199,12 +199,27 @@ impl FocusTree {
     /// the previously-focused address is still present in the rebuilt
     /// order, focus (and its current focus-visible state) is preserved;
     /// otherwise focus is cleared.
+    ///
+    /// A whole-widget address (`cur.1 == None`) counts as "still
+    /// present" when the rebuilt order carries *any* stop for that same
+    /// id, even a `FocusSpec::Children` widget's own per-child
+    /// `(id, Some(sub))` stops — `None` names "the whole widget, no
+    /// child singled out" (see [`FocusAddress`]'s own doc), the address
+    /// [`Self::sync_tab_order`] always lands a [`crate::runner::AppLogic::extra_tab_stops`]
+    /// landing on since that flat shape carries no [`SubTarget`] to be
+    /// specific with. Without this, Tab landing on a `FocusSpec::Children`
+    /// widget through `extra_tab_stops` would lose focus on the very
+    /// next routed event — this method runs on every one of them
+    /// ([`crate::runtime::route_widget_event`]) — because the rebuilt
+    /// stops are only ever addressed per-child, never `(id, None)`.
     pub fn sync(&mut self, tree: &FrameTree) {
         let rebuilt = Self::from_frame_tree(tree);
-        let keep_focus = self
-            .focused
-            .as_ref()
-            .is_some_and(|cur| rebuilt.stops.iter().any(|stop| &stop.address == cur));
+        let keep_focus = self.focused.as_ref().is_some_and(|cur| {
+            rebuilt
+                .stops
+                .iter()
+                .any(|stop| stop.address == *cur || (cur.1.is_none() && stop.address.0 == cur.0))
+        });
         self.stops = rebuilt.stops;
         if !keep_focus {
             self.focused = None;
@@ -782,6 +797,52 @@ mod tests {
             let mut rebuilt_frame = FrameTree::new();
             rebuilt_frame.push(a, rect(0.0), Box::new(StopWidget));
             tree.sync(&rebuilt_frame);
+
+            assert_eq!(tree.focused(), None);
+        }
+
+        /// `(id, None)` — the only address [`Self::sync_tab_order`] can
+        /// ever land on, since the flat `AppLogic::extra_tab_stops` shape
+        /// carries no [`SubTarget`] — must survive a [`Self::sync`]
+        /// rebuild even for a [`FocusSpec::Children`] widget, whose own
+        /// [`Self::from_frame_tree`] stops are never addressed `None`
+        /// (see [`children_widget_expands_into_one_stop_per_child`]).
+        /// Without this, Tab landing on a `FocusSpec::Children` widget
+        /// through `extra_tab_stops` would lose focus on the very next
+        /// routed event, since [`crate::runtime::route_widget_event`]
+        /// calls [`Self::sync`] before routing every one of them.
+        #[test]
+        fn sync_keeps_a_whole_widget_address_focused_on_a_children_widget() {
+            let id = WidgetId::new("table");
+            let mut tree = FocusTree::new();
+            tree.set_focus(Some((id, None)));
+
+            let mut frame = FrameTree::new();
+            frame.push(id, rect(0.0), Box::new(ChildrenWidget { cells: 3 }));
+            tree.sync(&frame);
+
+            assert_eq!(
+                tree.focused(),
+                Some(&(id, None)),
+                "a whole-widget address names the widget regardless of which \
+                 per-child stops it rebuilds into"
+            );
+        }
+
+        /// The flip side of the test above: a whole-widget address for an
+        /// id that dropped out of the frame entirely still clears focus —
+        /// the relaxed id-only match in [`Self::sync`] only waives the
+        /// `sub` field, never the id itself.
+        #[test]
+        fn sync_still_clears_a_whole_widget_address_when_the_id_is_gone() {
+            let id = WidgetId::new("table");
+            let other = WidgetId::new("other");
+            let mut tree = FocusTree::new();
+            tree.set_focus(Some((id, None)));
+
+            let mut frame = FrameTree::new();
+            frame.push(other, rect(0.0), Box::new(ChildrenWidget { cells: 3 }));
+            tree.sync(&frame);
 
             assert_eq!(tree.focused(), None);
         }

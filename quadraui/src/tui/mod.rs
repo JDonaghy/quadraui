@@ -86,7 +86,6 @@ mod number_input;
 mod palette;
 mod pipeline_view;
 mod progress;
-mod radio_group;
 mod rich_text_popup;
 mod run;
 mod scrollbar;
@@ -204,9 +203,6 @@ pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
 pub(crate) use progress::draw_progress_layout;
 #[doc(hidden)]
 pub use progress::{draw_progress, tui_progress_layout};
-pub(crate) use radio_group::draw_radio_group_layout;
-#[doc(hidden)]
-pub use radio_group::{draw_radio_group, tui_radio_group_layout};
 #[doc(hidden)]
 pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig, StepOutcome, TuiRunner};

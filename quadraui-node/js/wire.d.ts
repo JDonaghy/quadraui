@@ -1896,7 +1896,6 @@ export interface LayoutLeafNode {
   number_input?: NumberInputDescriptor;
   combo_box?: ComboBoxDescriptor;
   date_picker?: DatePickerDescriptor;
-  radio_group?: RadioGroupDescriptor;
   chart?: ChartDescriptor;
   message_list?: MessageListDescriptor;
   board?: BoardModelDescriptor;
@@ -1927,6 +1926,7 @@ export interface LayoutLeafNode {
   icon_grid?: IconGridDescriptor;
   cell_grid?: CellGridDescriptor;
   switch?: SwitchDescriptor;
+  radio_group?: RadioGroupDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -1956,7 +1956,6 @@ export interface RenderFrameDict {
   number_input?: NumberInputDescriptor | null;
   combo_box?: ComboBoxDescriptor | null;
   date_picker?: DatePickerDescriptor | null;
-  radio_group?: RadioGroupDescriptor | null;
   chart?: ChartDescriptor | null;
   message_list?: MessageListDescriptor | null;
   board?: BoardModelDescriptor | null;
@@ -1987,6 +1986,7 @@ export interface RenderFrameDict {
   icon_grid?: IconGridDescriptor | null;
   cell_grid?: CellGridDescriptor | null;
   switch?: SwitchDescriptor | null;
+  radio_group?: RadioGroupDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

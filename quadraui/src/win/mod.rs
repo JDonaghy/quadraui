@@ -151,10 +151,6 @@ mod pipeline_view;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod progress;
-/// Direct2D / DirectWrite rasteriser for [`crate::RadioGroup`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod radio_group;
 /// Direct2D / DirectWrite rasteriser for [`crate::RichTextPopup`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -359,9 +355,6 @@ pub use pipeline_view::win_pipeline_view_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use progress::win_progress_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use radio_group::win_radio_group_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use rich_text_popup::draw_rich_text_popup;

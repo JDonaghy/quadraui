@@ -15,10 +15,10 @@ use quadraui::{
     Column, ComboBox, CommandCenter, CommandLine, CompletionItemMeasure, DatePicker, Decoration,
     DiffView, Editor, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon, Image,
     InteractionState, LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize,
-    NumberInput, NumberInputHit, Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect,
-    RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit,
-    StyledText, Terminal, TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme,
-    Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
+    NumberInput, NumberInputHit, Palette, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown,
+    ScrollAxis, ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, Terminal,
+    TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton,
+    TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -379,67 +379,6 @@ impl ExtraPaint for TextField {
     }
 }
 
-impl ExtraPaint for RadioGroup {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_radio_group(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check: [`ExtraPaint::hit_test`]'s own signature
-    /// has no parameter for the per-option `measure` closure
-    /// [`quadraui::RadioGroup::layout`] needs (unlike
-    /// [`NumberInput::hit_test`]'s fixed stepper column). That alone
-    /// doesn't rule out resolving a click to a specific option —
-    /// `InteractionEngine::handle`'s own click site has a real `backend`
-    /// (and so real metrics) in hand, the same way it does for
-    /// [`TextInput::hit_test`]'s equivalent limitation — it just isn't
-    /// wired there yet, so a click still only focuses the whole group;
-    /// `Up`/`Down`/`Left`/`Right` move the selection once focused via
-    /// [`ExtraPaint::tab_stop`].
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// One row per option ([`quadraui::RadioGroup::layout`] stacks them
-    /// top-to-bottom, never side by side), as wide as a selection glyph
-    /// plus the widest option label, both measured the same way
-    /// [`toggle_control_size`]/`crate::render::natural_size`'s `Button`
-    /// arm measure their own chrome/label. TUI paints
-    /// `"({glyph}) {label}"` — `'('`, glyph, `')'`, a gap, then the
-    /// label — so `glyph_width` carries a `char_width` gap in addition to
-    /// the `"(x)"` chrome; omitting it undersizes the natural width by
-    /// one cell and `draw_radio_group` truncates the last label
-    /// character under a non-`Stretch` align.
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        if self.options.is_empty() {
-            return NaturalSize::NONE;
-        }
-        let line_height = backend.line_height();
-        let char_width = backend.char_width();
-        let glyph_width = if char_width <= 1.0 {
-            4.0 * char_width
-        } else {
-            1.5 * line_height
-        };
-        let widest_label = self
-            .options
-            .iter()
-            .map(|opt| backend.measure_text(&opt.label, FontRole::Chrome).0)
-            .fold(0.0_f32, f32::max);
-        NaturalSize::new(
-            Some(glyph_width + widest_label),
-            Some(self.options.len() as f32 * line_height),
-        )
-    }
-}
-
 impl ExtraPaint for NumberInput {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         let layout = self.layout(area);
@@ -498,12 +437,12 @@ impl ExtraPaint for ComboBox {
         self.id
     }
 
-    /// Whole-area bounds check, same limitation [`RadioGroup::hit_test`]
-    /// documents: resolving a click to the field or a specific filtered
-    /// dropdown item needs the backend's `line_height` [`ExtraPaint::paint`]
-    /// uses to build [`quadraui::ComboBox::layout`]'s `field_bounds`/
-    /// `measure_item`, which this trait's `hit_test` has no parameter for
-    /// — `InteractionEngine::handle` has that `backend` in hand at the
+    /// Whole-area bounds check: resolving a click to the field or a
+    /// specific filtered dropdown item needs the backend's `line_height`
+    /// [`ExtraPaint::paint`] uses to build
+    /// [`quadraui::ComboBox::layout`]'s `field_bounds`/`measure_item`,
+    /// which this trait's `hit_test` has no parameter for —
+    /// `InteractionEngine::handle` has that `backend` in hand at the
     /// click site, same as it does for `TextInput`, so this is not wired
     /// yet rather than impossible. Typing, `Up`/`Down`/`Enter`/`Escape`
     /// still work once focused via [`ExtraPaint::tab_stop`].
@@ -562,14 +501,14 @@ impl ExtraPaint for DatePicker {
         self.id
     }
 
-    /// Whole-area bounds check, same limitation [`RadioGroup::hit_test`]
-    /// documents: resolving a click to a prev/next control or a specific
-    /// day cell needs the backend's `line_height` [`ExtraPaint::paint`]
-    /// uses to derive the grid's `cell_width`/`cell_height`, which this
-    /// trait's `hit_test` has no parameter for — not wired yet rather than
-    /// impossible, same caveat. `Left`/`Right`/`Up`/`Down`/`PageUp`/
-    /// `PageDown`/`Enter` navigation still works once focused via
-    /// [`ExtraPaint::tab_stop`].
+    /// Whole-area bounds check, same limitation [`ComboBox`]'s own
+    /// `hit_test` documents above: resolving a click to a prev/next
+    /// control or a specific day cell needs the backend's `line_height`
+    /// [`ExtraPaint::paint`] uses to derive the grid's
+    /// `cell_width`/`cell_height`, which this trait's `hit_test` has no
+    /// parameter for — not wired yet rather than impossible, same
+    /// caveat. `Left`/`Right`/`Up`/`Down`/`PageUp`/`PageDown`/`Enter`
+    /// navigation still works once focused via [`ExtraPaint::tab_stop`].
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }
@@ -2127,7 +2066,6 @@ extra_primitives! {
     "number_input" => NumberInput,
     "combo_box" => ComboBox,
     "date_picker" => DatePicker,
-    "radio_group" => RadioGroup,
     "chart" => Chart,
     "message_list" => MessageList,
     "board" => BoardModel,
@@ -2168,26 +2106,30 @@ extra_primitives! {
 /// [`decode_widget_leaf`] is this table's own decode step, the `Widget`
 /// counterpart of [`decode_extra_primitive_checked`].
 ///
-/// `"icon_grid"`, `"cell_grid"` and `"switch"` are this table's members:
-/// unlike every [`EXTRA_PRIMITIVE_KINDS`] entry, none of
-/// [`quadraui::IconGrid`], [`quadraui::CellGrid`] or [`quadraui::Switch`]
-/// has a bespoke [`ExtraPaint`] impl to write here — painting, whole-area
-/// hit testing and [`DynWidget::handle`] routing are already fully generic
-/// (see [`crate::layout::LeafDescriptor::Widget`]'s own doc), so each
-/// kind's entire wiring is its one line in this array.
+/// `"icon_grid"`, `"cell_grid"`, `"switch"` and `"radio_group"` are this
+/// table's members: unlike every [`EXTRA_PRIMITIVE_KINDS`] entry, none of
+/// [`quadraui::IconGrid`], [`quadraui::CellGrid`], [`quadraui::Switch`] or
+/// [`quadraui::RadioGroup`] has a bespoke [`ExtraPaint`] impl to write
+/// here — painting, whole-area hit testing and [`DynWidget::handle`]
+/// routing are already fully generic (see
+/// [`crate::layout::LeafDescriptor::Widget`]'s own doc), so each kind's
+/// entire wiring is its one line in this array.
 /// [`quadraui::CellGrid`]'s own [`crate::interactive::Interactive`] impl
 /// (keyboard navigation, inline editing, click-and-drag selection) and
 /// [`quadraui::CellGrid::cells_requested`] (read generically through
 /// [`crate::engine::InteractionEngine::dyn_widget_cells_requested`]'s own
 /// downcast) cover every bit of state a `"cell_grid"` leaf needs;
 /// [`quadraui::Switch`]'s own [`crate::interactive::Interactive`] impl
-/// (Enter/Space/click toggling) covers `"switch"` the same way. A
-/// further kind joins this table only when it likewise needs nothing
-/// beyond that generic contract; a kind with its own paint-time chrome
-/// state (tab-stop children, chrome click regions, a custom
-/// whole-area-vs-sub-region hit test) still belongs in
+/// (Enter/Space/click toggling) covers `"switch"` the same way, and
+/// [`quadraui::RadioGroup`]'s own [`crate::interactive::Interactive`] impl
+/// (arrow-key cursor, click-to-select, one [`crate::interactive::FocusStop`]
+/// per option via [`crate::interactive::FocusSpec::Children`]) covers
+/// `"radio_group"`. A further kind joins this table only when it
+/// likewise needs nothing beyond that generic contract; a kind with its
+/// own paint-time chrome state (tab-stop children, chrome click regions,
+/// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 3] = ["icon_grid", "cell_grid", "switch"];
+pub const WIDGET_KINDS: [&str; 4] = ["icon_grid", "cell_grid", "switch", "radio_group"];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
 /// [`DynWidget`], via [`quadraui::decode_widget`] — the `Widget`
@@ -3279,7 +3221,7 @@ mod tests {
 
     /// Typing a character is the real interactive path for a standalone
     /// password leaf (a whole-area click only focuses it, the same coarse
-    /// convention `ComboBox`/`DatePicker`/`RadioGroup` already have) —
+    /// convention `ComboBox`/`DatePicker` already have) —
     /// reaching the handler as [`FormEvent::TextInputChanged`] via
     /// [`password_key_event`]'s forward to [`text_input_key_event`]. The
     /// render assertion checks the masked glyph appears and the plaintext

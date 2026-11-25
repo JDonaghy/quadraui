@@ -98,8 +98,6 @@ pub mod pipeline_view;
 #[doc(hidden)]
 pub mod progress;
 #[doc(hidden)]
-pub mod radio_group;
-#[doc(hidden)]
 pub mod rich_text_popup;
 mod run;
 #[doc(hidden)]
@@ -197,8 +195,6 @@ pub use palette::{draw_palette, mac_palette_layout};
 pub use pipeline_view::mac_pipeline_view_layout;
 #[doc(hidden)]
 pub use progress::mac_progress_layout;
-#[doc(hidden)]
-pub use radio_group::mac_radio_group_layout;
 #[doc(hidden)]
 pub use rich_text_popup::draw_rich_text_popup;
 #[doc(hidden)]

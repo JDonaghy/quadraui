@@ -4490,8 +4490,7 @@ mod tests {
     fn align_sizes_every_extra_leaf_kind_to_its_own_natural_height() {
         use crate::extra_paint::{Checkbox, PasswordInput, Select, Slider, TextArea};
         use quadraui::{
-            ComboBox, Image, ImageFit, ImageSource, ProgressBar, RadioGroup, RadioOption, Spinner,
-            TextField, TextInput,
+            ComboBox, Image, ImageFit, ImageSource, ProgressBar, Spinner, TextField, TextInput,
         };
 
         let kinds: Vec<(&str, Rc<dyn ExtraPaint>)> = vec![
@@ -4533,16 +4532,6 @@ mod tests {
                     disabled: false,
                     focused: false,
                 }),
-            ),
-            (
-                "radio_group",
-                Rc::new(RadioGroup::new(
-                    WidgetId::new("radio_group"),
-                    vec![
-                        RadioOption::new(WidgetId::new("radio_group:a"), "A"),
-                        RadioOption::new(WidgetId::new("radio_group:b"), "B"),
-                    ],
-                )),
             ),
             (
                 "slider",
@@ -4662,22 +4651,22 @@ mod tests {
     /// `Switch` under-reporting its `4`-cell `[● ]`/`[ ●]` track collapses
     /// its own cell painter's knob column so on/off paint identically, and
     /// a `RadioGroup` under-reporting its `"(x) label"` chrome by even one
-    /// cell gets its last label character truncated by `draw_radio_group`
-    /// under a non-`Stretch` `Column` align. `Switch` resolves through
+    /// cell truncates the last label character under a non-`Stretch`
+    /// `Column` align. Both resolve through
     /// [`quadraui::primitive::Primitive::measure`] (the generic
     /// [`crate::extra_paint::WIDGET_KINDS`] seam, not [`ExtraPaint`]), so
-    /// its half of this test builds a cells-mode `LayoutCtx` from the same
-    /// backend's own metrics rather than calling `ExtraPaint::natural_size`.
+    /// this test builds a cells-mode `LayoutCtx` from the same backend's
+    /// own metrics rather than calling `ExtraPaint::natural_size`.
     #[test]
     fn switch_and_radio_group_natural_width_matches_what_tui_paints() {
         use quadraui::primitive::{LayoutCtx, Primitive};
         use quadraui::{RadioGroup, RadioOption, Switch};
 
-        let mut backend = tui();
+        let backend = tui();
         let char_width = backend.char_width();
+        let ctx = LayoutCtx::new(backend.chrome_line_height(), char_width, false);
 
         let switch = Switch::new(WidgetId::new("switch"));
-        let ctx = LayoutCtx::new(backend.chrome_line_height(), char_width, false);
         let switch_width =
             Primitive::measure(&switch, &ctx, quadraui::primitive::Size::new(0.0, 0.0))
                 .width
@@ -4694,16 +4683,16 @@ mod tests {
                 RadioOption::new(WidgetId::new("radio_group:b"), "C"),
             ],
         );
-        let group_width = group
-            .natural_size(&mut backend)
-            .width
-            .expect("RadioGroup reports a natural width");
-        // `draw_radio_group` paints `"({glyph}) {label}"`: `'('`, glyph,
+        let group_width =
+            Primitive::measure(&group, &ctx, quadraui::primitive::Size::new(0.0, 0.0))
+                .width
+                .expect("RadioGroup reports a natural width");
+        // `cell_paint::paint` paints `"({glyph}) {label}"`: `'('`, glyph,
         // `')'`, a gap, then the widest label -- 4 cells of chrome plus
         // the label's own width.
         assert_eq!(
             group_width,
-            4.0 * char_width + 2.0 * char_width,
+            4.0 + 2.0,
             "RadioGroup's natural width should fit its widest label without truncation"
         );
     }

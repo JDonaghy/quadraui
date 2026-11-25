@@ -2,9 +2,9 @@
 //!
 //! macOS port of `tui_controls.rs` / `gtk_controls.rs` / `win_controls.rs`.
 //! Same `ControlsApp` `AppLogic` impl in `examples/common/controls.rs`;
-//! only the runner call differs — real `draw_button`/`draw_radio_group`
-//! CoreGraphics/CoreText chrome for `Button`/`RadioGroup` instead of the
-//! TUI fallback painter, and `Switch`'s own shared pixel painter
+//! only the runner call differs — real `draw_button` CoreGraphics/CoreText
+//! chrome for `Button` instead of the TUI fallback painter, and
+//! `RadioGroup`/`Switch`'s own shared pixel painter
 //! (`native_surface_paint::paint`) through the widget contract either
 //! way. Demonstrates every `ButtonVariant` (`Primary`, `Secondary`,
 //! `Danger`, `Warning`, `Icon`), the leading icon toggle (`i`), the

@@ -1343,16 +1343,6 @@ mod tests {
         fn button_layout(&self, _r: Rect, _b: &crate::Button) -> crate::ButtonLayout {
             unimplemented!()
         }
-        fn draw_radio_group(
-            &mut self,
-            _r: Rect,
-            _g: &crate::RadioGroup,
-        ) -> crate::RadioGroupLayout {
-            unimplemented!()
-        }
-        fn radio_group_layout(&self, _r: Rect, _g: &crate::RadioGroup) -> crate::RadioGroupLayout {
-            unimplemented!()
-        }
         fn draw_command_center(
             &mut self,
             _r: Rect,

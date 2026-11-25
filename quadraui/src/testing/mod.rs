@@ -1506,13 +1506,6 @@ impl crate::Backend for RecordingBackend {
     fn button_layout(&self, _r: Rect, _b: &crate::Button) -> crate::ButtonLayout {
         unimplemented!("RecordingBackend has no Button layout algorithm")
     }
-    fn draw_radio_group(&mut self, _r: Rect, _g: &crate::RadioGroup) -> crate::RadioGroupLayout {
-        self.record("draw_radio_group");
-        unimplemented!("RecordingBackend has no RadioGroup layout algorithm")
-    }
-    fn radio_group_layout(&self, _r: Rect, _g: &crate::RadioGroup) -> crate::RadioGroupLayout {
-        unimplemented!("RecordingBackend has no RadioGroup layout algorithm")
-    }
     fn draw_command_center(
         &mut self,
         _r: Rect,

@@ -4276,32 +4276,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_button_layout(button, area)
     }
 
-    fn draw_radio_group(
-        &mut self,
-        rect: QRect,
-        group: &crate::primitives::radio_group::RadioGroup,
-    ) -> crate::primitives::radio_group::RadioGroupLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_radio_group called outside enter_frame_scope"
-            );
-            return self.radio_group_layout(rect, group);
-        };
-        crate::tui::draw_radio_group(frame.buffer_mut(), area, group, &theme)
-    }
-
-    fn radio_group_layout(
-        &self,
-        rect: QRect,
-        group: &crate::primitives::radio_group::RadioGroup,
-    ) -> crate::primitives::radio_group::RadioGroupLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_radio_group_layout(group, area)
-    }
-
     fn draw_command_center(
         &mut self,
         rect: QRect,
@@ -5327,40 +5301,6 @@ mod tests {
             button: &crate::primitives::button::Button,
         ) -> crate::primitives::button::ButtonLayout {
             button.layout(crate::event::Rect::new(r.x, r.y, r.width, r.height))
-        }
-
-        fn draw_radio_group(
-            &mut self,
-            r: QRect,
-            group: &crate::primitives::radio_group::RadioGroup,
-        ) -> crate::primitives::radio_group::RadioGroupLayout {
-            let bounds = crate::event::Rect::new(r.x, r.y, r.width, r.height);
-            group.layout(
-                bounds,
-                |_option: &crate::primitives::radio_group::RadioOption| {
-                    crate::primitives::radio_group::RadioOptionMeasure {
-                        width: bounds.width,
-                        height: 1.0,
-                    }
-                },
-            )
-        }
-
-        fn radio_group_layout(
-            &self,
-            r: QRect,
-            group: &crate::primitives::radio_group::RadioGroup,
-        ) -> crate::primitives::radio_group::RadioGroupLayout {
-            let bounds = crate::event::Rect::new(r.x, r.y, r.width, r.height);
-            group.layout(
-                bounds,
-                |_option: &crate::primitives::radio_group::RadioOption| {
-                    crate::primitives::radio_group::RadioOptionMeasure {
-                        width: bounds.width,
-                        height: 1.0,
-                    }
-                },
-            )
         }
 
         fn draw_command_center(

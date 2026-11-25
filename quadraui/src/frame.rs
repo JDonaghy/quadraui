@@ -1533,7 +1533,11 @@ impl OwnedContent {
                 backend.draw_primitive(rect, switch);
             }
             OwnedContent::RadioGroup(group) => {
-                backend.draw_radio_group(rect, group);
+                // `impl Primitive for RadioGroup` is unconditional, like
+                // `Switch`'s above, so this arm needs no backend-feature
+                // guard of the kind `OwnedContent::ListWidget` below
+                // still carries.
+                backend.draw_primitive(rect, group);
             }
             OwnedContent::Button(button) => {
                 backend.draw_button(rect, button);
