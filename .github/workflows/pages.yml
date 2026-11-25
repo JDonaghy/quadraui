@@ -24,10 +24,8 @@ name: Deploy site
 #      demo/variant through each backend's own headless driver), each
 #      uploaded as its own `gallery-capture-*` artifact and downloaded
 #      here. GTK's and Windows's artifacts refresh on every `ci.yml` run
-#      on `develop`; macOS's refreshes only on `macos.yml`'s weekly
-#      develop cron, so that column can lag the others by up to a week —
-#      for a widget gallery that is acceptable and far better than a
-#      "Pending" column (quadraui#1619).
+#      on `develop`, and macOS's on every `macos.yml` run on `develop`
+#      (each push touching `quadraui/src/**`, plus the weekly cron).
 #   4. `tools/site_gen.py` merges (1), (2) and (3) into `site/src/gallery/`
 #      and `site/src/SUMMARY.md` (its `--capture` is repeatable and keys
 #      rows by `(demo, group, variant, backend)`, preferring a real

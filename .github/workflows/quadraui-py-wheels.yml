@@ -79,6 +79,9 @@ jobs:
       # diff happens to be bump-shaped too — see `ci.yml`'s `bump-shape`
       # job for why a promotion PR must never skip real checks.
       is_bump: ${{ github.base_ref != 'main' && steps.detect.outputs.bump_shape }}
+      # The OS legs `build` runs on this PR, as a JSON list. Empty on every
+      # non-PR event, where `build` falls back to all three.
+      wheel_os: ${{ steps.legs.outputs.wheel_os }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -89,6 +92,28 @@ jobs:
           python3 tools/changelog_check.py --print-bump-shape \
             "${{ github.event.pull_request.base.sha }}" \
             "${{ github.event.pull_request.head.sha }}"
+      # GitHub's hosted macOS arm64 pool regularly fails to assign a runner
+      # at all ("not acquired by Runner of type hosted"), which leaves a PR
+      # unmergeable until someone reruns it. A PR therefore builds the
+      # macOS wheel only when it changes the Python binding itself
+      # (`quadraui-py`, `quadraui-binding-core`, or this workflow). A
+      # `quadraui/src` change is compiled for macOS by the Test stage on a
+      # Mac before review, and every `develop`/`main` push and every
+      # promotion PR into `main` still builds all three wheels.
+      - name: Pick wheel OS legs
+        id: legs
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          all='["ubuntu-latest","macos-latest","windows-latest"]'
+          if [ "${{ github.base_ref }}" = main ] \
+            || git diff --name-only "$BASE...$HEAD" \
+              | grep -qE '^(quadraui-py/|quadraui-binding-core/|\.github/workflows/quadraui-py-wheels\.yml$)'; then
+            echo "wheel_os=$all" >> "$GITHUB_OUTPUT"
+          else
+            echo 'wheel_os=["ubuntu-latest","windows-latest"]' >> "$GITHUB_OUTPUT"
+          fi
 
   build:
     name: wheel (${{ matrix.os }})
@@ -102,26 +127,22 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          # `pyo3/extension-module` is listed explicitly in every
-          # `cargo_features` entry below (duplicating `pyproject.toml`'s
-          # `[tool.maturin] features`) because the `Build wheel` step passes
-          # `--features` on the CLI to let the macOS/Windows legs add their
-          # native feature on top, and relying on maturin to merge that
-          # with `pyproject.toml`'s own `features` list (rather than
-          # override it) is an assumption not worth making. Linux has no
-          # native feature (see the header comment for why GTK can't ship
-          # in a manylinux wheel), so `run_native` stays undefined on that
-          # wheel.
-          - os: ubuntu-latest
-            cargo_features: "pyo3/extension-module"
-            has_run_native: "false"
-          - os: macos-latest
-            cargo_features: "pyo3/extension-module,macos"
-            has_run_native: "true"
-          - os: windows-latest
-            cargo_features: "pyo3/extension-module,win"
-            has_run_native: "true"
+        # The OS list comes from `bump-shape`'s `wheel_os` on a PR. Per-OS
+        # settings are derived from `matrix.os` in the job `env:` below rather
+        # than attached with `include:`, because an `include:` entry for an
+        # OS missing from this list would add that OS back as a new leg.
+        os: ${{ fromJSON(needs.bump-shape.outputs.wheel_os || '["ubuntu-latest","macos-latest","windows-latest"]') }}
+    env:
+      # `pyo3/extension-module` is listed explicitly in every leg's
+      # features (duplicating `pyproject.toml`'s `[tool.maturin] features`)
+      # because the `Build wheel` step passes `--features` on the CLI to let
+      # the macOS/Windows legs add their native feature on top, and relying
+      # on maturin to merge that with `pyproject.toml`'s own `features` list
+      # (rather than override it) is an assumption not worth making. Linux
+      # has no native feature (see the header comment for why GTK can't ship
+      # in a manylinux wheel), so `run_native` stays undefined on that wheel.
+      CARGO_FEATURES: ${{ matrix.os == 'macos-latest' && 'pyo3/extension-module,macos' || (matrix.os == 'windows-latest' && 'pyo3/extension-module,win' || 'pyo3/extension-module') }}
+      HAS_RUN_NATIVE: ${{ matrix.os != 'ubuntu-latest' }}
     runs-on: ${{ matrix.os }}
     # Sized generously for a cold Rust + maturin build; a healthy run is a
     # few minutes once dependencies are warm.
@@ -136,15 +157,13 @@ jobs:
         uses: PyO3/maturin-action@v1
         with:
           working-directory: quadraui-py
-          args: --release --out dist --features ${{ matrix.cargo_features }}
+          args: --release --out dist --features ${{ env.CARGO_FEATURES }}
           # `auto` picks the oldest manylinux maturin supports on Linux and
           # is a no-op on macOS/Windows; there is no GTK dependency here to
           # make manylinux's older glibc/toolchain a problem.
           manylinux: auto
       - name: Import the built wheel
         shell: bash
-        env:
-          HAS_RUN_NATIVE: ${{ matrix.has_run_native }}
         run: |
           python -m venv /tmp/quadraui-py-wheel-check
           if [ "$RUNNER_OS" = "Windows" ]; then
