@@ -1,9 +1,9 @@
 //! `RadioGroup` primitive: a standalone set of mutually-exclusive
 //! options — layout, hit-test, keyboard focus/activation (arrow-key
-//! wraparound cursor), and its event. Layout/hit-test/keyboard logic
-//! lives here; backend rasterisers live in `tui::radio_group` and
-//! inline in each platform's `backend.rs` (see
-//! `Backend::draw_radio_group`).
+//! wraparound cursor), and its event, all on the widget contract
+//! (`Primitive` + `Interactive`, below). `RadioGroup` reaches a frame
+//! as a type-erased `crate::frame::Surface::Widget`; there is no
+//! `Backend` method or per-platform rasteriser file of its own.
 //!
 //! Today `Form`'s `Radio`/`RadioGroup` field kind covers the same shape
 //! embedded inside a form. `RadioGroup` is additive: a standalone
@@ -57,18 +57,18 @@ pub struct RadioOption {
     /// Whether the pointer currently sits over this option. Set by the
     /// host from its own hover tracking (an
     /// [`crate::interaction::InteractionState`] keyed by
-    /// [`RadioOption::id`], or any other source); read by
-    /// [`Backend::draw_radio_group`](crate::Backend::draw_radio_group)
-    /// to tint this option's marker toward [`crate::Theme::button_hover_bg`]
-    /// — the same host-set convention [`RadioGroup::focused`] already
+    /// [`RadioOption::id`], or any other source); read by this type's
+    /// own shared pixel painter (`native_surface_paint::paint`) to tint
+    /// this option's marker toward [`crate::Theme::button_hover_bg`] —
+    /// the same host-set convention [`RadioGroup::focused`] already
     /// follows.
     #[serde(default)]
     pub hovered: bool,
     /// Whether the pointer currently holds this option pressed. Same
-    /// host-set convention as [`RadioOption::hovered`]; read by
-    /// [`Backend::draw_radio_group`](crate::Backend::draw_radio_group)
-    /// to tint the marker toward [`crate::Theme::button_pressed_bg`],
-    /// which wins over [`RadioOption::hovered`] when both are set.
+    /// host-set convention as [`RadioOption::hovered`]; read by that
+    /// same pixel painter to tint the marker toward
+    /// [`crate::Theme::button_pressed_bg`], which wins over
+    /// [`RadioOption::hovered`] when both are set.
     #[serde(default)]
     pub pressed: bool,
 }
@@ -313,20 +313,36 @@ impl crate::primitive::Primitive for RadioGroup {
         crate::frame::OwnedContent::RadioGroup(self.clone())
     }
 
-    /// One row per option, `row_height` tall; no intrinsic width — the
-    /// label sizing a `RadioGroup` needs is the host's own text metric,
-    /// same as [`crate::primitives::progress`] reports no width for
-    /// `ProgressBar`.
+    /// One row per option, `row_height` tall, as wide as a selection
+    /// glyph plus the widest option label — the chrome's own `("(x) "`
+    /// 4-character marker on a cell grid (matching [`cell_paint::paint`]'s
+    /// `"({glyph}) {label}"` text), or the circular marker plus its 4px
+    /// gap on a pixel surface (matching [`native_surface_paint::paint_resolved`]'s
+    /// `marker_size + 4.0` label offset), approximated here as
+    /// `1.5 * line_height` the same way [`crate::compose`]'s
+    /// `toggle_control_size` approximates a toggle's own chrome.
+    /// `NaturalSize::NONE` for an empty group: there is nothing to size.
     fn measure(
         &self,
         ctx: &crate::primitive::LayoutCtx,
         _avail: crate::primitive::Size,
     ) -> crate::NaturalSize {
-        let row_height = match ctx.units() {
-            crate::primitive::Units::Cells => 1.0,
-            _ => ctx.line_height,
+        if self.options.is_empty() {
+            return crate::NaturalSize::NONE;
+        }
+        let (row_height, glyph_width) = match ctx.units() {
+            crate::primitive::Units::Cells => (1.0, 4.0),
+            _ => (ctx.line_height, 1.5 * ctx.line_height),
         };
-        crate::NaturalSize::new(None, Some(self.options.len() as f32 * row_height))
+        let widest_label = self
+            .options
+            .iter()
+            .map(|opt| ctx.text_width(&opt.label, crate::FontRole::Chrome))
+            .fold(0.0_f32, f32::max);
+        crate::NaturalSize::new(
+            Some(glyph_width + widest_label),
+            Some(self.options.len() as f32 * row_height),
+        )
     }
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> RadioGroupLayout {
@@ -358,9 +374,11 @@ impl crate::primitive::Primitive for RadioGroup {
         let _ = (layout, surface, theme);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_radio_group_layout`] because the `Buffer` ->
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] over `buf`, adapted through
+    /// [`crate::tui::cell_surface::TuiCellSurface`] — the `Buffer` ->
+    /// [`crate::CellSurface`] bridge every `tui` cell-grid painter builds
+    /// for itself, `pub(crate)` rather than private to `crate::tui` for
+    /// exactly this reach.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -368,7 +386,14 @@ impl crate::primitive::Primitive for RadioGroup {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_radio_group_layout(buf, self, layout, theme);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, layout, &mut surface, theme);
     }
 }
 
@@ -511,8 +536,10 @@ impl crate::interactive::Interactive for RadioGroup {
 }
 
 /// The cell-grid painter for [`RadioGroup`], written against
-/// [`crate::CellSurface`] — moved from `crate::tui::radio_group`, which
-/// is now a thin `Buffer` -> [`crate::CellSurface`] adapter.
+/// [`crate::CellSurface`]. `RadioGroup`'s own `paint_cells` adapts the
+/// raw `Buffer` it's called with into that seam via
+/// `crate::tui::cell_surface::TuiCellSurface`, the same bridge every
+/// `tui` cell-grid painter builds for itself.
 ///
 /// Stacks each [`RadioOption`] one per row, painting `(•) Label` for the
 /// selected option and `( ) Label` for the rest.
@@ -1240,6 +1267,39 @@ mod contract_tests {
             let row1: String = (0..10).map(|x| buf[(x, 1)].symbol()).collect();
             assert!(row1.starts_with("(\u{2022}) Dark") || row1.starts_with("(•) Dark"));
         }
+    }
+
+    /// `measure`'s reported width must fit the widest label without
+    /// truncation on a cell grid: `cell_paint::paint` always writes the
+    /// 4-char `"(x) "` chrome before the label, so under-reporting even
+    /// one cell of that chrome clips the longer of two differently-sized
+    /// labels.
+    #[test]
+    fn measure_reports_the_widest_labels_chrome_plus_width_on_cells() {
+        let g = RadioGroup::new(
+            WidgetId::new("settings:theme"),
+            vec![
+                RadioOption::new(WidgetId::new("theme:a"), "Ab"),
+                RadioOption::new(WidgetId::new("theme:b"), "C"),
+            ],
+        );
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let natural = Primitive::measure(&g, &ctx, crate::primitive::Size::new(0.0, 0.0));
+        assert_eq!(
+            natural.width,
+            Some(4.0 + 2.0),
+            "4-cell chrome plus the widest label (\"Ab\", 2 chars)"
+        );
+        assert_eq!(natural.height, Some(2.0), "one row per option");
+    }
+
+    /// An empty group has nothing to size.
+    #[test]
+    fn measure_reports_no_natural_size_for_an_empty_group() {
+        let g = RadioGroup::default();
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let natural = Primitive::measure(&g, &ctx, crate::primitive::Size::new(0.0, 0.0));
+        assert_eq!(natural, crate::NaturalSize::NONE);
     }
 
     /// Three-way event parity's in-crate leg: an [`A11yAction::Click`]

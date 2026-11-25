@@ -226,7 +226,7 @@ impl AppLogic for ControlsApp {
             let rect = self.button_rect(backend, idx);
             let _ = backend.draw_button_with_state(rect, &self.button(idx), &self.interaction);
         }
-        let _ = backend.draw_radio_group(self.radio_rect(backend), &self.radio_group());
+        let _ = backend.draw_primitive(self.radio_rect(backend), &self.radio_group());
         let _ = backend.draw_primitive(self.switch_rect(backend), &self.switch());
         let _ = backend.draw_status_bar_interactive(
             self.status_rect(backend),
@@ -330,7 +330,7 @@ impl AppLogic for ControlsApp {
                 }
 
                 let radio_layout =
-                    backend.radio_group_layout(self.radio_rect(backend), &self.radio_group());
+                    backend.layout_primitive(self.radio_rect(backend), &self.radio_group());
                 if let RadioGroupHit::Option(index) = radio_layout.hit_test(position) {
                     self.focus = Focus::RadioGroup;
                     self.selected = Some(index);

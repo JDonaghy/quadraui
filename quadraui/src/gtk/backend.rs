@@ -4685,43 +4685,6 @@ impl Backend for GtkBackend {
         button.layout(rect)
     }
 
-    /// Paint via the shared [`crate::primitives::radio_group::native_surface_paint::paint`].
-    /// The per-option measure is nominal (`rect.width` × the chrome
-    /// line height) since there is no native text-metrics surface to
-    /// measure against yet.
-    fn draw_radio_group(
-        &mut self,
-        rect: QRect,
-        group: &crate::primitives::radio_group::RadioGroup,
-    ) -> crate::primitives::radio_group::RadioGroupLayout {
-        let theme = self.current_theme;
-        let row_height = self.current_line_height as f32;
-        let layout = crate::primitives::radio_group::native_surface_paint::paint(
-            group, self, &theme, rect, row_height,
-        );
-        for (option, item) in group.options.iter().zip(layout.items.iter()) {
-            self.register_zone(option.id, *item);
-        }
-        layout
-    }
-
-    fn radio_group_layout(
-        &self,
-        rect: QRect,
-        group: &crate::primitives::radio_group::RadioGroup,
-    ) -> crate::primitives::radio_group::RadioGroupLayout {
-        let row_height = self.current_line_height as f32;
-        group.layout(
-            rect,
-            |_option: &crate::primitives::radio_group::RadioOption| {
-                crate::primitives::radio_group::RadioOptionMeasure {
-                    width: rect.width,
-                    height: row_height,
-                }
-            },
-        )
-    }
-
     fn toast_stack_layout(
         &self,
         rect: QRect,

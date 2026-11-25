@@ -81,9 +81,6 @@ use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::radio_group::{
-    RadioGroup, RadioGroupLayout, RadioOption, RadioOptionMeasure,
-};
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
@@ -4084,28 +4081,6 @@ impl Backend for MacBackend {
     }
     fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout {
         button.layout(rect)
-    }
-    /// Paint via the shared [`crate::primitives::radio_group::native_surface_paint::paint`].
-    /// The per-option measure is nominal (`rect.width` × the chrome
-    /// line height) since there is no native text-metrics surface to
-    /// measure against yet.
-    fn draw_radio_group(&mut self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout {
-        let theme = self.current_theme;
-        let row_height = self.current_line_height as f32;
-        let layout = crate::primitives::radio_group::native_surface_paint::paint(
-            group, self, &theme, rect, row_height,
-        );
-        for (option, item) in group.options.iter().zip(layout.items.iter()) {
-            self.register_zone(option.id, *item);
-        }
-        layout
-    }
-    fn radio_group_layout(&self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout {
-        let row_height = self.current_line_height as f32;
-        group.layout(rect, |_option: &RadioOption| RadioOptionMeasure {
-            width: rect.width,
-            height: row_height,
-        })
     }
     fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)

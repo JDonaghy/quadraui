@@ -66,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 185;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 183;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -204,13 +204,12 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("ContextMenu", "draw_context_menu"),
     ("ContextMenu", "draw_context_menu_with_state"),
     ("ContextMenu", "draw_context_menu_with_glyphs"),
-    // Group-A slice 1 (quadraui#3005): `RadioGroup`/`Button` now paint
-    // through `Primitive`/`Interactive`, and keep their bespoke pairs
-    // until the sibling retirement issues (#3007-#3009) delete the
-    // methods, the per-backend wrapper files and the in-repo bindings
-    // together. `Switch`'s own pair is already gone (#3006).
-    ("RadioGroup", "draw_radio_group"),
-    ("RadioGroup", "radio_group_layout"),
+    // Group-A slice 1 (quadraui#3005): `Button` now paints through
+    // `Primitive`/`Interactive`, and keeps its bespoke pair until the
+    // sibling retirement issue (#3008) deletes the methods, the
+    // per-backend wrapper files and the in-repo bindings together.
+    // `Switch`'s and `RadioGroup`'s own pairs are already gone (#3006,
+    // #3007).
     ("Button", "draw_button"),
     ("Button", "draw_button_with_state"),
     ("Button", "button_layout"),

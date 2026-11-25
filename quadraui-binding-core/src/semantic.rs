@@ -7,9 +7,8 @@
 use quadraui::{
     ActivityBar, ActivityBarEvent, CanvasEvent, ComboBox, ComboBoxEvent, DataTableEvent,
     DatePicker, DatePickerEvent, EditOp, FormEvent, Key, ListViewEvent, Modifiers, MouseButton,
-    NamedKey, NumberInput, NumberInputEvent, RadioGroup, RadioGroupEvent, StatusBar,
-    StatusBarEvent, TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, TreeTable,
-    TreeTableLayout, UiEvent, WidgetId,
+    NamedKey, NumberInput, NumberInputEvent, StatusBar, StatusBarEvent, TabBar, TabBarEvent,
+    TextDisplayEvent, TextInput, TreeEvent, TreeTable, TreeTableLayout, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -170,8 +169,8 @@ fn number_input_key_event(
 
 /// Resolves a `MouseDown`/`DoubleClick` landing on a standalone
 /// [`NumberInput`] extra's [`crate::hit::HitDetail::ExtraBody`] into the
-/// stepper click it stands for — unlike `RadioGroup`/`ComboBox`/`DatePicker`
-/// below, [`NumberInput::layout`] needs no backend metrics (its stepper
+/// stepper click it stands for — unlike `ComboBox`/`DatePicker` below,
+/// [`NumberInput::layout`] needs no backend metrics (its stepper
 /// column is a fixed width), so the increment/decrement regions are
 /// precisely resolvable here from `point` alone, the same way
 /// [`crate::text_input::text_input_click_event`] resolves a `TextInput`
@@ -200,36 +199,9 @@ pub(crate) fn number_input_click_event(
     ))
 }
 
-/// Resolves a key focused on a standalone [`RadioGroup`] extra into the
-/// [`FormEvent`] it should produce: `RadioGroup` has no `FormEvent` slot
-/// of its own either, so [`RadioGroupEvent::SelectionChanged`] is
-/// translated into `SegmentedControlChanged` — both carry the exact same
-/// `{ id, selected_idx: usize }` shape (a single exclusive choice from a
-/// list of options), and `FormEvent` has no other index-based variant free
-/// of a `Dropdown`-specific connotation `RadioGroup` doesn't share.
-/// Returns `None` for every key [`RadioGroup::handle_key`] doesn't
-/// recognize (also the case when nothing is focused, since this is only
-/// reached once `focused` already matched) — the caller then falls
-/// through to the raw `KeyPressed` fallback.
-fn radio_group_key_event(
-    id: WidgetId,
-    group: &RadioGroup,
-    key: &Key,
-    modifiers: &Modifiers,
-) -> Option<UiEvent> {
-    let RadioGroupEvent::SelectionChanged { index } = group.handle_key(key, modifiers)?;
-    Some(UiEvent::Form(
-        id,
-        FormEvent::SegmentedControlChanged {
-            id,
-            selected_idx: index,
-        },
-    ))
-}
-
 /// Resolves a key focused on a standalone [`ComboBox`] extra into the
-/// [`FormEvent`] it should produce. Unlike `NumberInput`/`RadioGroup`
-/// above, `FormEvent` already has a dedicated variant for every
+/// [`FormEvent`] it should produce. Unlike `NumberInput` above,
+/// `FormEvent` already has a dedicated variant for every
 /// [`ComboBoxEvent`] shape (`Form`'s own `FieldKind::ComboBox` embeds the
 /// same primitive), so each one carries over field-for-field. Returns
 /// `None` for every key [`ComboBox::handle_key`] doesn't recognize — the
@@ -875,9 +847,6 @@ pub fn focus_scoped_key_event(
                 }
                 if let Some(number_input) = extra_as::<NumberInput>(extra) {
                     return number_input_key_event(*id, number_input, raw_key, &modifiers);
-                }
-                if let Some(radio_group) = extra_as::<RadioGroup>(extra) {
-                    return radio_group_key_event(*id, radio_group, raw_key, &modifiers);
                 }
                 if let Some(combo_box) = extra_as::<ComboBox>(extra) {
                     return combo_box_key_event(*id, combo_box, raw_key, &modifiers);

@@ -1328,9 +1328,10 @@ fn draw_field_number_input(
 }
 
 /// Renders the embedded [`crate::primitives::radio_group::RadioGroup`]
-/// through the real `crate::tui::draw_radio_group` (`#[doc(hidden)]`, so
-/// not linked here) rasteriser, one row per option —
-/// `visible_field.item_bounds` (populated by
+/// through its own cell painter (`crate::primitives::radio_group::cell_paint`),
+/// adapted into [`crate::CellSurface`] the same way
+/// [`crate::primitives::radio_group::RadioGroup`]'s own `paint_cells`
+/// does, one row per option — `visible_field.item_bounds` (populated by
 /// `tui_form_layout_with_label_width`'s `FieldKind::RadioGroup` arm, one
 /// entry per [`crate::primitives::radio_group::RadioOption`]) gives the
 /// control's on-screen rect via its first entry; `FormController`'s click
@@ -1377,10 +1378,10 @@ fn draw_field_radio_group(
 
     // While this row is focused, the embedded group's own `focused` flag
     // drives the selected option's marker colour (see
-    // `tui::radio_group::draw_radio_group`) — the app isn't expected to
-    // mirror `Form::focused_field` onto the embedded primitive itself,
-    // the same contract `FormController`'s `ComboBox`/`DatePicker`
-    // handling already documents.
+    // `crate::primitives::radio_group::cell_paint::paint`) — the app
+    // isn't expected to mirror `Form::focused_field` onto the embedded
+    // primitive itself, the same contract `FormController`'s
+    // `ComboBox`/`DatePicker` handling already documents.
     let mut group = group.clone();
     group.focused = is_focused;
 
@@ -1388,7 +1389,23 @@ fn draw_field_radio_group(
     let abs_x = (area.x as f32 + first_rect.x).round() as u16;
     let width = first_rect.width.round() as u16;
     let radio_area = Rect::new(abs_x, y, width, rows);
-    super::draw_radio_group(buf, radio_area, &group, theme);
+    let layout = crate::primitives::radio_group::cell_radio_group_layout(
+        &group,
+        crate::event::Rect::new(
+            radio_area.x as f32,
+            radio_area.y as f32,
+            radio_area.width as f32,
+            radio_area.height as f32,
+        ),
+    );
+    // The painter never moves the cursor, so the sink is never read.
+    let mut cursor_sink = None;
+    let mut surface = super::cell_surface::TuiCellSurface::new(
+        buf,
+        crate::backend::ColorDepth::TrueColor,
+        &mut cursor_sink,
+    );
+    crate::primitives::radio_group::cell_paint::paint(&group, &layout, &mut surface, theme);
 }
 
 fn draw_field_toolbar(
@@ -3324,9 +3341,9 @@ mod tests {
     }
 
     /// `FieldKind::RadioGroup` paints every option on its own row through
-    /// the real `tui::draw_radio_group` rasteriser — unlike every other
-    /// field kind, the row is allowed to span more than one cell tall
-    /// (see `FormFieldMeasure::vertical`'s doc).
+    /// `RadioGroup`'s own cell painter (`crate::primitives::radio_group::cell_paint`)
+    /// — unlike every other field kind, the row is allowed to span more
+    /// than one cell tall (see `FormFieldMeasure::vertical`'s doc).
     #[test]
     fn radio_group_field_paints_one_row_per_option() {
         let mut group = RadioGroup::new(

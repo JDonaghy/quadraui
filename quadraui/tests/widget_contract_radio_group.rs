@@ -80,6 +80,14 @@ impl AppLogic for RadioGroupApp {
         tree
     }
 
+    /// Makes the group reachable by Tab before any click has focused
+    /// it — the same seam [`quadraui::AppLogic::extra_tab_stops`]'s own
+    /// doc describes a host using to feed a widget-contract widget into
+    /// Tab/Shift+Tab cycling.
+    fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        vec![(self.group.id, AREA)]
+    }
+
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         if let UiEvent::RadioGroupSelectionChanged { widget, index } = event {
             assert_eq!(widget, group_id(), "the group's own id rides the event");
@@ -134,6 +142,33 @@ fn arrow_keys_walk_the_selection_once_a_click_has_focused_it() {
 
     driver.press_named(NamedKey::Up);
     assert_eq!(driver.app().changes, vec![0, 1, 0]);
+}
+
+/// `FocusSpec::Children` collapses to exactly one `Tab` stop for the
+/// whole group ([`crate::frame`]'s own
+/// `widget_tab_stops_collapses_focus_spec_children_to_one_stop` test
+/// covers that collapse in isolation) — this confirms the host-facing
+/// half: `Tab` alone, with no prior click, actually lands keyboard focus
+/// on the group (landing with `sub: None`, not any one option), and the
+/// arrow keys that reach it afterward still walk the cursor exactly as
+/// [`arrow_keys_walk_the_selection_once_a_click_has_focused_it`] already
+/// shows for the click-focused case — `RadioGroup::handle`'s `Key` arm
+/// seeds off `RadioGroup::selected` alone, never `sub`.
+#[test]
+fn tab_into_the_group_then_arrow_walks_the_selection() {
+    let mut driver = TuiDriver::new(RadioGroupApp::new(), COLS, ROWS);
+
+    driver.press_named(NamedKey::Tab);
+    assert!(
+        driver.app().changes.is_empty(),
+        "Tab alone must not select an option"
+    );
+
+    driver.press_named(NamedKey::Down);
+    assert_eq!(driver.app().changes, vec![0]);
+
+    driver.press_named(NamedKey::Down);
+    assert_eq!(driver.app().changes, vec![0, 1]);
 }
 
 #[test]

@@ -2879,7 +2879,6 @@ pub fn schema() -> Vec<DefJson> {
             "number_input" => number_input_descriptor.clone(),
             "combo_box" => combo_box_descriptor.clone(),
             "date_picker" => date_picker_descriptor.clone(),
-            "radio_group" => radio_group_descriptor.clone(),
             "chart" => chart_descriptor.clone(),
             "message_list" => message_list_descriptor.clone(),
             "board" => board_model_descriptor.clone(),
@@ -2925,6 +2924,7 @@ pub fn schema() -> Vec<DefJson> {
             "icon_grid" => icon_grid_descriptor.clone(),
             "cell_grid" => cell_grid_descriptor.clone(),
             "switch" => switch_descriptor.clone(),
+            "radio_group" => radio_group_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));

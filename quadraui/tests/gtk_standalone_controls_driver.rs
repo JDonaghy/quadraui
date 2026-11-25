@@ -6,15 +6,14 @@
 //!
 //! Unlike the TUI twin (`tests/standalone_controls_driver.rs`), which paints
 //! a `TextDisplay` status line because TUI has no dedicated painter for
-//! `Button`/`RadioGroup`, this test paints those two through their real
-//! `Backend::draw_button` / `draw_radio_group` method and hit-tests clicks
-//! through the matching backend-agnostic `Backend::button_layout` /
-//! `radio_group_layout` query — the same split a live click router uses
-//! (CLAUDE.md "Layout helpers go through `Backend` too; consumer click
-//! routers stay backend-agnostic"). `Switch` has no `Backend` method of
-//! its own — it paints and hit-tests through the widget contract's
-//! `DrawsPrimitives::draw_primitive`/`layout_primitive` instead, the same
-//! backend-generic seam on every backend. Mirrors
+//! `Button`, this test paints it through its real `Backend::draw_button`
+//! method and hit-tests clicks through the matching backend-agnostic
+//! `Backend::button_layout` query — the same split a live click router
+//! uses (CLAUDE.md "Layout helpers go through `Backend` too; consumer
+//! click routers stay backend-agnostic"). `RadioGroup`/`Switch` have no
+//! `Backend` method of their own — each paints and hit-tests through the
+//! widget contract's `DrawsPrimitives::draw_primitive`/`layout_primitive`
+//! instead, the same backend-generic seam on every backend. Mirrors
 //! `tests/macos_standalone_controls_driver.rs` one-for-one.
 
 use quadraui::gtk::testing::GtkDriver;
@@ -147,7 +146,7 @@ impl AppLogic for StandaloneControlsApp {
         backend.draw_button_with_state(BUTTON_BOUNDS, &self.button, &self.interaction);
         backend.draw_button(DANGER_BOUNDS, &self.danger);
         backend.draw_button(WARNING_BOUNDS, &self.warning);
-        backend.draw_radio_group(RADIOS_BOUNDS, &self.radios);
+        backend.draw_primitive(RADIOS_BOUNDS, &self.radios);
         backend.draw_primitive(SWITCH_BOUNDS, &self.switch);
     }
 
@@ -198,7 +197,7 @@ impl AppLogic for StandaloneControlsApp {
             }
             UiEvent::MouseDown { position, .. } => {
                 let button_layout = backend.button_layout(BUTTON_BOUNDS, &self.button);
-                let radios_layout = backend.radio_group_layout(RADIOS_BOUNDS, &self.radios);
+                let radios_layout = backend.layout_primitive(RADIOS_BOUNDS, &self.radios);
                 let switch_layout = backend.layout_primitive(SWITCH_BOUNDS, &self.switch);
 
                 if button_layout.bounds.contains(position) {
