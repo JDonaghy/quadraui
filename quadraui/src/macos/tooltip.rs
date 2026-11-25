@@ -95,6 +95,7 @@ mod tests {
     use super::super::text::make_font;
     use super::super::MacBackend;
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::tooltip::{
         ResolvedPlacement, Tooltip, TooltipBorder, TooltipLayout, TooltipPlacement,
@@ -117,6 +118,7 @@ mod tests {
             placement: TooltipPlacement::Bottom,
             fg: None,
             bg: None,
+            chrome: TooltipChrome::default(),
         }
     }
 
@@ -130,14 +132,18 @@ mod tests {
         (layout, chrome)
     }
 
+    /// Paint `tip` — carrying `chrome` as its own descriptor field — into
+    /// the already-placed box `layout.bounds`, through the
+    /// widget-contract path.
     fn paint(tip: &Tooltip, layout: &TooltipLayout, chrome: &TooltipChrome) -> BitmapSurface {
+        let tip = tip.clone().with_chrome(chrome.clone());
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_tooltip_with_chrome(tip, layout, chrome);
+            b.draw_primitive(layout.bounds, &tip);
         });
         backend.end_frame();
         surface
@@ -407,7 +413,7 @@ mod tests {
     /// repaint (see [`MacDriver::tick`]'s own doc for why the headless
     /// driver needs this seam instead of a real `NSTimer`). Not a test of
     /// `HoverTooltipTracker` itself (that lives in its own module) — this
-    /// proves the macOS dispatch + tick + `draw_tooltip` wiring actually
+    /// proves the macOS dispatch + tick + tooltip paint wiring actually
     /// shows and hides a tooltip in response to pointer movement.
     mod hover_driven {
         use std::cell::{Cell, RefCell};
@@ -447,12 +453,7 @@ mod tests {
 
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
                 if self.tracker.borrow().visible_item().is_some() {
-                    let tooltip = sample_tooltip();
-                    let layout = TooltipLayout {
-                        bounds: anchor(),
-                        resolved_placement: ResolvedPlacement::Bottom,
-                    };
-                    backend.draw_tooltip(&tooltip, &layout);
+                    backend.draw_dyn(anchor(), &sample_tooltip(), &());
                 }
             }
 

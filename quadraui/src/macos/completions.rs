@@ -51,6 +51,7 @@ mod tests {
     use super::super::text::make_font;
     use super::super::MacBackend;
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::completions::{
         CompletionItem, CompletionItemMeasure, CompletionKind, CompletionsHit,
@@ -118,24 +119,27 @@ mod tests {
         )
     }
 
-    fn paint_via_backend(c: &Completions, l: &CompletionsLayout) -> BitmapSurface {
+    /// Paint `c` into the popup box `bounds` through the widget-contract
+    /// path and hand back both the pixels and the layout the backend
+    /// itself resolved, so every probe below reads the geometry that was
+    /// actually painted rather than a separately measured one.
+    fn paint_via_backend(c: &Completions, bounds: QRect) -> (BitmapSurface, CompletionsLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_completions(c, l);
+        let painted = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(bounds, c).layout
         });
         backend.end_frame();
-        surface
+        (surface, painted)
     }
 
     #[test]
     fn popup_paints_completion_bg() {
         let c = sample();
-        let l = layout_for(&c);
-        let surface = paint_via_backend(&c, &l);
+        let (surface, l) = paint_via_backend(&c, layout_for(&c).bounds);
         let theme = Theme::default();
         // Probe near bottom-right of the popup interior.
         let px = (l.bounds.x + l.bounds.width - 4.0) as u32;
@@ -154,8 +158,7 @@ mod tests {
     #[test]
     fn selected_item_paints_completion_selected_bg() {
         let c = sample();
-        let l = layout_for(&c);
-        let surface = paint_via_backend(&c, &l);
+        let (surface, l) = paint_via_backend(&c, layout_for(&c).bounds);
         let theme = Theme::default();
         // selected_idx = 1 — find the visible item with idx 1.
         let item = l

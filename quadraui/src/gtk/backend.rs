@@ -10631,20 +10631,16 @@ mod tests {
         });
     }
 
-    /// [`Backend::draw_rich_text_popup_with_font_role`]
-    /// must select a genuinely different live font, not a documented
-    /// no-op — proven the same way as
+    /// [`crate::RichTextPopup::font_role`] must select a genuinely
+    /// different live font, not a documented no-op — proven the same way
+    /// as
     /// `gtk_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`:
     /// a huge chrome font versus a tiny editor font paints visibly
-    /// different amounts of ink for the same popup content. Plain
-    /// `draw_rich_text_popup` (no role argument) must still paint with
-    /// the chrome font — proving the new method didn't change today's
-    /// behaviour for existing call sites.
+    /// different amounts of ink for the same popup content. A descriptor
+    /// left at the default role must paint with the chrome font.
     #[test]
     fn gtk_rich_text_popup_font_role_selects_the_requested_fonts_size() {
-        use crate::primitives::rich_text_popup::{
-            PopupPlacement, RichTextPopup, RichTextPopupMeasure,
-        };
+        use crate::primitives::rich_text_popup::{PopupPlacement, RichTextPopup};
         use crate::types::{StyledText, WidgetId};
         use crate::FontRole;
         use pangocairo::cairo::{Context, Format, ImageSurface};

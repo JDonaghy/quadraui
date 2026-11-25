@@ -1117,6 +1117,13 @@ impl AppLogic for TooltipBorderFixture {
         tooltip.chrome.title = self.title.clone();
         let layout = tooltip.layout(anchor, viewport, measure, lh);
         backend.draw_dyn(layout.bounds, &tooltip, &());
+        // The host registers the zone it painted into, the same way
+        // `TabGroupController::render` does for its drop overlay: the
+        // widget-contract paint path records a `PaintedWidget`, not a
+        // frame zone, so a structural-parity observer
+        // (`ConformanceDriver::inventory().zones()`) only sees the
+        // tooltip's own box because this call puts it there.
+        backend.register_zone(tooltip.id, layout.bounds);
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
