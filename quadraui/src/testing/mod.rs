@@ -1229,12 +1229,6 @@ impl crate::Backend for RecordingBackend {
         self.record("draw_activity_bar");
         Vec::new()
     }
-    fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {
-        self.record("draw_terminal");
-    }
-    fn draw_terminal_divider(&mut self, _r: Rect) {
-        self.record("draw_terminal_divider");
-    }
     fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {
         self.record("draw_solid_fill");
     }
@@ -1427,9 +1421,6 @@ impl crate::Backend for RecordingBackend {
     fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
         self.record("draw_scrollbar");
     }
-    fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {
-        self.record("draw_drop_overlay");
-    }
     fn draw_menu_bar(&mut self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
         self.record("draw_menu_bar");
         unimplemented!("RecordingBackend has no MenuBar layout algorithm")
@@ -1499,21 +1490,6 @@ impl crate::Backend for RecordingBackend {
     fn spinner_layout(&self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
         crate::SpinnerLayout { bounds: r }
     }
-    fn draw_command_center(
-        &mut self,
-        _r: Rect,
-        _c: &crate::CommandCenter,
-    ) -> crate::CommandCenterLayout {
-        self.record("draw_command_center");
-        unimplemented!("RecordingBackend has no CommandCenter layout algorithm")
-    }
-    fn command_center_layout(
-        &self,
-        _r: Rect,
-        _c: &crate::CommandCenter,
-    ) -> crate::CommandCenterLayout {
-        unimplemented!("RecordingBackend has no CommandCenter layout algorithm")
-    }
     fn draw_chart(
         &mut self,
         _r: Rect,
@@ -1547,22 +1523,6 @@ impl crate::Backend for RecordingBackend {
         _b: &crate::primitives::toolbar::Toolbar,
     ) -> crate::primitives::toolbar::ToolbarLayout {
         unimplemented!("RecordingBackend has no Toolbar layout algorithm")
-    }
-    fn draw_sidebar_panel_interactive(
-        &mut self,
-        _r: Rect,
-        _p: &crate::primitives::sidebar_panel::SidebarPanel,
-        _interaction: &crate::interaction::InteractionState,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        self.record("draw_sidebar_panel");
-        unimplemented!("RecordingBackend has no SidebarPanel layout algorithm")
-    }
-    fn sidebar_panel_layout(
-        &self,
-        _r: Rect,
-        _p: &crate::primitives::sidebar_panel::SidebarPanel,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        unimplemented!("RecordingBackend has no SidebarPanel layout algorithm")
     }
     fn draw_diff_view(
         &mut self,

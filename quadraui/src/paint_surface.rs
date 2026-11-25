@@ -331,6 +331,22 @@ pub trait PaintSurface {
         self.surface_draw_text_run_styled(rect, text, color, false, italic, false, 1.0)
     }
 
+    /// Run `paint` against this surface's editor-font twin — the same
+    /// target, with every text verb painting in [`crate::FontRole::Editor`]
+    /// and [`Self::surface_line_height`]/[`Self::surface_char_width`]
+    /// reporting the editor metrics — and return `true`. An editor-class
+    /// primitive (`crate::font_role::EditorClassPrimitive`) paints its
+    /// text through it.
+    ///
+    /// Defaults to returning `false` without calling `paint`: a surface
+    /// with a single font has no twin, and the caller paints through the
+    /// surface itself. Every pixel backend's own impl overrides this with
+    /// its `EditorSurface` adapter.
+    fn surface_with_editor_font(&mut self, paint: &mut dyn FnMut(&mut dyn PaintSurface)) -> bool {
+        let _ = paint;
+        false
+    }
+
     /// Paint `text` (conventionally one glyph from an icon font's
     /// Private-Use-Area range, e.g. a Nerd Font codepoint) at `rect`'s
     /// top-left corner in `color`, resolving through this surface's

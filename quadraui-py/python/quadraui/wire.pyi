@@ -1775,11 +1775,9 @@ LayoutLeafNode = TypedDict(
         "toolbar": NotRequired[ToolbarDescriptor],
         "menu_bar": NotRequired[MenuBarDescriptor],
         "command_line": NotRequired[CommandLineDescriptor],
-        "command_center": NotRequired[CommandCenterDescriptor],
         "palette": NotRequired[PaletteDescriptor],
         "scrollbar": NotRequired[ScrollbarDescriptor],
         "editor": NotRequired[EditorDescriptor],
-        "terminal": NotRequired[TerminalDescriptor],
         "canvas": NotRequired[CanvasDescriptor],
         "scroll_view": NotRequired[ScrollViewDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
@@ -1794,6 +1792,8 @@ LayoutLeafNode = TypedDict(
         "switch": NotRequired[SwitchDescriptor],
         "radio_group": NotRequired[RadioGroupDescriptor],
         "button": NotRequired[ButtonDescriptor],
+        "command_center": NotRequired[CommandCenterDescriptor],
+        "terminal": NotRequired[TerminalDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1837,11 +1837,9 @@ class RenderFrameDict(TypedDict):
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
     command_line: NotRequired[Optional[CommandLineDescriptor]]
-    command_center: NotRequired[Optional[CommandCenterDescriptor]]
     palette: NotRequired[Optional[PaletteDescriptor]]
     scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
     editor: NotRequired[Optional[EditorDescriptor]]
-    terminal: NotRequired[Optional[TerminalDescriptor]]
     canvas: NotRequired[Optional[CanvasDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
@@ -1856,6 +1854,8 @@ class RenderFrameDict(TypedDict):
     switch: NotRequired[Optional[SwitchDescriptor]]
     radio_group: NotRequired[Optional[RadioGroupDescriptor]]
     button: NotRequired[Optional[ButtonDescriptor]]
+    command_center: NotRequired[Optional[CommandCenterDescriptor]]
+    terminal: NotRequired[Optional[TerminalDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
@@ -2374,10 +2374,6 @@ class _HitDetailSplitTreeDivider(TypedDict):
     kind: Literal['split_tree_divider']
     split_index: int
 
-class _HitDetailSidebarPanelToolbarButton(TypedDict):
-    kind: Literal['sidebar_panel_toolbar_button']
-    bar: WidgetId
-
 class _HitDetailTreeScrollbarTrackBefore(TypedDict):
     kind: Literal['tree_scrollbar_track_before']
 
@@ -2414,7 +2410,7 @@ class _HitDetailScrollScrollbarTrackAfter(TypedDict):
     kind: Literal['scroll_scrollbar_track_after']
 
 # The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
-HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 class _UiKeyPressedPayload(TypedDict):
     key: Key
@@ -2483,6 +2479,12 @@ class _RadioGroupSelectionChangedPayload(TypedDict):
     widget: WidgetId
     index: int
 
+CommandCenterTarget = Literal['Back', 'Forward', 'Search']
+
+class _CommandCenterActivatedPayload(TypedDict):
+    widget: WidgetId
+    target: CommandCenterTarget
+
 class _TextSelectionChangedPayload(TypedDict):
     region: WidgetId
     anchor: Point
@@ -2535,6 +2537,7 @@ class _UiEventDict(TypedDict):
     SwitchToggled: NotRequired[_SwitchToggledPayload]
     RadioGroupSelectionChanged: NotRequired[_RadioGroupSelectionChangedPayload]
     ButtonActivated: NotRequired[_WidgetPayload]
+    CommandCenterActivated: NotRequired[_CommandCenterActivatedPayload]
     TextSelectionChanged: NotRequired[_TextSelectionChangedPayload]
     SplitDividerDragged: NotRequired[_SplitDividerDraggedPayload]
     MenuActivated: NotRequired[WidgetId]

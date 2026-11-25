@@ -19,7 +19,6 @@ use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
-use crate::primitives::command_center::{CommandCenter, CommandCenterHit, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
@@ -52,7 +51,7 @@ use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, Palette, StatusBar,
-    Terminal, TextDisplay, TooltipChrome, TreeView, UserPayload,
+    TextDisplay, TooltipChrome, TreeView, UserPayload,
 };
 // `TabBar` is only named by `#[cfg(test)]` code below — a tab strip
 // paints through its widget contract, not a method on this backend.
@@ -1059,17 +1058,6 @@ impl WinBackend {
         }
     }
 
-    /// Resolve a `SidebarPanel`'s default toolbar-header slot height —
-    /// same shape as [`Self::resolved_row_height`], for `Style::toolbar_height`
-    /// instead of `Style::row_height`.
-    fn resolved_toolbar_height(&self, candidate_line_height: f32) -> f32 {
-        if candidate_line_height > 1.0 {
-            candidate_line_height.max(self.current_style.toolbar_height)
-        } else {
-            candidate_line_height
-        }
-    }
-
     /// Live DirectWrite handles for the current chrome (UI) font, once
     /// [`Self::attach_surface`]/[`Self::attach_headless`] has built them —
     /// `None` beforehand, same lifecycle as the editor `dwrite` field.
@@ -1498,11 +1486,15 @@ impl WinBackend {
     ///   why no `begin_window_drag`/`begin_window_resize` call is needed
     ///   here).
     /// - `Some(false)` — the point is in the band but also inside another
-    ///   registered zone strictly smaller than the band (a button, the
-    ///   command-centre search box, or any other interactive widget a
-    ///   host paints into the row) — report `HTCLIENT` instead, so the
-    ///   click reaches that widget as an ordinary `UiEvent::MouseDown`
-    ///   rather than being swallowed by the OS move/maximize gesture.
+    ///   registered zone strictly smaller than the band (a button, or any
+    ///   other interactive widget a host paints into the row), or inside
+    ///   an addressable sub-part of a widget-contract widget painted this
+    ///   frame (a command center's arrows and search box, recorded by
+    ///   [`crate::DrawsPrimitives::draw_dyn`] into
+    ///   [`crate::primitive::PaintedWidgets`]) — report `HTCLIENT`
+    ///   instead, so the click reaches that widget as an ordinary
+    ///   `UiEvent::MouseDown` rather than being swallowed by the OS
+    ///   move/maximize gesture.
     ///
     /// Zones whose bounds are *not* strictly smaller than the band (e.g.
     /// `AppShell`'s own `"app-shell:window"` whole-window zone, which
@@ -1525,13 +1517,17 @@ impl WinBackend {
             z.id.as_str() != Self::TITLE_BAR_DRAG_ZONE
                 && z.bounds.contains(point)
                 && z.bounds.width * z.bounds.height < band_area
+        }) || crate::primitive::with_painted_widgets(|painted| {
+            painted
+                .iter()
+                .any(|w| w.sub_regions.iter().any(|(r, _)| r.contains(point)))
         });
         Some(!excluded)
     }
 
     // ── Band-content zone registration ──────────────────────────────────
     //
-    // These three helpers register zones at the one place each widget's real
+    // These helpers register zones at the one place each widget's real
     // screen bounds are known: right after its `draw_*` call. Called
     // unconditionally — a zone outside the band is simply never found by
     // `nc_hit_test`'s `band.bounds.contains(point)` check, so this is harmless
@@ -1554,8 +1550,7 @@ impl WinBackend {
     /// `action_id`-bearing status-bar segments drawn into the title-bar
     /// band. See the section doc above.
     ///
-    /// Unlike [`Self::register_menu_bar_item_zones`]/
-    /// [`Self::register_command_center_zones`], `StatusBar::layout`/
+    /// Unlike [`Self::register_menu_bar_item_zones`], `StatusBar::layout`/
     /// `layout_padded` (`primitives/status_bar.rs`) returns bounds in
     /// **bar-local** coordinates — origin `(0, 0)` at the bar's own
     /// top-left, by design (see `compose::status_bar_interaction::
@@ -1579,27 +1574,6 @@ impl WinBackend {
                     ),
                 );
             }
-        }
-    }
-
-    /// Register a zone for each present [`CommandCenterLayout`] hit
-    /// region (back/forward nav arrows, the search box) — the
-    /// command-centre strip the issue names explicitly. `CommandCenterHit`
-    /// carries no `WidgetId` of its own, so each zone is keyed off `cc`'s
-    /// id with a fixed suffix, mirroring `"titlebar:minimize-button"`-style
-    /// synthetic ids already used by this file's unit tests below.
-    fn register_command_center_zones(&mut self, cc_id: &WidgetId, layout: &CommandCenterLayout) {
-        for (bounds, hit) in &layout.hit_regions {
-            let suffix = match hit {
-                CommandCenterHit::Back => "back",
-                CommandCenterHit::Forward => "forward",
-                CommandCenterHit::SearchBox => "search",
-                CommandCenterHit::Bar | CommandCenterHit::Outside => continue,
-            };
-            self.register_zone(
-                WidgetId::new(format!("{}:{}", cc_id.as_str(), suffix)),
-                *bounds,
-            );
         }
     }
 
@@ -3784,85 +3758,6 @@ impl Backend for WinBackend {
             .collect()
     }
 
-    /// Real Direct2D/DirectWrite rasteriser via `win::terminal` once a
-    /// surface is attached. Mirrors `GtkBackend::draw_terminal`'s
-    /// scrollbar handling (subtract the gutter from the cell area, paint
-    /// cells, then paint the scrollbar over the freed strip) but skips
-    /// the dirty-row cache — see `win::terminal`'s module doc for why
-    /// that's a deliberate follow-up. See [`Self::draw_status_bar`]'s
-    /// doc for the "surface not attached yet" fallback posture.
-    /// Shared cell-grid painting lives in
-    /// [`crate::primitives::terminal::paint`] now — see that fn's doc
-    /// for the divergences (per-cell bold/italic/underline styling)
-    /// resolved while unifying `gtk::terminal::draw_terminal_cells`,
-    /// `macos::terminal::draw_terminal_cells` and
-    /// `win::terminal::draw_terminal_cells` into one implementation.
-    fn draw_terminal(&mut self, rect: Rect, term: &Terminal) {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() {
-            let lh = self.current_line_height;
-            let cw = self.current_char_width;
-            let theme = self.current_theme;
-
-            let sb_width = match &term.scrollbar {
-                Some(sb) => sb.width.map(|w| w as f32).unwrap_or(8.0),
-                None => 0.0,
-            };
-            let cell_area_w = (rect.width - sb_width).max(0.0);
-
-            // The terminal is editor-class — paint through
-            // `EditorSurface` so its cell glyphs keep painting in the
-            // editor font even though `WinBackend`'s own `PaintSurface`
-            // impl now defaults to `chrome_dwrite` (see that impl's
-            // doc).
-            let mut surface = EditorSurface { backend: self };
-            crate::primitives::terminal::paint(
-                term,
-                &mut surface,
-                &theme,
-                rect.x,
-                rect.y,
-                cell_area_w,
-                rect.height,
-                lh,
-                cw,
-                None,
-            );
-
-            if let Some(ref sb_state) = term.scrollbar {
-                let sb = crate::primitives::scrollbar::Scrollbar::vertical(
-                    term.id,
-                    Rect::new(rect.x + cell_area_w, rect.y, sb_width, rect.height),
-                    sb_state.effective_scroll_offset() as f32,
-                    sb_state.total_lines as f32,
-                    sb_state.visible_lines as f32,
-                    lh,
-                );
-                crate::primitives::scrollbar::native_surface_paint::paint(&sb, self, &theme);
-            }
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, term);
-    }
-
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture. `Terminal` paints no text, so
-    /// unlike most of that method's siblings this doesn't need
-    /// `self.dwrite`.
-    fn draw_terminal_divider(&mut self, rect: Rect) {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() {
-            let theme = self.current_theme;
-            crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = rect;
-    }
-
     /// See [`Backend::draw_solid_fill`]'s doc — a pixel backend
     /// can honor `rect` exactly via `PaintSurface::surface_fill_rect`,
     /// which already degrades to a no-op when no surface is attached
@@ -3890,9 +3785,8 @@ impl Backend for WinBackend {
             let theme = self.current_theme;
             let line_height = self.current_line_height;
             let char_width = self.current_char_width;
-            // The text display is editor-class — see the matching
-            // comment on `Self::draw_terminal` / `EditorSurface`'s own
-            // doc.
+            // The text display is editor-class — see `EditorSurface`'s
+            // own doc.
             let mut surface = EditorSurface { backend: self };
             crate::primitives::text_display::paint(
                 td,
@@ -4772,23 +4666,6 @@ impl Backend for WinBackend {
         let _ = (rect, scrollbar);
     }
 
-    /// Paint via the shared
-    /// [`crate::primitives::drop_zone::native_surface_paint::paint`]
-    /// once a surface is attached — mirrors [`Self::draw_scrollbar`].
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
-    /// yet" fallback posture.
-    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() {
-            let theme = self.current_theme;
-            crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = overlay;
-    }
-
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
@@ -5329,58 +5206,6 @@ impl Backend for WinBackend {
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
-    /// `CommandCenter` is `ChromePrimitive::CommandCenter` — see
-    /// [`Self::draw_tree`]'s note for the font-swap shape.
-    /// `char_width` (the search-box width estimate's own input) stays
-    /// at the editor's value, same as [`Self::command_center_layout`]
-    /// already uses — only the paint font changes here, matching
-    /// `GtkBackend::draw_command_center`'s identical split (layout
-    /// estimate stays char-width-based; only the Pango paint swaps to
-    /// `ui_font`).
-    fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let layout = super::command_center::draw_command_center(
-                &surface.target,
-                dwrite,
-                self.current_char_width,
-                self.current_line_height,
-                rect,
-                cc,
-                &self.current_theme,
-            );
-            // See "Band-content zone registration" above — the
-            // command-centre search box the issue names explicitly.
-            self.register_command_center_zones(&cc.id, &layout);
-            return layout;
-        }
-        // No surface yet — return the real (pure `char_width` estimate)
-        // layout via `command_center_layout` and paint nothing.
-        let layout = self.command_center_layout(rect, cc);
-        self.register_command_center_zones(&cc.id, &layout);
-        layout
-    }
-
-    /// Pure `char_width` estimate (via the shared
-    /// [`crate::primitives::command_center::CommandCenterMeasure::from_char_width`]
-    /// formula) — no live `DWrite` measurer is needed at all, so this is
-    /// computed directly rather than reaching into the Windows-only
-    /// `super::command_center` module.
-    fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        cc.layout(
-            rect,
-            crate::primitives::command_center::CommandCenterMeasure::from_char_width(
-                &cc.search_label,
-                self.current_char_width,
-                rect.height,
-            ),
-        )
-    }
-
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
-    ///
     /// `Toolbar` is `ChromePrimitive::Toolbar` — see
     /// [`Self::draw_menu_bar`]'s note for why passing
     /// `chrome_dwrite` here keeps `win_toolbar_layout`'s internal
@@ -5515,85 +5340,6 @@ impl Backend for WinBackend {
         )
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface
-    /// not attached yet" fallback posture. `SidebarPanel` embeds a
-    /// [`crate::primitives::toolbar::Toolbar`] header, painted here via
-    /// the shared
-    /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-    /// rather than a per-backend `toolbar::draw_toolbar` call.
-    ///
-    /// `SidebarPanel` is `ChromePrimitive::SidebarPanel` (whole
-    /// primitive, including its embedded toolbar header) — see
-    /// [`Self::draw_status_bar_interactive`]'s doc for why this paints
-    /// through [`ChromeSurface`] instead of `self` directly.
-    fn draw_sidebar_panel_interactive(
-        &mut self,
-        rect: Rect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let (hovered_toolbar_id, pressed_toolbar_id) =
-            (interaction.hovered(), interaction.pressed());
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() && self.dwrite.is_some() {
-            let line_height = self.resolved_toolbar_height(self.current_line_height);
-            // `self.current_theme` is the live theme `Backend::set_theme`
-            // writes, same as `WinBackend::draw_toast_overlay` above.
-            let theme = self.current_theme;
-            let mut surface = ChromeSurface { backend: self };
-            return crate::primitives::sidebar_panel::native_surface_paint::paint(
-                panel,
-                &mut surface,
-                &theme,
-                rect,
-                line_height,
-                hovered_toolbar_id,
-                pressed_toolbar_id,
-            );
-        }
-        // No surface/DWrite yet — compute the real layout via the same
-        // nominal measurer `sidebar_panel_layout` falls back to, and
-        // paint nothing. `hovered_toolbar_id`/
-        // `pressed_toolbar_id` only affect painting, so they're unused
-        // on this path.
-        let _ = (hovered_toolbar_id, pressed_toolbar_id);
-        self.sidebar_panel_layout(rect, panel)
-    }
-
-    /// See [`Self::toolbar_layout`]'s doc for why this only needs
-    /// `self.dwrite` (text measurement for the nested toolbar's button
-    /// widths), not a live render target. Prefers `chrome_dwrite`,
-    /// matching [`Self::draw_sidebar_panel_interactive`]'s paint font.
-    fn sidebar_panel_layout(
-        &self,
-        rect: Rect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let line_height = self.resolved_toolbar_height(self.current_line_height);
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::sidebar_panel::win_sidebar_panel_layout(
-                dwrite,
-                line_height,
-                rect,
-                panel,
-            );
-        }
-        // No live DWrite handle — nominal char-width estimate instead
-        let measure = NominalTextMeasure {
-            char_width: self.current_char_width,
-        };
-        panel.layout(
-            rect,
-            crate::primitives::sidebar_panel::SidebarPanelMeasure::new(line_height, 0.0),
-            |btn| {
-                crate::primitives::toolbar::ToolbarItemMeasure::new(
-                    crate::primitives::toolbar::measure_button(&measure, btn),
-                )
-            },
-        )
-    }
-
     /// `diff_view_layout` is **not** overridden on this backend —
     /// see `win::diff_view`'s module doc for why the trait default stays
     /// the honest answer even after the shared `DiffView::layout` landed.
@@ -5617,8 +5363,8 @@ impl Backend for WinBackend {
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
             let line_height = self.current_line_height;
-            // The diff view is editor-class — see the matching comment
-            // on `Self::draw_terminal` / `EditorSurface`'s own doc.
+            // The diff view is editor-class — see `EditorSurface`'s own
+            // doc.
             let mut surface = EditorSurface { backend: self };
             return crate::primitives::diff_view::native_surface_paint::paint(
                 view,
@@ -6311,6 +6057,12 @@ impl PaintSurface for WinBackend {
         Backend::begin_frame(self, viewport);
     }
 
+    /// Paints through [`EditorSurface`], this backend's editor-font twin.
+    fn surface_with_editor_font(&mut self, paint: &mut dyn FnMut(&mut dyn PaintSurface)) -> bool {
+        paint(&mut EditorSurface { backend: self });
+        true
+    }
+
     fn surface_end_frame(&mut self) {
         Backend::end_frame(self);
     }
@@ -6588,8 +6340,8 @@ impl PaintSurface for WinBackend {
 
 /// Win-GUI twin of `MacBackend`'s `ChromeSurface` (see that
 /// struct's own doc) — wraps a `&mut WinBackend` so a primitive already
-/// migrated onto [`PaintSurface`] (today: [`Self::draw_status_bar_interactive`],
-/// [`Self::draw_sidebar_panel_interactive`]) paints through
+/// migrated onto [`PaintSurface`] (today: [`Self::draw_status_bar_interactive`])
+/// paints through
 /// `chrome_dwrite` (falling back to the editor `dwrite` handle if no
 /// live chrome one exists yet — same "degrade, don't panic" convention
 /// as `WinBackend::surface_draw_text_run_with_role`) instead of
@@ -8529,21 +8281,36 @@ mod tests {
         );
     }
 
-    /// Same regression for `Backend::draw_command_center` — the
-    /// command-centre search box the issue names explicitly.
+    /// Paint `cc` into `rect` through the widget contract, the way a host
+    /// pushes it as a `Surface::Widget`, and hand back its layout.
+    fn draw_command_center_widget(
+        b: &mut WinBackend,
+        rect: Rect,
+        cc: &crate::CommandCenter,
+    ) -> crate::CommandCenterLayout {
+        use crate::backend::DrawsPrimitives;
+        b.draw_dyn(rect, cc, &())
+            .downcast_ref::<crate::CommandCenterLayout>()
+            .expect("a CommandCenter lays out as a CommandCenterLayout")
+            .clone()
+    }
+
+    /// A widget-contract `CommandCenter` painted into the band needs no
+    /// zone of its own: its arrows and search box are recorded as
+    /// painted sub-regions, and `nc_hit_test` reads those as `HTCLIENT`.
     #[test]
-    fn draw_command_center_registers_its_own_zones_inside_the_band() {
+    fn command_center_sub_regions_read_as_client_inside_the_band() {
         let mut b = WinBackend::new();
         let band = Rect::new(0.0, 0.0, 800.0, 32.0);
         Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
 
-        let cc = CommandCenter {
+        let cc = crate::CommandCenter {
             id: WidgetId::new("titlebar:cc"),
             back_enabled: true,
             forward_enabled: true,
             search_label: "project-name".into(),
         };
-        let layout = Backend::draw_command_center(&mut b, Rect::new(300.0, 0.0, 400.0, 32.0), &cc);
+        let layout = draw_command_center_widget(&mut b, Rect::new(300.0, 0.0, 400.0, 32.0), &cc);
         let search = layout.search_bounds.expect("search box must be laid out");
         let (cx, cy) = (
             search.x + search.width / 2.0,
@@ -8563,7 +8330,7 @@ mod tests {
     /// container with unclaimed room — this test probes the gap between the
     /// container's left edge and the centred content instead.
     #[test]
-    fn draw_command_center_leaves_its_own_container_padding_as_caption() {
+    fn command_center_leaves_its_own_container_padding_as_caption() {
         let mut b = WinBackend::new();
         let band = Rect::new(0.0, 0.0, 900.0, 32.0);
         Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
@@ -8572,14 +8339,14 @@ mod tests {
         // search-box width, so the centred content (2 arrows + 2 gaps +
         // the 280px floor) is well short of the 400px-wide container
         // below — leaving real padding on both sides to probe.
-        let cc = CommandCenter {
+        let cc = crate::CommandCenter {
             id: WidgetId::new("titlebar:cc"),
             back_enabled: true,
             forward_enabled: true,
             search_label: "x".into(),
         };
         let container = Rect::new(300.0, 0.0, 400.0, 32.0);
-        let layout = Backend::draw_command_center(&mut b, container, &cc);
+        let layout = draw_command_center_widget(&mut b, container, &cc);
 
         let back = layout.back_bounds.expect("back arrow must be laid out");
         assert!(
@@ -8672,8 +8439,8 @@ mod tests {
     }
 
     /// `Backend::set_theme` must reach the rasterisers, not just be stored and
-    /// ignored — a real `HeadlessSurface` pixel probe. Tests
-    /// [`super::terminal::draw_terminal_divider`]'s painted pixel: a single flat
+    /// ignored — a real `HeadlessSurface` pixel probe. Tests a
+    /// [`crate::TerminalDivider`]'s painted pixel: a single flat
     /// `theme.separator` fill with no blending, so a non-default theme's colour
     /// must come through pixel-exact if `set_theme` is wired at all.
     #[cfg(target_os = "windows")]
@@ -8707,7 +8474,11 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         // 1 DIP wide at x=0, spanning the full probe height — see
         // `crate::terminal_style::divider_geometry`.
-        backend.draw_terminal_divider(Rect::new(0.0, 0.0, 1.0, H as f32));
+        crate::DrawsPrimitives::draw_primitive(
+            &mut backend,
+            Rect::new(0.0, 0.0, 1.0, H as f32),
+            &crate::TerminalDivider::new(WidgetId::new("divider")),
+        );
         backend.end_frame();
 
         let px = surface.pixel_at(0, H / 2);
@@ -9563,8 +9334,8 @@ mod tests {
         );
     }
 
-    /// `draw_sidebar_panel_interactive`'s embedded toolbar chrome must
-    /// paint from the live theme rather than a hardcoded `Theme::default()`.
+    /// A `SidebarPanel`'s embedded toolbar chrome must paint from the
+    /// live theme rather than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_sidebar_panel_toolbar() {
@@ -9604,10 +9375,9 @@ mod tests {
             toolbar_height: Some(24.0),
         };
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-        let interaction = crate::interaction::InteractionState::default();
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = backend.draw_sidebar_panel_interactive(rect, &panel, &interaction);
+        let layout = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &panel);
         backend.end_frame();
 
         let tb = layout
@@ -10524,8 +10294,9 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_command_center_paints_the_search_label_in_the_chrome_fonts_size() {
-        let cc = CommandCenter {
+    fn win_backend_command_center_paints_the_search_label_in_the_chrome_fonts_size() {
+        use crate::backend::DrawsPrimitives;
+        let cc = crate::CommandCenter {
             id: WidgetId::new("cc"),
             back_enabled: true,
             forward_enabled: true,
@@ -10537,12 +10308,12 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_command_center(Rect::new(0.0, 0.0, 300.0, 32.0), &cc);
+                let _ = backend.draw_dyn(Rect::new(0.0, 0.0, 300.0, 32.0), &cc, &());
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_command_center must paint the search label through \
+            "#1266: CommandCenter must paint the search label through \
              chrome_dwrite, not the (unchanged) editor dwrite handle"
         );
     }
@@ -10596,8 +10367,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_sidebar_panel_interactive_paints_the_toolbar_label_in_the_chrome_fonts_size(
-    ) {
+    fn win_backend_sidebar_panel_paints_the_toolbar_label_in_the_chrome_fonts_size() {
         let panel = crate::primitives::sidebar_panel::SidebarPanel {
             id: WidgetId::new("sb"),
             toolbar: Some(crate::primitives::toolbar::Toolbar {
@@ -10618,25 +10388,24 @@ mod tests {
             }),
             toolbar_height: None,
         };
-        let interaction = crate::interaction::InteractionState::new();
         let diff = chrome_font_diff_pixel_count(
             200,
             100,
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_sidebar_panel_interactive(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, 200.0, 100.0),
                     &panel,
-                    &interaction,
+                    &(),
                 );
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_sidebar_panel_interactive must paint the embedded toolbar's \
-             label through ChromeSurface (chrome_dwrite), not WinBackend's own \
-             PaintSurface impl (the editor dwrite handle)"
+            "the sidebar panel header must paint its toolbar label through \
+             chrome_dwrite, not the (unchanged) editor dwrite handle"
         );
     }
 
@@ -10841,14 +10610,14 @@ mod tests {
         );
     }
 
-    /// `Terminal`'s other call site through `EditorSurface` — see
+    /// `Terminal`'s paint through `EditorSurface` — see
     /// [`win_backend_draw_text_display_does_not_vary_with_chrome_font_size`]'s
     /// doc for why this must stay pixel-identical across chrome font
     /// sizes.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_terminal_does_not_vary_with_chrome_font_size() {
-        let term = Terminal {
+    fn win_backend_terminal_does_not_vary_with_chrome_font_size() {
+        let term = crate::Terminal {
             id: WidgetId::new("terminal"),
             cells: vec![vec![crate::primitives::terminal::TerminalCell {
                 text: "Z".to_string(),
@@ -10873,19 +10642,23 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_terminal(Rect::new(0.0, 0.0, 200.0, 40.0), &term);
+                crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 40.0),
+                    &term,
+                );
             },
         );
         assert_eq!(
             diff, 0,
-            "draw_terminal is editor-class — it must keep painting cell glyphs \
+            "the terminal is editor-class — it must keep painting cell glyphs \
              through EditorSurface (the editor dwrite handle) regardless of the \
              chrome font's size"
         );
     }
 
     /// `DiffView`'s call site through `EditorSurface` — same contract as
-    /// [`win_backend_draw_terminal_does_not_vary_with_chrome_font_size`]
+    /// [`win_backend_terminal_does_not_vary_with_chrome_font_size`]
     /// above.
     #[cfg(target_os = "windows")]
     #[test]

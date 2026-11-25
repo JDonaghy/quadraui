@@ -164,7 +164,7 @@ mod tests {
     /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
     /// Cairo's `ARgb32` stores each pixel as four bytes in native
     /// (little-endian) byte order: [B, G, R, A] — mirrors
-    /// `gtk::terminal`/`gtk::activity_bar`'s test-local helper of the
+    /// `gtk::activity_bar`'s test-local helper of the
     /// same name.
     fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
         let off = y as usize * stride + x as usize * 4;

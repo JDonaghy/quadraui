@@ -43,7 +43,6 @@ mod chart;
 #[doc(hidden)]
 pub mod color;
 mod combo_box;
-mod command_center;
 // `pub(crate)` rather than private: `CommandLine`'s own
 // `Primitive::paint_cells` reaches this module's `Buffer` →
 // `CellSurface` adapter, which cannot be built outside `crate::tui`.
@@ -54,7 +53,6 @@ mod data_table;
 mod date_picker;
 mod dialog;
 mod diff_view;
-mod drop_overlay;
 mod editor;
 pub mod events;
 mod find_replace;
@@ -90,14 +88,12 @@ mod run;
 mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-mod sidebar_panel;
 mod solid_fill;
 mod spinner;
 mod split;
 mod split_junction;
 mod split_tree;
 mod status_bar;
-mod terminal;
 pub mod testing;
 pub mod text;
 // vt100/ANSI-byte-stream conformance observer — needs
@@ -137,8 +133,6 @@ pub use chart::{draw_chart, tui_chart_layout};
 #[doc(hidden)]
 pub use combo_box::draw_combo_box;
 #[doc(hidden)]
-pub use command_center::{draw_command_center, tui_command_center_layout};
-#[doc(hidden)]
 pub use completions::draw_completions;
 #[doc(hidden)]
 pub use context_menu::{
@@ -157,7 +151,6 @@ pub use dialog::{draw_dialog, draw_dialog_with_nerd_fonts, tui_dialog_layout};
 #[doc(hidden)]
 pub use diff_view::draw_diff_view;
 #[doc(hidden)]
-pub use drop_overlay::draw_drop_overlay;
 pub use editor::draw_editor;
 #[doc(hidden)]
 pub use editor::{draw_editor_with_reserve, EditorPaintResult};
@@ -208,8 +201,6 @@ pub(crate) use scrollbar::draw_scrollbar_layout;
 #[doc(hidden)]
 pub use services::TuiPlatformServices;
 #[doc(hidden)]
-pub use sidebar_panel::{draw_sidebar_panel, tui_sidebar_panel_layout};
-#[doc(hidden)]
 pub use solid_fill::draw_solid_fill;
 pub(crate) use spinner::draw_spinner_layout;
 #[doc(hidden)]
@@ -227,8 +218,6 @@ pub use status_bar::draw_status_bar;
 pub use crate::primitives::tab_bar::{
     TAB_CLOSE_CHAR, TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
 };
-#[doc(hidden)]
-pub use terminal::{draw_terminal, draw_terminal_divider};
 #[doc(hidden)]
 pub use text::truncate_to_width_ellipsis;
 pub use text::{char_cell_width, display_width, truncate_to_width};

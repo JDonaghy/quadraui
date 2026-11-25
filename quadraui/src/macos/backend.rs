@@ -65,7 +65,6 @@ use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::CommandLine;
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
@@ -96,7 +95,7 @@ use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, FieldKind, Form, Key, ListView, Modifiers, Palette,
-    ParsedBinding, PlatformServices, StatusBar, Terminal, TextDisplay, Theme, TreeView,
+    ParsedBinding, PlatformServices, StatusBar, TextDisplay, Theme, TreeView,
 };
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this
@@ -1057,7 +1056,7 @@ impl MacBackend {
     /// [`Self::nerd_font_fallback_family`] — the same `font_with_fallback`
     /// cascade [`Self::set_current_font`] applies. Icon glyphs in
     /// `draw_tree`/`draw_activity_bar_with_style`/
-    /// `draw_toolbar_interactive`/`draw_sidebar_panel_interactive` now
+    /// `draw_toolbar_interactive` now
     /// paint through `chrome_font`, not `current_font` — without this,
     /// a host that calls `set_nerd_font_fallback` would see icon glyphs
     /// render correctly in the editor but as tofu in every chrome
@@ -1155,8 +1154,8 @@ impl MacBackend {
         }
     }
 
-    /// Resolve a `SidebarPanel`'s default toolbar-header slot height:
-    /// `Style::toolbar_height` on a pixel backend, floored the same way
+    /// Resolve a toolbar's row height: `Style::toolbar_height` on a
+    /// pixel backend, floored the same way
     /// [`Self::resolved_row_height`] is — same shape, for the toolbar
     /// chrome metric instead of the row metric.
     fn resolved_toolbar_height(&self, candidate_line_height: f64) -> f64 {
@@ -3234,68 +3233,6 @@ impl Backend for MacBackend {
         super::activity_bar::mac_activity_bar_layout(rect.width as f64, rect.height as f64, bar)
     }
 
-    /// Shared cell-grid painting lives in
-    /// [`crate::primitives::terminal::paint`] now — see that fn's doc
-    /// for the divergences resolved while unifying
-    /// `gtk::terminal::draw_terminal_cells`,
-    /// `macos::terminal::draw_terminal_cells` and
-    /// `win::terminal::draw_terminal_cells` into one implementation.
-    fn draw_terminal(&mut self, rect: Rect, term: &Terminal) {
-        let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
-
-        let sb_width = match &term.scrollbar {
-            Some(sb) => sb.width.map(|w| w as f64).unwrap_or(8.0),
-            None => 0.0,
-        };
-        let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
-
-        // The terminal is editor-class — paint through `EditorSurface`
-        // so its cell glyphs paint in `current_font` even though the
-        // plain `self` surface defaults to `chrome_font` (see
-        // `EditorSurface`'s doc). Scoped to a block so `self` is free
-        // again for the scrollbar paint below, which has no text of its
-        // own and is fine through the plain (chrome) surface.
-        {
-            let mut surface = EditorSurface { backend: self };
-            crate::primitives::terminal::paint(
-                term,
-                &mut surface,
-                &theme,
-                rect.x,
-                rect.y,
-                cell_area_w as f32,
-                rect.height,
-                line_height as f32,
-                char_width as f32,
-                None,
-            );
-        }
-
-        if let Some(ref sb_state) = term.scrollbar {
-            let sb = crate::primitives::scrollbar::Scrollbar::vertical(
-                term.id,
-                Rect::new(
-                    rect.x + cell_area_w as f32,
-                    rect.y,
-                    sb_width as f32,
-                    rect.height,
-                ),
-                sb_state.effective_scroll_offset() as f32,
-                sb_state.total_lines as f32,
-                sb_state.visible_lines as f32,
-                line_height as f32,
-            );
-            crate::primitives::scrollbar::native_surface_paint::paint(&sb, self, &theme);
-        }
-    }
-    /// Shared divider painting lives in
-    /// [`crate::primitives::terminal::paint_divider`] now.
-    fn draw_terminal_divider(&mut self, rect: Rect) {
-        let theme = self.current_theme;
-        crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
-    }
     /// See `Backend::draw_solid_fill`'s doc — a pixel backend can
     /// honor `rect` exactly via `PaintSurface::surface_fill_rect`.
     fn draw_solid_fill(&mut self, rect: Rect, color: Color) {
@@ -3314,8 +3251,7 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
         let char_width = self.current_char_width as f32;
-        // `TextDisplay` is editor-class — see `draw_terminal`'s comment
-        // / `EditorSurface`'s doc.
+        // `TextDisplay` is editor-class — see `EditorSurface`'s doc.
         let mut surface = EditorSurface { backend: self };
         crate::primitives::text_display::paint(
             td,
@@ -3912,10 +3848,6 @@ impl Backend for MacBackend {
         );
     }
 
-    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
-        let theme = self.current_theme;
-        crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
-    }
     /// macOS's own idiomatic default for a top-level menu bar:
     /// presents `bar` as the real system `NSMenu` whenever
     /// [`Backend::effective_menu_style`] resolves to
@@ -4208,46 +4140,6 @@ impl Backend for MacBackend {
         let font = &self.chrome_font;
         super::spinner::mac_spinner_layout(spinner, font, rect.x as f64, rect.y as f64)
     }
-    fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_command_center called outside enter_frame_scope",
-        );
-        // Chrome primitives are drawn through `chrome_font` —
-        // `draw_tree`'s comment explains the swap. `line_height` stays
-        // the editor pitch (used only for vertical centring).
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx non-null inside frame scope.
-        unsafe {
-            super::command_center::draw_command_center(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                cc,
-                &theme,
-                line_height,
-            )
-        }
-    }
-    fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        // No-paint twin of `draw_command_center` — must agree with what
-        // that method painted.
-        let font = &self.chrome_font;
-        super::command_center::mac_command_center_layout(
-            cc,
-            font,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
     /// Shared chart painting lives in
     /// [`crate::primitives::chart::paint`] now — see that fn's doc for
     /// the divergences resolved while unifying `gtk::chart::draw_chart`,
@@ -4428,9 +4320,7 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         // `Wrap`'s per-row height — `rect.height` is the whole slot the
         // host allocated the bar, not one row's height (see
-        // `super::toolbar::mac_toolbar_layout_with_overflow`'s doc); this
-        // is the same default row height `draw_sidebar_panel_interactive`
-        // sizes its own toolbar header slot from.
+        // `super::toolbar::mac_toolbar_layout_with_overflow`'s doc).
         let row_h = self.resolved_toolbar_height(self.chrome_line_height);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -4476,40 +4366,6 @@ impl Backend for MacBackend {
         )
     }
 
-    fn draw_sidebar_panel_interactive(
-        &mut self,
-        rect: Rect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let (hovered_toolbar_id, pressed_toolbar_id) =
-            (interaction.hovered(), interaction.pressed());
-        debug_assert!(
-            !self.current_cg().is_null(),
-            "MacBackend::draw_sidebar_panel called outside enter_frame_scope",
-        );
-        // `SidebarPanel` composes a `Toolbar` header — its icon glyphs
-        // are chrome (`ChromePrimitive::SidebarPanel`), not editor
-        // content — so this paints through `ChromeSurface` (routes text
-        // through `chrome_font`), the same switch
-        // `draw_status_bar_interactive` makes. The default header slot
-        // height is `Style::toolbar_height` on a pixel backend — VS
-        // Code's own toolbar height — rather than the raw
-        // `chrome_line_height` metric, which is usually shorter.
-        let theme = self.current_theme;
-        let line_height = self.resolved_toolbar_height(self.chrome_line_height) as f32;
-        let mut surface = ChromeSurface { backend: self };
-        crate::primitives::sidebar_panel::native_surface_paint::paint(
-            panel,
-            &mut surface,
-            &theme,
-            rect,
-            line_height,
-            hovered_toolbar_id,
-            pressed_toolbar_id,
-        )
-    }
-
     /// Paint via the shared
     /// [`crate::primitives::diff_view::native_surface_paint::paint`] —
     /// see that fn's doc for the two named divergences (row/header text
@@ -4526,8 +4382,7 @@ impl Backend for MacBackend {
         // each debug_assert their own `!ctx.is_null()` internally, so
         // this method needs no separate ctx/font fetch of its own.
         //
-        // `DiffView` is editor-class — see `draw_terminal`'s comment /
-        // `EditorSurface`'s doc.
+        // `DiffView` is editor-class — see `EditorSurface`'s doc.
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
         let mut surface = EditorSurface { backend: self };
@@ -4537,29 +4392,6 @@ impl Backend for MacBackend {
             &theme,
             rect,
             line_height,
-        )
-    }
-
-    fn sidebar_panel_layout(
-        &self,
-        rect: Rect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        // No-paint twin of `draw_sidebar_panel_interactive` — must agree
-        // with what that method painted, so its header toolbar both
-        // measures against `chrome_font` and sizes its default slot
-        // height via `resolved_toolbar_height`, matching
-        // `draw_sidebar_panel_interactive` above. `chrome_font` is never
-        // `None` (seeded at construction — see its field doc), so there
-        // is no "no font installed yet" fallback to guard against here.
-        super::sidebar_panel::mac_sidebar_panel_layout(
-            panel,
-            &self.chrome_font,
-            self.resolved_toolbar_height(self.chrome_line_height),
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
         )
     }
 
@@ -5274,6 +5106,12 @@ impl PaintSurface for EditorSurface<'_> {
 impl PaintSurface for MacBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
+    }
+
+    /// Paints through [`EditorSurface`], this backend's editor-font twin.
+    fn surface_with_editor_font(&mut self, paint: &mut dyn FnMut(&mut dyn PaintSurface)) -> bool {
+        paint(&mut EditorSurface { backend: self });
+        true
     }
 
     fn surface_end_frame(&mut self) {
@@ -9622,7 +9460,7 @@ mod tests {
     /// top edge, when the band (`Style::status_bar_height`-sized, 22px by
     /// default — wider still here at `H`) is taller than the chrome
     /// font's own line height. Mirrors
-    /// `sidebar_panel::toolbar_icon_glyph_is_vertically_centered_in_header_band`'s
+    /// `primitives::sidebar_panel`'s `toolbar_icon_glyph_is_vertically_centered_in_header_band`'s
     /// pixel-scan approach: the band is flat-filled with the segment's own
     /// `bg` before text is painted, so any pixel that doesn't match that
     /// fill colour is glyph ink.

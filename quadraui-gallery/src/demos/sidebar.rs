@@ -12,10 +12,10 @@
 
 use quadraui::compose::sidebar_panel_body::{SidebarPanelBody, SidebarPanelChrome};
 use quadraui::{
-    Backend, BackendCaps, BackendWidget, Decoration, InteractionState, NavigationMode, Reaction,
-    Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit, SidebarSectionDef, SidebarSystem,
-    StatusBar, StatusBarSegment, Style, StyledText, Toolbar, ToolbarButton, ToolbarHoverTracker,
-    TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    Backend, BackendCaps, BackendWidget, Decoration, DrawsPrimitives, InteractionState,
+    NavigationMode, Reaction, Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit,
+    SidebarPanelLayout, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, Style,
+    StyledText, Toolbar, ToolbarButton, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -122,7 +122,6 @@ pub struct SidebarDemo {
     tasks_selected: Option<usize>,
     filter_on: bool,
     tasks_last: String,
-    hover: ToolbarHoverTracker,
     pressed: Option<WidgetId>,
     next_task_id: usize,
     // Variant 2: header groups.
@@ -159,7 +158,6 @@ impl SidebarDemo {
             tasks_selected: Some(0),
             filter_on: false,
             tasks_last: "click toolbar buttons, then list rows".into(),
-            hover: ToolbarHoverTracker::new(),
             pressed: None,
             next_task_id: 4,
             groups_sidebar,
@@ -307,11 +305,11 @@ impl Demo for SidebarDemo {
             }
             1 => {
                 let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-                let layout = backend.draw_sidebar_panel_interactive(
-                    panel_rect,
-                    &self.panel(),
-                    &InteractionState::from_parts(self.hover.current(), self.pressed),
-                );
+                let layout = backend
+                    .draw_dyn(panel_rect, &self.panel(), &())
+                    .downcast_ref::<SidebarPanelLayout>()
+                    .cloned()
+                    .expect("a SidebarPanel resolves a SidebarPanelLayout");
                 let content = layout.content_bounds;
                 // `SidebarPanel` paints its toolbar slot but deliberately
                 // leaves `content_bounds` to the host (see that
@@ -498,27 +496,10 @@ impl Demo for SidebarDemo {
                 }
             }
             1 => match event {
-                UiEvent::MouseMoved { position, .. } => {
-                    let panel_rect =
-                        Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-                    let layout = backend.sidebar_panel_layout(panel_rect, &self.panel());
-                    let mut new_hover = self.hover.clone();
-                    if let Some(tlayout) = &layout.toolbar_layout {
-                        new_hover.update(tlayout, position.x, position.y);
-                    } else {
-                        new_hover.clear();
-                    }
-                    if new_hover.current() != self.hover.current() {
-                        self.hover = new_hover;
-                        Reaction::Redraw
-                    } else {
-                        Reaction::Continue
-                    }
-                }
                 UiEvent::MouseDown { position, .. } => {
                     let panel_rect =
                         Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-                    let layout = backend.sidebar_panel_layout(panel_rect, &self.panel());
+                    let layout = backend.layout_primitive(panel_rect, &self.panel());
                     match layout.hit_test(position.x, position.y) {
                         SidebarPanelHit::ToolbarButton(id) => {
                             self.pressed = Some(id);
@@ -541,7 +522,7 @@ impl Demo for SidebarDemo {
                 UiEvent::MouseUp { position, .. } => {
                     let panel_rect =
                         Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-                    let layout = backend.sidebar_panel_layout(panel_rect, &self.panel());
+                    let layout = backend.layout_primitive(panel_rect, &self.panel());
                     let pressed = self.pressed.take();
                     if let (Some(pressed_id), SidebarPanelHit::ToolbarButton(release_id)) =
                         (pressed, layout.hit_test(position.x, position.y))

@@ -1124,11 +1124,12 @@ test("inline tree leaf chart renders its x_label", () => {
   assert.ok(app.screenContains("Time"));
 });
 
-// `editor`/`terminal`/`canvas` are each a tab stop (the first two) or a
-// bare hit target (`canvas`, which `ExtraPaint::tab_stop` leaves
-// non-focusable) with no dedicated semantic event of their own -- a click
-// reaches the handler as the raw `MouseDown` with `widget` resolved to the
-// leaf's id, same as a render callback's flat-slot path.
+// `editor`/`canvas` are a tab stop and a bare hit target (`canvas`, which
+// `ExtraPaint::tab_stop` leaves non-focusable) with no dedicated semantic
+// event of their own -- a click reaches the handler as the raw `MouseDown`
+// with `widget` resolved to the leaf's id, same as a render callback's
+// flat-slot path. `terminal` is a widget-contract kind whose own
+// `Interactive` impl turns the click into a selection start.
 test("inline tree leaf editor focuses it and routes the hit", () => {
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
@@ -1165,7 +1166,7 @@ test("inline tree leaf editor focuses it and routes the hit", () => {
   assert.equal(received[1].MouseDown.widget, "editor:main");
 });
 
-test("inline tree leaf terminal focuses it and routes the hit", () => {
+test("inline tree leaf terminal focuses it and starts a selection", () => {
   const app = new QuiApp(40, 20);
   app.setRender(() => ({
     row: [
@@ -1189,7 +1190,8 @@ test("inline tree leaf terminal focuses it and routes the hit", () => {
 
   assert.equal(received.length, 2, JSON.stringify(received));
   assert.equal(received[0].FocusChanged, "terminal:shell");
-  assert.equal(received[1].MouseDown.widget, "terminal:shell");
+  assert.equal(received[1].Terminal[0], "terminal:shell");
+  assert.ok("SelectStart" in received[1].Terminal[1], JSON.stringify(received));
 });
 
 test("inline tree leaf canvas routes the hit without focusing", () => {

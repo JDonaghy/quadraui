@@ -53,8 +53,7 @@ use crate::testing::ZoneRec;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Backend, Color, CommandLine, DragState, Form,
     ListView, MenuBar, ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split,
-    StatusBar, Terminal as TerminalPrim, TerminalCellSize, TextDisplay, TreeView, UiEvent,
-    Viewport, WidgetId,
+    StatusBar, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
 // only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs
@@ -773,8 +772,8 @@ impl TuiBackend {
     /// Runs once per frame, over the whole buffer, from
     /// [`super::run::paint_frame`] right after every rasteriser for the
     /// frame has painted — not threaded as a parameter through
-    /// the tab strip/`draw_editor`/`draw_terminal` (the three call
-    /// sites that currently set `underline_color`). A
+    /// the tab strip/`draw_editor`/the terminal cell painter (the three
+    /// call sites that set `underline_color`). A
     /// single per-frame sweep here can't miss a call site a
     /// future primitive adds, costs nothing beyond one extra `bool`
     /// branch per cell on the common (`true`) case, and is exactly what
@@ -2660,8 +2659,8 @@ impl Backend for TuiBackend {
         };
         crate::tui::draw_focus_ring(frame.buffer_mut(), area, &theme);
         // A chrome-only paint (no text of its own) is only "observable" via a
-        // registered zone — mirrors `draw_terminal_divider`'s identical
-        // registration above.
+        // registered zone — mirrors `draw_solid_fill`'s identical
+        // registration.
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
@@ -2844,13 +2843,6 @@ impl Backend for TuiBackend {
             ui_family: String::new(),
             ui_size_pt: 0.0,
         }
-    }
-
-    /// TUI's terminal scrollbar gutter is one character cell, not GTK's
-    /// 8px default — matching `src/tui/terminal.rs`'s
-    /// `sb_cols: … .unwrap_or(1)` default.
-    fn terminal_scrollbar_default_width(&self) -> f32 {
-        1.0
     }
 
     fn snap_height(&self, h: f32) -> f32 {
@@ -3348,38 +3340,6 @@ impl Backend for TuiBackend {
         activity_bar_hits(rect, bar, lh)
     }
 
-    fn draw_terminal(&mut self, rect: QRect, term: &TerminalPrim) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_terminal called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_terminal(frame.buffer_mut(), area, term, &theme);
-    }
-
-    fn draw_terminal_divider(&mut self, rect: QRect) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_terminal_divider called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_terminal_divider(frame.buffer_mut(), area.x, area.y, area.height, &theme);
-        // The primitive takes no `WidgetId` of its own (there is at
-        // most one divider on screen at a time), so register a fixed
-        // chrome id — otherwise this frame is indistinguishable from one
-        // where the no-op trait default silently dropped the call (C0
-        // paint smoke, contract §5b).
-        self.register_zone(WidgetId::new("chrome:terminal-divider"), rect);
-    }
-
     fn draw_solid_fill(&mut self, rect: QRect, color: Color) {
         let area = q_rect_to_ratatui(rect);
         let Some(frame) = self.current_frame_mut() else {
@@ -3391,8 +3351,7 @@ impl Backend for TuiBackend {
         };
         crate::tui::draw_solid_fill(frame.buffer_mut(), area, color);
         // Chrome-only paint (no text of its own) — only "observable"
-        // via a registered zone, mirroring `draw_terminal_divider`'s
-        // identical registration above. Callers that need a *semantic*
+        // via a registered zone. Callers that need a *semantic*
         // id for click routing (e.g. `AppShell`'s divider) register their
         // own zone on top of this one; this fixed id just proves the
         // frame isn't the no-op trait default silently dropping the call
@@ -3980,26 +3939,6 @@ impl Backend for TuiBackend {
         self.register_zone(scrollbar.id, scrollbar.track);
     }
 
-    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_drop_overlay called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_drop_overlay(frame.buffer_mut(), overlay, &theme);
-        // `DropOverlay` carries no `WidgetId` (there is at most one
-        // overlay active at a time), so register a fixed chrome id at
-        // whichever sub-rect it actually drew — otherwise this frame is
-        // indistinguishable from one where the no-op default silently
-        // dropped the call (C0 paint smoke, contract §5b).
-        if let Some(bounds) = overlay.highlight.or(overlay.insertion_bar) {
-            self.register_zone(WidgetId::new("chrome:drop-overlay"), bounds);
-        }
-    }
-
     fn draw_menu_bar(
         &mut self,
         rect: QRect,
@@ -4069,7 +4008,7 @@ impl Backend for TuiBackend {
         let layout = crate::tui::draw_split_tree(frame.buffer_mut(), area, tree, &theme);
         // Dividers only, and `SplitTree` (unlike `Split`) carries no
         // id of its own — register a fixed chrome id, same pattern as
-        // `draw_terminal_divider` / `draw_drop_overlay`.
+        // `draw_solid_fill` and the `DropOverlay` widget's host.
         self.register_zone(WidgetId::new("chrome:split-tree"), rect);
         layout
     }
@@ -4232,32 +4171,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_spinner_layout(spinner, area)
     }
 
-    fn draw_command_center(
-        &mut self,
-        rect: QRect,
-        cc: &crate::primitives::command_center::CommandCenter,
-    ) -> crate::primitives::command_center::CommandCenterLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_command_center called outside enter_frame_scope"
-            );
-            return self.command_center_layout(rect, cc);
-        };
-        crate::tui::draw_command_center(frame.buffer_mut(), area, cc, &theme)
-    }
-
-    fn command_center_layout(
-        &self,
-        rect: QRect,
-        cc: &crate::primitives::command_center::CommandCenter,
-    ) -> crate::primitives::command_center::CommandCenterLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_command_center_layout(cc, area)
-    }
-
     fn draw_chart(
         &mut self,
         rect: QRect,
@@ -4367,42 +4280,6 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::toolbar::ToolbarLayout {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_toolbar_layout_with_overflow(bar, area, layout_options, priorities)
-    }
-
-    fn draw_sidebar_panel_interactive(
-        &mut self,
-        rect: QRect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let (hovered_toolbar_id, pressed_toolbar_id) =
-            (interaction.hovered(), interaction.pressed());
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_sidebar_panel called outside enter_frame_scope"
-            );
-            return self.sidebar_panel_layout(rect, panel);
-        };
-        crate::tui::draw_sidebar_panel(
-            frame.buffer_mut(),
-            area,
-            panel,
-            &theme,
-            hovered_toolbar_id,
-            pressed_toolbar_id,
-        )
-    }
-
-    fn sidebar_panel_layout(
-        &self,
-        rect: QRect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_sidebar_panel_layout(panel, area)
     }
 
     fn draw_diff_view(
@@ -4653,10 +4530,7 @@ mod tests {
     #![allow(deprecated)]
     use super::*;
     use crate::backend::{DrawsPrimitives, MessageDialogOptions};
-    use crate::{
-        ListItem, ListView, Palette, PaletteItem, StyledSpan, StyledText, TerminalCursorShape,
-        WidgetId,
-    };
+    use crate::{ListItem, ListView, Palette, PaletteItem, StyledSpan, StyledText, WidgetId};
 
     /// Records every draw call so tests can assert what the trait
     /// boundary actually delivers.
@@ -4875,8 +4749,6 @@ mod tests {
         ) -> Vec<crate::ActivityBarRowHit> {
             Vec::new()
         }
-        fn draw_terminal(&mut self, _r: QRect, _t: &TerminalPrim) {}
-        fn draw_terminal_divider(&mut self, _r: QRect) {}
         fn draw_solid_fill(&mut self, _r: QRect, _c: Color) {}
         fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
         fn draw_command_line(&mut self, _r: QRect, _c: &CommandLine) {}
@@ -5076,7 +4948,6 @@ mod tests {
         }
 
         fn draw_scrollbar(&mut self, _r: QRect, _s: &crate::primitives::scrollbar::Scrollbar) {}
-        fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {}
 
         fn draw_menu_bar(
             &mut self,
@@ -5243,38 +5114,6 @@ mod tests {
             )
         }
 
-        fn draw_command_center(
-            &mut self,
-            _r: QRect,
-            cc: &crate::primitives::command_center::CommandCenter,
-        ) -> crate::primitives::command_center::CommandCenterLayout {
-            cc.layout(
-                crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-                crate::primitives::command_center::CommandCenterMeasure {
-                    arrow_width: 2.0,
-                    gap: 1.0,
-                    search_box_width: 0.0,
-                    height: 1.0,
-                },
-            )
-        }
-
-        fn command_center_layout(
-            &self,
-            _r: QRect,
-            cc: &crate::primitives::command_center::CommandCenter,
-        ) -> crate::primitives::command_center::CommandCenterLayout {
-            cc.layout(
-                crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-                crate::primitives::command_center::CommandCenterMeasure {
-                    arrow_width: 2.0,
-                    gap: 1.0,
-                    search_box_width: 0.0,
-                    height: 1.0,
-                },
-            )
-        }
-
         fn draw_chart(
             &mut self,
             _r: QRect,
@@ -5331,31 +5170,6 @@ mod tests {
             bar.layout(r.x, r.y, r.width, r.height, |_| {
                 crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
             })
-        }
-
-        fn draw_sidebar_panel_interactive(
-            &mut self,
-            r: QRect,
-            panel: &crate::primitives::sidebar_panel::SidebarPanel,
-            _interaction: &crate::interaction::InteractionState,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            panel.layout(
-                r,
-                crate::primitives::sidebar_panel::SidebarPanelMeasure::new(1.0, 0.0),
-                |_| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
-            )
-        }
-
-        fn sidebar_panel_layout(
-            &self,
-            r: QRect,
-            panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            panel.layout(
-                r,
-                crate::primitives::sidebar_panel::SidebarPanelMeasure::new(1.0, 0.0),
-                |_| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
-            )
         }
 
         fn draw_diff_view(
@@ -7805,71 +7619,6 @@ mod tests {
         assert_eq!(
             no_paint, painted,
             "board_layout must equal the exact layout draw_board painted with"
-        );
-    }
-
-    /// Issue #506 review fix: `terminal_layout`'s default body must
-    /// reserve the same scrollbar gutter width `draw_terminal` reserves
-    /// before iterating cells (`cell_area_w =
-    /// area.width.saturating_sub(sb_cols)`, `src/tui/terminal.rs`), or a
-    /// click on the gutter resolves to `TerminalHit::Cell` when the
-    /// paint path shows a scrollbar there, not a cell — "paint and
-    /// no-paint silently disagree" (rule 5).
-    #[test]
-    fn terminal_layout_reserves_scrollbar_gutter_matching_draw_terminal() {
-        let backend = TuiBackend::new();
-        let cell = crate::TerminalCell {
-            text: "x".to_string(),
-            fg: crate::Color::rgb(200, 200, 200),
-            bg: crate::Color::rgb(20, 20, 20),
-            bold: false,
-            italic: false,
-            underline: false,
-            dim: false,
-            selected: false,
-            is_cursor: false,
-            is_find_match: false,
-            is_find_active: false,
-            cursor_shape: TerminalCursorShape::Block,
-            cursor_blinking: false,
-        };
-        let term = TerminalPrim {
-            id: WidgetId::new("t"),
-            cells: vec![vec![cell; 20]; 5],
-            scrollbar: Some(crate::TerminalScrollbar {
-                total_lines: 100,
-                visible_lines: 5,
-                scroll_offset: 0,
-                inverted: false,
-                // `None` — draw_terminal's `sb_cols: … .unwrap_or(1)` fallback,
-                // which `terminal_scrollbar_default_width` must reproduce.
-                width: None,
-            }),
-        };
-        let rect = QRect::new(0.0, 0.0, 10.0, 5.0);
-        let area = q_rect_to_ratatui(rect);
-
-        let layout = backend.terminal_layout(rect, &term);
-        assert_eq!(
-            layout.grid_cols, 9,
-            "terminal_layout must reserve the 1-column scrollbar gutter (TUI's \
-             terminal_scrollbar_default_width), not the full unreduced rect.width"
-        );
-        assert_eq!(
-            layout.hit_test(9.0, 0.0),
-            crate::primitives::terminal::TerminalHit::Empty,
-            "a click at x=9 (the scrollbar gutter column) must not resolve to a grid cell"
-        );
-
-        // Confirm against the real paint path: column 9 is where
-        // draw_terminal paints the scrollbar track, not cell glyphs.
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_terminal(&mut buf, area, &term, &backend.current_theme);
-        assert_ne!(
-            buf[(area.x + 9, area.y)].symbol(),
-            "x",
-            "column 9 is draw_terminal's scrollbar gutter — it must not show painted cell \
-             content, matching terminal_layout's grid_cols=9 exclusion of that column"
         );
     }
 

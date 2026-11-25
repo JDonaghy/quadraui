@@ -204,6 +204,38 @@ fn paint_tab_bar(backend: &mut dyn Backend, rect: Rect, tab_bar: &TabBar) -> Tab
         })
 }
 
+/// Paints `panel`'s header through the widget contract and records it as
+/// a [`PaintedHit::Widget`] covering the header slot only, so a click on a
+/// header button routes through `SidebarPanel`'s own
+/// [`quadraui::Interactive`] impl while a click in the content area falls
+/// through to whatever the content subtree paints. Returns the content
+/// rect the subtree paints into.
+fn paint_sidebar_panel(
+    backend: &mut dyn Backend,
+    area: Rect,
+    panel: &quadraui::SidebarPanel,
+    hits: &mut Vec<PaintedHit>,
+) -> Rect {
+    let resolved = backend.draw_dyn(area, panel, &());
+    let Some(layout) = resolved.downcast_ref::<quadraui::SidebarPanelLayout>() else {
+        return area;
+    };
+    if let Some(header) = layout.toolbar_bounds {
+        // The recorded widget is re-laid-out against `header` alone at
+        // click time, so it carries the painted header height explicitly
+        // and the click layout's toolbar matches the painted one exactly.
+        hits.push(PaintedHit::Widget {
+            id: panel.id,
+            area: header,
+            widget: Rc::new(quadraui::SidebarPanel {
+                toolbar_height: Some(header.height),
+                ..panel.clone()
+            }),
+        });
+    }
+    layout.content_bounds
+}
+
 /// Allocates the next `lines`-tall band (scaled by `line_height`),
 /// starting at the mutable cursor `*y` and never exceeding `viewport`'s
 /// remaining height — the sequential top-to-bottom allocation [`draw_bands`]
@@ -526,8 +558,9 @@ fn text_display_region(
 /// shares for the Rust-side `TabBar` primitive) and recurses into the
 /// remaining area with the selected tab's content, so a tab group is just a
 /// `Split` whose panes are each a `Tabs`. A `SidebarPanel` paints its
-/// chrome (toolbar) via `Backend::draw_sidebar_panel_interactive` and
-/// recurses into `content_bounds` with its one content subtree; a
+/// chrome (toolbar) through the `SidebarPanel` widget contract
+/// ([`paint_sidebar_panel`]) and recurses into `content_bounds` with its
+/// one content subtree; a
 /// `SplitTree` paints its dividers via `Backend::draw_split_tree` and
 /// recurses into each resolved leaf rect. All three record a [`PaintedHit`]
 /// for their own chrome (divider / toolbar button), same as `Split`,
@@ -718,19 +751,11 @@ pub fn paint_layout_windowed(
             }
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
-            let layout = backend.draw_sidebar_panel_interactive(
-                area,
-                &sidebar_node.sidebar_panel,
-                &InteractionState::default(),
-            );
-            hits.push(PaintedHit::SidebarPanel {
-                id: sidebar_node.sidebar_panel.id,
-                layout: layout.clone(),
-                toolbar: sidebar_node.sidebar_panel.toolbar.clone(),
-            });
+            let panel = &sidebar_node.sidebar_panel;
+            let content_bounds = paint_sidebar_panel(backend, area, panel, hits);
             paint_layout_windowed(
                 backend,
-                layout.content_bounds,
+                content_bounds,
                 &sidebar_node.content,
                 hits,
                 chrome_interaction,

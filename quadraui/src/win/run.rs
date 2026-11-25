@@ -3396,13 +3396,14 @@ mod win32 {
     /// A live-window `WM_NCHITTEST` round trip. Every other test in
     /// this file proves the Rust-side half — `nc_hit_test`'s
     /// classification, and (in `win::backend`'s own test module) that
-    /// `draw_menu_bar`/`draw_status_bar_interactive`/
-    /// `draw_command_center` now call `register_zone` for their own
-    /// clickable bounds — but the regression only showed up once a
+    /// `draw_menu_bar`/`draw_status_bar_interactive` call
+    /// `register_zone` for their own clickable bounds, and that a
+    /// widget-contract command centre's painted sub-regions read as
+    /// client area — but the regression only showed up once a
     /// real `WM_NCHITTEST` round-trips through a real `wndproc` on a
     /// real `HWND`. This module creates a real top-level window, paints
     /// real menu-bar / status-bar / command-centre widgets into its
-    /// title-bar band via the real `WinBackend::draw_*` calls (so it
+    /// title-bar band via the real `WinBackend` paint calls (so it
     /// exercises the actual fix, not a hand-registered zone), then
     /// drives `WM_NCHITTEST` with `SendMessageW` at each widget's real
     /// resolved centre and at an empty strip of the band between them.
@@ -3415,7 +3416,7 @@ mod win32 {
 
         /// Real DIP centre points [`LiveWindowApp::render`] resolves each
         /// frame from the real `MenuBarLayout`/`StatusBarLayout`/
-        /// `CommandCenterLayout` the real `WinBackend` `draw_*` calls hand
+        /// `CommandCenterLayout` the real `WinBackend` paint calls hand
         /// back, plus the real `Viewport::scale` those bounds are in —
         /// shared with the probing thread so it computes real screen
         /// coordinates instead of guessing font-metric-dependent pixel
@@ -3486,7 +3487,11 @@ mod win32 {
                     search_label: "probe".into(),
                 };
                 let cc_rect = crate::event::Rect::new(160.0, 0.0, 240.0, band_height);
-                let cc_layout = backend.draw_command_center(cc_rect, &cc);
+                let cc_layout =
+                    crate::backend::DrawsPrimitives::draw_dyn(backend, cc_rect, &cc, &())
+                        .downcast_ref::<crate::CommandCenterLayout>()
+                        .cloned()
+                        .expect("a CommandCenter lays out as a CommandCenterLayout");
 
                 let file_item = menu_layout
                     .visible_items

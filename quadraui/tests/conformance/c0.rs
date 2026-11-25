@@ -33,23 +33,22 @@
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
     BadgeStatus, BoardCard, BoardColumn, BoardModel, CalendarDate, Canvas, CardBadge, Chart,
-    ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine,
-    CompletionItem, CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem,
-    ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration,
-    Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp,
-    DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
-    EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
-    Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
-    MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
-    PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction,
-    Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section,
-    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, SidebarPanel, Spinner,
-    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
-    StyledText, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextField, TextInput, Toast,
-    ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
-    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
-    ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
-    TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
+    ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandLine, CompletionItem,
+    CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
+    ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration, Dialog, DialogButton,
+    DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, Editor, EditorCursor,
+    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind,
+    FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit, ImageSource,
+    InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
+    MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette, PaletteItem, PaletteMode,
+    PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
+    RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
+    SectionSize, SelectionMode, Series, Side, Spinner, Split, SplitDirection, SplitTree,
+    StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TextDisplay, TextDisplayLine,
+    TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton,
+    ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities,
+    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
+    TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -446,14 +445,6 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_terminal_divider",
-        needle: None,
-        paint: |b, area| {
-            let lh = b.line_height();
-            b.draw_terminal_divider(Rect::new(0.0, lh * 2.0, area.width, lh));
-        },
-    },
-    Case {
         method: "draw_solid_fill",
         needle: None,
         paint: |b, area| {
@@ -473,21 +464,6 @@ pub const CASES: &[Case] = &[
             let cw = b.char_width();
             let lh = b.line_height();
             b.draw_focus_ring(Rect::new(cw * 2.0, lh * 2.0, cw * 20.0, lh * 3.0));
-            let _ = area;
-        },
-    },
-    Case {
-        method: "draw_drop_overlay",
-        needle: None,
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let overlay = DropOverlay {
-                highlight: Some(Rect::new(cw * 2.0, lh * 2.0, cw * 20.0, lh * 6.0)),
-                insertion_bar: None,
-                ghost_position: None,
-            };
-            b.draw_drop_overlay(&overlay);
             let _ = area;
         },
     },
@@ -771,38 +747,6 @@ pub const CASES: &[Case] = &[
                 None,
                 &style,
             );
-        },
-    },
-    Case {
-        method: "draw_terminal",
-        // GTK's rasteriser paints cell glyphs via a raw
-        // `pangocairo::functions::show_layout` call, bypassing the
-        // `painted_text` tracking every other primitive's rasteriser routes
-        // through — so an exact-text needle cannot be asserted across
-        // backends. Observability instead comes from the zone `draw_terminal`
-        // now registers (TUI's buffer scan sees the glyphs directly either way).
-        needle: None,
-        paint: |b, area| {
-            let cell = |ch: char| TerminalCell {
-                text: ch.to_string(),
-                fg: Color::rgb(220, 220, 220),
-                bg: Color::rgb(30, 30, 30),
-                bold: false,
-                italic: false,
-                underline: false,
-                dim: false,
-                selected: false,
-                is_cursor: false,
-                cursor_shape: quadraui::TerminalCursorShape::Block,
-                cursor_blinking: false,
-                is_find_match: false,
-                is_find_active: false,
-            };
-            let row: Vec<TerminalCell> = "c0term".chars().map(cell).collect();
-            let mut term = Terminal::default();
-            term.id = id("terminal");
-            term.cells = vec![row];
-            b.draw_terminal(area, &term);
         },
     },
     Case {
@@ -1266,18 +1210,6 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_command_center",
-        needle: Some("c0ccnt"),
-        paint: |b, area| {
-            let mut cc = CommandCenter::default();
-            cc.id = id("command-center");
-            cc.back_enabled = true;
-            cc.forward_enabled = true;
-            cc.search_label = "c0ccnt".to_string();
-            let _ = b.draw_command_center(area, &cc);
-        },
-    },
-    Case {
         method: "draw_toolbar_interactive",
         needle: Some("c0tbar"),
         paint: |b, area| {
@@ -1362,29 +1294,6 @@ pub const CASES: &[Case] = &[
                 ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap),
                 &ToolbarOverflowPriorities::new(),
             );
-        },
-    },
-    Case {
-        method: "draw_sidebar_panel_interactive",
-        needle: Some("c0sbpn"),
-        paint: |b, area| {
-            let toolbar =
-                Toolbar::new(id("sidebar-toolbar")).with_buttons(vec![ToolbarButton::Action {
-                    spec: None,
-                    id: id("sidebar-toolbar-button"),
-                    label: "c0sbpn".to_string(),
-                    icon: None,
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                }]);
-            let panel = SidebarPanel {
-                id: id("sidebar-panel"),
-                toolbar: Some(toolbar),
-                toolbar_height: None,
-            };
-            let _ = b.draw_sidebar_panel_interactive(area, &panel, &InteractionState::new());
         },
     },
     Case {

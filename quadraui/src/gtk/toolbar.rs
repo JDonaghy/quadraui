@@ -31,7 +31,7 @@ use crate::types::WidgetId;
 /// Pango type — mirrors `macos::toolbar`'s / `win::toolbar`'s twin
 /// adapters.
 ///
-/// `pub(crate)` so `gtk::sidebar_panel`'s embedded toolbar header can
+/// `pub(crate)` so any embedded toolbar header can
 /// build the exact same adapter for its own `measure_button` calls,
 /// guaranteeing paint and hit-test agree on item positions everywhere a
 /// `Toolbar` appears — with no separate per-caller measurer function.

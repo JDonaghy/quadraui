@@ -10,12 +10,11 @@
 //!
 //! Not covered here, deliberately:
 //!
-//! * **`draw_terminal`** — the cell-grid rasteriser paints one Pango run
-//!   *per cell*, so routing it through the recorder would push thousands
-//!   of single-character entries into the map per frame. It needs the
-//!   cheaper row-coalescing path; see `src/gtk/painted_text.rs`.
+//! * **`Terminal`** — the cell-grid painter paints one Pango run *per
+//!   cell*, so a text needle spanning cells is never one recorded run. It
+//!   needs the cheaper row-coalescing path; see `src/gtk/painted_text.rs`.
 //! * **`draw_split` / `draw_split_tree` / `draw_scrollbar` /
-//!   `draw_drop_overlay`** — these paint no text at all (dividers,
+//!   `DropOverlay`** — these paint no text at all (dividers,
 //!   tracks, tint rects), so there is nothing to record. The labels a
 //!   `Split` appears to have belong to whatever the app paints into
 //!   `first_bounds` / `second_bounds`.
@@ -435,8 +434,8 @@ fn sidebar_panel_app_paints_locatable_toolbar_and_list_rows() {
     assert_locatable(
         &driver,
         &[
-            ("draw_sidebar_panel", "Filter (f)"),
-            ("draw_sidebar_panel", "Clear (c)"),
+            ("draw_dyn(SidebarPanel)", "Filter (f)"),
+            ("draw_dyn(SidebarPanel)", "Clear (c)"),
             ("draw_list", "Review PR #257"),
         ],
     );
@@ -466,16 +465,14 @@ fn indicators_app_paints_locatable_spinner_and_progress_labels() {
 
 // ─── Overlays with no example-app call site (in-test fixtures) ─────────────
 //
-// `draw_tooltip` / `draw_command_center` / `draw_completions` /
+// `draw_tooltip` / `CommandCenter` / `draw_completions` /
 // `draw_find_replace` aren't reached by *any* example app's `AppLogic`
 // today — grepping `examples/common/*.rs` for `Tooltip`, `CommandCenter`,
 // `Completions`, and `FindReplacePanel` turns up zero constructions, so
 // there is no "through a real example app" fixture to route through yet.
 // These four mirror `gtk::testing::tests::StatusBarApp`'s pattern instead:
 // a minimal `AppLogic` that builds the primitive directly and hands it to
-// the backend, sourced from the equivalent fixtures already committed for
-// the macOS backend (`src/macos/{tooltip,command_center,completions,
-// find_replace}.rs`).
+// the backend.
 
 struct TooltipFixtureApp;
 
@@ -513,11 +510,18 @@ impl AppLogic for CommandCenterFixtureApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut cc = CommandCenter::default();
-        cc.id = WidgetId::new("cc");
-        cc.back_enabled = true;
-        cc.search_label = "my-project".into();
-        backend.draw_command_center(Rect::new(0.0, 0.0, W as f32, 32.0), &cc);
+        let cc = CommandCenter {
+            id: WidgetId::new("cc"),
+            back_enabled: true,
+            search_label: "my-project".into(),
+            ..CommandCenter::default()
+        };
+        let _ = quadraui::DrawsPrimitives::draw_dyn(
+            backend,
+            Rect::new(0.0, 0.0, W as f32, 32.0),
+            &cc,
+            &(),
+        );
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -528,7 +532,7 @@ impl AppLogic for CommandCenterFixtureApp {
 #[test]
 fn command_center_fixture_paints_locatable_search_label() {
     let driver = GtkDriver::new(CommandCenterFixtureApp, W, H);
-    assert_locatable(&driver, &[("draw_command_center", "my-project")]);
+    assert_locatable(&driver, &[("CommandCenter", "my-project")]);
 }
 
 struct CompletionsFixtureApp;

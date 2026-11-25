@@ -52,8 +52,6 @@ mod cg;
 #[doc(hidden)]
 pub mod chart;
 #[doc(hidden)]
-pub mod command_center;
-#[doc(hidden)]
 pub mod command_line;
 #[doc(hidden)]
 pub mod completions;
@@ -67,8 +65,6 @@ pub mod date_picker;
 pub mod dialog;
 #[doc(hidden)]
 pub mod diff_view;
-#[doc(hidden)]
-pub mod drop_overlay;
 #[doc(hidden)]
 pub mod editor;
 pub mod events;
@@ -103,8 +99,6 @@ pub mod scrollbar;
 pub mod services;
 pub mod shell_runner;
 #[doc(hidden)]
-pub mod sidebar_panel;
-#[doc(hidden)]
 pub mod spinner;
 #[doc(hidden)]
 pub mod split;
@@ -115,8 +109,6 @@ pub mod status_bar;
 // Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
 #[doc(hidden)]
-#[doc(hidden)]
-pub mod terminal;
 pub mod testing;
 pub mod text;
 #[doc(hidden)]
@@ -160,8 +152,6 @@ pub use board::mac_board_layout;
 #[doc(hidden)]
 pub use chart::mac_chart_layout;
 #[doc(hidden)]
-pub use command_center::{draw_command_center, mac_command_center_layout};
-#[doc(hidden)]
 pub use command_line::draw_command_line;
 #[doc(hidden)]
 pub use completions::draw_completions;
@@ -198,8 +188,6 @@ pub use run::run_with;
 pub use run::{run, MacRunner, RunConfig, StepOutcome};
 #[doc(hidden)]
 pub use services::MacPlatformServices;
-#[doc(hidden)]
-pub use sidebar_panel::mac_sidebar_panel_layout;
 #[doc(hidden)]
 pub use spinner::mac_spinner_layout;
 #[doc(hidden)]

@@ -102,7 +102,11 @@ def test_terminal_leaf_renders_cell_text():
     assert app.screen_contains("$")
 
 
-def test_clicking_a_terminal_focuses_it_and_routes_the_hit():
+def test_clicking_a_terminal_focuses_it_and_starts_a_selection():
+    # `"terminal"` is a `WIDGET_KINDS` entry: the click reaches
+    # `Terminal`'s own `Interactive` impl, which takes focus and resolves
+    # the press on a grid cell to a `SelectStart` event in place of the
+    # raw `MouseDown`.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {"terminal": {"id": "terminal:shell", "cells": [[_terminal_cell("$")]]}}
@@ -113,8 +117,9 @@ def test_clicking_a_terminal_focuses_it_and_routes_the_hit():
 
     assert len(received) == 2
     assert received[0]["FocusChanged"] == "terminal:shell"
-    assert received[1]["MouseDown"]["widget"] == "terminal:shell"
-    assert received[1]["hit"] == {"kind": "extra_body"}
+    widget_id, terminal_event = received[1]["Terminal"]
+    assert widget_id == "terminal:shell"
+    assert "SelectStart" in terminal_event
 
 
 def test_canvas_leaf_decodes_and_paints_without_error():

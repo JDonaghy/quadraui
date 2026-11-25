@@ -1228,8 +1228,9 @@ pub(crate) fn with_translation<F: FnOnce() -> R, R>(
 /// Direct2D has no per-draw-call scale parameter (unlike Cairo's
 /// `cr.scale` or Core Text's text-matrix `a` component, see
 /// [`crate::macos::text::draw_text_scaled_x`]) — only a render-target-wide
-/// transform via `SetTransform`. [`crate::win::terminal::draw_terminal_cells`]
-/// uses this to stretch or shrink a double-width glyph (CJK / emoji) so it
+/// transform via `SetTransform`. The terminal's shared cell painter (through
+/// `WinBackend`'s `surface_draw_text_run_styled`) uses this to stretch or
+/// shrink a double-width glyph (CJK / emoji) so it
 /// fills its two-column cell box exactly, using the scale factor from
 /// [`crate::terminal_style::wide_glyph_x_scale`] — the same decision GTK
 /// and macOS apply.

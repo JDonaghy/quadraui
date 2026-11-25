@@ -186,6 +186,9 @@ pub struct LayoutCtx<'a> {
     /// [`Self::with_style`] and [`Self::style`]. `None` when no backend is
     /// in reach.
     style: Option<&'a crate::Style>,
+    /// The calling backend's editor-font row height — see
+    /// [`Self::with_editor_line_height`] and [`Self::editor_line_height`].
+    editor_line_height: Option<f32>,
 }
 
 /// Prints the three scalar metrics plus whether a text measurer is
@@ -233,6 +236,7 @@ impl LayoutCtx<'static> {
             nerd_fonts_enabled,
             measurer: None,
             style: None,
+            editor_line_height: None,
         }
     }
 }
@@ -268,6 +272,25 @@ impl<'a> LayoutCtx<'a> {
             style: Some(style),
             ..self
         }
+    }
+
+    /// This ctx with `line_height` as the editor font's row height — the
+    /// row pitch an editor-class primitive (`crate::font_role::EditorClassPrimitive`)
+    /// lays its rows out on, which [`Self::line_height`] (the chrome row)
+    /// does not describe once the two fonts differ.
+    pub fn with_editor_line_height(self, line_height: f32) -> Self {
+        Self {
+            editor_line_height: Some(line_height),
+            ..self
+        }
+    }
+
+    /// The editor font's row height attached with
+    /// [`Self::with_editor_line_height`] — [`crate::Backend::line_height`]
+    /// on a ctx [`crate::DrawsPrimitives`] built — else
+    /// [`Self::line_height`].
+    pub fn editor_line_height(&self) -> f32 {
+        self.editor_line_height.unwrap_or(self.line_height)
     }
 
     /// The style attached with [`Self::with_style`], else

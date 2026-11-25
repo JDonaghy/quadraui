@@ -116,7 +116,6 @@ pub mod backend;
 mod board;
 mod chart;
 mod combo_box;
-mod command_center;
 mod command_line;
 mod completions;
 mod context_menu;
@@ -124,7 +123,6 @@ mod data_table;
 mod date_picker;
 mod dialog;
 mod diff_view;
-mod drop_overlay;
 mod editor;
 pub mod events;
 mod form;
@@ -153,13 +151,11 @@ pub mod scroll_view;
 mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-mod sidebar_panel;
 mod spinner;
 mod split;
 mod split_tree;
 mod status_bar;
 mod surface;
-mod terminal;
 pub mod testing;
 mod text_display;
 mod text_input;
@@ -191,8 +187,6 @@ pub use backend::GtkBackend;
 pub use board::gtk_board_layout;
 #[doc(hidden)]
 pub use chart::gtk_chart_layout;
-#[doc(hidden)]
-pub use command_center::{draw_command_center, gtk_command_center_layout};
 #[doc(hidden)]
 pub use completions::draw_completions;
 #[doc(hidden)]
@@ -242,8 +236,6 @@ pub use rich_text_popup::{
 #[doc(hidden)]
 pub use run::run_with;
 pub use run::{app_id_is_valid, display_available, run, GtkRunner, RunConfig, StepOutcome};
-#[doc(hidden)]
-pub use sidebar_panel::gtk_sidebar_panel_layout;
 #[doc(hidden)]
 pub use spinner::{draw_spinner, gtk_spinner_layout};
 #[doc(hidden)]

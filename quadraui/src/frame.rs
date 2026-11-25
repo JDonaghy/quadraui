@@ -39,10 +39,9 @@
 //! ## `Surface` coverage
 //!
 //! Every primitive that has a `Backend::draw_*` method has a matching
-//! [`Surface`] variant (`Board`, `CommandCenter`, `DiffView`,
-//! `DropOverlay`, `Image`, `MessageList`, `Minimap`, `PipelineView`,
-//! `Progress`, `SidebarPanel`, `Spinner`, `SplitTree`, `TextField`,
-//! `TextInput`, `Toolbar` included). `Backend::draw_<name>` stays reachable directly
+//! [`Surface`] variant (`Board`, `DiffView`, `Image`, `MessageList`,
+//! `Minimap`, `PipelineView`, `Progress`, `Spinner`, `SplitTree`,
+//! `TextField`, `TextInput`, `Toolbar` included). `Backend::draw_<name>` stays reachable directly
 //! for the reasons above; there is no primitive that is categorically
 //! unreachable through the declarative path.
 //!
@@ -88,10 +87,9 @@
 //! [`Surface`] is owned-but-not-serde and takes any primitive quadraui
 //! can paint, while [`OwnedFrame`] is the serializable snapshot and is
 //! therefore limited to primitives that are themselves `serde`-capable.
-//! [`DropOverlay`] and [`FindReplacePanel`] are not, which is why
-//! [`OwnedContent`] has the contentless
-//! [`OwnedContent::DropOverlay`]/[`OwnedContent::FindReplace`]
-//! fallbacks (and [`OwnedContent::Opaque`] as the generic one). Reach
+//! [`FindReplacePanel`] is not, which is why [`OwnedContent`] has the
+//! contentless [`OwnedContent::FindReplace`] fallback (and
+//! [`OwnedContent::Opaque`] as the generic one). Reach
 //! for `Surface`/`ScreenLayout` to describe and paint a frame; reach
 //! for `OwnedFrame` when that description has to be serialized.
 //!
@@ -218,7 +216,6 @@ use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::DataTable;
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::diff_view::DiffView;
-use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::float::{Float, FloatLayout};
@@ -285,10 +282,6 @@ pub enum Surface {
     CommandLine {
         rect: Rect,
         cmd: CommandLine,
-    },
-    Terminal {
-        rect: Rect,
-        term: Terminal,
     },
     TextDisplay {
         rect: Rect,
@@ -398,21 +391,9 @@ pub enum Surface {
         rect: Rect,
         model: BoardModel,
     },
-    CommandCenter {
-        rect: Rect,
-        cc: CommandCenter,
-    },
     DiffView {
         rect: Rect,
         view: DiffView,
-    },
-    /// Tab-drag highlight overlay. Unlike every other
-    /// transient-overlay variant above (`Tooltip`, `ContextMenu`,
-    /// `Dialog`, `Completions`, `RichTextPopup`), there is no `rect`
-    /// or `*Layout.bounds` to carry — [`DropOverlay::bounds`] derives
-    /// the zone rect from `overlay` itself.
-    DropOverlay {
-        overlay: DropOverlay,
     },
     Image {
         rect: Rect,
@@ -434,17 +415,6 @@ pub enum Surface {
         rect: Rect,
         bar: ProgressBar,
     },
-    /// Mirrors [`Surface::StatusBar`]'s `hovered`/`pressed` shape: a
-    /// `Surface` carries the two optional ids rather than a whole
-    /// [`crate::interaction::InteractionState`], and
-    /// [`ScreenLayout::draw`] builds the `WidgetId`-keyed store from
-    /// them at the call boundary.
-    SidebarPanel {
-        rect: Rect,
-        panel: SidebarPanel,
-        hovered: Option<WidgetId>,
-        pressed: Option<WidgetId>,
-    },
     Spinner {
         rect: Rect,
         spinner: Spinner,
@@ -464,8 +434,11 @@ pub enum Surface {
         rect: Rect,
         tf: TextField,
     },
-    /// See [`Surface::SidebarPanel`]'s doc for why `hovered`/`pressed`
-    /// are a pair of optional ids rather than an `InteractionState`.
+    /// Mirrors [`Surface::StatusBar`]'s `hovered`/`pressed` shape: a
+    /// `Surface` carries the two optional ids rather than a whole
+    /// [`crate::interaction::InteractionState`], and
+    /// [`ScreenLayout::draw`] builds the `WidgetId`-keyed store from
+    /// them at the call boundary.
     Toolbar {
         rect: Rect,
         bar: Toolbar,
@@ -518,9 +491,6 @@ pub enum FrameZone {
         idx: usize,
     },
     CommandLine {
-        idx: usize,
-    },
-    Terminal {
         idx: usize,
     },
     TextDisplay {
@@ -595,13 +565,7 @@ pub enum FrameZone {
     Board {
         idx: usize,
     },
-    CommandCenter {
-        idx: usize,
-    },
     DiffView {
-        idx: usize,
-    },
-    DropOverlay {
         idx: usize,
     },
     Image {
@@ -617,9 +581,6 @@ pub enum FrameZone {
         idx: usize,
     },
     Progress {
-        idx: usize,
-    },
-    SidebarPanel {
         idx: usize,
     },
     Spinner {
@@ -891,9 +852,6 @@ impl ScreenLayout {
                 Surface::CommandLine { rect, cmd } => {
                     backend.draw_command_line(*rect, cmd);
                 }
-                Surface::Terminal { rect, term } => {
-                    backend.draw_terminal(*rect, term);
-                }
                 Surface::TextDisplay { rect, td } => {
                     backend.draw_text_display(*rect, td);
                 }
@@ -975,14 +933,8 @@ impl ScreenLayout {
                 Surface::Board { rect, model } => {
                     backend.draw_board(*rect, model);
                 }
-                Surface::CommandCenter { rect, cc } => {
-                    backend.draw_command_center(*rect, cc);
-                }
                 Surface::DiffView { rect, view } => {
                     backend.draw_diff_view(*rect, view);
-                }
-                Surface::DropOverlay { overlay } => {
-                    backend.draw_drop_overlay(overlay);
                 }
                 Surface::Image { rect, image } => {
                     backend.draw_image(*rect, image);
@@ -998,16 +950,6 @@ impl ScreenLayout {
                 }
                 Surface::Progress { rect, bar } => {
                     backend.draw_progress(*rect, bar);
-                }
-                Surface::SidebarPanel {
-                    rect,
-                    panel,
-                    hovered,
-                    pressed,
-                } => {
-                    let interaction =
-                        crate::interaction::InteractionState::from_parts(*hovered, *pressed);
-                    backend.draw_sidebar_panel_interactive(*rect, panel, &interaction);
                 }
                 Surface::Spinner { rect, spinner } => {
                     backend.draw_spinner(*rect, spinner);
@@ -1076,7 +1018,7 @@ impl ScreenLayout {
     /// [`WidgetId`] participate. Excluded, deliberately:
     /// - Transient overlays (`Tooltip`, `ContextMenu`, `Dialog`,
     ///   `Float`, `Completions`, `RichTextPopup`, `FindReplace`,
-    ///   `Toast`, `DropOverlay`) — these already own their own internal
+    ///   `Toast`) — these already own their own internal
     ///   focus/dismiss handling while open, and being modal, nothing
     ///   behind them should be Tab-reachable anyway. `Float` in
     ///   particular already has its own, finer-grained focus story —
@@ -1111,7 +1053,6 @@ impl ScreenLayout {
                 Surface::StatusBar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::ActivityBar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::CommandLine { rect, cmd } => vec![(cmd.id, *rect)],
-                Surface::Terminal { rect, term } => vec![(term.id, *rect)],
                 Surface::TextDisplay { rect, td } => vec![(td.id, *rect)],
                 Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
                 Surface::Tree { rect, tree } => vec![(tree.id, *rect)],
@@ -1123,13 +1064,11 @@ impl ScreenLayout {
                 Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
                 Surface::Chart { rect, chart, .. } => vec![(chart.id, *rect)],
                 Surface::Board { rect, model } => vec![(model.id, *rect)],
-                Surface::CommandCenter { rect, cc } => vec![(cc.id, *rect)],
                 Surface::DiffView { rect, view } => vec![(view.id, *rect)],
                 Surface::MessageList { rect, list } => vec![(list.id, *rect)],
                 Surface::Minimap { rect, minimap } => vec![(minimap.id, *rect)],
                 Surface::PipelineView { rect, view } => vec![(view.id, *rect)],
                 Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
-                Surface::SidebarPanel { rect, panel, .. } => vec![(panel.id, *rect)],
                 Surface::TextInput { rect, ti } => vec![(ti.id, *rect)],
                 Surface::TextField { rect, tf } => vec![(tf.id, *rect)],
                 Surface::Toolbar { rect, bar, .. } => vec![(bar.id, *rect)],
@@ -1146,7 +1085,6 @@ impl ScreenLayout {
                 | Surface::Completions { .. }
                 | Surface::FindReplace { .. }
                 | Surface::RichTextPopup { .. }
-                | Surface::DropOverlay { .. }
                 | Surface::SplitTree { .. }
                 | Surface::Toast { .. } => Vec::new(),
             })
@@ -1193,7 +1131,6 @@ impl ScreenLayout {
             Surface::StatusBar { rect, .. } => (*rect, FrameZone::StatusBar { idx }),
             Surface::ActivityBar { rect, .. } => (*rect, FrameZone::ActivityBar { idx }),
             Surface::CommandLine { rect, .. } => (*rect, FrameZone::CommandLine { idx }),
-            Surface::Terminal { rect, .. } => (*rect, FrameZone::Terminal { idx }),
             Surface::TextDisplay { rect, .. } => (*rect, FrameZone::TextDisplay { idx }),
             Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
             Surface::Tree { rect, .. } => (*rect, FrameZone::Tree { idx }),
@@ -1224,15 +1161,12 @@ impl ScreenLayout {
             Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
             Surface::Canvas { rect, .. } => (*rect, FrameZone::Canvas { idx }),
             Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
-            Surface::CommandCenter { rect, .. } => (*rect, FrameZone::CommandCenter { idx }),
             Surface::DiffView { rect, .. } => (*rect, FrameZone::DiffView { idx }),
-            Surface::DropOverlay { overlay } => (overlay.bounds(), FrameZone::DropOverlay { idx }),
             Surface::Image { rect, .. } => (*rect, FrameZone::Image { idx }),
             Surface::MessageList { rect, .. } => (*rect, FrameZone::MessageList { idx }),
             Surface::Minimap { rect, .. } => (*rect, FrameZone::Minimap { idx }),
             Surface::PipelineView { rect, .. } => (*rect, FrameZone::PipelineView { idx }),
             Surface::Progress { rect, .. } => (*rect, FrameZone::Progress { idx }),
-            Surface::SidebarPanel { rect, .. } => (*rect, FrameZone::SidebarPanel { idx }),
             Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
             Surface::SplitTree { rect, .. } => (*rect, FrameZone::SplitTree { idx }),
             Surface::TextInput { rect, .. } => (*rect, FrameZone::TextInput { idx }),
@@ -1285,10 +1219,10 @@ impl Default for ScreenLayout {
 /// `#[non_exhaustive]` for the same reason as [`Surface`] and
 /// [`FrameZone`]: a new primitive adds a new variant here additively.
 ///
-/// [`Self::DropOverlay`] and [`Self::FindReplace`] are the fallbacks for
-/// the two [`Surface`] variants whose primitive does not (yet) implement
-/// `serde::{Serialize, Deserialize}` ([`DropOverlay`], [`FindReplacePanel`]
-/// respectively) — the node still gets a rect and its own distinct
+/// [`Self::FindReplace`] is the fallback for the [`Surface`] variant
+/// whose primitive does not (yet) implement
+/// `serde::{Serialize, Deserialize}` ([`FindReplacePanel`]) — the node
+/// still gets a rect and its own distinct
 /// [`FrameZone`] tag via [`OwnedFrame::hit_map`], but carries no content
 /// to redraw or inspect. [`Self::Opaque`] is the generic fallback for any
 /// future primitive that likewise can't be captured yet.
@@ -1307,6 +1241,9 @@ pub enum OwnedContent {
     StatusBar(StatusBar),
     ActivityBar(ActivityBar),
     CommandLine(CommandLine),
+    /// Captured from a [`Terminal`] reached through [`Surface::Widget`] via
+    /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the only
+    /// way a `Terminal` reaches a frame.
     Terminal(Terminal),
     TextDisplay(TextDisplay),
     MultiSectionView(MultiSectionView),
@@ -1344,6 +1281,10 @@ pub enum OwnedContent {
     Chart(Chart),
     Canvas(Canvas),
     Board(BoardModel),
+    /// Captured from a [`CommandCenter`] reached through
+    /// [`Surface::Widget`] via [`DynWidget::capture`] — maps to
+    /// [`FrameZone::Widget`], the only way a `CommandCenter` reaches a
+    /// frame.
     CommandCenter(CommandCenter),
     DiffView(DiffView),
     Image(Image),
@@ -1351,6 +1292,8 @@ pub enum OwnedContent {
     Minimap(Minimap),
     PipelineView(PipelineView),
     Progress(ProgressBar),
+    /// Captured from a [`SidebarPanel`] reached through [`Surface::Widget`]
+    /// via [`DynWidget::capture`] — maps to [`FrameZone::Widget`].
     SidebarPanel(SidebarPanel),
     Spinner(Spinner),
     SplitTree(SplitTree),
@@ -1369,8 +1312,6 @@ pub enum OwnedContent {
     /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the only
     /// way a standalone `Button` ever reaches a frame.
     Button(Button),
-    /// No content captured — the source [`Surface`] was [`Surface::DropOverlay`].
-    DropOverlay,
     /// No content captured — the source [`Surface`] was [`Surface::FindReplace`].
     FindReplace,
     /// No content captured — a generic fallback for any future
@@ -1389,8 +1330,8 @@ impl OwnedContent {
     ///
     /// The six overlay variants that need a non-serializable `*Layout`
     /// companion to redraw (`Tooltip`, `ContextMenu`, `Dialog`, `Float`,
-    /// `Completions`, `RichTextPopup`), plus [`Self::DropOverlay`],
-    /// [`Self::FindReplace`] and [`Self::Opaque`], are no-ops: their
+    /// `Completions`, `RichTextPopup`), plus [`Self::FindReplace`] and
+    /// [`Self::Opaque`], are no-ops: their
     /// hit-test zone still round-trips, but repainting them needs either
     /// a layout or primitive content this owned snapshot does not keep.
     fn draw(&self, rect: Rect, backend: &mut dyn Backend) {
@@ -1418,7 +1359,9 @@ impl OwnedContent {
                 );
             }
             OwnedContent::CommandLine(cmd) => backend.draw_command_line(rect, cmd),
-            OwnedContent::Terminal(term) => backend.draw_terminal(rect, term),
+            OwnedContent::Terminal(term) => {
+                backend.draw_primitive(rect, term);
+            }
             OwnedContent::TextDisplay(td) => backend.draw_text_display(rect, td),
             OwnedContent::MultiSectionView(view) => backend.draw_multi_section_view(rect, view),
             #[allow(deprecated)]
@@ -1487,7 +1430,10 @@ impl OwnedContent {
                 backend.draw_board(rect, model);
             }
             OwnedContent::CommandCenter(cc) => {
-                backend.draw_command_center(rect, cc);
+                // `impl Primitive for CommandCenter` is unconditional, like
+                // `TabBar`'s above, so this arm needs no backend-feature
+                // guard.
+                backend.draw_primitive(rect, cc);
             }
             OwnedContent::DiffView(view) => {
                 backend.draw_diff_view(rect, view);
@@ -1506,8 +1452,9 @@ impl OwnedContent {
                 backend.draw_progress(rect, bar);
             }
             OwnedContent::SidebarPanel(panel) => {
-                let interaction = crate::interaction::InteractionState::from_parts(None, None);
-                backend.draw_sidebar_panel_interactive(rect, panel, &interaction);
+                // `impl Primitive for SidebarPanel` is unconditional, like
+                // `TabBar`'s above.
+                backend.draw_primitive(rect, panel);
             }
             OwnedContent::Spinner(spinner) => {
                 backend.draw_spinner(rect, spinner);
@@ -1552,7 +1499,6 @@ impl OwnedContent {
             | OwnedContent::Float(_)
             | OwnedContent::Completions(_)
             | OwnedContent::RichTextPopup(_)
-            | OwnedContent::DropOverlay
             | OwnedContent::FindReplace
             | OwnedContent::Opaque => {}
         }
@@ -1573,7 +1519,10 @@ impl OwnedContent {
             OwnedContent::StatusBar(_) => FrameZone::StatusBar { idx },
             OwnedContent::ActivityBar(_) => FrameZone::ActivityBar { idx },
             OwnedContent::CommandLine(_) => FrameZone::CommandLine { idx },
-            OwnedContent::Terminal(_) => FrameZone::Terminal { idx },
+            OwnedContent::Terminal(term) => FrameZone::Widget {
+                idx,
+                id: Some(term.id),
+            },
             OwnedContent::TextDisplay(_) => FrameZone::TextDisplay { idx },
             OwnedContent::MultiSectionView(_) => FrameZone::MultiSectionView { idx },
             OwnedContent::Tree(_) => FrameZone::Tree { idx },
@@ -1602,14 +1551,20 @@ impl OwnedContent {
             OwnedContent::Chart(_) => FrameZone::Chart { idx },
             OwnedContent::Canvas(_) => FrameZone::Canvas { idx },
             OwnedContent::Board(_) => FrameZone::Board { idx },
-            OwnedContent::CommandCenter(_) => FrameZone::CommandCenter { idx },
+            OwnedContent::CommandCenter(cc) => FrameZone::Widget {
+                idx,
+                id: Some(cc.id),
+            },
             OwnedContent::DiffView(_) => FrameZone::DiffView { idx },
             OwnedContent::Image(_) => FrameZone::Image { idx },
             OwnedContent::MessageList(_) => FrameZone::MessageList { idx },
             OwnedContent::Minimap(_) => FrameZone::Minimap { idx },
             OwnedContent::PipelineView(_) => FrameZone::PipelineView { idx },
             OwnedContent::Progress(_) => FrameZone::Progress { idx },
-            OwnedContent::SidebarPanel(_) => FrameZone::SidebarPanel { idx },
+            OwnedContent::SidebarPanel(panel) => FrameZone::Widget {
+                idx,
+                id: Some(panel.id),
+            },
             OwnedContent::Spinner(_) => FrameZone::Spinner { idx },
             OwnedContent::SplitTree(_) => FrameZone::SplitTree { idx },
             OwnedContent::TextInput(_) => FrameZone::TextInput { idx },
@@ -1627,7 +1582,6 @@ impl OwnedContent {
                 idx,
                 id: Some(button.id),
             },
-            OwnedContent::DropOverlay => FrameZone::DropOverlay { idx },
             OwnedContent::FindReplace => FrameZone::FindReplace { idx },
             OwnedContent::Opaque => FrameZone::Empty,
         }
@@ -1645,8 +1599,7 @@ pub struct OwnedNode {
     /// Bounding rect this node paints/hit-tests at — the same rect
     /// [`ScreenLayout::zone_for`] would have used for the source
     /// [`Surface`] (plain `rect` for most variants, `layout.bounds` for
-    /// the overlay variants that carry one, [`DropOverlay::bounds`] for
-    /// [`Surface::DropOverlay`]).
+    /// the overlay variants that carry one).
     pub rect: Rect,
     /// This node's owning widget, when the source [`Surface`] variant
     /// carries one — mirrors [`ScreenLayout::tab_stops`]'s inclusion
@@ -1767,11 +1720,20 @@ impl OwnedFrame {
             .enumerate()
             .map(|(idx, surface)| {
                 let (rect, widget_id, content) = capture_surface(surface);
+                // A widget whose content cannot be captured still describes
+                // itself to the accessibility tree through its own
+                // `A11yPrimitive` impl.
+                let a11y = match (surface, &content) {
+                    (Surface::Widget { widget, .. }, OwnedContent::Opaque) => {
+                        Some(widget.a11y_info())
+                    }
+                    _ => None,
+                };
                 OwnedNode {
                     idx,
                     rect,
                     widget_id,
-                    a11y: None,
+                    a11y,
                     content,
                 }
             })
@@ -1834,11 +1796,10 @@ impl OwnedFrame {
 /// Clone one [`Surface`]'s primitive into the `(rect, widget_id,
 /// content)` parts an [`OwnedNode`] holds. The widget-id rule mirrors
 /// [`ScreenLayout::tab_stops`]'s inclusion list exactly; the rect rule
-/// mirrors [`ScreenLayout::zone_for`]'s exactly. [`Surface::DropOverlay`]
-/// falls back to [`OwnedContent::DropOverlay`] and [`Surface::FindReplace`]
-/// falls back to [`OwnedContent::FindReplace`], because [`DropOverlay`]
-/// and [`FindReplacePanel`] do not implement `serde::{Serialize,
-/// Deserialize}` — both still keep their own distinct [`FrameZone`] tag.
+/// mirrors [`ScreenLayout::zone_for`]'s exactly. [`Surface::FindReplace`]
+/// falls back to [`OwnedContent::FindReplace`], because
+/// [`FindReplacePanel`] does not implement `serde::{Serialize,
+/// Deserialize}` — it still keeps its own distinct [`FrameZone`] tag.
 fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) {
     match surface {
         Surface::Editor { rect, editor } => {
@@ -1852,9 +1813,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         }
         Surface::CommandLine { rect, cmd } => {
             (*rect, Some(cmd.id), OwnedContent::CommandLine(cmd.clone()))
-        }
-        Surface::Terminal { rect, term } => {
-            (*rect, Some(term.id), OwnedContent::Terminal(term.clone()))
         }
         Surface::TextDisplay { rect, td } => {
             (*rect, Some(td.id), OwnedContent::TextDisplay(td.clone()))
@@ -1915,13 +1873,9 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::Board { rect, model } => {
             (*rect, Some(model.id), OwnedContent::Board(model.clone()))
         }
-        Surface::CommandCenter { rect, cc } => {
-            (*rect, Some(cc.id), OwnedContent::CommandCenter(cc.clone()))
-        }
         Surface::DiffView { rect, view } => {
             (*rect, Some(view.id), OwnedContent::DiffView(view.clone()))
         }
-        Surface::DropOverlay { overlay } => (overlay.bounds(), None, OwnedContent::DropOverlay),
         Surface::Image { rect, image } => (*rect, None, OwnedContent::Image(image.clone())),
         Surface::MessageList { rect, list } => (
             *rect,
@@ -1942,11 +1896,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
             *rect,
             if bar.cancellable { Some(bar.id) } else { None },
             OwnedContent::Progress(bar.clone()),
-        ),
-        Surface::SidebarPanel { rect, panel, .. } => (
-            *rect,
-            Some(panel.id),
-            OwnedContent::SidebarPanel(panel.clone()),
         ),
         Surface::Spinner { rect, spinner } => (*rect, None, OwnedContent::Spinner(spinner.clone())),
         Surface::SplitTree { rect, tree } => (*rect, None, OwnedContent::SplitTree(tree.clone())),
@@ -2537,7 +2486,7 @@ mod tests {
             focused_pane: Default::default(),
             has_focus: false,
         };
-        let overlay = DropOverlay {
+        let overlay = crate::primitives::drop_zone::DropOverlay {
             highlight: Some(Rect::new(1.0, 1.0, 2.0, 2.0)),
             insertion_bar: None,
             ghost_position: None,
@@ -2608,10 +2557,14 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
         let mut layout = ScreenLayout::new();
         layout.push(Surface::Board { rect, model: board });
-        layout.push(Surface::CommandCenter { rect, cc });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(cc),
+        });
         layout.push(Surface::DiffView { rect, view: diff });
-        layout.push(Surface::DropOverlay {
-            overlay: overlay.clone(),
+        layout.push(Surface::Widget {
+            rect: overlay.bounds(),
+            widget: Box::new(overlay.clone()),
         });
         layout.push(Surface::Image { rect, image });
         layout.push(Surface::MessageList {
@@ -2627,11 +2580,9 @@ mod tests {
             rect,
             bar: progress,
         });
-        layout.push(Surface::SidebarPanel {
+        layout.push(Surface::Widget {
             rect,
-            panel: sidebar,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(sidebar),
         });
         layout.push(Surface::Spinner { rect, spinner });
         layout.push(Surface::SplitTree {
@@ -2654,37 +2605,49 @@ mod tests {
 
         let zones: Vec<&FrameZone> = hit_map.zones().iter().map(|(_, z)| z).collect();
         assert_eq!(zones[0], &FrameZone::Board { idx: 0 });
-        assert_eq!(zones[1], &FrameZone::CommandCenter { idx: 1 });
+        assert_eq!(
+            zones[1],
+            &FrameZone::Widget {
+                idx: 1,
+                id: Some("cc".into())
+            }
+        );
         assert_eq!(zones[2], &FrameZone::DiffView { idx: 2 });
-        assert_eq!(zones[3], &FrameZone::DropOverlay { idx: 3 });
+        assert_eq!(zones[3], &FrameZone::Widget { idx: 3, id: None });
         assert_eq!(zones[4], &FrameZone::Image { idx: 4 });
         assert_eq!(zones[5], &FrameZone::MessageList { idx: 5 });
         assert_eq!(zones[6], &FrameZone::Minimap { idx: 6 });
         assert_eq!(zones[7], &FrameZone::PipelineView { idx: 7 });
         assert_eq!(zones[8], &FrameZone::Progress { idx: 8 });
-        assert_eq!(zones[9], &FrameZone::SidebarPanel { idx: 9 });
+        assert_eq!(
+            zones[9],
+            &FrameZone::Widget {
+                idx: 9,
+                id: Some(WidgetId::new("sp")),
+            }
+        );
         assert_eq!(zones[10], &FrameZone::Spinner { idx: 10 });
         assert_eq!(zones[11], &FrameZone::SplitTree { idx: 11 });
         assert_eq!(zones[12], &FrameZone::TextInput { idx: 12 });
         assert_eq!(zones[13], &FrameZone::Toolbar { idx: 13 });
 
-        // `DropOverlay`'s zone rect comes from `DropOverlay::bounds()`,
-        // not a `rect` field it doesn't have.
+        // A drop overlay is pushed at `DropOverlay::bounds()`.
         assert_eq!(hit_map.zones()[3].0, overlay.bounds());
 
-        // Tab order: `DropOverlay` (transient overlay) and `SplitTree`
+        // Tab order: the non-interactive drop overlay and `SplitTree`
         // (structural chrome, like `Split`) don't participate, and
         // neither do the purely-decorative `Image`/`Spinner` or this
         // non-cancellable `Progress` (no activatable affordance).
         let stops = layout.tab_stops();
         let stop_ids: Vec<&str> = stops.iter().map(|(id, _)| id.as_str()).collect();
-        for id in ["board", "cc", "diff", "ml", "mm", "pv", "sp", "ti", "tb"] {
+        for id in ["board", "cc", "diff", "ml", "mm", "pv", "ti", "tb"] {
             assert!(stop_ids.contains(&id), "{id} should be a tab stop");
         }
-        for id in ["img", "sn", "pb", "leaf"] {
+        // A `SidebarPanel` is pointer-only (`FocusSpec::None`).
+        for id in ["img", "sn", "pb", "leaf", "sp"] {
             assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
         }
-        assert_eq!(stop_ids.len(), 9);
+        assert_eq!(stop_ids.len(), 8);
     }
 
     /// A cancellable `Progress` bar *does* get a tab stop — the cancel

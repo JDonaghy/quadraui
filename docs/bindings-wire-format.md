@@ -761,7 +761,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailSplitSecondPane`](#wire-_hitdetailsplitsecondpane)
 - [`_HitDetailSplitDivider`](#wire-_hitdetailsplitdivider)
 - [`_HitDetailSplitTreeDivider`](#wire-_hitdetailsplittreedivider)
-- [`_HitDetailSidebarPanelToolbarButton`](#wire-_hitdetailsidebarpaneltoolbarbutton)
 - [`_HitDetailTreeScrollbarTrackBefore`](#wire-_hitdetailtreescrollbartrackbefore)
 - [`_HitDetailTreeScrollbarThumb`](#wire-_hitdetailtreescrollbarthumb)
 - [`_HitDetailTreeScrollbarTrackAfter`](#wire-_hitdetailtreescrollbartrackafter)
@@ -790,6 +789,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_ScrollbarMovedPayload`](#wire-_scrollbarmovedpayload)
 - [`_SwitchToggledPayload`](#wire-_switchtoggledpayload)
 - [`_RadioGroupSelectionChangedPayload`](#wire-_radiogroupselectionchangedpayload)
+- [`CommandCenterTarget`](#wire-commandcentertarget)
+- [`_CommandCenterActivatedPayload`](#wire-_commandcenteractivatedpayload)
 - [`_TextSelectionChangedPayload`](#wire-_textselectionchangedpayload)
 - [`_SplitDividerDraggedPayload`](#wire-_splitdividerdraggedpayload)
 - [`_TrayClickedPayload`](#wire-_trayclickedpayload)
@@ -3627,11 +3628,9 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
 | `command_line` | `CommandLineDescriptor` | no |  |
-| `command_center` | `CommandCenterDescriptor` | no |  |
 | `palette` | `PaletteDescriptor` | no |  |
 | `scrollbar` | `ScrollbarDescriptor` | no |  |
 | `editor` | `EditorDescriptor` | no |  |
-| `terminal` | `TerminalDescriptor` | no |  |
 | `canvas` | `CanvasDescriptor` | no |  |
 | `scroll_view` | `ScrollViewDescriptor` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor` | no |  |
@@ -3646,6 +3645,8 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `switch` | `SwitchDescriptor` | no |  |
 | `radio_group` | `RadioGroupDescriptor` | no |  |
 | `button` | `ButtonDescriptor` | no |  |
+| `command_center` | `CommandCenterDescriptor` | no |  |
+| `terminal` | `TerminalDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3695,11 +3696,9 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
 | `command_line` | `CommandLineDescriptor \| null` | no |  |
-| `command_center` | `CommandCenterDescriptor \| null` | no |  |
 | `palette` | `PaletteDescriptor \| null` | no |  |
 | `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
 | `editor` | `EditorDescriptor \| null` | no |  |
-| `terminal` | `TerminalDescriptor \| null` | no |  |
 | `canvas` | `CanvasDescriptor \| null` | no |  |
 | `scroll_view` | `ScrollViewDescriptor \| null` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
@@ -3714,6 +3713,8 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `switch` | `SwitchDescriptor \| null` | no |  |
 | `radio_group` | `RadioGroupDescriptor \| null` | no |  |
 | `button` | `ButtonDescriptor \| null` | no |  |
+| `command_center` | `CommandCenterDescriptor \| null` | no |  |
+| `terminal` | `TerminalDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`
@@ -4699,14 +4700,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `kind` | `"split_tree_divider"` | yes |  |
 | `split_index` | `number` | yes |  |
 
-<a id="wire-_hitdetailsidebarpaneltoolbarbutton"></a>
-#### `_HitDetailSidebarPanelToolbarButton`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"sidebar_panel_toolbar_button"` | yes |  |
-| `bar` | `WidgetId` | yes |  |
-
 <a id="wire-_hitdetailtreescrollbartrackbefore"></a>
 #### `_HitDetailTreeScrollbarTrackBefore`
 
@@ -4791,7 +4784,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`
@@ -4924,6 +4917,19 @@ Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _Hi
 | `widget` | `WidgetId` | yes |  |
 | `index` | `number` | yes |  |
 
+<a id="wire-commandcentertarget"></a>
+#### `CommandCenterTarget`
+
+Alias for `"Back" | "Forward" | "Search"`.
+
+<a id="wire-_commandcenteractivatedpayload"></a>
+#### `_CommandCenterActivatedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `widget` | `WidgetId` | yes |  |
+| `target` | `CommandCenterTarget` | yes |  |
+
 <a id="wire-_textselectionchangedpayload"></a>
 #### `_TextSelectionChangedPayload`
 
@@ -5004,6 +5010,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `SwitchToggled` | `_SwitchToggledPayload` |  |
 | `RadioGroupSelectionChanged` | `_RadioGroupSelectionChangedPayload` |  |
 | `ButtonActivated` | `_WidgetPayload` |  |
+| `CommandCenterActivated` | `_CommandCenterActivatedPayload` |  |
 | `TextSelectionChanged` | `_TextSelectionChangedPayload` |  |
 | `SplitDividerDragged` | `_SplitDividerDraggedPayload` |  |
 | `MenuActivated` | `WidgetId` |  |

@@ -495,7 +495,7 @@ pub fn font_metrics(font: &CTFont) -> FontMetrics {
 /// fallback run's), so letting height vary with the resolved run's
 /// metrics would desynchronise the two: callers that centre text
 /// vertically using this height (e.g.
-/// `sidebar_panel::native_surface_paint::paint_toolbar_header`) would
+/// `primitives::sidebar_panel`'s header painter) would
 /// then centre against a height [`draw_text_impl`] never positions
 /// against, pushing the glyph low in its slot where a clip rect can cut
 /// off its lower part. Pinning height to `font`'s own metrics, exactly
@@ -545,9 +545,9 @@ pub unsafe fn draw_text(
 /// Like [`draw_text`], but additionally scales the glyph run horizontally
 /// by `scale_x` around its own origin `(x, y)`.
 ///
-/// Used by `crate::macos::terminal::draw_terminal_cells` (`#[doc(hidden)]`,
-/// so not linked here) to stretch or shrink a double-width glyph (CJK /
-/// emoji) so it fills its two-column
+/// Used by the terminal's shared cell painter (through `MacBackend`'s
+/// `surface_draw_text_run_styled`) to stretch or shrink a double-width
+/// glyph (CJK / emoji) so it fills its two-column
 /// cell box exactly — the scale factor comes from
 /// [`crate::terminal_style::wide_glyph_x_scale`], the same decision GTK's
 /// `cr.scale(scale_x, 1.0)` applies via Cairo's CTM. Core

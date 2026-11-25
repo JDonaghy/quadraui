@@ -17,8 +17,8 @@ use std::cell::RefCell;
 
 use quadraui::terminal_engine::{default_shell, TerminalSession};
 use quadraui::{
-    Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    Style, UiEvent, WidgetId,
+    Backend, Color, DrawsPrimitives, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -204,7 +204,7 @@ impl Demo for TerminalDemo {
             };
             let snapshot =
                 sess.to_terminal(WidgetId::new(format!("gallery:terminal:{variant}")), sb);
-            backend.draw_terminal(term_area, &snapshot);
+            backend.draw_dyn(term_area, &snapshot, &());
         }
 
         let footer_text = match &slot.session {

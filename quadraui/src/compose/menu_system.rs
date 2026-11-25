@@ -1139,8 +1139,6 @@ mod tests {
         ) -> Vec<crate::primitives::activity_bar::ActivityBarRowHit> {
             unimplemented!()
         }
-        fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {}
-        fn draw_terminal_divider(&mut self, _r: Rect) {}
         fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {}
         fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
         fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
@@ -1278,7 +1276,6 @@ mod tests {
         ) {
         }
         fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
-        fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {}
         fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
             unimplemented!()
         }
@@ -1337,20 +1334,6 @@ mod tests {
         fn spinner_layout(&self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
             unimplemented!()
         }
-        fn draw_command_center(
-            &mut self,
-            _r: Rect,
-            _c: &crate::CommandCenter,
-        ) -> crate::CommandCenterLayout {
-            unimplemented!()
-        }
-        fn command_center_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::CommandCenter,
-        ) -> crate::CommandCenterLayout {
-            unimplemented!()
-        }
         fn draw_toolbar_with_options(
             &mut self,
             _r: Rect,
@@ -1365,21 +1348,6 @@ mod tests {
             _r: Rect,
             _b: &crate::primitives::toolbar::Toolbar,
         ) -> crate::primitives::toolbar::ToolbarLayout {
-            unimplemented!()
-        }
-        fn draw_sidebar_panel_interactive(
-            &mut self,
-            _r: Rect,
-            _p: &crate::primitives::sidebar_panel::SidebarPanel,
-            _interaction: &crate::interaction::InteractionState,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            unimplemented!()
-        }
-        fn sidebar_panel_layout(
-            &self,
-            _r: Rect,
-            _p: &crate::primitives::sidebar_panel::SidebarPanel,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
             unimplemented!()
         }
         fn draw_diff_view(

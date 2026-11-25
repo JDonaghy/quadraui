@@ -11,7 +11,7 @@
 //! overlay/popup rasterisers include `tooltip`/`context_menu`/`dialog`/
 //! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
 //! indicator rasterisers include `split`/`toast`/`progress`/
-//! `spinner`; text-heavy rasterisers include `terminal`/`text_display`/
+//! `spinner`; text-heavy rasterisers include `text_display`/
 //! `message_list` — every other `draw_*`/`*_layout` rasteriser is still a
 //! `todo!()` stub; implement each one against Direct2D / DirectWrite and
 //! the compiler will tell you when you're done.
@@ -46,10 +46,6 @@ mod chart;
 /// [`crate::Backend::draw_combo_box`], so this module carries no
 /// production code of its own — see its module docs.
 mod combo_box;
-/// Direct2D / DirectWrite rasteriser for [`crate::CommandCenter`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod command_center;
 /// Direct2D / DirectWrite rasteriser for
 /// [`crate::primitives::command_line::CommandLine`]. Windows-only
 /// in full — see its module docs.
@@ -80,11 +76,6 @@ mod dialog;
 /// full — see its module docs.
 #[cfg(target_os = "windows")]
 mod diff_view;
-/// Direct2D rasteriser for
-/// [`crate::primitives::drop_zone::DropOverlay`]. Windows-only
-/// in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod drop_overlay;
 /// Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -177,11 +168,6 @@ pub mod services;
 /// "compiles everywhere, only *works* on Windows" reason as `run`/`mod
 /// run` above — see this module's own doc.
 pub mod shell_runner;
-/// Direct2D / DirectWrite rasteriser for
-/// [`crate::primitives::sidebar_panel::SidebarPanel`]. Windows-only
-/// in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod sidebar_panel;
 /// Direct2D / DirectWrite rasteriser for [`crate::Spinner`]. Issue
 /// Only its paint fn is Windows-only — see its module docs.
 mod spinner;
@@ -202,10 +188,6 @@ mod status_bar;
 /// rasteriser modules above that consume it.
 #[cfg(target_os = "windows")]
 mod surface;
-/// Direct2D / DirectWrite rasteriser for [`crate::Terminal`] cell grids.
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod terminal;
 /// Headless Direct2D test surface: an offscreen `ID2D1DCRenderTarget`
 /// backed by an in-memory DIB section, so `#[cfg(test)]` blocks can paint
 /// a primitive and read pixels back with no `HWND`, display, or GPU.
@@ -293,9 +275,6 @@ pub use board::win_board_layout;
 pub use chart::win_chart_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
-pub use command_center::{draw_command_center, win_command_center_layout};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
 pub use command_line::{draw_command_line, draw_command_line_selection, win_command_line_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
@@ -360,9 +339,6 @@ pub use run::{run, run_with, RunConfig, StepOutcome};
 pub use run::WinRunner;
 #[doc(hidden)]
 pub use services::WinPlatformServices;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use sidebar_panel::win_sidebar_panel_layout;
 #[doc(hidden)]
 pub use spinner::win_spinner_layout;
 #[cfg(target_os = "windows")]

@@ -645,18 +645,6 @@ pub fn semantic_event_for_hit(
             }
             _ => None,
         }),
-        // `bar` is the embedded `Toolbar`'s own id (see
-        // `HitDetail::SidebarPanelToolbarButton`'s doc) — look up that same
-        // `PaintedHit::SidebarPanel` entry to get the descriptor back and
-        // reuse `Toolbar::click`, exactly like the standalone/chrome case
-        // above.
-        HitDetail::SidebarPanelToolbarButton { bar } => hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::SidebarPanel {
-                toolbar: Some(toolbar),
-                ..
-            } if toolbar.id == *bar => Some(UiEvent::Toolbar(*bar, toolbar.click(id)?)),
-            _ => None,
-        }),
         _ => None,
     }
 }

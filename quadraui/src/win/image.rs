@@ -12,7 +12,7 @@
 //! [`crate::primitives::image::ImageFit`] variants that can extend past
 //! it are `Cover` and `None`, and neither should bleed into whatever the
 //! host paints next to it (same [`super::text::push_clip`]/`pop_clip`
-//! pair `super::panel`/`super::sidebar_panel` use for their own
+//! pair `super::panel` uses for its own
 //! overflow-prone content).
 //!
 //! # No decode cache here yet

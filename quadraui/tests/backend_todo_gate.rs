@@ -157,16 +157,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_terminal",
-        "\"Direct2D terminal cell grid rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_terminal_divider",
-        "\"Direct2D terminal split divider rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_text_display",
         "\"Direct2D text display rasteriser (no surface attached yet)\"",
     ),
@@ -237,11 +227,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_drop_overlay",
-        "\"Direct2D drop overlay rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_menu_bar",
         "\"Direct2D menu bar rasteriser (no surface attached yet)\"",
     ),
@@ -307,11 +292,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_command_center",
-        "\"Direct2D command center rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_toolbar_with_options",
         "\"Direct2D toolbar rasteriser (no surface attached yet)\"",
     ),
@@ -319,16 +299,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
         "src/win/backend.rs",
         "fn toolbar_layout",
         "\"DirectWrite toolbar layout (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_sidebar_panel_interactive",
-        "\"Direct2D sidebar-panel rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn sidebar_panel_layout",
-        "\"DirectWrite sidebar-panel layout (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",

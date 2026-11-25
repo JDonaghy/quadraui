@@ -422,9 +422,9 @@ fn terminal_exposes_role_and_visible_grid_as_value() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Terminal {
+    scenario.push(Surface::Widget {
         rect: rect(1.0),
-        term,
+        widget: Box::new(term),
     });
 
     scenario.snapshot().assert_matches(
@@ -461,9 +461,9 @@ fn terminal_trims_trailing_blank_padding_from_each_row() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Terminal {
+    scenario.push(Surface::Widget {
         rect: rect(2.0),
-        term,
+        widget: Box::new(term),
     });
 
     scenario.snapshot().assert_matches(
@@ -493,9 +493,9 @@ fn terminal_drops_the_spacer_column_after_a_wide_glyph() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Terminal {
+    scenario.push(Surface::Widget {
         rect: rect(1.0),
-        term,
+        widget: Box::new(term),
     });
 
     scenario.snapshot().assert_matches(
@@ -516,9 +516,9 @@ fn terminal_keeps_spaces_between_narrow_glyphs() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Terminal {
+    scenario.push(Surface::Widget {
         rect: rect(1.0),
-        term,
+        widget: Box::new(term),
     });
 
     scenario.snapshot().assert_matches(
@@ -539,9 +539,9 @@ fn terminal_with_empty_grid_has_no_value() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Terminal {
+    scenario.push(Surface::Widget {
         rect: rect(1.0),
-        term,
+        widget: Box::new(term),
     });
 
     scenario.snapshot().assert_matches(

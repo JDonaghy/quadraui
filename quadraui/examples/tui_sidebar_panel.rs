@@ -1,10 +1,9 @@
 //! SidebarPanel `AppLogic` + `quadraui::tui::run` example.
 //!
-//! Smoke-tests every #259 gap end-to-end: 2-row toolbar (Gap 1),
-//! icon-only / wide-glyph buttons (Gap 4), `ToolbarHoverTracker`
-//! managing hover state (Gap 3), and the `SidebarPanel` primitive
-//! itself owning the toolbar-header + content-rect coordination
-//! (Gap 2).
+//! Smoke-tests a 2-row toolbar header, icon-only / wide-glyph buttons,
+//! header clicks routed through the panel's widget contract, and the
+//! `SidebarPanel` primitive owning the toolbar-header + content-rect
+//! coordination.
 //!
 //! - Click `+`              add a task
 //! - Click `↻`              clear last action message

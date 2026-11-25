@@ -630,7 +630,8 @@ pub use primitives::chart::{
 };
 pub use primitives::combo_box::{ComboBox, ComboBoxEvent, ComboBoxHit, ComboBoxLayout};
 pub use primitives::command_center::{
-    CommandCenter, CommandCenterHit, CommandCenterLayout, CommandCenterMeasure,
+    CommandCenter, CommandCenterAction, CommandCenterHit, CommandCenterLayout,
+    CommandCenterMeasure, CommandCenterTarget,
 };
 pub use primitives::command_line::{CommandLine, CommandLineLayout, CommandLineMeasure};
 pub use primitives::completions::{
@@ -661,7 +662,7 @@ pub use primitives::diff_view::{
 };
 pub use primitives::drop_zone::{
     compute_drop_zone, drop_zone_hit_test, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay,
-    DropZone, DropZoneHit, DropZoneKind,
+    DropOverlayLayout, DropZone, DropZoneHit, DropZoneKind, DROP_OVERLAY_ZONE_ID,
 };
 pub use primitives::editor::{
     CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,
@@ -758,7 +759,7 @@ pub use primitives::scrollbar::{
     ScrollbarState, SCROLLBAR_WHEEL_VIEWPORTS_PER_NOTCH,
 };
 pub use primitives::sidebar_panel::{
-    SidebarPanel, SidebarPanelHit, SidebarPanelLayout, SidebarPanelMeasure,
+    SidebarPanel, SidebarPanelAction, SidebarPanelHit, SidebarPanelLayout, SidebarPanelState,
 };
 pub use primitives::spinner::{Spinner, SpinnerHit, SpinnerLayout, SpinnerMeasure};
 pub use primitives::split::{Split, SplitDirection, SplitHit, SplitLayout, SplitMeasure};
@@ -789,8 +790,9 @@ pub use primitives::tab_bar::{
 // backend-generic `AppLogic` type-checks.
 pub use primitives::tab_bar::TabBarPrimitiveLayout;
 pub use primitives::terminal::{
-    Terminal, TerminalCell, TerminalCellSize, TerminalCursorShape, TerminalEvent, TerminalHit,
-    TerminalLayout, TerminalScrollbar, TerminalSplitHit, TerminalSplitLayout,
+    Terminal, TerminalCell, TerminalCellSize, TerminalCursorShape, TerminalDivider,
+    TerminalDividerLayout, TerminalEvent, TerminalHit, TerminalLayout, TerminalScrollbar,
+    TerminalSplitHit, TerminalSplitLayout, TerminalState,
 };
 pub use primitives::text_display::{
     TextDisplay, TextDisplayEvent, TextDisplayHit, TextDisplayLayout, TextDisplayLine,

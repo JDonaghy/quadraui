@@ -105,7 +105,7 @@
 //! **before** [`handle_drag_start`]. On success, route subsequent `MouseMoved`
 //! to [`handle_tab_drag_move`] and `MouseUp` to [`handle_tab_drop_event`] (or
 //! [`cancel_tab_drag`](TabGroupController::cancel_tab_drag) on `Escape`).
-//! The controller calls `backend.draw_drop_overlay` automatically inside
+//! The controller paints the [`DropOverlay`] automatically inside
 //! [`render`](TabGroupController::render) whenever a drag is active.
 //!
 //! # Host-owned tab/pane model
@@ -141,7 +141,7 @@ use crate::compose::Handled;
 use crate::event::Rect;
 use crate::primitives::drop_zone::{
     drop_zone_hit_test, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay, DropZone,
-    DropZoneHit,
+    DropZoneHit, DROP_OVERLAY_ZONE_ID,
 };
 use crate::primitives::split::{Split, SplitDirection};
 // This compose helper caches the `TabBar` primitive's own resolved
@@ -1024,8 +1024,9 @@ impl TabGroupController {
     /// inter-pane divider and paints each pane's tab strip through the
     /// `TabBar` primitive (see [`draw_pane_tab_strip`]).
     /// Active-pane content is rendered via [`BackendWidget::render`].
-    /// When a tab drag is active, automatically calls
-    /// `backend.draw_drop_overlay` at the end of the frame.
+    /// When a tab drag is active, paints the [`DropOverlay`] through the
+    /// widget contract at the end of the frame and registers its
+    /// [`DROP_OVERLAY_ZONE_ID`] zone.
     ///
     /// Returns a [`TabGroupLayout`] with resolved pane/strip/content rects
     /// in pane vec order.
@@ -1131,7 +1132,9 @@ impl TabGroupController {
             None
         };
         if let Some(ov) = overlay {
-            backend.draw_drop_overlay(&ov);
+            let bounds = ov.bounds();
+            crate::backend::DrawsPrimitives::draw_dyn(backend, bounds, &ov, &());
+            backend.register_zone(crate::types::WidgetId::new(DROP_OVERLAY_ZONE_ID), bounds);
         }
 
         TabGroupLayout {
@@ -1503,9 +1506,9 @@ impl TabGroupController {
     /// 2–3 px for GTK, 1 cell for TUI). `ghost_offset` is how far the ghost
     /// label floats from the cursor (typically one line height).
     ///
-    /// Note: [`render`](Self::render) calls this automatically and passes the
-    /// overlay to `backend.draw_drop_overlay`. Only call this directly if you
-    /// need the overlay for a custom rendering path.
+    /// Note: [`render`](Self::render) calls this automatically and paints the
+    /// overlay through [`crate::DrawsPrimitives::draw_dyn`]. Only call this
+    /// directly if you need the overlay for a custom rendering path.
     pub fn tab_drag_overlay(
         &self,
         cursor_x: f32,
