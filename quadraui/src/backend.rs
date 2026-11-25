@@ -90,7 +90,6 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
-use crate::primitives::switch::{Switch, SwitchLayout};
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_field::{TextField, TextFieldLayout, TextFieldMeasure};
@@ -3990,20 +3989,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn radio_group_layout(&self, rect: Rect, group: &RadioGroup) -> RadioGroupLayout;
-
-    /// Draw a [`Switch`] (a standalone on/off toggle). Returns the
-    /// [`SwitchLayout`] so hosts can route clicks. A backend that
-    /// tints hover/pressed state reads it straight off
-    /// [`Switch::hovered`]/[`Switch::pressed`] — the host sets those
-    /// before calling, the same convention [`Switch::focused`] already
-    /// follows. Same coordinate frame as [`Self::switch_layout`]
-    /// (ABSOLUTE).
-    fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout;
-
-    /// Compute switch layout without painting.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout;
 
     /// Draw a [`CommandCenter`] (nav arrows + search box). Returns the
     /// [`CommandCenterLayout`] so hosts can route clicks. Same

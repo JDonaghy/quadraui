@@ -277,7 +277,7 @@ pub enum PaintedHit {
     /// [`crate::layout::LeafDescriptor::Extra`]
     /// leaf. `area` is the ABSOLUTE rect it was painted into — the same frame
     /// [`ExtraPaint::hit_test`] expects, so no translation is needed before
-    /// calling it (matching `Button`/`Switch`'s own layout convention: no
+    /// calling it (matching `Button`/`Checkbox`'s own layout convention: no
     /// local-frame remap). `extra` is an [`Rc`] clone of the slot's/leaf's
     /// descriptor, kept alive past this frame's render so a later `handle`
     /// call can still hit-test and tab-stop against it.
@@ -614,7 +614,7 @@ pub enum HitDetail {
     /// `TreeScrollbarTrackBefore`.
     TreeScrollbarTrackAfter,
     /// Landed on an additive primitive's interactive region (currently
-    /// [`quadraui::Switch`] and [`quadraui::TextInput`]). Carries no
+    /// [`crate::extra_paint::Checkbox`] and [`quadraui::TextInput`]). Carries no
     /// sub-region detail yet —
     /// just enough for the binding's own event handler to set `widget` and
     /// attach this as `hit`, so it sees the click reached the primitive.

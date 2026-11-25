@@ -6946,9 +6946,10 @@ fn indicators_toggling_cancellable_paints_and_clears_cancel_symbol() {
 
 // ─── ControlsApp: button/radio/switch focus, activation and clicks ────────
 //
-// `tui_controls` is the first example to exercise the `draw_button`,
-// `draw_radio_group` and `draw_switch` `Backend` trait methods together.
-// It stacks one button per `ButtonVariant` (Primary, Secondary, Danger,
+// `tui_controls` is the first example to exercise the `draw_button` and
+// `draw_radio_group` `Backend` trait methods alongside `Switch`'s own
+// widget-contract paint (`DrawsPrimitives::draw_primitive`). It stacks
+// one button per `ButtonVariant` (Primary, Secondary, Danger,
 // Warning, Icon) above the radio group and the switch, so Tab walks all
 // five buttons before it reaches the group. These tests drive the real
 // `ControlsApp` through Tab-focus, Space/Enter activation, arrow-key

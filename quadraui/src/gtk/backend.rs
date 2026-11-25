@@ -4722,30 +4722,6 @@ impl Backend for GtkBackend {
         )
     }
 
-    /// Paint via the shared [`crate::primitives::switch::native_surface_paint::paint`].
-    /// Chrome-only (no label of its own), so this also registers a
-    /// click zone — same "paint + register" pairing as
-    /// [`Self::draw_focus_ring`].
-    fn draw_switch(
-        &mut self,
-        rect: QRect,
-        switch: &crate::primitives::switch::Switch,
-    ) -> crate::primitives::switch::SwitchLayout {
-        let theme = self.current_theme;
-        let layout =
-            crate::primitives::switch::native_surface_paint::paint(switch, self, &theme, rect);
-        self.register_zone(switch.id, rect);
-        layout
-    }
-
-    fn switch_layout(
-        &self,
-        rect: QRect,
-        switch: &crate::primitives::switch::Switch,
-    ) -> crate::primitives::switch::SwitchLayout {
-        switch.layout(rect)
-    }
-
     fn toast_stack_layout(
         &self,
         rect: QRect,

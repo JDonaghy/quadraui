@@ -116,8 +116,6 @@ pub mod split;
 pub mod split_tree;
 #[doc(hidden)]
 pub mod status_bar;
-#[doc(hidden)]
-pub mod switch;
 // Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
 #[doc(hidden)]
@@ -218,9 +216,6 @@ pub use split::mac_split_layout;
 pub use split_tree::mac_split_tree_layout;
 #[doc(hidden)]
 pub use status_bar::mac_status_bar_layout;
-#[doc(hidden)]
-pub use switch::mac_switch_layout;
-#[doc(hidden)]
 #[doc(hidden)]
 pub use text_display::mac_text_display_layout;
 #[doc(hidden)]

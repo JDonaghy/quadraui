@@ -1353,12 +1353,6 @@ mod tests {
         fn radio_group_layout(&self, _r: Rect, _g: &crate::RadioGroup) -> crate::RadioGroupLayout {
             unimplemented!()
         }
-        fn draw_switch(&mut self, _r: Rect, _s: &crate::Switch) -> crate::SwitchLayout {
-            unimplemented!()
-        }
-        fn switch_layout(&self, _r: Rect, _s: &crate::Switch) -> crate::SwitchLayout {
-            unimplemented!()
-        }
         fn draw_command_center(
             &mut self,
             _r: Rect,

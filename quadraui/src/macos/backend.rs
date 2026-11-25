@@ -90,7 +90,6 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::status_bar::StatusBarLayout;
-use crate::primitives::switch::{Switch, SwitchLayout};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastCorner, ToastOverlay, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
@@ -4107,20 +4106,6 @@ impl Backend for MacBackend {
             width: rect.width,
             height: row_height,
         })
-    }
-    /// Paint via the shared [`crate::primitives::switch::native_surface_paint::paint`].
-    /// Chrome-only (no label of its own), so this also registers a
-    /// click zone — same "paint + register" pairing as
-    /// [`Self::draw_focus_ring`].
-    fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout {
-        let theme = self.current_theme;
-        let layout =
-            crate::primitives::switch::native_surface_paint::paint(switch, self, &theme, rect);
-        self.register_zone(switch.id, rect);
-        layout
-    }
-    fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout {
-        switch.layout(rect)
     }
     fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)

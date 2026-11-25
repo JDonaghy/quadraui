@@ -1762,7 +1762,6 @@ LayoutLeafNode = TypedDict(
         "combo_box": NotRequired[ComboBoxDescriptor],
         "date_picker": NotRequired[DatePickerDescriptor],
         "radio_group": NotRequired[RadioGroupDescriptor],
-        "switch": NotRequired[SwitchDescriptor],
         "chart": NotRequired[ChartDescriptor],
         "message_list": NotRequired[MessageListDescriptor],
         "board": NotRequired[BoardModelDescriptor],
@@ -1792,6 +1791,7 @@ LayoutLeafNode = TypedDict(
         "markdown": NotRequired[MarkdownDescriptor],
         "icon_grid": NotRequired[IconGridDescriptor],
         "cell_grid": NotRequired[CellGridDescriptor],
+        "switch": NotRequired[SwitchDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1824,7 +1824,6 @@ class RenderFrameDict(TypedDict):
     combo_box: NotRequired[Optional[ComboBoxDescriptor]]
     date_picker: NotRequired[Optional[DatePickerDescriptor]]
     radio_group: NotRequired[Optional[RadioGroupDescriptor]]
-    switch: NotRequired[Optional[SwitchDescriptor]]
     chart: NotRequired[Optional[ChartDescriptor]]
     message_list: NotRequired[Optional[MessageListDescriptor]]
     board: NotRequired[Optional[BoardModelDescriptor]]
@@ -1854,6 +1853,7 @@ class RenderFrameDict(TypedDict):
     markdown: NotRequired[Optional[MarkdownDescriptor]]
     icon_grid: NotRequired[Optional[IconGridDescriptor]]
     cell_grid: NotRequired[Optional[CellGridDescriptor]]
+    switch: NotRequired[Optional[SwitchDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]

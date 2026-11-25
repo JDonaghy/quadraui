@@ -1513,13 +1513,6 @@ impl crate::Backend for RecordingBackend {
     fn radio_group_layout(&self, _r: Rect, _g: &crate::RadioGroup) -> crate::RadioGroupLayout {
         unimplemented!("RecordingBackend has no RadioGroup layout algorithm")
     }
-    fn draw_switch(&mut self, _r: Rect, _s: &crate::Switch) -> crate::SwitchLayout {
-        self.record("draw_switch");
-        unimplemented!("RecordingBackend has no Switch layout algorithm")
-    }
-    fn switch_layout(&self, _r: Rect, _s: &crate::Switch) -> crate::SwitchLayout {
-        unimplemented!("RecordingBackend has no Switch layout algorithm")
-    }
     fn draw_command_center(
         &mut self,
         _r: Rect,

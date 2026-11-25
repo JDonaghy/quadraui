@@ -204,7 +204,7 @@ impl LayoutContent {
     /// convention) and then resolves to that leaf's semantic event —
     /// [`crate::semantic::button_clicked_event`] for a `Button`,
     /// [`crate::semantic::semantic_event_for_hit`] for a `Tree`/`List`/
-    /// `DataTable`/`TabBar`/`Switch`/... leaf, the owning
+    /// `DataTable`/`TabBar`/`Checkbox`/... leaf, the owning
     /// [`FormController`] for a `"form"` extra leaf; a
     /// `KeyPressed`/`CharTyped`/`ClipboardPaste` routes to whichever leaf
     /// holds keyboard focus, through that same `FormController` for a
@@ -386,7 +386,7 @@ impl LayoutContent {
 /// — so a future keyboard-nav pass over those specific buttons
 /// still has nothing to pick up here); `Extra` is a tab stop only when its
 /// descriptor opts in via [`crate::extra_paint::ExtraPaint::tab_stop`]
-/// (currently `Switch` and `TextInput`); `TextDisplay` is always one
+/// (currently `TextInput`); `TextDisplay` is always one
 /// (scroll/copy need keyboard focus the same way a `Tree`/`List` does);
 /// every other variant yields its id and bounding `Rect`.
 fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
@@ -416,9 +416,10 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             // `PaintedHit::Widget` field to report more than one
             // `(WidgetId, Rect)` from yet — a widget that needs
             // per-sub-target stops extends this arm with a finer-grained
-            // `HitDetail::WidgetBody` of its own. `IconGrid`, this seam's
-            // only member so far, reports `FocusSpec::Stop`, so it is a
-            // tab stop through this generic path.
+            // `HitDetail::WidgetBody` of its own. `IconGrid`, `CellGrid`
+            // and `Switch` each report `FocusSpec::Stop` (`CellGrid` only
+            // once it has at least one row and column), so each is a tab
+            // stop through this generic path.
             PaintedHit::Widget { id, area, widget } => {
                 matches!(widget.focus(), quadraui::FocusSpec::Stop).then_some((*id, *area))
             }
@@ -2021,7 +2022,7 @@ impl InteractionEngine {
     /// routing exactly as the same leaf would in the main tree: a click
     /// on a `Button` emits the normal
     /// [`crate::semantic::button_clicked_event`]; a click or focused key
-    /// on a `Tree`/`List`/`DataTable`/`TabBar`/`TextDisplay`/`Switch`/…
+    /// on a `Tree`/`List`/`DataTable`/`TabBar`/`TextDisplay`/`Checkbox`/…
     /// leaf resolves through the same
     /// [`crate::semantic::semantic_event_for_hit`]/
     /// [`crate::semantic::focus_scoped_key_event`] pair
@@ -2299,7 +2300,7 @@ impl InteractionEngine {
     /// future keyboard-nav pass over those specific buttons still has
     /// nothing to pick up here); `Extra` is a tab stop only when its
     /// descriptor opts in via
-    /// [`crate::extra_paint::ExtraPaint::tab_stop`] (currently `Switch` and
+    /// [`crate::extra_paint::ExtraPaint::tab_stop`] (currently
     /// `TextInput`); `TextDisplay` is always one (scroll/copy need
     /// keyboard focus the same way a `Tree`/`List` does); every other
     /// variant yields its id and bounding `Rect`.
@@ -4568,7 +4569,7 @@ impl InteractionEngine {
                     false
                 };
                 // Generic counterpart of the per-kind arms
-                // `focus_scoped_key_event` below has for `Switch`/
+                // `focus_scoped_key_event` below has for `Checkbox`/
                 // `TextInput`/... — forwards straight to the focused
                 // leaf's own `ScriptedExtra::scripted_key_pressed` when it
                 // has one, since that function's `UiEvent`-only return has
@@ -4870,7 +4871,7 @@ impl InteractionEngine {
                 // by kind), so this is the first arm of the same `if`/
                 // `else if` chain the other `detail` variants use below,
                 // with its own `semantic_event_for_hit` fallback folded in
-                // rather than left to the chain's final arm — a `Switch`
+                // rather than left to the chain's final arm — a `Checkbox`
                 // body click (which `text_input_click_event`/
                 // `number_input_click_event` both no-op on, since neither
                 // finds the kind it looks for) still resolves through

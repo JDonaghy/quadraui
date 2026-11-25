@@ -47,7 +47,6 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
-use crate::primitives::switch::{Switch, SwitchLayout};
 use crate::primitives::text_display::{TextDisplayLayout, TextDisplayLineMeasure};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 #[cfg(target_os = "windows")]
@@ -5459,28 +5458,6 @@ impl Backend for WinBackend {
             height: row_height,
         })
     }
-    /// See [`Self::draw_button`]'s doc. Chrome-only (no label of its
-    /// own), so this also registers a click zone over the whole `rect` —
-    /// same "paint + register" pairing as [`Self::draw_button`].
-    fn draw_switch(&mut self, rect: Rect, switch: &Switch) -> SwitchLayout {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() && self.dwrite.is_some() {
-            let theme = self.current_theme;
-            let layout =
-                crate::primitives::switch::native_surface_paint::paint(switch, self, &theme, rect);
-            self.register_zone(switch.id, rect);
-            return layout;
-        }
-        // No surface/DWrite yet — return the real (pure-geometry) layout
-        // via `switch_layout` and paint nothing.
-        let layout = self.switch_layout(rect, switch);
-        self.register_zone(switch.id, rect);
-        layout
-    }
-    fn switch_layout(&self, rect: Rect, switch: &Switch) -> SwitchLayout {
-        switch.layout(rect)
-    }
-
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
