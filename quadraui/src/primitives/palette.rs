@@ -2312,23 +2312,63 @@ impl PalettePrimitiveLayout {
     }
 }
 
+/// The per-row insets each painter lays an item row's content out with,
+/// resolved for one [`crate::LayoutCtx`] — what [`Palette`]'s own
+/// `measure` adds around the widest label so the reported natural width
+/// matches the row the painter will actually draw.
+struct RowInsets {
+    /// Leading inset before the row's first glyph: the two columns the
+    /// `▶ ` selection marker occupies on a cell grid (reserved on every
+    /// row so a moving selection never reflows the text),
+    /// [`crate::Style::row_padding_x`] on a pixel surface.
+    lead: f32,
+    /// Gap between the icon glyph and the label.
+    icon_gap: f32,
+    /// Gap between the label and the right-aligned `detail`, plus the
+    /// trailing inset the painter keeps clear past it.
+    detail_gap: f32,
+}
+
 impl Palette {
+    /// The row insets for `ctx`'s own surface, read from
+    /// [`crate::LayoutCtx::style`] where the pixel painter reads them.
+    fn row_insets(ctx: &crate::LayoutCtx) -> RowInsets {
+        if matches!(ctx.units(), crate::primitive::Units::Cells) {
+            RowInsets {
+                lead: 2.0,
+                icon_gap: 1.0,
+                detail_gap: 1.0,
+            }
+        } else {
+            RowInsets {
+                lead: ctx.style().row_padding_x,
+                // `row_stack::row_content_paint`'s own icon advance and
+                // detail reserve — the two gaps `native_surface_paint`
+                // paints each item row with.
+                icon_gap: 6.0,
+                detail_gap: 12.0,
+            }
+        }
+    }
+
     /// The widest item row's content in the units `ctx` measures in — the
-    /// selection prefix, the icon plus a one-advance gap, the label, and
-    /// (when present) a gap plus the right-aligned `detail`.
-    fn widest_row(&self, ctx: &crate::LayoutCtx) -> f32 {
+    /// leading inset, the icon plus its gap, the label, and (when present)
+    /// a gap plus the right-aligned `detail`.
+    fn widest_row(&self, ctx: &crate::LayoutCtx, insets: &RowInsets) -> f32 {
         let cells = matches!(ctx.units(), crate::primitive::Units::Cells);
         let width_of = |text: &str| -> f32 {
             if cells {
                 crate::text_util::display_width(text) as f32
             } else {
+                // The role every pixel backend's `draw_palette` paints
+                // item text in, asserted by `gtk_font_role`/
+                // `macos_font_role`'s own `draw_palette` cases. The icon
+                // glyph measures in the same role because
+                // `row_content_paint::paint_row_icon` sizes it with the
+                // surface's own `surface_measure_text`.
                 ctx.text_width(text, crate::FontRole::Chrome)
             }
         };
-        let gap = if cells { 1.0 } else { ctx.char_width.max(1.0) };
-        // Every row reserves the two columns the selected row's "▶ "
-        // prefix occupies, so a selection never reflows the text.
-        let prefix = 2.0 * gap;
         self.items
             .iter()
             .map(|item| {
@@ -2341,16 +2381,18 @@ impl Palette {
                         } else {
                             &icon.fallback
                         };
-                        width_of(glyph) + gap
+                        width_of(glyph) + insets.icon_gap
                     })
                     .unwrap_or(0.0);
                 let label: f32 = item.text.spans.iter().map(|s| width_of(&s.text)).sum();
                 let detail = item
                     .detail
                     .as_ref()
-                    .map(|d| gap + d.spans.iter().map(|s| width_of(&s.text)).sum::<f32>())
+                    .map(|d| {
+                        insets.detail_gap + d.spans.iter().map(|s| width_of(&s.text)).sum::<f32>()
+                    })
                     .unwrap_or(0.0);
-                prefix + icon + label + detail
+                insets.lead + icon + label + detail
             })
             .fold(0.0_f32, f32::max)
     }
@@ -2369,10 +2411,11 @@ impl crate::primitive::Primitive for Palette {
     }
 
     /// The box that shows every item at once: the widest row's own
-    /// content ([`Self::widest_row`]) plus the border/padding columns the
-    /// painters frame each row with, and a column of rows tall enough for
-    /// the title, the query area, every item, the pinned create row and
-    /// the bottom chrome.
+    /// content ([`Self::widest_row`], with the insets each painter lays a
+    /// row out with) floored at the title and query rows' own widths, plus
+    /// the frame either side; and enough rows for the title, the query
+    /// area, every item, the pinned create row and the bottom chrome —
+    /// the same row reservations [`cell_layout`]/[`pixel_layout`] make.
     ///
     /// [`PaletteMode::Input`] suppresses the item list, so it measures
     /// title plus query only. A palette with a preview pane is scaled up
@@ -2385,6 +2428,7 @@ impl crate::primitive::Primitive for Palette {
     ) -> crate::NaturalSize {
         let cells = matches!(ctx.units(), crate::primitive::Units::Cells);
         let line_height = ctx.line_height.max(1.0);
+        let insets = Self::row_insets(ctx);
         let gap = if cells { 1.0 } else { ctx.char_width.max(1.0) };
         let item_h = if cells {
             1.0
@@ -2416,7 +2460,19 @@ impl crate::primitive::Primitive for Palette {
         let bottom = if cells { 1.0 } else { BOTTOM_INSET };
         let height = title_h + query_h + rows as f32 * item_h + create_h + bottom;
 
-        let title_w = crate::text_util::display_width(&self.title) as f32 * gap;
+        // Title row: the `" {title} "` overlay, the `N/M` count and the
+        // three-column `[L]`/`[I]` mode badge, with a column of clearance
+        // either side of the badge.
+        let count_w = if self.total_count > 0 {
+            crate::text_util::display_width(&format!("  {}/{}", self.items.len(), self.total_count))
+                as f32
+        } else {
+            0.0
+        };
+        let title_w = (crate::text_util::display_width(&self.title) as f32 + 2.0) * gap
+            + count_w * gap
+            + 5.0 * gap;
+        // Query row: the `"> "` prompt plus the query text.
         let query_w = if self.show_query {
             (2 + crate::text_util::display_width(&self.query)) as f32 * gap
         } else {
@@ -2424,7 +2480,7 @@ impl crate::primitive::Primitive for Palette {
         };
         // Two border columns plus one pad column either side.
         let chrome = 4.0 * gap;
-        let content = self.widest_row(ctx).max(title_w).max(query_w);
+        let content = self.widest_row(ctx, &insets).max(title_w).max(query_w);
         let width = if self.preview.is_some() {
             (content + chrome) / 0.4
         } else {
@@ -2695,10 +2751,15 @@ impl Palette {
 
         match key.key {
             Key::Named(NamedKey::Escape) => return Handled::Event(PaletteEvent::Closed),
-            Key::Named(NamedKey::Enter) if self.mode == PaletteMode::List => {
-                return match self.current_idx() {
-                    Some(idx) => Handled::Event(PaletteEvent::ItemConfirmed { idx }),
-                    None => Handled::Consumed,
+            // Claimed in both modes, so the newline `EditOp::from_key`
+            // resolves Enter to never reaches the query.
+            Key::Named(NamedKey::Enter) => {
+                return match self.mode {
+                    PaletteMode::List => match self.current_idx() {
+                        Some(idx) => Handled::Event(PaletteEvent::ItemConfirmed { idx }),
+                        None => Handled::Consumed,
+                    },
+                    PaletteMode::Input => Handled::Ignored,
                 };
             }
             _ => {}
@@ -2879,6 +2940,370 @@ impl crate::interactive::Interactive for Palette {
                 )
             })
             .collect()
+    }
+}
+
+/// Routes a headless `TuiDriver` test can't reach, plus the intrinsic
+/// measurement a layout container sizes this popup with: the
+/// assistive-technology action path, a host-driven focus transition, the
+/// `Input`-mode Enter the host owns, and `Primitive::measure`.
+#[cfg(test)]
+mod interactive_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::event::{Key, MouseButton, NamedKey, Point};
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Size, Units};
+    use crate::types::Modifiers;
+    use crate::PointerShape;
+
+    /// Minimal [`EventHost`] mock — the same shape every other widget
+    /// module's own `Interactive` tests use.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+        emitted: Vec<crate::UiEvent>,
+        redraws: usize,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            true
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {
+            self.redraws += 1;
+        }
+        fn emit(&mut self, event: crate::UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn row(text: &str) -> PaletteItem {
+        PaletteItem {
+            text: StyledText::plain(text),
+            detail: None,
+            icon: None,
+            match_positions: Vec::new(),
+            depth: 0,
+            expandable: false,
+            expanded: false,
+        }
+    }
+
+    fn popup(query: &str) -> Palette {
+        Palette {
+            id: WidgetId::new("palette"),
+            title: "Commands".into(),
+            query: query.into(),
+            query_cursor: query.len(),
+            items: vec![row("alpha"), row("beta"), row("gamma")],
+            has_focus: true,
+            total_count: 3,
+            ..Palette::default()
+        }
+    }
+
+    fn area() -> Rect {
+        Rect::new(0.0, 0.0, 24.0, 10.0)
+    }
+
+    fn cells_ctx() -> LayoutCtx<'static> {
+        LayoutCtx::new(1.0, 1.0, false)
+    }
+
+    fn layout_of(p: &Palette) -> PalettePrimitiveLayout {
+        Primitive::layout(p, &cells_ctx(), area())
+    }
+
+    fn key(key: Key, modifiers: Modifiers) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key,
+            modifiers,
+            repeat: false,
+        })
+    }
+
+    #[test]
+    fn a_palette_is_one_focus_stop_even_when_the_marker_is_hidden() {
+        assert_eq!(Interactive::focus(&popup("")), FocusSpec::Stop);
+        let mut unfocused = popup("");
+        unfocused.has_focus = false;
+        assert_eq!(Interactive::focus(&unfocused), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn an_a11y_click_confirms_the_highlighted_row() {
+        let mut p = popup("");
+        p.selected_idx = 2;
+        let layout = layout_of(&p);
+        let mut host = MockHost::default();
+        let mut state = PaletteState::default();
+        let mut cx = EventCx::new(p.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &p,
+                &mut state,
+                &RoutedEvent::Action(A11yAction::Click),
+                &layout,
+                &mut cx
+            ),
+            Handled::Event(PaletteEvent::ItemConfirmed { idx: 2 })
+        );
+    }
+
+    #[test]
+    fn an_a11y_click_on_an_empty_list_reports_nothing() {
+        let mut p = popup("zzz");
+        p.items.clear();
+        let layout = layout_of(&p);
+        let mut host = MockHost::default();
+        let mut state = PaletteState::default();
+        let mut cx = EventCx::new(p.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &p,
+                &mut state,
+                &RoutedEvent::Action(A11yAction::Click),
+                &layout,
+                &mut cx
+            ),
+            Handled::Ignored
+        );
+        assert_eq!(
+            Interactive::a11y_actions(&p, &state),
+            vec![A11yAction::Focus]
+        );
+    }
+
+    /// A host-driven focus transition re-seeds the caret from the
+    /// descriptor on the way in and releases it on the way out, so the
+    /// next frame follows `query_cursor` again.
+    #[test]
+    fn focus_in_seeds_the_caret_from_the_descriptor_and_focus_out_releases_it() {
+        let p = popup("save");
+        let layout = layout_of(&p);
+        let mut host = MockHost::default();
+        let mut state = PaletteState {
+            cursor: Some(1),
+            anchor: Some(0),
+        };
+        let mut cx = EventCx::new(p.id, &mut host);
+
+        let focus_in = Interactive::handle(
+            &p,
+            &mut state,
+            &RoutedEvent::FocusIn(None),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(focus_in, Handled::Consumed);
+        assert_eq!(state.cursor, Some(4));
+        assert_eq!(state.anchor, None);
+
+        let focus_out =
+            Interactive::handle(&p, &mut state, &RoutedEvent::FocusOut, &layout, &mut cx);
+        assert_eq!(focus_out, Handled::Consumed);
+        assert_eq!(state.cursor, None);
+        assert_eq!(state.anchor, None);
+    }
+
+    /// `Input` mode hides the item list, so Enter is not the palette's to
+    /// claim — the host confirms the raw query text itself.
+    #[test]
+    fn input_mode_leaves_enter_to_the_host() {
+        let mut p = popup("new-branch");
+        p.mode = PaletteMode::Input;
+        let layout = layout_of(&p);
+        let mut host = MockHost::default();
+        let mut state = PaletteState::default();
+        let mut cx = EventCx::new(p.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &p,
+                &mut state,
+                &key(Key::Named(NamedKey::Enter), Modifiers::default()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Ignored
+        );
+    }
+
+    /// With the query row hidden there is nothing to type into, so
+    /// `Home`/`End` navigate the list instead of parking a caret.
+    #[test]
+    fn a_query_less_palette_navigates_with_home_and_end() {
+        let mut p = popup("");
+        p.show_query = false;
+        p.selected_idx = 1;
+        let layout = layout_of(&p);
+        let mut host = MockHost::default();
+        let mut state = PaletteState::default();
+        let mut cx = EventCx::new(p.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &p,
+                &mut state,
+                &key(Key::Named(NamedKey::End), Modifiers::default()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Event(PaletteEvent::SelectionChanged { idx: 2 })
+        );
+        assert_eq!(
+            Interactive::handle(
+                &p,
+                &mut state,
+                &key(Key::Char('x'), Modifiers::default()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Ignored,
+            "a hidden query row must not swallow a printable key"
+        );
+    }
+
+    /// A caret-only move changes no text, so it reports `Consumed` plus a
+    /// redraw rather than a `QueryChanged` the host would re-filter on.
+    #[test]
+    fn a_caret_only_move_asks_for_a_redraw_without_reporting_a_change() {
+        let p = popup("save");
+        let layout = layout_of(&p);
+        let mut host = MockHost::default();
+        let mut state = PaletteState::default();
+        let mut cx = EventCx::new(p.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &p,
+                &mut state,
+                &key(Key::Named(NamedKey::Left), Modifiers::default()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Consumed
+        );
+        assert_eq!(state.cursor, Some(3));
+        drop(cx);
+        assert_eq!(host.redraws, 1);
+    }
+
+    /// Pasted text arrives as `RoutedEvent::Text` and inserts at the
+    /// caret, reporting the whole new query.
+    #[test]
+    fn pasted_text_inserts_at_the_caret() {
+        let p = popup("sa");
+        let layout = layout_of(&p);
+        let mut host = MockHost::default();
+        let mut state = PaletteState::default();
+        let mut cx = EventCx::new(p.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &p,
+                &mut state,
+                &RoutedEvent::Text("ve".into()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Event(PaletteEvent::QueryChanged {
+                value: "save".into()
+            })
+        );
+    }
+
+    /// Clicking the query row focuses the popup and swallows the press,
+    /// rather than letting it reach whatever the overlay covers.
+    #[test]
+    fn a_press_on_the_query_row_focuses_and_is_swallowed() {
+        let p = popup("");
+        let layout = layout_of(&p);
+        assert_eq!(layout.hit_test_local(1.0, 1.0), PaletteHit::Query);
+        let mut host = MockHost::default();
+        let mut state = PaletteState::default();
+        let mut cx = EventCx::new(p.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &p,
+                &mut state,
+                &RoutedEvent::Pointer {
+                    kind: PointerKind::Down(MouseButton::Left),
+                    sub: None,
+                    local: Point::new(1.0, 1.0),
+                    mods: Modifiers::default(),
+                },
+                &layout,
+                &mut cx
+            ),
+            Handled::Consumed
+        );
+        drop(cx);
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    /// Every visible row is an addressable sub-part, in the popup's own
+    /// local space.
+    #[test]
+    fn sub_regions_name_every_visible_row() {
+        let p = popup("");
+        let layout = layout_of(&p);
+        let regions = Interactive::sub_regions(&p, &layout);
+        assert_eq!(regions.len(), 3);
+        for (idx, (rect, target)) in regions.iter().enumerate() {
+            assert_eq!(*target, SubTarget(idx as u64));
+            assert_eq!(rect.y, 3.0 + idx as f32, "items start below the separator");
+        }
+    }
+
+    /// The reported natural size holds every row the popup would paint,
+    /// plus the chrome rows `cell_layout` reserves.
+    #[test]
+    fn measure_reports_a_cell_box_that_holds_every_row_and_the_chrome() {
+        let p = popup("fo");
+        let natural = Primitive::measure(&p, &cells_ctx(), Size::new(80.0, 24.0));
+        // 1 title + 2 query/separator + 3 items + 1 bottom border.
+        assert_eq!(natural.height, Some(7.0));
+        let width = natural.width.expect("a palette measures its own width");
+
+        // Laying the popup out at exactly that size shows all three rows.
+        let layout = Primitive::layout(&p, &cells_ctx(), Rect::new(0.0, 0.0, width, 7.0));
+        assert_eq!(layout.layout.visible_items.len(), 3);
+        // ...and the widest label fits between the two border columns.
+        assert!(
+            width >= "gamma".len() as f32 + 4.0,
+            "measured width {width} must clear the widest label plus chrome"
+        );
+    }
+
+    /// `Input` mode hides the item list, so the measured box reserves no
+    /// item rows for it.
+    #[test]
+    fn measure_drops_the_item_rows_in_input_mode() {
+        let mut p = popup("new-branch");
+        p.mode = PaletteMode::Input;
+        let natural = Primitive::measure(&p, &cells_ctx(), Size::new(80.0, 24.0));
+        // 1 title + 1 query + 1 bottom border, no separator and no items.
+        assert_eq!(natural.height, Some(3.0));
+    }
+
+    /// A pixel surface measures in its own metrics: item rows pitch at
+    /// `item_row_height`, not the chrome line height.
+    #[test]
+    fn measure_pitches_pixel_item_rows_at_the_row_height_token() {
+        let p = popup("");
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
+        let natural = Primitive::measure(&p, &ctx, Size::new(600.0, 400.0));
+        let expected = 16.0 + (16.0 + 1.0) + 3.0 * item_row_height(16.0) + 4.0;
+        assert_eq!(natural.height, Some(expected));
     }
 }
 
