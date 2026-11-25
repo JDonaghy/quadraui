@@ -2462,9 +2462,9 @@ mod tests {
             rect,
             tree: split_tree,
         });
-        layout.push(Surface::TextInput {
+        layout.push(Surface::Widget {
             rect,
-            ti: text_input,
+            widget: Box::new(text_input),
         });
         layout.push(Surface::Toolbar {
             rect,
@@ -2501,7 +2501,13 @@ mod tests {
         );
         assert_eq!(zones[10], &FrameZone::Spinner { idx: 10 });
         assert_eq!(zones[11], &FrameZone::SplitTree { idx: 11 });
-        assert_eq!(zones[12], &FrameZone::TextInput { idx: 12 });
+        assert_eq!(
+            zones[12],
+            &FrameZone::Widget {
+                idx: 12,
+                id: Some(WidgetId::new("ti")),
+            }
+        );
         assert_eq!(zones[13], &FrameZone::Toolbar { idx: 13 });
 
         // A drop overlay is pushed at `DropOverlay::bounds()`.
@@ -2597,9 +2603,9 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
             editor,
         });
-        layout.push(Surface::Float {
-            float,
-            layout: float_layout,
+        layout.push(Surface::Widget {
+            rect: float_layout.bounds,
+            widget: Box::new(float),
         });
 
         let mut backend = RecordingBackend::new();
@@ -2631,13 +2637,21 @@ mod tests {
         let field = TextField::new(WidgetId::new("search")).with_value("hi");
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::TextField { rect, tf: field });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(field),
+        });
 
         let mut backend = RecordingBackend::new();
         let hit_map = layout.draw(&mut backend);
-        assert!(backend.calls.contains(&"draw_text_field"));
         assert_eq!(hit_map.zones()[0].0, rect);
-        assert_eq!(hit_map.zones()[0].1, FrameZone::TextField { idx: 0 });
+        assert_eq!(
+            hit_map.zones()[0].1,
+            FrameZone::Widget {
+                idx: 0,
+                id: Some(WidgetId::new("search")),
+            }
+        );
 
         let stops = layout.tab_stops();
         assert_eq!(stops.len(), 1);
@@ -2771,9 +2785,9 @@ mod tests {
         };
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::TextField {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 10.0, 20.0, 1.0),
-            tf: TextField::new(Id::new("status")),
+            widget: Box::new(TextField::new(Id::new("status"))),
         });
         layout.push(Surface::Widget {
             rect: widget_rect,

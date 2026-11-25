@@ -2277,9 +2277,7 @@ mod tests {
     use crate::primitives::board::{BoardCard, BoardColumn, BoardModel};
     use crate::primitives::canvas::Canvas;
     use crate::primitives::chart::{Chart, ChartKind, Series};
-    use crate::primitives::completions::{
-        CompletionItem, CompletionKind, CompletionsLayout, CompletionsPlacement,
-    };
+    use crate::primitives::completions::{CompletionItem, CompletionKind};
     use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow};
     use crate::primitives::float::{Float, FloatMeasure};
     use crate::primitives::form::Form;
@@ -2440,7 +2438,10 @@ mod tests {
             Rect::new(0.0, 0.0, 80.0, 24.0),
             FloatMeasure::new(10.0, 4.0),
         );
-        Surface::Float { float, layout }
+        Surface::Widget {
+            rect: layout.bounds,
+            widget: Box::new(float),
+        }
     }
 
     /// A mapped surface whose capture carries no `WidgetId`, and whose
@@ -3537,15 +3538,10 @@ mod tests {
             scroll_offset: 0,
             has_focus: false,
         };
-        let frame = frame_with(vec![Surface::Completions {
-            completions,
-            layout: CompletionsLayout {
-                bounds: Rect::new(0.0, 0.0, 30.0, 6.0),
-                placement: CompletionsPlacement::Below,
-                visible_items: Vec::new(),
-                hit_regions: Vec::new(),
-                resolved_scroll_offset: 0,
-            },
+        let bounds = Rect::new(0.0, 0.0, 30.0, 6.0);
+        let frame = frame_with(vec![Surface::Widget {
+            rect: bounds,
+            widget: Box::new(completions),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(

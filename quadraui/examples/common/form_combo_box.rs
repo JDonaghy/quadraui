@@ -24,9 +24,9 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, ComboBox, CompletionItemMeasure, FieldKind, Form, FormController,
-    FormControllerAction, FormEvent, FormField, Handled, InteractionState, Key, NamedKey, Reaction,
-    Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, ComboBox, FieldKind, Form, FormController, FormControllerAction,
+    FormEvent, FormField, Handled, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormComboBoxApp {
