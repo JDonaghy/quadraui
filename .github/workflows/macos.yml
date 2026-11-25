@@ -72,49 +72,59 @@ name: macOS
 # a stale push getting cancelled costs nothing, a stale trigger silently
 # skipping a real regression costs #537 again) over re-narrowing `paths`.
 #
-# The path filter still resolves the original #483/#598 tension:
+# Where this runs, and where it does not. GitHub's hosted macOS arm64 pool
+# regularly fails to assign a runner at all ("The job was not acquired by
+# Runner of type hosted even after multiple attempts"), and on a PR that
+# left the merge blocked until someone noticed and reran it (quadraui#3009
+# / PR #3019, #2992 / PR #2996). So the PR-time macOS signal now comes from
+# the fleet: coord's Test stage routes every `quadraui/src/**`,
+# `quadraui/tests/**` and `quadraui-gallery/**` diff to a capability
+# partition on the macmini, a real Mac, and its `test_command` runs this
+# job's build/test/clippy plus the control-channel, gallery, doc, gtk-on-mac
+# and cross-backend-parity steps there, against the PR head, BEFORE review.
+# That is earlier than this job ever ran.
 #
-#   * A PR touching neither `quadraui/src/**` nor this workflow file gets
-#     NO macOS check — not a passing one, not a failing one, none at all.
-#     Unrelated work (docs, other-workspace-member changes, CI files
-#     outside this one) is untouched, exactly as #483 intended.
-#   * A PR touching `quadraui/src/**` — macOS-specific or not — gets a
-#     real macos-latest build + test + clippy, where a red check is
-#     CORRECT: it is #484's progress bar and should hold the merge until
-#     the backend actually compiles and behaves.
+# This workflow therefore triggers on:
 #
-# Do NOT add `continue-on-error` here, and do NOT "restore" the
-# schedule-only trigger — that re-creates the circularity above.
+#   * `push` to `develop`, for every merge touching the paths below. This
+#     is the post-merge proof on a GitHub-hosted image, and it is also what
+#     refreshes the `gallery-capture-macos` artifact `pages.yml` publishes.
+#   * `pull_request` into `main` only, so a develop -> main promotion is
+#     still gated on a hosted macOS run before anything is published.
+#   * the Monday cron and `workflow_dispatch`, unchanged.
+#
+# A PR into `develop` gets no hosted macOS check. That is deliberate, not
+# the #483 schedule-only posture: the PR is still run on a Mac, by the
+# Test stage. A hand-opened PR that bypasses coord loses the pre-merge
+# signal and relies on the `develop` push run, so run
+# `cargo test -p quadraui --features macos` on a Mac before merging one.
+#
+# Do NOT add `continue-on-error` here.
 on:
   workflow_dispatch: {}
+  push:
+    branches: [develop]
+    paths:
+      - "quadraui/src/**"
+      - "quadraui/Cargo.toml"
+      - ".github/workflows/macos.yml"
   pull_request:
-    branches: [main, develop]
+    branches: [main]
     paths:
       - "quadraui/src/**"
       - "quadraui/Cargo.toml"
       - ".github/workflows/macos.yml"
   schedule:
-    # Mondays 06:00 UTC. Arbitrary but deliberate: frequent enough that a
-    # regression in `src/macos` (193 tests, only ever run here) doesn't sit
-    # undiscovered for a long stretch, infrequent enough not to burn
-    # macos-latest minutes on a lane nobody's iterating on day-to-day. Now
-    # a backstop rather than the primary signal — the widened `paths`
-    # filter above catches shared-code breakage on the PR that causes it —
-    # but kept for the same reason ci.yml's cross-target compile check is
-    # kept alongside it: compile-truth and schedule-truth are each cheap
-    # insurance against the other's blind spot.
+    # Mondays 06:00 UTC: a backstop for weeks with no qualifying push.
     - cron: "0 6 * * 1"
 
-# #792: cancel a superseded run's job rather than letting the trigger
-# widen above translate into runner cost from every force-push/rebase on
-# an open PR piling up queued macos-latest minutes. This is the
-# "path-filtered concurrency group" alternative the issue names in place
-# of re-narrowing the trigger — scoped per-PR (`github.ref` is the PR's
-# head ref for `pull_request` events) so unrelated PRs never cancel each
-# other's runs.
+# A superseded promotion-PR run is cancelled. A `develop` push is grouped by
+# its own SHA, because GitHub keeps only one PENDING run per group even with
+# `cancel-in-progress: false`; so every merge gets its own post-merge
+# verdict and a regression is pinned to the merge that caused it.
 concurrency:
-  group: macos-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: macos-${{ github.workflow }}-${{ github.event_name == 'push' && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_TERM_COLOR: always
