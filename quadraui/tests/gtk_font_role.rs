@@ -55,8 +55,7 @@
 //! scope. A primitive is intentionally absent from this file if it is
 //! editor-class (paints in the editor font on purpose —
 //! `crate::font_role::EditorClassPrimitive::ALL`) or if it paints no
-//! text of its own (`draw_split`, `draw_split_tree`, `draw_scrollbar`,
-//! `draw_drop_overlay`).
+//! text of its own (`draw_split`, `draw_split_tree`, `draw_scrollbar`).
 
 #![cfg(feature = "gtk")]
 

@@ -4308,19 +4308,6 @@ impl Backend for GtkBackend {
         self.register_zone(scrollbar.id, scrollbar.track);
     }
 
-    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
-        let theme = self.current_theme;
-        crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
-        // `DropOverlay` carries no `WidgetId` (there is at most one
-        // overlay active at a time), so register a fixed chrome id at
-        // whichever sub-rect it actually drew — otherwise this frame is
-        // indistinguishable from one where the no-op default silently
-        // dropped the call (C0 paint smoke, contract §5b).
-        if let Some(bounds) = overlay.highlight.or(overlay.insertion_bar) {
-            self.register_zone(WidgetId::new("chrome:drop-overlay"), bounds);
-        }
-    }
-
     fn draw_menu_bar(
         &mut self,
         rect: QRect,

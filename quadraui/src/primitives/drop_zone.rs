@@ -7,7 +7,11 @@
 //!
 //! [`DropOverlay`] translates a [`DropZone`] result into visual
 //! overlay geometry (highlight rect, insertion bar, ghost label
-//! position) that backends render on top of the normal frame.
+//! position). It is a widget-contract [`crate::primitive::Primitive`]:
+//! a host paints it on top of the normal frame with
+//! [`crate::backend::DrawsPrimitives::draw_dyn`] at
+//! [`DropOverlay::bounds`], or pushes it as a
+//! [`crate::frame::Surface::Widget`] at that rect.
 
 use crate::event::Rect;
 use serde::{Deserialize, Serialize};
@@ -200,8 +204,8 @@ fn edge_zone_size(dimension: f32) -> f32 {
 
 // ── Drop overlay ────────────────────────────────────────────────────────────
 
-/// Visual overlay components for rendering a drop zone indicator.
-/// Backends draw these on top of the normal frame during a tab drag.
+/// Visual overlay components for rendering a drop zone indicator,
+/// painted on top of the normal frame during a tab drag.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DropOverlay {
     /// Tinted rectangle highlighting the target zone.
@@ -213,32 +217,42 @@ pub struct DropOverlay {
 }
 
 impl DropOverlay {
-    /// Alpha applied to the highlight tint. Shared by every backend
-    /// rasteriser (`gtk::drop_overlay`, `macos::drop_overlay`,
-    /// `win::drop_overlay`) so they agree on a value by construction
-    /// rather than by three separately-copied literals — see
-    /// `PRIMITIVE_RULES.md`'s primitive-first rule.
+    /// Alpha applied to the highlight tint by the shared pixel painter
+    /// every pixel backend paints the overlay through.
     pub const HIGHLIGHT_ALPHA: f32 = 0.15;
 
     /// Minimum insertion-bar thickness (px on GTK/macOS, DIPs on
     /// Win-GUI), applied when [`DropOverlay::insertion_bar`]'s computed
-    /// width/height would otherwise be thinner (e.g. a zero-width bar
-    /// from [`drop_zone_overlay`]).
+    /// width would otherwise be thinner (e.g. a zero-width bar from
+    /// [`drop_zone_overlay`]).
     pub const MIN_BAR_THICKNESS: f32 = 2.0;
 
-    /// The rect a hit-test / accessibility consumer should treat as
-    /// this overlay's bounds — [`Self::highlight`] if present,
-    /// otherwise [`Self::insertion_bar`], otherwise a zero-sized
-    /// [`Rect::default`] (an overlay with neither carries no visible
-    /// geometry, same as `drop_zone_overlay` never constructing one).
+    /// The rect this overlay paints inside: the union of
+    /// [`Self::highlight`] and [`Self::insertion_bar`] (the bar widened to
+    /// [`Self::MIN_BAR_THICKNESS`], as the pixel painter widens it), or a
+    /// zero-sized [`Rect::default`] when the overlay carries neither.
     ///
-    /// Backs [`crate::frame::Surface::DropOverlay`]: unlike every other
-    /// transient-overlay `Surface` variant (`Tooltip`, `ContextMenu`,
-    /// `Dialog`, `Completions`, `RichTextPopup`), this primitive has no
-    /// sibling `*Layout` type carrying a single `bounds` field to
-    /// borrow — this method is that single source of truth instead.
+    /// The overlay's geometry is absolute, so this is the rect a host
+    /// pushes it at as a [`crate::frame::Surface::Widget`] or hands to
+    /// [`crate::backend::DrawsPrimitives::draw_dyn`]: a pixel backend clips
+    /// a widget's paint to that rect, and this is the smallest one that
+    /// clips nothing.
     pub fn bounds(&self) -> Rect {
-        self.highlight.or(self.insertion_bar).unwrap_or_default()
+        let bar = self
+            .insertion_bar
+            .map(|b| Rect::new(b.x, b.y, b.width.max(Self::MIN_BAR_THICKNESS), b.height));
+        match (self.highlight, bar) {
+            (Some(h), Some(b)) => {
+                let x0 = h.x.min(b.x);
+                let y0 = h.y.min(b.y);
+                let x1 = (h.x + h.width).max(b.x + b.width);
+                let y1 = (h.y + h.height).max(b.y + b.height);
+                Rect::new(x0, y0, x1 - x0, y1 - y0)
+            }
+            (Some(h), None) => h,
+            (None, Some(b)) => b,
+            (None, None) => Rect::default(),
+        }
     }
 }
 
@@ -306,37 +320,313 @@ pub fn drop_zone_overlay(
     }
 }
 
-// Shared implementation of drop overlay painting, factored from
-// GTK, macOS, and Windows backends to use [`crate::paint_surface::PaintSurface`].
+// ── Widget contract ─────────────────────────────────────────────────────────
 //
-// Windows's pre-migration implementation CPU-premixed the tint against
-// `theme.background` before an opaque fill. This shared implementation
-// uses `PaintSurface::surface_fill_rect`, which paints a real alpha blend
-// on all backends, fixing Windows's drop-overlay highlight to match
-// GTK/macOS's real-blend behaviour.
-//
-// `#[allow(dead_code)]`: only called once a real pixel backend is compiled in,
-// exercised by each backend's own `Backend::draw_drop_overlay` call sites plus
-// this module's own `RecordingSurface` tests.
+// `DropOverlay` reaches a backend through `DrawsPrimitives::draw_dyn` (or
+// a `Surface::Widget`) at the rect `DropOverlay::bounds` reports, and the
+// host registers `DROP_OVERLAY_ZONE_ID` at that rect. Its
+// geometry is absolute, so the resolved layout is the descriptor's own
+// rects rather than anything derived from the host's `rect`; `paint` runs
+// the shared pixel painter and `paint_cells` the cell painter in
+// `cell_paint`. A drop overlay reacts to no input of its own: the drag it
+// visualises belongs to the host (`compose::TabGroup`), so the widget is
+// `non_interactive!`.
+
+/// The zone id a host registers with [`crate::Backend::register_zone`]
+/// at [`DropOverlay::bounds`] after painting an overlay. The overlay
+/// paints no text, so this zone is what attributes it in a frame's
+/// inventory. At most one overlay is visible at a time, so one fixed
+/// chrome id serves every overlay.
+///
+/// The overlay itself carries no [`crate::types::WidgetId`]: it is
+/// painted over the tab bars a drag is hovering, and an id would make it
+/// the widget-contract hit for every point it covers.
+pub const DROP_OVERLAY_ZONE_ID: &str = "chrome:drop-overlay";
+
+/// The resolved layout of a [`DropOverlay`]: its paint rects, in the same
+/// absolute frame the descriptor's own geometry is expressed in.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[non_exhaustive]
+pub struct DropOverlayLayout {
+    /// [`DropOverlay::bounds`] — the union of everything below.
+    pub bounds: Rect,
+    /// The tinted target-zone rect, when the overlay has one.
+    pub highlight: Option<Rect>,
+    /// The tab-reorder insertion bar, when the overlay has one.
+    pub insertion_bar: Option<Rect>,
+}
+
+impl DropOverlay {
+    fn resolved_layout(&self) -> DropOverlayLayout {
+        DropOverlayLayout {
+            bounds: self.bounds(),
+            highlight: self.highlight,
+            insertion_bar: self.insertion_bar,
+        }
+    }
+}
+
+impl crate::a11y::A11yPrimitive for DropOverlay {
+    /// Presentational: the overlay previews where a dragged tab lands,
+    /// and the drag itself is announced by the tab bar being dragged
+    /// from.
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        crate::a11y::A11yInfo::new()
+            .with_role(crate::a11y::A11yRole::Presentation)
+            .with_label("Drop overlay")
+    }
+}
+
+impl crate::primitive::Primitive for DropOverlay {
+    type Layout = DropOverlayLayout;
+    type Event = std::convert::Infallible;
+
+    /// The size of [`DropOverlay::bounds`], in whatever units the
+    /// descriptor's geometry was computed in — the overlay is sized by
+    /// the drop zone it previews, never by the container.
+    fn measure(
+        &self,
+        _ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let b = self.bounds();
+        crate::NaturalSize::new(Some(b.width), Some(b.height))
+    }
+
+    /// The descriptor's own absolute rects. `rect` is only the clip the
+    /// host paints inside, normally [`DropOverlay::bounds`].
+    fn layout(&self, _ctx: &crate::primitive::LayoutCtx, _rect: Rect) -> DropOverlayLayout {
+        self.resolved_layout()
+    }
+
+    /// The shared pixel painter, against the already-resolved `layout`.
+    fn paint(
+        &self,
+        layout: &DropOverlayLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        native_surface_paint::paint_resolved(layout, surface, theme);
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, theme);
+    }
+
+    /// [`cell_paint::paint`] over `buf`, adapted through
+    /// [`crate::tui::cell_surface::TuiCellSurface`].
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &DropOverlayLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(layout, &mut surface, theme);
+    }
+}
+
+crate::non_interactive!(DropOverlay);
+
+/// The cell-grid painter for [`DropOverlay`], written against
+/// [`crate::CellSurface`].
+///
+/// The highlight re-tints the background of every cell it covers with a
+/// lightened `theme.accent_fg`, keeping each cell's glyph and foreground;
+/// the insertion bar is a column of `│` in `theme.accent_fg` on
+/// `theme.background`.
+///
+/// The background-only re-tint goes through
+/// [`crate::CellSurface::ratatui_buffer`]: every glyph-writing verb
+/// replaces the cell's symbol, and a read-back-then-rewrite through
+/// [`crate::CellSurface::get`] loses multi-codepoint symbols and the
+/// trailing half of a double-width glyph.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::DropOverlayLayout;
+    use crate::cell_surface::{solid_style, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    /// The highlight's background tint: `theme.accent_fg` lightened so
+    /// glyphs painted on top of it stay legible.
+    pub(crate) fn highlight_tint(theme: &Theme) -> Color {
+        let accent = theme.accent_fg;
+        Color::rgb(
+            accent.r.saturating_add(30),
+            accent.g.saturating_add(30),
+            accent.b.saturating_add(60),
+        )
+    }
+
+    /// Paint `layout` onto `surface`.
+    pub(crate) fn paint(layout: &DropOverlayLayout, surface: &mut dyn CellSurface, theme: &Theme) {
+        if let Some(h) = layout.highlight {
+            let x0 = h.x.round() as u16;
+            let y0 = h.y.round() as u16;
+            let x1 = (h.x + h.width).round() as u16;
+            let y1 = (h.y + h.height).round() as u16;
+            let tint_bg = crate::tui::ratatui_color(highlight_tint(theme));
+            if let Some(buf) = surface.ratatui_buffer() {
+                let area = buf.area;
+                for y in y0..y1 {
+                    for x in x0..x1 {
+                        if x >= area.x
+                            && y >= area.y
+                            && x < area.x + area.width
+                            && y < area.y + area.height
+                        {
+                            buf[(x, y)].set_bg(tint_bg);
+                        }
+                    }
+                }
+            }
+        }
+
+        if let Some(bar) = layout.insertion_bar {
+            let x = bar.x.round() as u16;
+            let y0 = bar.y.round() as u16;
+            let y1 = (bar.y + bar.height).round() as u16;
+            let style = solid_style(theme.accent_fg, theme.background);
+            for y in y0..y1 {
+                surface.put_char(x, y, '│', style);
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::event::Rect;
+        use crate::primitives::drop_zone::DropOverlay;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        fn paint_into(overlay: &DropOverlay, buf: &mut Buffer, theme: &Theme) {
+            let mut cursor_sink = None;
+            let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+                buf,
+                crate::backend::ColorDepth::TrueColor,
+                &mut cursor_sink,
+            );
+            paint(&overlay.resolved_layout(), &mut surface, theme);
+        }
+
+        #[test]
+        fn highlight_tints_background_and_keeps_glyphs() {
+            let theme = Theme::default();
+            let mut buf = Buffer::empty(RRect::new(0, 0, 10, 4));
+            buf[(2, 1)].set_char('x');
+            let overlay = DropOverlay {
+                highlight: Some(Rect::new(1.0, 1.0, 3.0, 2.0)),
+                insertion_bar: None,
+                ghost_position: None,
+            };
+            paint_into(&overlay, &mut buf, &theme);
+
+            let tint = crate::tui::ratatui_color(highlight_tint(&theme));
+            for y in 1..3 {
+                for x in 1..4 {
+                    assert_eq!(buf[(x, y)].bg, tint, "cell ({x},{y}) is tinted");
+                }
+            }
+            assert_eq!(
+                buf[(2, 1)].symbol(),
+                "x",
+                "the glyph under the tint survives"
+            );
+            assert_ne!(
+                buf[(0, 0)].bg,
+                tint,
+                "cells outside the highlight are untouched"
+            );
+            assert_ne!(
+                buf[(4, 1)].bg,
+                tint,
+                "the highlight's right edge is exclusive"
+            );
+        }
+
+        #[test]
+        fn highlight_past_the_buffer_edge_is_clipped() {
+            let theme = Theme::default();
+            let mut buf = Buffer::empty(RRect::new(0, 0, 4, 2));
+            let overlay = DropOverlay {
+                highlight: Some(Rect::new(2.0, 0.0, 10.0, 10.0)),
+                insertion_bar: None,
+                ghost_position: None,
+            };
+            paint_into(&overlay, &mut buf, &theme);
+            let tint = crate::tui::ratatui_color(highlight_tint(&theme));
+            assert_eq!(buf[(3, 1)].bg, tint);
+        }
+
+        #[test]
+        fn insertion_bar_paints_a_vertical_rule_in_the_accent() {
+            let theme = Theme::default();
+            let mut buf = Buffer::empty(RRect::new(0, 0, 10, 4));
+            let overlay = DropOverlay {
+                highlight: None,
+                insertion_bar: Some(Rect::new(5.0, 0.0, 1.0, 3.0)),
+                ghost_position: None,
+            };
+            paint_into(&overlay, &mut buf, &theme);
+            for y in 0..3 {
+                let cell = &buf[(5, y)];
+                assert_eq!(cell.symbol(), "│");
+                assert_eq!(cell.fg, crate::tui::ratatui_color(theme.accent_fg));
+                assert_eq!(cell.bg, crate::tui::ratatui_color(theme.background));
+            }
+            assert_eq!(
+                buf[(5, 3)].symbol(),
+                " ",
+                "the bar's bottom edge is exclusive"
+            );
+        }
+    }
+}
+
+// Shared pixel painter for drop overlays, against
+// [`crate::paint_surface::PaintSurface`] on GTK, macOS and Windows. The
+// highlight is a real alpha blend through `surface_fill_rect` on every
+// backend.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-#[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::DropOverlay;
+    use super::{DropOverlay, DropOverlayLayout};
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
-    /// Paint a [`DropOverlay`] onto `surface`: a translucent highlight
-    /// rect at [`DropOverlay::HIGHLIGHT_ALPHA`] and/or a solid insertion
-    /// bar widened to at least [`DropOverlay::MIN_BAR_THICKNESS`], both
-    /// in `theme.accent_fg`. `ghost_position` is not painted here — no
-    /// backend renders a ghost label (see the per-backend module docs),
-    /// so callers that want one draw it themselves on top.
-    pub(crate) fn paint(overlay: &DropOverlay, surface: &mut dyn PaintSurface, theme: &Theme) {
-        if let Some(h) = overlay.highlight {
+    /// Paint a resolved [`DropOverlayLayout`] onto `surface`: a
+    /// translucent highlight rect at [`DropOverlay::HIGHLIGHT_ALPHA`]
+    /// and/or a solid insertion bar widened to at least
+    /// [`DropOverlay::MIN_BAR_THICKNESS`], both in `theme.accent_fg`.
+    /// `ghost_position` is not painted here; a host that wants a ghost
+    /// label draws it itself on top.
+    pub(crate) fn paint_resolved(
+        layout: &DropOverlayLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) {
+        if let Some(h) = layout.highlight {
             if h.width > 0.0 && h.height > 0.0 {
                 surface.surface_fill_rect(
                     h,
@@ -347,7 +637,7 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        if let Some(bar) = overlay.insertion_bar {
+        if let Some(bar) = layout.insertion_bar {
             if bar.height > 0.0 {
                 let widened = crate::event::Rect::new(
                     bar.x,
@@ -367,6 +657,10 @@ pub(crate) mod native_surface_paint {
         use crate::event::{Rect, Viewport};
         use crate::types::Color;
         use crate::Image;
+
+        fn paint(overlay: &DropOverlay, surface: &mut dyn PaintSurface, theme: &Theme) {
+            paint_resolved(&overlay.resolved_layout(), surface, theme);
+        }
 
         /// Records every `surface_fill_rect` call — mirrors
         /// `primitives::scrollbar`'s `RecordingSurface` test double,
@@ -395,12 +689,10 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// Test-only recorder — `paint` never calls this verb
-            /// (see this module's own doc for why no primitive here has been
-            /// migrated onto it yet); this exists only so `RecordingSurface`
-            /// satisfies the trait. Records into the same `fills` list as
-            /// `surface_fill_rect` (radius dropped) — no test asserts on it
-            /// today.
+            /// Test-only recorder — the painter never calls this verb;
+            /// it exists only so `RecordingSurface` satisfies the trait.
+            /// Records into the same `fills` list as `surface_fill_rect`
+            /// (radius dropped).
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
@@ -429,10 +721,8 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        /// Regression pinning this migration's found divergence: the
-        /// highlight must carry real alpha (`Color::a < 255`), matching
-        /// GTK/macOS's pre-migration behaviour and *correcting*
-        /// Windows's pre-migration CPU-premix (see this module's doc).
+        /// The highlight carries real alpha (`Color::a < 255`) rather
+        /// than a tint pre-mixed against the theme background.
         #[test]
         fn highlight_paints_with_real_alpha_not_opaque() {
             let overlay = DropOverlay {
@@ -680,14 +970,8 @@ mod tests {
         assert_eq!(bar.height, 20.0);
     }
 
-    /// Backs [`crate::frame::Surface::DropOverlay`]: `bounds()` is
-    /// this primitive's only source of a zone rect, so it needs its
-    /// own direct coverage independent of the `Surface`/`FrameHitMap`
-    /// round-trip test in `frame.rs` (`FrameHitMap` itself is
-    /// `#[deprecated]`; the round-trip test still exercises it under
-    /// `#[allow(deprecated)]`).
     #[test]
-    fn bounds_prefers_highlight_then_insertion_bar_then_default() {
+    fn bounds_is_the_union_of_highlight_and_widened_insertion_bar() {
         let highlight = Rect::new(1.0, 2.0, 3.0, 4.0);
         let bar = Rect::new(5.0, 6.0, 7.0, 8.0);
 
@@ -696,7 +980,14 @@ mod tests {
             insertion_bar: Some(bar),
             ghost_position: None,
         };
-        assert_eq!(both.bounds(), highlight);
+        assert_eq!(both.bounds(), Rect::new(1.0, 2.0, 11.0, 12.0));
+
+        let highlight_only = DropOverlay {
+            highlight: Some(highlight),
+            insertion_bar: None,
+            ghost_position: None,
+        };
+        assert_eq!(highlight_only.bounds(), highlight);
 
         let bar_only = DropOverlay {
             highlight: None,
@@ -705,11 +996,54 @@ mod tests {
         };
         assert_eq!(bar_only.bounds(), bar);
 
+        let hairline_bar = DropOverlay {
+            highlight: None,
+            insertion_bar: Some(Rect::new(40.0, 0.0, 0.0, 20.0)),
+            ghost_position: None,
+        };
+        assert_eq!(
+            hairline_bar.bounds(),
+            Rect::new(40.0, 0.0, DropOverlay::MIN_BAR_THICKNESS, 20.0),
+            "bounds covers the bar as the pixel painter widens it"
+        );
+
         let neither = DropOverlay {
             highlight: None,
             insertion_bar: None,
             ghost_position: None,
         };
         assert_eq!(neither.bounds(), Rect::default());
+    }
+
+    #[test]
+    fn layout_and_measure_follow_bounds_whatever_rect_the_host_passes() {
+        use crate::primitive::{LayoutCtx, Primitive, Size};
+
+        let overlay = DropOverlay {
+            highlight: Some(Rect::new(4.0, 2.0, 10.0, 6.0)),
+            insertion_bar: None,
+            ghost_position: None,
+        };
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let layout = overlay.layout(&ctx, Rect::new(0.0, 0.0, 80.0, 24.0));
+        assert_eq!(layout.bounds, overlay.bounds());
+        assert_eq!(layout.highlight, overlay.highlight);
+        assert_eq!(layout.insertion_bar, None);
+
+        let natural = overlay.measure(&ctx, Size::new(80.0, 24.0));
+        assert_eq!(natural.width, Some(10.0));
+        assert_eq!(natural.height, Some(6.0));
+    }
+
+    #[test]
+    fn an_overlay_carries_no_widget_id() {
+        use crate::primitive::Primitive;
+
+        let overlay = DropOverlay {
+            highlight: Some(Rect::new(0.0, 0.0, 4.0, 4.0)),
+            insertion_bar: None,
+            ghost_position: None,
+        };
+        assert!(overlay.id().is_none());
     }
 }

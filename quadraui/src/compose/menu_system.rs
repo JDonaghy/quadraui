@@ -1278,7 +1278,6 @@ mod tests {
         ) {
         }
         fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
-        fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {}
         fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
             unimplemented!()
         }

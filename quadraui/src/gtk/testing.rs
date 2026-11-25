@@ -492,7 +492,7 @@ impl<A: AppLogic> GtkDriver<A> {
     /// on a phrase that straddles a style change. The exceptions are
     /// `draw_terminal` (a per-cell grid — deliberately not recorded) and
     /// the primitives that paint no text at all (`draw_split`,
-    /// `draw_split_tree`, `draw_scrollbar`, `draw_drop_overlay`).
+    /// `draw_split_tree`, `draw_scrollbar`).
     pub fn painted_texts(&self) -> Vec<&str> {
         self.core
             .backend()

@@ -662,7 +662,7 @@ pub use primitives::diff_view::{
 };
 pub use primitives::drop_zone::{
     compute_drop_zone, drop_zone_hit_test, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay,
-    DropZone, DropZoneHit, DropZoneKind,
+    DropOverlayLayout, DropZone, DropZoneHit, DropZoneKind, DROP_OVERLAY_ZONE_ID,
 };
 pub use primitives::editor::{
     CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,

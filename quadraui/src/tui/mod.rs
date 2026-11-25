@@ -53,7 +53,6 @@ mod data_table;
 mod date_picker;
 mod dialog;
 mod diff_view;
-mod drop_overlay;
 mod editor;
 pub mod events;
 mod find_replace;
@@ -153,7 +152,6 @@ pub use dialog::{draw_dialog, draw_dialog_with_nerd_fonts, tui_dialog_layout};
 #[doc(hidden)]
 pub use diff_view::draw_diff_view;
 #[doc(hidden)]
-pub use drop_overlay::draw_drop_overlay;
 pub use editor::draw_editor;
 #[doc(hidden)]
 pub use editor::{draw_editor_with_reserve, EditorPaintResult};

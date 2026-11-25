@@ -11,7 +11,7 @@
 //!    [`CairoSurface::layout`] is `Option` so one struct covers both —
 //!    [`Self::layout_or_panic`] panics only if a text verb is reached with
 //!    `layout: None`.
-//! 2. **Fill translucency.** [`crate::Scrollbar`], `gtk::drop_overlay`,
+//! 2. **Fill translucency.** [`crate::Scrollbar`], [`crate::DropOverlay`],
 //!    `gtk::status_bar`, `gtk::diff_view` and `gtk::toast`
 //!    fill with `set_source_rgba` (honouring `color.a`); [`crate::Form`],
 //!    [`crate::Split`], [`crate::SplitTree`] and

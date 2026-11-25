@@ -3911,10 +3911,6 @@ impl Backend for MacBackend {
         );
     }
 
-    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
-        let theme = self.current_theme;
-        crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
-    }
     /// macOS's own idiomatic default for a top-level menu bar:
     /// presents `bar` as the real system `NSMenu` whenever
     /// [`Backend::effective_menu_style`] resolves to

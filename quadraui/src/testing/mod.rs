@@ -1427,9 +1427,6 @@ impl crate::Backend for RecordingBackend {
     fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
         self.record("draw_scrollbar");
     }
-    fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {
-        self.record("draw_drop_overlay");
-    }
     fn draw_menu_bar(&mut self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
         self.record("draw_menu_bar");
         unimplemented!("RecordingBackend has no MenuBar layout algorithm")

@@ -14,9 +14,9 @@
 //!   *per cell*, so routing it through the recorder would push thousands
 //!   of single-character entries into the map per frame. It needs the
 //!   cheaper row-coalescing path; see `src/gtk/painted_text.rs`.
-//! * **`draw_split` / `draw_split_tree` / `draw_scrollbar` /
-//!   `draw_drop_overlay`** — these paint no text at all (dividers,
-//!   tracks, tint rects), so there is nothing to record. The labels a
+//! * **`draw_split` / `draw_split_tree` / `draw_scrollbar`** — these
+//!   paint no text at all (dividers, tracks), so there is nothing to
+//!   record. The labels a
 //!   `Split` appears to have belong to whatever the app paints into
 //!   `first_bounds` / `second_bounds`.
 #![cfg(feature = "gtk")]
