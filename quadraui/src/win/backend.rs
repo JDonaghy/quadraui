@@ -19,7 +19,6 @@ use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
-use crate::primitives::button::{Button, ButtonLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterHit, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
@@ -5379,51 +5378,6 @@ impl Backend for WinBackend {
         )
     }
 
-    /// Paint via the shared
-    /// [`crate::primitives::button::native_surface_paint::paint`] once a
-    /// surface is attached — mirrors [`Self::draw_progress`]. See
-    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
-    /// fallback posture.
-    fn draw_button(&mut self, rect: Rect, button: &Button) -> ButtonLayout {
-        self.draw_button_with_state(rect, button, &crate::InteractionState::new())
-    }
-
-    /// Paint via the shared [`native_surface_paint::paint`][paint], passing
-    /// through `interaction`'s resolved hover/pressed state for
-    /// `button.id`.
-    ///
-    /// [paint]: crate::primitives::button::native_surface_paint::paint
-    fn draw_button_with_state(
-        &mut self,
-        rect: Rect,
-        button: &Button,
-        interaction: &crate::InteractionState,
-    ) -> ButtonLayout {
-        let (is_hovered, is_pressed) = (
-            interaction.is_hovered(&button.id),
-            interaction.is_pressed(&button.id),
-        );
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() && self.dwrite.is_some() {
-            let theme = self.current_theme;
-            let style = self.style();
-            let layout = crate::primitives::button::native_surface_paint::paint(
-                button, self, &theme, rect, &style, is_hovered, is_pressed,
-            );
-            self.register_zone(button.id, rect);
-            return layout;
-        }
-        // No surface/DWrite yet — return the real (pure-geometry) layout
-        // via `button_layout` and paint nothing. `is_hovered`/`is_pressed`
-        // only affect painting, so they're unused on this path.
-        let _ = (is_hovered, is_pressed);
-        let layout = self.button_layout(rect, button);
-        self.register_zone(button.id, rect);
-        layout
-    }
-    fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout {
-        button.layout(rect)
-    }
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///

@@ -25,7 +25,6 @@ mod activity_bar;
 pub mod backend;
 mod board;
 mod braille;
-mod button;
 mod canvas;
 mod cell_grid;
 // `pub(crate)` rather than private: `Switch`'s own `Primitive::paint_cells`
@@ -129,9 +128,6 @@ pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::TuiBackend;
 #[doc(hidden)]
 pub use board::{draw_board, tui_board_layout};
-pub(crate) use button::draw_button_layout;
-#[doc(hidden)]
-pub use button::{draw_button, draw_button_interactive, tui_button_layout};
 #[doc(hidden)]
 pub use canvas::{draw_canvas, tui_canvas_layout, tui_canvas_region_hit_test};
 #[doc(hidden)]

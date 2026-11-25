@@ -11,11 +11,12 @@ use std::rc::Rc;
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataRow, DataTable, Decoration, FontRole, InteractionState, ListItem,
-    ListView, ListViewHit, ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize,
-    Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar, TabBarLayout,
-    TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme,
-    TreePath, TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
+    Backend, Button, ButtonLayout, DataRow, DataTable, Decoration, FontRole, InteractionState,
+    ListItem, ListView, ListViewHit, ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar,
+    SectionSize, Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar,
+    TabBarLayout, TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine,
+    TextRegion, Theme, TreePath, TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout,
+    WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
@@ -170,6 +171,30 @@ pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
     NO_WIDGETS.with(|map| *map)
 }
 
+/// Paint `button` into `rect` through the widget contract —
+/// [`quadraui::DrawsPrimitives::draw_dyn`], since [`Button`] is a
+/// [`quadraui::primitive::Primitive`] — and return the resolved
+/// [`ButtonLayout`] for host click dispatch. All three button paint paths
+/// here (the fixed `"button"` slot in [`draw_bands`] and
+/// [`LeafDescriptor::Button`] in [`paint_leaf`]/[`paint_leaf_windowed`])
+/// share this one call, so none reaches for a per-backend button
+/// rasteriser of its own.
+///
+/// `rect`-bounds fallback when `draw_dyn` hands back a layout of some
+/// other concrete type, which means nothing measured a button — the same
+/// "leaves it false" default [`Button::layout`] itself falls back to when
+/// it has no [`quadraui::primitive::LayoutCtx`] to consult.
+fn paint_button(backend: &mut dyn Backend, rect: Rect, button: &Button) -> ButtonLayout {
+    backend
+        .draw_dyn(rect, button, &())
+        .downcast_ref::<ButtonLayout>()
+        .copied()
+        .unwrap_or(ButtonLayout {
+            bounds: rect,
+            nerd_fonts_enabled: false,
+        })
+}
+
 /// Paint `tab_bar` into `rect` through the widget contract —
 /// [`quadraui::DrawsPrimitives::draw_dyn`], since [`TabBar`] is a
 /// [`quadraui::primitive::Primitive`] — and return the **bar-relative**
@@ -260,7 +285,7 @@ pub fn draw_bands(
 
     if let Some(button) = refs.button {
         if let Some(rect) = band(3.0) {
-            let layout = backend.draw_button(rect, button);
+            let layout = paint_button(backend, rect, button);
             hits.push(PaintedHit::Button {
                 id: button.id,
                 layout,
@@ -2885,7 +2910,7 @@ pub fn paint_leaf_windowed(
     let window = windows.get(&leaf.id).copied();
     match &leaf.descriptor {
         LeafDescriptor::Button(button) => {
-            let layout = backend.draw_button(area, button);
+            let layout = paint_button(backend, area, button);
             hits.push(PaintedHit::Button { id, layout });
         }
         LeafDescriptor::TextDisplay(text_display) => {

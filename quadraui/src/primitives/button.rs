@@ -659,9 +659,11 @@ impl crate::primitive::Primitive for Button {
         let _ = (layout, surface, theme, style);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_button_layout`] because the `Buffer` ->
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] over `buf`, adapted through
+    /// [`crate::tui::cell_surface::TuiCellSurface`] — the `Buffer` ->
+    /// [`crate::CellSurface`] bridge every `tui` cell-grid painter builds
+    /// for itself, `pub(crate)` rather than private to `crate::tui` for
+    /// exactly this reach.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -669,7 +671,14 @@ impl crate::primitive::Primitive for Button {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_button_layout(buf, self, layout, theme);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, layout, &mut surface, theme, false, false);
     }
 }
 
@@ -894,6 +903,14 @@ pub(crate) mod cell_paint {
     #[cfg(test)]
     mod tests {
         use super::*;
+        use crate::event::{Point, Rect as QRect};
+        use crate::primitive::LayoutCtx;
+        use crate::primitives::button::{cell_button_layout, ButtonHit};
+        use crate::tui::cell_surface::TuiCellSurface;
+        use crate::tui::ratatui_color;
+        use crate::types::{Icon, WidgetId};
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
 
         /// Must clamp against the button's own paint width rather than
         /// growing the gap string without bound — an unvalidated
@@ -904,6 +921,367 @@ pub(crate) mod cell_paint {
             assert_eq!(icon_gap_cells(f32::MAX, 10), 10);
             assert_eq!(icon_gap_cells(f32::INFINITY, 10), 10);
             assert_eq!(icon_gap_cells(f32::NAN, 10), 10);
+        }
+
+        fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+            buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+        }
+
+        fn cell_bg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+            buf[(x, y)]
+                .style()
+                .bg
+                .unwrap_or(ratatui::style::Color::Reset)
+        }
+
+        fn cell_fg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+            buf[(x, y)]
+                .style()
+                .fg
+                .unwrap_or(ratatui::style::Color::Reset)
+        }
+
+        fn mk_button(label: &str) -> Button {
+            Button::new(WidgetId::new("dialog:ok"), label)
+        }
+
+        /// Lay out and paint `button` into `area` on a fresh [`Buffer`],
+        /// `is_hovered`/`is_pressed` both `false` — the plain paint every
+        /// non-state contract call goes through today.
+        fn paint_button(area: RRect, button: &Button, theme: &Theme) -> (Buffer, ButtonLayout) {
+            paint_interactive(area, button, theme, false, false)
+        }
+
+        /// [`paint`], threading `is_hovered`/`is_pressed` through to
+        /// [`super::paint`] directly — the only way to reach this
+        /// painter's own hover/pressed tint today, since no contract
+        /// paint call wires an `InteractionState` through yet (see
+        /// [`Primitive::paint_cells`]'s own doc for that gap).
+        fn paint_interactive(
+            area: RRect,
+            button: &Button,
+            theme: &Theme,
+            is_hovered: bool,
+            is_pressed: bool,
+        ) -> (Buffer, ButtonLayout) {
+            let mut buf = Buffer::empty(area);
+            let layout = cell_button_layout(
+                button,
+                &LayoutCtx::new(1.0, 1.0, false),
+                QRect::new(
+                    area.x as f32,
+                    area.y as f32,
+                    area.width as f32,
+                    area.height as f32,
+                ),
+            );
+            let mut cursor_sink = None;
+            let mut surface = TuiCellSurface::new(
+                &mut buf,
+                crate::backend::ColorDepth::TrueColor,
+                &mut cursor_sink,
+            );
+            super::paint(button, &layout, &mut surface, theme, is_hovered, is_pressed);
+            (buf, layout)
+        }
+
+        // Parametrized over the area's origin — LESSONS.md "Layout helpers
+        // must return coords in the same frame across backends".
+        // `cell_button_layout` bakes `area.x`/`area.y` straight into
+        // `Button::layout`'s returned bounds (absolute frame), so the
+        // regression guard is a full paint+hit_test round trip re-run at a
+        // non-zero origin.
+        fn primary_round_trip_at(origin_x: u16, origin_y: u16) {
+            let area = RRect::new(origin_x, origin_y, 8, 1);
+            let button = mk_button("OK");
+            let (buf, layout) = paint_button(area, &button, &Theme::default());
+
+            assert_eq!(cell_char(&buf, origin_x, origin_y), '[');
+            assert_eq!(cell_char(&buf, origin_x + 2, origin_y), 'O');
+            assert_eq!(cell_char(&buf, origin_x + 3, origin_y), 'K');
+            assert_eq!(cell_char(&buf, origin_x + 5, origin_y), ']');
+
+            let hit = layout.hit_test(Point::new(origin_x as f32 + 1.0, origin_y as f32));
+            assert_eq!(hit, ButtonHit::Body);
+            let outside = layout.hit_test(Point::new(origin_x as f32 + 50.0, origin_y as f32));
+            assert_eq!(outside, ButtonHit::Outside);
+        }
+
+        #[test]
+        fn primary_paint_and_hit_round_trip() {
+            primary_round_trip_at(0, 0);
+        }
+
+        #[test]
+        fn primary_paint_and_hit_round_trip_at_nonzero_origin() {
+            primary_round_trip_at(7, 13);
+        }
+
+        #[test]
+        fn icon_variant_paints_bare_label_without_brackets() {
+            let area = RRect::new(0, 0, 4, 1);
+            let mut button = mk_button("X");
+            button.variant = ButtonVariant::Icon;
+            let (buf, _) = paint_button(area, &button, &Theme::default());
+            assert_eq!(cell_char(&buf, 0, 0), 'X');
+            assert_eq!(cell_char(&buf, 1, 0), ' ');
+        }
+
+        #[test]
+        fn disabled_button_still_paints_but_dims() {
+            let area = RRect::new(0, 0, 8, 1);
+            let mut button = mk_button("OK");
+            button.disabled = true;
+            let (buf, _) = paint_button(area, &button, &Theme::default());
+            assert_eq!(cell_char(&buf, 2, 0), 'O');
+        }
+
+        /// A taller cell centres the label (keeping it off the focus ring's
+        /// edge rows) while the hit rect still covers the whole cell.
+        #[test]
+        fn taller_area_centres_the_label_and_keeps_whole_cell_hit_bounds() {
+            let area = RRect::new(0, 0, 8, 3);
+            let (buf, layout) = paint_button(area, &mk_button("OK"), &Theme::default());
+            assert_eq!(cell_char(&buf, 0, 1), '[', "label paints on the middle row");
+            assert_eq!(cell_char(&buf, 0, 0), ' ');
+            assert_eq!(cell_char(&buf, 0, 2), ' ');
+            assert_eq!(layout.bounds.height.round() as u16, area.height);
+            assert_eq!(layout.hit_test(Point::new(0.0, 0.0)), ButtonHit::Body);
+        }
+
+        #[test]
+        fn zero_size_is_a_no_op() {
+            let (buf, _) =
+                paint_button(RRect::new(0, 0, 0, 0), &mk_button("OK"), &Theme::default());
+            assert_eq!(buf.area, RRect::new(0, 0, 0, 0));
+        }
+
+        #[test]
+        fn hovered_background_differs_from_resting() {
+            let area = RRect::new(0, 0, 8, 1);
+            let theme = Theme::default();
+            let button = mk_button("OK");
+
+            let (resting_buf, _) = paint_interactive(area, &button, &theme, false, false);
+            let (hovered_buf, _) = paint_interactive(area, &button, &theme, true, false);
+
+            assert_ne!(
+                cell_bg(&resting_buf, 3, 0),
+                cell_bg(&hovered_buf, 3, 0),
+                "hovering should repaint the button background"
+            );
+        }
+
+        #[test]
+        fn pressed_background_differs_from_hovered_and_resting() {
+            let area = RRect::new(0, 0, 8, 1);
+            let theme = Theme::default();
+            let button = mk_button("OK");
+
+            let (resting_buf, _) = paint_interactive(area, &button, &theme, false, false);
+            let (hovered_buf, _) = paint_interactive(area, &button, &theme, true, false);
+            let (pressed_buf, _) = paint_interactive(area, &button, &theme, true, true);
+
+            assert_ne!(cell_bg(&pressed_buf, 3, 0), cell_bg(&resting_buf, 3, 0));
+            assert_ne!(cell_bg(&pressed_buf, 3, 0), cell_bg(&hovered_buf, 3, 0));
+        }
+
+        #[test]
+        fn disabled_button_ignores_hover_and_pressed() {
+            let area = RRect::new(0, 0, 8, 1);
+            let theme = Theme::default();
+            let mut button = mk_button("OK");
+            button.disabled = true;
+
+            let (resting_buf, _) = paint_interactive(area, &button, &theme, false, false);
+            let (hovered_buf, _) = paint_interactive(area, &button, &theme, true, true);
+
+            assert_eq!(
+                cell_bg(&resting_buf, 3, 0),
+                cell_bg(&hovered_buf, 3, 0),
+                "a disabled button must not paint hover/pressed tints"
+            );
+        }
+
+        /// `Danger`/`Warning` paint intent entirely through the foreground
+        /// colour on TUI — both the bracket chrome and the label text — and
+        /// leave the background untouched (same `surface_bg` as `Secondary`),
+        /// unlike `Primary`'s solid `accent_bg` fill.
+        #[test]
+        fn danger_variant_paints_error_fg_on_brackets_and_label_with_no_bg_fill() {
+            let area = RRect::new(0, 0, 10, 1);
+            let theme = Theme::default();
+            let mut button = mk_button("Delete");
+            button.variant = ButtonVariant::Danger;
+
+            let (buf, _) = paint_button(area, &button, &theme);
+
+            let bracket_fg = cell_fg(&buf, 0, 0);
+            let label_fg = cell_fg(&buf, 2, 0);
+            assert_eq!(bracket_fg, ratatui_color(theme.error_fg));
+            assert_eq!(label_fg, ratatui_color(theme.error_fg));
+            assert_eq!(
+                cell_bg(&buf, 0, 0),
+                ratatui_color(theme.surface_bg),
+                "Danger must not fill a solid background on TUI"
+            );
+        }
+
+        #[test]
+        fn warning_variant_paints_warning_fg_on_brackets_and_label() {
+            let area = RRect::new(0, 0, 10, 1);
+            let theme = Theme::default();
+            let mut button = mk_button("Overwrite");
+            button.variant = ButtonVariant::Warning;
+
+            let (buf, _) = paint_button(area, &button, &theme);
+
+            assert_eq!(cell_fg(&buf, 0, 0), ratatui_color(theme.warning_fg));
+            assert_eq!(cell_fg(&buf, 2, 0), ratatui_color(theme.warning_fg));
+        }
+
+        /// A focused `Danger` button must stay visually distinct from an
+        /// unfocused one: the bracket chrome switches to `accent_fg` (the
+        /// same focus cue `Primary`/`Secondary` already paint) while the
+        /// label keeps `error_fg` either way.
+        #[test]
+        fn focused_danger_button_bracket_differs_from_unfocused_but_label_keeps_intent_colour() {
+            let area = RRect::new(0, 0, 10, 1);
+            let theme = Theme::default();
+            let mut button = mk_button("Delete");
+            button.variant = ButtonVariant::Danger;
+
+            let (unfocused_buf, _) = paint_button(area, &button, &theme);
+            let unfocused_bracket_fg = cell_fg(&unfocused_buf, 0, 0);
+            let unfocused_label_fg = cell_fg(&unfocused_buf, 2, 0);
+
+            button.focused = true;
+            let (focused_buf, _) = paint_button(area, &button, &theme);
+            let focused_bracket_fg = cell_fg(&focused_buf, 0, 0);
+            let focused_label_fg = cell_fg(&focused_buf, 2, 0);
+
+            assert_ne!(
+                focused_bracket_fg, unfocused_bracket_fg,
+                "a focused Danger button's bracket chrome must look different \
+                 from an unfocused one"
+            );
+            assert_eq!(
+                focused_bracket_fg,
+                ratatui_color(theme.accent_fg),
+                "focus wins on the bracket chrome ahead of the intent colour"
+            );
+            assert_eq!(
+                unfocused_label_fg,
+                ratatui_color(theme.error_fg),
+                "the label keeps the intent colour while unfocused"
+            );
+            assert_eq!(
+                focused_label_fg,
+                ratatui_color(theme.error_fg),
+                "the label keeps the intent colour while focused too"
+            );
+        }
+
+        #[test]
+        fn disabled_danger_button_paints_muted_fg_not_the_intent_colour() {
+            let area = RRect::new(0, 0, 10, 1);
+            let theme = Theme::default();
+            let mut button = mk_button("Delete");
+            button.variant = ButtonVariant::Danger;
+            button.disabled = true;
+
+            let (buf, _) = paint_button(area, &button, &theme);
+
+            assert_eq!(cell_fg(&buf, 2, 0), ratatui_color(theme.muted_fg));
+        }
+
+        /// `[ ⚠ Delete ]`: a Danger button with a leading icon, painted with
+        /// Nerd Fonts on (glyph) and off (fallback).
+        #[test]
+        fn danger_button_with_icon_paints_glyph_or_fallback_per_nerd_fonts_flag() {
+            let area = RRect::new(0, 0, 14, 1);
+            let theme = Theme::default();
+            let mut button = mk_button("Delete");
+            button.variant = ButtonVariant::Danger;
+            button.icon = Some(Icon::new("\u{f071}", "!"));
+
+            let row_text = |nerd_fonts_enabled: bool| -> String {
+                let layout = cell_button_layout(
+                    &button,
+                    &LayoutCtx::new(1.0, 1.0, nerd_fonts_enabled),
+                    QRect::new(0.0, 0.0, area.width as f32, area.height as f32),
+                );
+                let mut buf = Buffer::empty(area);
+                let mut cursor_sink = None;
+                let mut surface = TuiCellSurface::new(
+                    &mut buf,
+                    crate::backend::ColorDepth::TrueColor,
+                    &mut cursor_sink,
+                );
+                paint(&button, &layout, &mut surface, &theme, false, false);
+                (area.x..area.x + area.width)
+                    .map(|x| cell_char(&buf, x, area.y))
+                    .collect()
+            };
+
+            let with_nerd_fonts = row_text(true);
+            assert!(
+                with_nerd_fonts.contains('\u{f071}'),
+                "nerd_fonts_enabled: true should paint the glyph half of the icon, got {with_nerd_fonts:?}"
+            );
+            assert!(with_nerd_fonts.contains("Delete"));
+
+            let without_nerd_fonts = row_text(false);
+            assert!(
+                without_nerd_fonts.contains('!'),
+                "nerd_fonts_enabled: false should paint the fallback half of the icon, got {without_nerd_fonts:?}"
+            );
+            assert!(!without_nerd_fonts.contains('\u{f071}'));
+        }
+
+        /// A huge/non-finite `icon_gap` must neither panic nor allocate
+        /// anywhere near its raw size — the unit-level clamp is covered
+        /// directly by [`icon_gap_cells_clamps_non_finite_and_huge_gaps`];
+        /// this is the black-box "painting one doesn't blow up" check.
+        #[test]
+        fn huge_icon_gap_is_clamped_instead_of_overflowing_or_panicking() {
+            let area = RRect::new(0, 0, 14, 1);
+            let mut button = mk_button("Save");
+            button.icon = Some(Icon::new("S", "S"));
+            button.icon_gap = f32::MAX;
+
+            let _ = paint_button(area, &button, &Theme::default());
+        }
+
+        #[test]
+        fn trailing_icon_paints_after_the_label() {
+            let area = RRect::new(0, 0, 14, 1);
+            let mut button = mk_button("Save");
+            button.icon = Some(Icon::new("S", "S"));
+            button.icon_position = ButtonIconPosition::Trailing;
+
+            let (buf, _) = paint_button(area, &button, &Theme::default());
+            let row: String = (area.x..area.x + area.width)
+                .map(|x| cell_char(&buf, x, area.y))
+                .collect();
+
+            let save_idx = row.find("Save").expect("label must paint");
+            let icon_idx = row.rfind('S').expect("icon glyph must paint");
+            assert!(
+                icon_idx > save_idx,
+                "a Trailing icon must paint after the label, got {row:?}"
+            );
+        }
+
+        #[test]
+        fn no_icon_paints_the_label_alone() {
+            let area = RRect::new(0, 0, 8, 1);
+            let button = mk_button("OK");
+            assert_eq!(button.icon, None);
+
+            let (buf, _) = paint_button(area, &button, &Theme::default());
+            assert_eq!(cell_char(&buf, 0, 0), '[');
+            assert_eq!(cell_char(&buf, 2, 0), 'O');
         }
     }
 }
@@ -1421,6 +1799,206 @@ pub(crate) mod native_surface_paint {
 
             let (_, _, fill) = surface.fills.first().expect("button must paint a fill");
             assert_eq!(*fill, theme.button_warning_bg());
+        }
+
+        #[test]
+        fn secondary_variant_fills_surface_bg() {
+            let mut button = Button::new(WidgetId::new("b"), "Cancel");
+            button.variant = ButtonVariant::Secondary;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (_, _, fill) = surface.fills.first().expect("button must paint a fill");
+            assert_eq!(*fill, theme.surface_bg);
+        }
+
+        #[test]
+        fn disabled_button_fills_surface_bg_regardless_of_variant() {
+            let mut button = Button::new(WidgetId::new("b"), "OK");
+            button.disabled = true;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (_, _, fill) = surface.fills.first().expect("button must paint a fill");
+            assert_eq!(*fill, theme.surface_bg);
+        }
+
+        /// `is_hovered: true` tints the fill toward `Theme::button_hover_bg`
+        /// — this painter's own hover story, reached today only by a
+        /// direct caller (no widget-contract paint call threads
+        /// `is_hovered`/`is_pressed` through yet; see [`Primitive::paint`]'s
+        /// own doc for that gap).
+        #[test]
+        fn hover_state_changes_the_fill_colour() {
+            let button = Button::new(WidgetId::new("b"), "OK");
+            let theme = Theme::default();
+            let style = Style::default();
+
+            let mut resting = RecordingSurface::default();
+            paint(&button, &mut resting, &theme, RECT, &style, false, false);
+            let mut hovered = RecordingSurface::default();
+            paint(&button, &mut hovered, &theme, RECT, &style, true, false);
+
+            assert_ne!(
+                resting.fills.first().map(|(_, _, c)| *c),
+                hovered.fills.first().map(|(_, _, c)| *c),
+                "hovering a button must repaint its fill",
+            );
+        }
+
+        /// `is_pressed: true` wins over `is_hovered: true` — the same
+        /// priority [`crate::backend::PressableVisual::resolve`] documents.
+        #[test]
+        fn pressed_state_wins_over_hover_and_changes_the_fill_colour() {
+            let button = Button::new(WidgetId::new("b"), "OK");
+            let theme = Theme::default();
+            let style = Style::default();
+
+            let mut hovered = RecordingSurface::default();
+            paint(&button, &mut hovered, &theme, RECT, &style, true, false);
+            let mut pressed = RecordingSurface::default();
+            paint(&button, &mut pressed, &theme, RECT, &style, true, true);
+
+            assert_ne!(
+                hovered.fills.first().map(|(_, _, c)| *c),
+                pressed.fills.first().map(|(_, _, c)| *c),
+                "a pressed button must paint Theme::button_pressed_bg, not stay at the hover tint",
+            );
+        }
+
+        /// A `Leading` icon paints before the label, `icon_gap` clear of
+        /// it.
+        #[test]
+        fn leading_icon_paints_before_the_label_icon_gap_apart() {
+            let mut button = Button::new(WidgetId::new("b"), "Save");
+            button.icon = Some(Icon::new("S", "S"));
+            button.icon_position = ButtonIconPosition::Leading;
+            button.icon_gap = 10.0;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (icon_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "S")
+                .expect("icon glyph must paint a text run");
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Save")
+                .expect("label must paint a text run");
+
+            assert!(
+                icon_rect.x < label_rect.x,
+                "a Leading icon must paint before the label: icon.x={}, label.x={}",
+                icon_rect.x,
+                label_rect.x,
+            );
+            let gap = label_rect.x - (icon_rect.x + icon_rect.width);
+            assert!(
+                (gap - button.icon_gap).abs() < 0.5,
+                "expected icon_gap ({}) clear of the icon, got {gap}",
+                button.icon_gap,
+            );
+        }
+
+        /// `Trailing` flips the order: the label paints first, the icon
+        /// after it.
+        #[test]
+        fn trailing_icon_paints_after_the_label() {
+            let mut button = Button::new(WidgetId::new("b"), "Save");
+            button.icon = Some(Icon::new("S", "S"));
+            button.icon_position = ButtonIconPosition::Trailing;
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (icon_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "S")
+                .expect("icon glyph must paint a text run");
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "Save")
+                .expect("label must paint a text run");
+
+            assert!(
+                label_rect.x < icon_rect.x,
+                "a Trailing icon must paint after the label: label.x={}, icon.x={}",
+                label_rect.x,
+                icon_rect.x,
+            );
+        }
+
+        /// The label is inset from `rect`'s own edge by at least
+        /// `Style::default().padding` — `ButtonMetrics::padding_x`'s own
+        /// source — not flush against it.
+        #[test]
+        fn label_is_inset_by_at_least_the_style_padding() {
+            let button = Button::new(WidgetId::new("b"), "OK");
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, RECT, &style, false, false);
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "OK")
+                .expect("label must paint a text run");
+            assert!(
+                label_rect.x - RECT.x >= style.padding - 0.5,
+                "expected the label inset by at least style.padding ({}), got {}",
+                style.padding,
+                label_rect.x - RECT.x,
+            );
+        }
+
+        /// At `RECT`'s own width, plain centring alone already clears
+        /// `style.padding` for a two-character label, so the test above
+        /// never actually exercises the `.max(metrics.padding_x)` clamp
+        /// in this painter's centring arithmetic. This test narrows the
+        /// rect to exactly `label_w + style.padding` wide — `label_w`
+        /// from `RecordingSurface::surface_measure_text`'s own `8.0`-per-
+        /// char formula — where plain centring would put the label at
+        /// half of `style.padding`, below the floor, so the assertion
+        /// only holds if the clamp binds.
+        #[test]
+        fn label_clamps_to_style_padding_when_plain_centering_would_not() {
+            let button = Button::new(WidgetId::new("b"), "OK");
+            let theme = Theme::default();
+            let style = Style::default();
+            let label_w = 2.0 * 8.0; // "OK": 2 chars at 8.0px/char.
+            let rect = Rect::new(RECT.x, RECT.y, label_w + style.padding, RECT.height);
+            let mut surface = RecordingSurface::default();
+
+            paint(&button, &mut surface, &theme, rect, &style, false, false);
+
+            let (label_rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "OK")
+                .expect("label must paint a text run");
+            assert!(
+                label_rect.x - rect.x >= style.padding - 0.5,
+                "expected the clamp to hold the label at style.padding ({}), got {}",
+                style.padding,
+                label_rect.x - rect.x,
+            );
         }
 
         /// An enabled button paints an `Icon::color`-carrying icon at

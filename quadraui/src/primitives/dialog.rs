@@ -1588,14 +1588,15 @@ const CELL_MAX_BODY_ROWS: f32 = 10.0;
 /// overlaid into the top rule, multi-line body text, an optional table,
 /// an optional input slot, and a row (or column) of buttons.
 ///
-/// Two sub-regions reach for [`CellSurface::ratatui_buffer`] rather than
-/// a cell verb, because the widget they paint is a whole primitive of its
-/// own with its own cell rasteriser: a [`DialogButton`] carrying an
-/// explicit [`crate::ButtonSpec`] paints through `crate::tui::draw_button`
-/// (bracket chrome, icon, intent colour), and a
-/// [`DialogInput::Toolbar`] body slot paints through the toolbar
-/// rasteriser. Both move onto the widget contract with their own
-/// primitive; everything else here is `fill`/`put_char`/`put_str_clipped`.
+/// One sub-region reaches for [`CellSurface::ratatui_buffer`] rather than
+/// a cell verb, because the widget it paints is a whole primitive of its
+/// own with its own cell rasteriser: a [`DialogInput::Toolbar`] body slot
+/// paints through the toolbar rasteriser. A [`DialogButton`] carrying an
+/// explicit [`crate::ButtonSpec`] paints through
+/// [`crate::primitives::button::cell_paint::paint`] (bracket chrome,
+/// icon, intent colour) directly against this module's own `surface`,
+/// needing no raw buffer. Everything else here is
+/// `fill`/`put_char`/`put_str_clipped`.
 #[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
     use super::{flatten, Dialog, DialogInput, DialogLayout, DialogTable};
@@ -1870,11 +1871,18 @@ pub(crate) mod cell_paint {
             // bracket chrome) survives on a spec-backed button the same
             // way the legacy path's `selected_bg` highlight does.
             if let Some(spec) = &btn.spec {
-                if let Some(buf) = surface.ratatui_buffer() {
-                    let area = ratatui::layout::Rect::new(bx, by, bw, 1);
-                    let button = spec.to_button(btn.id, btn.is_default);
-                    crate::tui::draw_button(buf, area, &button, theme, nerd_fonts_enabled);
-                }
+                let button = spec.to_button(btn.id, btn.is_default);
+                let rect = Rect::new(bx as f32, by as f32, bw as f32, 1.0);
+                let ctx = crate::primitive::LayoutCtx::new(1.0, 1.0, nerd_fonts_enabled);
+                let btn_layout = crate::primitives::button::cell_button_layout(&button, &ctx, rect);
+                crate::primitives::button::cell_paint::paint(
+                    &button,
+                    &btn_layout,
+                    surface,
+                    theme,
+                    false,
+                    false,
+                );
                 continue;
             }
 

@@ -4,9 +4,10 @@
 //! pointer activation, and the events each emits, all driven through the
 //! real `event -> handle -> render` path on the in-memory TUI backend.
 //!
-//! `Button`/`RadioGroup`/`Switch` have no `Backend` painter of their own
-//! (none is in scope for this issue), so this test's `render` paints a
-//! status line per control via `TextDisplay`, the one primitive with an
+//! `Button`/`RadioGroup`/`Switch` paint through the widget contract
+//! ([`DrawsPrimitives::draw_primitive`]/[`Backend::draw_dyn`]) rather than
+//! a dedicated `Backend` method, so this test's `render` paints a status
+//! line per control via `TextDisplay`, the one primitive with an
 //! already-implemented `Backend::draw_text_display`. Each primitive's own
 //! `handle_key`/`click`/`select` is a pure `&self` method that returns an
 //! event without mutating the struct — `handle` below applies the
@@ -15,10 +16,10 @@
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, Button, ButtonEvent, ButtonVariant, Decoration, Icon, Key, Modifiers,
-    MouseButton, NamedKey, Point, RadioGroup, RadioGroupEvent, RadioOption, RadioOptionMeasure,
-    Reaction, Rect, StyledSpan, Switch, SwitchEvent, TextDisplay, TextDisplayLine, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Button, ButtonEvent, ButtonVariant, Decoration, DrawsPrimitives, Icon, Key,
+    Modifiers, MouseButton, NamedKey, Point, RadioGroup, RadioGroupEvent, RadioOption,
+    RadioOptionMeasure, Reaction, Rect, StyledSpan, Switch, SwitchEvent, TextDisplay,
+    TextDisplayLine, UiEvent, WidgetId,
 };
 
 /// Which of the three standalone controls currently holds keyboard focus.
@@ -331,10 +332,11 @@ fn mouse_click_toggles_the_switch_without_requiring_focus() {
     assert_eq!(driver.app().events, vec!["Toggled(demo:wrap, true)"]);
 }
 
-/// A single [`Button`] painted via `Backend::draw_button`, so a test can
-/// assert the actual TUI rasteriser's output for a [`ButtonVariant::Danger`]
-/// button carrying a leading [`Icon`] (`[ ⚠ Delete ]`), through the real
-/// `render` path rather than calling `crate::tui::draw_button` directly.
+/// A single [`Button`] painted through the widget contract
+/// ([`DrawsPrimitives::draw_primitive`]), so a test can assert the actual
+/// TUI rasteriser's output for a [`ButtonVariant::Danger`] button
+/// carrying a leading [`Icon`] (`[ ⚠ Delete ]`), through the real
+/// `render` path rather than calling the primitive's painter directly.
 struct DangerIconButtonApp {
     button: Button,
 }
@@ -352,7 +354,7 @@ impl AppLogic for DangerIconButtonApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let _ = backend.draw_button(Rect::new(0.0, 0.0, 14.0, 1.0), &self.button);
+        let _ = backend.draw_primitive(Rect::new(0.0, 0.0, 14.0, 1.0), &self.button);
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

@@ -52,7 +52,6 @@ use crate::primitive::{
 };
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
-use crate::primitives::button::{Button, ButtonLayout};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::combo_box::{ComboBox, ComboBoxLayout};
@@ -214,7 +213,7 @@ impl PressableVisual {
     /// Resolve the three inputs every pressable/toggle painter in this
     /// crate carries (in some combination) into the one priority order
     /// they share. `is_active` is the "toggled on" flag — pass `false`
-    /// for a control with no such concept (a plain [`Button`]).
+    /// for a control with no such concept (a plain [`crate::Button`]).
     pub(crate) fn resolve(is_pressed: bool, is_active: bool, is_hovered: bool) -> Self {
         if is_pressed || is_active {
             Self::PressedOrActive
@@ -2587,8 +2586,9 @@ pub trait Backend: sealed::Sealed {
     /// via [`crate::Theme::tree_hover_bg`] / [`crate::Theme::tree_pressed_bg`].
     ///
     /// Index-keyed rather than [`crate::InteractionState`]-keyed, unlike
-    /// [`Self::draw_button_with_state`] — see `interaction.rs`'s module
-    /// doc for why a tree row has no stable id to key off. Feed
+    /// the hover/pressed resolution a `Button` paints through the widget
+    /// contract — see `interaction.rs`'s module doc for why a tree row
+    /// has no stable id to key off. Feed
     /// [`crate::compose::TreeHoverTracker`] from `MouseMoved` and pass
     /// its `hovered_idx()` here; `pressed_idx` follows the same
     /// left-button-down bookkeeping a host already does for
@@ -3940,38 +3940,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
-
-    /// Draw a [`Button`]. Returns the [`ButtonLayout`] so hosts can
-    /// route clicks. Same coordinate frame as [`Self::button_layout`]
-    /// (ABSOLUTE).
-    fn draw_button(&mut self, rect: Rect, button: &Button) -> ButtonLayout;
-
-    /// [`Self::draw_button`], reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`]: a backend that
-    /// implements this tints the button's background when
-    /// `interaction.is_hovered(&button.id)` / `is_pressed(&button.id)`
-    /// — see [`crate::Theme::button_hover_bg`] /
-    /// [`crate::Theme::button_pressed_bg`] for the derived tint colours.
-    ///
-    /// Additive over [`Self::draw_button`], not a replacement — the
-    /// default forwards to it (ignoring `interaction`), so this method
-    /// is the one new backends/hosts adopt for hover feedback while
-    /// every existing call site and implementor keeps compiling
-    /// unchanged. Same coordinate frame as [`Self::button_layout`]
-    /// (ABSOLUTE).
-    fn draw_button_with_state(
-        &mut self,
-        rect: Rect,
-        button: &Button,
-        _interaction: &InteractionState,
-    ) -> ButtonLayout {
-        self.draw_button(rect, button)
-    }
-
-    /// Compute button layout without painting.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout;
 
     /// Draw a [`CommandCenter`] (nav arrows + search box). Returns the
     /// [`CommandCenterLayout`] so hosts can route clicks. Same
