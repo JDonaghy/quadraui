@@ -1075,17 +1075,6 @@ impl GtkBackend {
         }
     }
 
-    /// Resolve a `SidebarPanel`'s default toolbar-header slot height —
-    /// same shape as [`Self::resolved_row_height`], for `Style::toolbar_height`
-    /// instead of `Style::row_height`.
-    fn resolved_toolbar_height(&self, candidate_line_height: f64) -> f64 {
-        if candidate_line_height > 1.0 {
-            candidate_line_height.max(self.current_style.toolbar_height as f64)
-        } else {
-            candidate_line_height
-        }
-    }
-
     /// Push the app's chosen theme into GTK's own
     /// `gtk-application-prefer-dark-theme` setting, so native GTK chrome
     /// that this crate doesn't rasterise itself (the file dialog, as of
@@ -4890,86 +4879,6 @@ impl Backend for GtkBackend {
             line_height,
             layout_options,
             priorities,
-        );
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-        result
-    }
-
-    fn draw_sidebar_panel_interactive(
-        &mut self,
-        rect: QRect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let (hovered_toolbar_id, pressed_toolbar_id) =
-            (interaction.hovered(), interaction.pressed());
-        let theme = self.current_theme;
-        let line_height = self.resolved_toolbar_height(self.current_line_height);
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        // `SidebarPanel` composes a `Toolbar` header — its
-        // icon glyphs are chrome, not editor content — so the same
-        // save/swap/restore `Self::draw_toolbar` does has to happen here
-        // too (the shared `native_surface_paint::paint` below measures
-        // and draws text via `Self::surface_measure_text`/
-        // `surface_draw_text_run`, which just use whatever font is live
-        // on this shared `pango_layout`).
-        let saved_font = {
-            let (_cr, pango_layout) = self
-                .current_frame_refs()
-                .expect("GtkBackend::draw_sidebar_panel called outside enter_frame_scope");
-            let saved = pango_layout.font_description();
-            pango_layout.set_font_description(Some(&ui_font_desc));
-            saved
-        };
-        let layout = crate::primitives::sidebar_panel::native_surface_paint::paint(
-            panel,
-            self,
-            &theme,
-            rect,
-            line_height as f32,
-            hovered_toolbar_id,
-            pressed_toolbar_id,
-        );
-        {
-            let (_cr, pango_layout) = self
-                .current_frame_refs()
-                .expect("GtkBackend::draw_sidebar_panel called outside enter_frame_scope");
-            pango_layout.set_font_description(saved_font.as_ref());
-        }
-        layout
-    }
-
-    fn sidebar_panel_layout(
-        &self,
-        rect: QRect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let char_w = self.current_char_width;
-        let line_h = self.resolved_toolbar_height(self.current_line_height);
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        // The panel's header is a `Toolbar`, so its measured button
-        // widths must come from the same `ui_font`
-        // `Self::draw_sidebar_panel` now paints with — see
-        // `Self::toolbar_layout` above.
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-        let result = crate::gtk::gtk_sidebar_panel_layout(
-            panel,
-            pango_layout.as_ref(),
-            char_w,
-            line_h,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
         );
         if let Some(pl) = &pango_layout {
             pl.set_font_description(saved_font.as_ref());
@@ -10217,12 +10126,11 @@ mod tests {
     }
 
     /// `SidebarPanel` composes a `Toolbar` header internally — its button
-    /// text is measured/drawn via `PaintSurface` methods that use whatever
-    /// font is live on the shared `pango_layout`. The same editor-font leak
-    /// the previous test guards against propagates here too unless
-    /// `GtkBackend::draw_sidebar_panel` does its own save/swap/restore.
+    /// text is measured through the backend's chrome measurer and drawn
+    /// via `PaintSurface` methods, so the editor font on the shared
+    /// `pango_layout` must not leak into the header's geometry.
     #[test]
-    fn gtk_backend_draw_sidebar_panel_toolbar_uses_ui_font_not_editor_font() {
+    fn gtk_backend_sidebar_panel_toolbar_uses_ui_font_not_editor_font() {
         let (surface, small_editor_font, large_editor_font) = ui_font_test_surface_and_contexts();
         let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
         let panel = crate::primitives::sidebar_panel::SidebarPanel {
@@ -10241,9 +10149,13 @@ mod tests {
                 Backend::set_ui_font(&mut backend, f);
             }
             backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_sidebar_panel_interactive(rect, &panel, &crate::InteractionState::new())
-                    .toolbar_layout
+                crate::DrawsPrimitives::draw_dyn(b, rect, &panel, &())
+                    .downcast_ref::<crate::SidebarPanelLayout>()
+                    .expect("a SidebarPanel resolves a SidebarPanelLayout")
+                    .toolbar
+                    .as_ref()
                     .expect("panel has a toolbar")
+                    .layout
                     .visible_items[0]
                     .bounds
                     .width

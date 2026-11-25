@@ -30,7 +30,6 @@
 //! |---|---|
 //! | `draw_toolbar(rect, bar, hovered_id, pressed_id)` | [`crate::Backend::draw_toolbar_interactive`] |
 //! | `draw_status_bar(rect, bar, hovered_id, pressed_id)` | [`crate::Backend::draw_status_bar_interactive`] |
-//! | `draw_sidebar_panel(rect, panel, hovered_toolbar_id, pressed_toolbar_id)` | [`crate::Backend::draw_sidebar_panel_interactive`] |
 //!
 //! The positional names survive as `#[deprecated]` trait defaults that
 //! rebuild an `InteractionState` via [`InteractionState::from_parts`]

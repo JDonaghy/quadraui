@@ -2,13 +2,11 @@
 //! [`Toolbar`] header at the top + a content region beneath that the
 //! host paints into.
 //!
-//! Solves the "panel-with-toolbar" composition gap surfaced in #259.
-//! Hosts that wanted a sidebar with a clickable action header used to
-//! carve a top rect by hand, paint a `Toolbar` into it, remember to
-//! always reserve the slot (so content didn't shift when the toolbar
-//! came/went), and hit-test the bar manually before falling through
-//! to content. That coordination — paint + hit-test + layout-reserve
-//! — is the easy-to-get-wrong part this primitive owns.
+//! The coordination this primitive owns — reserve the header slot,
+//! paint the toolbar into it, route a click to the header before the
+//! content — is the easy-to-get-wrong part of a "panel with an action
+//! header", so a host gets it from one descriptor instead of carving the
+//! top rect by hand.
 //!
 //! ## Why "SidebarPanel" and not "Sidebar"
 //!
@@ -25,31 +23,59 @@
 //!   - `None`: no slot reserved. Content occupies the full rect.
 //!   - `Some(bar)`: header slot reserved at `toolbar_height`. Reserved
 //!     *even when `bar.buttons.is_empty()`*, so content below doesn't
-//!     shift as toolbar items come and go (a bug a consumer app hit
-//!     when toolbar appearance was state-dependent).
+//!     shift as toolbar items come and go.
 //! - `toolbar_height`: optional explicit height in native units. When
-//!   `None`, backends pick an idiomatic default (`1.0` cells TUI,
-//!   `line_height` GTK / macOS).
+//!   `None`, the header is one cell tall on a cell grid and
+//!   [`crate::Style::toolbar_height`] (floored at the row height) on a
+//!   pixel surface.
 //!
-//! ## Backend contract
+//! ## Widget contract
 //!
-//! Each backend renders the toolbar into the header slot and **does
-//! not paint the content region** — the content rect is returned in
-//! `SidebarPanelLayout.content_bounds` for the host to paint into
-//! (typically a tree, list, form, etc.).
+//! [`Primitive::layout`] resolves a [`SidebarPanelLayout`]: the panel,
+//! header and content rects in the **absolute** frame the panel was laid
+//! out in (the content rect is what a host paints its tree / list / form
+//! into), plus the header's own [`ToolbarPrimitiveLayout`] — the exact
+//! value [`Toolbar`]'s own contract resolves for the header slot, whose
+//! item bounds are header-local. The header slot shares the panel's
+//! origin, so header-local coordinates are also panel-local, which is
+//! the space [`Interactive::sub_regions`] and
+//! [`crate::interactive::RoutedEvent::Pointer`]'s `local` use.
 //!
-//! Hit-test:
+//! The panel paints only its header; the content region is never
+//! painted. [`Primitive::paint`] runs this module's shared pixel painter
+//! ([`native_surface_paint`]), and [`Primitive::paint_cells`] runs the
+//! header toolbar's own cell painter, so a header on a cell grid is
+//! byte-for-byte the toolbar it carries.
+//!
+//! [`Interactive`] is pointer-only ([`FocusSpec::None`]): hover, press
+//! and click on the header's buttons go through [`Toolbar`]'s own
+//! [`Interactive`] impl, and a click comes back out as the
+//! [`crate::UiEvent::Toolbar`] the header toolbar itself would emit. The
+//! header's keyboard cursor stays host-driven through
+//! [`Toolbar::focused_index`]; an assistive-technology
+//! [`A11yAction::Click`] activates it.
+//!
+//! Hit-test ([`SidebarPanelLayout::hit_test`], absolute coordinates):
 //! - Click inside the toolbar slot routes via the nested
-//!   `ToolbarLayout::hit_test` to a [`SidebarPanelHit::ToolbarButton`]
-//!   or, for misses inside the slot,
+//!   [`ToolbarPrimitiveLayout::hit_test`] to a
+//!   [`SidebarPanelHit::ToolbarButton`] or, for misses inside the slot,
 //!   [`SidebarPanelHit::ToolbarEmpty`].
 //! - Click inside the content rect produces
 //!   [`SidebarPanelHit::Content`] with content-local coordinates.
 //! - Click outside both produces [`SidebarPanelHit::Empty`].
 
-use crate::event::Rect;
-use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
+use crate::a11y::A11yAction;
+use crate::backend::PointerShape;
+use crate::event::{Point, Rect};
+use crate::interactive::{
+    EventCx, EventHost, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget, WidgetAction,
+};
+use crate::primitive::{LayoutCtx, PaintState, Primitive, Units};
+use crate::primitives::toolbar::{
+    Toolbar, ToolbarEvent, ToolbarHit, ToolbarPrimitiveLayout, ToolbarState,
+};
 use crate::types::WidgetId;
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 // ── Data model ───────────────────────────────────────────────────────────────
@@ -59,9 +85,8 @@ use serde::{Deserialize, Serialize};
 /// # Examples
 ///
 /// ```
-/// use quadraui::{
-///     Rect, SidebarPanel, SidebarPanelHit, SidebarPanelMeasure, ToolbarItemMeasure, WidgetId,
-/// };
+/// use quadraui::primitive::{LayoutCtx, Primitive};
+/// use quadraui::{Rect, SidebarPanel, SidebarPanelHit, WidgetId};
 ///
 /// let panel = SidebarPanel {
 ///     id: WidgetId::new("sidebar:explorer"),
@@ -70,10 +95,7 @@ use serde::{Deserialize, Serialize};
 /// };
 ///
 /// let bounds = Rect::new(0.0, 0.0, 40.0, 20.0);
-/// let measure = SidebarPanelMeasure::new(1.0, 3.0);
-/// // `toolbar` is `None` above, so `layout` never calls this closure — it's
-/// // only reached when a toolbar slot is reserved.
-/// let layout = panel.layout(bounds, measure, |_| ToolbarItemMeasure::new(10.0));
+/// let layout = panel.layout(&LayoutCtx::new(1.0, 1.0, false), bounds);
 ///
 /// // No toolbar means no slot reserved — content gets the full rect.
 /// assert_eq!(layout.content_bounds, bounds);
@@ -90,18 +112,24 @@ pub struct SidebarPanel {
     #[serde(default)]
     pub toolbar: Option<Toolbar>,
     /// Reserved height for the toolbar slot in native units. When
-    /// `None`, backends pick an idiomatic default (1 cell TUI,
-    /// `line_height` GTK / macOS).
+    /// `None`, the header is one cell on a cell grid and
+    /// [`crate::Style::toolbar_height`] on a pixel surface.
     #[serde(default)]
     pub toolbar_height: Option<f32>,
 }
 
 // ── Layout + hit-testing ─────────────────────────────────────────────────────
 
-/// Fully-resolved layout for a [`SidebarPanel`].
+/// [`Primitive::Layout`] for a [`SidebarPanel`].
+///
+/// The three rects are **absolute** — in the frame the panel was laid
+/// out in — so a host paints its content straight into
+/// [`Self::content_bounds`]. [`Self::toolbar`] is the header toolbar's
+/// own [`ToolbarPrimitiveLayout`]: its `area` is the absolute header
+/// slot, its item bounds header-local.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SidebarPanelLayout {
-    /// Bounds of the entire panel as given to `layout()`.
+    /// Bounds of the entire panel as given to [`Primitive::layout`].
     pub panel_bounds: Rect,
     /// Bounds of the toolbar slot. `None` when the panel has no
     /// toolbar (slot wasn't reserved). When `Some`, this rect is
@@ -110,8 +138,9 @@ pub struct SidebarPanelLayout {
     /// Bounds of the content area. Always populated — equals the
     /// panel minus the toolbar slot.
     pub content_bounds: Rect,
-    /// Resolved inner toolbar layout. `None` mirrors `toolbar_bounds`.
-    pub toolbar_layout: Option<ToolbarLayout>,
+    /// The header toolbar's resolved layout. `None` mirrors
+    /// `toolbar_bounds`.
+    pub toolbar: Option<ToolbarPrimitiveLayout>,
 }
 
 /// Classification of a hit-test result on a [`SidebarPanel`].
@@ -131,21 +160,13 @@ pub enum SidebarPanelHit {
 }
 
 impl SidebarPanelLayout {
-    /// Test point `(x, y)` against the layout. Toolbar slot wins over
-    /// the content area when bounds overlap (which they shouldn't —
-    /// `layout()` carves disjoint rects — but the precedence is
-    /// documented in case future relaxations of that invariant break
-    /// it).
+    /// Test absolute point `(x, y)` against the layout. The toolbar slot
+    /// is checked before the content area.
     pub fn hit_test(&self, x: f32, y: f32) -> SidebarPanelHit {
-        if let (Some(tb), Some(tlayout)) = (self.toolbar_bounds, &self.toolbar_layout) {
+        if let (Some(tb), Some(toolbar)) = (self.toolbar_bounds, &self.toolbar) {
             if contains(tb, x, y) {
-                return match tlayout.hit_test(x, y) {
+                return match toolbar.hit_test(x - tb.x, y - tb.y) {
                     ToolbarHit::Button(id) => SidebarPanelHit::ToolbarButton(id),
-                    // `SidebarPanel`'s own toolbar slot never opts into
-                    // `ToolbarOverflow::Menu` or embeds a `Field`/
-                    // `MenuButton` today, so these arms are unreachable
-                    // in practice; reads the same as `Empty` if a future
-                    // caller ever does.
                     ToolbarHit::Empty
                     | ToolbarHit::Overflow
                     | ToolbarHit::Field(_)
@@ -167,220 +188,357 @@ fn contains(r: Rect, x: f32, y: f32) -> bool {
     x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height
 }
 
-// ── Measurement ──────────────────────────────────────────────────────────────
-
-/// Caller-supplied measurements for computing a
-/// [`SidebarPanelLayout`].
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct SidebarPanelMeasure {
-    /// Default header height when `SidebarPanel.toolbar_height` is
-    /// `None`. Use `1.0` for TUI cells, `line_height` for native.
-    pub default_toolbar_height: f32,
-    /// Per-toolbar-item width in native units — passed through to the
-    /// nested `Toolbar::layout`. Backends supply the same measurer
-    /// they would use for a standalone toolbar in the same rect.
-    pub item_width: f32,
-}
-
-impl SidebarPanelMeasure {
-    pub fn new(default_toolbar_height: f32, item_width: f32) -> Self {
-        Self {
-            default_toolbar_height,
-            item_width,
-        }
+/// The header height a panel with no explicit `toolbar_height` reserves
+/// in `ctx`'s units: one cell on a cell grid, and on a pixel surface the
+/// active [`crate::Style::toolbar_height`] floored at `ctx`'s row height,
+/// the same chrome metric every pixel rasteriser sizes a toolbar strip
+/// with.
+fn default_toolbar_height(ctx: &LayoutCtx) -> f32 {
+    match ctx.units() {
+        Units::Cells => 1.0,
+        Units::Pixels => ctx.line_height.max(ctx.style().toolbar_height),
     }
 }
 
-impl SidebarPanel {
-    /// Compute the full layout for this panel.
-    ///
-    /// `measure_item` is the per-toolbar-item width measurer. It
-    /// receives each `ToolbarButton` and returns its width in the
-    /// caller's native unit — TUI passes a cell-count measurer, GTK
-    /// passes a Pango pixel measurer. When the panel has no toolbar
-    /// the closure is never invoked.
-    pub fn layout<F>(
-        &self,
-        bounds: Rect,
-        measure: SidebarPanelMeasure,
-        measure_item: F,
-    ) -> SidebarPanelLayout
-    where
-        F: Fn(&crate::primitives::toolbar::ToolbarButton) -> ToolbarItemMeasure,
-    {
+// ── Primitive ────────────────────────────────────────────────────────────────
+
+impl Primitive for SidebarPanel {
+    type Layout = SidebarPanelLayout;
+    type Event = ToolbarEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// Round-trips through [`crate::frame::OwnedContent::SidebarPanel`],
+    /// which replays through [`crate::DrawsPrimitives::draw_primitive`]
+    /// and reports [`crate::frame::FrameZone::Widget`].
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::SidebarPanel(self.clone())
+    }
+
+    /// Carve the header slot off the top of `rect` and resolve the
+    /// header toolbar's own [`Primitive::layout`] for it, in whichever
+    /// unit `ctx` measures in — see this module's own doc.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout {
+        let Some(bar) = &self.toolbar else {
+            return SidebarPanelLayout {
+                panel_bounds: rect,
+                toolbar_bounds: None,
+                content_bounds: rect,
+                toolbar: None,
+            };
+        };
         let toolbar_height = self
             .toolbar_height
-            .unwrap_or(measure.default_toolbar_height);
+            .unwrap_or_else(|| default_toolbar_height(ctx));
+        // Reserved even when `bar.buttons.is_empty()` so content doesn't
+        // shift as toolbar items come and go.
+        let slot_height = toolbar_height.min(rect.height).max(0.0);
+        let toolbar_bounds = Rect::new(rect.x, rect.y, rect.width, slot_height);
+        let content_bounds = Rect::new(
+            rect.x,
+            rect.y + slot_height,
+            rect.width,
+            (rect.height - slot_height).max(0.0),
+        );
+        SidebarPanelLayout {
+            panel_bounds: rect,
+            toolbar_bounds: Some(toolbar_bounds),
+            content_bounds,
+            toolbar: Some(Primitive::layout(bar, ctx, toolbar_bounds)),
+        }
+    }
 
-        match &self.toolbar {
-            Some(bar) => {
-                // Reserve the slot even when `bar.buttons.is_empty()`
-                // so content doesn't shift as toolbar items come and
-                // go (a bug a consumer app hit twice).
-                let slot_height = toolbar_height.min(bounds.height).max(0.0);
-                let toolbar_bounds = Rect::new(bounds.x, bounds.y, bounds.width, slot_height);
-                let content_y = bounds.y + slot_height;
-                let content_h = (bounds.height - slot_height).max(0.0);
-                let content_bounds = Rect::new(bounds.x, content_y, bounds.width, content_h);
+    /// Runs the shared pixel painter at the resolved header geometry,
+    /// with no pointer state ([`Primitive::paint`] carries no interaction
+    /// channel); the descriptor's own [`Toolbar::focused_index`] still
+    /// paints its focus ring.
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let state = SidebarPanelState::default();
+            native_surface_paint::paint(
+                self,
+                layout,
+                surface,
+                theme,
+                state.toolbar.hovered_id.as_ref(),
+                state.toolbar.pressed_id.as_ref(),
+            );
+            let _ = style;
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
 
-                let toolbar_layout = bar.layout(
-                    toolbar_bounds.x,
-                    toolbar_bounds.y,
-                    toolbar_bounds.width,
-                    toolbar_bounds.height,
-                    measure_item,
-                );
-
-                SidebarPanelLayout {
-                    panel_bounds: bounds,
-                    toolbar_bounds: Some(toolbar_bounds),
-                    content_bounds,
-                    toolbar_layout: Some(toolbar_layout),
-                }
+    /// Paints the header through the header toolbar's own
+    /// [`Primitive::paint_cells`]; the content rows are left untouched
+    /// for the host.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        if let (Some(bar), Some(toolbar)) = (&self.toolbar, &layout.toolbar) {
+            if toolbar.area.width > 0.0 && toolbar.area.height > 0.0 {
+                Primitive::paint_cells(bar, toolbar, buf, theme);
             }
-            None => SidebarPanelLayout {
-                panel_bounds: bounds,
-                toolbar_bounds: None,
-                content_bounds: bounds,
-                toolbar_layout: None,
-            },
         }
     }
 }
 
-// Shared implementation for all backends, written against
+// ── Interactive ──────────────────────────────────────────────────────────────
+
+/// [`Interactive::State`] for [`SidebarPanel`]: the header toolbar's own
+/// [`ToolbarState`] (hovered / pressed button), which every pointer
+/// gesture on the header updates.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SidebarPanelState {
+    /// The header toolbar's interaction state.
+    pub toolbar: ToolbarState,
+}
+
+impl PaintState for SidebarPanelState {
+    fn hovered_idx(&self) -> Option<usize> {
+        self.toolbar.hovered_idx()
+    }
+
+    fn pressed_idx(&self) -> Option<usize> {
+        self.toolbar.pressed_idx()
+    }
+}
+
+/// [`Interactive::Action`] for [`SidebarPanel`]: an event the header
+/// toolbar produced, tagged with that toolbar's own id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SidebarPanelAction {
+    /// The header [`Toolbar::id`].
+    pub toolbar: WidgetId,
+    /// What the header toolbar reported.
+    pub event: ToolbarEvent,
+}
+
+/// Rides [`crate::UiEvent::Toolbar`] under the header toolbar's own id —
+/// the channel a host routing a standalone [`Toolbar`] already handles.
+impl WidgetAction for SidebarPanelAction {
+    fn into_ui_event(self, _id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::Toolbar(self.toolbar, self.event)
+    }
+}
+
+/// The [`EventHost`] the header toolbar's [`Interactive::handle`] runs
+/// against: forwards everything to the panel's own [`EventCx`] except
+/// focus, since the panel is not a focus stop.
+struct HeaderHost<'a, 'b> {
+    panel: &'a mut EventCx<'b>,
+}
+
+impl EventHost for HeaderHost<'_, '_> {
+    fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+        false
+    }
+    fn request_focus(&mut self, _id: &WidgetId, _sub: Option<SubTarget>) {}
+    fn capture_pointer(&mut self, _id: &WidgetId) {
+        self.panel.capture_pointer();
+    }
+    fn release_pointer(&mut self) {
+        self.panel.release_pointer();
+    }
+    fn set_cursor(&mut self, cursor: PointerShape) {
+        self.panel.set_cursor(cursor);
+    }
+    fn request_redraw(&mut self) {
+        self.panel.request_redraw();
+    }
+    fn emit(&mut self, event: crate::UiEvent) {
+        self.panel.emit(event);
+    }
+    fn units(&self) -> Units {
+        self.panel.units()
+    }
+}
+
+/// Whether panel-local `local` lies inside the header slot `header`
+/// (which starts at the panel's own origin).
+fn in_header(header: &ToolbarPrimitiveLayout, local: Point) -> bool {
+    local.x >= 0.0 && local.y >= 0.0 && local.x < header.area.width && local.y < header.area.height
+}
+
+impl Interactive for SidebarPanel {
+    type State = SidebarPanelState;
+    type Action = SidebarPanelAction;
+
+    /// Pointer-only: the header's keyboard cursor is host-driven through
+    /// [`Toolbar::focused_index`], so the panel is never a tab stop.
+    fn focus(&self) -> FocusSpec {
+        FocusSpec::None
+    }
+
+    /// The header toolbar's own sub-parts — header-local, which is
+    /// panel-local because the header shares the panel's origin.
+    fn sub_regions(&self, layout: &Self::Layout) -> Vec<(Rect, SubTarget)> {
+        match (&self.toolbar, &layout.toolbar) {
+            (Some(bar), Some(toolbar)) => Interactive::sub_regions(bar, toolbar),
+            _ => Vec::new(),
+        }
+    }
+
+    /// Routes header gestures through the header toolbar's own
+    /// [`Interactive::handle`]: a pointer that moves into the content
+    /// area reads as leaving the header, and a press in the content area
+    /// is not the panel's to claim.
+    fn handle(
+        &self,
+        state: &mut SidebarPanelState,
+        event: &RoutedEvent,
+        layout: &Self::Layout,
+        cx: &mut EventCx,
+    ) -> Handled<SidebarPanelAction> {
+        let (Some(bar), Some(header)) = (&self.toolbar, &layout.toolbar) else {
+            return Handled::Ignored;
+        };
+        let routed = match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Move | PointerKind::Enter,
+                sub,
+                local,
+                mods,
+            } if !in_header(header, *local) => RoutedEvent::Pointer {
+                kind: PointerKind::Leave,
+                sub: *sub,
+                local: *local,
+                mods: *mods,
+            },
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(_) | PointerKind::DoubleClick(_),
+                local,
+                ..
+            } if !in_header(header, *local) => return Handled::Ignored,
+            RoutedEvent::Pointer { .. } | RoutedEvent::Action(_) => event.clone(),
+            _ => return Handled::Ignored,
+        };
+        let mut host = HeaderHost { panel: cx };
+        let mut header_cx = EventCx::new(bar.id, &mut host);
+        Interactive::handle(bar, &mut state.toolbar, &routed, header, &mut header_cx).map(|event| {
+            SidebarPanelAction {
+                toolbar: bar.id,
+                event,
+            }
+        })
+    }
+
+    /// `Click` whenever the header carries something to activate.
+    fn a11y_actions(&self, state: &SidebarPanelState) -> Vec<A11yAction> {
+        match &self.toolbar {
+            Some(bar) => Interactive::a11y_actions(bar, &state.toolbar),
+            None => Vec::new(),
+        }
+    }
+}
+
+// Shared pixel painter for all backends, written against
 // [`crate::paint_surface::PaintSurface`] instead of individual
 // backend drawing APIs.
 //
 // `SidebarPanel` paints nothing of its own — its entire visible
 // surface is the optional [`Toolbar`] header; the content region
-// is left to the host. `paint_toolbar_header` below duplicates
-// toolbar rendering logic scoped to what a sidebar panel's header
-// needs. When `Toolbar` gets unified painting, extract a shared
-// helper or consolidate this copy.
+// is left to the host. `paint_toolbar_header` below paints the header
+// scoped to what a sidebar panel's header needs:
 //
-// Rendering choices made to unify backends:
-//
-// 1. **Plain rect highlights**, not rounded: `PaintSurface` has no
-//    rounded-rect verb, so this follows the macOS/Win majority
-//    (GTK previously painted 4px-radius rounded-rect pills).
-// 2. **Clip on all backends**: GTK and macOS clipped to toolbar
-//    bounds before drawing; Win did not. This now clips uniformly.
-// 3. **Alpha-channel preserved**: Uses `surface_fill_rect` which
-//    respects `Color::a`, unlike the old GTK path that dropped it.
-// 4. **Default theme on Win**: `WinBackend::draw_sidebar_panel`
-//    passes `Theme::default()`, not live theme.
-//
-// `#[allow(dead_code)]`: only called when a real pixel backend is
-// compiled in, exercised by each backend's `Backend::draw_sidebar_panel`
-// call site plus this module's `RecordingSurface` tests.
+// 1. **Plain rect highlights**, not rounded.
+// 2. **Clipped** to the header slot.
+// 3. **Alpha-channel preserved**: uses `surface_fill_rect`, which
+//    respects `Color::a`.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-#[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{SidebarPanel, SidebarPanelLayout, SidebarPanelMeasure};
+    use super::{SidebarPanel, SidebarPanelLayout};
     use crate::event::{Point, Rect};
     use crate::paint_surface::PaintSurface;
-    use crate::primitives::layout_metrics::TextMeasure;
-    use crate::primitives::toolbar::{
-        action_text, measure_button, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayout,
-    };
+    use crate::primitives::toolbar::{action_text, Toolbar, ToolbarButton, ToolbarPrimitiveLayout};
     use crate::theme::Theme;
     use crate::types::WidgetId;
 
-    /// Adapts a live `&dyn PaintSurface` to the shared [`TextMeasure`]
-    /// trait so [`measure_button`] never has to name a backend-specific
-    /// font type — generalises `gtk::toolbar::PangoMeasure` /
-    /// `macos::toolbar::CtFontMeasure` / `win::toolbar::DWriteMeasure`
-    /// into the one adapter every backend now shares.
-    struct SurfaceMeasure<'a>(&'a dyn PaintSurface);
-
-    impl TextMeasure for SurfaceMeasure<'_> {
-        fn width_of(&self, text: &str) -> f32 {
-            self.0.surface_measure_text(text).0
-        }
-    }
-
-    /// Paint a [`SidebarPanel`] into `bounds` on `surface`, returning
-    /// the resolved [`SidebarPanelLayout`]. The `content_bounds` and
-    /// `toolbar_bounds` in the layout are absolute (shifted by
-    /// `bounds.x`/`bounds.y`). The content region is never painted
-    /// — the host paints `layout.content_bounds` itself.
+    /// Paint `panel`'s header at `layout` (as [`super::Primitive::layout`]
+    /// resolved it) on `surface`. The content region is never painted —
+    /// the host paints `layout.content_bounds` itself.
     ///
     /// `hovered_toolbar_id` / `pressed_toolbar_id` tint the matching
     /// toolbar action button; the primitive carries no mouse state.
     ///
-    /// Non-positive `bounds.width` or `bounds.height` short-circuits
-    /// without touching `surface`.
+    /// Non-positive panel width or height short-circuits without
+    /// touching `surface`.
     pub(crate) fn paint(
         panel: &SidebarPanel,
+        layout: &SidebarPanelLayout,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
-        bounds: Rect,
-        default_toolbar_height: f32,
         hovered_toolbar_id: Option<&WidgetId>,
         pressed_toolbar_id: Option<&WidgetId>,
-    ) -> SidebarPanelLayout {
-        let layout = {
-            // `item_width` (the measure's second field) is dead in
-            // `SidebarPanel::layout` — every backend's own layout helper
-            // already passes `0.0` for it (see e.g. `win_sidebar_panel_layout`)
-            // since real per-button widths come from the `measure_item`
-            // closure below, not this field.
-            let measurer = SurfaceMeasure(&*surface);
-            panel.layout(
-                bounds,
-                SidebarPanelMeasure::new(default_toolbar_height, 0.0),
-                |btn| ToolbarItemMeasure::new(measure_button(&measurer, btn)),
-            )
-        };
-
+    ) {
+        let bounds = layout.panel_bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
-            return layout;
+            return;
         }
-
-        if let (Some(bar), Some(tb_bounds)) = (&panel.toolbar, layout.toolbar_bounds) {
-            if let Some(toolbar_layout) = &layout.toolbar_layout {
-                paint_toolbar_header(
-                    bar,
-                    toolbar_layout,
-                    surface,
-                    theme,
-                    tb_bounds,
-                    hovered_toolbar_id,
-                    pressed_toolbar_id,
-                );
-            }
+        if let (Some(bar), Some(header)) = (&panel.toolbar, &layout.toolbar) {
+            paint_toolbar_header(
+                bar,
+                header,
+                surface,
+                theme,
+                hovered_toolbar_id,
+                pressed_toolbar_id,
+            );
         }
-
-        layout
     }
 
-    /// Paint `bar`'s buttons into `tb_bounds` on `surface` — see this
-    /// module's doc for why this exists (a `PaintSurface`-generic port
-    /// of `gtk`/`macos`/`win`'s own `toolbar::draw_toolbar`, scoped to
-    /// what a sidebar panel's header needs) and for the four named
-    /// divergences found while porting it.
+    /// Paint `bar`'s buttons into `header.area` on `surface`, at the item
+    /// bounds `header` resolved (header-local, so each is offset by the
+    /// header's own origin here).
     fn paint_toolbar_header(
         bar: &Toolbar,
-        toolbar_layout: &ToolbarLayout,
+        header: &ToolbarPrimitiveLayout,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
-        tb_bounds: Rect,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
     ) {
-        // Clip to toolbar bounds on all backends.
+        let tb_bounds = header.area;
         surface.surface_push_clip(tb_bounds);
 
         let bar_bg = bar.bg.unwrap_or(theme.header_bg);
         surface.surface_fill_rect(tb_bounds, bar_bg);
 
-        for vis in &toolbar_layout.visible_items {
-            let item = vis.bounds;
+        for vis in &header.layout.visible_items {
+            let item = Rect::new(
+                vis.bounds.x + tb_bounds.x,
+                vis.bounds.y + tb_bounds.y,
+                vis.bounds.width,
+                vis.bounds.height,
+            );
             if item.width <= 0.0 || item.height <= 0.0 {
                 continue;
             }
@@ -403,7 +561,6 @@ pub(crate) mod native_surface_paint {
                     let is_focused = *enabled && bar.focused_index == Some(vis.item_idx);
 
                     // Highlight background: pressed/active > hovered > none.
-                    // Plain rect (no rounded corners).
                     let highlight = if is_pressed || *is_active {
                         Some(theme.selected_bg)
                     } else if is_hovered {
@@ -466,12 +623,9 @@ pub(crate) mod native_surface_paint {
                 // Invisible by definition — see `ToolbarButton::Spacer`'s
                 // own doc.
                 ToolbarButton::Spacer => {}
-                // Not yet painted by this header-scoped port of
-                // `toolbar::draw_toolbar` (see this fn's own doc for the
-                // four divergences it already names) — a sidebar panel
-                // header with a segmented `Group`, embedded `Field`, or
-                // `MenuButton` paints only its shared border/divider-less
-                // background for now.
+                // A sidebar panel header with a segmented `Group`,
+                // embedded `Field`, or `MenuButton` paints only the
+                // header background for those slots.
                 ToolbarButton::Group { .. }
                 | ToolbarButton::Field { .. }
                 | ToolbarButton::MenuButton { .. } => {}
@@ -486,12 +640,12 @@ pub(crate) mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::Viewport;
+        use crate::primitive::{LayoutCtx, Primitive};
         use crate::types::Color;
         use crate::Image;
 
-        /// Records every surface verb this primitive's paint uses —
-        /// mirrors `primitives::status_bar`'s `RecordingSurface` test
-        /// double, so this test runs on any host without Cairo/Core
+        /// Records every surface verb this primitive's paint uses, so
+        /// this test runs on any host without Cairo/Core
         /// Graphics/Direct2D.
         #[derive(Default)]
         struct RecordingSurface {
@@ -521,12 +675,8 @@ pub(crate) mod native_surface_paint {
             fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
                 self.fills.push((rect, color));
             }
-            /// Test-only recorder — `paint` never calls this verb
-            /// (see this module's own doc for why no primitive here has been
-            /// migrated onto it yet); this exists only so `RecordingSurface`
-            /// satisfies the trait. Records into the same `fills` list as
-            /// `surface_fill_rect` (radius dropped) — no test asserts on it
-            /// today.
+            /// Records into the same `fills` list as `surface_fill_rect`
+            /// (radius dropped); `paint` never calls it.
             fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
                 self.fills.push((rect, color));
             }
@@ -578,19 +728,49 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        fn panel_with_toolbar() -> SidebarPanel {
+        fn panel_of(buttons: Vec<ToolbarButton>, focused_index: Option<usize>) -> SidebarPanel {
             SidebarPanel {
                 id: WidgetId::new("sb"),
                 toolbar: Some(Toolbar {
                     id: WidgetId::new("sb:toolbar"),
-                    buttons: vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
+                    buttons,
                     bg: None,
-                    focused_index: None,
+                    focused_index,
                     ..Default::default()
                 }),
                 toolbar_height: None,
             }
         }
+
+        fn panel_with_toolbar() -> SidebarPanel {
+            panel_of(
+                vec![mk_action("a", "Refine", true), mk_action("b", "Drop", true)],
+                None,
+            )
+        }
+
+        /// Pixel metrics matching `RecordingSurface`'s own 8px-per-char
+        /// measure, so layout and paint agree on every item width.
+        fn paint_at(
+            panel: &SidebarPanel,
+            bounds: Rect,
+            hovered: Option<&WidgetId>,
+            pressed: Option<&WidgetId>,
+        ) -> (RecordingSurface, SidebarPanelLayout) {
+            let layout = Primitive::layout(panel, &LayoutCtx::new(16.0, 8.0, false), bounds);
+            let mut surface = RecordingSurface::default();
+            paint(
+                panel,
+                &layout,
+                &mut surface,
+                &Theme::default(),
+                hovered,
+                pressed,
+            );
+            (surface, layout)
+        }
+
+        const BOUNDS: Rect = Rect::new(0.0, 0.0, 100.0, 50.0);
 
         #[test]
         fn no_toolbar_paints_nothing() {
@@ -599,33 +779,17 @@ pub(crate) mod native_surface_paint {
                 toolbar: None,
                 toolbar_height: None,
             };
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            let layout = paint(
-                &panel,
-                &mut surface,
-                &theme,
-                Rect::new(0.0, 0.0, 100.0, 50.0),
-                16.0,
-                None,
-                None,
-            );
+            let (surface, layout) = paint_at(&panel, BOUNDS, None, None);
             assert!(surface.fills.is_empty());
             assert!(surface.text_runs.is_empty());
-            assert_eq!(layout.content_bounds, Rect::new(0.0, 0.0, 100.0, 50.0));
+            assert_eq!(layout.content_bounds, BOUNDS);
         }
 
         #[test]
         fn zero_size_bounds_paints_nothing() {
-            let panel = panel_with_toolbar();
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            paint(
-                &panel,
-                &mut surface,
-                &theme,
+            let (surface, _) = paint_at(
+                &panel_with_toolbar(),
                 Rect::new(0.0, 0.0, 0.0, 0.0),
-                16.0,
                 None,
                 None,
             );
@@ -635,18 +799,8 @@ pub(crate) mod native_surface_paint {
 
         #[test]
         fn toolbar_header_fills_bar_background_and_clips() {
-            let panel = panel_with_toolbar();
             let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            let layout = paint(
-                &panel,
-                &mut surface,
-                &theme,
-                Rect::new(0.0, 0.0, 100.0, 50.0),
-                16.0,
-                None,
-                None,
-            );
+            let (surface, layout) = paint_at(&panel_with_toolbar(), BOUNDS, None, None);
             let tb = layout.toolbar_bounds.expect("toolbar slot reserved");
             assert_eq!(surface.clip_pushes, vec![tb]);
             assert_eq!(surface.clip_pops, 1);
@@ -655,15 +809,10 @@ pub(crate) mod native_surface_paint {
 
         #[test]
         fn hovered_button_gets_hover_bg_and_hover_fg() {
-            let panel = panel_with_toolbar();
             let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            paint(
-                &panel,
-                &mut surface,
-                &theme,
-                Rect::new(0.0, 0.0, 100.0, 50.0),
-                16.0,
+            let (surface, _) = paint_at(
+                &panel_with_toolbar(),
+                BOUNDS,
                 Some(&WidgetId::new("a")),
                 None,
             );
@@ -680,159 +829,81 @@ pub(crate) mod native_surface_paint {
 
         #[test]
         fn pressed_button_gets_selected_bg() {
-            let panel = panel_with_toolbar();
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            paint(
-                &panel,
-                &mut surface,
-                &theme,
-                Rect::new(0.0, 0.0, 100.0, 50.0),
-                16.0,
+            let (surface, _) = paint_at(
+                &panel_with_toolbar(),
+                BOUNDS,
                 None,
                 Some(&WidgetId::new("a")),
             );
-            assert_eq!(surface.fills[1].1, theme.selected_bg);
+            assert_eq!(surface.fills[1].1, Theme::default().selected_bg);
         }
 
         #[test]
         fn disabled_action_paints_muted_fg_no_highlight() {
-            let panel = SidebarPanel {
-                id: WidgetId::new("sb"),
-                toolbar: Some(Toolbar {
-                    id: WidgetId::new("sb:toolbar"),
-                    buttons: vec![mk_action("a", "Refine", false)],
-                    bg: None,
-                    focused_index: None,
-                    ..Default::default()
-                }),
-                toolbar_height: None,
-            };
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            paint(
-                &panel,
-                &mut surface,
-                &theme,
-                Rect::new(0.0, 0.0, 100.0, 50.0),
-                16.0,
-                Some(&WidgetId::new("a")), // hover on a disabled button is a no-op
-                None,
-            );
-            // Only the bar background fill — no highlight for a disabled
-            // (thus never "hovered") action.
+            let panel = panel_of(vec![mk_action("a", "Refine", false)], None);
+            // Hover on a disabled button is a no-op.
+            let (surface, _) = paint_at(&panel, BOUNDS, Some(&WidgetId::new("a")), None);
             assert_eq!(surface.fills.len(), 1);
             let (_, _, color) = &surface.text_runs[0];
-            assert_eq!(*color, theme.muted_fg);
+            assert_eq!(*color, Theme::default().muted_fg);
         }
 
         #[test]
         fn focused_button_gets_stroke_ring_when_not_hovered_or_pressed() {
-            let panel = SidebarPanel {
-                id: WidgetId::new("sb"),
-                toolbar: Some(Toolbar {
-                    id: WidgetId::new("sb:toolbar"),
-                    buttons: vec![mk_action("a", "Refine", true)],
-                    bg: None,
-                    focused_index: Some(0),
-                    ..Default::default()
-                }),
-                toolbar_height: None,
-            };
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            paint(
-                &panel,
-                &mut surface,
-                &theme,
-                Rect::new(0.0, 0.0, 100.0, 50.0),
-                16.0,
-                None,
-                None,
-            );
+            let panel = panel_of(vec![mk_action("a", "Refine", true)], Some(0));
+            let (surface, _) = paint_at(&panel, BOUNDS, None, None);
             assert_eq!(surface.strokes.len(), 1);
-            assert_eq!(surface.strokes[0].1, theme.accent_fg);
+            assert_eq!(surface.strokes[0].1, Theme::default().accent_fg);
         }
 
         #[test]
         fn separator_draws_a_vertical_line_not_a_fill() {
-            let panel = SidebarPanel {
-                id: WidgetId::new("sb"),
-                toolbar: Some(Toolbar {
-                    id: WidgetId::new("sb:toolbar"),
-                    buttons: vec![mk_action("a", "Refine", true), ToolbarButton::Separator],
-                    bg: None,
-                    focused_index: None,
-                    ..Default::default()
-                }),
-                toolbar_height: None,
-            };
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            paint(
-                &panel,
-                &mut surface,
-                &theme,
-                Rect::new(0.0, 0.0, 100.0, 50.0),
-                16.0,
-                None,
+            let panel = panel_of(
+                vec![mk_action("a", "Refine", true), ToolbarButton::Separator],
                 None,
             );
+            let (surface, _) = paint_at(&panel, BOUNDS, None, None);
             assert_eq!(surface.lines.len(), 1);
-            assert_eq!(surface.lines[0].2, theme.muted_fg);
+            assert_eq!(surface.lines[0].2, Theme::default().muted_fg);
         }
 
         #[test]
         fn label_draws_left_aligned_unhighlighted_text() {
-            let panel = SidebarPanel {
-                id: WidgetId::new("sb"),
-                toolbar: Some(Toolbar {
-                    id: WidgetId::new("sb:toolbar"),
-                    buttons: vec![ToolbarButton::Label {
-                        text: "2 of 5".into(),
-                        fg: None,
-                    }],
-                    bg: None,
-                    focused_index: None,
-                    ..Default::default()
-                }),
-                toolbar_height: None,
-            };
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            let layout = paint(
-                &panel,
-                &mut surface,
-                &theme,
-                Rect::new(0.0, 0.0, 100.0, 50.0),
-                16.0,
-                None,
+            let panel = panel_of(
+                vec![ToolbarButton::Label {
+                    text: "2 of 5".into(),
+                    fg: None,
+                }],
                 None,
             );
+            let (surface, layout) = paint_at(&panel, BOUNDS, None, None);
             let tb = layout.toolbar_bounds.unwrap();
-            // Only the bar background fill — labels never get a
-            // highlight fill.
             assert_eq!(surface.fills.len(), 1);
             let (rect, text, color) = &surface.text_runs[0];
             assert_eq!(text, "2 of 5");
             assert_eq!(rect.x, tb.x);
-            assert_eq!(*color, theme.muted_fg);
+            assert_eq!(*color, Theme::default().muted_fg);
+        }
+
+        /// Item bounds are header-local in the layout; the painter
+        /// offsets them by the header's own origin.
+        #[test]
+        fn a_panel_at_a_nonzero_origin_paints_its_buttons_inside_its_header() {
+            let bounds = Rect::new(40.0, 30.0, 100.0, 50.0);
+            let (surface, layout) = paint_at(&panel_with_toolbar(), bounds, None, None);
+            let tb = layout.toolbar_bounds.unwrap();
+            let (rect, _, _) = surface
+                .text_runs
+                .iter()
+                .find(|(_, t, _)| t == "Refine")
+                .expect("Refine label drawn");
+            assert!(rect.x >= tb.x && rect.x + rect.width <= tb.x + tb.width);
+            assert!(rect.y >= tb.y && rect.y <= tb.y + tb.height);
         }
 
         #[test]
         fn content_bounds_still_start_below_toolbar_slot() {
-            let panel = panel_with_toolbar();
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-            let layout = paint(
-                &panel,
-                &mut surface,
-                &theme,
-                Rect::new(0.0, 0.0, 100.0, 50.0),
-                16.0,
-                None,
-                None,
-            );
+            let (_, layout) = paint_at(&panel_with_toolbar(), BOUNDS, None, None);
             let tb = layout.toolbar_bounds.unwrap();
             assert_eq!(layout.content_bounds.y, tb.y + tb.height);
         }
@@ -844,8 +915,10 @@ pub(crate) mod native_surface_paint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::toolbar::ToolbarButton;
-    use crate::types::WidgetId;
+    use crate::event::{Key, MouseButton, NamedKey};
+    use crate::interactive::KeyEvent;
+    use crate::primitives::toolbar::{ToolbarButton, ToolbarSubPart};
+    use crate::types::Modifiers;
 
     fn mk_action(id: &str, label: &str) -> ToolbarButton {
         ToolbarButton::Action {
@@ -874,12 +947,28 @@ mod tests {
         }
     }
 
-    fn measure() -> (
-        SidebarPanelMeasure,
-        impl Fn(&ToolbarButton) -> ToolbarItemMeasure,
-    ) {
-        let m = SidebarPanelMeasure::new(1.0, 8.0);
-        (m, |_btn: &ToolbarButton| ToolbarItemMeasure::new(8.0))
+    /// Whole-cell metrics: [`LayoutCtx::units`] reports [`Units::Cells`].
+    fn cells() -> LayoutCtx<'static> {
+        LayoutCtx::new(1.0, 1.0, false)
+    }
+
+    /// Pixel metrics with the default [`crate::Style`].
+    fn pixels() -> LayoutCtx<'static> {
+        LayoutCtx::new(16.0, 8.0, false)
+    }
+
+    /// Header-local bounds of the header item at `idx` in `layout`.
+    fn item_bounds(layout: &SidebarPanelLayout, idx: usize) -> Rect {
+        layout
+            .toolbar
+            .as_ref()
+            .expect("toolbar laid out")
+            .layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == idx)
+            .expect("item laid out")
+            .bounds
     }
 
     #[test]
@@ -889,47 +978,53 @@ mod tests {
             toolbar: None,
             toolbar_height: None,
         };
-        let (m, mi) = measure();
-        let layout = panel.layout(Rect::new(0.0, 0.0, 30.0, 10.0), m, mi);
+        let layout = panel.layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
         assert!(layout.toolbar_bounds.is_none());
-        assert!(layout.toolbar_layout.is_none());
+        assert!(layout.toolbar.is_none());
         assert_eq!(layout.content_bounds, Rect::new(0.0, 0.0, 30.0, 10.0));
     }
 
     #[test]
-    fn toolbar_reserves_top_slot() {
-        let panel = panel_with_toolbar();
-        let (m, mi) = measure();
-        let layout = panel.layout(Rect::new(0.0, 0.0, 30.0, 10.0), m, mi);
+    fn toolbar_reserves_one_cell_on_a_cell_grid() {
+        let layout = panel_with_toolbar().layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
         let tb = layout.toolbar_bounds.expect("toolbar slot reserved");
-        assert_eq!(tb.x, 0.0);
-        assert_eq!(tb.y, 0.0);
-        assert_eq!(tb.width, 30.0);
-        assert_eq!(tb.height, 1.0); // default_toolbar_height
-                                    // Content starts below the slot.
-        assert_eq!(layout.content_bounds.y, 1.0);
-        assert_eq!(layout.content_bounds.height, 9.0);
+        assert_eq!(tb, Rect::new(0.0, 0.0, 30.0, 1.0));
+        assert_eq!(layout.content_bounds, Rect::new(0.0, 1.0, 30.0, 9.0));
+        assert_eq!(layout.toolbar.as_ref().map(|t| t.area), Some(tb));
+    }
+
+    #[test]
+    fn toolbar_reserves_the_style_toolbar_height_on_a_pixel_surface() {
+        let style = crate::Style::default().with_toolbar_height(30.0);
+        let ctx = pixels().with_style(&style);
+        let layout = panel_with_toolbar().layout(&ctx, Rect::new(0.0, 0.0, 200.0, 100.0));
+        assert_eq!(layout.toolbar_bounds.unwrap().height, 30.0);
+        assert_eq!(layout.content_bounds.y, 30.0);
+
+        // Floored at the row height when the style token is shorter.
+        let short = crate::Style::default().with_toolbar_height(4.0);
+        let ctx = pixels().with_style(&short);
+        let layout = panel_with_toolbar().layout(&ctx, Rect::new(0.0, 0.0, 200.0, 100.0));
+        assert_eq!(layout.toolbar_bounds.unwrap().height, 16.0);
     }
 
     #[test]
     fn empty_toolbar_still_reserves_slot() {
-        // The whole point of Gap 2 is that content doesn't shift when
-        // the toolbar's buttons vector is temporarily empty.
+        // Content doesn't shift when the toolbar's buttons vector is
+        // temporarily empty.
         let panel = SidebarPanel {
             id: WidgetId::new("sb"),
             toolbar: Some(Toolbar {
                 id: WidgetId::new("sb:toolbar"),
-                buttons: vec![], // empty!
+                buttons: vec![],
                 bg: None,
                 focused_index: None,
                 ..Default::default()
             }),
             toolbar_height: None,
         };
-        let (m, mi) = measure();
-        let layout = panel.layout(Rect::new(0.0, 0.0, 30.0, 10.0), m, mi);
+        let layout = panel.layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
         assert!(layout.toolbar_bounds.is_some());
-        // Slot still reserved — content offset by the toolbar height.
         assert_eq!(layout.content_bounds.y, 1.0);
         assert_eq!(layout.content_bounds.height, 9.0);
     }
@@ -938,74 +1033,70 @@ mod tests {
     fn explicit_toolbar_height_overrides_default() {
         let mut panel = panel_with_toolbar();
         panel.toolbar_height = Some(3.0);
-        let (m, mi) = measure();
-        let layout = panel.layout(Rect::new(0.0, 0.0, 30.0, 10.0), m, mi);
-        let tb = layout.toolbar_bounds.unwrap();
-        assert_eq!(tb.height, 3.0);
+        let layout = panel.layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
+        assert_eq!(layout.toolbar_bounds.unwrap().height, 3.0);
         assert_eq!(layout.content_bounds.y, 3.0);
         assert_eq!(layout.content_bounds.height, 7.0);
     }
 
     #[test]
-    fn hit_test_routes_toolbar_button_click() {
-        let panel = panel_with_toolbar();
-        let (m, mi) = measure();
-        let layout = panel.layout(Rect::new(0.0, 0.0, 30.0, 10.0), m, mi);
-        // First button is at x=0..8 in the toolbar slot.
-        match layout.hit_test(2.0, 0.0) {
-            SidebarPanelHit::ToolbarButton(id) => assert_eq!(id.as_str(), "a"),
-            other => panic!("expected ToolbarButton hit, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn hit_test_inside_toolbar_slot_off_button_is_toolbar_empty() {
-        let panel = panel_with_toolbar();
-        let (m, mi) = measure();
-        let layout = panel.layout(Rect::new(0.0, 0.0, 30.0, 10.0), m, mi);
-        // Past the second button's right edge (16) but still in the
-        // toolbar slot (y < 1).
-        let hit = layout.hit_test(20.0, 0.0);
-        assert_eq!(hit, SidebarPanelHit::ToolbarEmpty);
-    }
-
-    #[test]
-    fn hit_test_content_returns_content_local_coords() {
-        let panel = panel_with_toolbar();
-        let (m, mi) = measure();
-        let layout = panel.layout(Rect::new(10.0, 5.0, 30.0, 10.0), m, mi);
-        // Click at panel-absolute (12.0, 8.0): toolbar slot is rows
-        // 5..6, so y=8 lands in content. Content origin is (10, 6).
-        // Local: (12-10, 8-6) = (2.0, 2.0).
-        match layout.hit_test(12.0, 8.0) {
-            SidebarPanelHit::Content { x, y } => {
-                assert_eq!(x, 2.0);
-                assert_eq!(y, 2.0);
-            }
-            other => panic!("expected Content hit, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn hit_test_outside_panel_is_empty() {
-        let panel = panel_with_toolbar();
-        let (m, mi) = measure();
-        let layout = panel.layout(Rect::new(0.0, 0.0, 30.0, 10.0), m, mi);
-        assert_eq!(layout.hit_test(100.0, 100.0), SidebarPanelHit::Empty);
-    }
-
-    #[test]
     fn toolbar_height_clamps_to_panel_height() {
-        // If a host accidentally asks for a toolbar taller than the
-        // panel, the slot must not overflow into negative-content
-        // territory.
         let mut panel = panel_with_toolbar();
         panel.toolbar_height = Some(50.0);
-        let (m, mi) = measure();
-        let layout = panel.layout(Rect::new(0.0, 0.0, 30.0, 10.0), m, mi);
-        let tb = layout.toolbar_bounds.unwrap();
-        assert_eq!(tb.height, 10.0); // clamped to panel height
+        let layout = panel.layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
+        assert_eq!(layout.toolbar_bounds.unwrap().height, 10.0);
         assert_eq!(layout.content_bounds.height, 0.0);
+    }
+
+    /// Item bounds are header-local whatever the panel's own origin is.
+    #[test]
+    fn header_items_are_header_local_at_a_nonzero_origin() {
+        let layout = panel_with_toolbar().layout(&cells(), Rect::new(7.0, 13.0, 30.0, 10.0));
+        let first = item_bounds(&layout, 0);
+        assert_eq!((first.x, first.y), (0.0, 0.0));
+    }
+
+    fn hit_test_round_trip_at(origin_x: f32, origin_y: f32) {
+        for ctx in [cells(), pixels()] {
+            let bounds = Rect::new(origin_x, origin_y, 300.0, 200.0);
+            let layout = panel_with_toolbar().layout(&ctx, bounds);
+            let tb = layout.toolbar_bounds.unwrap();
+            let refine = item_bounds(&layout, 0);
+            assert_eq!(
+                layout.hit_test(tb.x + refine.x + 0.5, tb.y),
+                SidebarPanelHit::ToolbarButton(WidgetId::new("a")),
+            );
+            let drop = item_bounds(&layout, 1);
+            assert_eq!(
+                layout.hit_test(tb.x + drop.x + 0.5, tb.y),
+                SidebarPanelHit::ToolbarButton(WidgetId::new("b")),
+            );
+            // Past the last button but still inside the slot.
+            assert_eq!(
+                layout.hit_test(tb.x + tb.width - 1.0, tb.y),
+                SidebarPanelHit::ToolbarEmpty,
+            );
+            // Content-local coordinates below the slot.
+            let c = layout.content_bounds;
+            assert_eq!(
+                layout.hit_test(c.x + 2.0, c.y + 2.0),
+                SidebarPanelHit::Content { x: 2.0, y: 2.0 },
+            );
+            assert_eq!(
+                layout.hit_test(origin_x - 1.0, origin_y - 1.0),
+                SidebarPanelHit::Empty
+            );
+        }
+    }
+
+    #[test]
+    fn hit_test_routes_header_and_content_at_the_origin() {
+        hit_test_round_trip_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn hit_test_routes_header_and_content_at_a_nonzero_origin() {
+        hit_test_round_trip_at(7.0, 13.0);
     }
 
     #[test]
@@ -1014,5 +1105,559 @@ mod tests {
         let json = serde_json::to_string(&panel).unwrap();
         let back: SidebarPanel = serde_json::from_str(&json).unwrap();
         assert_eq!(panel, back);
+    }
+
+    // ── Interactive ─────────────────────────────────────────────────
+
+    /// Minimal [`EventHost`] mock recording what a `handle` asked for.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: usize,
+        captures: usize,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, _sub: Option<SubTarget>) {
+            self.focus_requests += 1;
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {
+            self.captures += 1;
+        }
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn pointer(kind: PointerKind, x: f32, y: f32) -> RoutedEvent {
+        RoutedEvent::Pointer {
+            kind,
+            sub: None,
+            local: Point { x, y },
+            mods: Modifiers::default(),
+        }
+    }
+
+    fn handle(
+        panel: &SidebarPanel,
+        state: &mut SidebarPanelState,
+        layout: &SidebarPanelLayout,
+        host: &mut MockHost,
+        event: RoutedEvent,
+    ) -> Handled<SidebarPanelAction> {
+        let mut cx = EventCx::new(panel.id, host);
+        Interactive::handle(panel, state, &event, layout, &mut cx)
+    }
+
+    fn clicked(id: &str) -> SidebarPanelAction {
+        SidebarPanelAction {
+            toolbar: WidgetId::new("sb:toolbar"),
+            event: ToolbarEvent::ButtonClicked {
+                id: WidgetId::new(id),
+                is_active: true,
+            },
+        }
+    }
+
+    #[test]
+    fn a_header_click_emits_the_header_toolbars_own_event() {
+        for ctx in [cells(), pixels()] {
+            let panel = panel_with_toolbar();
+            let layout = panel.layout(&ctx, Rect::new(5.0, 5.0, 300.0, 200.0));
+            let drop = item_bounds(&layout, 1);
+            let mut state = SidebarPanelState::default();
+            let mut host = MockHost::default();
+
+            let out = handle(
+                &panel,
+                &mut state,
+                &layout,
+                &mut host,
+                pointer(PointerKind::Down(MouseButton::Left), drop.x + 0.5, 0.0),
+            );
+            assert_eq!(out, Handled::Event(clicked("b")));
+            assert_eq!(state.pressed_idx(), Some(1));
+            assert_eq!(host.focus_requests, 0, "the panel is not a focus stop");
+
+            assert!(handle(
+                &panel,
+                &mut state,
+                &layout,
+                &mut host,
+                pointer(PointerKind::Up(MouseButton::Left), drop.x + 0.5, 0.0),
+            )
+            .is_consumed());
+            assert_eq!(state.pressed_idx(), None);
+        }
+    }
+
+    #[test]
+    fn the_action_rides_ui_event_toolbar_under_the_header_id() {
+        assert_eq!(
+            clicked("a").into_ui_event(WidgetId::new("sb")),
+            crate::UiEvent::Toolbar(
+                WidgetId::new("sb:toolbar"),
+                ToolbarEvent::ButtonClicked {
+                    id: WidgetId::new("a"),
+                    is_active: true,
+                },
+            ),
+        );
+    }
+
+    #[test]
+    fn a_press_in_the_content_area_is_not_claimed() {
+        let panel = panel_with_toolbar();
+        let layout = panel.layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
+        let mut state = SidebarPanelState::default();
+        let mut host = MockHost::default();
+        assert!(handle(
+            &panel,
+            &mut state,
+            &layout,
+            &mut host,
+            pointer(PointerKind::Down(MouseButton::Left), 1.0, 4.0),
+        )
+        .is_ignored());
+    }
+
+    #[test]
+    fn hover_tracks_the_header_and_clears_on_moving_into_the_content() {
+        let panel = panel_with_toolbar();
+        let layout = panel.layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
+        let mut state = SidebarPanelState::default();
+        let mut host = MockHost::default();
+
+        assert!(handle(
+            &panel,
+            &mut state,
+            &layout,
+            &mut host,
+            pointer(PointerKind::Enter, 1.0, 0.0)
+        )
+        .is_consumed());
+        assert_eq!(state.hovered_idx(), Some(0));
+        assert_eq!(state.toolbar.hovered_id, Some(WidgetId::new("a")));
+
+        assert!(handle(
+            &panel,
+            &mut state,
+            &layout,
+            &mut host,
+            pointer(PointerKind::Move, 1.0, 5.0)
+        )
+        .is_consumed());
+        assert_eq!(state.hovered_idx(), None);
+    }
+
+    #[test]
+    fn keys_are_never_the_panels_and_it_is_no_focus_stop() {
+        let panel = panel_with_toolbar();
+        let layout = panel.layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
+        let mut state = SidebarPanelState::default();
+        let mut host = MockHost::default();
+        assert_eq!(Interactive::focus(&panel), FocusSpec::None);
+        assert!(handle(
+            &panel,
+            &mut state,
+            &layout,
+            &mut host,
+            RoutedEvent::Key(KeyEvent {
+                key: Key::Named(NamedKey::Enter),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            }),
+        )
+        .is_ignored());
+    }
+
+    #[test]
+    fn the_a11y_click_activates_the_first_header_button() {
+        let panel = panel_with_toolbar();
+        let layout = panel.layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
+        let mut state = SidebarPanelState::default();
+        let mut host = MockHost::default();
+        assert_eq!(
+            Interactive::a11y_actions(&panel, &state),
+            vec![A11yAction::Click]
+        );
+        assert_eq!(
+            handle(
+                &panel,
+                &mut state,
+                &layout,
+                &mut host,
+                RoutedEvent::Action(A11yAction::Click),
+            ),
+            Handled::Event(clicked("a")),
+        );
+    }
+
+    /// Three-way event parity's in-crate leg: an [`A11yAction::Click`]
+    /// routed through [`crate::a11y::route_widget_action`] produces the
+    /// same [`crate::UiEvent`] as a direct [`Interactive::handle`] call
+    /// with the same action, and as a mouse click on the first header
+    /// button. The `TuiDriver` mouse leg lives in
+    /// `tests/widget_contract_sidebar_panel.rs`, the binding-host leg in
+    /// `quadraui-binding-core`'s engine tests.
+    #[test]
+    fn route_widget_action_click_matches_a_direct_handle_and_a_mouse_click() {
+        let panel = panel_with_toolbar();
+        let area = Rect::new(0.0, 0.0, 30.0, 10.0);
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(panel.id, area, Box::new(panel.clone()));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let via_a11y = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &cells(),
+            panel.id,
+            A11yAction::Click,
+        );
+
+        let layout = panel.layout(&cells(), area);
+        let mut host = MockHost::default();
+        let direct = handle(
+            &panel,
+            &mut SidebarPanelState::default(),
+            &layout,
+            &mut host,
+            RoutedEvent::Action(A11yAction::Click),
+        );
+        let refine = item_bounds(&layout, 0);
+        let via_mouse = handle(
+            &panel,
+            &mut SidebarPanelState::default(),
+            &layout,
+            &mut host,
+            pointer(PointerKind::Down(MouseButton::Left), refine.x + 0.5, 0.0),
+        );
+
+        let expected = vec![clicked("a").into_ui_event(panel.id)];
+        assert_eq!(via_a11y, expected);
+        for outcome in [direct, via_mouse] {
+            match outcome {
+                Handled::Event(action) => {
+                    assert_eq!(vec![action.into_ui_event(panel.id)], expected)
+                }
+                other => panic!("expected an event, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn a_panel_without_a_header_has_no_behaviour() {
+        let panel = SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: None,
+            toolbar_height: None,
+        };
+        let layout = panel.layout(&cells(), Rect::new(0.0, 0.0, 30.0, 10.0));
+        let mut state = SidebarPanelState::default();
+        let mut host = MockHost::default();
+        assert!(Interactive::a11y_actions(&panel, &state).is_empty());
+        assert!(Interactive::sub_regions(&panel, &layout).is_empty());
+        assert!(handle(
+            &panel,
+            &mut state,
+            &layout,
+            &mut host,
+            pointer(PointerKind::Down(MouseButton::Left), 1.0, 0.0),
+        )
+        .is_ignored());
+    }
+
+    #[test]
+    fn sub_regions_are_the_header_buttons_in_panel_local_space() {
+        let panel = panel_with_toolbar();
+        let layout = panel.layout(&cells(), Rect::new(4.0, 6.0, 30.0, 10.0));
+        let regions = Interactive::sub_regions(&panel, &layout);
+        let (rect, _) = regions
+            .iter()
+            .find(|(_, sub)| {
+                ToolbarSubPart::from_sub_target(*sub) == Some(ToolbarSubPart::Button(0))
+            })
+            .expect("the first button is addressable");
+        assert_eq!((rect.x, rect.y), (0.0, 0.0));
+    }
+
+    #[test]
+    fn decodes_through_widget_kinds() {
+        let widget = crate::widget_kinds::decode_widget(
+            "sidebar_panel",
+            serde_json::json!({"id": "sb", "toolbar": null}),
+        )
+        .unwrap_or_else(|err| panic!("sidebar_panel decodes: {err}"));
+        assert_eq!(widget.id().map(|id| id.as_str()), Some("sb"));
+    }
+}
+
+/// The cell rasteriser: a header paints as its toolbar does on a cell
+/// grid, and the content rows are left for the host.
+#[cfg(all(test, feature = "tui"))]
+mod cell_paint_tests {
+    use super::*;
+    use crate::primitives::toolbar::ToolbarButton;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    fn panel_with_toolbar() -> SidebarPanel {
+        SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: Some(Toolbar {
+                id: WidgetId::new("sb:toolbar"),
+                buttons: vec![ToolbarButton::Action {
+                    spec: None,
+                    id: WidgetId::new("refine"),
+                    label: "Refine".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                }],
+                bg: None,
+                focused_index: None,
+                ..Default::default()
+            }),
+            toolbar_height: None,
+        }
+    }
+
+    fn paint(panel: &SidebarPanel, area: Rect, buf: &mut Buffer) -> SidebarPanelLayout {
+        let layout = panel.layout(&LayoutCtx::new(1.0, 1.0, false), area);
+        panel.paint_cells(&layout, buf, &Theme::default());
+        layout
+    }
+
+    #[test]
+    fn paints_toolbar_in_top_row() {
+        let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
+        let layout = paint(
+            &panel_with_toolbar(),
+            Rect::new(0.0, 0.0, 40.0, 10.0),
+            &mut buf,
+        );
+        assert_eq!(cell_char(&buf, 0, 0), '[');
+        // Content begins at row 1 and is left blank (host paints).
+        assert_eq!(cell_char(&buf, 0, 1), ' ');
+        assert_eq!(layout.content_bounds.y, 1.0);
+        assert_eq!(layout.content_bounds.height, 9.0);
+    }
+
+    /// Paint and click round-trip at a non-zero origin too.
+    fn click_in_header_round_trip_at(origin_x: u16, origin_y: u16) {
+        let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, 60, 30));
+        let layout = paint(
+            &panel_with_toolbar(),
+            Rect::new(origin_x as f32, origin_y as f32, 40.0, 10.0),
+            &mut buf,
+        );
+        assert_eq!(cell_char(&buf, origin_x, origin_y), '[');
+        match layout.hit_test(origin_x as f32 + 2.0, origin_y as f32) {
+            SidebarPanelHit::ToolbarButton(id) => assert_eq!(id.as_str(), "refine"),
+            other => panic!("expected ToolbarButton, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn click_in_header_resolves_to_toolbar_button() {
+        click_in_header_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn click_in_header_resolves_to_toolbar_button_at_nonzero_origin() {
+        click_in_header_round_trip_at(7, 13);
+    }
+
+    #[test]
+    fn no_toolbar_paints_nothing() {
+        let panel = SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: None,
+            toolbar_height: None,
+        };
+        let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
+        let layout = paint(&panel, Rect::new(0.0, 0.0, 40.0, 10.0), &mut buf);
+        assert!(layout.toolbar_bounds.is_none());
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+        assert_eq!(layout.content_bounds.height, 10.0);
+    }
+}
+
+/// The header painted through a real macOS backend via
+/// [`crate::DrawsPrimitives::draw_dyn`], read back off a bitmap.
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_paint_tests {
+    use super::*;
+    use crate::event::Viewport;
+    use crate::macos::headless::BitmapSurface;
+    use crate::macos::text::make_font;
+    use crate::macos::MacBackend;
+    use crate::primitives::toolbar::ToolbarButton;
+    use crate::Backend;
+
+    const W: u32 = 240;
+    const H: u32 = 200;
+
+    fn action(id: &str, label: &str, icon: Option<&str>) -> ToolbarButton {
+        ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new(id),
+            label: label.into(),
+            icon: icon.map(Into::into),
+            key_hint: None,
+            enabled: true,
+            is_active: false,
+            tooltip: String::new(),
+        }
+    }
+
+    fn panel_of(button: ToolbarButton) -> SidebarPanel {
+        SidebarPanel {
+            id: WidgetId::new("sb"),
+            toolbar: Some(Toolbar {
+                id: WidgetId::new("sb:toolbar"),
+                buttons: vec![button],
+                bg: None,
+                focused_index: None,
+                ..Default::default()
+            }),
+            toolbar_height: None,
+        }
+    }
+
+    fn paint_via_backend(
+        backend: &mut MacBackend,
+        panel: &SidebarPanel,
+    ) -> (BitmapSurface, SidebarPanelLayout) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let resolved = crate::DrawsPrimitives::draw_dyn(
+                b,
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                panel,
+                &(),
+            );
+            *layout.borrow_mut() = resolved.downcast_ref::<SidebarPanelLayout>().cloned();
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().expect("a SidebarPanelLayout"))
+    }
+
+    fn default_backend() -> MacBackend {
+        let mut backend = MacBackend::new();
+        backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
+        backend
+    }
+
+    #[test]
+    fn toolbar_reserves_header_slot_content_starts_below() {
+        let (_surface, layout) = paint_via_backend(
+            &mut default_backend(),
+            &panel_of(action("refine", "Refine", None)),
+        );
+        let tb = layout.toolbar_bounds.expect("toolbar bounds present");
+        assert_eq!(tb.y, 0.0);
+        assert!(layout.content_bounds.y >= tb.y + tb.height);
+        match layout.hit_test(2.0, 1.0) {
+            SidebarPanelHit::ToolbarButton(id) => assert_eq!(id.as_str(), "refine"),
+            other => panic!("expected ToolbarButton, got {other:?}"),
+        }
+    }
+
+    /// A chrome font smaller than `Style::toolbar_height` gets that fixed
+    /// token as its header height; a chrome font taller than it grows the
+    /// header, so the header's own icon glyphs are never clipped.
+    #[test]
+    fn toolbar_header_height_floors_at_style_toolbar_height_and_grows_with_a_huge_chrome_font() {
+        fn toolbar_height_for(chrome_desc: &str) -> f32 {
+            let mut backend = MacBackend::new();
+            Backend::set_editor_font(&mut backend, "Menlo", 9.0);
+            Backend::set_ui_font(&mut backend, chrome_desc);
+            let (_surface, layout) =
+                paint_via_backend(&mut backend, &panel_of(action("refine", "Refine", None)));
+            layout
+                .toolbar_bounds
+                .expect("toolbar bounds present")
+                .height
+        }
+
+        let h_small_chrome = toolbar_height_for("Menlo 9");
+        assert_eq!(h_small_chrome, crate::Style::default().toolbar_height);
+
+        let h_huge_chrome = toolbar_height_for("Menlo 60");
+        assert!(
+            h_huge_chrome > h_small_chrome,
+            "header height must grow with a chrome font taller than the default token: \
+             {h_small_chrome} vs {h_huge_chrome}"
+        );
+    }
+
+    /// A codicon icon glyph — which resolves through the chrome font's
+    /// fallback cascade — paints fully inside the header band and sits
+    /// vertically centred on it.
+    #[test]
+    fn toolbar_icon_glyph_is_vertically_centered_in_header_band() {
+        let panel = panel_of(action("new-file", "", Some("\u{EAF0}")));
+        let (surface, layout) = paint_via_backend(&mut default_backend(), &panel);
+        let tb = layout.toolbar_bounds.expect("toolbar bounds present");
+        let local = layout
+            .toolbar
+            .as_ref()
+            .expect("toolbar layout present")
+            .layout
+            .visible_items[0]
+            .bounds;
+        let item = Rect::new(local.x + tb.x, local.y + tb.y, local.width, local.height);
+
+        // The header band is flat-filled before any glyph is painted, so
+        // any pixel that doesn't match that fill is glyph ink.
+        let bg = surface.pixel((item.x as u32).min(W - 1), (tb.y as u32).min(H - 1));
+
+        let x0 = item.x.max(0.0) as u32;
+        let x1 = ((item.x + item.width).min(W as f32)) as u32;
+        let y0 = tb.y.max(0.0) as u32;
+        let y1 = ((tb.y + tb.height).min(H as f32)) as u32;
+
+        let mut min_y: Option<u32> = None;
+        let mut max_y: Option<u32> = None;
+        for y in y0..y1 {
+            for x in x0..x1 {
+                if surface.pixel(x, y) != bg {
+                    min_y = Some(min_y.map_or(y, |m| m.min(y)));
+                    max_y = Some(max_y.map_or(y, |m| m.max(y)));
+                }
+            }
+        }
+        let min_y = min_y.expect("icon glyph should paint at least one pixel") as f32;
+        let max_y = max_y.expect("icon glyph should paint at least one pixel") as f32;
+
+        assert!(min_y >= tb.y - 0.5, "glyph top {min_y} above band {}", tb.y);
+        assert!(
+            max_y + 1.0 <= tb.y + tb.height + 0.5,
+            "glyph bottom {} clipped by band bottom {}",
+            max_y + 1.0,
+            tb.y + tb.height,
+        );
+        let glyph_center = (min_y + max_y + 1.0) / 2.0;
+        let band_center = tb.y + tb.height / 2.0;
+        assert!(
+            (glyph_center - band_center).abs() <= 2.0,
+            "glyph centre {glyph_center} not within 2px of band centre {band_center}",
+        );
     }
 }

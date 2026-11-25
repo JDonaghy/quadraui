@@ -495,7 +495,7 @@ pub fn font_metrics(font: &CTFont) -> FontMetrics {
 /// fallback run's), so letting height vary with the resolved run's
 /// metrics would desynchronise the two: callers that centre text
 /// vertically using this height (e.g.
-/// `sidebar_panel::native_surface_paint::paint_toolbar_header`) would
+/// `primitives::sidebar_panel`'s header painter) would
 /// then centre against a height [`draw_text_impl`] never positions
 /// against, pushing the glyph low in its slot where a clip rect can cut
 /// off its lower part. Pinning height to `font`'s own metrics, exactly

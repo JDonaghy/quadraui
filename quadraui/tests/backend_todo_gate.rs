@@ -322,16 +322,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_sidebar_panel_interactive",
-        "\"Direct2D sidebar-panel rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn sidebar_panel_layout",
-        "\"DirectWrite sidebar-panel layout (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_diff_view",
         "\"Direct2D DiffView rasteriser (no surface attached yet)\"",
     ),

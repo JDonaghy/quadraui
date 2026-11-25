@@ -137,8 +137,8 @@ mod tests {
     }
 
     /// Paint↔click round trip at a non-zero origin — regression guard for
-    /// LOCAL/ABSOLUTE coordinate mixups, mirrored from `win::command_line`
-    /// and `win::sidebar_panel`'s own nonzero-origin tests.
+    /// LOCAL/ABSOLUTE coordinate mixups, mirrored from `win::command_line`'s
+    /// own nonzero-origin tests.
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         let origin_x = 12.0_f32;
@@ -352,7 +352,7 @@ mod tests {
     /// No-paint layout must agree byte-for-byte with what the shared
     /// painter paints against — same contract every other `win::`
     /// rasteriser's `no_paint_layout_matches_paint_layout` test proves
-    /// (see `win::command_line`, `win::sidebar_panel`).
+    /// (see `win::command_line`).
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let ti = sample(vec!["hello", "world"], 1, 2);

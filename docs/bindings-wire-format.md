@@ -761,7 +761,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_HitDetailSplitSecondPane`](#wire-_hitdetailsplitsecondpane)
 - [`_HitDetailSplitDivider`](#wire-_hitdetailsplitdivider)
 - [`_HitDetailSplitTreeDivider`](#wire-_hitdetailsplittreedivider)
-- [`_HitDetailSidebarPanelToolbarButton`](#wire-_hitdetailsidebarpaneltoolbarbutton)
 - [`_HitDetailTreeScrollbarTrackBefore`](#wire-_hitdetailtreescrollbartrackbefore)
 - [`_HitDetailTreeScrollbarThumb`](#wire-_hitdetailtreescrollbarthumb)
 - [`_HitDetailTreeScrollbarTrackAfter`](#wire-_hitdetailtreescrollbartrackafter)
@@ -4699,14 +4698,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `kind` | `"split_tree_divider"` | yes |  |
 | `split_index` | `number` | yes |  |
 
-<a id="wire-_hitdetailsidebarpaneltoolbarbutton"></a>
-#### `_HitDetailSidebarPanelToolbarButton`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"sidebar_panel_toolbar_button"` | yes |  |
-| `bar` | `WidgetId` | yes |  |
-
 <a id="wire-_hitdetailtreescrollbartrackbefore"></a>
 #### `_HitDetailTreeScrollbarTrackBefore`
 
@@ -4791,7 +4782,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`

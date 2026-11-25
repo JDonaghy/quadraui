@@ -41,7 +41,7 @@
 //! Every primitive that has a `Backend::draw_*` method has a matching
 //! [`Surface`] variant (`Board`, `CommandCenter`, `DiffView`,
 //! `DropOverlay`, `Image`, `MessageList`, `Minimap`, `PipelineView`,
-//! `Progress`, `SidebarPanel`, `Spinner`, `SplitTree`, `TextField`,
+//! `Progress`, `Spinner`, `SplitTree`, `TextField`,
 //! `TextInput`, `Toolbar` included). `Backend::draw_<name>` stays reachable directly
 //! for the reasons above; there is no primitive that is categorically
 //! unreachable through the declarative path.
@@ -434,17 +434,6 @@ pub enum Surface {
         rect: Rect,
         bar: ProgressBar,
     },
-    /// Mirrors [`Surface::StatusBar`]'s `hovered`/`pressed` shape: a
-    /// `Surface` carries the two optional ids rather than a whole
-    /// [`crate::interaction::InteractionState`], and
-    /// [`ScreenLayout::draw`] builds the `WidgetId`-keyed store from
-    /// them at the call boundary.
-    SidebarPanel {
-        rect: Rect,
-        panel: SidebarPanel,
-        hovered: Option<WidgetId>,
-        pressed: Option<WidgetId>,
-    },
     Spinner {
         rect: Rect,
         spinner: Spinner,
@@ -464,8 +453,11 @@ pub enum Surface {
         rect: Rect,
         tf: TextField,
     },
-    /// See [`Surface::SidebarPanel`]'s doc for why `hovered`/`pressed`
-    /// are a pair of optional ids rather than an `InteractionState`.
+    /// Mirrors [`Surface::StatusBar`]'s `hovered`/`pressed` shape: a
+    /// `Surface` carries the two optional ids rather than a whole
+    /// [`crate::interaction::InteractionState`], and
+    /// [`ScreenLayout::draw`] builds the `WidgetId`-keyed store from
+    /// them at the call boundary.
     Toolbar {
         rect: Rect,
         bar: Toolbar,
@@ -617,9 +609,6 @@ pub enum FrameZone {
         idx: usize,
     },
     Progress {
-        idx: usize,
-    },
-    SidebarPanel {
         idx: usize,
     },
     Spinner {
@@ -999,16 +988,6 @@ impl ScreenLayout {
                 Surface::Progress { rect, bar } => {
                     backend.draw_progress(*rect, bar);
                 }
-                Surface::SidebarPanel {
-                    rect,
-                    panel,
-                    hovered,
-                    pressed,
-                } => {
-                    let interaction =
-                        crate::interaction::InteractionState::from_parts(*hovered, *pressed);
-                    backend.draw_sidebar_panel_interactive(*rect, panel, &interaction);
-                }
                 Surface::Spinner { rect, spinner } => {
                     backend.draw_spinner(*rect, spinner);
                 }
@@ -1129,7 +1108,6 @@ impl ScreenLayout {
                 Surface::Minimap { rect, minimap } => vec![(minimap.id, *rect)],
                 Surface::PipelineView { rect, view } => vec![(view.id, *rect)],
                 Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
-                Surface::SidebarPanel { rect, panel, .. } => vec![(panel.id, *rect)],
                 Surface::TextInput { rect, ti } => vec![(ti.id, *rect)],
                 Surface::TextField { rect, tf } => vec![(tf.id, *rect)],
                 Surface::Toolbar { rect, bar, .. } => vec![(bar.id, *rect)],
@@ -1232,7 +1210,6 @@ impl ScreenLayout {
             Surface::Minimap { rect, .. } => (*rect, FrameZone::Minimap { idx }),
             Surface::PipelineView { rect, .. } => (*rect, FrameZone::PipelineView { idx }),
             Surface::Progress { rect, .. } => (*rect, FrameZone::Progress { idx }),
-            Surface::SidebarPanel { rect, .. } => (*rect, FrameZone::SidebarPanel { idx }),
             Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
             Surface::SplitTree { rect, .. } => (*rect, FrameZone::SplitTree { idx }),
             Surface::TextInput { rect, .. } => (*rect, FrameZone::TextInput { idx }),
@@ -1351,6 +1328,8 @@ pub enum OwnedContent {
     Minimap(Minimap),
     PipelineView(PipelineView),
     Progress(ProgressBar),
+    /// Captured from a [`SidebarPanel`] reached through [`Surface::Widget`]
+    /// via [`DynWidget::capture`] — maps to [`FrameZone::Widget`].
     SidebarPanel(SidebarPanel),
     Spinner(Spinner),
     SplitTree(SplitTree),
@@ -1506,8 +1485,9 @@ impl OwnedContent {
                 backend.draw_progress(rect, bar);
             }
             OwnedContent::SidebarPanel(panel) => {
-                let interaction = crate::interaction::InteractionState::from_parts(None, None);
-                backend.draw_sidebar_panel_interactive(rect, panel, &interaction);
+                // `impl Primitive for SidebarPanel` is unconditional, like
+                // `TabBar`'s above.
+                backend.draw_primitive(rect, panel);
             }
             OwnedContent::Spinner(spinner) => {
                 backend.draw_spinner(rect, spinner);
@@ -1609,7 +1589,10 @@ impl OwnedContent {
             OwnedContent::Minimap(_) => FrameZone::Minimap { idx },
             OwnedContent::PipelineView(_) => FrameZone::PipelineView { idx },
             OwnedContent::Progress(_) => FrameZone::Progress { idx },
-            OwnedContent::SidebarPanel(_) => FrameZone::SidebarPanel { idx },
+            OwnedContent::SidebarPanel(panel) => FrameZone::Widget {
+                idx,
+                id: Some(panel.id),
+            },
             OwnedContent::Spinner(_) => FrameZone::Spinner { idx },
             OwnedContent::SplitTree(_) => FrameZone::SplitTree { idx },
             OwnedContent::TextInput(_) => FrameZone::TextInput { idx },
@@ -1942,11 +1925,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
             *rect,
             if bar.cancellable { Some(bar.id) } else { None },
             OwnedContent::Progress(bar.clone()),
-        ),
-        Surface::SidebarPanel { rect, panel, .. } => (
-            *rect,
-            Some(panel.id),
-            OwnedContent::SidebarPanel(panel.clone()),
         ),
         Surface::Spinner { rect, spinner } => (*rect, None, OwnedContent::Spinner(spinner.clone())),
         Surface::SplitTree { rect, tree } => (*rect, None, OwnedContent::SplitTree(tree.clone())),
@@ -2627,11 +2605,9 @@ mod tests {
             rect,
             bar: progress,
         });
-        layout.push(Surface::SidebarPanel {
+        layout.push(Surface::Widget {
             rect,
-            panel: sidebar,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(sidebar),
         });
         layout.push(Surface::Spinner { rect, spinner });
         layout.push(Surface::SplitTree {
@@ -2662,7 +2638,13 @@ mod tests {
         assert_eq!(zones[6], &FrameZone::Minimap { idx: 6 });
         assert_eq!(zones[7], &FrameZone::PipelineView { idx: 7 });
         assert_eq!(zones[8], &FrameZone::Progress { idx: 8 });
-        assert_eq!(zones[9], &FrameZone::SidebarPanel { idx: 9 });
+        assert_eq!(
+            zones[9],
+            &FrameZone::Widget {
+                idx: 9,
+                id: Some(WidgetId::new("sp")),
+            }
+        );
         assert_eq!(zones[10], &FrameZone::Spinner { idx: 10 });
         assert_eq!(zones[11], &FrameZone::SplitTree { idx: 11 });
         assert_eq!(zones[12], &FrameZone::TextInput { idx: 12 });
@@ -2678,13 +2660,14 @@ mod tests {
         // non-cancellable `Progress` (no activatable affordance).
         let stops = layout.tab_stops();
         let stop_ids: Vec<&str> = stops.iter().map(|(id, _)| id.as_str()).collect();
-        for id in ["board", "cc", "diff", "ml", "mm", "pv", "sp", "ti", "tb"] {
+        for id in ["board", "cc", "diff", "ml", "mm", "pv", "ti", "tb"] {
             assert!(stop_ids.contains(&id), "{id} should be a tab stop");
         }
-        for id in ["img", "sn", "pb", "leaf"] {
+        // A `SidebarPanel` is pointer-only (`FocusSpec::None`).
+        for id in ["img", "sn", "pb", "leaf", "sp"] {
             assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
         }
-        assert_eq!(stop_ids.len(), 9);
+        assert_eq!(stop_ids.len(), 8);
     }
 
     /// A cancellable `Progress` bar *does* get a tab stop — the cancel

@@ -1367,21 +1367,6 @@ mod tests {
         ) -> crate::primitives::toolbar::ToolbarLayout {
             unimplemented!()
         }
-        fn draw_sidebar_panel_interactive(
-            &mut self,
-            _r: Rect,
-            _p: &crate::primitives::sidebar_panel::SidebarPanel,
-            _interaction: &crate::interaction::InteractionState,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            unimplemented!()
-        }
-        fn sidebar_panel_layout(
-            &self,
-            _r: Rect,
-            _p: &crate::primitives::sidebar_panel::SidebarPanel,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            unimplemented!()
-        }
         fn draw_diff_view(
             &mut self,
             _r: Rect,

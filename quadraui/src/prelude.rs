@@ -6,7 +6,7 @@
 //! crate (grep `quadraui::` and take whatever comes back), but it's a
 //! wall for a first-time reader who just wants to get `examples/hello.rs`
 //! on screen and has no way to tell `StatusBar` (the thing they need)
-//! from `SidebarPanelMeasure` (the thing they don't, yet).
+//! from `SidebarPanelHit` (the thing they don't, yet).
 //!
 //! `quadraui::prelude::*` is not a replacement for the crate root — it's
 //! a subset, picked for "building your first `AppLogic` app": the two

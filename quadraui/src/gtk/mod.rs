@@ -153,7 +153,6 @@ pub mod scroll_view;
 mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-mod sidebar_panel;
 mod spinner;
 mod split;
 mod split_tree;
@@ -242,8 +241,6 @@ pub use rich_text_popup::{
 #[doc(hidden)]
 pub use run::run_with;
 pub use run::{app_id_is_valid, display_available, run, GtkRunner, RunConfig, StepOutcome};
-#[doc(hidden)]
-pub use sidebar_panel::gtk_sidebar_panel_layout;
 #[doc(hidden)]
 pub use spinner::{draw_spinner, gtk_spinner_layout};
 #[doc(hidden)]

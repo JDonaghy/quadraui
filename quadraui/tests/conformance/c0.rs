@@ -43,13 +43,13 @@ use quadraui::{
     MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
     PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction,
     Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section,
-    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, SidebarPanel, Spinner,
-    Split, SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan,
-    StyledText, Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextField, TextInput, Toast,
-    ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure,
-    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions,
-    ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
-    TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
+    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, Spinner, Split,
+    SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
+    Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextField, TextInput, Toast, ToastCorner,
+    ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayoutOptions,
+    ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions, ToolbarVAlign, Tooltip,
+    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeTable,
+    TreeTableNode, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -1362,29 +1362,6 @@ pub const CASES: &[Case] = &[
                 ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap),
                 &ToolbarOverflowPriorities::new(),
             );
-        },
-    },
-    Case {
-        method: "draw_sidebar_panel_interactive",
-        needle: Some("c0sbpn"),
-        paint: |b, area| {
-            let toolbar =
-                Toolbar::new(id("sidebar-toolbar")).with_buttons(vec![ToolbarButton::Action {
-                    spec: None,
-                    id: id("sidebar-toolbar-button"),
-                    label: "c0sbpn".to_string(),
-                    icon: None,
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                }]);
-            let panel = SidebarPanel {
-                id: id("sidebar-panel"),
-                toolbar: Some(toolbar),
-                toolbar_height: None,
-            };
-            let _ = b.draw_sidebar_panel_interactive(area, &panel, &InteractionState::new());
         },
     },
     Case {

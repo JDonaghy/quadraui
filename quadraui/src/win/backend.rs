@@ -1059,17 +1059,6 @@ impl WinBackend {
         }
     }
 
-    /// Resolve a `SidebarPanel`'s default toolbar-header slot height —
-    /// same shape as [`Self::resolved_row_height`], for `Style::toolbar_height`
-    /// instead of `Style::row_height`.
-    fn resolved_toolbar_height(&self, candidate_line_height: f32) -> f32 {
-        if candidate_line_height > 1.0 {
-            candidate_line_height.max(self.current_style.toolbar_height)
-        } else {
-            candidate_line_height
-        }
-    }
-
     /// Live DirectWrite handles for the current chrome (UI) font, once
     /// [`Self::attach_surface`]/[`Self::attach_headless`] has built them —
     /// `None` beforehand, same lifecycle as the editor `dwrite` field.
@@ -5515,85 +5504,6 @@ impl Backend for WinBackend {
         )
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface
-    /// not attached yet" fallback posture. `SidebarPanel` embeds a
-    /// [`crate::primitives::toolbar::Toolbar`] header, painted here via
-    /// the shared
-    /// [`crate::primitives::sidebar_panel::native_surface_paint::paint`]
-    /// rather than a per-backend `toolbar::draw_toolbar` call.
-    ///
-    /// `SidebarPanel` is `ChromePrimitive::SidebarPanel` (whole
-    /// primitive, including its embedded toolbar header) — see
-    /// [`Self::draw_status_bar_interactive`]'s doc for why this paints
-    /// through [`ChromeSurface`] instead of `self` directly.
-    fn draw_sidebar_panel_interactive(
-        &mut self,
-        rect: Rect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let (hovered_toolbar_id, pressed_toolbar_id) =
-            (interaction.hovered(), interaction.pressed());
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() && self.dwrite.is_some() {
-            let line_height = self.resolved_toolbar_height(self.current_line_height);
-            // `self.current_theme` is the live theme `Backend::set_theme`
-            // writes, same as `WinBackend::draw_toast_overlay` above.
-            let theme = self.current_theme;
-            let mut surface = ChromeSurface { backend: self };
-            return crate::primitives::sidebar_panel::native_surface_paint::paint(
-                panel,
-                &mut surface,
-                &theme,
-                rect,
-                line_height,
-                hovered_toolbar_id,
-                pressed_toolbar_id,
-            );
-        }
-        // No surface/DWrite yet — compute the real layout via the same
-        // nominal measurer `sidebar_panel_layout` falls back to, and
-        // paint nothing. `hovered_toolbar_id`/
-        // `pressed_toolbar_id` only affect painting, so they're unused
-        // on this path.
-        let _ = (hovered_toolbar_id, pressed_toolbar_id);
-        self.sidebar_panel_layout(rect, panel)
-    }
-
-    /// See [`Self::toolbar_layout`]'s doc for why this only needs
-    /// `self.dwrite` (text measurement for the nested toolbar's button
-    /// widths), not a live render target. Prefers `chrome_dwrite`,
-    /// matching [`Self::draw_sidebar_panel_interactive`]'s paint font.
-    fn sidebar_panel_layout(
-        &self,
-        rect: Rect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let line_height = self.resolved_toolbar_height(self.current_line_height);
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::sidebar_panel::win_sidebar_panel_layout(
-                dwrite,
-                line_height,
-                rect,
-                panel,
-            );
-        }
-        // No live DWrite handle — nominal char-width estimate instead
-        let measure = NominalTextMeasure {
-            char_width: self.current_char_width,
-        };
-        panel.layout(
-            rect,
-            crate::primitives::sidebar_panel::SidebarPanelMeasure::new(line_height, 0.0),
-            |btn| {
-                crate::primitives::toolbar::ToolbarItemMeasure::new(
-                    crate::primitives::toolbar::measure_button(&measure, btn),
-                )
-            },
-        )
-    }
-
     /// `diff_view_layout` is **not** overridden on this backend —
     /// see `win::diff_view`'s module doc for why the trait default stays
     /// the honest answer even after the shared `DiffView::layout` landed.
@@ -6588,8 +6498,8 @@ impl PaintSurface for WinBackend {
 
 /// Win-GUI twin of `MacBackend`'s `ChromeSurface` (see that
 /// struct's own doc) — wraps a `&mut WinBackend` so a primitive already
-/// migrated onto [`PaintSurface`] (today: [`Self::draw_status_bar_interactive`],
-/// [`Self::draw_sidebar_panel_interactive`]) paints through
+/// migrated onto [`PaintSurface`] (today: [`Self::draw_status_bar_interactive`])
+/// paints through
 /// `chrome_dwrite` (falling back to the editor `dwrite` handle if no
 /// live chrome one exists yet — same "degrade, don't panic" convention
 /// as `WinBackend::surface_draw_text_run_with_role`) instead of
@@ -9563,8 +9473,8 @@ mod tests {
         );
     }
 
-    /// `draw_sidebar_panel_interactive`'s embedded toolbar chrome must
-    /// paint from the live theme rather than a hardcoded `Theme::default()`.
+    /// A `SidebarPanel`'s embedded toolbar chrome must paint from the
+    /// live theme rather than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_sidebar_panel_toolbar() {
@@ -9604,10 +9514,9 @@ mod tests {
             toolbar_height: Some(24.0),
         };
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-        let interaction = crate::interaction::InteractionState::default();
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = backend.draw_sidebar_panel_interactive(rect, &panel, &interaction);
+        let layout = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &panel);
         backend.end_frame();
 
         let tb = layout
@@ -10596,8 +10505,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_sidebar_panel_interactive_paints_the_toolbar_label_in_the_chrome_fonts_size(
-    ) {
+    fn win_backend_sidebar_panel_paints_the_toolbar_label_in_the_chrome_fonts_size() {
         let panel = crate::primitives::sidebar_panel::SidebarPanel {
             id: WidgetId::new("sb"),
             toolbar: Some(crate::primitives::toolbar::Toolbar {
@@ -10618,25 +10526,24 @@ mod tests {
             }),
             toolbar_height: None,
         };
-        let interaction = crate::interaction::InteractionState::new();
         let diff = chrome_font_diff_pixel_count(
             200,
             100,
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_sidebar_panel_interactive(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, 200.0, 100.0),
                     &panel,
-                    &interaction,
+                    &(),
                 );
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_sidebar_panel_interactive must paint the embedded toolbar's \
-             label through ChromeSurface (chrome_dwrite), not WinBackend's own \
-             PaintSurface impl (the editor dwrite handle)"
+            "the sidebar panel header must paint its toolbar label through \
+             chrome_dwrite, not the (unchanged) editor dwrite handle"
         );
     }
 

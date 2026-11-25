@@ -4369,42 +4369,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_toolbar_layout_with_overflow(bar, area, layout_options, priorities)
     }
 
-    fn draw_sidebar_panel_interactive(
-        &mut self,
-        rect: QRect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let (hovered_toolbar_id, pressed_toolbar_id) =
-            (interaction.hovered(), interaction.pressed());
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_sidebar_panel called outside enter_frame_scope"
-            );
-            return self.sidebar_panel_layout(rect, panel);
-        };
-        crate::tui::draw_sidebar_panel(
-            frame.buffer_mut(),
-            area,
-            panel,
-            &theme,
-            hovered_toolbar_id,
-            pressed_toolbar_id,
-        )
-    }
-
-    fn sidebar_panel_layout(
-        &self,
-        rect: QRect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_sidebar_panel_layout(panel, area)
-    }
-
     fn draw_diff_view(
         &mut self,
         rect: QRect,
@@ -5331,31 +5295,6 @@ mod tests {
             bar.layout(r.x, r.y, r.width, r.height, |_| {
                 crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
             })
-        }
-
-        fn draw_sidebar_panel_interactive(
-            &mut self,
-            r: QRect,
-            panel: &crate::primitives::sidebar_panel::SidebarPanel,
-            _interaction: &crate::interaction::InteractionState,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            panel.layout(
-                r,
-                crate::primitives::sidebar_panel::SidebarPanelMeasure::new(1.0, 0.0),
-                |_| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
-            )
-        }
-
-        fn sidebar_panel_layout(
-            &self,
-            r: QRect,
-            panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-            panel.layout(
-                r,
-                crate::primitives::sidebar_panel::SidebarPanelMeasure::new(1.0, 0.0),
-                |_| crate::primitives::toolbar::ToolbarItemMeasure::new(0.0),
-            )
         }
 
         fn draw_diff_view(

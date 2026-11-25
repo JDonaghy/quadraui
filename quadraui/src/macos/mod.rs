@@ -103,8 +103,6 @@ pub mod scrollbar;
 pub mod services;
 pub mod shell_runner;
 #[doc(hidden)]
-pub mod sidebar_panel;
-#[doc(hidden)]
 pub mod spinner;
 #[doc(hidden)]
 pub mod split;
@@ -198,8 +196,6 @@ pub use run::run_with;
 pub use run::{run, MacRunner, RunConfig, StepOutcome};
 #[doc(hidden)]
 pub use services::MacPlatformServices;
-#[doc(hidden)]
-pub use sidebar_panel::mac_sidebar_panel_layout;
 #[doc(hidden)]
 pub use spinner::mac_spinner_layout;
 #[doc(hidden)]
