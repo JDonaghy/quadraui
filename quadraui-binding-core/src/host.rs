@@ -78,7 +78,12 @@ pub const SLOT_TAB_BAR: i64 = 5;
 /// here is host-language-specific.
 #[derive(Default)]
 pub struct BindingHost {
-    pub button: Option<Button>,
+    /// The host's `"button"` slot, carried as a generic
+    /// [`quadraui::primitive::DynWidget`] entry (keyed `"button"`) rather
+    /// than its own typed field — [`SLOT_BUTTON`] reads/writes this
+    /// entry specifically, the same single-slot shape a `Button` had as a
+    /// dedicated field before it joined [`crate::extra_paint::WIDGET_KINDS`].
+    pub widgets: HashMap<String, std::rc::Rc<dyn quadraui::primitive::DynWidget>>,
     pub text_display: Option<TextDisplay>,
     pub list: Option<ListView>,
     pub tree: Option<TreeView>,
@@ -141,10 +146,10 @@ pub struct BindingHost {
     /// this frame, via `crate::render::collect_leaf_tooltips`. Replaced
     /// wholesale by [`Self::set_leaf_tooltips`] each render; consulted by
     /// [`Self::hover_tooltip_text`] as the layout-tree counterpart of
-    /// [`Self::button`]'s direct slot read. A binding whose render never
+    /// [`Self::widgets`]'s `"button"` entry read. A binding whose render never
     /// paints a layout tree at all (or paints only via [`Self::render_refs`]'s
-    /// six fixed slots) leaves this empty forever, so
-    /// [`Self::hover_tooltip_text`] falls through to [`Self::button`]
+    /// five fixed slots) leaves this empty forever, so
+    /// [`Self::hover_tooltip_text`] falls through to [`Self::widgets`]
     /// exactly as before this field existed. A [`RefCell`] (not a plain
     /// field) because `AppLogic::render` takes `&self`, not `&mut self` --
     /// the same reason [`Self::tooltip_clock`]/[`Self::test_clock_ms`]
@@ -188,7 +193,7 @@ impl BindingHost {
     /// Whether `slot` currently holds a descriptor.
     pub fn slot_occupied(&self, slot: i64) -> bool {
         match slot {
-            SLOT_BUTTON => self.button.is_some(),
+            SLOT_BUTTON => self.widgets.contains_key("button"),
             SLOT_TEXT_DISPLAY => self.text_display.is_some(),
             SLOT_LIST => self.list.is_some(),
             SLOT_TREE => self.tree.is_some(),
@@ -214,7 +219,7 @@ impl BindingHost {
     /// Empties one slot, returning whether it held anything.
     pub fn clear_slot(&mut self, slot: i64) -> bool {
         match slot {
-            SLOT_BUTTON => self.button.take().is_some(),
+            SLOT_BUTTON => self.widgets.remove("button").is_some(),
             SLOT_TEXT_DISPLAY => self.text_display.take().is_some(),
             SLOT_LIST => self.list.take().is_some(),
             SLOT_TREE => self.tree.take().is_some(),
@@ -260,22 +265,22 @@ impl BindingHost {
         }
     }
 
-    /// Borrows this host's six fixed slots as the [`RenderRefs`] shape
+    /// Borrows this host's five fixed slots (plus its own `"button"`
+    /// [`Self::widgets`] entry) as the [`RenderRefs`] shape
     /// [`crate::render::draw_bands`] paints from. A host carries no
     /// additive primitives of its own, so [`RenderRefs::extra`] borrows an
-    /// empty map and nothing paints after the six fixed bands; an additive
+    /// empty map and nothing paints after the fixed bands; an additive
     /// primitive reaches a backend as a layout-tree leaf or through a
     /// decoded [`crate::render::RenderFrame`] instead.
     pub fn render_refs(&self) -> RenderRefs<'_> {
         RenderRefs {
-            button: self.button.as_ref(),
             text_display: self.text_display.as_ref(),
             list: self.list.as_ref(),
             tree: self.tree.as_ref(),
             data_table: self.data_table.as_ref(),
             tab_bar: self.tab_bar.as_ref(),
             extra: crate::render::no_extras(),
-            widgets: crate::render::no_widgets(),
+            widgets: &self.widgets,
             // `BindingHost`'s slots are set directly from Rust fields, not
             // decoded from a raw dict, so there is no `scroll_px` key to
             // lift out here — a host that wants pixel-precise scrolling
@@ -328,17 +333,18 @@ impl BindingHost {
         self.test_clock_ms.set(ms);
     }
 
-    /// The hover tooltip text for `id`: first [`Self::button`]'s own
-    /// `Button::tooltip` (matched by that slot's own `Button::id`), then
-    /// [`Self::leaf_tooltips`] (matched by tree-address id) -- the
-    /// layout-tree leaf a render callback painted through
+    /// The hover tooltip text for `id`: first [`Self::widgets`]'s own
+    /// `"button"` entry's `Button::tooltip` (matched by that entry's own
+    /// `Button::id`), then [`Self::leaf_tooltips`] (matched by tree-address
+    /// id) -- the layout-tree leaf a render callback painted through
     /// `crate::render::paint_layout`. [`Self::drive_hover_tooltip`] uses
     /// this to decide whether a hovered widget has anything to show at
     /// all before arming [`Self::tooltip_tracker`] for it; a widget with
     /// no tooltip text in either source never starts the delay.
     pub fn hover_tooltip_text(&self, id: WidgetId) -> Option<String> {
-        self.button
-            .as_ref()
+        self.widgets
+            .get("button")
+            .and_then(|widget| widget.as_any().downcast_ref::<Button>())
             .filter(|button| button.id == id)
             .and_then(|button| button.tooltip.clone())
             .or_else(|| self.leaf_tooltips.borrow().get(&id).cloned())
@@ -359,14 +365,18 @@ impl BindingHost {
 
     /// This host's most recently painted bounds for `id`, read from
     /// `engine`'s own [`InteractionEngine::hit_map`] — the anchor rect
-    /// [`Self::drive_hover_tooltip`] shows a tooltip against. Only
-    /// [`PaintedHit::Button`] carries a tooltip source today (see
-    /// [`Self::hover_tooltip_text`]), so this only matches that variant;
-    /// extending [`Self::hover_tooltip_text`] to a further primitive
-    /// extends this the same way.
+    /// [`Self::drive_hover_tooltip`] shows a tooltip against. Only the
+    /// `"button"`-kind [`PaintedHit::Widget`] carries a tooltip source
+    /// today (see [`Self::hover_tooltip_text`]), so this only matches a
+    /// `Button`-downcastable one; extending [`Self::hover_tooltip_text`]
+    /// to a further primitive extends this the same way.
     fn hover_anchor(engine: &InteractionEngine, id: WidgetId) -> Option<Rect> {
         engine.hit_map().iter().find_map(|hit| match hit {
-            PaintedHit::Button { id: hit_id, layout } if *hit_id == id => Some(layout.bounds),
+            PaintedHit::Widget {
+                id: hit_id,
+                area,
+                widget,
+            } if *hit_id == id && widget.as_any().is::<Button>() => Some(*area),
             _ => None,
         })
     }
@@ -401,7 +411,7 @@ impl BindingHost {
     /// The pending-delay tick only promotes [`HoverTooltipTracker`] to
     /// visible once [`Self::hover_anchor`] actually finds a painted rect
     /// for the hovered id. Without that guard, a hovered id with no
-    /// anchor (not yet painted this frame, or no [`PaintedHit::Button`]
+    /// anchor (not yet painted this frame, or no [`PaintedHit::Widget`]
     /// for it at all) would flip the tracker's own phase to visible with
     /// nothing shown on screen; the next call's resync above would then
     /// see `engine`'s tooltip still closed, dismiss the tracker, and
@@ -1730,11 +1740,11 @@ pub fn tree_table_controller_nodes_from_wire(
         .collect()
 }
 
-// ─── Resolving the six fixed slots as a unit, and reading the store back ───
+// ─── Resolving the five fixed slots as a unit, and reading the store back ───
 //
 // Every `resolve_*` function above takes one descriptor and returns the
 // same shape back; a binding's own `render` still has to know which of its
-// six fixed slots are present, in what order they'll be painted, and
+// five fixed slots are present, in what order they'll be painted, and
 // which ones even carry resolvable state. [`resolve_render_refs`] is that
 // wiring, done once here so `quadraui-py`/`quadraui-node` each call it
 // instead of re-deriving [`crate::render::draw_bands`]'s own band order by
@@ -1744,9 +1754,9 @@ pub fn tree_table_controller_nodes_from_wire(
 // resolved it through the functions above.
 
 /// Resolves whichever of `refs`'s `list`/`tree`/`data_table`/`tab_bar`
-/// slots are present against `widget_state` — `button`/`text_display`
-/// carry no widget-state of their own and pass through unresolved, as do
-/// any `extra` slots. Walks [`crate::render::next_band`] in the exact same
+/// slots are present against `widget_state` — `text_display`
+/// carries no widget-state of its own and passes through unresolved, as do
+/// any `extra`/`widgets` slots. Walks [`crate::render::next_band`] in the exact same
 /// top-to-bottom order and fixed line counts [`crate::render::draw_bands`]
 /// itself paints into, so an occupied slot gets the same `viewport_rows`
 /// its own `resolve_tree_cursor`/`resolve_list_cursor`/
@@ -1787,10 +1797,6 @@ pub fn resolve_render_refs(
         crate::render::next_band(&mut y, viewport.width, viewport.height, line_height, lines)
     };
 
-    let button = refs.button.cloned();
-    if button.is_some() {
-        band(3.0);
-    }
     let text_display = refs.text_display.cloned();
     if text_display.is_some() {
         band(3.0);
@@ -1825,7 +1831,6 @@ pub fn resolve_render_refs(
     });
 
     RenderFrame {
-        button,
         text_display,
         list,
         tree,
@@ -1991,8 +1996,7 @@ pub fn resolve_layout_node_windowed(
                     tab_bar.id = widget_id;
                     *tab_bar = resolve_tab_bar_active(widget_state, tab_bar);
                 }
-                LeafDescriptor::Button(_)
-                | LeafDescriptor::TextDisplay(_)
+                LeafDescriptor::TextDisplay(_)
                 | LeafDescriptor::Extra(_)
                 | LeafDescriptor::Widget { .. } => {}
             }
@@ -3047,8 +3051,8 @@ mod tests {
     use quadraui::tui::testing::TuiDriver;
     use quadraui::tui::TuiBackend;
     use quadraui::{
-        AppLogic, Backend, Button, ButtonLayout, ButtonMask, Point, Reaction, Rect, TextInput,
-        Toast, ToastSeverity, UiEvent,
+        AppLogic, Backend, Button, ButtonMask, Point, Reaction, Rect, TextInput, Toast,
+        ToastSeverity, UiEvent,
     };
 
     use super::*;
@@ -3058,6 +3062,20 @@ mod tests {
         Spacing,
     };
     use crate::render::{collect_leaf_tooltips, draw_bands, paint_layout};
+
+    /// A [`BindingHost::widgets`] map holding just `button` under its
+    /// `"button"` key — the test fixtures' own shorthand for the single
+    /// slot [`BindingHost`] carries today, now that `Button` is a generic
+    /// [`crate::extra_paint::WIDGET_KINDS`] entry rather than its own
+    /// typed field.
+    fn button_widgets(button: Button) -> HashMap<String, Rc<dyn quadraui::primitive::DynWidget>> {
+        let mut widgets = HashMap::new();
+        widgets.insert(
+            "button".to_string(),
+            Rc::new(button) as Rc<dyn quadraui::primitive::DynWidget>,
+        );
+        widgets
+    }
 
     #[derive(Default)]
     struct RecordingSink;
@@ -3113,7 +3131,7 @@ mod tests {
     fn render_overlays_paints_every_registered_overlay_in_one_call() {
         let logic = HostLogic {
             host: BindingHost {
-                button: Some(Button::new(WidgetId::new("go"), "Go")),
+                widgets: button_widgets(Button::new(WidgetId::new("go"), "Go")),
                 ..BindingHost::default()
             },
             engine: InteractionEngine::default(),
@@ -3226,7 +3244,7 @@ mod tests {
     /// A minimal [`AppLogic`] whose `render` resolves [`BindingHost::render_refs`]
     /// through [`resolve_render_refs`] before painting — exactly the
     /// resolve-then-paint sequence a real binding's own `render` runs for
-    /// its six fixed slots, as opposed to [`HostLogic`]'s raw (unresolved)
+    /// its five fixed slots, as opposed to [`HostLogic`]'s raw (unresolved)
     /// `render_refs()` call above.
     struct ResolvedHostLogic {
         host: BindingHost,
@@ -3506,15 +3524,18 @@ mod tests {
                 split: self.split.clone(),
                 first: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "left".to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("left-btn"), "L")),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(WidgetId::new("left-btn"), "L")),
+                    },
                     scroll_px: None,
                 })),
                 second: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "right".to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(
-                        WidgetId::new("right-btn"),
-                        "R",
-                    )),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(WidgetId::new("right-btn"), "R")),
+                    },
                     scroll_px: None,
                 })),
                 spacing: Spacing::default(),
@@ -3814,10 +3835,10 @@ mod tests {
                         let label = i.to_string();
                         LayoutNode::Leaf(LayoutLeaf {
                             id: label.clone(),
-                            descriptor: LeafDescriptor::Button(Button::new(
-                                WidgetId::new(label.clone()),
-                                label,
-                            )),
+                            descriptor: LeafDescriptor::Widget {
+                                kind: "button",
+                                widget: Rc::new(Button::new(WidgetId::new(label.clone()), label)),
+                            },
                             scroll_px: None,
                         })
                     })
@@ -3847,7 +3868,9 @@ mod tests {
     fn painted_button_ids(hits: &[PaintedHit]) -> Vec<String> {
         hits.iter()
             .filter_map(|hit| match hit {
-                PaintedHit::Button { id, .. } => Some(id.as_str().to_string()),
+                PaintedHit::Widget { id, widget, .. } if widget.as_any().is::<Button>() => {
+                    Some(id.as_str().to_string())
+                }
                 _ => None,
             })
             .collect()
@@ -3926,10 +3949,10 @@ mod tests {
                         let label = i.to_string();
                         let leaf = LayoutNode::Leaf(LayoutLeaf {
                             id: label.clone(),
-                            descriptor: LeafDescriptor::Button(Button::new(
-                                WidgetId::new(label.clone()),
-                                label,
-                            )),
+                            descriptor: LeafDescriptor::Widget {
+                                kind: "button",
+                                widget: Rc::new(Button::new(WidgetId::new(label.clone()), label)),
+                            },
                             scroll_px: None,
                         });
                         if i == 0 {
@@ -4244,7 +4267,7 @@ mod tests {
         button.tooltip = Some("Save the file".to_string());
         let logic = HoverHostLogic {
             host: BindingHost {
-                button: Some(button),
+                widgets: button_widgets(button),
                 ..BindingHost::default()
             },
             engine: InteractionEngine::default(),
@@ -4310,7 +4333,7 @@ mod tests {
         button.tooltip = Some("Save the file".to_string());
         let logic = HoverHostLogic {
             host: BindingHost {
-                button: Some(button),
+                widgets: button_widgets(button),
                 ..BindingHost::default()
             },
             engine: InteractionEngine::default(),
@@ -4385,7 +4408,7 @@ mod tests {
         button.tooltip = Some("Save the file".to_string());
         let logic = HoverHostLogic {
             host: BindingHost {
-                button: Some(button),
+                widgets: button_widgets(button),
                 ..BindingHost::default()
             },
             engine: InteractionEngine::default(),
@@ -4517,7 +4540,7 @@ mod tests {
         button.tooltip = Some("Save the file".to_string());
         let logic = HoverHostLogic {
             host: BindingHost {
-                button: Some(button),
+                widgets: button_widgets(button),
                 ..BindingHost::default()
             },
             engine: InteractionEngine::default(),
@@ -4560,7 +4583,7 @@ mod tests {
         );
     }
 
-    /// A hovered id with tooltip text but no [`PaintedHit::Button`] anchor
+    /// A hovered id with tooltip text but no [`PaintedHit::Widget`] anchor
     /// in this frame's hit map (a layout race, a mid-resize frame, or any
     /// other reason `render` hasn't repainted it yet) must never reach
     /// [`HoverTooltipTracker::visible_item`] — and, critically, repeated
@@ -4576,7 +4599,7 @@ mod tests {
         let mut button = Button::new(WidgetId::new("save"), "Save");
         button.tooltip = Some("Save the file".to_string());
         let mut host = BindingHost {
-            button: Some(button),
+            widgets: button_widgets(button),
             ..BindingHost::default()
         };
         let mut engine = InteractionEngine::default();
@@ -4584,12 +4607,10 @@ mod tests {
         let mut sink = RecordingSink;
 
         let id = WidgetId::new("save");
-        engine.set_hits(vec![PaintedHit::Button {
+        engine.set_hits(vec![PaintedHit::Widget {
             id,
-            layout: ButtonLayout {
-                bounds: Rect::new(0.0, 0.0, 10.0, 1.0),
-                nerd_fonts_enabled: false,
-            },
+            area: Rect::new(0.0, 0.0, 10.0, 1.0),
+            widget: Rc::new(Button::new(id, "Save")),
         }]);
         engine.handle(
             UiEvent::MouseMoved {
@@ -4647,7 +4668,7 @@ mod tests {
 
     /// A minimal [`AppLogic`] whose `render` paints a layout tree through
     /// [`crate::render::paint_layout`] -- not [`BindingHost::render_refs`]'s
-    /// six fixed slots -- and refreshes [`BindingHost::leaf_tooltips`] from
+    /// five fixed slots -- and refreshes [`BindingHost::leaf_tooltips`] from
     /// it every frame via [`crate::render::collect_leaf_tooltips`], the
     /// same two calls `quadraui-py`'s own `PyAppLogic::render` makes for
     /// its `RenderOutput::Tree` path.
@@ -4720,12 +4741,18 @@ mod tests {
             vec![
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:save".to_string(),
-                    descriptor: LeafDescriptor::Button(save_button),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(save_button),
+                    },
                     scroll_px: None,
                 }),
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:other".to_string(),
-                    descriptor: LeafDescriptor::Button(other_button),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(other_button),
+                    },
                     scroll_px: None,
                 }),
             ],
@@ -4802,12 +4829,18 @@ mod tests {
             vec![
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:alpha".to_string(),
-                    descriptor: LeafDescriptor::Button(alpha),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(alpha),
+                    },
                     scroll_px: None,
                 }),
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "leaf:bravo".to_string(),
-                    descriptor: LeafDescriptor::Button(bravo),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(bravo),
+                    },
                     scroll_px: None,
                 }),
             ],
@@ -5500,10 +5533,13 @@ mod tests {
                 id: format!("content-{i}"),
                 content: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: format!("content-{i}-btn"),
-                    descriptor: LeafDescriptor::Button(Button::new(
-                        WidgetId::new(format!("content-{i}-btn")),
-                        format!("tab {i} body"),
-                    )),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(
+                            WidgetId::new(format!("content-{i}-btn")),
+                            format!("tab {i} body"),
+                        )),
+                    },
                     scroll_px: None,
                 })),
             })

@@ -1,7 +1,7 @@
 //! The `ExtraPaint` trait, one impl per additive primitive, and the
 //! `extra_primitives!` table decoding each one — the paint/hit-test and
-//! wire-decode logic for every primitive painted outside the six fixed
-//! slots (`Button`/`TextDisplay`/`List`/`Tree`/`DataTable`/`TabBar`).
+//! wire-decode logic for every primitive painted outside the five fixed
+//! slots (`TextDisplay`/`List`/`Tree`/`DataTable`/`TabBar`).
 //! Registering a further additive primitive needs exactly one impl here
 //! plus one appended line in the `extra_primitives!` table at the bottom
 //! of this file — no enum variant, no central match arm, and no second
@@ -21,7 +21,7 @@ use quadraui::{
     TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
-/// Paints one additive primitive descriptor painted outside the six fixed
+/// Paints one additive primitive descriptor painted outside the five fixed
 /// slots above. Implemented once per primitive type (see the `impl`s just
 /// below) so that registering a kind in a binding's own `EXTRA_PRIMITIVES`
 /// decode table never needs a central match arm.
@@ -47,7 +47,7 @@ pub trait ExtraPaint: std::any::Any {
 
     /// Whether `point` lands on an interactive region of this descriptor,
     /// given the ABSOLUTE `area` it was painted into (the same frame
-    /// `point` itself is in — no translation, matching `Button`/`Split`'s
+    /// `point` itself is in — no translation, matching `Split`'s
     /// own layout convention). `false` by default: most additive
     /// primitives are pure display and a miss here lets
     /// [`crate::hit::hit_test_painted`] fall through to whatever painted
@@ -66,7 +66,7 @@ pub trait ExtraPaint: std::any::Any {
 
     /// Best-effort intrinsic size of this descriptor — the `ExtraPaint`
     /// counterpart of `crate::render::natural_size`'s per-kind arms for
-    /// the six fixed leaf slots (`Button`/`TextDisplay`/`List`/`Tree`/
+    /// the five fixed leaf slots (`TextDisplay`/`List`/`Tree`/
     /// `DataTable`/`TabBar`). Consulted by
     /// [`crate::render::layout_container_rects`]'s non-`Stretch`
     /// `crate::layout::Align` so a compact additive leaf (`Checkbox`,
@@ -177,10 +177,8 @@ pub fn extra_as_toolbar(extra: &Rc<dyn ExtraPaint>) -> Option<&Toolbar> {
 /// A compact boolean toggle's own box, with no label of its own
 /// ([`Checkbox`] hides its `Form`-field label — see [`single_field_form`]):
 /// `cell_width` cells on a cell-grid backend, or two text rows' worth on a
-/// pixel backend (a nominal pill/box width, the same "no real
-/// `Style::padding` to read at this layer" caveat
-/// `crate::render::natural_size`'s own `Button` arm already documents for
-/// its own chrome estimate). [`Checkbox`], its one caller below, paints
+/// pixel backend (a nominal pill/box width — a cheap chrome estimate with
+/// no real `Style::padding` read at this layer). [`Checkbox`], its one caller below, paints
 /// through `Form`'s `FieldKind::Toggle` control, which is `3` cells wide
 /// (`quadraui::tui::form`'s `natural_content_width`).
 fn toggle_control_size(backend: &mut dyn Backend, cell_width: f32) -> (f32, f32) {
@@ -226,7 +224,7 @@ impl ExtraPaint for Spinner {
     /// [`toggle_control_size`] uses) plus, when `label` is non-empty, a
     /// one-`char_width` gap and the label's own measured width in
     /// `FontRole::Chrome` (the role every chrome label on this trait
-    /// measures in — see `crate::render::natural_size`'s `Button` arm).
+    /// measures in — see `crate::render::natural_size`'s `TabBar` arm).
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
         let line_height = backend.line_height();
         let char_width = backend.char_width();
@@ -2106,10 +2104,11 @@ extra_primitives! {
 /// [`decode_widget_leaf`] is this table's own decode step, the `Widget`
 /// counterpart of [`decode_extra_primitive_checked`].
 ///
-/// `"icon_grid"`, `"cell_grid"`, `"switch"` and `"radio_group"` are this
-/// table's members: unlike every [`EXTRA_PRIMITIVE_KINDS`] entry, none of
-/// [`quadraui::IconGrid`], [`quadraui::CellGrid`], [`quadraui::Switch`] or
-/// [`quadraui::RadioGroup`] has a bespoke [`ExtraPaint`] impl to write
+/// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"` and
+/// `"button"` are this table's members: unlike every
+/// [`EXTRA_PRIMITIVE_KINDS`] entry, none of [`quadraui::IconGrid`],
+/// [`quadraui::CellGrid`], [`quadraui::Switch`], [`quadraui::RadioGroup`]
+/// or [`quadraui::Button`] has a bespoke [`ExtraPaint`] impl to write
 /// here — painting, whole-area hit testing and [`DynWidget::handle`]
 /// routing are already fully generic (see
 /// [`crate::layout::LeafDescriptor::Widget`]'s own doc), so each kind's
@@ -2120,16 +2119,19 @@ extra_primitives! {
 /// [`crate::engine::InteractionEngine::dyn_widget_cells_requested`]'s own
 /// downcast) cover every bit of state a `"cell_grid"` leaf needs;
 /// [`quadraui::Switch`]'s own [`crate::interactive::Interactive`] impl
-/// (Enter/Space/click toggling) covers `"switch"` the same way, and
+/// (Enter/Space/click toggling) covers `"switch"` the same way;
 /// [`quadraui::RadioGroup`]'s own [`crate::interactive::Interactive`] impl
 /// (arrow-key cursor, click-to-select, one [`crate::interactive::FocusStop`]
 /// per option via [`crate::interactive::FocusSpec::Children`]) covers
-/// `"radio_group"`. A further kind joins this table only when it
+/// `"radio_group"`; and [`quadraui::Button`]'s own
+/// [`crate::interactive::Interactive`] impl (a single
+/// [`crate::interactive::FocusSpec::Stop`], Enter/Space/click activation)
+/// covers `"button"`. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 4] = ["icon_grid", "cell_grid", "switch", "radio_group"];
+pub const WIDGET_KINDS: [&str; 5] = ["icon_grid", "cell_grid", "switch", "radio_group", "button"];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
 /// [`DynWidget`], via [`quadraui::decode_widget`] — the `Widget`

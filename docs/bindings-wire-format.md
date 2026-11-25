@@ -739,7 +739,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_ItemConfirmedPayload`](#wire-_itemconfirmedpayload)
 - [`_ExpandToggledPayload`](#wire-_expandtoggledpayload)
 - [`PaletteEvent`](#wire-paletteevent)
-- [`_HitDetailButtonBody`](#wire-_hitdetailbuttonbody)
 - [`_HitDetailTreeRow`](#wire-_hitdetailtreerow)
 - [`_HitDetailTreeChevron`](#wire-_hitdetailtreechevron)
 - [`_HitDetailListTitle`](#wire-_hitdetaillisttitle)
@@ -3593,13 +3592,12 @@ Alias for `"Left" | "Right"`.
 <a id="wire-layoutleafnode"></a>
 #### `LayoutLeafNode`
 
-One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.
+One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `id` | `string` | yes |  |
 | `wire_version` | `number` | no |  |
-| `button` | `ButtonDescriptor` | no |  |
 | `text_display` | `TextDisplayDescriptor` | no |  |
 | `list` | `ListViewDescriptor` | no |  |
 | `tree` | `TreeViewDescriptor` | no |  |
@@ -3647,6 +3645,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `cell_grid` | `CellGridDescriptor` | no |  |
 | `switch` | `SwitchDescriptor` | no |  |
 | `radio_group` | `RadioGroupDescriptor` | no |  |
+| `button` | `ButtonDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3668,7 +3667,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `wire_version` | `number` | no |  |
-| `button` | `ButtonDescriptor \| null` | no |  |
 | `text_display` | `TextDisplayDescriptor \| null` | no |  |
 | `list` | `ListViewDescriptor \| null` | no |  |
 | `tree` | `TreeViewDescriptor \| null` | no |  |
@@ -3715,6 +3713,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `cell_grid` | `CellGridDescriptor \| null` | no |  |
 | `switch` | `SwitchDescriptor \| null` | no |  |
 | `radio_group` | `RadioGroupDescriptor \| null` | no |  |
+| `button` | `ButtonDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`
@@ -4535,13 +4534,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `ExpandToggled` | `_ExpandToggledPayload` |  |
 | `KeyPressed` | `_KeyPressedStrPayload` |  |
 
-<a id="wire-_hitdetailbuttonbody"></a>
-#### `_HitDetailButtonBody`
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"button_body"` | yes |  |
-
 <a id="wire-_hitdetailtreerow"></a>
 #### `_HitDetailTreeRow`
 
@@ -4799,7 +4791,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
 
-Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-_uikeypressedpayload"></a>
 #### `_UiKeyPressedPayload`

@@ -8,11 +8,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use quadraui::{
-    ButtonHit, ButtonLayout, Canvas, CanvasHit, DataTableHit, DataTableLayout, ListViewHit,
-    ListViewLayout, Point, PressZone, Rect, ScrollAxis, Scrollbar, SidebarPanelHit,
-    SidebarPanelLayout, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout,
-    TextDisplayHit, TextDisplayLayout, Toolbar, TreePath, TreeRowEditState, TreeViewHit,
-    TreeViewLayout, UiEvent, WidgetId,
+    Canvas, CanvasHit, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point,
+    PressZone, Rect, ScrollAxis, Scrollbar, SidebarPanelHit, SidebarPanelLayout, SplitHit,
+    SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout, TextDisplayHit, TextDisplayLayout,
+    Toolbar, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
 };
 
 use quadraui::primitive::DynWidget;
@@ -67,9 +66,6 @@ pub fn loaded_row_path(
 /// [`hit_test_painted`] to translate an incoming pointer event's screen
 /// position into the primitive (and sub-region) under it.
 pub enum PaintedHit {
-    /// `Button`'s layout is in the backend's ABSOLUTE coordinate frame, so
-    /// no `area` is stored alongside it — same as [`Self::Split`].
-    Button { id: WidgetId, layout: ButtonLayout },
     /// `area` is the absolute rect this tree was painted into, and the
     /// frame `layout` is relative to (like `List`/`DataTable`/`TabBar`'s
     /// own layout) — a hit-test must translate a click into it via
@@ -99,7 +95,7 @@ pub enum PaintedHit {
     /// `scrollbar` is `None` when the tree's rows fit without scrolling —
     /// its own `track` is an absolute rect (see [`quadraui::Scrollbar`]'s
     /// own doc), so [`clip_hits_to_viewport`] narrows it directly, the same
-    /// way it narrows [`Self::Button`]'s `layout.bounds`. `scroll_offset`
+    /// way it narrows [`Self::Widget`]'s `area`. `scroll_offset`
     /// is the tree's own ABSOLUTE offset as painted (an index into
     /// `total_rows`, not into `row_paths`); `total_rows` is the
     /// collection's real row count — `TreeView::rows.len()` on an
@@ -409,7 +405,7 @@ pub struct ScrollChildHit {
 ///
 /// Only the hit kinds whose containment test lives in a plain field this
 /// module can reach are narrowed, via [`primary_bounds_mut`]:
-/// [`PaintedHit::Button`]'s `layout.bounds`; [`PaintedHit::Extra`]'s
+/// [`PaintedHit::Widget`]'s `area`; [`PaintedHit::Extra`]'s
 /// `area`; [`PaintedHit::Tree`]/[`PaintedHit::List`]/
 /// [`PaintedHit::DataTable`]/[`PaintedHit::TabBar`]/
 /// [`PaintedHit::TextDisplay`]'s own `clip` (NOT `area` — see
@@ -419,8 +415,8 @@ pub struct ScrollChildHit {
 /// `viewport`. Two more sub-rect collections, checked by
 /// [`hit_test_painted`] ahead of a kind's own primary bounds, are narrowed
 /// alongside it: [`PaintedHit::Tree`]'s and [`PaintedHit::Scroll`]'s own
-/// `scrollbar.track` (an absolute rect, like `Button`'s `layout.bounds` —
-/// narrowed directly, never dropping the surrounding `Tree`/`Scroll` entry
+/// `scrollbar.track` (an absolute rect, like [`PaintedHit::Widget`]'s own
+/// `area` — narrowed directly, never dropping the surrounding `Tree`/`Scroll` entry
 /// even when the track itself ends up with no overlap) and
 /// [`PaintedHit::Extra`]'s `chrome_hits` (each
 /// entry independently intersected and dropped on no overlap, the same
@@ -466,8 +462,8 @@ pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, vi
     }
 }
 
-/// The hit kind's own containment-test rect — [`PaintedHit::Button`]'s
-/// `layout.bounds`, [`PaintedHit::Extra`]'s `area`, the local-frame kinds'
+/// The hit kind's own containment-test rect — [`PaintedHit::Widget`]'s
+/// `area`, [`PaintedHit::Extra`]'s `area`, the local-frame kinds'
 /// own `clip` (see [`PaintedHit::Tree`]'s doc), and a nested
 /// [`PaintedHit::Scroll`]'s own `viewport` — or `None` for a chrome-layout
 /// kind with no single outer bounds. The one place [`clip_hits_to_viewport`]
@@ -476,7 +472,6 @@ pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, vi
 /// into two independently-maintained match arms.
 fn primary_bounds_mut(hit: &mut PaintedHit) -> Option<&mut Rect> {
     match hit {
-        PaintedHit::Button { layout, .. } => Some(&mut layout.bounds),
         PaintedHit::Tree { clip, .. }
         | PaintedHit::List { clip, .. }
         | PaintedHit::DataTable { clip, .. }
@@ -530,7 +525,6 @@ fn intersect_rect(a: Rect, b: Rect) -> Option<Rect> {
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum HitDetail {
-    ButtonBody,
     TreeRow {
         row: usize,
     },
@@ -592,7 +586,7 @@ pub enum HitDetail {
     },
     /// Landed on a [`quadraui::SidebarPanel`]'s toolbar button. `id`
     /// resolves to the matched hit returned alongside this detail as the
-    /// clicked button's own id, same as a plain `Button` click. `bar` is the
+    /// clicked button's own id, same as a plain `Button` leaf click. `bar` is the
     /// embedded [`quadraui::Toolbar`]'s own id (not the `SidebarPanel`'s),
     /// carried here so [`crate::semantic::semantic_event_for_hit`] can look
     /// the toolbar back up in the hit map and build its typed
@@ -648,7 +642,7 @@ pub enum HitDetail {
     /// detail (mirroring [`TabBarHit::RightSegment`]'s button-id-wins
     /// convention) — a raw `MouseDown` with no semantic substitution (a
     /// `Toolbar` button: no typed `UiEvent` exists for it) therefore gets
-    /// `widget` set to the button itself, same as a plain `Button` click.
+    /// `widget` set to the button itself, same as a plain `Button` leaf click.
     /// `bar` is the enclosing bar's own id, carried here so
     /// [`crate::semantic::semantic_event_for_hit`] can look it back up in
     /// the hit map to build `StatusBar`'s/`ActivityBar`'s typed event
@@ -686,11 +680,6 @@ pub enum HitDetail {
 pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetId, HitDetail)> {
     for hit in hit_map.iter().rev() {
         match hit {
-            PaintedHit::Button { id, layout } => {
-                if matches!(layout.hit_test(point), ButtonHit::Body) {
-                    return Some((*id, HitDetail::ButtonBody));
-                }
-            }
             PaintedHit::Tree {
                 id,
                 area,
@@ -1181,8 +1170,8 @@ pub fn set_event_widget(event: &mut UiEvent, id: WidgetId) {
 mod tests {
     use super::*;
     use quadraui::{
-        Decoration, SelectionMode, StyledSpan, StyledText, TextDisplay, TextDisplayLine, TreeRow,
-        TreeRowMeasure, TreeStyle, TreeView,
+        Button, Decoration, SelectionMode, StyledSpan, StyledText, TextDisplay, TextDisplayLine,
+        TreeRow, TreeRowMeasure, TreeStyle, TreeView,
     };
 
     /// A single-row `Tree` hit, painted at a real `TreeView::layout` call
@@ -1305,12 +1294,11 @@ mod tests {
     #[test]
     fn clip_hits_to_viewport_keeps_a_sibling_painted_before_the_scroll() {
         let viewport = Rect::new(0.0, 1.0, 20.0, 9.0);
-        let button = PaintedHit::Button {
-            id: WidgetId::new("above"),
-            layout: ButtonLayout {
-                bounds: Rect::new(0.0, 0.0, 20.0, 1.0),
-                nerd_fonts_enabled: false,
-            },
+        let button_id = WidgetId::new("above");
+        let button = PaintedHit::Widget {
+            id: button_id,
+            area: Rect::new(0.0, 0.0, 20.0, 1.0),
+            widget: Rc::new(Button::new(button_id, "Above")),
         };
         let scroll = PaintedHit::Scroll {
             id: WidgetId::new("scroll"),
@@ -1332,7 +1320,7 @@ mod tests {
         // click to the scroll's content instead of the button.
         assert_eq!(
             hit_test_painted(&hits, Point { x: 0.0, y: 0.0 }),
-            Some((WidgetId::new("above"), HitDetail::ButtonBody))
+            Some((WidgetId::new("above"), HitDetail::WidgetBody))
         );
 
         // Still resolves to the `TextDisplay` for a point genuinely
@@ -1352,12 +1340,11 @@ mod tests {
     #[test]
     fn clip_hits_to_viewport_drops_a_hit_with_no_overlap() {
         let viewport = Rect::new(0.0, 10.0, 20.0, 5.0);
-        let mut hits = vec![PaintedHit::Button {
-            id: WidgetId::new("far-above"),
-            layout: ButtonLayout {
-                bounds: Rect::new(0.0, 0.0, 20.0, 1.0),
-                nerd_fonts_enabled: false,
-            },
+        let button_id = WidgetId::new("far-above");
+        let mut hits = vec![PaintedHit::Widget {
+            id: button_id,
+            area: Rect::new(0.0, 0.0, 20.0, 1.0),
+            widget: Rc::new(Button::new(button_id, "Above")),
         }];
         clip_hits_to_viewport(&mut hits, 0, viewport);
         assert!(hits.is_empty());

@@ -1746,7 +1746,6 @@ LayoutLeafNode = TypedDict(
     {
         "id": str,
         "wire_version": NotRequired[int],
-        "button": NotRequired[ButtonDescriptor],
         "text_display": NotRequired[TextDisplayDescriptor],
         "list": NotRequired[ListViewDescriptor],
         "tree": NotRequired[TreeViewDescriptor],
@@ -1794,6 +1793,7 @@ LayoutLeafNode = TypedDict(
         "cell_grid": NotRequired[CellGridDescriptor],
         "switch": NotRequired[SwitchDescriptor],
         "radio_group": NotRequired[RadioGroupDescriptor],
+        "button": NotRequired[ButtonDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1801,7 +1801,7 @@ LayoutLeafNode = TypedDict(
         "max": NotRequired[float],
     },
 )
-"""One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed."""
+"""One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed."""
 
 # One node of a render callback's returned layout tree.
 LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutGridNode, LayoutSplitNode, LayoutTabsNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutScrollNode, LayoutLeafNode]
@@ -1809,7 +1809,6 @@ LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutGridNode, LayoutSplitN
 class RenderFrameDict(TypedDict):
     """The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed."""
     wire_version: NotRequired[int]
-    button: NotRequired[Optional[ButtonDescriptor]]
     text_display: NotRequired[Optional[TextDisplayDescriptor]]
     list: NotRequired[Optional[ListViewDescriptor]]
     tree: NotRequired[Optional[TreeViewDescriptor]]
@@ -1856,6 +1855,7 @@ class RenderFrameDict(TypedDict):
     cell_grid: NotRequired[Optional[CellGridDescriptor]]
     switch: NotRequired[Optional[SwitchDescriptor]]
     radio_group: NotRequired[Optional[RadioGroupDescriptor]]
+    button: NotRequired[Optional[ButtonDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
@@ -2297,9 +2297,6 @@ class PaletteEvent(TypedDict):
     ExpandToggled: NotRequired[_ExpandToggledPayload]
     KeyPressed: NotRequired[_KeyPressedStrPayload]
 
-class _HitDetailButtonBody(TypedDict):
-    kind: Literal['button_body']
-
 class _HitDetailTreeRow(TypedDict):
     kind: Literal['tree_row']
     row: int
@@ -2417,7 +2414,7 @@ class _HitDetailScrollScrollbarTrackAfter(TypedDict):
     kind: Literal['scroll_scrollbar_track_after']
 
 # The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
-HitDetail = Union[_HitDetailButtonBody, _HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailSidebarPanelToolbarButton, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailExtraChrome, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 class _UiKeyPressedPayload(TypedDict):
     key: Key

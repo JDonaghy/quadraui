@@ -1,4 +1,4 @@
-//! Render-to-frame assembly: paints either the six-fixed-slot
+//! Render-to-frame assembly: paints either the five-fixed-slot
 //! [`RenderFrame`]/[`RenderRefs`] shape ([`draw_bands`]) or a decoded
 //! [`crate::layout::LayoutNode`] tree ([`paint_layout`]) into a
 //! [`quadraui::Backend`], recording a [`PaintedHit`] per primitive painted
@@ -11,7 +11,7 @@ use std::rc::Rc;
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, ButtonLayout, DataRow, DataTable, Decoration, FontRole, InteractionState,
+    Backend, Button, DataRow, DataTable, Decoration, FontRole, InteractionState,
     ListItem, ListView, ListViewHit, ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar,
     SectionSize, Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar,
     TabBarLayout, TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine,
@@ -32,14 +32,13 @@ use crate::layout::{
 };
 
 /// Owned decode of a render callback's returned descriptor set — one
-/// optional descriptor per slot, keyed by `"button"`, `"text_display"`,
+/// optional descriptor per slot, keyed by `"text_display"`,
 /// `"list"`, `"tree"`, `"data_table"`, and `"tab_bar"`. A binding decodes
 /// its own wire format (a Python `dict`, a JS object, ...) into this type;
 /// [`RenderFrame::as_refs`] is the one shape [`draw_bands`] paints from,
 /// regardless of which path produced it.
 #[derive(Default)]
 pub struct RenderFrame {
-    pub button: Option<Button>,
     pub text_display: Option<TextDisplay>,
     pub list: Option<ListView>,
     pub tree: Option<TreeView>,
@@ -73,7 +72,7 @@ pub struct RenderFrame {
 }
 
 /// Decodes a render callback's returned `dict` into a [`RenderFrame`] —
-/// the flat six-slot wire shape (`"button"`, `"text_display"`, `"list"`,
+/// the flat five-slot wire shape (`"text_display"`, `"list"`,
 /// `"tree"`, `"data_table"`, `"tab_bar"`, plus any additive primitive
 /// kind) is a contract of this type, not of any one binding's own decode.
 /// A missing key or a `null` value both mean "draw nothing in this slot
@@ -102,7 +101,6 @@ impl<'de> Deserialize<'de> for RenderFrame {
 impl RenderFrame {
     pub fn as_refs(&self) -> RenderRefs<'_> {
         RenderRefs {
-            button: self.button.as_ref(),
             text_display: self.text_display.as_ref(),
             list: self.list.as_ref(),
             tree: self.tree.as_ref(),
@@ -122,13 +120,12 @@ impl RenderFrame {
 /// callback's return value — the one shape [`draw_bands`] paints from,
 /// regardless of which path produced it.
 pub struct RenderRefs<'a> {
-    pub button: Option<&'a Button>,
     pub text_display: Option<&'a TextDisplay>,
     pub list: Option<&'a ListView>,
     pub tree: Option<&'a TreeView>,
     pub data_table: Option<&'a DataTable>,
     pub tab_bar: Option<&'a TabBar>,
-    /// Additive primitive slots, keyed by kind name. Painted after the six
+    /// Additive primitive slots, keyed by kind name. Painted after the five
     /// fixed bands above, in a binding's own `EXTRA_PRIMITIVES` order.
     pub extra: &'a HashMap<String, Rc<dyn ExtraPaint>>,
     /// Generic-widget slots, keyed by kind name — the [`DynWidget`]
@@ -147,7 +144,7 @@ pub struct RenderRefs<'a> {
 }
 
 /// The additive-primitive map a [`RenderRefs`] borrows when its source
-/// carries only the six fixed descriptors — one empty map per thread, so a
+/// carries only the five fixed descriptors — one empty map per thread, so a
 /// caller with nothing to paint after the fixed bands has a map that
 /// outlives any `RenderRefs<'_>` it builds without keeping a permanently
 /// empty field of its own. [`crate::host::BindingHost::render_refs`] is
@@ -162,37 +159,17 @@ pub(crate) fn no_extras() -> &'static HashMap<String, Rc<dyn ExtraPaint>> {
 
 /// [`no_extras`]'s [`DynWidget`] counterpart — the empty map a
 /// [`RenderRefs`] borrows for its `widgets` field when its source carries
-/// only the six fixed descriptors (plus, today, no `extra` either).
+/// only the five fixed descriptors (plus, today, no `extra` either). Unlike
+/// [`no_extras`], every production caller now has a real `"button"` entry to
+/// carry (`Button` joined [`crate::extra_paint::WIDGET_KINDS`]), so only
+/// this file's and `crate::engine`'s own tests still reach for an empty one.
+#[cfg(test)]
 pub(crate) fn no_widgets() -> &'static HashMap<String, Rc<dyn DynWidget>> {
     thread_local! {
         static NO_WIDGETS: &'static HashMap<String, Rc<dyn DynWidget>> =
             Box::leak(Box::new(HashMap::new()));
     }
     NO_WIDGETS.with(|map| *map)
-}
-
-/// Paint `button` into `rect` through the widget contract —
-/// [`quadraui::DrawsPrimitives::draw_dyn`], since [`Button`] is a
-/// [`quadraui::primitive::Primitive`] — and return the resolved
-/// [`ButtonLayout`] for host click dispatch. All three button paint paths
-/// here (the fixed `"button"` slot in [`draw_bands`] and
-/// [`LeafDescriptor::Button`] in [`paint_leaf`]/[`paint_leaf_windowed`])
-/// share this one call, so none reaches for a per-backend button
-/// rasteriser of its own.
-///
-/// `rect`-bounds fallback when `draw_dyn` hands back a layout of some
-/// other concrete type, which means nothing measured a button — the same
-/// "leaves it false" default [`Button::layout`] itself falls back to when
-/// it has no [`quadraui::primitive::LayoutCtx`] to consult.
-fn paint_button(backend: &mut dyn Backend, rect: Rect, button: &Button) -> ButtonLayout {
-    backend
-        .draw_dyn(rect, button, &())
-        .downcast_ref::<ButtonLayout>()
-        .copied()
-        .unwrap_or(ButtonLayout {
-            bounds: rect,
-            nerd_fonts_enabled: false,
-        })
 }
 
 /// Paint `tab_bar` into `rect` through the widget contract —
@@ -231,7 +208,7 @@ fn paint_tab_bar(backend: &mut dyn Backend, rect: Rect, tab_bar: &TabBar) -> Tab
 /// Allocates the next `lines`-tall band (scaled by `line_height`),
 /// starting at the mutable cursor `*y` and never exceeding `viewport`'s
 /// remaining height — the sequential top-to-bottom allocation [`draw_bands`]
-/// uses for each of its six fixed slots plus every additive primitive.
+/// uses for each of its five fixed slots plus every additive primitive.
 /// [`crate::host::resolve_render_refs`] calls this directly too, so it
 /// computes each occupied slot's pre-paint rect from the exact same band
 /// order and sizes `draw_bands` itself paints into, rather than a second,
@@ -283,15 +260,6 @@ pub fn draw_bands(
         next_band(&mut y, viewport.width, viewport.height, line_height, lines)
     };
 
-    if let Some(button) = refs.button {
-        if let Some(rect) = band(3.0) {
-            let layout = paint_button(backend, rect, button);
-            hits.push(PaintedHit::Button {
-                id: button.id,
-                layout,
-            });
-        }
-    }
     if let Some(text_display) = refs.text_display {
         if let Some(rect) = band(3.0) {
             hits.push(draw_text_display_hit(
@@ -1157,10 +1125,9 @@ fn offset_windowed_leaf_scrolled_to_offset(
             shadow.scroll_offset = row;
             LeafDescriptor::DataTable(shadow)
         }
-        LeafDescriptor::Button(_)
-        | LeafDescriptor::TabBar(_)
-        | LeafDescriptor::Extra(_)
-        | LeafDescriptor::Widget { .. } => return None,
+        LeafDescriptor::TabBar(_) | LeafDescriptor::Extra(_) | LeafDescriptor::Widget { .. } => {
+            return None
+        }
     };
     Some(LayoutNode::Leaf(LayoutLeaf {
         id: leaf.id.clone(),
@@ -1457,8 +1424,8 @@ pub(crate) fn scroll_content_slots(
     metrics: ScrollMetrics,
 ) -> ScrollSlots {
     let horizontal = matches!(axis, ScrollAxis::Horizontal);
-    // The same cell-grid-backend test `natural_size`'s `Button` arm and
-    // `crate::layout::native_units` already use. A cell-grid `draw_*`
+    // The same cell-grid-backend test `crate::layout::native_units`
+    // already uses. A cell-grid `draw_*`
     // (every TUI one, via `q_rect_to_ratatui`) clamps a negative `x`/`y`
     // to `0.0` without shrinking the matching `width`/`height`, so a slot
     // positioned with a negative main-axis origin repaints its own top
@@ -1627,7 +1594,7 @@ impl NaturalSize {
 /// [`layout_container_rects`] for a [`quadraui::SectionSize::Content`]
 /// child's main-axis size and for a non-`Stretch`
 /// [`crate::layout::Align`]'s cross-axis size. Measured directly off the
-/// descriptor already decoded for painting: `Button`/`TabBar` via
+/// descriptor already decoded for painting: `TabBar` via
 /// `Backend::measure_text` (the same measurer `quadraui::compose::
 /// menu_system` already leans on for its own label widths), `TextDisplay`
 /// via its own line count/widest line, `List`/`Tree`/`DataTable` via their
@@ -1646,9 +1613,7 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
     // A `Styled` wrapper carries no geometry of its own -- unwrap to
     // whatever it wraps, but push the override first via the same
     // `push_styled_override`/`pop_styled_override` bracket `paint_styled`
-    // brackets its own recursive paint with. A leaf arm below that reads
-    // `Backend::style()` (the `Button` chrome inset) sees the merged
-    // value for the duration of this call, so a `padding` override on
+    // brackets its own recursive paint with, so a `padding` override on
     // this wrapper changes what gets measured here, not just how the
     // subtree later paints.
     if let LayoutNode::Styled(styled) = node {
@@ -1664,45 +1629,6 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
         };
     };
     match &leaf.descriptor {
-        LeafDescriptor::Button(button) => {
-            let (label_w, label_h) = backend.measure_text(&button.label, FontRole::Chrome);
-            // `measure_text` reports the bare label; every non-`Icon`
-            // variant paints chrome around it too (TUI's `"[ Label ]"`
-            // bracket chrome — see `quadraui::tui::button` — a pixel
-            // backend's own left/right `Button` padding). Omitting this
-            // would undersize the natural width enough to clip the
-            // chrome under `Align::Start`/`Center`/`End` or a `Content`
-            // main-axis size, not just misalign it. `char_width <= 1.0`
-            // is the same cell-grid-backend test `layout::native_units`
-            // uses; the pixel-backend branch is a nominal estimate, not
-            // a real `Style::padding` read.
-            //
-            // A `"style": {"padding": ...}` override changes this: rather
-            // than re-deriving the base chrome width from
-            // `Backend::style().padding` outright (which would also shift
-            // every unstyled button whose host sets a non-default global
-            // `Style`), only the *delta* from `Style::default().padding`
-            // is added on each side — zero whenever the active style's
-            // padding equals the default, which is every call site that
-            // never pushed an override. On a cell-grid backend the delta
-            // is rounded to whole cells first, the same
-            // `quantise_horizontal` rule `crate::layout::Spacing::inset`
-            // already applies to a container's own padding.
-            let style = backend.style();
-            let char_width = backend.char_width();
-            let default_padding = Style::default().padding;
-            let chrome_w = if char_width <= 1.0 {
-                let extra = quantise_horizontal(style.padding, char_width)
-                    - quantise_horizontal(default_padding, char_width);
-                4.0 + 2.0 * extra
-            } else {
-                24.0 + 2.0 * (style.padding - default_padding)
-            };
-            NaturalSize {
-                width: Some(label_w + chrome_w),
-                height: Some(label_h),
-            }
-        }
         LeafDescriptor::TextDisplay(text) => {
             let width = text
                 .lines
@@ -2812,12 +2738,12 @@ pub fn draw_tree_with_scrollbar_and_state_windowed(
 }
 
 /// Walks `node`'s layout tree collecting the tree-address `id` ->
-/// `Button::tooltip` text of every `Button` leaf that sets one — the
-/// layout-tree counterpart of a `BindingHost`'s own `button` slot read.
-/// [`paint_leaf`] keys a layout-tree leaf's [`PaintedHit::Button`] by this
-/// same tree-address id (not the descriptor's own embedded `Button::id`,
-/// which a render callback may leave at its default and reuse across
-/// leaves — see [`paint_leaf`]'s own doc), so a binding that paints
+/// `Button::tooltip` text of every `"button"`-kind
+/// [`LeafDescriptor::Widget`] leaf that sets one. [`paint_leaf`] keys a
+/// layout-tree leaf's [`PaintedHit::Widget`] by this same tree-address id
+/// (not the descriptor's own embedded `Button::id`, which a render
+/// callback may leave at its default and reuse across leaves — see
+/// [`paint_leaf`]'s own doc), so a binding that paints
 /// through [`paint_layout`] calls this once per render and feeds the
 /// result to `crate::host::BindingHost::set_leaf_tooltips`: one
 /// `crate::host::BindingHost::hover_tooltip_text` lookup then resolves a
@@ -2838,9 +2764,13 @@ pub fn collect_leaf_tooltips(node: &LayoutNode, out: &mut HashMap<WidgetId, Stri
             }
         }
         LayoutNode::Leaf(leaf) => {
-            if let LeafDescriptor::Button(button) = &leaf.descriptor {
-                if let Some(tooltip) = &button.tooltip {
-                    out.insert(WidgetId::new(leaf.id.clone()), tooltip.clone());
+            if let LeafDescriptor::Widget { kind, widget } = &leaf.descriptor {
+                if *kind == "button" {
+                    if let Some(button) = widget.as_ref().downcast_ref::<Button>() {
+                        if let Some(tooltip) = &button.tooltip {
+                            out.insert(WidgetId::new(leaf.id.clone()), tooltip.clone());
+                        }
+                    }
                 }
             }
         }
@@ -2909,10 +2839,6 @@ pub fn paint_leaf_windowed(
     let id = WidgetId::new(leaf.id.clone());
     let window = windows.get(&leaf.id).copied();
     match &leaf.descriptor {
-        LeafDescriptor::Button(button) => {
-            let layout = paint_button(backend, area, button);
-            hits.push(PaintedHit::Button { id, layout });
-        }
         LeafDescriptor::TextDisplay(text_display) => {
             let windowed = window.map(|w| {
                 windowed_text_display_band(
@@ -3191,7 +3117,6 @@ mod tests {
         draw_bands(
             &mut backend,
             RenderRefs {
-                button: None,
                 text_display: None,
                 list: None,
                 tree: None,
@@ -3590,7 +3515,10 @@ mod tests {
             let leaf = |id: &str, label: &str| {
                 LayoutNode::Leaf(LayoutLeaf {
                     id: id.to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(WidgetId::new(id), label)),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(WidgetId::new(id), label)),
+                    },
                     scroll_px: None,
                 })
             };
@@ -3698,7 +3626,10 @@ mod tests {
                 button.variant = quadraui::ButtonVariant::Icon;
                 LayoutNode::Leaf(LayoutLeaf {
                     id: id.to_string(),
-                    descriptor: LeafDescriptor::Button(button),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(button),
+                    },
                     scroll_px: None,
                 })
             };
@@ -3806,7 +3737,10 @@ mod tests {
                 let primary = |id: &str, label: &str| {
                     LayoutNode::Leaf(LayoutLeaf {
                         id: id.to_string(),
-                        descriptor: LeafDescriptor::Button(Button::new(WidgetId::new(id), label)),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new(id), label)),
+                        },
                         scroll_px: None,
                     })
                 };
@@ -4098,7 +4032,10 @@ mod tests {
         LayoutChild {
             node: LayoutNode::Leaf(LayoutLeaf {
                 id: id.to_string(),
-                descriptor: LeafDescriptor::Button(Button::new(WidgetId::new(id), id)),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "button",
+                    widget: Rc::new(Button::new(WidgetId::new(id), id)),
+                },
                 scroll_px: None,
             }),
             size,
@@ -4189,61 +4126,6 @@ mod tests {
             assert_eq!(rects[0].width, 8.0);
             assert_eq!(rects[1].width, width - 8.0);
         }
-    }
-
-    /// A `"style": {"padding": ...}` override on a `Content`-sized
-    /// `Button` leaf changes that leaf's own measured rect, not just how
-    /// it later paints — the `padding` override [`StyleOverride`]'s own
-    /// doc describes under "Metric overrides feed layout".
-    #[test]
-    fn a_styled_padding_override_widens_a_content_sized_leaf_and_narrows_its_sibling() {
-        let width = 80.0_f32;
-        let area = Rect::new(0.0, 0.0, width, 10.0);
-        let baseline = layout_container_rects(
-            &mut tui(),
-            area,
-            &row(
-                vec![
-                    leaf_child("abcd", SectionSize::Content, None, None),
-                    leaf_child("rest", SectionSize::EqualShare, None, None),
-                ],
-                Justify::Start,
-                Align::Stretch,
-            ),
-            true,
-        );
-        assert_eq!(baseline[0].width, 8.0);
-
-        // Doubling `Style::default().padding` (`8.0` -> `16.0`) adds one
-        // whole cell of chrome on each side on `TuiBackend`
-        // (`ceil(16/8) - ceil(8/8) = 1`), widening the leaf by 2 cells
-        // total and narrowing its `EqualShare` sibling by the same
-        // amount — the row's own full width never changes.
-        let unstyled_leaf = leaf_child("abcd", SectionSize::Content, None, None);
-        let styled_first = LayoutChild {
-            node: LayoutNode::Styled(LayoutStyled {
-                style: Box::new(crate::layout::StyleOverride {
-                    padding: Some(16.0),
-                    ..Default::default()
-                }),
-                node: Box::new(unstyled_leaf.node),
-            }),
-            size: unstyled_leaf.size,
-            min: unstyled_leaf.min,
-            max: unstyled_leaf.max,
-        };
-        let styled = row(
-            vec![
-                styled_first,
-                leaf_child("rest", SectionSize::EqualShare, None, None),
-            ],
-            Justify::Start,
-            Align::Stretch,
-        );
-        let overridden = layout_container_rects(&mut tui(), area, &styled, true);
-        assert_eq!(overridden[0].width, 10.0);
-        assert_eq!(overridden[1].width, width - 10.0);
-        assert_eq!(overridden[0].height, baseline[0].height);
     }
 
     #[test]
@@ -4359,7 +4241,10 @@ mod tests {
             let one = || {
                 vec![LayoutChild::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "x".to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("x"), "x")),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(WidgetId::new("x"), "x")),
+                    },
                     scroll_px: None,
                 }))]
             };
@@ -4739,17 +4624,26 @@ mod tests {
                 vec![
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "a".to_string(),
-                        descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("a"), "a")),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new("a"), "a")),
+                        },
                         scroll_px: None,
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "b".to_string(),
-                        descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("b"), "b")),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new("b"), "b")),
+                        },
                         scroll_px: None,
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "c".to_string(),
-                        descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("c"), "c")),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new("c"), "c")),
+                        },
                         scroll_px: None,
                     }),
                 ],
@@ -4777,10 +4671,10 @@ mod tests {
                     let label = i.to_string();
                     LayoutNode::Leaf(LayoutLeaf {
                         id: label.clone(),
-                        descriptor: LeafDescriptor::Button(Button::new(
-                            WidgetId::new(label.clone()),
-                            label,
-                        )),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new(label.clone()), label)),
+                        },
                         scroll_px: None,
                     })
                 })
@@ -4832,7 +4726,9 @@ mod tests {
     fn painted_button_ids(hits: &[PaintedHit]) -> Vec<String> {
         hits.iter()
             .filter_map(|hit| match hit {
-                PaintedHit::Button { id, .. } => Some(id.as_str().to_string()),
+                PaintedHit::Widget { id, widget, .. } if widget.as_any().is::<Button>() => {
+                    Some(id.as_str().to_string())
+                }
                 _ => None,
             })
             .collect()
@@ -4880,7 +4776,7 @@ mod tests {
         let found = hit_test_painted_for_test(&hits, quadraui::Point { x: 0.0, y: 0.0 });
         assert_eq!(
             found,
-            Some((WidgetId::new("20"), "button_body".to_string()))
+            Some((WidgetId::new("20"), "widget_body".to_string()))
         );
     }
 

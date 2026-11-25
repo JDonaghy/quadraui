@@ -10,12 +10,24 @@
 //! primitives of its own: the `RenderRefs` it hands `draw_bands` borrows an
 //! empty extras map, so only the fixed bands reach the backend.
 
+use std::collections::HashMap;
+use std::rc::Rc;
+
+use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Button, InteractionState,
     KeyBinding, Reaction, StyledSpan, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 use quadraui_binding_core::{draw_bands, BindingHost};
+
+/// A [`BindingHost::widgets`] map holding just `button` under its `"button"`
+/// key — the single generic-widget slot this test's own hosts carry.
+fn button_widgets(button: Button) -> HashMap<String, Rc<dyn DynWidget>> {
+    let mut widgets = HashMap::new();
+    widgets.insert("button".to_string(), Rc::new(button) as Rc<dyn DynWidget>);
+    widgets
+}
 
 /// Paints whatever fixed descriptors its host holds, through the exact
 /// `BindingHost::render_refs` -> `draw_bands` path a binding's own
@@ -54,17 +66,17 @@ fn a_binding_builds_a_host_by_functional_record_update() {
     accelerators.insert(accelerator.id.clone(), accelerator);
 
     let host = BindingHost {
-        button: Some(Button::new(WidgetId::new("save"), "Save")),
+        widgets: button_widgets(Button::new(WidgetId::new("save"), "Save")),
         accelerators,
         ..BindingHost::default()
     };
 
-    assert!(host.button.is_some());
+    assert!(host.widgets.contains_key("button"));
     assert_eq!(host.accelerators.len(), 1);
     assert!(host.list.is_none());
 }
 
-/// The six fixed slots a host does hold paint top-to-bottom, and the extras
+/// The five fixed slots a host does hold paint top-to-bottom, and the extras
 /// map the host contributes is empty, so nothing paints after them.
 #[test]
 fn a_host_paints_its_fixed_slots_and_no_additive_primitives() {
@@ -76,7 +88,7 @@ fn a_host_paints_its_fixed_slots_and_no_additive_primitives() {
     });
 
     let host = BindingHost {
-        button: Some(Button::new(WidgetId::new("save"), "Save")),
+        widgets: button_widgets(Button::new(WidgetId::new("save"), "Save")),
         text_display: Some(status),
         ..BindingHost::default()
     };

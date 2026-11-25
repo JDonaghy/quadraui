@@ -591,7 +591,10 @@ pub fn schema() -> Vec<DefJson> {
         ],
     ));
 
-    // ── Core leaf descriptors (the six fixed primitive kinds) ───────────
+    // `ButtonDescriptor`/`ButtonSpecDescriptor` type the `"button"`
+    // `WIDGET_KINDS` member below, defined up here (not beside the other
+    // `WIDGET_KINDS` descriptors further down) because `button_spec_descriptor`
+    // is also reused by other descriptors ahead of those.
     let button_variant = b.define(alias(
         "ButtonVariant",
         lit(&["Primary", "Secondary", "Icon", "Danger", "Warning"]),
@@ -2812,7 +2815,7 @@ pub fn schema() -> Vec<DefJson> {
         ],
     ));
 
-    // `LayoutLeafNode`/`RenderFrameDict`'s descriptor-kind keys: the six
+    // `LayoutLeafNode`/`RenderFrameDict`'s descriptor-kind keys: the five
     // fixed `LEAF_KIND_KEYS`, `status_bar`, every `EXTRA_PRIMITIVE_KINDS`
     // additive kind, and every `WIDGET_KINDS` generic-widget kind are all
     // fully typed. Reading straight off the real Rust consts means a new
@@ -2837,7 +2840,6 @@ pub fn schema() -> Vec<DefJson> {
     let mut render_frame_fields = vec![wire_version_field.clone()];
     for key in LEAF_KIND_KEYS {
         let ty = match key {
-            "button" => button_descriptor.clone(),
             "text_display" => text_display_descriptor.clone(),
             "list" => list_view_descriptor.clone(),
             "tree" => tree_view_descriptor.clone(),
@@ -2927,6 +2929,7 @@ pub fn schema() -> Vec<DefJson> {
             "cell_grid" => cell_grid_descriptor.clone(),
             "switch" => switch_descriptor.clone(),
             "radio_group" => radio_group_descriptor.clone(),
+            "button" => button_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -2944,7 +2947,7 @@ pub fn schema() -> Vec<DefJson> {
     let layout_leaf_node = b.define(obj_doc(
         "LayoutLeafNode",
         leaf_fields,
-        "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.",
+        "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.",
     ));
 
     b.define(union_of_doc(
@@ -3577,7 +3580,6 @@ pub fn schema() -> Vec<DefJson> {
     type HitDetailExtraField = (&'static str, fn() -> TyJson);
     type HitDetailKind = (&'static str, &'static str, &'static [HitDetailExtraField]);
     const HIT_DETAIL_KINDS: &[HitDetailKind] = &[
-        ("_HitDetailButtonBody", "button_body", &[]),
         ("_HitDetailTreeRow", "tree_row", &[("row", int_)]),
         ("_HitDetailTreeChevron", "tree_chevron", &[("row", int_)]),
         ("_HitDetailListTitle", "list_title", &[]),
@@ -4381,7 +4383,6 @@ mod coverage {
 
     fn assert_hit_detail(h: HitDetail) {
         match h {
-            HitDetail::ButtonBody => {}
             HitDetail::TreeRow { row: _ } => {}
             HitDetail::TreeChevron { row: _ } => {}
             HitDetail::ListTitle => {}
@@ -4421,7 +4422,6 @@ mod coverage {
 
     fn assert_leaf_descriptor(d: LeafDescriptor) {
         match d {
-            LeafDescriptor::Button(_) => {}
             LeafDescriptor::TextDisplay(_) => {}
             LeafDescriptor::List(_) => {}
             LeafDescriptor::Tree(_) => {}

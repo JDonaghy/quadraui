@@ -23,15 +23,16 @@ use quadraui::primitive::DynWidget;
 use quadraui::primitives::form::focus_order;
 use quadraui::primitives::scrollbar::{scroll_by_clamped, ThumbDrag};
 use quadraui::{
-    wheel_row_delta, Backend, CanvasEvent, CellGrid, CellGridEvent, CellGridPrimitiveLayout,
-    Column, CompletionItemMeasure, Completions, CompletionsHit, CompletionsLayout, ContextMenu,
-    ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog, EditOp, EventCx, EventHost,
-    Float, FloatLayout, FloatMeasure, Form, FormEvent, InteractionState, Key, KeyEvent, MenuBar,
-    MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind, PointerShape, Rect,
-    RichTextPopup, RichTextPopupHit, RichTextPopupLayout, RichTextPopupMeasure, RoutedEvent,
-    ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner,
-    ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
-    TreeTableNodeData, UiEvent, WidgetId,
+    wheel_row_delta, Backend, Button, CanvasEvent, CellGrid, CellGridEvent,
+    CellGridPrimitiveLayout, Column, CompletionItemMeasure, Completions, CompletionsHit,
+    CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog,
+    EditOp, EventCx, EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent,
+    InteractionState, Key, KeyEvent, MenuBar, MessageDialogButton, Modifiers, MouseButton,
+    NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup, RichTextPopupHit,
+    RichTextPopupLayout, RichTextPopupMeasure, RoutedEvent, ScrollAxis, ScrollViewEvent,
+    TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay,
+    ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, TreeTableNodeData,
+    UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -53,8 +54,8 @@ use crate::host::{
 use crate::layout::LayoutNode;
 use crate::render::{paint_layout, rows_requested_for_window, ItemsWindow, RowsRequestedEvent};
 use crate::semantic::{
-    button_clicked_event, focus_scoped_key_event, number_input_click_event, scripted_key_press,
-    scripted_region_click, semantic_event_for_hit, DragGestureWireEvent,
+    focus_scoped_key_event, number_input_click_event, scripted_key_press, scripted_region_click,
+    semantic_event_for_hit, DragGestureWireEvent,
 };
 use crate::text_input::{text_input_click_event, text_input_insert_event, TextEditorCache};
 use crate::widget_state::WidgetState;
@@ -202,7 +203,8 @@ impl LayoutContent {
     /// `MouseDown`/`DoubleClick` click-focuses the leaf it landed on
     /// (mirroring [`InteractionEngine::handle`]'s own click-to-focus
     /// convention) and then resolves to that leaf's semantic event —
-    /// [`crate::semantic::button_clicked_event`] for a `Button`,
+    /// a synthesized [`quadraui::UiEvent::ButtonActivated`] for a
+    /// `"button"`-kind [`HitDetail::WidgetBody`],
     /// [`crate::semantic::semantic_event_for_hit`] for a `Tree`/`List`/
     /// `DataTable`/`TabBar`/`Checkbox`/... leaf, the owning
     /// [`FormController`] for a `"form"` extra leaf; a
@@ -257,10 +259,26 @@ impl LayoutContent {
                         return Some(reaction);
                     }
                 }
-                if matches!(detail, HitDetail::ButtonBody) {
-                    return Some(reaction.merge(Reaction::Redraw).merge(
-                        sink.dispatch(&button_clicked_event(id), Some(&HitDetail::ButtonBody)),
-                    ));
+                // A `"button"`-kind `WidgetBody` hit is resolved directly
+                // here rather than through `InteractionEngine`'s own
+                // `dispatch_dyn_widget_click` (whose `dyn_widget_state`/
+                // `dyn_widget_capture` caches live on the main engine, not
+                // this subtree's own smaller `LayoutContent`): a `Button`
+                // leaf nested in a popover/dialog needs nothing beyond a
+                // plain click-to-activate, so it's synthesized directly
+                // the same way the retired fixed `Button` leaf slot's own
+                // click used to be.
+                if matches!(detail, HitDetail::WidgetBody) {
+                    let is_button = dyn_widget_hit(&self.hits.borrow(), id)
+                        .is_some_and(|(_, widget)| widget.as_any().is::<Button>());
+                    if is_button {
+                        let activated = UiEvent::ButtonActivated { widget: id };
+                        return Some(
+                            reaction
+                                .merge(Reaction::Redraw)
+                                .merge(sink.dispatch(&activated, Some(&HitDetail::WidgetBody))),
+                        );
+                    }
                 }
                 if let Some(area) = self.form_leaf_area(id) {
                     let routed = self.route_form_event(id, area, event, backend, sink);
@@ -392,7 +410,6 @@ impl LayoutContent {
 fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
     hits.iter()
         .filter_map(|hit| match hit {
-            PaintedHit::Button { id, layout } => Some((*id, layout.bounds)),
             PaintedHit::Tree { id, area, .. }
             | PaintedHit::List { id, area, .. }
             | PaintedHit::DataTable { id, area, .. }
@@ -416,10 +433,10 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             // `PaintedHit::Widget` field to report more than one
             // `(WidgetId, Rect)` from yet — a widget that needs
             // per-sub-target stops extends this arm with a finer-grained
-            // `HitDetail::WidgetBody` of its own. `IconGrid`, `CellGrid`
-            // and `Switch` each report `FocusSpec::Stop` (`CellGrid` only
-            // once it has at least one row and column), so each is a tab
-            // stop through this generic path.
+            // `HitDetail::WidgetBody` of its own. `IconGrid`, `CellGrid`,
+            // `Switch` and `Button` each report `FocusSpec::Stop`
+            // (`CellGrid` only once it has at least one row and column),
+            // so each is a tab stop through this generic path.
             PaintedHit::Widget { id, area, widget } => {
                 matches!(widget.focus(), quadraui::FocusSpec::Stop).then_some((*id, *area))
             }
@@ -2021,7 +2038,7 @@ impl InteractionEngine {
     /// `SplitTree`/`Scroll`/`Styled`) receives focus, click and keyboard
     /// routing exactly as the same leaf would in the main tree: a click
     /// on a `Button` emits the normal
-    /// [`crate::semantic::button_clicked_event`]; a click or focused key
+    /// [`quadraui::UiEvent::ButtonActivated`]; a click or focused key
     /// on a `Tree`/`List`/`DataTable`/`TabBar`/`TextDisplay`/`Checkbox`/…
     /// leaf resolves through the same
     /// [`crate::semantic::semantic_event_for_hit`]/
@@ -4847,12 +4864,7 @@ impl InteractionEngine {
         // which case the raw `MouseDown`/`DoubleClick` (and its `"hit"` dict)
         // never reaches `sink` at all.
         let mut attach_hit = hit.is_some() && !scroll_translated;
-        // Set by the `HitDetail::ButtonBody` arm below, alongside (never
-        // instead of) the raw `MouseDown`/`DoubleClick` dispatch — merged
-        // into the final `Reaction` the same way `focus_reaction` is.
-        let mut button_clicked_reaction = Reaction::Continue;
-        // Set by the `HitDetail::WidgetBody` arm below, mirroring
-        // `button_clicked_reaction`'s own doc.
+        // Set by the `HitDetail::WidgetBody` arm below.
         let mut widget_click_reaction = Reaction::Continue;
         if let Some((id, detail)) = &hit {
             let modifiers_and_double_click = match &event {
@@ -5089,21 +5101,6 @@ impl InteractionEngine {
                         }
                     }
                     attach_hit = false;
-                } else if matches!(detail, HitDetail::ButtonBody) {
-                    // A layout-tree `Button` leaf's click is additive, not
-                    // a replacement, unlike every other `detail` arm above
-                    // and below: `event`/`attach_hit` are left untouched
-                    // here, so the raw `MouseDown`/`DoubleClick` (with its
-                    // `"hit"` dict still attached) reaches `sink` below
-                    // exactly as it always did, for compatibility with a
-                    // binding's own handler that already synthesizes the
-                    // click itself from that raw event. This dispatch is
-                    // the semantic event on top of it.
-                    button_clicked_reaction =
-                        sink.dispatch(&button_clicked_event(*id), Some(&HitDetail::ButtonBody));
-                    if matches!(button_clicked_reaction, Reaction::Exit) {
-                        return button_clicked_reaction;
-                    }
                 } else if let Some(semantic) = semantic_event_for_hit(
                     *id,
                     detail,
@@ -5113,7 +5110,7 @@ impl InteractionEngine {
                     &self.hit_map.borrow(),
                     event_position(&event).unwrap_or_default(),
                 ) {
-                    // Generic counterpart of the `ButtonBody`/`SplitDivider`/...
+                    // Generic counterpart of the `SplitDivider`/`SplitTreeDivider`/...
                     // arms above: a `CanvasRegion` hit also reaches the
                     // matched leaf's own `ScriptedExtra::scripted_click_region`,
                     // when it has one, since `semantic_event_for_hit`'s own
@@ -5215,7 +5212,6 @@ impl InteractionEngine {
             .merge(menu_reaction)
             .merge(hover_reaction)
             .merge(focus_reaction)
-            .merge(button_clicked_reaction)
             .merge(widget_click_reaction)
             .merge(event_reaction)
             .merge(persisted_state)
@@ -5318,6 +5314,7 @@ mod tests {
 
     use std::rc::Rc;
 
+    use quadraui::primitive::DynWidget;
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
         AppLogic, Backend, Button, Cell, CellGrid, CellGridEvent, Column, ColumnAlign, ColumnWidth,
@@ -5403,17 +5400,18 @@ mod tests {
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
             let extra = HashMap::new();
+            let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert("button".to_string(), Rc::new(self.button.clone()));
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: Some(&self.button),
                     text_display: None,
                     list: None,
                     tree: None,
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
-                    widgets: crate::render::no_widgets(),
+                    widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -5460,7 +5458,6 @@ mod tests {
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: None,
                     text_display: None,
                     list: None,
                     tree: None,
@@ -5513,17 +5510,18 @@ mod tests {
                 std::rc::Rc::new(self.form.clone())
                     as std::rc::Rc<dyn crate::extra_paint::ExtraPaint>,
             );
+            let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert("button".to_string(), Rc::new(self.button.clone()));
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: Some(&self.button),
                     text_display: None,
                     list: None,
                     tree: None,
                     data_table: None,
                     tab_bar: None,
                     extra: &extra,
-                    widgets: crate::render::no_widgets(),
+                    widgets: &widgets,
                     list_scroll_px: None,
                     tree_scroll_px: None,
                     data_table_scroll_px: None,
@@ -5572,10 +5570,10 @@ mod tests {
                 vec![
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "before".to_string(),
-                        descriptor: LeafDescriptor::Button(Button::new(
-                            WidgetId::new("before"),
-                            "Before",
-                        )),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new("before"), "Before")),
+                        },
                         scroll_px: None,
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
@@ -5585,10 +5583,10 @@ mod tests {
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "after".to_string(),
-                        descriptor: LeafDescriptor::Button(Button::new(
-                            WidgetId::new("after"),
-                            "After",
-                        )),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new("after"), "After")),
+                        },
                         scroll_px: None,
                     }),
                 ],
@@ -6938,15 +6936,16 @@ mod tests {
 
     /// A `MouseDown` on the button must round-trip through
     /// [`InteractionEngine::handle`] as click-to-focus (a `FocusChanged`
-    /// dispatch), then the semantic `UiEvent::Form(id,
-    /// FormEvent::ButtonClicked)` [`crate::semantic::button_clicked_event`]
-    /// builds, then the raw click itself with its hit still attached — the
-    /// semantic dispatch is additive, never a replacement, so a binding
-    /// that already synthesizes its own click from the raw `MouseDown`
-    /// keeps working unchanged. Proves the orchestration itself (not just
-    /// paint/hit-test) is usable with no host-language binding in scope.
+    /// dispatch) followed by the generic `"button"`-kind
+    /// [`HitDetail::WidgetBody`] seam's own
+    /// [`quadraui::UiEvent::ButtonActivated`] — [`crate::engine::
+    /// InteractionEngine::dispatch_dyn_widget_click`]'s replacement for
+    /// the raw `MouseDown`, the same shape a `"switch"`/`"radio_group"`
+    /// leaf click already produces. Proves the orchestration itself (not
+    /// just paint/hit-test) is usable with no host-language binding in
+    /// scope.
     #[test]
-    fn click_on_a_button_focuses_it_then_dispatches_button_clicked_then_the_raw_click() {
+    fn click_on_a_button_focuses_it_then_dispatches_button_activated() {
         let logic = MinimalLogic {
             button: Button::new(WidgetId::new("go"), "Go"),
             engine: InteractionEngine::new(),
@@ -6958,7 +6957,11 @@ mod tests {
             let hits = driver.app().engine.hit_map();
             hits.iter()
                 .find_map(|hit| match hit {
-                    crate::hit::PaintedHit::Button { layout, .. } => Some(layout.bounds),
+                    crate::hit::PaintedHit::Widget { id, area, widget }
+                        if *id == WidgetId::new("go") && widget.as_any().is::<Button>() =>
+                    {
+                        Some(*area)
+                    }
                     _ => None,
                 })
                 .expect("button should have painted a hit")
@@ -6976,53 +6979,36 @@ mod tests {
         });
 
         let dispatched = &driver.app().sink.borrow().dispatched;
-        assert_eq!(
-            dispatched.len(),
-            3,
-            "expected a focus dispatch, the semantic ButtonClicked, and the raw click: {:?}",
+        assert!(
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::FocusChanged(Some(id)) if *id == WidgetId::new("go")
+            )),
+            "clicking the button must click-focus it: {:?}",
             dispatched
         );
         assert!(
-            matches!(dispatched[0].0, UiEvent::FocusChanged(Some(id)) if id == WidgetId::new("go")),
-            "click-to-focus must dispatch FocusChanged first: {:?}",
-            dispatched[0]
-        );
-        assert_eq!(
-            dispatched[1].0,
-            UiEvent::Form(
-                WidgetId::new("go"),
-                quadraui::FormEvent::ButtonClicked {
-                    id: WidgetId::new("go")
-                }
-            ),
-            "the semantic ButtonClicked must follow the focus dispatch: {:?}",
-            dispatched[1]
-        );
-        assert!(
-            matches!(dispatched[2].0, UiEvent::MouseDown { .. }),
-            "the raw click must still follow, with its hit attached, for compatibility \
-             with a binding that already synthesizes its own click from it: {:?}",
-            dispatched[2]
-        );
-        assert!(
-            dispatched[2].1.is_some(),
-            "a button has no semantic click SUBSTITUTION (only an additive one), so the \
-             raw click keeps its hit"
+            dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::ButtonActivated { widget } if *widget == WidgetId::new("go")
+            )),
+            "expected a ButtonActivated event for the clicked button: {:?}",
+            dispatched
         );
     }
 
     /// Enter on a focused layout-tree `Button` round-trips through
-    /// [`InteractionEngine::handle`] as the same semantic
-    /// `UiEvent::Form(id, FormEvent::ButtonClicked)` a pointer click
-    /// produces — the keyboard-activation half of this engine's `Button`
-    /// coverage, exercised via [`crate::semantic::focus_scoped_key_event`]'s
-    /// own `PaintedHit::Button` arm rather than
+    /// [`InteractionEngine::handle`] as the same `UiEvent::ButtonActivated`
+    /// a pointer click produces — the keyboard-activation half of this
+    /// engine's `Button` coverage, exercised via
+    /// [`InteractionEngine::dispatch_dyn_widget_key`] rather than
     /// [`InteractionEngine::handle`]'s `MouseDown`/`DoubleClick` routing.
     /// Unlike the pointer click, this fully replaces the raw `KeyPressed`
-    /// — matching `Toolbar::activate_focused`'s own Enter/Space handling,
-    /// which does the same.
+    /// — the same generic `"button"`-kind [`HitDetail::WidgetBody`]
+    /// replacement [`InteractionEngine::dispatch_dyn_widget_key`] produces
+    /// for any focused [`crate::primitive::DynWidget`] leaf.
     #[test]
-    fn enter_on_a_focused_button_dispatches_button_clicked() {
+    fn enter_on_a_focused_button_dispatches_button_activated() {
         let logic = MinimalLogic {
             button: Button::new(WidgetId::new("go"), "Go"),
             engine: InteractionEngine::new(),
@@ -7044,26 +7030,21 @@ mod tests {
         assert_eq!(
             dispatched,
             &[(
-                UiEvent::Form(
-                    WidgetId::new("go"),
-                    quadraui::FormEvent::ButtonClicked {
-                        id: WidgetId::new("go")
-                    }
-                ),
-                None
+                UiEvent::ButtonActivated {
+                    widget: WidgetId::new("go")
+                },
+                Some(HitDetail::WidgetBody)
             )],
-            "Enter on a focused Button must dispatch exactly the semantic \
-             ButtonClicked, replacing the raw KeyPressed: {:?}",
+            "Enter on a focused Button must dispatch exactly the generic \
+             ButtonActivated, replacing the raw KeyPressed: {:?}",
             dispatched
         );
     }
 
     /// Space does the same as Enter (see
-    /// [`enter_on_a_focused_button_dispatches_button_clicked`]) — both are
-    /// the chords [`quadraui::Button::handle_key`]'s own doc names as this
-    /// primitive's activation keys.
+    /// [`enter_on_a_focused_button_dispatches_button_activated`]).
     #[test]
-    fn space_on_a_focused_button_dispatches_button_clicked() {
+    fn space_on_a_focused_button_dispatches_button_activated() {
         let logic = MinimalLogic {
             button: Button::new(WidgetId::new("go"), "Go"),
             engine: InteractionEngine::new(),
@@ -7085,16 +7066,13 @@ mod tests {
         assert_eq!(
             dispatched,
             &[(
-                UiEvent::Form(
-                    WidgetId::new("go"),
-                    quadraui::FormEvent::ButtonClicked {
-                        id: WidgetId::new("go")
-                    }
-                ),
-                None
+                UiEvent::ButtonActivated {
+                    widget: WidgetId::new("go")
+                },
+                Some(HitDetail::WidgetBody)
             )],
-            "Space on a focused Button must dispatch exactly the semantic \
-             ButtonClicked, replacing the raw KeyPressed: {:?}",
+            "Space on a focused Button must dispatch exactly the generic \
+             ButtonActivated, replacing the raw KeyPressed: {:?}",
             dispatched
         );
     }
@@ -7102,11 +7080,11 @@ mod tests {
     /// A `MouseMoved` landing on a painted button, then one moving off it,
     /// round-trips through [`InteractionEngine::handle`] as a hit-tested
     /// `UiEvent::MouseEntered` followed later by a `UiEvent::MouseLeft`,
-    /// each carrying the button's own `HitDetail::ButtonBody` — the real
-    /// hover signal a binding's own toolbar/tree/details-pane hover
-    /// tooltip needs, synthesized the same way for every binding since it
-    /// lives in this shared engine rather than each binding re-deriving
-    /// hit-testing from the raw position itself.
+    /// each carrying the button's own generic `HitDetail::WidgetBody` —
+    /// the real hover signal a binding's own toolbar/tree/details-pane
+    /// hover tooltip needs, synthesized the same way for every binding
+    /// since it lives in this shared engine rather than each binding
+    /// re-deriving hit-testing from the raw position itself.
     #[test]
     fn mouse_moved_onto_then_off_a_button_synthesizes_entered_then_left() {
         let logic = MinimalLogic {
@@ -7120,7 +7098,11 @@ mod tests {
             let hits = driver.app().engine.hit_map();
             hits.iter()
                 .find_map(|hit| match hit {
-                    crate::hit::PaintedHit::Button { layout, .. } => Some(layout.bounds),
+                    crate::hit::PaintedHit::Widget { id, area, widget }
+                        if *id == WidgetId::new("go") && widget.as_any().is::<Button>() =>
+                    {
+                        Some(*area)
+                    }
                     _ => None,
                 })
                 .expect("button should have painted a hit")
@@ -7163,7 +7145,7 @@ mod tests {
                     UiEvent::MouseEntered {
                         widget: WidgetId::new("go")
                     },
-                    Some(HitDetail::ButtonBody)
+                    Some(HitDetail::WidgetBody)
                 ),
                 "entering the button must dispatch MouseEntered with its hit attached"
             );
@@ -7191,7 +7173,7 @@ mod tests {
                 UiEvent::MouseLeft {
                     widget: WidgetId::new("go")
                 },
-                Some(HitDetail::ButtonBody)
+                Some(HitDetail::WidgetBody)
             ),
             "leaving the button must dispatch MouseLeft with its old hit attached"
         );
@@ -7528,8 +7510,8 @@ mod tests {
             hit_map
                 .iter()
                 .find_map(|hit| match hit {
-                    PaintedHit::Button { id, layout } if *id == WidgetId::new("go") => {
-                        Some(layout.bounds)
+                    PaintedHit::Widget { id, area, .. } if *id == WidgetId::new("go") => {
+                        Some(*area)
                     }
                     _ => None,
                 })
@@ -7694,10 +7676,10 @@ mod tests {
                 }),
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "submit".to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(
-                        WidgetId::new("submit"),
-                        "Submit",
-                    )),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(WidgetId::new("submit"), "Submit")),
+                    },
                     scroll_px: None,
                 }),
             ],
@@ -7716,8 +7698,8 @@ mod tests {
             hit_map
                 .iter()
                 .find_map(|hit| match hit {
-                    PaintedHit::Button { id, layout } if *id == WidgetId::new("go") => {
-                        Some(layout.bounds)
+                    PaintedHit::Widget { id, area, .. } if *id == WidgetId::new("go") => {
+                        Some(*area)
                     }
                     _ => None,
                 })
@@ -7780,7 +7762,7 @@ mod tests {
 
         // Clicking the "submit" button click-focuses it (a `FocusChanged`
         // ahead of the click, same convention `Self::handle` uses for the
-        // main tree) and emits the normal `button_clicked_event` shape.
+        // main tree) and emits the generic `UiEvent::ButtonActivated` shape.
         driver.dispatch(UiEvent::MouseDown {
             widget: None,
             button: MouseButton::Left,
@@ -7803,10 +7785,9 @@ mod tests {
             assert!(
                 dispatched.iter().any(|(ev, _)| matches!(
                     ev,
-                    UiEvent::Form(id, FormEvent::ButtonClicked { id: inner })
-                        if *id == WidgetId::new("submit") && *inner == WidgetId::new("submit")
+                    UiEvent::ButtonActivated { widget } if *widget == WidgetId::new("submit")
                 )),
-                "clicking the button should emit the normal button_clicked_event: {:?}",
+                "clicking the button should emit the generic ButtonActivated event: {:?}",
                 dispatched
             );
         }
@@ -7887,8 +7868,8 @@ mod tests {
             hit_map
                 .iter()
                 .find_map(|hit| match hit {
-                    PaintedHit::Button { id, layout } if *id == WidgetId::new("go") => {
-                        Some(layout.bounds)
+                    PaintedHit::Widget { id, area, .. } if *id == WidgetId::new("go") => {
+                        Some(*area)
                     }
                     _ => None,
                 })
@@ -8031,10 +8012,10 @@ mod tests {
                 }),
                 LayoutNode::Leaf(LayoutLeaf {
                     id: "reset".to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(
-                        WidgetId::new("reset"),
-                        "Reset",
-                    )),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(WidgetId::new("reset"), "Reset")),
+                    },
                     scroll_px: None,
                 }),
             ],
@@ -8218,7 +8199,10 @@ mod tests {
 
         let content = LayoutNode::Leaf(LayoutLeaf {
             id: "apply".to_string(),
-            descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("apply"), "Apply")),
+            descriptor: LeafDescriptor::Widget {
+                kind: "button",
+                widget: Rc::new(Button::new(WidgetId::new("apply"), "Apply")),
+            },
             scroll_px: None,
         });
         let dialog = quadraui::Dialog {
@@ -8686,7 +8670,6 @@ mod tests {
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: None,
                     text_display: None,
                     list: None,
                     tree: None,
@@ -9145,7 +9128,6 @@ mod tests {
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: None,
                     text_display: None,
                     list: None,
                     tree: Some(&resolved),
@@ -9341,7 +9323,6 @@ mod tests {
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: None,
                     text_display: None,
                     list: Some(&resolved),
                     tree: None,
@@ -9577,7 +9558,6 @@ mod tests {
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: None,
                     text_display: None,
                     list: None,
                     tree: None,
@@ -9756,7 +9736,6 @@ mod tests {
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: None,
                     text_display: None,
                     list: Some(&self.list),
                     tree: None,
@@ -10023,7 +10002,6 @@ mod tests {
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: None,
                     text_display: Some(&self.text_display),
                     list: None,
                     tree: None,
@@ -10201,18 +10179,18 @@ mod tests {
                 leaves: vec![
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "left".to_string(),
-                        descriptor: LeafDescriptor::Button(Button::new(
-                            WidgetId::new("left-btn"),
-                            "L",
-                        )),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new("left-btn"), "L")),
+                        },
                         scroll_px: None,
                     }),
                     LayoutNode::Leaf(LayoutLeaf {
                         id: "right".to_string(),
-                        descriptor: LeafDescriptor::Button(Button::new(
-                            WidgetId::new("right-btn"),
-                            "R",
-                        )),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new("right-btn"), "R")),
+                        },
                         scroll_px: None,
                     }),
                 ],
@@ -10243,13 +10221,9 @@ mod tests {
         use quadraui::SplitDirection;
 
         // Ratio 0.6 (not the more obvious 0.5) so the resolved divider
-        // `position` has a fractional part under `0.5` — `first_w` then
-        // rounds DOWN to the Button leaf's own painted width, so the leaf
-        // doesn't also claim the divider's painted cell the way it would
-        // at a dead-even tie (`width * 0.5` on an even width rounds UP,
-        // per `f32::round`'s ties-away-from-zero rule, which is a
-        // pre-existing, separate leaf/divider hit-box overlap this test
-        // isn't about).
+        // `position` has a fractional part under `0.5`, matching
+        // `cell_position`'s own truncate-toward-zero convention for where
+        // the divider's bar paints.
         let tree = quadraui::SplitTree::split(
             SplitDirection::Horizontal,
             0.6,
@@ -10263,7 +10237,7 @@ mod tests {
         };
         // The module's usual 40-cell-wide viewport — deliberately even, so
         // the divider's resolved `position` is fractional and the click
-        // below exercises the truncate-to-painted-cell path
+        // below exercises the tolerant-band path
         // `hit_test_painted`'s `PaintedHit::SplitTree` arm needs (an odd
         // width like 41 lands the divider on an exact integer and would
         // hide a regression there).
@@ -10285,7 +10259,16 @@ mod tests {
             "expected a fractional divider position on an even-width viewport, got {}",
             divider.position
         );
-        let divider_cell = divider.cell_position() as f32;
+        // A `"button"`-kind `LeafDescriptor::Widget` leaf's own painted
+        // `PaintedHit::Widget.area` is the UNQUANTIZED pane rect `draw_split_tree`
+        // handed it (every leaf kind this layout-tree paints shares that —
+        // nothing here is specific to `Button`), so it still claims the
+        // whole `[0, 23.4)` span on this geometry, past `cell_position`'s
+        // own truncated `23`. `ceil` instead lands solidly inside the
+        // divider's own `[position, position + thickness)` band without
+        // landing inside either leaf's area — `23.4..24.4` here — and is
+        // still a realistic integer mouse column.
+        let divider_cell = divider.position.ceil();
 
         driver.dispatch(UiEvent::MouseDown {
             widget: None,
@@ -10316,7 +10299,7 @@ mod tests {
         assert_eq!(split_index, 0);
         // ratio = (cursor_axis - axis_start) / axis_size, the same
         // `dispatch_mouse_moved` conversion `drag.rs`'s `ActiveDrag::SplitTree::ratio_at`
-        // now mirrors: (19 + 10 - 0) / 40 == 0.725.
+        // now mirrors: (24 + 10 - 0) / 40 == 0.85.
         let expected_ratio = (divider_cell + 10.0 - divider.axis_start) / divider.axis_size;
         assert!(
             (new_ratio - expected_ratio).abs() < 0.001,
@@ -10348,15 +10331,18 @@ mod tests {
                 split: resolved,
                 first: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "left".to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(WidgetId::new("left-btn"), "L")),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(WidgetId::new("left-btn"), "L")),
+                    },
                     scroll_px: None,
                 })),
                 second: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "right".to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(
-                        WidgetId::new("right-btn"),
-                        "R",
-                    )),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(WidgetId::new("right-btn"), "R")),
+                    },
                     scroll_px: None,
                 })),
                 spacing: Spacing::default(),
@@ -10556,10 +10542,13 @@ mod tests {
                     id: format!("content-{i}"),
                     content: Box::new(LayoutNode::Leaf(LayoutLeaf {
                         id: format!("content-{i}-btn"),
-                        descriptor: LeafDescriptor::Button(Button::new(
-                            WidgetId::new(format!("content-{i}-btn")),
-                            format!("Tab {i} body"),
-                        )),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(
+                                WidgetId::new(format!("content-{i}-btn")),
+                                format!("Tab {i} body"),
+                            )),
+                        },
                         scroll_px: None,
                     })),
                 })
@@ -10623,7 +10612,7 @@ mod tests {
             let hits = driver.app().engine.hit_map();
             assert!(hits.iter().any(|hit| matches!(
                 hit,
-                crate::hit::PaintedHit::Button { id, .. } if *id == WidgetId::new("content-0-btn")
+                crate::hit::PaintedHit::Widget { id, .. } if *id == WidgetId::new("content-0-btn")
             )));
         }
 
@@ -10671,14 +10660,14 @@ mod tests {
         assert!(
             hits.iter().any(|hit| matches!(
                 hit,
-                crate::hit::PaintedHit::Button { id, .. } if *id == WidgetId::new("content-1-btn")
+                crate::hit::PaintedHit::Widget { id, .. } if *id == WidgetId::new("content-1-btn")
             )),
             "the content pane must follow the clicked tab, not stay on the descriptor's own tab 0"
         );
         assert!(
             !hits.iter().any(|hit| matches!(
                 hit,
-                crate::hit::PaintedHit::Button { id, .. } if *id == WidgetId::new("content-0-btn")
+                crate::hit::PaintedHit::Widget { id, .. } if *id == WidgetId::new("content-0-btn")
             )),
             "tab 0's own content must stop painting once tab 1 is active"
         );
@@ -10764,10 +10753,10 @@ mod tests {
                 sidebar_panel: self.sidebar_panel.clone(),
                 content: Box::new(LayoutNode::Leaf(LayoutLeaf {
                     id: "body".to_string(),
-                    descriptor: LeafDescriptor::Button(Button::new(
-                        WidgetId::new("body-btn"),
-                        "Body",
-                    )),
+                    descriptor: LeafDescriptor::Widget {
+                        kind: "button",
+                        widget: Rc::new(Button::new(WidgetId::new("body-btn"), "Body")),
+                    },
                     scroll_px: None,
                 })),
             });
@@ -10871,7 +10860,6 @@ mod tests {
             draw_bands(
                 backend,
                 RenderRefs {
-                    button: None,
                     text_display: None,
                     list: None,
                     tree: None,
@@ -11095,10 +11083,10 @@ mod tests {
                     let label = i.to_string();
                     LayoutNode::Leaf(LayoutLeaf {
                         id: label.clone(),
-                        descriptor: LeafDescriptor::Button(Button::new(
-                            WidgetId::new(label.clone()),
-                            label,
-                        )),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new(label.clone()), label)),
+                        },
                         scroll_px: None,
                     })
                 })
@@ -11117,10 +11105,10 @@ mod tests {
                     let label = i.to_string();
                     LayoutNode::Leaf(LayoutLeaf {
                         id: label.clone(),
-                        descriptor: LeafDescriptor::Button(Button::new(
-                            WidgetId::new(label.clone()),
-                            label,
-                        )),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new(label.clone()), label)),
+                        },
                         scroll_px: None,
                     })
                 })
@@ -11228,10 +11216,10 @@ mod tests {
             let label = i.to_string();
             LayoutNode::Leaf(LayoutLeaf {
                 id: label.clone(),
-                descriptor: LeafDescriptor::Button(Button::new(
-                    WidgetId::new(label.clone()),
-                    label,
-                )),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "button",
+                    widget: Rc::new(Button::new(WidgetId::new(label.clone()), label)),
+                },
                 scroll_px: None,
             })
         }));
@@ -11341,7 +11329,9 @@ mod tests {
     fn painted_button_ids(hits: &[PaintedHit]) -> Vec<String> {
         hits.iter()
             .filter_map(|hit| match hit {
-                PaintedHit::Button { id, .. } => Some(id.as_str().to_string()),
+                PaintedHit::Widget { id, widget, .. } if widget.as_any().is::<Button>() => {
+                    Some(id.as_str().to_string())
+                }
                 _ => None,
             })
             .collect()
@@ -11403,22 +11393,16 @@ mod tests {
             modifiers: Modifiers::default(),
             position: Point { x: 0.0, y: 0.0 },
         });
-        let clicked =
-            driver
-                .app()
-                .sink
-                .borrow()
-                .dispatched
-                .iter()
-                .find_map(|(event, detail)| match (event, detail) {
-                    (
-                        UiEvent::MouseDown {
-                            widget: Some(id), ..
-                        },
-                        Some(HitDetail::ButtonBody),
-                    ) => Some(id.as_str().to_string()),
-                    _ => None,
-                });
+        let clicked = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .find_map(|(event, _detail)| match event {
+                UiEvent::ButtonActivated { widget } => Some(widget.as_str().to_string()),
+                _ => None,
+            });
         assert_eq!(
             clicked,
             Some("10".to_string()),
@@ -12260,12 +12244,10 @@ mod tests {
         );
         engine.set_drag_roles(roles);
 
-        engine.set_hits(vec![PaintedHit::Button {
+        engine.set_hits(vec![PaintedHit::Widget {
             id: WidgetId::new("btn"),
-            layout: quadraui::ButtonLayout {
-                bounds: Rect::new(0.0, 0.0, 10.0, 1.0),
-                nerd_fonts_enabled: false,
-            },
+            area: Rect::new(0.0, 0.0, 10.0, 1.0),
+            widget: Rc::new(Button::new(WidgetId::new("btn"), "Button")),
         }]);
 
         assert_eq!(

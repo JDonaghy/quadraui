@@ -763,7 +763,22 @@ unsafe fn insert_descriptor(
         }
 
         match slot {
-            QUI_SLOT_BUTTON => decode_into!(Button, button),
+            // `Button` is a `quadraui_binding_core::extra_paint::WIDGET_KINDS`
+            // member, not its own `BindingHost` field, so it decodes into
+            // `host.widgets`'s `"button"` entry instead of `decode_into!`'s
+            // single-named-field shape every other slot below still uses.
+            QUI_SLOT_BUTTON => {
+                match quadraui_binding_core::decode_value::<Button, _>(label, &value) {
+                    Ok(decoded) => {
+                        app.driver
+                            .app_mut()
+                            .host
+                            .widgets
+                            .insert("button".to_string(), std::rc::Rc::new(decoded));
+                    }
+                    Err(err) => return fail_i64(QUI_ERR_INVALID_JSON, format!("{name}: {err}")),
+                }
+            }
             QUI_SLOT_TEXT_DISPLAY => decode_into!(TextDisplay, text_display),
             QUI_SLOT_LIST => decode_into!(ListView, list),
             QUI_SLOT_TREE => decode_into!(TreeView, tree),

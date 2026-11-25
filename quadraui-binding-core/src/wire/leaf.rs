@@ -98,13 +98,6 @@ pub(super) fn layout_leaf_from_value(
             ));
         }
         found = Some(match key {
-            "button" => LeafDescriptor::Button(decode_value_checked(
-                diagnostics,
-                &context,
-                key,
-                value_dict,
-                &[],
-            )?),
             "text_display" => {
                 record_items_window(diagnostics, &id, v);
                 LeafDescriptor::TextDisplay(decode_value_checked(
@@ -184,7 +177,7 @@ pub(super) fn layout_leaf_from_value(
         });
     }
     // Additive primitive kinds share the same leaf dict shape and the same
-    // `found` duplicate-detection as the six fixed kinds above; a new
+    // `found` duplicate-detection as the five fixed kinds above; a new
     // additive primitive only ever adds a line to `extra_paint`'s
     // `extra_primitives!` table, never a new loop here.
     for kind in EXTRA_PRIMITIVE_KINDS {
@@ -354,13 +347,17 @@ mod tests {
         );
     }
 
-    /// A leaf dict naming two descriptor kinds at once is rejected.
+    /// A leaf dict naming two descriptor kinds at once is rejected — even
+    /// across the `LEAF_KIND_KEYS`/`WIDGET_KINDS` loops `"list"`/`"button"`
+    /// fall into respectively, so `"list"` carries a complete, validly
+    /// decoding body here (unlike most other fixtures in this file, which
+    /// only need enough to reach the check they're after).
     #[test]
     fn rejects_a_leaf_with_two_descriptor_kinds() {
         let value = json!({
             "id": "leaf1",
             "button": {"id": "leaf1", "label": "A"},
-            "list": {"id": "leaf1", "items": []},
+            "list": {"id": "leaf1", "items": [], "selected_idx": 0},
         });
         let err = err(decode(&value));
         assert!(
@@ -598,19 +595,19 @@ mod tests {
         );
     }
 
-    /// An unrecognised key inside a `"button"` descriptor body -- a fixed
+    /// An unrecognised key inside a `"tab_bar"` descriptor body -- a fixed
     /// leaf's own dict, decoded through [`decode_value_checked`] rather
     /// than [`check_unknown_keys`]'s sibling-key path -- is a hard
     /// [`DecodeError::UnknownKey`] under `strict`, naming the key, the
-    /// dict it was found on, and the keys `Button` actually accepts.
+    /// dict it was found on, and the keys `TabBar` actually accepts.
     #[test]
-    fn button_leaf_body_rejects_an_unknown_key_under_strict() {
+    fn tab_bar_leaf_body_rejects_an_unknown_key_under_strict() {
         let sets = StyleSets::new();
         let theme = Theme::default();
         let diagnostics = DecodeDiagnostics::strict();
         let value = json!({
             "id": "b1",
-            "button": {"id": "b1", "labl": "Go"},
+            "tab_bar": {"id": "b1", "tabz": []},
         });
         let error = err(decode_layout_node_with_styles(
             "test",
@@ -620,24 +617,24 @@ mod tests {
         ));
         assert_eq!(error.code(), "unknown_key");
         assert!(
-            error.to_string().contains("\"labl\""),
+            error.to_string().contains("\"tabz\""),
             "{}",
             error.to_string()
         );
     }
 
-    /// The same typo'd key [`button_leaf_body_rejects_an_unknown_key_under_strict`]
+    /// The same typo'd key [`tab_bar_leaf_body_rejects_an_unknown_key_under_strict`]
     /// rejects under `strict` only warns once, through the registered hook,
     /// under the default (warn) policy -- the decode still succeeds, since
-    /// the dict also carries the real `"label"` key `Button` requires.
+    /// the dict also carries the real `"tabs"` key `TabBar` requires.
     #[test]
-    fn button_leaf_body_warns_once_under_default_policy() {
+    fn tab_bar_leaf_body_warns_once_under_default_policy() {
         let sets = StyleSets::new();
         let theme = Theme::default();
         let diagnostics = DecodeDiagnostics::warn();
         let value = json!({
             "id": "b1",
-            "button": {"id": "b1", "label": "Go", "labl": "Go"},
+            "tab_bar": {"id": "b1", "tabs": [], "tabz": []},
         });
         decode_layout_node_with_styles(
             "test",
@@ -648,7 +645,7 @@ mod tests {
         .expect("warn mode still decodes despite the unrecognised key");
         assert_eq!(
             diagnostics.warned_keys(),
-            HashSet::from(["labl".to_string()])
+            HashSet::from(["tabz".to_string()])
         );
     }
 

@@ -218,7 +218,6 @@ pub(crate) fn render_frame_from_value(
     diagnostics: &DecodeDiagnostics,
 ) -> Result<RenderFrame, DecodeError> {
     let known_keys: Vec<&str> = [
-        "button",
         "text_display",
         "list",
         "tree",
@@ -247,7 +246,6 @@ pub(crate) fn render_frame_from_value(
     let tree_scroll_px = obj_get(value, "tree").and_then(crate::scroll_px_from_value);
     let data_table_scroll_px = obj_get(value, "data_table").and_then(crate::scroll_px_from_value);
     Ok(RenderFrame {
-        button: slot_entry(diagnostics, what, value, "button", &[])?,
         text_display: slot_entry(
             diagnostics,
             what,
@@ -286,8 +284,10 @@ mod tests {
     use super::*;
 
     /// A render callback's flat (pre-layout-tree) `dict` shape decodes
-    /// into a [`RenderFrame`]: a present slot decodes into its type, a
-    /// missing or `null` slot leaves that frame slot empty.
+    /// into a [`RenderFrame`]: a present fixed slot decodes into its type, a
+    /// missing or `null` fixed slot leaves that frame slot empty, and a
+    /// present `"button"` [`crate::extra_paint::WIDGET_KINDS`] slot lands in
+    /// [`RenderFrame::widgets`].
     #[test]
     fn decodes_a_flat_render_frame() {
         let value = json!({
@@ -298,7 +298,7 @@ mod tests {
         let RenderOutput::Flat(frame) = output else {
             panic!("expected a flat frame");
         };
-        assert!(frame.button.is_some());
+        assert!(frame.widgets.contains_key("button"));
         assert!(frame.list.is_none());
         assert!(frame.text_display.is_none());
     }
@@ -321,7 +321,7 @@ mod tests {
         let RenderOutput::Flat(frame) = output else {
             panic!("expected a flat frame");
         };
-        assert!(frame.button.is_none());
+        assert!(!frame.widgets.contains_key("button"));
         let widget = frame.widgets.get("icon_grid").expect("icon_grid slot set");
         assert_eq!(widget.id().map(|id| id.as_str()), Some("icons:1"));
     }
