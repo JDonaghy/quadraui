@@ -4653,6 +4653,12 @@ impl PaintSurface for EditorSurface<'_> {
 }
 
 impl PaintSurface for MacBackend {
+    /// Remembers the box so a later [`Backend::draw_focus_ring`] this
+    /// frame keeps clear of it — see `overlay_bounds_this_frame`.
+    fn surface_note_overlay(&mut self, rect: Rect) {
+        self.overlay_bounds_this_frame.push(rect);
+    }
+
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
     }

@@ -1339,6 +1339,7 @@ pub(crate) mod native_surface_paint {
             let focus = stack.focus.as_ref().filter(|f| f.toast_id == toast.id);
             let dx = x_offset_for(&vt.id);
             if dx == 0.0 {
+                surface.surface_note_overlay(vt.bounds);
                 paint_toast(surface, theme, style, vt, toast, line_height, focus);
             } else {
                 let shifted = VisibleToast {
@@ -1352,6 +1353,7 @@ pub(crate) mod native_surface_paint {
                         .map(|r| shift_rect(*r, dx, 0.0))
                         .collect(),
                 };
+                surface.surface_note_overlay(shifted.bounds);
                 paint_toast(surface, theme, style, &shifted, toast, line_height, focus);
             }
         }

@@ -4685,6 +4685,12 @@ impl PaintSurface for EditorSurface<'_> {
 // the ambient per-frame layout font. `Self::status_bar_paint_scaled` relies
 // on this: every text verb resolves `self.ui_font` fresh on every call.
 impl PaintSurface for GtkBackend {
+    /// Remembers the box so a later [`Backend::draw_focus_ring`] this
+    /// frame keeps clear of it — see `overlay_bounds_this_frame`.
+    fn surface_note_overlay(&mut self, rect: QRect) {
+        self.overlay_bounds_this_frame.push(rect);
+    }
+
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
     }
@@ -10685,22 +10691,19 @@ mod tests {
         fn paint(backend: &mut GtkBackend, role: Option<FontRole>) -> usize {
             let mut surface =
                 ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
-            let p = popup();
-            let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-            let measure = RichTextPopupMeasure::new(80.0, 80.0);
-            let layout = p.layout(2.0, 2.0, viewport, measure, |_, s, e| (e - s) as f32);
             // The descriptor carries the font role the popup measures
             // and paints its body in.
             let p = RichTextPopup {
                 font_role: role.unwrap_or_default(),
-                ..p
+                ..popup()
             };
+            let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
             {
                 let cr = Context::new(&surface).expect("Context::new");
                 let pango_ctx = pangocairo::functions::create_context(&cr);
                 let pango_layout = pango::Layout::new(&pango_ctx);
                 backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                    b.draw_dyn(layout.bounds, &p, &());
+                    b.draw_dyn(viewport, &p, &());
                 });
             }
             ink_pixel_count(&mut surface)
@@ -10710,8 +10713,8 @@ mod tests {
         backend.set_ui_font("Sans 48");
         backend.set_editor_font("Monospace", 6.0);
 
-        // `None` = plain `draw_rich_text_popup` (today's call site, no
-        // role argument at all) — must still paint the chrome font.
+        // `None` = a descriptor with the default role — must paint in
+        // the chrome font.
         let chrome_ink = paint(&mut backend, None);
         let editor_ink = paint(&mut backend, Some(FontRole::Editor));
 
@@ -10722,8 +10725,8 @@ mod tests {
         assert!(
             chrome_ink > editor_ink * 3,
             "a 48pt chrome font must paint far more ink than a 6pt editor font for the \
-             same glyph if plain draw_rich_text_popup (no role argument) really selects \
-             the chrome font: chrome={chrome_ink}, editor={editor_ink}"
+             same glyph if the descriptor's default role really selects the chrome \
+             font: chrome={chrome_ink}, editor={editor_ink}"
         );
     }
 

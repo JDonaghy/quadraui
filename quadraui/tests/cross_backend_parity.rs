@@ -16,6 +16,7 @@ use quadraui::gtk::testing::{driver_with_shell as gtk_driver_with_shell, GtkDriv
 use quadraui::testing::{ConformanceDriver, FrameInventory, LogicalViewport};
 use quadraui::tui::ratatui_color;
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableLayout,
     NamedKey, Reaction, Rect, StyledText, Theme, Tooltip, TooltipBorder, TooltipChrome,
@@ -1098,11 +1099,8 @@ impl AppLogic for TooltipBorderFixture {
         let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
         let anchor = Rect::new(0.0, 0.0, vp.width, lh);
 
-        // `border`/`title` travel in a `TooltipChrome` sidecar
-        // passed alongside the tooltip and its layout — not as fields on
-        // either. See `primitives::tooltip`'s module doc for why: it keeps
-        // every exhaustive `Tooltip { .. }` *and* `TooltipLayout { .. }`
-        // literal (in-tree and downstream) compiling untouched.
+        // `border`/`title` travel on the descriptor, in its
+        // `TooltipChrome` field — one value is the whole paint input.
         let mut tooltip = Tooltip::new(
             WidgetId::new(BORDER_TOOLTIP_ID),
             BORDER_TOOLTIP_TEXT.to_string(),
@@ -1115,10 +1113,10 @@ impl AppLogic for TooltipBorderFixture {
             cw * (BORDER_TOOLTIP_TEXT.chars().count() as f32 + 4.0),
             lh * self.rows,
         );
+        tooltip.chrome = TooltipChrome::new(self.border);
+        tooltip.chrome.title = self.title.clone();
         let layout = tooltip.layout(anchor, viewport, measure, lh);
-        let mut chrome = TooltipChrome::new(self.border);
-        chrome.title = self.title.clone();
-        backend.draw_tooltip_with_chrome(&tooltip, &layout, &chrome);
+        backend.draw_dyn(layout.bounds, &tooltip, &());
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

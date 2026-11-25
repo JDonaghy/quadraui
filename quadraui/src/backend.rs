@@ -3943,7 +3943,9 @@ pub trait DrawsPrimitives: Backend {
         let theme = self.theme();
         if let Some(surface) = self.paint_surface() {
             surface.surface_push_clip(rect);
-            primitive.paint(&layout, surface, &theme, &style);
+            paint_in_role(surface, primitive.font_role(), &mut |s| {
+                primitive.paint(&layout, s, &theme, &style)
+            });
             surface.surface_pop_clip();
         }
         #[cfg(feature = "tui")]
@@ -4037,7 +4039,9 @@ pub trait DrawsPrimitives: Backend {
         };
         if let Some(surface) = self.paint_surface() {
             surface.surface_push_clip(rect);
-            w.paint(layout.as_ref(), PaintTarget::Surface(surface), &env, state);
+            paint_in_role(surface, w.font_role(), &mut |s| {
+                w.paint(layout.as_ref(), PaintTarget::Surface(s), &env, state)
+            });
             surface.surface_pop_clip();
         }
         #[cfg(feature = "tui")]
@@ -4077,6 +4081,25 @@ pub trait DrawsPrimitives: Backend {
         }
         layout
     }
+}
+
+/// Run `paint` against `surface`, in the editor font when `role` asks for
+/// it and the surface has an editor-font twin
+/// ([`crate::paint_surface::PaintSurface::surface_with_editor_font`]) —
+/// the one place the
+/// widget contract honours [`Primitive::font_role`], so a backend never
+/// needs a per-widget "…_with_font_role" entry point. A surface with no
+/// editor twin (and every [`crate::FontRole::Chrome`]/
+/// [`crate::FontRole::Icon`] widget) paints straight through.
+fn paint_in_role(
+    surface: &mut dyn crate::paint_surface::PaintSurface,
+    role: crate::FontRole,
+    paint: &mut dyn FnMut(&mut dyn crate::paint_surface::PaintSurface),
+) {
+    if role == crate::FontRole::Editor && surface.surface_with_editor_font(paint) {
+        return;
+    }
+    paint(surface);
 }
 
 /// Shared `ctx` resolution for [`DrawsPrimitives::draw_primitive`] and

@@ -846,6 +846,7 @@ pub(crate) mod native_surface_paint {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return;
         }
+        surface.surface_note_overlay(bounds);
 
         let bg = tooltip.bg.unwrap_or(theme.hover_bg);
         let fg = tooltip.fg.unwrap_or(theme.hover_fg);
