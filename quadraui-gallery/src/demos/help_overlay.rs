@@ -19,10 +19,10 @@
 //! [`HelpOverlayController`] itself.
 
 use quadraui::compose::Handled;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, Color, HelpAction, HelpNote, HelpOverlayController, HelpRegistry,
-    InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent, ViewHelp,
-    WidgetId,
+    Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent, ViewHelp, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -170,10 +170,10 @@ impl Demo for HelpOverlayDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let bar_rect = Rect::new(area.x, area.y, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
+        let _ = backend.draw_dyn(
             bar_rect,
             &Self::status_bar(variant, self.overlay.is_open()),
-            &InteractionState::new(),
+            &(),
         );
 
         self.overlay

@@ -6,7 +6,7 @@
 //! check --features win` still type-checks `WinBackend`'s trait
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
 //! `win` feature comment). Chrome-strip rasterisers include
-//! `status_bar`/`activity_bar`/`menu_bar`; content-area
+//! `menu_bar`; content-area
 //! rasterisers include `tree`/`list`/`form`/`data_table`/`editor`/`chart`;
 //! overlay/popup rasterisers include `tooltip`/`context_menu`/`dialog`/
 //! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
@@ -27,10 +27,6 @@
 //! this page (`WinBackend`, `run`, …) are the stable, consumer-depended-on
 //! subset; everything else is `#[doc(hidden)]`.
 
-/// Direct2D / DirectWrite rasteriser for [`crate::ActivityBar`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod activity_bar;
 pub mod backend;
 /// Direct2D / DirectWrite rasteriser for
 /// [`crate::primitives::board::BoardModel`]. Windows-only in full —
@@ -179,10 +175,6 @@ mod split;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod split_tree;
-/// Direct2D / DirectWrite rasteriser for [`crate::StatusBar`]. Issue
-/// Only its deprecated paint shim is Windows-only — see its
-/// module docs.
-mod status_bar;
 /// Shared `PaintSurface` adapter over a bare `&ID2D1RenderTarget`.
 /// Windows-only — same gating as the per-primitive
 /// rasteriser modules above that consume it.
@@ -210,7 +202,7 @@ pub mod testing;
 /// line-by-line like `backend.rs`.
 ///
 /// `pub` rather than `pub(crate)`: the chrome rasterisers re-exported
-/// below (`draw_status_bar`, …) take a `&DWrite` measurer in
+/// below take a `&DWrite` measurer in
 /// their signatures, exactly as [`crate::macos`]'s take a `&CTFont` from its
 /// own `pub mod text`. A `pub` function whose parameter type is `pub(crate)`
 /// is a `private_interfaces` warning — and this repo's CI runs with
@@ -263,9 +255,6 @@ mod tree;
 // zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use activity_bar::{draw_activity_bar, win_activity_bar_layout, ACTIVITY_ROW_DIP};
 pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
@@ -347,8 +336,6 @@ pub use split::win_split_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use split_tree::win_split_tree_layout;
-#[doc(hidden)]
-pub use status_bar::{win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use text_display::win_text_display_layout;

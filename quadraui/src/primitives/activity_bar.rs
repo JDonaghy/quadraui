@@ -15,18 +15,15 @@
 //!
 //! # Backend contract
 //!
-//! **Declarative + per-frame interaction state passed alongside.** Render
-//! the `top_items` from the top of the strip, then the `bottom_items`
-//! pinned to the bottom. Click on item → emit
+//! **Declarative.** Render the `top_items` from the top of the strip,
+//! then the `bottom_items` pinned to the bottom. Click on item → emit
 //! `ActivityBarEvent::ItemClicked { id }`.
 //!
-//! Hover state (which item the mouse is currently over for tooltip
-//! affordance) is **per-frame, backend-owned** — the primitive does NOT
-//! carry it. Backends pass `hovered_idx: Option<usize>` to their own
-//! `draw_activity_bar` function. Same pattern as `TabBar`'s
-//! `hovered_close_tab`. Rule: **state that's only knowable by the
-//! backend (cursor position, focus-within, scroll momentum) lives
-//! beside the primitive, not inside it.**
+//! The bar paints through the widget contract
+//! ([`crate::backend::DrawsPrimitives::draw_dyn`]). The hovered row and
+//! the paint-time [`ActivityBarStyle`] ride on the descriptor itself
+//! ([`ActivityBar::hovered`], [`ActivityBar::style`]), so every painter
+//! reads them from the one value it is handed.
 
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;
@@ -59,6 +56,8 @@ use serde::{Deserialize, Serialize};
 ///     active_accent: None,
 ///     selection_bg: None,
 ///     is_keyboard_focused: false,
+///     style: Default::default(),
+///     hovered: None,
 /// };
 ///
 /// let layout = bar.layout(2.0, 10.0, 1.0);
@@ -67,7 +66,7 @@ use serde::{Deserialize, Serialize};
 ///     ActivityBarHit::Item(WidgetId::new("activity:explorer"))
 /// );
 /// ```
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivityBar {
     pub id: WidgetId,
     /// Top items rendered starting at the top edge, one row per item.
@@ -104,6 +103,16 @@ pub struct ActivityBar {
     /// engine calls (`activity_bar_move_up`, `focus_out`, etc.).
     #[serde(default)]
     pub is_keyboard_focused: bool,
+    /// Paint-time style request: the active row's fill colour and the
+    /// icon glyph size. [`ActivityBarStyle::default`] paints no fill and
+    /// the default icon size.
+    #[serde(default)]
+    pub style: ActivityBarStyle,
+    /// The [`ActivityBarLayout::visible_items`] row the pointer is over,
+    /// tinted by every painter. A host fills it from its own hover
+    /// tracking (for example [`ActivityBarState::hovered_idx`]).
+    #[serde(default)]
+    pub hovered: Option<usize>,
 }
 
 /// One icon entry in an `ActivityBar`.
@@ -298,7 +307,7 @@ impl ActivityBar {
     /// [`ToolbarOrientation::Vertical`] and
     /// [`ToolbarLayoutOptions::with_pin_trailing_overflow_to_origin`] set,
     /// at origin `(0.0, 0.0)` — into the row-hit list a
-    /// `draw_activity_bar`-shaped painter returns today.
+    /// rail painter returns.
     ///
     /// Order and coordinate space match
     /// [`native_surface_paint::paint`]'s own return value exactly:
@@ -346,24 +355,12 @@ impl ActivityBar {
     }
 }
 
-/// Per-frame style overrides for
-/// [`crate::Backend::draw_activity_bar_with_style`] — currently just
-/// the active-item row-fill colour, VS Code style (no line, a soft chip on
-/// the row itself).
+/// Paint-time style for an [`ActivityBar`], carried on the descriptor as
+/// [`ActivityBar::style`]: the active-item row-fill colour, VS Code style
+/// (no line, a soft chip on the row itself), and the icon glyph size.
 ///
-/// This is a **sidecar** passed alongside an [`ActivityBar`] rather than a
-/// field on it. `ActivityBar` is a plain, non-`#[non_exhaustive]`,
-/// all-`pub`-field struct constructed via *exhaustive* literals both
-/// in-tree and downstream, so adding a required field to it would break
-/// every exhaustive literal call site. Threading the row-fill colour
-/// through this separate value sidesteps the break entirely — mirrors
-/// [`crate::TooltipChrome`] and [`crate::TabChrome`], which solve the
-/// identical problem for `Tooltip` and `TabBar`.
-///
-/// [`crate::Backend::draw_activity_bar`] keeps its exact signature and
-/// behaviour (delegates to the new method with
-/// `ActivityBarStyle::default()`, i.e. no fill), so existing `Backend`
-/// implementors and callers are untouched.
+/// [`ActivityBarStyle::default`] paints no fill and the default icon
+/// size.
 ///
 /// `#[non_exhaustive]`: means a future style knob (e.g. a corner radius
 /// for the fill) is additive rather than breaking. Construct with
@@ -390,15 +387,9 @@ pub struct ActivityBarStyle {
     /// of whatever size the app's editor or chrome font happens to be set
     /// to.
     ///
-    /// Before this field existed, macOS painted the icon glyph at
-    /// whatever font the backend's `draw_activity_bar` passed in — first
-    /// the *editor* font, then the *chrome* font — so icon
-    /// size tracked a font size never meant to govern it; GTK independently
-    /// hardcoded a fixed 18pt (≈24px @ 96dpi) size for the same reason.
-    /// This field generalises GTK's already-correct fixed size into a
-    /// configurable, cross-backend knob every pixel backend now honours,
-    /// rather than leaving a third independently-tuned constant on
-    /// Win-GUI.
+    /// Every pixel backend paints the icon at this size rather than at
+    /// the editor or chrome font's size, which was never meant to govern
+    /// it.
     #[serde(default)]
     pub icon_size_px: Option<f32>,
 }
@@ -509,7 +500,7 @@ pub enum ActivityBarHit {
 /// # Coordinate space — **relative to the bar**
 ///
 /// `y_start` / `y_end` are measured from the **top edge of the `rect`
-/// passed to [`Backend::draw_activity_bar`]**, i.e. the first row always
+/// the bar was laid out in**, i.e. the first row always
 /// starts at `0.0` regardless of where the bar sits on screen. They are
 /// **not** target-surface (absolute) coordinates — this is the opposite
 /// convention from [`TabBarHits`], whose `x` spans *are* absolute.
@@ -522,8 +513,7 @@ pub enum ActivityBarHit {
 /// ```
 ///
 /// Coordinates here are bar-relative offsets, not absolute paint `y`
-/// values. Each backend's `activity_bar` module doc spells out its
-/// conversion. Callers add the bar origin before hit-testing.
+/// values. Callers add the bar origin before hit-testing.
 #[derive(Debug, Clone)]
 pub struct ActivityBarRowHit {
     /// Top edge of the row, **relative to the bar's `rect.y`** (first
@@ -713,11 +703,8 @@ pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
     }
 }
 
-// ── PaintSurface Phase 4 slice 5/8 ─────────────────────────────────────────
-//
 // `paint` below delegates to `crate::primitives::toolbar::native_surface_paint::paint_rail`,
-// the one shared rail painter every pixel backend (`gtk::activity_bar`,
-// `macos::activity_bar`, `win::activity_bar`) calls through — see that
+// the one shared rail painter every pixel backend paints through — see that
 // function's own doc for the fill order and per-row foreground rule. This
 // module's job is purely the seam: build the `Toolbar` + `ToolbarRailStyle`
 // pair via [`ActivityBar::to_toolbar_parts`], lay it out with the same
@@ -837,6 +824,33 @@ pub struct ActivityBarPrimitiveLayout {
     /// [`ActivityItem`]'s [`crate::Icon`] resolves a different glyph with
     /// and without one.
     pub nerd_fonts: bool,
+    /// The descriptor's [`ActivityBar::is_keyboard_focused`], kept on the
+    /// painted layout so a backend reads which rail holds keyboard focus
+    /// from this frame's painted-widget record
+    /// ([`painted_keyboard_focused_bar`]).
+    pub keyboard_focused: bool,
+}
+
+/// The id of the [`ActivityBar`] painted this frame with
+/// [`ActivityBar::is_keyboard_focused`] set, if any, read from the
+/// painted-widget record [`crate::backend::DrawsPrimitives::draw_dyn`]
+/// fills. A backend redirects key presses to that bar as
+/// [`ActivityBarEvent::KeyPressed`].
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    all(feature = "macos", target_os = "macos"),
+    feature = "win"
+))]
+pub(crate) fn painted_keyboard_focused_bar() -> Option<WidgetId> {
+    crate::primitive::with_painted_widgets(|painted| {
+        painted.iter().find_map(|w| {
+            w.layout
+                .downcast_ref::<ActivityBarPrimitiveLayout>()
+                .filter(|layout| layout.keyboard_focused)
+                .map(|_| w.id)
+        })
+    })
 }
 
 impl ActivityBarPrimitiveLayout {
@@ -856,6 +870,29 @@ impl ActivityBarPrimitiveLayout {
                 && y >= vi.bounds.y
                 && y < vi.bounds.y + vi.bounds.height
         })
+    }
+
+    /// One bar-relative [`ActivityBarRowHit`] per visible row, in
+    /// [`ActivityBarLayout::visible_items`] order (bottom-pinned items
+    /// first, then top-pinned), carrying each item's id and tooltip.
+    /// `bar` is the descriptor this layout was resolved for.
+    pub fn row_hits(&self, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
+        self.layout
+            .visible_items
+            .iter()
+            .filter_map(|vi| {
+                let item = match vi.side {
+                    ActivitySide::Top => bar.top_items.get(vi.item_idx)?,
+                    ActivitySide::Bottom => bar.bottom_items.get(vi.item_idx)?,
+                };
+                Some(ActivityBarRowHit {
+                    y_start: vi.bounds.y,
+                    y_end: vi.bounds.y + vi.bounds.height,
+                    id: item.id,
+                    tooltip: item.tooltip.clone(),
+                })
+            })
+            .collect()
     }
 }
 
@@ -1051,21 +1088,13 @@ impl crate::primitive::Primitive for ActivityBar {
             area: rect,
             layout,
             nerd_fonts: ctx.nerd_fonts_enabled,
+            keyboard_focused: self.is_keyboard_focused,
         }
     }
 
-    /// The shared rail painter, through
-    /// [`native_surface_paint::paint`] — the same one every pixel
-    /// backend's own `draw_activity_bar` calls.
-    ///
-    /// Paints with [`ActivityBarStyle::default`] (no active-row fill) and
-    /// no hover: the per-frame style request and the hovered row both
-    /// live beside the descriptor, and the type-erased
-    /// [`crate::primitive::DynWidget::paint`] seam does not yet hand a
-    /// widget's own [`crate::primitive::PaintState`] to
-    /// [`Primitive::paint`](crate::primitive::Primitive::paint). A caller
-    /// that needs either reaches `native_surface_paint::paint` with its
-    /// own `style`/`hovered_idx`.
+    /// The shared rail painter, through [`native_surface_paint::paint`],
+    /// with the descriptor's own [`ActivityBar::style`] and
+    /// [`ActivityBar::hovered`] row.
     fn paint(
         &self,
         layout: &ActivityBarPrimitiveLayout,
@@ -1083,10 +1112,10 @@ impl crate::primitive::Primitive for ActivityBar {
             native_surface_paint::paint(
                 self,
                 &layout.layout,
-                &ActivityBarStyle::default(),
+                &self.style,
                 surface,
                 theme,
-                None,
+                self.hovered,
                 layout.nerd_fonts,
             );
         }
@@ -1100,13 +1129,7 @@ impl crate::primitive::Primitive for ActivityBar {
         }
     }
 
-    /// The TUI rail painter, reached through
-    /// [`crate::tui::draw_activity_bar_with_style`] — the delegate that
-    /// adapts the ratatui `Buffer` for
-    /// [`crate::tui::draw_toolbar_with_rail_style`], the one cell-grid
-    /// rail rasteriser this bar shares with [`Toolbar`]. Same
-    /// default-style, no-hover caveat as
-    /// [`Primitive::paint`](crate::primitive::Primitive::paint).
+    /// The cell-grid rail painter, [`cell_paint::paint`].
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1120,15 +1143,69 @@ impl crate::primitive::Primitive for ActivityBar {
             layout.area.width.max(0.0).round() as u16,
             layout.area.height.max(0.0).round() as u16,
         );
-        let _ = crate::tui::draw_activity_bar_with_style(
+        let _ = cell_paint::paint(buf, area, self, theme, layout.nerd_fonts);
+    }
+}
+
+/// The cell-grid rail painter. An activity bar paints as a vertical-rail
+/// [`Toolbar`] ([`ActivityBar::to_toolbar_parts`]) through Toolbar's own
+/// rail rasteriser, so the two rails share one cell painter; the same
+/// layout then becomes this bar's [`ActivityBarRowHit`] list through
+/// [`ActivityBar::row_hits_from_toolbar_layout`].
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{ActivityBar, ActivityBarRowHit};
+    use crate::primitives::toolbar::cell_layout::{
+        rail_layout_options, tui_toolbar_layout_with_options,
+    };
+    use crate::primitives::toolbar::cell_paint::draw_toolbar_with_rail_style;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    /// Paint `bar` into `area` on `buf` with its own
+    /// [`ActivityBar::style`] and [`ActivityBar::hovered`] row, returning
+    /// the bar-relative row hits (bottom-pinned items first, then
+    /// top-pinned, the order [`ActivityBar::hovered`] indexes).
+    ///
+    /// `nerd_fonts_enabled` picks which half of each item's
+    /// [`crate::Icon`] paints: `glyph` when `true`, `fallback` when
+    /// `false`.
+    pub(crate) fn paint(
+        buf: &mut Buffer,
+        area: Rect,
+        bar: &ActivityBar,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) -> Vec<ActivityBarRowHit> {
+        if area.width == 0 || area.height == 0 {
+            return Vec::new();
+        }
+
+        let (toolbar, rail_style) = bar.to_toolbar_parts(&bar.style, theme, nerd_fonts_enabled);
+
+        // Row hits are built at origin (0, 0), the precondition of
+        // `row_hits_from_toolbar_layout`, which also makes them the
+        // lookup table `bar.hovered` indexes into.
+        let zero_origin_layout = tui_toolbar_layout_with_options(
+            &toolbar,
+            Rect::new(0, 0, area.width, area.height),
+            rail_layout_options(),
+        );
+        let row_hits = bar.row_hits_from_toolbar_layout(&zero_origin_layout);
+
+        let hovered_id = bar.hovered.and_then(|i| row_hits.get(i)).map(|h| h.id);
+
+        let _ = draw_toolbar_with_rail_style(
             buf,
             area,
-            self,
-            &ActivityBarStyle::default(),
+            &toolbar,
+            &rail_style,
             theme,
-            None,
-            layout.nerd_fonts,
+            hovered_id.as_ref(),
         );
+
+        row_hits
     }
 }
 
@@ -1321,6 +1398,8 @@ mod tests {
             active_accent: Some(Color::rgb(120, 180, 255)),
             selection_bg: Some(Color::rgb(80, 80, 80)),
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let json = serde_json::to_string(&bar).unwrap();
         let back: ActivityBar = serde_json::from_str(&json).unwrap();
@@ -1405,6 +1484,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let layout = bar.layout(3.0, 20.0, 1.0);
         assert_eq!(layout.visible_items.len(), 0);
@@ -1428,6 +1509,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: true,
+            style: Default::default(),
+            hovered: None,
         };
 
         let toolbar: Toolbar = (&bar).into();
@@ -1467,6 +1550,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let toolbar: Toolbar = (&bar).into();
         assert_eq!(toolbar.focused_index, None);
@@ -1493,6 +1578,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new().with_active_bg(Color::rgb(1, 2, 3));
         let theme = Theme::default();
@@ -1509,6 +1596,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1525,6 +1614,8 @@ mod tests {
             active_accent: Some(Color::rgb(4, 5, 6)),
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1541,6 +1632,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1557,6 +1650,8 @@ mod tests {
             active_accent: None,
             selection_bg: Some(Color::rgb(7, 8, 9)),
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1573,6 +1668,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1589,6 +1686,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1606,6 +1705,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1627,6 +1728,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1705,6 +1808,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let layout = bar.layout(3.0, 10.0, 1.0);
         assert_eq!(
@@ -1730,6 +1835,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let layout = bar.layout(3.0, 2.0, 1.0);
         let expected = expected_row_hits(&bar, &layout);
@@ -1756,6 +1863,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let layout = bar.layout(3.0, 6.0, 1.0);
 
@@ -1825,6 +1934,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let layout = bar.layout(3.0, 2.0, 1.0);
 
@@ -1861,6 +1972,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let layout = bar.layout(3.0, 10.0, 1.0);
         assert_eq!(layout.visible_items.len(), 2);
@@ -1882,6 +1995,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         // Viewport 10, items 1 each. Top at y=0, bottom at y=9.
         let layout = bar.layout(3.0, 10.0, 1.0);
@@ -1924,6 +2039,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let layout = bar.layout(3.0, 6.0, 1.0);
         let top_count = layout
@@ -1962,6 +2079,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let layout = bar.layout(48.0, 100.0, 48.0);
 
@@ -2001,6 +2120,8 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let layout = bar.layout(48.0, 200.0, 48.0);
         // Top items at y = 0, 48, 96. Settings at y = 200 - 48 = 152.
@@ -2116,6 +2237,8 @@ mod native_surface_paint_tests {
             active_accent: Some(accent),
             selection_bg: Some(selection_bg),
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
         let style = ActivityBarStyle::new().with_active_bg(active_bg);
         let theme = Theme::default();
@@ -2175,16 +2298,14 @@ mod native_surface_paint_tests {
 }
 
 /// The cell-grid rail's paint/hit-region coverage, driven through
-/// [`crate::tui::draw_activity_bar`] /
-/// [`crate::tui::draw_activity_bar_with_style`] — the delegates that
-/// adapt a ratatui `Buffer` for the shared
-/// [`crate::tui::draw_toolbar_with_rail_style`] painter this bar reaches
-/// from [`crate::primitive::Primitive::paint_cells`].
+/// [`cell_paint::paint`], the painter
+/// [`crate::primitive::Primitive::paint_cells`] reaches.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
+    use super::cell_paint::paint as draw_activity_bar;
     use super::{ActivityBar, ActivityBarStyle, ActivityItem};
     use crate::theme::Theme;
-    use crate::tui::{draw_activity_bar, draw_activity_bar_with_style, ratatui_color};
+    use crate::tui::ratatui_color;
     use crate::types::{Color, Icon, WidgetId};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -2207,6 +2328,8 @@ mod cell_paint_tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         }
     }
 
@@ -2223,7 +2346,7 @@ mod cell_paint_tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 3, 10);
-        let hits = draw_activity_bar(&mut buf, area, &b, &theme, None, false);
+        let hits = draw_activity_bar(&mut buf, area, &b, &theme, false);
 
         let span = |id: &str| {
             let h = hits
@@ -2260,7 +2383,7 @@ mod cell_paint_tests {
 
         let spans = |y: u16| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 30));
-            let hits = draw_activity_bar(&mut buf, Rect::new(0, y, 3, 10), &b, &theme, None, false);
+            let hits = draw_activity_bar(&mut buf, Rect::new(0, y, 3, 10), &b, &theme, false);
             hits.iter()
                 .map(|h| (h.y_start, h.y_end))
                 .collect::<Vec<_>>()
@@ -2285,7 +2408,7 @@ mod cell_paint_tests {
         let theme = Theme::default();
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 4, 10);
-        draw_activity_bar(&mut buf, area, &b, &theme, None, false);
+        draw_activity_bar(&mut buf, area, &b, &theme, false);
 
         let row_text = |y: u16| {
             (area.x..area.x + area.width)
@@ -2316,7 +2439,7 @@ mod cell_paint_tests {
         let row_text = |nerd_fonts_enabled: bool| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
             let area = Rect::new(0, 0, 4, 10);
-            draw_activity_bar(&mut buf, area, &b, &theme, None, nerd_fonts_enabled);
+            draw_activity_bar(&mut buf, area, &b, &theme, nerd_fonts_enabled);
             (area.x..area.x + area.width)
                 .map(|x| buf[(x, area.y)].symbol().to_string())
                 .collect::<String>()
@@ -2346,7 +2469,8 @@ mod cell_paint_tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 0, 3, 10);
-        draw_activity_bar_with_style(&mut buf, area, &b, &style, &theme, None, false);
+        b.style = style;
+        draw_activity_bar(&mut buf, area, &b, &theme, false);
 
         let fill = ratatui_color(fill_color);
         assert_ne!(
@@ -2380,15 +2504,8 @@ mod cell_paint_tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 0, 3, 10);
-        draw_activity_bar_with_style(
-            &mut buf,
-            area,
-            &b,
-            &ActivityBarStyle::default(),
-            &theme,
-            None,
-            false,
-        );
+        b.style = ActivityBarStyle::default();
+        draw_activity_bar(&mut buf, area, &b, &theme, false);
 
         assert_eq!(
             buf[(area.x, area.y)].symbol(),
@@ -2463,6 +2580,8 @@ mod widget_contract_tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         }
     }
 

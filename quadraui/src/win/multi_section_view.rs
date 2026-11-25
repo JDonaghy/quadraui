@@ -32,7 +32,7 @@
 //! `--features win` compile gate stays meaningful without a Windows
 //! host. Colours come from `Theme::default()` rather than a live
 //! `WinBackend` theme field, same as every other rasteriser in this
-//! module (see `win::status_bar`'s doc for why).
+//! module.
 //!
 //! # Scope omissions (follow-up, matches `crate::macos::multi_section_view`)
 //!

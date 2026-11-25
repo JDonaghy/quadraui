@@ -26,8 +26,8 @@
 //! click first.
 
 use quadraui::{
-    AppLogic, Backend, Color, DrawsPrimitives, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, TabBar, TabBarHit, TabIcon, TabItem, UiEvent, WidgetId,
+    AppLogic, Backend, Color, DrawsPrimitives, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, TabBar, TabBarHit, TabIcon, TabItem, UiEvent, WidgetId,
 };
 
 /// Tab labels, paired index-for-index with [`TabIconsDemo::icons`].
@@ -152,10 +152,10 @@ impl AppLogic for TabIconsDemo {
         let lh = backend.line_height();
         // The bar carries its icons, or none while they're toggled off.
         backend.draw_dyn(Rect::new(0.0, 0.0, viewport.width, lh), &self.bar(), &());
-        backend.draw_status_bar_interactive(
+        backend.draw_dyn(
             Rect::new(0.0, viewport.height - lh, viewport.width, lh),
             &self.hint_bar(),
-            &InteractionState::new(),
+            &(),
         );
     }
 

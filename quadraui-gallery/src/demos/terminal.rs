@@ -17,8 +17,8 @@ use std::cell::RefCell;
 
 use quadraui::terminal_engine::{default_shell, TerminalSession};
 use quadraui::{
-    Backend, Color, DrawsPrimitives, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, UiEvent, WidgetId,
+    Backend, Color, DrawsPrimitives, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -226,7 +226,7 @@ impl Demo for TerminalDemo {
             right_segments: vec![],
         };
         let footer_rect = Rect::new(area.x, area.y + term_area.height, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(footer_rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(footer_rect, &bar, &());
     }
 
     fn handle(

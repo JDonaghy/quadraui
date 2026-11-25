@@ -3,17 +3,17 @@
 //! instead of the left-edge accent line `ActivityNavApp` (`tui_activity_nav`
 //! / `gtk_activity_nav`) demonstrates.
 //!
-//! The fill is requested through [`Backend::draw_activity_bar_with_style`] —
-//! never a field on [`ActivityBar`] itself, which avoids storing presentation
-//! state in the model (see [`quadraui::ActivityBarStyle`]'s doc for details).
+//! The fill is requested through the bar's own [`ActivityBar::style`], and
+//! the bar paints through the widget contract.
 //! `active_accent` stays `None` throughout, so the row fill is the only
 //! active-item indicator.
 //!
 //! Click an icon (or press **1**/**2**/**3**) to activate it, **q** to quit.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    ActivityBar, ActivityBarStyle, ActivityItem, AppLogic, Backend, Color, InteractionState, Key,
-    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    ActivityBar, ActivityBarStyle, ActivityItem, AppLogic, Backend, Color, Key, Reaction, Rect,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Item labels, index-stable across activation (only `is_active` moves).
@@ -58,6 +58,8 @@ impl ActivityStyleDemo {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: self.style(),
+            hovered: None,
         }
     }
 
@@ -111,11 +113,11 @@ impl AppLogic for ActivityStyleDemo {
         let vp = backend.viewport();
         let lh = backend.line_height();
         let bar_rect = self.bar_rect(backend);
-        let _ = backend.draw_activity_bar_with_style(bar_rect, &self.bar(), None, &self.style());
-        let _ = backend.draw_status_bar_interactive(
+        let _ = backend.draw_dyn(bar_rect, &self.bar(), &());
+        let _ = backend.draw_dyn(
             Rect::new(0.0, vp.height - lh, vp.width, lh),
             &self.hint_bar(),
-            &InteractionState::new(),
+            &(),
         );
     }
 
@@ -141,10 +143,8 @@ impl AppLogic for ActivityStyleDemo {
                 {
                     return Reaction::Continue;
                 }
-                // No replacement seam exists for a no-paint geometry query —
-                // see `Backend::activity_bar_layout`'s deprecation note.
-                #[allow(deprecated)]
-                let hits = backend.activity_bar_layout(bar_rect, &self.bar());
+                let bar = self.bar();
+                let hits = backend.layout_primitive(bar_rect, &bar).row_hits(&bar);
                 let rel_y = position.y - bar_rect.y;
                 for hit in &hits {
                     if rel_y >= hit.y_start && rel_y < hit.y_end {

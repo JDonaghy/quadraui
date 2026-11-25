@@ -50,7 +50,6 @@ use crate::primitive::{
     DynWidget, LayoutCtx, PaintEnv, PaintServices, PaintState, PaintTarget, Primitive,
     PrimitiveLayout,
 };
-use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
@@ -84,7 +83,6 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
-use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_field::{TextField, TextFieldLayout, TextFieldMeasure};
@@ -99,8 +97,8 @@ use crate::primitives::tree_table::TreeTableLayout;
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
-    PaletteLayout, StatusBar, TabBar, TextDisplay, TreeTable, TreeView,
+    Accelerator, AcceleratorId, Form, GlobalShortcutId, ListView, Palette, PaletteLayout, TabBar,
+    TextDisplay, TreeTable, TreeView,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2881,200 +2879,6 @@ pub trait Backend: sealed::Sealed {
     // Methods that produce hit-region data (clickable segments,
     // close-button rects, link rects) return it directly so callers
     // route clicks against the same data the rasteriser paints with.
-    /// Draw a status bar, reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`].
-    ///
-    /// The rasteriser tints the background of the clickable segment
-    /// whose `action_id` matches `interaction.hovered()` /
-    /// `interaction.pressed()` — the primitive itself carries no mouse
-    /// state. Returns hit regions in **bar-local coordinates**
-    /// (relative to `rect.x` / `rect.y`) for each segment carrying an
-    /// `action_id`. Caller dispatches clicks against the returned list.
-    ///
-    /// This is the implemented method; the positional
-    /// [`Self::draw_status_bar`] is a deprecated shim over it.
-    fn draw_status_bar_interactive(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &InteractionState,
-    ) -> StatusBarLayout;
-
-    /// Like [`Self::draw_status_bar_interactive`], but scales the chrome
-    /// font this one call paints with, without touching the ambient
-    /// [`Self::set_ui_font`] state every *other* status bar (or any other
-    /// [`crate::font_role::ChromePrimitive::StatusBar`] paint) draws in
-    /// this frame.
-    ///
-    /// `font_scale` multiplies the backend's current UI font's point
-    /// size for this call only — `1.0` behaves identically to
-    /// [`Self::draw_status_bar_interactive`]; `0.85` paints ~15% smaller,
-    /// e.g. a breadcrumb strip that wants to sit visually subordinate to
-    /// a full-size status bar without either one needing its own
-    /// `set_ui_font` call (which would perturb every other chrome
-    /// primitive too — see [`Self::set_ui_font`]'s own doc).
-    ///
-    /// Default: ignores `font_scale` and forwards to
-    /// [`Self::draw_status_bar_interactive`] unscaled — the honest
-    /// default for TUI (a fixed-cell backend has no font size to scale)
-    /// and any future backend that hasn't wired real per-call scaling
-    /// yet. Additive over `draw_status_bar_interactive`, not a
-    /// replacement for it, so every existing in-tree and downstream call
-    /// site keeps compiling unchanged.
-    ///
-    /// `font_scale` is expected to be a small positive multiplier (e.g.
-    /// `0.5`–`2.0`); implementations clamp a degenerate value (`0.0` or
-    /// negative) to a small positive floor rather than handing it
-    /// unchecked to the native font API — see the GTK and macOS backends'
-    /// own `status_bar_paint_scaled` for the specific floor each uses.
-    fn draw_status_bar_interactive_scaled(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &InteractionState,
-        _font_scale: f32,
-    ) -> StatusBarLayout {
-        self.draw_status_bar_interactive(rect, bar, interaction)
-    }
-
-    /// Draw a status bar with hover/pressed supplied positionally.
-    ///
-    /// # Deprecated
-    ///
-    /// Superseded by [`Self::draw_status_bar_interactive`], which reads
-    /// the same two values out of one [`InteractionState`] keyed by
-    /// [`WidgetId`] instead of two positional `Option<&WidgetId>` slots.
-    /// Kept because the sealed milestone acceptance slices
-    /// `tests/acceptance/ms-11/{structural_parity,c0_paint_smoke}.rs`
-    /// still call it positionally and this crate cannot edit anything
-    /// under `tests/acceptance/` (see `quadraui/tests/acceptance.rs`'s
-    /// module doc). Removal target: whichever Gate A pass migrates those
-    /// two slices off the positional call, not before v0.2.0.
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `draw_status_bar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819; removal target: once the sealed `tests/acceptance/ms-11` slices that still call this positionally migrate, not before v0.2.0"
-    )]
-    fn draw_status_bar(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        hovered_id: Option<&WidgetId>,
-        pressed_id: Option<&WidgetId>,
-    ) -> StatusBarLayout {
-        let interaction = InteractionState::from_parts(hovered_id.cloned(), pressed_id.cloned());
-        self.draw_status_bar_interactive(rect, bar, &interaction)
-    }
-
-    /// Draw an activity bar. `hovered_idx` carries per-frame hover
-    /// state so the rasteriser can paint a tint on the hovered row.
-    /// Returns per-row hit regions for click + tooltip dispatch.
-    ///
-    /// # Coordinate space — **relative to `rect`**
-    ///
-    /// Each [`ActivityBarRowHit`]'s `y_start` / `y_end` is measured from
-    /// the **top edge of `rect`**: the first row starts at `0.0` no
-    /// matter where the bar sits on the target surface. Implementors
-    /// must **not** fold `rect.y` into the returned spans, even though
-    /// they need the absolute value to paint. Callers add the bar origin
-    /// themselves (`hit.y_start + rect.y`).
-    ///
-    /// Note this is deliberately the *opposite* convention from
-    /// [`TabBarHits`], whose x spans are absolute. The split is
-    /// historical but now
-    /// pinned: the activity bar's space is what GTK, macOS, and the
-    /// shared [`activity_bar_hits`] helper already produced, and what
-    /// `AppShell` assumes in both its click and hover readers.
-    ///
-    /// [`Self::activity_bar_layout`] must return the same space. A
-    /// drifting backend fails
-    /// `tui::activity_bar::tests::hit_regions_are_bar_relative_not_absolute`
-    /// / `hit_regions_do_not_move_when_the_bar_does`, plus the
-    /// `activity_click_*_parity` / `activity_hover_*_parity` cross-backend
-    /// tests in `tests/cross_backend_parity.rs`.
-    ///
-    /// # Deprecated
-    ///
-    /// Superseded by [`Self::draw_activity_bar_with_style`], which takes
-    /// the same arguments plus an [`ActivityBarStyle`] request —
-    /// `&ActivityBarStyle::default()` reproduces this method's exact
-    /// behaviour. Kept as a required (non-default) method because every
-    /// in-tree backend still implements it directly; callers migrate by
-    /// passing a default style to the new method.
-    #[deprecated(
-        since = "0.11.0",
-        note = "use `draw_activity_bar_with_style` (pass `&ActivityBarStyle::default()` for identical behaviour)"
-    )]
-    fn draw_activity_bar(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-    ) -> Vec<ActivityBarRowHit>;
-
-    /// Draw an activity bar with an explicit [`ActivityBarStyle`] request —
-    /// currently just the active item's row-fill colour, VS Code style
-    /// (no line, a soft chip on the row itself).
-    ///
-    /// Added rather than folded into [`Self::draw_activity_bar`]'s
-    /// signature, and given a default body, so it breaks no existing
-    /// `Backend` implementor and no existing call site — mirrors
-    /// [`crate::TooltipChrome`] / [`Self::draw_tooltip_with_chrome`],
-    /// which solves the
-    /// identical "additive field would break exhaustive downstream
-    /// literals" problem for `Tooltip`. See
-    /// [`ActivityBarStyle`]'s doc for the full reasoning.
-    ///
-    /// The default body **ignores `style`** and delegates to
-    /// [`Self::draw_activity_bar`] — the correct fallback for a backend
-    /// with no fill vocabulary of its own. The TUI, GTK, and macOS
-    /// backends override it and honour `style.active_bg` in full; Win
-    /// takes the default for now (every `draw_*` method there is a
-    /// stub).
-    fn draw_activity_bar_with_style(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-        style: &ActivityBarStyle,
-    ) -> Vec<ActivityBarRowHit> {
-        let _ = style;
-        // `draw_activity_bar` is `#[deprecated]`; this default is its own plumbing.
-        #[allow(deprecated)]
-        self.draw_activity_bar(rect, bar, hovered_idx)
-    }
-
-    /// Compute the status bar layout without painting. Same measurement
-    /// logic as `draw_status_bar` — call after `ScreenLayout::draw()` to
-    /// recover hit regions for click dispatch.
-    ///
-    /// Returns `hit_regions` in the same **bar-local** space as
-    /// [`Self::draw_status_bar`] (relative to `rect.x` / `rect.y`): every
-    /// backend returns the primitive's own unshifted `StatusBar::layout`
-    /// output, so paint and no-paint already agree and no backend folds
-    /// the origin in.
-    fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout;
-
-    /// Compute activity bar row hit regions without painting. Returns
-    /// the same **bar-relative** spans as [`Self::draw_activity_bar`] —
-    /// `y_start` / `y_end` measured from `rect.y`, first row at `0.0`.
-    /// See that method for the full contract.
-    ///
-    /// # Deprecated
-    ///
-    /// [`ActivityBarStyle`] never changes row geometry (only paint
-    /// colour/icon size), so [`Self::draw_activity_bar_with_style`]'s
-    /// returned `Vec<ActivityBarRowHit>` already *is* this method's
-    /// result — a host that paints every frame (every in-tree caller
-    /// does) should cache that return value for click/hover dispatch
-    /// instead of querying this method separately. Kept as a required
-    /// (non-default) method for the "no live frame yet" fallback a few
-    /// backends still need before their first paint.
-    #[deprecated(
-        since = "0.11.0",
-        note = "cache the `Vec<ActivityBarRowHit>` `draw_activity_bar_with_style` already returns instead of querying layout separately"
-    )]
-    fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit>;
-
     /// Fill `rect` edge-to-edge with a solid `color` — no text, no
     /// segments, no per-row seams. For chrome elements that are a plain
     /// color block (e.g. `AppShell`'s sidebar/editor resize divider),
@@ -4495,37 +4299,6 @@ pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHi
         available_cols: layout.bar_width as usize,
         correct_scroll_offset: layout.resolved_scroll_offset,
     }
-}
-
-/// Compute activity bar hit regions from geometry (no paint).
-///
-/// Spans are **relative to `rect`** per the [`Backend::draw_activity_bar`]
-/// contract: the first top-pinned row starts at `0.0` and only `rect.height`
-/// is consulted (to pin the bottom group), never `rect.y`.
-pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<ActivityBarRowHit> {
-    let mut hits = Vec::new();
-    let mut y = 0.0_f32;
-    for item in &bar.top_items {
-        hits.push(ActivityBarRowHit {
-            id: item.id,
-            tooltip: item.tooltip.clone(),
-            y_start: y,
-            y_end: y + lh,
-        });
-        y += lh;
-    }
-    let bottom_start = rect.height - bar.bottom_items.len() as f32 * lh;
-    let mut by = bottom_start.max(y);
-    for item in &bar.bottom_items {
-        hits.push(ActivityBarRowHit {
-            id: item.id,
-            tooltip: item.tooltip.clone(),
-            y_start: by,
-            y_end: by + lh,
-        });
-        by += lh;
-    }
-    hits
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries

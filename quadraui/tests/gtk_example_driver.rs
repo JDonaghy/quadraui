@@ -969,7 +969,7 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn quadraui::Backend, _area: ()) {
-        use quadraui::{InteractionState, StatusBar, StatusBarSegment, WidgetId};
+        use quadraui::{DrawsPrimitives, StatusBar, StatusBarSegment, WidgetId};
 
         let status_bar_rect = quadraui::Rect::new(0.0, 0.0, 40.0, PROBE_RECT_HEIGHT);
         let bar = StatusBar {
@@ -983,8 +983,7 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
             }],
             right_segments: vec![],
         };
-        let _ =
-            backend.draw_status_bar_interactive(status_bar_rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(status_bar_rect, &bar, &());
 
         let solid_fill_rect = quadraui::Rect::new(60.0, 0.0, 40.0, PROBE_RECT_HEIGHT);
         backend.draw_solid_fill(solid_fill_rect, PROBE_FILL_COLOR);

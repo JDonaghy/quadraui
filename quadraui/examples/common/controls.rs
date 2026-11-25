@@ -232,11 +232,7 @@ impl AppLogic for ControlsApp {
         }
         let _ = backend.draw_primitive(self.radio_rect(backend), &self.radio_group());
         let _ = backend.draw_primitive(self.switch_rect(backend), &self.switch());
-        let _ = backend.draw_status_bar_interactive(
-            self.status_rect(backend),
-            &self.status_bar(),
-            &quadraui::InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(self.status_rect(backend), &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

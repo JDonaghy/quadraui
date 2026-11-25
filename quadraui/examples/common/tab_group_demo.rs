@@ -21,12 +21,13 @@
 //! - **`r`** — reset to the default 2-pane horizontal layout.
 //! - `q` / Esc to quit.
 
+use quadraui::DrawsPrimitives;
 use std::cell::RefCell;
 
 use quadraui::compose::tab_group::{GroupLayout, Pane, PaneTab, TabGroupController, TabGroupEvent};
 use quadraui::{
-    AppLogic, Backend, Color, Handled, InteractionState, Key, Modifiers, NamedKey, Reaction, Rect,
-    SplitDirection, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Handled, Key, Modifiers, NamedKey, Reaction, Rect, SplitDirection,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Minimum cursor movement (backend units: pixels for GTK, character cells for
@@ -59,11 +60,7 @@ impl quadraui::BackendWidget for LabelContent {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(
-            Rect::new(rect.x, rect.y, rect.width, lh),
-            &bar,
-            &InteractionState::new(),
-        );
+        backend.draw_dyn(Rect::new(rect.x, rect.y, rect.width, lh), &bar, &());
     }
 }
 
@@ -267,7 +264,7 @@ impl AppLogic for TabGroupDemo {
             }],
         };
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        backend.draw_status_bar_interactive(status_rect, &status, &InteractionState::new());
+        backend.draw_dyn(status_rect, &status, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

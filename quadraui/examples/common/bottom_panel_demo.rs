@@ -20,9 +20,10 @@ use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, BottomBand, Pa
 use quadraui::compose::bottom_panel::{
     BackendWidget, BottomPanelConfig, BottomPanelEvent, BottomPanelTab,
 };
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
-    ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    Backend, Color, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Id of the demo's one `BottomBand`.
@@ -59,11 +60,7 @@ impl BackendWidget for TerminalContent {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(
-            Rect::new(rect.x, rect.y, rect.width, lh),
-            &bar,
-            &InteractionState::new(),
-        );
+        backend.draw_dyn(Rect::new(rect.x, rect.y, rect.width, lh), &bar, &());
     }
 }
 
@@ -94,11 +91,7 @@ impl BackendWidget for ProblemsContent {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar_interactive(
-                Rect::new(rect.x, y, rect.width, lh),
-                &bar,
-                &InteractionState::new(),
-            );
+            backend.draw_dyn(Rect::new(rect.x, y, rect.width, lh), &bar, &());
         }
     }
 }
@@ -191,11 +184,7 @@ impl ShellApp for BottomPanelDemo {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar_interactive(
-                Rect::new(sb.x, sb.y, sb.width, lh),
-                &bar,
-                &InteractionState::new(),
-            );
+            backend.draw_dyn(Rect::new(sb.x, sb.y, sb.width, lh), &bar, &());
         }
 
         // Main content area: show the last event.
@@ -212,11 +201,7 @@ impl ShellApp for BottomPanelDemo {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar_interactive(
-                Rect::new(main.x, main.y, main.width, lh),
-                &bar,
-                &InteractionState::new(),
-            );
+            backend.draw_dyn(Rect::new(main.x, main.y, main.width, lh), &bar, &());
         }
     }
 
@@ -239,7 +224,7 @@ impl ShellApp for BottomPanelDemo {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(bounds, &bar, &InteractionState::new());
+        backend.draw_dyn(bounds, &bar, &());
     }
 
     fn handle(

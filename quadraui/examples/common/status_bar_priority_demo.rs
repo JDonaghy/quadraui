@@ -13,9 +13,10 @@
 //! - d       toggle the simulated "dirty" (unsaved changes) state
 //! - q / Esc quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
+    WidgetId,
 };
 
 pub struct StatusBarPriorityDemo {
@@ -77,11 +78,7 @@ impl AppLogic for StatusBarPriorityDemo {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

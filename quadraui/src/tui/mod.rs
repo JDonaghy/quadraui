@@ -21,7 +21,6 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use crate::types::{Color, Decoration, StyledText};
 
-mod activity_bar;
 pub mod backend;
 mod board;
 mod braille;
@@ -93,7 +92,6 @@ mod spinner;
 mod split;
 mod split_junction;
 mod split_tree;
-mod status_bar;
 pub mod testing;
 pub mod text;
 // vt100/ANSI-byte-stream conformance observer — needs
@@ -119,8 +117,6 @@ pub mod vt_testing;
 // zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
-#[doc(hidden)]
-pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::TuiBackend;
 #[doc(hidden)]
 pub use board::{draw_board, tui_board_layout};
@@ -209,8 +205,6 @@ pub use spinner::{draw_spinner, tui_spinner_layout};
 pub use split::{draw_split, tui_split_layout};
 #[doc(hidden)]
 pub use split_tree::{draw_split_tree, tui_split_tree_layout};
-#[doc(hidden)]
-pub use status_bar::draw_status_bar;
 // The cell-measure constants live with the primitive, next to the shared
 // cell-grid painter that reads them; `tui::` re-exports them under the
 // names apps already build their `TabMeasure`s against.

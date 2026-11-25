@@ -41,8 +41,6 @@
 // `vimcode` and `coord-tui` already depend on by module path, not just
 // through a flat re-export — mirrors the set `crate::gtk`/`crate::tui`/
 // `crate::win` already keep `pub` (undecorated) for the same reason.
-#[doc(hidden)]
-pub mod activity_bar;
 pub mod backend;
 #[doc(hidden)]
 pub mod board;
@@ -104,8 +102,6 @@ pub mod spinner;
 pub mod split;
 #[doc(hidden)]
 pub mod split_tree;
-#[doc(hidden)]
-pub mod status_bar;
 // Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
 #[doc(hidden)]
@@ -144,8 +140,6 @@ pub(crate) mod tray;
 // exposes, with zero reachers, so it is `#[doc(hidden)]` — unstable, not
 // covered by semver, free to move or disappear without a version bump
 // (see `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
-#[doc(hidden)]
-pub use activity_bar::mac_activity_bar_layout;
 pub use backend::MacBackend;
 #[doc(hidden)]
 pub use board::mac_board_layout;
@@ -194,8 +188,6 @@ pub use spinner::mac_spinner_layout;
 pub use split::mac_split_layout;
 #[doc(hidden)]
 pub use split_tree::mac_split_tree_layout;
-#[doc(hidden)]
-pub use status_bar::mac_status_bar_layout;
 #[doc(hidden)]
 pub use text_display::mac_text_display_layout;
 #[doc(hidden)]

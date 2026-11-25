@@ -20,9 +20,10 @@
 //! (including a paste from *outside* this process, e.g. from a
 //! browser) can be verified too.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TextInput, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    TextInput, UiEvent, WidgetId,
 };
 
 pub struct ClipboardDemo {
@@ -115,7 +116,7 @@ impl AppLogic for ClipboardDemo {
         let pad = lh;
 
         let status_rect = Rect::new(0.0, viewport.height - status_h, viewport.width, status_h);
-        backend.draw_status_bar_interactive(status_rect, &self.status(), &InteractionState::new());
+        backend.draw_dyn(status_rect, &self.status(), &());
 
         let input_rect = Rect::new(pad, pad, viewport.width - pad * 2.0, lh);
         backend.draw_text_input(input_rect, &self.input);

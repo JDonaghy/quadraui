@@ -11,9 +11,10 @@
 //! - r                        reset ratio to 0.5
 //! - q / Esc                  quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, Split,
-    SplitDirection, SplitHit, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, Split, SplitDirection, SplitHit,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Ratio delta per `[`/`]` keypress — the keyboard equivalent of nudging
@@ -88,7 +89,7 @@ impl SplitApp {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(bounds, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(bounds, &bar, &());
     }
 }
 
@@ -137,11 +138,7 @@ impl AppLogic for SplitApp {
         );
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

@@ -41,9 +41,10 @@
 //!   banner, else quit
 //! - q: quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Anchor, AppLogic, Backend, Color, Float, FloatLayout, FloatMeasure, InteractionState, Key,
-    NamedKey, Reaction, Rect, Side, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    Anchor, AppLogic, Backend, Color, Float, FloatLayout, FloatMeasure, Key, NamedKey, Reaction,
+    Rect, Side, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 const HINT_ID: &str = "float:hint";
@@ -343,7 +344,7 @@ impl FloatApp {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(row, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(row, &bar, &());
     }
 
     /// Paint the menu's own items into `layout.content_bounds` — `Float`
@@ -451,11 +452,7 @@ impl AppLogic for FloatApp {
         }
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
 
         // Floats paint last (highest z) — `ModalStack` has no opinion on
         // draw order, only on hit-test precedence (see its module doc).

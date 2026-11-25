@@ -22,10 +22,11 @@
 //! - `Esc`            → cancel the edit, revert to the committed value
 //! - `q`              → quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, ComboBox, CompletionItemMeasure, FieldKind, Form, FormController,
-    FormControllerAction, FormEvent, FormField, Handled, InteractionState, Key, NamedKey, Reaction,
-    Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    FormControllerAction, FormEvent, FormField, Handled, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormComboBoxApp {
@@ -164,11 +165,7 @@ impl AppLogic for FormComboBoxApp {
             backend.draw_combo_box(&self.combo, &layout);
         }
 
-        let _hits = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.build_status_bar(),
-            &InteractionState::new(),
-        );
+        let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

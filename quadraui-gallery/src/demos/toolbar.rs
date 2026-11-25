@@ -9,6 +9,7 @@
 //! pull-down, both focusable the same Tab/Shift-Tab way as every other
 //! button here.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, Color, ContextMenuItem, EditOp, Icon, InteractionState, Key, Modifiers,
     NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText, TextField, Toolbar,
@@ -625,11 +626,7 @@ impl Demo for ToolbarDemo {
                 let _ = backend.draw_toolbar_interactive(rect, &bar, &self.interaction);
 
                 let hint_rect = Self::hint_rect(area, backend);
-                let _ = backend.draw_status_bar_interactive(
-                    hint_rect,
-                    &self.hint_bar(),
-                    &InteractionState::new(),
-                );
+                let _ = backend.draw_dyn(hint_rect, &self.hint_bar(), &());
             }
             Some(mode) => {
                 let rect = Self::overflow_rect(area, backend, mode);
@@ -643,11 +640,7 @@ impl Demo for ToolbarDemo {
                 );
 
                 let hint_rect = Self::overflow_hint_rect(area, rect, backend);
-                let _ = backend.draw_status_bar_interactive(
-                    hint_rect,
-                    &self.hint_bar(),
-                    &InteractionState::new(),
-                );
+                let _ = backend.draw_dyn(hint_rect, &self.hint_bar(), &());
             }
         }
     }

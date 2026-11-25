@@ -44,10 +44,11 @@
 //! strip; GTK (`FixedPitch` only, continuous pixel pitch) shows the
 //! excerpt top-aligned with blank space below instead.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    aggregate_spans, sample_blocks, AppLogic, Backend, Color, InteractionState, Key, Minimap,
-    MinimapGrid, MinimapHit, MinimapScale, MinimapSizing, MinimapSpan, MouseButton, NamedKey,
-    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    aggregate_spans, sample_blocks, AppLogic, Backend, Color, Key, Minimap, MinimapGrid,
+    MinimapHit, MinimapScale, MinimapSizing, MinimapSpan, MouseButton, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Rows of the buffer visible in the (non-minimap) editor viewport —
@@ -285,11 +286,7 @@ impl AppLogic for MinimapApp {
         let _ = backend.draw_minimap(minimap_rect, &minimap);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

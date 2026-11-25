@@ -169,9 +169,7 @@ mod tests {
     /// theme's `foreground`, not [`Theme::default`] — a non-default theme
     /// passed in must show up in what gets painted. Offsets the rect
     /// away from the surface's own origin so `(0, 0)` is a reliable
-    /// unpainted background sample (same shape as
-    /// `win::activity_bar`'s `paints_at_rect_origin_not_at_surface_origin`),
-    /// then finds the most-inked pixel (max colour distance from that
+    /// unpainted background sample, then finds the most-inked pixel (max colour distance from that
     /// background) per paint and checks it lands nearer the theme that
     /// was actually passed in than the other one — robust to
     /// anti-aliasing, unlike an exact-pixel-colour match.

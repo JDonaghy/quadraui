@@ -18,8 +18,8 @@
 
 use quadraui::layout::{resolve_grid_tracks, GridTrack};
 use quadraui::{
-    AppLogic, Backend, Button, ButtonHit, Color, DrawsPrimitives, InteractionState, Key, NamedKey,
-    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonHit, Color, DrawsPrimitives, Key, NamedKey, Reaction, Rect,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 const ROWS: usize = 2;
@@ -127,11 +127,7 @@ impl AppLogic for GridApp {
         let lh = backend.line_height();
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
 
         let body = Self::body_rect(backend);
         for (index, cell) in Self::cells(body).into_iter().enumerate() {

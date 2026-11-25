@@ -31,20 +31,19 @@
 //! `tests::NON_TRAIT_DRAW_FNS`.
 
 use quadraui::{
-    compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
-    BadgeStatus, BoardCard, BoardColumn, BoardModel, CalendarDate, Canvas, CardBadge, Chart,
-    ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandLine, CompletionItem,
-    CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
-    ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration, Dialog, DialogButton,
-    DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, Editor, EditorCursor,
-    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind,
-    FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit, ImageSource,
-    InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
-    MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette, PaletteItem, PaletteMode,
-    PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
-    RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
-    SectionSize, SelectionMode, Series, Side, Spinner, Split, SplitDirection, SplitTree,
-    StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TextDisplay, TextDisplayLine,
+    compute_hunks, Anchor, AppLogic, Backend, BadgeStatus, BoardCard, BoardColumn, BoardModel,
+    CalendarDate, Canvas, CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth,
+    ComboBox, CommandLine, CompletionItem, CompletionItemMeasure, Completions, ContextMenu,
+    ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, DatePicker,
+    Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView,
+    DrawOp, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
+    EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
+    Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
+    MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
+    PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction,
+    Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section,
+    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, Spinner, Split,
+    SplitDirection, SplitTree, StageStatus, StyledSpan, StyledText, TextDisplay, TextDisplayLine,
     TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton,
     ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities,
     ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
@@ -84,56 +83,6 @@ pub struct Case {
 /// ever stops being true in either direction. Adding a primitive to the
 /// trait is therefore one more entry here, not an optional one.
 pub const CASES: &[Case] = &[
-    Case {
-        method: "draw_status_bar_interactive",
-        needle: Some("c0stat"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = StatusBar {
-                id: id("status-bar"),
-                left_segments: vec![StatusBarSegment {
-                    text: " c0stat ".to_string(),
-                    fg: Color::rgb(220, 220, 220),
-                    bg: Color::rgb(37, 37, 38),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            let _ = b.draw_status_bar_interactive(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                &InteractionState::new(),
-            );
-        },
-    },
-    Case {
-        // Same content as `draw_status_bar_interactive` above, but
-        // through the scaled entry point to exercise the `font_scale`
-        // parameter reaching the backend.
-        method: "draw_status_bar_interactive_scaled",
-        needle: Some("c0statscaled"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = StatusBar {
-                id: id("status-bar-scaled"),
-                left_segments: vec![StatusBarSegment {
-                    text: " c0statscaled ".to_string(),
-                    fg: Color::rgb(220, 220, 220),
-                    bg: Color::rgb(37, 37, 38),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            let _ = b.draw_status_bar_interactive_scaled(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                &InteractionState::new(),
-                0.85,
-            );
-        },
-    },
     Case {
         method: "draw_command_line",
         needle: Some("c0cmd"),
@@ -681,72 +630,6 @@ pub const CASES: &[Case] = &[
         needle: Some("c0sett"),
         paint: |b, area| {
             b.draw_settings_chrome(area, "c0sett", "", "search…", false);
-        },
-    },
-    // `draw_activity_bar` is `#[deprecated]` (use `draw_activity_bar_with_style`
-    // instead); kept as a required `Backend` method, so this row is the only
-    // automated proof the shim still reaches a rasteriser. `#[allow(deprecated)]`
-    // stays scoped to the one call in this closure.
-    Case {
-        method: "draw_activity_bar",
-        // TUI paints only the icon's *first* character while GTK paints the
-        // whole `icon` string — an inherent cross-backend asymmetry in this
-        // primitive's design, not a coverage gap, so no single needle matches
-        // both verbatim. Observability comes from the icon glyph itself: a
-        // backend that painted nothing would leave both `text_runs()` and
-        // `zones()` empty.
-        needle: None,
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = ActivityBar {
-                id: id("activity-bar"),
-                top_items: vec![ActivityItem {
-                    id: id("activity-item"),
-                    icon: "c0acty".into(),
-                    tooltip: String::new(),
-                    is_active: true,
-                    is_keyboard_selected: false,
-                }],
-                bottom_items: vec![],
-                active_accent: None,
-                selection_bg: None,
-                is_keyboard_focused: false,
-            };
-            #[allow(deprecated)]
-            let _ = b.draw_activity_bar(Rect::new(0.0, 0.0, lh * 3.0, area.height), &bar, None);
-        },
-    },
-    Case {
-        // The style-carrying entry point. Same content as
-        // `draw_activity_bar` above, but asking explicitly for an
-        // `ActivityBarStyle` row fill so C0 exercises a non-default
-        // request reaching the backend rather than only the delegating
-        // path (mirrors `draw_tooltip_with_chrome` above).
-        method: "draw_activity_bar_with_style",
-        needle: None,
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = ActivityBar {
-                id: id("activity-bar-style"),
-                top_items: vec![ActivityItem {
-                    id: id("activity-item-style"),
-                    icon: "c0actystyle".into(),
-                    tooltip: String::new(),
-                    is_active: true,
-                    is_keyboard_selected: false,
-                }],
-                bottom_items: vec![],
-                active_accent: None,
-                selection_bg: None,
-                is_keyboard_focused: false,
-            };
-            let style = ActivityBarStyle::new().with_active_bg(Color::rgb(49, 50, 51));
-            let _ = b.draw_activity_bar_with_style(
-                Rect::new(0.0, 0.0, lh * 3.0, area.height),
-                &bar,
-                None,
-                &style,
-            );
         },
     },
     Case {
@@ -1397,34 +1280,6 @@ pub const CASES: &[Case] = &[
                 fallback_text: "c0img".to_string(),
             };
             let _ = b.draw_image(area, &image);
-        },
-    },
-    // ── Deprecated positional hover/pressed shim ──────────────────────
-    //
-    // `draw_status_bar` is a `#[deprecated]` trait *default* that rebuilds
-    // an `InteractionState` and forwards to `draw_status_bar_interactive`.
-    // This C0 row is the only automated proof that the shim reaches a
-    // rasteriser rather than silently painting nothing. `#[allow(deprecated)]`
-    // is scoped to the one call in this closure deliberately: elsewhere in
-    // this repo `-D warnings` must keep rejecting this name.
-    Case {
-        method: "draw_status_bar",
-        needle: Some("c0stsh"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = StatusBar {
-                id: id("status-bar-shim"),
-                left_segments: vec![StatusBarSegment {
-                    text: " c0stsh ".to_string(),
-                    fg: Color::rgb(220, 220, 220),
-                    bg: Color::rgb(37, 37, 38),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            #[allow(deprecated)]
-            let _ = b.draw_status_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
         },
     },
     Case {

@@ -13,11 +13,12 @@
 //! [`UiEvent::ContextMenuItemActivated`] / [`UiEvent::ContextMenuDismissed`]
 //! — routed through one handler regardless of which path produced them.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, Backend, BackendCaps, Color, ContextMenu,
     ContextMenuController, ContextMenuItem, ContextMenuOutcome, ContextMenuPlacement, Icon,
-    InteractionState, KeyBinding, MenuStyle, Reaction, Rect, ResolvedMenuStyle, StatusBar,
-    StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
+    KeyBinding, MenuStyle, Reaction, Rect, ResolvedMenuStyle, StatusBar, StatusBarSegment, Style,
+    StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -189,7 +190,7 @@ impl Demo for ContextMenuDemo {
         let bar = self.status_bar(variant, backend.effective_menu_style());
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let rect = Rect::new(area.x, area.y + area.height - lh, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(rect, &bar, &());
 
         // Layer the painted context menu (if one is open) above
         // everything else, per `ContextMenuController`'s contract. A

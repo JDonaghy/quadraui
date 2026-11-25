@@ -110,7 +110,6 @@ pub(crate) fn test_render_guard() -> TestRenderGuard {
     }
 }
 
-mod activity_bar;
 mod app_font;
 pub mod backend;
 mod board;
@@ -154,7 +153,6 @@ pub mod shell_runner;
 mod spinner;
 mod split;
 mod split_tree;
-mod status_bar;
 mod surface;
 pub mod testing;
 mod text_display;
@@ -179,9 +177,6 @@ pub use crate::primitives::tab_bar::TabBarHits;
 // zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
-pub use activity_bar::ACTIVITY_ROW_PX;
-#[doc(hidden)]
-pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::GtkBackend;
 #[doc(hidden)]
 pub use board::gtk_board_layout;
@@ -242,12 +237,6 @@ pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::gtk_split_layout;
 #[doc(hidden)]
 pub use split_tree::gtk_split_tree_layout;
-// `draw_status_bar`/`MIN_GAP_PX` have zero reachers (vimcode migrated its
-// last direct caller onto `Backend::draw_status_bar_interactive` — see
-// `status_bar.rs`'s module doc) — `#[doc(hidden)]` like their siblings
-// above.
-#[doc(hidden)]
-pub use status_bar::{draw_status_bar, MIN_GAP_PX};
 #[doc(hidden)]
 #[doc(hidden)]
 pub use text_display::{draw_text_display, gtk_text_display_layout};
@@ -330,9 +319,8 @@ pub use pango::Layout as PangoLayout;
 /// until [`Backend::set_nerd_font_fallback`][crate::Backend::set_nerd_font_fallback]
 /// overrides it.
 ///
-/// Matches the family [`activity_bar::ICON_FONT_DESC`] and
-/// [`tab_icon_font`] already pin for the activity bar and tab
-/// icons — kept as one named constant so retargeting to a
+/// Matches the family [`tab_icon_font`] already pins for the
+/// activity bar and tab icons — kept as one named constant so retargeting to a
 /// differently-named Nerd Font patch (or a consumer's fontconfig alias)
 /// is a one-line change instead of hunting every rasteriser that
 /// references the literal.

@@ -614,7 +614,8 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 QRect::new(0.0, 0.0, 30.0, 1.0),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -627,7 +628,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 

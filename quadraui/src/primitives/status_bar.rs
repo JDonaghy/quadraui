@@ -64,10 +64,6 @@
 //!
 //! Skipping step 3 means clicking blank space at the left of the right
 //! group can trigger random toggles — confusing and undebuggable.
-//!
-//! See vimcode's `src/gtk/quadraui_gtk.rs::draw_status_bar` and
-//! `src/tui_main/quadraui_tui.rs::draw_status_bar` for reference
-//! implementations.
 
 use crate::compose::Handled;
 use crate::event::Rect;
@@ -760,8 +756,8 @@ pub(crate) mod cell_paint {
 }
 
 // Shared implementation for painting status bars across GTK, Windows,
-// and macOS. Each backend's `draw_status_bar` calls [`paint`] with its
-// native [`PaintSurface`], measuring and rendering text with backend-
+// and macOS. The widget's own `Primitive::paint` calls [`paint`] with each
+// backend's native [`PaintSurface`], measuring and rendering text with backend-
 // specific overrides as needed.
 //
 // Bold-aware measurement: GTK and Windows measure segment width against
@@ -771,8 +767,7 @@ pub(crate) mod cell_paint {
 // it to preserve their bold measurement.
 //
 // Zero-size guard: a non-positive `width` or `line_height` short-
-// circuits without touching the surface, matching the contract of
-// [`crate::Backend::draw_status_bar`].
+// circuits without touching the surface.
 //
 // `#[allow(dead_code)]`: `paint` is only called when a pixel backend
 // (GTK, Windows, or macOS) is compiled in.
@@ -798,9 +793,8 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a [`StatusBar`] into `(x, y, width, line_height)` on
     /// `surface`, returning the resolved [`StatusBarLayout`] for the
-    /// caller's click dispatch — same contract as
-    /// [`crate::Backend::draw_status_bar`]: hit regions are **bar-local**
-    /// (relative to `x`/`y`).
+    /// caller's click dispatch: hit regions are **bar-local** (relative to
+    /// `x`/`y`).
     ///
     /// `hovered_id` / `pressed_id` tint the matching clickable segment's
     /// background (lighten on hover, darken on press) — the primitive
@@ -1778,9 +1772,8 @@ impl crate::primitive::Primitive for StatusBar {
         }
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_status_bar`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] over `buf`, wrapped in the TUI
+    /// [`crate::CellSurface`].
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1788,13 +1781,20 @@ impl crate::primitive::Primitive for StatusBar {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = ratatui::layout::Rect::new(
-            layout.area.x.max(0.0).round() as u16,
-            layout.area.y.max(0.0).round() as u16,
-            layout.area.width.max(0.0).round() as u16,
-            layout.area.height.max(0.0).round() as u16,
+        let area = Rect::new(
+            layout.area.x.max(0.0).round(),
+            layout.area.y.max(0.0).round(),
+            layout.area.width.max(0.0).round(),
+            layout.area.height.max(0.0).round(),
         );
-        crate::tui::draw_status_bar(buf, area, self, &layout.layout, theme, None, None);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, &layout.layout, area, &mut surface, theme, None, None);
     }
 }
 
@@ -2502,20 +2502,49 @@ mod tests {
 }
 
 /// The cell painter's own paint coverage, driven through
-/// [`crate::tui::draw_status_bar`] — the delegate that wraps a ratatui
-/// `Buffer` in the [`crate::CellSurface`] [`cell_paint::paint`] takes.
+/// [`cell_paint::paint`] over a ratatui `Buffer`.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
     use super::{
         cell_layout, StatusBar, StatusBarHit, StatusBarLayout, StatusBarSegment,
         StatusSegmentMeasure, StatusSegmentSide,
     };
+    use crate::backend::ColorDepth;
     use crate::theme::Theme;
-    use crate::tui::{draw_status_bar, ratatui_color};
+    use crate::tui::cell_surface::TuiCellSurface;
+    use crate::tui::ratatui_color;
     use crate::types::{Color, WidgetId};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;
+
+    /// [`super::cell_paint::paint`] over `buf` at the ratatui `area`.
+    fn draw_status_bar(
+        buf: &mut Buffer,
+        area: Rect,
+        bar: &StatusBar,
+        layout: &StatusBarLayout,
+        theme: &Theme,
+        hovered_id: Option<&WidgetId>,
+        pressed_id: Option<&WidgetId>,
+    ) -> StatusBarLayout {
+        let mut cursor_sink = None;
+        let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+        super::cell_paint::paint(
+            bar,
+            layout,
+            crate::event::Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+            &mut surface,
+            theme,
+            hovered_id,
+            pressed_id,
+        )
+    }
 
     fn make_bar() -> StatusBar {
         StatusBar {

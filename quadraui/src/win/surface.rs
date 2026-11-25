@@ -123,8 +123,7 @@ impl PaintSurface for D2dSurface<'_> {
 
     /// See module doc: this is `win::form`'s pre-existing bold +
     /// `scale_x` implementation, generalised to every call site. At
-    /// `scale_x == 1.0` it reproduces `win::status_bar`'s narrower
-    /// bold-only override exactly (the `with_horizontal_scale` branch is
+    /// `scale_x == 1.0` it reproduces the plain bold-only override exactly (the `with_horizontal_scale` branch is
     /// skipped, falling through to the same `draw_text_styled` call).
     #[allow(clippy::too_many_arguments)]
     fn surface_draw_text_run_styled(

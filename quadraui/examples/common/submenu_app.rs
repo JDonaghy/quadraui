@@ -17,11 +17,12 @@
 //! - ← / Esc          close deepest submenu (Esc at root closes the whole menu)
 //! - q / Esc (no menu open) → quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     resolve_bar_height, AppLogic, Backend, Color, ContextMenu, ContextMenuHit, ContextMenuItem,
-    ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement, InteractionState, Key,
-    MenuDef, MenuEvent, MenuSystem, MouseButton, NamedKey, Point, Reaction, Rect, StatusBar,
-    StatusBarSegment, StyledText, UiEvent, WidgetId,
+    ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement, Key, MenuDef, MenuEvent,
+    MenuSystem, MouseButton, NamedKey, Point, Reaction, Rect, StatusBar, StatusBarSegment,
+    StyledText, UiEvent, WidgetId,
 };
 
 // ── Context-menu state ────────────────────────────────────────────────────────
@@ -657,11 +658,7 @@ impl AppLogic for SubmenuApp {
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

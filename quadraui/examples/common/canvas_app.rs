@@ -13,9 +13,10 @@
 //! - click inside the gauge   jump to that position's value
 //! - q / Esc              quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Canvas, CanvasHit, Color, DrawOp, InteractionState, Key, MouseButton,
-    NamedKey, Point, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Canvas, CanvasHit, Color, DrawOp, Key, MouseButton, NamedKey, Point,
+    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct CanvasApp {
@@ -116,11 +117,7 @@ impl AppLogic for CanvasApp {
         let _ = backend.draw_canvas(rect, &self.gauge_canvas(rect));
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

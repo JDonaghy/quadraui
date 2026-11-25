@@ -268,17 +268,6 @@ pub enum Surface {
         rect: Rect,
         editor: Editor,
     },
-    StatusBar {
-        rect: Rect,
-        bar: StatusBar,
-        hovered: Option<WidgetId>,
-        pressed: Option<WidgetId>,
-    },
-    ActivityBar {
-        rect: Rect,
-        bar: ActivityBar,
-        hovered: Option<usize>,
-    },
     CommandLine {
         rect: Rect,
         cmd: CommandLine,
@@ -482,12 +471,6 @@ pub enum FrameZone {
         idx: usize,
     },
     TabBar {
-        idx: usize,
-    },
-    StatusBar {
-        idx: usize,
-    },
-    ActivityBar {
         idx: usize,
     },
     CommandLine {
@@ -827,28 +810,6 @@ impl ScreenLayout {
                 Surface::Editor { rect, editor } => {
                     backend.draw_editor(*rect, editor);
                 }
-                Surface::StatusBar {
-                    rect,
-                    bar,
-                    hovered,
-                    pressed,
-                } => {
-                    // `Surface::StatusBar` carries the two optional
-                    // ids; the trait wants the `WidgetId`-keyed
-                    // hover/pressed store, so build one from them here
-                    // at the call boundary.
-                    let interaction =
-                        crate::interaction::InteractionState::from_parts(*hovered, *pressed);
-                    backend.draw_status_bar_interactive(*rect, bar, &interaction);
-                }
-                Surface::ActivityBar { rect, bar, hovered } => {
-                    backend.draw_activity_bar_with_style(
-                        *rect,
-                        bar,
-                        *hovered,
-                        &crate::ActivityBarStyle::default(),
-                    );
-                }
                 Surface::CommandLine { rect, cmd } => {
                     backend.draw_command_line(*rect, cmd);
                 }
@@ -1050,8 +1011,6 @@ impl ScreenLayout {
             .iter()
             .flat_map(|s| match s {
                 Surface::Editor { rect, editor } => vec![(editor.id, *rect)],
-                Surface::StatusBar { rect, bar, .. } => vec![(bar.id, *rect)],
-                Surface::ActivityBar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::CommandLine { rect, cmd } => vec![(cmd.id, *rect)],
                 Surface::TextDisplay { rect, td } => vec![(td.id, *rect)],
                 Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
@@ -1128,8 +1087,6 @@ impl ScreenLayout {
     fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
             Surface::Editor { rect, .. } => (*rect, FrameZone::Editor { idx }),
-            Surface::StatusBar { rect, .. } => (*rect, FrameZone::StatusBar { idx }),
-            Surface::ActivityBar { rect, .. } => (*rect, FrameZone::ActivityBar { idx }),
             Surface::CommandLine { rect, .. } => (*rect, FrameZone::CommandLine { idx }),
             Surface::TextDisplay { rect, .. } => (*rect, FrameZone::TextDisplay { idx }),
             Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
@@ -1347,16 +1304,10 @@ impl OwnedContent {
                 backend.draw_primitive(rect, bar);
             }
             OwnedContent::StatusBar(bar) => {
-                let interaction = crate::interaction::InteractionState::from_parts(None, None);
-                backend.draw_status_bar_interactive(rect, bar, &interaction);
+                backend.draw_primitive(rect, bar);
             }
             OwnedContent::ActivityBar(bar) => {
-                backend.draw_activity_bar_with_style(
-                    rect,
-                    bar,
-                    None,
-                    &crate::ActivityBarStyle::default(),
-                );
+                backend.draw_primitive(rect, bar);
             }
             OwnedContent::CommandLine(cmd) => backend.draw_command_line(rect, cmd),
             OwnedContent::Terminal(term) => {
@@ -1516,8 +1467,14 @@ impl OwnedContent {
                 idx,
                 id: Some(bar.id),
             },
-            OwnedContent::StatusBar(_) => FrameZone::StatusBar { idx },
-            OwnedContent::ActivityBar(_) => FrameZone::ActivityBar { idx },
+            OwnedContent::StatusBar(bar) => FrameZone::Widget {
+                idx,
+                id: Some(bar.id),
+            },
+            OwnedContent::ActivityBar(bar) => FrameZone::Widget {
+                idx,
+                id: Some(bar.id),
+            },
             OwnedContent::CommandLine(_) => FrameZone::CommandLine { idx },
             OwnedContent::Terminal(term) => FrameZone::Widget {
                 idx,
@@ -1805,12 +1762,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::Editor { rect, editor } => {
             (*rect, Some(editor.id), OwnedContent::Editor(editor.clone()))
         }
-        Surface::StatusBar { rect, bar, .. } => {
-            (*rect, Some(bar.id), OwnedContent::StatusBar(bar.clone()))
-        }
-        Surface::ActivityBar { rect, bar, .. } => {
-            (*rect, Some(bar.id), OwnedContent::ActivityBar(bar.clone()))
-        }
         Surface::CommandLine { rect, cmd } => {
             (*rect, Some(cmd.id), OwnedContent::CommandLine(cmd.clone()))
         }
@@ -2072,12 +2023,12 @@ mod tests {
         map.push(Rect::new(0.0, 0.0, 80.0, 1.0), FrameZone::TabBar { idx: 1 });
         map.push(
             Rect::new(0.0, 23.0, 80.0, 1.0),
-            FrameZone::StatusBar { idx: 2 },
+            FrameZone::CommandLine { idx: 2 },
         );
 
         assert_eq!(map.hit_test(40.0, 0.5), FrameZone::TabBar { idx: 1 });
         assert_eq!(map.hit_test(40.0, 12.0), FrameZone::Editor { idx: 0 });
-        assert_eq!(map.hit_test(40.0, 23.5), FrameZone::StatusBar { idx: 2 });
+        assert_eq!(map.hit_test(40.0, 23.5), FrameZone::CommandLine { idx: 2 });
     }
 
     #[test]

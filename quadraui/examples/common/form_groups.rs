@@ -17,10 +17,11 @@
 //! - `Tab` / `Shift+Tab`    → cycle focused field (via FocusTree)
 //! - `q` / `Esc`            → quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusTree, Form, FormField, FormHit,
-    InteractionState, Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
+    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusTree, Form, FormField, FormHit, Key,
+    MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 /// Builds a [`FocusTree`] whose tab order is a fixed list of ids, each
@@ -336,11 +337,7 @@ impl AppLogic for FormGroupsApp {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
         backend.draw_form(form_rect, &self.build_form());
-        let _hits = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.build_status_bar(),
-            &InteractionState::new(),
-        );
+        let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

@@ -16,11 +16,9 @@
 //! `crate::tui::draw_toolbar*`/`crate::tui::tui_toolbar_layout*` caller
 //! (and `crate::tui::mod`'s own re-exports) keeps compiling untouched.
 
-pub(crate) use crate::primitives::toolbar::cell_layout::rail_layout_options;
 pub use crate::primitives::toolbar::cell_layout::{
     tui_toolbar_layout, tui_toolbar_layout_with_options, tui_toolbar_layout_with_overflow,
 };
-pub(crate) use crate::primitives::toolbar::cell_paint::draw_toolbar_with_rail_style;
 pub use crate::primitives::toolbar::cell_paint::{
     draw_toolbar, draw_toolbar_oriented, draw_toolbar_with_options, draw_toolbar_with_overflow,
 };

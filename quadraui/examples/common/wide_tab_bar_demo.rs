@@ -130,16 +130,14 @@ impl AppLogic for WideTabBarDemo {
             rect: strip,
             widget: Box::new(self.bar()),
         });
-        frame.push(Surface::StatusBar {
+        frame.push(Surface::Widget {
             rect: Rect::new(
                 0.0,
                 viewport.height - strip.height,
                 viewport.width,
                 strip.height,
             ),
-            bar: self.status(),
-            hovered: None,
-            pressed: None,
+            widget: Box::new(self.status()),
         });
         let _ = frame.draw(backend);
     }

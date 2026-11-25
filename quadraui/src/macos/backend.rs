@@ -61,7 +61,6 @@ use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
@@ -84,7 +83,6 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
-use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::toast::{ToastCorner, ToastOverlay, ToastStackLayout};
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
@@ -94,8 +92,8 @@ use crate::transition::{lerp, Transition};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, FieldKind, Form, Key, ListView, Modifiers, Palette,
-    ParsedBinding, PlatformServices, StatusBar, TextDisplay, Theme, TreeView,
+    Accelerator, AcceleratorId, FieldKind, Form, Key, ListView, Modifiers, Palette, ParsedBinding,
+    PlatformServices, TextDisplay, Theme, TreeView,
 };
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this
@@ -316,7 +314,7 @@ pub struct MacBackend {
     text_runs: Vec<TextRun>,
     /// `WidgetId` of the [`ActivityBar`] that painted itself with
     /// `is_keyboard_focused = true` this frame, if any. Set by
-    /// [`Backend::draw_activity_bar`], cleared by [`Backend::begin_frame`]
+    /// [`Backend::end_frame`] from the painted-widget record, cleared by [`Backend::begin_frame`]
     /// (same per-frame lifecycle as `zones`), read by
     /// [`super::run::dispatch_event`] to redirect the next `KeyPressed`
     /// into the bar. Mirrors `GtkBackend::focused_activity_bar`.
@@ -364,7 +362,7 @@ pub struct MacBackend {
     requested_cursor: PointerShape,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     // /. Picks `Icon::glyph` vs `Icon::fallback` in
-    /// `draw_activity_bar` and (since #804) `draw_tree`. Set via
+    /// the activity bar and `draw_tree`. Set via
     /// [`Backend::set_nerd_fonts`]; defaults to `true` on this backend —
     /// see `GtkBackend`'s matching field doc for why a
     /// GUI backend with the bundled codicon font always available
@@ -380,7 +378,7 @@ pub struct MacBackend {
     /// elsewhere via [`Backend::focus_tree`].
     focus_tree: crate::focus::FocusTree,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`.
-    /// Picks `Icon::glyph` vs `Icon::fallback` in `draw_activity_bar` and
+    /// Picks `Icon::glyph` vs `Icon::fallback` in the activity bar and
     /// `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
     /// on this backend — see `GtkBackend`'s matching field doc for why a
     /// GUI backend with the bundled codicon font always available carries
@@ -1055,7 +1053,7 @@ impl MacBackend {
     /// Unlike previous versions, `chrome_font` now *does* consult
     /// [`Self::nerd_font_fallback_family`] — the same `font_with_fallback`
     /// cascade [`Self::set_current_font`] applies. Icon glyphs in
-    /// `draw_tree`/`draw_activity_bar_with_style`/
+    /// `draw_tree`/the activity bar/
     /// `draw_toolbar_interactive` now
     /// paint through `chrome_font`, not `current_font` — without this,
     /// a host that calls `set_nerd_font_fallback` would see icon glyphs
@@ -1442,83 +1440,6 @@ impl MacBackend {
         }
     }
 
-    /// Shared body of [`Backend::draw_status_bar_interactive`] /
-    /// [`Backend::draw_status_bar_interactive_scaled`]. `font_scale`
-    /// multiplies `chrome_font`'s point size for this paint only — `1.0`
-    /// is the unscaled case.
-    ///
-    /// Temporarily swaps `chrome_font`/`chrome_line_height`/
-    /// `chrome_char_width` (restored in every case, including the
-    /// `font_scale == 1.0` no-op path, which skips the swap entirely
-    /// rather than swap-then-immediately-restore the same values) rather
-    /// than calling [`Self::set_chrome_font`] — that setter also
-    /// re-applies [`Self::nerd_font_fallback_family`]'s cascade, which
-    /// `chrome_font` already carries; re-running it here would append the
-    /// fallback family to the family list a second time.
-    fn status_bar_paint_scaled(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-        font_scale: f32,
-    ) -> StatusBarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        let saved = if font_scale != 1.0 {
-            // `.max(0.1)` guards against a degenerate `font_scale` (e.g.
-            // `0.0` or negative) handing `clone_with_font_size` a
-            // zero/negative point size — `CTFont` has no documented
-            // fallback for that, so without a floor the behaviour would be
-            // backend-inconsistent with GTK's own `.max(1)` guard on its
-            // (integer, `PANGO_SCALE`-ths-of-a-point) size for the same
-            // input. `0.1pt` mirrors GTK's intent of "paint (nearly)
-            // nothing, honestly" rather than silently falling back to some
-            // ambient size.
-            let scaled_size = (self.chrome_font.pt_size() * font_scale as f64).max(0.1);
-            let scaled_font = self.chrome_font.clone_with_font_size(scaled_size);
-            let metrics = super::text::font_metrics(&scaled_font);
-            let saved_font = std::mem::replace(&mut self.chrome_font, scaled_font);
-            let saved_lh = self.chrome_line_height;
-            let saved_cw = self.chrome_char_width;
-            self.chrome_line_height = metrics.line_height;
-            self.chrome_char_width = metrics.char_width;
-            Some((saved_font, saved_lh, saved_cw))
-        } else {
-            None
-        };
-        // The status bar is chrome, not editor content, so it paints
-        // through `ChromeSurface` (routes text through
-        // `chrome_font`/`chrome_line_height`/`chrome_char_width`) —
-        // self-documenting at this call site that the *scaled* chrome
-        // font swapped in above, not whatever `self`'s own `PaintSurface`
-        // impl happens to default to, is what this paint must use. See
-        // `ChromeSurface`'s doc.
-        let theme = self.current_theme;
-        // Pass the rect's own height, not just the chrome line height,
-        // so a caller that hands this a `rect` taller than the chrome
-        // font's own line height (e.g. a fixed-height breadcrumb row)
-        // gets a background fill that covers `rect.height` entirely,
-        // matching `WinBackend`'s already-correct call.
-        let line_height = rect.height;
-        let mut surface = ChromeSurface { backend: self };
-        let layout = crate::primitives::status_bar::native_surface_paint::paint(
-            bar,
-            &mut surface,
-            &theme,
-            rect.x,
-            rect.y,
-            rect.width,
-            line_height,
-            hovered_id,
-            pressed_id,
-        );
-        if let Some((saved_font, saved_lh, saved_cw)) = saved {
-            self.chrome_font = saved_font;
-            self.chrome_line_height = saved_lh;
-            self.chrome_char_width = saved_cw;
-        }
-        layout
-    }
-
     /// Install `bar` as the real system `NSMenu` via
     /// [`Self::install_menu_bar`] unless it's unchanged from the last
     /// native-path install — see the `Backend::draw_menu_bar` impl's
@@ -1732,7 +1653,7 @@ impl Backend for MacBackend {
         // `overlay_bounds_this_frame`'s own doc. Same per-frame lifecycle
         // as `zones`.
         self.overlay_bounds_this_frame.clear();
-        // Clear the focused activity bar — re-set by `draw_activity_bar`
+        // Clear the focused activity bar — re-set by `end_frame`
         // during this render pass if a bar is still keyboard-focused. Same
         // per-frame lifecycle as `zones`, matching `GtkBackend::begin_frame`.
         self.focused_activity_bar = None;
@@ -1746,6 +1667,9 @@ impl Backend for MacBackend {
     }
 
     fn end_frame(&mut self) {
+        // The rail that holds keyboard focus is whichever activity bar this
+        // frame painted with `is_keyboard_focused` set.
+        self.focused_activity_bar = crate::primitives::activity_bar::painted_keyboard_focused_bar();
         // No-op flush-wise. AppKit's `drawRect:` flushes when it returns;
         // this method exists for parity with backends that need an
         // explicit flush.
@@ -3098,139 +3022,6 @@ impl Backend for MacBackend {
                 &theme,
             );
         }
-    }
-
-    fn draw_status_bar_interactive(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-    ) -> StatusBarLayout {
-        self.status_bar_paint_scaled(rect, bar, interaction, 1.0)
-    }
-
-    /// Same paint as [`Self::draw_status_bar_interactive`], scaling only
-    /// this call's chrome font size — see
-    /// [`crate::Backend::draw_status_bar_interactive_scaled`]'s doc for
-    /// the full rationale. Both this and the unscaled method above funnel
-    /// through [`Self::status_bar_paint_scaled`] so a fix to one applies
-    /// to both; `1.0` there is exactly the unscaled call with no scaling.
-    fn draw_status_bar_interactive_scaled(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-        font_scale: f32,
-    ) -> StatusBarLayout {
-        self.status_bar_paint_scaled(rect, bar, interaction, font_scale)
-    }
-    /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
-    /// that method for the real painting logic.
-    fn draw_activity_bar(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-    ) -> Vec<ActivityBarRowHit> {
-        self.draw_activity_bar_with_style(
-            rect,
-            bar,
-            hovered_idx,
-            &crate::ActivityBarStyle::default(),
-        )
-    }
-
-    /// Paint via the shared
-    /// [`crate::primitives::activity_bar::native_surface_paint::paint`].
-    ///
-    /// Uses the backend's `chrome_font` for icon rendering — apps that
-    /// want Nerd-Font icons install a glyph-bearing font via
-    /// [`Self::set_current_font`] in `setup()` — but **not** at that
-    /// font's own size. The icon glyph always paints at
-    /// [`crate::ActivityBarStyle::resolved_icon_size_px`] via
-    /// [`core_text::font::CTFont::clone_with_font_size`] on `chrome_font`
-    /// — a same-family, same-fallback clone at a fixed size. `size` in
-    /// `clone_with_font_size` is Core Text points, which on macOS are
-    /// already device-independent pixels 1:1 (unlike GTK's Pango /
-    /// Win-GUI's DirectWrite, both of which apply the legacy 96/72 dpi
-    /// point-to-pixel ratio), so `resolved_icon_size_px()` is used here
-    /// without conversion.
-    fn draw_activity_bar_with_style(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-        style: &crate::ActivityBarStyle,
-    ) -> Vec<ActivityBarRowHit> {
-        // Track keyboard focus so `run::dispatch_event` can redirect the
-        // next `KeyPressed` into this bar — same contract
-        // `GtkBackend::draw_activity_bar` implements.
-        if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id);
-        }
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_activity_bar_with_style called outside enter_frame_scope",
-        );
-        let layout = bar.layout(
-            rect.width,
-            rect.height,
-            super::activity_bar::ACTIVITY_ROW_PX as f32,
-        );
-        let icon_font = self
-            .chrome_font
-            .clone_with_font_size(style.resolved_icon_size_px() as f64);
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        // SAFETY: ctx non-null inside frame scope. The shared painter is
-        // bar-relative by contract — it paints into `(0, 0, width, height)`
-        // and returns bar-relative hit spans — so the CTM translate below
-        // is what actually places the ink at `rect`'s absolute origin,
-        // matching `GtkBackend::draw_activity_bar`'s
-        // `cr.translate(rect.x, rect.y)`. The returned
-        // `ActivityBarRowHit`s are untouched by the translate — they stay
-        // bar-relative, per contract.
-        unsafe {
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, rect.x as f64, rect.y as f64);
-            let mut surface = super::surface::CgSurface {
-                ctx,
-                font: Some(&icon_font),
-            };
-            let hits = crate::primitives::activity_bar::native_surface_paint::paint(
-                bar,
-                &layout,
-                style,
-                &mut surface,
-                &theme,
-                hovered_idx,
-                nerd_fonts_enabled,
-            );
-            CGContextRestoreGState(ctx);
-            hits
-        }
-    }
-
-    fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout {
-        // No-paint twin of `draw_status_bar`: same `mac_status_bar_layout`
-        // call, so hit regions match the painted frame exactly. Hit
-        // regions are bar-local, so `rect.x` / `rect.y` are deliberately
-        // not folded in. Measures against `chrome_font`/`chrome_line_height`,
-        // matching `draw_status_bar_interactive`'s resolution.
-        super::status_bar::mac_status_bar_layout(
-            &self.chrome_font,
-            rect.width as f64,
-            self.chrome_line_height,
-            bar,
-        )
-    }
-
-    fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
-        // No-paint twin of `draw_activity_bar`; both walk the same
-        // activity-bar layout, so the returned bar-relative spans
-        // are exactly the rows that were painted.
-        super::activity_bar::mac_activity_bar_layout(rect.width as f64, rect.height as f64, bar)
     }
 
     /// See `Backend::draw_solid_fill`'s doc — a pixel backend can
@@ -4767,170 +4558,15 @@ impl crate::backend::TrayService for MacBackend {
 // every existing rasteriser keeps using its own private copy untouched.
 // See `paint_surface`'s module doc for the full scope note and why these
 // methods are `surface_`-prefixed instead of colliding with `Backend`'s.
-/// Adapts `&mut MacBackend` to [`PaintSurface`], routing text
-/// measurement and painting through `chrome_font`/`chrome_line_height`/
-/// `chrome_char_width` explicitly — the same resolution
-/// `MacBackend`'s own `PaintSurface` impl (below) now defaults to for
-/// every non-editor-class primitive. A call site reaches for this
-/// adapter instead of plain `self` when it needs a *scoped* chrome
-/// font — [`Self::status_bar_paint_scaled`] temporarily swaps
-/// `chrome_font`/`chrome_line_height`/`chrome_char_width` to a scaled
-/// variant and restores them afterward, and wrapping `self` in this
-/// type for the paint keeps that swap's intent self-documenting at the
-/// call site regardless of what `MacBackend`'s own default happens to
-/// resolve to. See `chrome_font`'s field doc for why `chrome_font` and
-/// `current_font` must stay separate, and [`EditorSurface`] for the
-/// mirror-image adapter that opts an editor-class primitive back into
-/// `current_font`.
-///
-/// Every font-agnostic method (fills, strokes, clip, lines, images, frame
-/// lifecycle) forwards straight through to `MacBackend`'s own impl, which
-/// doesn't touch the font either way — only the three text-shaped methods
-/// below actually differ.
-struct ChromeSurface<'a> {
-    backend: &'a mut MacBackend,
-}
-
-impl PaintSurface for ChromeSurface<'_> {
-    fn surface_begin_frame(&mut self, viewport: Viewport) {
-        self.backend.surface_begin_frame(viewport)
-    }
-
-    fn surface_end_frame(&mut self) {
-        self.backend.surface_end_frame()
-    }
-
-    fn surface_viewport(&self) -> Viewport {
-        self.backend.surface_viewport()
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        self.backend.chrome_line_height as f32
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        self.backend.chrome_char_width as f32
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let (w, h) = super::text::measure_text(&self.backend.chrome_font, text);
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
-        self.backend.surface_fill_rect(rect, color)
-    }
-
-    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
-        self.backend.surface_fill_rounded_rect(rect, radius, color)
-    }
-
-    fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
-        self.backend.surface_stroke_rect(rect, color, stroke_width)
-    }
-
-    fn surface_stroke_rounded_rect(
-        &mut self,
-        rect: Rect,
-        radius: f32,
-        color: Color,
-        stroke_width: f32,
-    ) {
-        self.backend
-            .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
-    }
-
-    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
-        let ctx = self.backend.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "ChromeSurface::surface_draw_text_run called outside enter_frame_scope",
-        );
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::text::draw_text(
-                ctx,
-                &self.backend.chrome_font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                ns_color_to_cg(color),
-            );
-        }
-    }
-
-    /// The chrome twin of `MacBackend`'s own override — same
-    /// `bold`/`italic`/`underline`-unsupported posture, same `scale_x`
-    /// support via [`super::text::draw_text_scaled_x`], just against
-    /// `chrome_font`.
-    ///
-    /// Not optional: this is the method the shared status-bar paint
-    /// actually calls. Without it the adapter would inherit the trait
-    /// default (forward to [`Self::surface_draw_text_run`]) — right font,
-    /// but `scale_x` silently dropped.
-    #[allow(clippy::too_many_arguments)]
-    fn surface_draw_text_run_styled(
-        &mut self,
-        rect: Rect,
-        text: &str,
-        color: Color,
-        bold: bool,
-        italic: bool,
-        underline: bool,
-        scale_x: f32,
-    ) {
-        let _ = (bold, italic, underline);
-        let ctx = self.backend.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "ChromeSurface::surface_draw_text_run_styled called outside enter_frame_scope",
-        );
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::text::draw_text_scaled_x(
-                ctx,
-                &self.backend.chrome_font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                scale_x as f64,
-                ns_color_to_cg(color),
-            );
-        }
-    }
-
-    fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
-        self.backend
-            .surface_draw_line(from, to, color, stroke_width)
-    }
-
-    fn surface_push_clip(&mut self, rect: Rect) {
-        self.backend.surface_push_clip(rect)
-    }
-
-    fn surface_pop_clip(&mut self) {
-        self.backend.surface_pop_clip()
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        rect: Rect,
-        image: &crate::primitives::image::Image,
-    ) -> crate::backend::ImagePaintResult {
-        self.backend.surface_draw_image(rect, image)
-    }
-}
-
-/// The editor-class twin of [`ChromeSurface`] just above. That adapter
-/// exists to reach `chrome_font` from a primitive-generic call site.
-/// This one exists to reach `current_font` from one, since
+/// Adapts `&mut MacBackend` to [`PaintSurface`] so a primitive-generic
+/// call site reaches `current_font`, since
 /// [`MacBackend`]'s own [`PaintSurface`] impl (below) defaults to
 /// `chrome_font` and a handful of primitives still need the editor font.
 /// The terminal and the plain text display paint through this trait and
 /// need `EditorSurface`; the diff view also paints through this trait
 /// and needs it too. The full-screen editor paints through its own
-/// dedicated Core Text calls instead of this trait at all, so it needs
-/// neither adapter.
+/// dedicated Core Text calls instead of this trait at all, so it does
+/// not need this adapter.
 ///
 /// Every font-agnostic method (fills, strokes, clip, lines, images, frame
 /// lifecycle) forwards straight through to [`MacBackend`]'s own impl,
@@ -5037,12 +4673,11 @@ impl PaintSurface for EditorSurface<'_> {
     /// [`super::text::draw_text_scaled_x`] (which fits the terminal's
     /// wide glyphs to their cell advance), just against `current_font`.
     ///
-    /// No `surface_draw_text_run_with_role` override here (nor on
-    /// [`ChromeSurface`]): both adapters are already constructed against
-    /// one specific, caller-chosen font, so the trait default's
-    /// "answered before this verb is reached" reasoning
-    /// ([`crate::PaintSurface::surface_draw_text_run_with_role`]'s doc)
-    /// applies to both. An explicit `FontRole::Chrome` request made
+    /// No `surface_draw_text_run_with_role` override here: this adapter is
+    /// already constructed against one specific, caller-chosen font, so
+    /// the trait default's "answered before this verb is reached"
+    /// reasoning ([`crate::PaintSurface::surface_draw_text_run_with_role`]'s
+    /// doc) applies. An explicit `FontRole::Chrome` request made
     /// through a live `EditorSurface` would still paint in
     /// `current_font` — there is no call site that does this today.
     #[allow(clippy::too_many_arguments)]
@@ -5265,7 +4900,7 @@ impl PaintSurface for MacBackend {
     /// and `current_font` are already genuinely different `CTFont`s on
     /// this backend (see `chrome_font`'s field doc), so a `dyn
     /// PaintSurface` caller holding a live `MacBackend` can now paint
-    /// either without a separate [`ChromeSurface`] wrapper. `italic` is
+    /// either without a separate wrapper. `italic` is
     /// dropped, matching [`Self::surface_draw_text_run_styled`]'s own
     /// documented "not rendered yet" posture — adding real italic
     /// support is out of this issue's scope.
@@ -5547,7 +5182,6 @@ pub(crate) unsafe fn ns_pop_clip(ctx: CGContextRef) {
 extern "C" {
     fn CGContextSaveGState(c: CGContextRef);
     fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextTranslateCTM(c: CGContextRef, tx: CGFloat, ty: CGFloat);
     fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
     fn CGContextSetRGBFillColor(
         c: CGContextRef,
@@ -7416,7 +7050,8 @@ mod tests {
         b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |bk| {
-            let l = bk.draw_status_bar_interactive(
+            let l = crate::DrawsPrimitives::draw_dyn(
+                bk,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("bg"),
@@ -7429,11 +7064,15 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
-            );
+                &(),
+            )
+            .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+            .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+            .layout
+            .clone();
             *layout.borrow_mut() = Some(l);
         });
-        let layout = layout.into_inner().expect("draw_status_bar ran");
+        let layout = layout.into_inner().expect("the status bar painted");
         let seg = layout
             .visible_segments
             .first()
@@ -8853,7 +8492,8 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             b.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), sentinel);
-            b.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                b,
                 Rect::new(10.0, 10.0, 0.0, 15.0),
                 &StatusBar {
                     id: WidgetId::new("test:status-bar"),
@@ -8866,7 +8506,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         });
         backend.end_frame();
@@ -9046,8 +8686,8 @@ mod tests {
     // Acceptance coverage: macOS now carries a `chrome_font` distinct
     // from `current_font` (the editor font), defaulting to the CoreText
     // system UI font, and `Backend::set_ui_font`/`set_editor_font` are no
-    // longer no-ops. See `ChromeSurface`'s doc for the paint-time wiring
-    // these tests exercise through `draw_status_bar_interactive`.
+    // longer no-ops. The tests below exercise the paint-time wiring
+    // through a status bar painted with the widget contract.
 
     /// A `MacBackend` that never received a `set_ui_font` call must still
     /// default its chrome to the CoreText system UI font, not a monospace
@@ -9388,12 +9028,12 @@ mod tests {
     }
 
     /// Black-box acceptance test: paint a `StatusBar`
-    /// through the real `Backend::draw_status_bar_interactive` path and
+    /// through the widget contract and
     /// prove its painted geometry tracks `set_ui_font`, not
     /// `set_editor_font` — the two-font separation actually reaching a
     /// rasteriser, not just backend-internal state.
     #[test]
-    fn draw_status_bar_interactive_paints_with_chrome_font_not_editor_font() {
+    fn status_bar_paints_with_chrome_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
         use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
         use crate::Backend;
@@ -9421,11 +9061,16 @@ mod tests {
             };
             let layout = std::cell::RefCell::new(None);
             b.enter_frame_scope(surface.context_ptr(), |backend| {
-                let l = backend.draw_status_bar_interactive(
+                let l = crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, W as f32, H as f32),
                     &bar,
-                    &crate::InteractionState::new(),
-                );
+                    &(),
+                )
+                .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+                .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+                .layout
+                .clone();
                 *layout.borrow_mut() = Some(l);
             });
             b.end_frame();
@@ -9491,11 +9136,16 @@ mod tests {
         };
         let layout = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |backend| {
-            let l = backend.draw_status_bar_interactive(
+            let l = crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &bar,
-                &crate::InteractionState::new(),
-            );
+                &(),
+            )
+            .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+            .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+            .layout
+            .clone();
             *layout.borrow_mut() = Some(l);
         });
         b.end_frame();
@@ -9534,86 +9184,9 @@ mod tests {
         );
     }
 
-    /// `draw_status_bar_interactive_scaled` must paint narrower text at a
-    /// smaller `font_scale`, and must not leave the ambient chrome font
-    /// perturbed for the next call. An unscaled paint immediately after
-    /// must come back to exactly its own pre-scaled width.
-    #[test]
-    fn draw_status_bar_interactive_scaled_shrinks_without_perturbing_later_unscaled_paints() {
-        use super::super::headless::BitmapSurface;
-        use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
-        use crate::Backend;
-
-        const W: u32 = 600;
-        const H: u32 = 40;
-
-        fn sample_bar() -> StatusBar {
-            StatusBar {
-                id: WidgetId::new("status"),
-                left_segments: vec![StatusBarSegment {
-                    text: "Save".into(),
-                    fg: Color::rgb(255, 255, 255),
-                    bg: Color::rgb(10, 10, 10),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            }
-        }
-
-        let surface = BitmapSurface::new(W, H);
-        let mut b = MacBackend::new();
-        Backend::set_ui_font(&mut b, "Menlo 40");
-        b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-
-        let bar = sample_bar();
-        let unscaled_w = std::cell::RefCell::new(0.0f32);
-        let scaled_w = std::cell::RefCell::new(0.0f32);
-        let unscaled_w_again = std::cell::RefCell::new(0.0f32);
-        b.enter_frame_scope(surface.context_ptr(), |backend| {
-            let l1 = backend.draw_status_bar_interactive(
-                Rect::new(0.0, 0.0, W as f32, H as f32),
-                &bar,
-                &crate::InteractionState::new(),
-            );
-            *unscaled_w.borrow_mut() = l1.visible_segments[0].bounds.width;
-
-            let l2 = backend.draw_status_bar_interactive_scaled(
-                Rect::new(0.0, 0.0, W as f32, H as f32),
-                &bar,
-                &crate::InteractionState::new(),
-                0.5,
-            );
-            *scaled_w.borrow_mut() = l2.visible_segments[0].bounds.width;
-
-            let l3 = backend.draw_status_bar_interactive(
-                Rect::new(0.0, 0.0, W as f32, H as f32),
-                &bar,
-                &crate::InteractionState::new(),
-            );
-            *unscaled_w_again.borrow_mut() = l3.visible_segments[0].bounds.width;
-        });
-        b.end_frame();
-
-        let unscaled_w = unscaled_w.into_inner();
-        let scaled_w = scaled_w.into_inner();
-        let unscaled_w_again = unscaled_w_again.into_inner();
-
-        assert!(
-            scaled_w < unscaled_w * 0.75,
-            "font_scale=0.5 should paint noticeably narrower: {scaled_w} vs {unscaled_w}",
-        );
-        assert!(
-            (unscaled_w_again - unscaled_w).abs() < 0.01,
-            "an unscaled paint after a scaled one must match the original unscaled width \
-             exactly — chrome font state must be restored, not left scaled: \
-             {unscaled_w_again} vs {unscaled_w}",
-        );
-    }
-
-    /// `status_bar_layout` (the no-paint twin) must agree with what
-    /// `draw_status_bar_interactive` actually painted once both read
-    /// `chrome_font`, keeping the two call sites in sync.
+    /// `layout_primitive` (the no-paint twin) must agree with what
+    /// `draw_dyn` actually painted once both read `chrome_font`, keeping
+    /// the two call sites in sync.
     #[test]
     fn status_bar_layout_matches_painted_layout_after_set_ui_font() {
         use super::super::headless::BitmapSurface;
@@ -9643,17 +9216,27 @@ mod tests {
         let surface = BitmapSurface::new(W, H);
         let painted = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |backend| {
-            let l = backend.draw_status_bar_interactive(
+            let l = crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &bar,
-                &crate::InteractionState::new(),
-            );
+                &(),
+            )
+            .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+            .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+            .layout
+            .clone();
             *painted.borrow_mut() = Some(l);
         });
         b.end_frame();
         let painted = painted.into_inner().unwrap();
 
-        let computed = b.status_bar_layout(Rect::new(0.0, 0.0, W as f32, H as f32), &bar);
+        let computed = crate::DrawsPrimitives::layout_primitive(
+            &b,
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            &bar,
+        )
+        .layout;
         assert_eq!(
             painted.visible_segments.len(),
             computed.visible_segments.len(),
@@ -9707,10 +9290,11 @@ mod tests {
             right_segments: vec![],
         };
         b.enter_frame_scope(surface.context_ptr(), |backend| {
-            let _ = backend.draw_status_bar_interactive(
+            let _ = crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &bar,
-                &crate::InteractionState::new(),
+                &(),
             );
         });
         b.end_frame();
@@ -10219,15 +9803,10 @@ mod tests {
         assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&other));
     }
 
-    /// Regression test for `draw_activity_bar_with_style` — the method
-    /// every real paint path routes through (`draw_activity_bar` is a
-    /// deprecated shim over it; `AppShell::render` and `ScreenLayout::draw`'s
-    /// `Surface::ActivityBar` arm both call the styled method directly).
-    ///
-    /// Verifies that `draw_activity_bar_with_style` paints through
-    /// `chrome_font`, never `current_font`/the editor font. Icon extent is pinned to
-    /// `ActivityBarStyle::resolved_icon_size_px()` regardless of font point
-    /// size (see `macos::activity_bar` module doc). This test uses three
+    /// Verifies that an activity bar painted through the widget contract
+    /// paints through `chrome_font`, never `current_font`/the editor font.
+    /// Icon extent is pinned to `ActivityBarStyle::resolved_icon_size_px()`
+    /// regardless of font point size. This test uses three
     /// probes:
     /// - icon extent is independent of `editor_font`'s size;
     /// - icon extent is independent of `editor_font`'s family — a
@@ -10235,7 +9814,7 @@ mod tests {
     ///   glyph;
     /// - icon extent is independent of `ui_font`'s size.
     #[test]
-    fn draw_activity_bar_with_style_uses_ui_font_not_editor_font() {
+    fn activity_bar_uses_ui_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
 
         const W: u32 = 200;
@@ -10280,13 +9859,15 @@ mod tests {
                 active_accent: None,
                 selection_bg: None,
                 is_keyboard_focused: false,
+                style: Default::default(),
+                hovered: None,
             };
             b.enter_frame_scope(surface.context_ptr(), |backend| {
-                backend.draw_activity_bar_with_style(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, W as f32, H as f32),
                     &bar,
-                    None,
-                    &crate::ActivityBarStyle::default(),
+                    &(),
                 );
             });
             b.end_frame();
@@ -10319,7 +9900,7 @@ mod tests {
         );
 
         // Editor *family* must be just as inert as editor *size* — if
-        // `draw_activity_bar` ever regressed to reading `current_font`
+        // the rail painter ever regressed to reading `current_font`
         // instead of `chrome_font`, a family swap this different
         // (monospace code font vs a decorative display face) would move
         // the rendered glyph.
@@ -10330,10 +9911,7 @@ mod tests {
              menlo_editor={small_editor_extent}, papyrus_editor={other_editor_family_extent}"
         );
 
-        // Icon extent must also be ui_font-*size* independent —
-        // the fix this issue shipped, exercised through the mandatory
-        // `draw_activity_bar` entry point rather than only the styled
-        // one.
+        // Icon extent must also be ui_font-*size* independent.
         let huge_ui_font_extent = icon_extent(("Menlo", 8.0), Some("Helvetica 60"));
         assert!(
             small_editor_extent.abs_diff(huge_ui_font_extent) <= 1,

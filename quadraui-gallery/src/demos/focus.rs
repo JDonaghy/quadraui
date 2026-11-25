@@ -9,6 +9,7 @@
 //! gets neither. Two variants swap the tree's declared order, showing
 //! that Tab visits whatever order the app registered.
 
+use quadraui::DrawsPrimitives;
 use std::cell::{Cell, RefCell};
 
 use quadraui::{
@@ -202,10 +203,10 @@ impl Demo for FocusDemo {
             &quadraui::ListPaintState::default(),
             right_focused,
         );
-        let _ = backend.draw_status_bar_interactive(
+        let _ = backend.draw_dyn(
             Rect::new(area.x, area.y + body_h, area.width, status_h),
             &self.status_bar(status_focused),
-            &quadraui::InteractionState::new(),
+            &(),
         );
     }
 

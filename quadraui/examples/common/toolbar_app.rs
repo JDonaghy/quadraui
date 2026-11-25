@@ -28,6 +28,7 @@
 //! - v                           cycle toolbar text vertical alignment
 //! - q / Esc                     quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, Icon, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
     StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarPaintOptions,
@@ -331,7 +332,7 @@ impl AppLogic for ToolbarApp {
 
         // Title row.
         let title_rect = Rect::new(0.0, 0.0, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
+        let _ = backend.draw_dyn(
             title_rect,
             &StatusBar {
                 id: WidgetId::new("title"),
@@ -344,7 +345,7 @@ impl AppLogic for ToolbarApp {
                 }],
                 right_segments: vec![],
             },
-            &InteractionState::new(),
+            &(),
         );
 
         // Toolbar in the second row.
@@ -361,11 +362,7 @@ impl AppLogic for ToolbarApp {
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

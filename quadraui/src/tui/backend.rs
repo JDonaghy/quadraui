@@ -47,13 +47,13 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use crate::backend::{activity_bar_hits, ColorDepth, Screenshot, ScreenshotRun};
+use crate::backend::{ColorDepth, Screenshot, ScreenshotRun};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Backend, Color, CommandLine, DragState, Form,
-    ListView, MenuBar, ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split,
-    StatusBar, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    Accelerator, AcceleratorId, Backend, Color, CommandLine, DragState, Form, ListView, MenuBar,
+    ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split, TerminalCellSize,
+    TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
 // only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs
@@ -70,11 +70,6 @@ use ratatui::Frame;
 
 use super::services::TuiPlatformServices;
 use super::text::{char_cell_width, display_width};
-
-/// Minimum gap (in cells) between left and right status-bar halves
-/// before priority drop kicks in. Mirrors `crate::gtk::status_bar`'s
-/// `MIN_GAP_PX = 16.0`. Irrelevant for bars without right segments.
-const MIN_GAP_CELLS: f32 = 2.0;
 
 /// Frames a Kitty-graphics id may go untouched before
 /// [`TuiBackend::end_frame`] expires and deletes it. `1` — not a
@@ -188,8 +183,8 @@ pub struct TuiBackend {
     /// caching here is the only reliable way to get the text.
     cached_selection_text: String,
     /// `WidgetId` of the `ActivityBar` that declared `is_keyboard_focused`
-    /// during the most recent render pass. Set by `draw_activity_bar`;
-    /// cleared at the start of each frame by `begin_frame` (same lifecycle
+    /// during the most recent render pass. Set by `end_frame` from the
+    /// painted-widget record; cleared at the start of each frame by `begin_frame` (same lifecycle
     /// as `text_regions`). When `Some`, `apply_dispatch` converts incoming
     /// `KeyPressed` events to `UiEvent::ActivityBar(id, KeyPressed { … })`
     /// so app logic receives activity-bar keys through a typed channel.
@@ -2310,7 +2305,7 @@ impl Backend for TuiBackend {
         // that stops painting (e.g. its image scrolled off) must stop
         // shielding its old cells from selection/copy.
         self.opaque_rects.clear();
-        // Clear the focused activity bar — re-set by draw_activity_bar
+        // Clear the focused activity bar — re-set by end_frame
         // during the render pass if still focused.
         self.focused_activity_bar = None;
         // Clear the cached editor cursor position — re-set by draw_editor
@@ -2355,6 +2350,9 @@ impl Backend for TuiBackend {
     }
 
     fn end_frame(&mut self) {
+        // The rail that holds keyboard focus is whichever activity bar this
+        // frame painted with `is_keyboard_focused` set.
+        self.focused_activity_bar = crate::primitives::activity_bar::painted_keyboard_focused_bar();
         // The frame's actual cell-grid flush happens when ratatui's
         // `terminal.draw(|frame| …)` closure returns; this method's
         // own work is bookkeeping that must run after every `draw_*`
@@ -3246,99 +3244,6 @@ impl Backend for TuiBackend {
     // for these primitives take `&Layout` directly — the trait impls
     // are now thin pass-throughs, mirroring the GTK impls in
     // `gtk/backend.rs`.
-
-    fn draw_status_bar_interactive(
-        &mut self,
-        rect: QRect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::StatusBarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let layout = bar.layout(area.width as f32, 1.0, MIN_GAP_CELLS, |seg| {
-            crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
-        });
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_status_bar called outside enter_frame_scope"
-            );
-            return layout;
-        };
-        crate::tui::draw_status_bar(
-            frame.buffer_mut(),
-            area,
-            bar,
-            &layout,
-            &theme,
-            hovered_id,
-            pressed_id,
-        )
-    }
-
-    /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
-    /// that method for the real painting logic.
-    fn draw_activity_bar(
-        &mut self,
-        rect: QRect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-    ) -> Vec<crate::ActivityBarRowHit> {
-        self.draw_activity_bar_with_style(
-            rect,
-            bar,
-            hovered_idx,
-            &crate::ActivityBarStyle::default(),
-        )
-    }
-
-    fn draw_activity_bar_with_style(
-        &mut self,
-        rect: QRect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-        style: &crate::ActivityBarStyle,
-    ) -> Vec<crate::ActivityBarRowHit> {
-        // Track keyboard focus: if this bar declares `is_keyboard_focused`,
-        // record its id so `apply_dispatch` can convert incoming `KeyPressed`
-        // events to `UiEvent::ActivityBar(id, KeyPressed { … })`.
-        if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id);
-        }
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_activity_bar_with_style called outside enter_frame_scope"
-            );
-            // `activity_bar_layout` is `#[deprecated]`; this fallback is its own plumbing.
-            #[allow(deprecated)]
-            return self.activity_bar_layout(rect, bar);
-        };
-        crate::tui::draw_activity_bar_with_style(
-            frame.buffer_mut(),
-            area,
-            bar,
-            style,
-            &theme,
-            hovered_idx,
-            nerd_fonts,
-        )
-    }
-
-    fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
-        bar.layout(rect.width, 1.0, MIN_GAP_CELLS, |seg| {
-            crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
-        })
-    }
-
-    fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
-        let lh = 1.0_f32;
-        activity_bar_hits(rect, bar, lh)
-    }
 
     fn draw_solid_fill(&mut self, rect: QRect, color: Color) {
         let area = q_rect_to_ratatui(rect);
@@ -4727,28 +4632,6 @@ mod tests {
             _active: bool,
         ) {
         }
-        fn draw_status_bar_interactive(
-            &mut self,
-            _r: QRect,
-            _b: &StatusBar,
-            _interaction: &crate::interaction::InteractionState,
-        ) -> crate::StatusBarLayout {
-            crate::StatusBarLayout {
-                bar_width: 0.0,
-                bar_height: 0.0,
-                visible_segments: Vec::new(),
-                hit_regions: Vec::new(),
-                resolved_right_start: 0,
-            }
-        }
-        fn draw_activity_bar(
-            &mut self,
-            _r: QRect,
-            _b: &ActivityBar,
-            _h: Option<usize>,
-        ) -> Vec<crate::ActivityBarRowHit> {
-            Vec::new()
-        }
         fn draw_solid_fill(&mut self, _r: QRect, _c: Color) {}
         fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
         fn draw_command_line(&mut self, _r: QRect, _c: &CommandLine) {}
@@ -4765,22 +4648,6 @@ mod tests {
             _c: &CommandLine,
         ) -> crate::primitives::command_line::CommandLineLayout {
             Default::default()
-        }
-        fn status_bar_layout(&self, _r: QRect, _b: &StatusBar) -> crate::StatusBarLayout {
-            crate::StatusBarLayout {
-                bar_width: 0.0,
-                bar_height: 0.0,
-                visible_segments: Vec::new(),
-                hit_regions: Vec::new(),
-                resolved_right_start: 0,
-            }
-        }
-        fn activity_bar_layout(
-            &self,
-            _r: QRect,
-            _b: &ActivityBar,
-        ) -> Vec<crate::ActivityBarRowHit> {
-            Vec::new()
         }
         fn text_display_layout(
             &self,
@@ -7068,56 +6935,6 @@ mod tests {
     fn tui_backend_scrollbar_reserve_uses_the_zero_default() {
         let backend = TuiBackend::new();
         assert_eq!(Backend::scrollbar_reserve(&backend), 0.0);
-    }
-
-    /// Issue #1045 item 2: TUI is a fixed-cell backend with no font size
-    /// to scale, so it doesn't override
-    /// `Backend::draw_status_bar_interactive_scaled` — this pins that the
-    /// trait's own default (ignore `font_scale`, forward unscaled) is
-    /// what actually runs, by checking a scaled call paints byte-for-byte
-    /// the same layout an unscaled call does.
-    #[test]
-    fn tui_backend_draw_status_bar_interactive_scaled_uses_the_unscaled_default() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let bar = crate::primitives::status_bar::StatusBar {
-            id: WidgetId::new("status"),
-            left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
-                text: "READY".into(),
-                fg: crate::Color::rgb(255, 255, 255),
-                bg: crate::Color::rgb(0, 0, 0),
-                bold: false,
-                action_id: None,
-            }],
-            right_segments: vec![],
-        };
-        let rect = QRect::new(0.0, 0.0, 40.0, 1.0);
-        let interaction = crate::InteractionState::new();
-
-        let mut unscaled_backend = TuiBackend::new();
-        let mut scaled_backend = TuiBackend::new();
-        let mut terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
-        let unscaled_result = std::cell::RefCell::new(None);
-        let scaled_result = std::cell::RefCell::new(None);
-        terminal
-            .draw(|frame| {
-                let unscaled = unscaled_backend.enter_frame_scope(frame, |b| {
-                    b.draw_status_bar_interactive(rect, &bar, &interaction)
-                });
-                *unscaled_result.borrow_mut() = Some(unscaled);
-                let scaled = scaled_backend.enter_frame_scope(frame, |b| {
-                    b.draw_status_bar_interactive_scaled(rect, &bar, &interaction, 0.5)
-                });
-                *scaled_result.borrow_mut() = Some(scaled);
-            })
-            .expect("draw");
-
-        assert_eq!(
-            unscaled_result.into_inner().unwrap(),
-            scaled_result.into_inner().unwrap(),
-            "TUI has no font to scale; the default impl must ignore font_scale entirely"
-        );
     }
 
     /// A pixel backend must not quantize — `snap_height` returns the input

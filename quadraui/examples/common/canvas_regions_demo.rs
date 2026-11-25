@@ -38,12 +38,13 @@
 //! - Enter / Space (focused)  toggle the selected region
 //! - q / Esc               quit
 
+use quadraui::DrawsPrimitives;
 use std::cell::RefCell;
 
 use quadraui::{
-    AppLogic, Backend, Canvas, CanvasCursor, CanvasHit, CanvasRegion, Color, DrawOp,
-    InteractionState, Key, MouseButton, NamedKey, PointerShape, Reaction, Rect, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Canvas, CanvasCursor, CanvasHit, CanvasRegion, Color, DrawOp, Key,
+    MouseButton, NamedKey, PointerShape, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
+    WidgetId,
 };
 
 /// The two toggleable regions, in declaration order — also their index
@@ -191,11 +192,7 @@ impl AppLogic for CanvasRegionsDemo {
         let _ = backend.draw_canvas(rect, &self.canvas(rect));
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {

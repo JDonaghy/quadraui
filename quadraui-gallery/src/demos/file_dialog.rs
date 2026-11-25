@@ -21,11 +21,12 @@
 //! itself (see [`build_demo_tree`]), so the listing is a fixed set of
 //! names on every machine and every checkout.
 
+use quadraui::DrawsPrimitives;
 use std::path::PathBuf;
 
 use quadraui::{
-    Backend, BackendCaps, Color, FileDialogOptions, InteractionState, Key, Reaction, Rect,
-    StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, FileDialogOptions, Key, Reaction, Rect, StatusBar,
+    StatusBarSegment, Style, UiEvent, WidgetId,
 };
 use tempfile::TempDir;
 
@@ -194,11 +195,7 @@ impl Demo for FileDialogDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let status_rect = Rect::new(area.x, area.y + area.height - lh, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(variant), &());
     }
 
     fn handle(

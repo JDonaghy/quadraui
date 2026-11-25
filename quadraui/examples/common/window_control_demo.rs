@@ -18,9 +18,10 @@
 //! Keys: `t` set_title, `f` toggle fullscreen, `a` toggle always-on-top,
 //! `m` minimize, `r` restore, `c` center. Esc quits.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, BackendError, Color, InteractionState, Key, NamedKey, Reaction, Rect,
-    ServiceResult, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, BackendError, Color, Key, NamedKey, Reaction, Rect, ServiceResult,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct WindowControlDemo {
@@ -85,11 +86,7 @@ impl AppLogic for WindowControlDemo {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

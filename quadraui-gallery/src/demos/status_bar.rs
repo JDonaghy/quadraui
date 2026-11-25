@@ -8,9 +8,10 @@
 //! right segment to drop while the cursor-position segment keeps
 //! painting.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment,
-    Style, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent,
+    WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -111,7 +112,7 @@ impl Demo for StatusBarDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = Self::rect(area, backend);
         let bar = status_bar(variant == 1);
-        let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(rect, &bar, &());
     }
 
     fn handle(

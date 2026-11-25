@@ -14,10 +14,10 @@
 //! follow-up issues).
 
 use quadraui::compose::{Handled, ToastStackAction, ToastStackController};
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay,
-    ToastSeverity, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Style,
+    Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -142,11 +142,7 @@ impl Demo for ToastDemo {
     fn render(&self, _variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let hint_rect = Rect::new(area.x, area.y, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            hint_rect,
-            &self.hint_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(hint_rect, &self.hint_bar(), &());
 
         let overlay_area = Self::overlay_area(backend, area);
         let _ = backend.draw_toast_overlay(overlay_area, &self.stack());

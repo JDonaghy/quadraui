@@ -22,11 +22,10 @@
 //! running — including `Theme::light_default()`.
 
 use quadraui::{
-    AppShellEvent, AppShellLayout, Backend, Decoration, DrawsPrimitives, Icon, InteractionState,
-    Key, ListItem, ListView, ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect,
-    ShellApp, ShellConfig, ShellContext, StatusBar, StatusBarSegment, Style, StyledSpan,
-    StyledText, TabBar, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextDisplayLine, UiEvent,
-    WidgetId,
+    AppShellEvent, AppShellLayout, Backend, Decoration, DrawsPrimitives, Icon, Key, ListItem,
+    ListView, ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect, ShellApp,
+    ShellConfig, ShellContext, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText, TabBar,
+    TabBarHit, TabBarLayout, TabItem, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 
 use crate::registry::registry;
@@ -544,11 +543,7 @@ impl ShellApp for GalleryApp {
                         }],
                         right_segments: vec![],
                     };
-                    backend.draw_status_bar_interactive(
-                        Rect::new(body.x, body.y, body.width, lh),
-                        &bar,
-                        &InteractionState::new(),
-                    );
+                    backend.draw_dyn(Rect::new(body.x, body.y, body.width, lh), &bar, &());
                 }
                 Some(idx) => match self.active_tab {
                     MainTab::Demo => {
@@ -573,10 +568,10 @@ impl ShellApp for GalleryApp {
                                 }],
                                 right_segments: vec![],
                             };
-                            backend.draw_status_bar_interactive(
+                            backend.draw_dyn(
                                 Rect::new(body.x, body.y + row as f32 * lh, body.width, lh),
                                 &note_bar,
-                                &InteractionState::new(),
+                                &(),
                             );
                         }
                         let demo_rect = self.demo_content_rect(idx, backend, body);
@@ -942,11 +937,7 @@ fn draw_text_block(backend: &mut dyn Backend, rect: Rect, prefix: &str, text: &s
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(
-            Rect::new(rect.x, y, rect.width, lh),
-            &bar,
-            &InteractionState::new(),
-        );
+        backend.draw_dyn(Rect::new(rect.x, y, rect.width, lh), &bar, &());
     }
 }
 
@@ -1022,7 +1013,7 @@ fn draw_variant_picker(backend: &mut dyn Backend, rect: Rect, variants: &[&str],
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(
+        backend.draw_dyn(
             Rect::new(
                 rect.x + i as f32 * col_width,
                 rect.y,
@@ -1030,7 +1021,7 @@ fn draw_variant_picker(backend: &mut dyn Backend, rect: Rect, variants: &[&str],
                 rect.height,
             ),
             &bar,
-            &InteractionState::new(),
+            &(),
         );
     }
 }

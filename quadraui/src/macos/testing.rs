@@ -510,7 +510,8 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -523,7 +524,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 
@@ -604,7 +605,8 @@ mod tests {
             if !self.panicked_yet.replace(true) {
                 panic!("PanicsOnceThenPaints: deliberate panic for #922 coverage");
             }
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -617,7 +619,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 
@@ -697,7 +699,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let width = if self.wide { W as f32 } else { (W / 2) as f32 };
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, width, H as f32),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -710,7 +713,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 
@@ -790,10 +793,11 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &self.bar(),
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 
@@ -889,7 +893,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             use crate::primitives::activity_bar::{ActivityBar, ActivityItem};
-            backend.draw_activity_bar_with_style(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &ActivityBar {
                     id: WidgetId::new("bar"),
@@ -904,9 +909,10 @@ mod tests {
                     active_accent: None,
                     selection_bg: None,
                     is_keyboard_focused: self.focused,
+                    style: Default::default(),
+                    hovered: None,
                 },
-                None,
-                &crate::ActivityBarStyle::default(),
+                &(),
             );
         }
 
@@ -1015,7 +1021,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let bounds = Rect::new(0.0, 0.0, W as f32, H as f32);
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 bounds,
                 &StatusBar {
                     id: WidgetId::new("bg"),
@@ -1036,7 +1043,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
             backend.register_text_region(crate::TextRegion {
                 id: WidgetId::new("bg"),
@@ -1126,7 +1133,8 @@ mod tests {
             if !self.drained.get() {
                 return;
             }
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -1139,7 +1147,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 

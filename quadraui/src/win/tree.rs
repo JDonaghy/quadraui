@@ -32,9 +32,7 @@
 //! `WinBackend` tracks a `nerd_fonts_enabled` flag the same way
 //! `TuiBackend`/`GtkBackend`/`MacBackend` do, and this rasteriser picks
 //! [`crate::types::Icon::glyph`] vs [`crate::types::Icon::fallback`] the
-//! same way theirs do. `draw_tree` is the only Win-GUI rasteriser wired
-//! to the flag so far — `win::activity_bar` still always paints `fallback`
-//! (see that module's doc). The chosen glyph paints in
+//! same way theirs do. The chosen glyph paints in
 //! [`crate::types::Icon::color`] when set, else the row's `def_fg`.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;

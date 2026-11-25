@@ -16,10 +16,11 @@
 //! - `Enter`                      select first row of active section
 //! - `q` / `Esc`                  quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, Handled, InteractionState, Key, NamedKey, NavigationMode,
-    Reaction, Rect, ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
-    StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Decoration, Handled, Key, NamedKey, NavigationMode, Reaction, Rect,
+    ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarInteraction,
+    StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;
@@ -131,18 +132,13 @@ impl AppLogic for DebugSidebar {
         let sidebar = Self::sidebar_rect(backend);
         let status = Self::status_rect(backend);
         self.sidebar.render(backend, sidebar);
-        // One `InteractionState` in, instead of two positional
-        // ids. `StatusBarInteraction` keeps owning the press/release
-        // state machine; this adapts its ids into the new call shape.
-        let layout = backend.draw_status_bar_interactive(
-            status,
-            &self.build_status_bar(),
-            &InteractionState::from_parts(
-                self.status_interaction.hovered_id().cloned(),
-                self.status_interaction.pressed_id().cloned(),
-            ),
-        );
-        self.status_interaction.set_layout(layout);
+        // `StatusBarInteraction` owns the press/release state machine;
+        // it resolves clicks against the same layout the widget contract
+        // paints with.
+        let bar = self.build_status_bar();
+        let _ = backend.draw_dyn(status, &bar, &());
+        self.status_interaction
+            .set_layout(backend.layout_primitive(status, &bar).layout);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

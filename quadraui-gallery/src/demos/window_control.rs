@@ -9,6 +9,7 @@
 //! supports `set_title` (OSC 0/2) and genuinely does not support the
 //! rest, so both outcomes are deterministic here.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, BackendError, Color, InteractionState, Reaction, Rect, ServiceResult,
     StatusBar, StatusBarSegment, Style, Toolbar, ToolbarButton, ToolbarHit, UiEvent, WidgetId,
@@ -187,11 +188,7 @@ impl Demo for WindowControlDemo {
         );
 
         let status_rect = Rect::new(area.x, area.y + lh, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(

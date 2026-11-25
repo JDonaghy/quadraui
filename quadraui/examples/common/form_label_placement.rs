@@ -39,10 +39,11 @@
 //! - `Esc`                  → quit
 //! - `q` (no field focused) → quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormField,
-    Handled, InteractionState, LabelAlign, LabelPosition, Reaction, Rect, StatusBar,
-    StatusBarSegment, StyledText, UiEvent, WidgetId,
+    Handled, LabelAlign, LabelPosition, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    UiEvent, WidgetId,
 };
 
 pub struct FormLabelPlacementApp {
@@ -219,11 +220,7 @@ impl AppLogic for FormLabelPlacementApp {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
         self.fc.render(backend, form_rect);
-        let _hits = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.build_status_bar(),
-            &InteractionState::new(),
-        );
+        let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

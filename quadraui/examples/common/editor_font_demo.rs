@@ -13,10 +13,11 @@
 //! (e.g. CSD window-drag/resize) that also shipped without a TUI demo.
 
 use quadraui::compose::app_shell::AppShellLayout;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, Color, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine,
-    EditorStyle, EditorStyledSpan, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp,
-    ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    EditorStyle, EditorStyledSpan, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
+    ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 const DEMO_FONT_FAMILY: &str = "DejaVu Sans Mono";
@@ -129,7 +130,7 @@ impl ShellApp for EditorFontDemo {
             right_segments: vec![],
         };
         let status_rect = Rect::new(main.x, main.y + main.height - lh, main.width, lh);
-        backend.draw_status_bar_interactive(status_rect, &status, &InteractionState::new());
+        backend.draw_dyn(status_rect, &status, &());
     }
 
     fn handle(

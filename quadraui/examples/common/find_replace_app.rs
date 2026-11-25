@@ -12,10 +12,11 @@
 //! | `r`       | Toggle the replace row           |
 //! | `q` / Esc | Quit                              |
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     compute_find_replace_hit_regions, AppLogic, Backend, Color, FindReplaceClickTarget,
-    FindReplaceHit, FindReplacePanel, InteractionState, MouseButton, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId, FR_PANEL_WIDTH,
+    FindReplaceHit, FindReplacePanel, MouseButton, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId, FR_PANEL_WIDTH,
 };
 
 pub struct FindReplaceApp {
@@ -128,11 +129,7 @@ impl AppLogic for FindReplaceApp {
         backend.draw_find_replace(rect, &panel);
 
         let status_rect = Rect::new(0.0, rect.height, vp.width, vp.height - rect.height);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

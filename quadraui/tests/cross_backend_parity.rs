@@ -75,8 +75,8 @@ impl<A: AppLogic> ActivityBarProbeDriver for TuiDriver<A> {
     }
 
     fn activity_row_height(&self) -> f32 {
-        // `tui::activity_bar` lays out with a row height of 1.0 — one
-        // terminal text row per icon.
+        // A cell-grid activity bar lays out one terminal text row per
+        // icon.
         1.0
     }
 }
@@ -91,7 +91,7 @@ impl<A: AppLogic> ActivityBarProbeDriver for GtkDriver<A> {
     }
 
     fn activity_row_height(&self) -> f32 {
-        quadraui::gtk::ACTIVITY_ROW_PX as f32
+        quadraui::primitives::activity_bar::PIXEL_ROW_HEIGHT
     }
 }
 
@@ -764,18 +764,14 @@ fn deprecated_fixed_width_is_the_ambiguity_fixed_cells_and_fixed_px_replace() {
 
 // ─── Issue #552: activity-bar hit regions vs. a revealed title bar ───────────
 //
-// `Backend::draw_activity_bar` returns `ActivityBarRowHit`s whose `y_start`/`y_end`
-// are **bar-relative** — measured from the `rect` the bar was drawn into. `AppShell`
-// adds `activity_bar_bounds.y` itself in both its click reader (`cached_activity_hit`)
-// and its hover reader (`update_hover`). The TUI rasteriser used to fold that origin
-// in a second time, so every TUI hit region sat `activity_bar_bounds.y` too low.
-// That offset is **zero while the title bar is hidden**, which is why the bug was
-// invisible to every existing test: they all construct in a fixed state. Only the
-// *transition* — hidden bar, then `set_title_bar_visible(true)` — makes the origin
-// nonzero and the double-count observable.
-//
-// GTK was always correct here, so the GTK half of each test below is the parity
-// guard: it pins the behaviour TUI now has to match.
+// An activity bar's `ActivityBarRowHit`s carry `y_start`/`y_end` **bar-relative** —
+// measured from the `rect` the bar was drawn into. `AppShell` adds
+// `activity_bar_bounds.y` itself in both its click reader (`cached_activity_hit`)
+// and its hover reader (`update_hover`), so a painter that also folded the origin in
+// would place every hit region `activity_bar_bounds.y` too low. That offset is
+// **zero while the title bar is hidden**; only the *transition* — hidden bar, then
+// `set_title_bar_visible(true)` — makes the origin nonzero and a double count
+// observable, so each test below drives that transition on both backends.
 
 /// Center of activity-bar row `idx` in the driver's native units, derived
 /// from the bounds the *shell* reported this frame — never a literal.

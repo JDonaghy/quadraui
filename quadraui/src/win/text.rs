@@ -54,8 +54,8 @@ use crate::Color;
 ///
 /// `pub` (with a `pub` constructor and measure/draw methods) rather than
 /// `pub(crate)`: it appears by reference in the signatures of the chrome
-/// rasterisers `super::mod` re-exports (`draw_status_bar`,
-/// `draw_activity_bar`, `draw_menu_bar`, and their `*_layout` twins), so a
+/// rasterisers `super::mod` re-exports (`draw_menu_bar` and its
+/// `*_layout` twin), so a
 /// crate-private type here is a `private_interfaces` warning — i.e. a build
 /// failure under CI's `-D warnings`. Same posture as
 /// [`crate::macos::text`]'s `pub fn make_font` / `pub fn measure_text`,
@@ -751,8 +751,7 @@ fn measure_text(
 /// `ID2D1SolidColorBrush` instead of creating a fresh one per call.
 ///
 /// This is the single choke point every Win-GUI chrome rasteriser paints
-/// text through (`win::status_bar`, `win::activity_bar`,
-/// …, via [`DWrite::draw_text`]/[`DWrite::draw_text_styled`]), so it's
+/// text through (`win::menu_bar`, …, via [`DWrite::draw_text`]/[`DWrite::draw_text_styled`]), so it's
 /// also where paint-time text-run recording hooks in for
 /// [`super::testing::WinDriver::find`]/`find_bounds`/`inventory`
 /// — the Win-GUI counterpart of `gtk::painted_text::show_layout`
@@ -1161,9 +1160,8 @@ thread_local! {
 /// own return value.
 ///
 /// The Direct2D twin of Cairo's `cr.translate(dx, dy)` /
-/// `CGContextTranslateCTM` (see [`crate::macos::activity_bar`]'s module
-/// doc) — used by callers that paint a bar-relative rasteriser (e.g.
-/// [`crate::win::activity_bar::draw_activity_bar`]) at a non-zero
+/// `CGContextTranslateCTM` — used by callers that paint a bar-relative
+/// rasteriser at a non-zero
 /// on-screen origin without threading that origin through every
 /// coordinate the rasteriser itself computes.
 ///

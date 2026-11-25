@@ -48,7 +48,7 @@ use gtk4::glib;
 use gtk4::pango;
 use gtk4::prelude::*;
 
-use crate::backend::{activity_bar_hits, BackendError};
+use crate::backend::BackendError;
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, TextRegion};
 use crate::event::{Point, Rect};
@@ -56,10 +56,10 @@ use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FieldKind, FontRole,
-    Form, GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
-    Rect as QRect, ResizeEdge, Split, StatusBar, SystemTheme, TextDisplay, TreeView, UiEvent,
-    UserPayload, Viewport,
+    Accelerator, AcceleratorId, Backend, CommandLine, DragState, FieldKind, FontRole, Form,
+    GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
+    Rect as QRect, ResizeEdge, Split, SystemTheme, TextDisplay, TreeView, UiEvent, UserPayload,
+    Viewport,
 };
 // `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
 // `#[cfg(test)]` code below — they're gated to avoid unused import
@@ -387,7 +387,7 @@ pub struct GtkBackend {
     painted_text_recording: bool,
     /// `WidgetId` of the `ActivityBar` that declared `is_keyboard_focused`
     /// during the most recent render pass. Cleared by `begin_frame` and
-    /// re-set by `draw_activity_bar`. The GTK runner reads this in the
+    /// re-set by `end_frame` from the painted-widget record. The GTK runner reads this in the
     /// window-level key handler to convert `KeyPressed` events into
     /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })` so
     /// consumers receive typed key events without fighting GTK widget focus.
@@ -1374,8 +1374,7 @@ impl GtkBackend {
     ///
     /// Two kinds of caller:
     /// 1. Trait methods that already compute a label's rect for
-    ///    hit-testing ([`Backend::draw_status_bar`],
-    ///    [`Backend::draw_data_table`], [`Backend::draw_pipeline_view`]).
+    ///    hit-testing ([`Backend::draw_data_table`], [`Backend::draw_pipeline_view`]).
     ///    These record the *logical* label — whole segment, whole cell —
     ///    at the rect the primitive's own `hit_test` uses, which is what
     ///    a `find`-driven click wants.
@@ -1672,96 +1671,6 @@ impl GtkBackend {
         modifiers: crate::Modifiers,
     ) -> Option<AcceleratorId> {
         self.core.match_keypress(key, modifiers)
-    }
-
-    /// Shared body of [`Backend::draw_status_bar_interactive`] /
-    /// [`Backend::draw_status_bar_interactive_scaled`]. `font_scale` multiplies
-    /// the chrome font's point size for this paint only — `1.0` is the unscaled case.
-    fn status_bar_paint_scaled(
-        &mut self,
-        rect: QRect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-        font_scale: f32,
-    ) -> crate::StatusBarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        // Status bar segments are chrome, painted in `ui_font` —
-        // `GtkBackend`'s own `PaintSurface` impl now resolves that font
-        // straight from `self.ui_font` on every text verb (see the
-        // cross-reference comment just above `impl PaintSurface for
-        // GtkBackend` below), so there is no shared-layout font to swap
-        // onto for the plain `font_scale == 1.0` case any more. A real
-        // `font_scale` still needs a scoped override: save `self.ui_font`,
-        // replace it with a size-scaled copy for the paint below, then
-        // restore it so later draws in this frame aren't left painting
-        // chrome text at the scaled size.
-        let saved_ui_font = if font_scale != 1.0 {
-            let mut scaled_desc = pango::FontDescription::from_string(&self.ui_font);
-            // Pango sizes are in `PANGO_SCALE`-ths of a point — scale the
-            // raw integer so a caller-friendly `f32` multiplier (e.g.
-            // `0.85`) survives the round-trip without losing precision to
-            // an intermediate point-size conversion. `.max(1)` guards
-            // against a degenerate `font_scale` (e.g. `0.0`) collapsing
-            // the description to Pango's own "unset" sentinel (`0`),
-            // which would fall back to some other ambient size instead of
-            // painting (nearly) nothing, the honest behaviour a caller
-            // asking for size `~0` should get.
-            let scaled = ((scaled_desc.size() as f32) * font_scale).round() as i32;
-            scaled_desc.set_size(scaled.max(1));
-            Some(std::mem::replace(
-                &mut self.ui_font,
-                scaled_desc.to_str().to_string(),
-            ))
-        } else {
-            None
-        };
-        let theme = self.current_theme;
-        // Use the rect's height for the background fill, matching other backends.
-        // This ensures the fill exactly matches the provided rect.
-        let line_height = rect.height;
-        let bar_layout = crate::primitives::status_bar::native_surface_paint::paint(
-            bar,
-            self,
-            &theme,
-            rect.x,
-            rect.y,
-            rect.width,
-            line_height,
-            hovered_id,
-            pressed_id,
-        );
-        if let Some(saved) = saved_ui_font {
-            self.ui_font = saved;
-        }
-        // Record each visible segment's label into the painted-text map
-        // that GtkDriver::find scans — resolve the text from `bar` via the
-        // segment's side + index, since `VisibleStatusSegment` carries the
-        // resolved bounds but not the label itself.
-        //
-        // `seg.bounds` (from `StatusBar::layout`) is bar-local:
-        // `x` relative to this bar's own left edge, `y` always `0` relative to
-        // its own top. Translate by `rect`'s origin to get absolute surface
-        // coordinates, matching `Self::draw_data_table`'s convention.
-        for seg in &bar_layout.visible_segments {
-            let text = match seg.side {
-                crate::primitives::status_bar::StatusSegmentSide::Left => {
-                    bar.left_segments.get(seg.segment_idx).map(|s| &s.text)
-                }
-                crate::primitives::status_bar::StatusSegmentSide::Right => {
-                    bar.right_segments.get(seg.segment_idx).map(|s| &s.text)
-                }
-            };
-            if let Some(text) = text {
-                let bounds = QRect::new(
-                    rect.x + seg.bounds.x,
-                    rect.y + seg.bounds.y,
-                    seg.bounds.width,
-                    seg.bounds.height,
-                );
-                self.record_painted_text(text, bounds);
-            }
-        }
-        bar_layout
     }
 }
 
@@ -2065,7 +1974,7 @@ impl Backend for GtkBackend {
         self.overlay_bounds_this_frame.clear();
         // Clear last frame's painted-text map — see `painted_text`'s docs.
         self.painted_text.clear();
-        // Clear the focused activity bar — re-set by draw_activity_bar
+        // Clear the focused activity bar — re-set by end_frame
         // during the render pass if still focused. Same lifecycle as
         // text_regions.
         self.focused_activity_bar = None;
@@ -2087,6 +1996,9 @@ impl Backend for GtkBackend {
     }
 
     fn end_frame(&mut self) {
+        // The rail that holds keyboard focus is whichever activity bar this
+        // frame painted with `is_keyboard_focused` set.
+        self.focused_activity_bar = crate::primitives::activity_bar::painted_keyboard_focused_bar();
         // No-op flush-wise. GTK's `set_draw_func` closure flushes when it
         // returns; this method exists for parity with backends that need
         // an explicit flush.
@@ -3218,7 +3130,7 @@ impl Backend for GtkBackend {
     //
     // Phase B.5b Stage 9: trait extended with `&Layout` parameter per
     // `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2. The current GTK rasterisers
-    // (`quadraui_gtk::draw_status_bar` etc.) recompute their own
+    // recompute their own
     // layout internally, so the `_layout` parameter is currently
     // ignored — kept for forward compatibility when the GTK
     // rasterisers are updated to consume it. Behaviour is unchanged.
@@ -3231,119 +3143,9 @@ impl Backend for GtkBackend {
     // those are lifted into quadraui itself, the trait impls stay as stubs.
     // The GTK call sites continue to use the legacy shims directly.
 
-    fn draw_status_bar_interactive(
-        &mut self,
-        rect: QRect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::StatusBarLayout {
-        self.status_bar_paint_scaled(rect, bar, interaction, 1.0)
-    }
-
-    /// Same paint as [`Self::draw_status_bar_interactive`],
-    /// scaling only this call's chrome font size. Both methods funnel
-    /// through [`Self::status_bar_paint_scaled`] so a fix to one applies to
-    /// both; `1.0` there is exactly this call with no scaling applied.
-    fn draw_status_bar_interactive_scaled(
-        &mut self,
-        rect: QRect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-        font_scale: f32,
-    ) -> crate::StatusBarLayout {
-        self.status_bar_paint_scaled(rect, bar, interaction, font_scale)
-    }
-
     // `status_bar_paint_scaled` — the shared body both methods above
     // funnel through — is defined in the inherent `impl GtkBackend` block.
     // A trait impl block may only contain that trait's own items.
-
-    /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
-    /// that method for the real painting logic.
-    fn draw_activity_bar(
-        &mut self,
-        rect: QRect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-    ) -> Vec<crate::ActivityBarRowHit> {
-        self.draw_activity_bar_with_style(
-            rect,
-            bar,
-            hovered_idx,
-            &crate::ActivityBarStyle::default(),
-        )
-    }
-
-    fn draw_activity_bar_with_style(
-        &mut self,
-        rect: QRect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-        style: &crate::ActivityBarStyle,
-    ) -> Vec<crate::ActivityBarRowHit> {
-        // Track keyboard focus so the GTK runner's key handler can
-        // redirect KeyPressed events to this bar.
-        if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id);
-        }
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_activity_bar_with_style called outside enter_frame_scope");
-        cr.save().ok();
-        cr.translate(rect.x as f64, rect.y as f64);
-        let hits = crate::gtk::draw_activity_bar_with_style(
-            cr,
-            layout,
-            rect.width as f64,
-            rect.height as f64,
-            bar,
-            style,
-            &self.current_theme,
-            hovered_idx,
-            self.nerd_fonts_enabled,
-        );
-        cr.restore().ok();
-        hits
-    }
-
-    fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let char_w = self.current_char_width as f32;
-        let lh = self.current_line_height as f32;
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        // Measure with `ui_font`, matching `draw_status_bar`'s paint
-        // font — a no-paint caller (hit-testing without repainting) must
-        // resolve the same segment widths the paint path produced.
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-        // `layout_padded` (not plain `layout`) so this no-paint
-        // twin agrees with the shared `native_surface_paint::paint`'s
-        // outer edge inset + per-segment padding — see that fn's doc.
-        let result = bar.layout_padded(
-            rect.width,
-            lh,
-            crate::gtk::MIN_GAP_PX,
-            crate::primitives::status_bar::PIXEL_EDGE_INSET,
-            crate::primitives::status_bar::PIXEL_SEGMENT_PADDING,
-            |seg| {
-                let text_w = self.pango_str_width(&pango_layout, &seg.text, char_w);
-                crate::StatusSegmentMeasure::new(text_w)
-            },
-        );
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-        result
-    }
-
-    fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
-        activity_bar_hits(rect, bar, crate::gtk::ACTIVITY_ROW_PX as f32)
-    }
 
     /// A pixel backend can honor `rect` exactly, unlike the old
     /// per-row `StatusBar` hack this replaces — see
@@ -5175,9 +4977,9 @@ impl PaintSurface for GtkBackend {
     }
 
     /// Overrides the default (which drops `bold`) — a bold Pango
-    /// `AttrList` weight, matching what `gtk::status_bar::draw_status_bar`
-    /// measured before its paint moved to
-    /// `primitives::status_bar::native_surface_paint::paint`. Also
+    /// `AttrList` weight — the bold-aware width
+    /// `primitives::status_bar::native_surface_paint::paint` measures
+    /// segments with. Also
     /// forces `ui_font` now, matching [`Self::surface_measure_text`]'s
     /// doc above.
     fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
@@ -5487,6 +5289,7 @@ mod tests {
     // this file's own coverage of the methods it deprecates.
     #![allow(deprecated)]
     use super::*;
+    use crate::primitives::status_bar::{StatusBar, StatusBarPrimitiveLayout};
     use crate::{MenuBarItem, TerminalCell, TerminalCursorShape, WidgetId};
 
     /// Generic helper — minimal "app render code" that consumes
@@ -7505,6 +7308,18 @@ mod tests {
     // control: the extent must visibly change, proving `ui_font` is
     // actually read, not just insulated from the editor font by accident.
 
+    /// Paint `bar` through the widget contract and return its first
+    /// visible segment's resolved width.
+    fn status_segment_width(b: &mut GtkBackend, rect: QRect, bar: &StatusBar) -> f32 {
+        crate::DrawsPrimitives::draw_dyn(b, rect, bar, &())
+            .downcast_ref::<StatusBarPrimitiveLayout>()
+            .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+            .layout
+            .visible_segments[0]
+            .bounds
+            .width
+    }
+
     fn ui_font_test_surface_and_contexts() -> (
         pangocairo::cairo::ImageSurface,
         pango::FontDescription,
@@ -7541,12 +7356,7 @@ mod tests {
             pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
-            backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
-                    .bounds
-                    .width
-            })
+            backend.enter_frame_scope(&cr, &layout, |b| status_segment_width(b, rect, &bar))
         };
 
         let small_editor_width = width_at(&small_editor_font);
@@ -7563,12 +7373,7 @@ mod tests {
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             Backend::set_ui_font(&mut backend, "Sans 40");
-            backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
-                    .bounds
-                    .width
-            })
+            backend.enter_frame_scope(&cr, &layout, |b| status_segment_width(b, rect, &bar))
         };
         assert!(
             ui_font_width > small_editor_width * 1.5,
@@ -7577,76 +7382,9 @@ mod tests {
         );
     }
 
-    /// `draw_status_bar_interactive_scaled` paints narrower text at a
-    /// smaller `font_scale`, and an unscaled paint immediately after a
-    /// scaled one must come back to exactly its own pre-scaled width —
-    /// proving the per-call scale doesn't leak into the backend's ambient
-    /// `ui_font` for later paints this frame.
-    #[test]
-    fn gtk_backend_draw_status_bar_interactive_scaled_shrinks_without_perturbing_later_unscaled_paints(
-    ) {
-        let (surface, font, _) = ui_font_test_surface_and_contexts();
-        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
-        let pango_ctx = pangocairo::functions::create_context(&cr);
-        pango_ctx.set_font_description(&font);
-        let layout = pango::Layout::new(&pango_ctx);
-
-        let bar = StatusBar {
-            id: WidgetId::new("test:status-bar"),
-            left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
-                text: "READY".to_string(),
-                fg: crate::types::Color::rgb(255, 255, 255),
-                bg: crate::types::Color::rgb(0, 0, 0),
-                bold: false,
-                action_id: None,
-            }],
-            right_segments: vec![],
-        };
-        let rect = QRect::new(0.0, 0.0, 400.0, 20.0);
-
-        let mut backend = GtkBackend::new();
-        Backend::set_ui_font(&mut backend, "Sans 40");
-        let (unscaled_w, scaled_w, unscaled_w_again) =
-            backend.enter_frame_scope(&cr, &layout, |b| {
-                let unscaled_w = b
-                    .draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
-                    .bounds
-                    .width;
-                let scaled_w = b
-                    .draw_status_bar_interactive_scaled(
-                        rect,
-                        &bar,
-                        &crate::InteractionState::new(),
-                        0.5,
-                    )
-                    .visible_segments[0]
-                    .bounds
-                    .width;
-                let unscaled_w_again = b
-                    .draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
-                    .bounds
-                    .width;
-                (unscaled_w, scaled_w, unscaled_w_again)
-            });
-
-        assert!(
-            scaled_w < unscaled_w * 0.75,
-            "font_scale=0.5 should paint noticeably narrower: {scaled_w} vs {unscaled_w}",
-        );
-        assert!(
-            (unscaled_w_again - unscaled_w).abs() < 0.5,
-            "an unscaled paint after a scaled one must match the original unscaled width \
-             — ui_font state must be restored, not left scaled: \
-             {unscaled_w_again} vs {unscaled_w}",
-        );
-    }
-
     /// Driver-tier proof that `GtkBackend::surface_measure_text_styled`'s
     /// bold override actually does something against a real `pango::Layout`.
-    /// Paints the same text through the real `Backend::draw_status_bar`
-    /// path once bold, once not, and asserts the bold segment's resolved
+    /// Paints the same text through the widget contract once bold, once not, and asserts the bold segment's resolved
     /// (painted) width is strictly wider. The chrome font is pinned to a
     /// large explicit size rather than the backend default: at the default
     /// 13px chrome size, macOS's Pango/CoreText rounds regular and bold
@@ -7675,12 +7413,7 @@ mod tests {
                 }],
                 right_segments: vec![],
             };
-            backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
-                    .bounds
-                    .width
-            })
+            backend.enter_frame_scope(&cr, &layout, |b| status_segment_width(b, rect, &bar))
         };
 
         let regular_width = width_for(false);
@@ -7744,11 +7477,7 @@ mod tests {
                 // Negative width: `rect.x = 20` mirrors to a real
                 // [5, 20) x [10, 25) area on a positive-width backend, but
                 // must paint nothing at all once the guard short-circuits.
-                b.draw_status_bar_interactive(
-                    QRect::new(20.0, 10.0, -15.0, 15.0),
-                    &bar,
-                    &crate::InteractionState::new(),
-                );
+                crate::DrawsPrimitives::draw_dyn(b, QRect::new(20.0, 10.0, -15.0, 15.0), &bar, &());
             });
         }
         surface.flush();
@@ -7813,10 +7542,11 @@ mod tests {
             };
             let pango_layout = pangocairo::functions::create_layout(&cr);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_status_bar_interactive(
+                crate::DrawsPrimitives::draw_dyn(
+                    b,
                     QRect::new(0.0, 0.0, canvas_w as f32, canvas_h as f32),
                     &bar,
-                    &crate::InteractionState::new(),
+                    &(),
                 );
             });
         }

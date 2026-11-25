@@ -19,10 +19,11 @@
 //! - Esc                      close dropdown (or quit if none open)
 //! - q                        quit (when no dropdown open)
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    resolve_bar_height, AppLogic, Backend, Color, ContextMenuItem, InteractionState, Key, MenuDef,
-    MenuEvent, MenuSystem, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    UiEvent, WidgetId,
+    resolve_bar_height, AppLogic, Backend, Color, ContextMenuItem, Key, MenuDef, MenuEvent,
+    MenuSystem, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
+    WidgetId,
 };
 
 pub struct MenuBarApp {
@@ -132,11 +133,7 @@ impl AppLogic for MenuBarApp {
         self.menu_system.render(backend, bar_rect);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

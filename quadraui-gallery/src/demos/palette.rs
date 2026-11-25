@@ -6,10 +6,11 @@
 //! naming a new one. Two variants show the popup at two sizes.
 
 use quadraui::compose::{DualModePaletteAction, Handled};
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, DualModePaletteController, InteractionState, PaletteItem,
-    PaletteMode, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText,
-    UiEvent, WidgetId, PALETTE_CHROME_ROWS,
+    Backend, BackendCaps, Color, DualModePaletteController, PaletteItem, PaletteMode, Reaction,
+    Rect, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText, UiEvent, WidgetId,
+    PALETTE_CHROME_ROWS,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -123,11 +124,7 @@ impl Demo for PaletteDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let bar_h = chrome_strip_height(backend, |s| s.status_bar_height);
         let bar_rect = Rect::new(area.x, area.y + area.height - bar_h, area.width, bar_h);
-        let _ = backend.draw_status_bar_interactive(
-            bar_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(bar_rect, &self.status_bar(), &());
 
         let popup_rect = Self::popup_rect(variant, area, backend);
         self.picker.render(popup_rect, backend);

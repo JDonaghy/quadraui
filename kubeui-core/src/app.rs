@@ -8,6 +8,7 @@
 //! runners already own panic-safe terminal/window teardown, so this
 //! crate doesn't need its own.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, MouseButton, NamedKey, Point, Reaction, Rect,
     StatusBarHit, Theme, UiEvent, PALETTE_CHROME_ROWS,
@@ -139,7 +140,7 @@ impl KubeApp {
             return Reaction::Continue;
         }
         let bar = build_status_bar(&self.state, &self.theme);
-        let layout = backend.status_bar_layout(rect, &bar);
+        let layout = backend.layout_primitive(rect, &bar).layout;
         if let StatusBarHit::Segment(id) = layout.hit_test(position.x - rect.x, position.y - rect.y)
         {
             apply_action(
@@ -249,7 +250,7 @@ impl AppLogic for KubeApp {
         // never shows hover feedback. `compose::StatusBarInteractionController`
         // is the intended holder for that — wiring it up means also
         // handling `UiEvent::MouseMove` to update it between frames.
-        backend.draw_status_bar_interactive(status_rect, &bar, &InteractionState::new());
+        backend.draw_dyn(status_rect, &bar, &());
 
         if let Some(picker) = self.state.picker.as_ref() {
             let popup_rect = Self::popup_rect(backend);

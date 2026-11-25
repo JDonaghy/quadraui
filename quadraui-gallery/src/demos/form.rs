@@ -10,12 +10,12 @@
 //! `label_align` / `label_width` (an aligned `Left` label column shared by
 //! two fields, plus `Top`, `Inline` and `Hidden` variants on the rest).
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, FocusTree,
-    Form, FormController, FormControllerAction, FormEvent, FormField, FormHit, Handled,
-    InteractionState, Key, LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, Style, StyledText, ToggleGroupItem, Toolbar, ToolbarButton,
-    UiEvent, WidgetId,
+    Form, FormController, FormControllerAction, FormEvent, FormField, FormHit, Handled, Key,
+    LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    Style, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -762,11 +762,7 @@ impl Demo for FormDemo {
                     &format!("last: {}", self.search_replace.last_action),
                     "click / Tab / Shift+Tab",
                 );
-                let _ = backend.draw_status_bar_interactive(
-                    Self::status_rect(area, backend),
-                    &bar,
-                    &InteractionState::new(),
-                );
+                let _ = backend.draw_dyn(Self::status_rect(area, backend), &bar, &());
             }
             2 => {
                 self.scroll.fc.render(backend, form_rect);
@@ -778,11 +774,7 @@ impl Demo for FormDemo {
                     ),
                     "scroll / click / drag scrollbar",
                 );
-                let _ = backend.draw_status_bar_interactive(
-                    Self::status_rect(area, backend),
-                    &bar,
-                    &InteractionState::new(),
-                );
+                let _ = backend.draw_dyn(Self::status_rect(area, backend), &bar, &());
             }
             // `variants()` has exactly four entries, so this wildcard is
             // reached only by variant 3 ("Label placement") — `handle`'s

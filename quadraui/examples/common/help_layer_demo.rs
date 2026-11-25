@@ -24,11 +24,12 @@
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::compose::{DualModePaletteAction, Handled};
+use quadraui::DrawsPrimitives;
 use quadraui::{
     filter_help_actions, help_actions_to_palette_items, Backend, Color, DualModePaletteController,
-    HelpAction, HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry, InteractionState,
-    Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
-    StatusBarSegment, UiEvent, ViewHelp, WidgetId,
+    HelpAction, HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry, Key, NamedKey,
+    Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent,
+    ViewHelp, WidgetId,
 };
 
 const EXPLORER_PANEL: &str = "panel:explorer";
@@ -171,7 +172,7 @@ impl ShellApp for HelpLayerDemo {
             layout.main_content_bounds.width,
             lh,
         );
-        backend.draw_status_bar_interactive(rect, &hint, &InteractionState::new());
+        backend.draw_dyn(rect, &hint, &());
 
         if let Some(palette) = &self.palette {
             let popup = popup_rect(layout.window_bounds, backend);

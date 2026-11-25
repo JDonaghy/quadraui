@@ -7,9 +7,10 @@
 //! severity tint + timestamp, manual scroll disabling auto-scroll) and
 //! an over-wide line that must word-wrap rather than silently truncate.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Color, Decoration, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, StyledSpan, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
+    Backend, Color, Decoration, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Style,
+    StyledSpan, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -164,7 +165,7 @@ impl Demo for TextDisplayDemo {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(status_rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(status_rect, &bar, &());
     }
 
     fn handle(

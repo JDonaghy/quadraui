@@ -31,6 +31,7 @@
 //! Clip-only geometry until a per-backend issue gives it one (see
 //! `CLAUDE.md`'s "One backend per issue").
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, ContextMenu, InteractionState, Key, NamedKey, Reaction, Rect,
     StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarLayoutOptions,
@@ -137,7 +138,7 @@ impl AppLogic for ToolbarOverflowDemo {
         let lh = backend.line_height();
 
         let title_rect = Rect::new(0.0, 0.0, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
+        let _ = backend.draw_dyn(
             title_rect,
             &StatusBar {
                 id: WidgetId::new("title"),
@@ -153,7 +154,7 @@ impl AppLogic for ToolbarOverflowDemo {
                 }],
                 right_segments: vec![],
             },
-            &InteractionState::new(),
+            &(),
         );
 
         let rect = Self::toolbar_rect(backend);
@@ -167,7 +168,7 @@ impl AppLogic for ToolbarOverflowDemo {
         );
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
+        let _ = backend.draw_dyn(
             status_rect,
             &StatusBar {
                 id: WidgetId::new("status"),
@@ -180,7 +181,7 @@ impl AppLogic for ToolbarOverflowDemo {
                 }],
                 right_segments: vec![],
             },
-            &InteractionState::new(),
+            &(),
         );
     }
 

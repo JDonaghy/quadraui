@@ -64,6 +64,8 @@ impl ActivityBarApp {
                 active_accent: None,
                 selection_bg: None,
                 is_keyboard_focused: false,
+                style: Default::default(),
+                hovered: None,
             },
             activated: Vec::new(),
             events: Vec::new(),

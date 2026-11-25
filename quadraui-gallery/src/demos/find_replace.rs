@@ -20,10 +20,11 @@
 //! track that gap as a follow-up rather than copy this approximation
 //! verbatim.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     compute_find_replace_hit_regions, Backend, BackendCaps, Color, FindReplaceClickTarget,
-    FindReplaceHit, FindReplacePanel, InteractionState, MouseButton, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, UiEvent, WidgetId, FR_PANEL_WIDTH,
+    FindReplaceHit, FindReplacePanel, MouseButton, Reaction, Rect, StatusBar, StatusBarSegment,
+    Style, UiEvent, WidgetId, FR_PANEL_WIDTH,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -194,11 +195,7 @@ impl Demo for FindReplaceDemo {
 
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let status_rect = Rect::new(area.x, rect.y + rect.height, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(

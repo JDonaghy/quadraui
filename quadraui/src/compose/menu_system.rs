@@ -1123,22 +1123,6 @@ mod tests {
             _active: bool,
         ) {
         }
-        fn draw_status_bar_interactive(
-            &mut self,
-            _r: Rect,
-            _b: &crate::primitives::status_bar::StatusBar,
-            _interaction: &crate::interaction::InteractionState,
-        ) -> crate::StatusBarLayout {
-            unimplemented!()
-        }
-        fn draw_activity_bar(
-            &mut self,
-            _r: Rect,
-            _b: &crate::primitives::activity_bar::ActivityBar,
-            _h: Option<usize>,
-        ) -> Vec<crate::primitives::activity_bar::ActivityBarRowHit> {
-            unimplemented!()
-        }
         fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {}
         fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
         fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
@@ -1155,22 +1139,6 @@ mod tests {
             _c: &crate::CommandLine,
         ) -> crate::primitives::command_line::CommandLineLayout {
             Default::default()
-        }
-        fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
-            crate::StatusBarLayout {
-                bar_width: 0.0,
-                bar_height: 0.0,
-                visible_segments: Vec::new(),
-                hit_regions: Vec::new(),
-                resolved_right_start: 0,
-            }
-        }
-        fn activity_bar_layout(
-            &self,
-            _r: Rect,
-            _b: &crate::primitives::activity_bar::ActivityBar,
-        ) -> Vec<crate::ActivityBarRowHit> {
-            Vec::new()
         }
         fn text_display_layout(
             &self,

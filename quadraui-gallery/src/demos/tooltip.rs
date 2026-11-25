@@ -6,10 +6,10 @@
 //! a bespoke popup needs in order to keep its border and title rather
 //! than losing them. `t` toggles the title on the `Full` variant.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Key, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
-    TooltipPlacement, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Key, Reaction, Rect, StatusBar, StatusBarSegment, Style, Tooltip,
+    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -142,20 +142,12 @@ impl Demo for TooltipDemo {
 
         // Anchor bar at the top — the element the tooltip "describes".
         let anchor = Rect::new(area.x, area.y, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            anchor,
-            &Self::anchor_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(anchor, &Self::anchor_bar(), &());
 
         // Status bar at the bottom shows the current border/title choice
         // plus the key hint.
         let status_rect = Rect::new(area.x, area.y + area.height - lh, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(variant), &());
 
         // Tooltip renders between the two bars, below the anchor.
         let clamp = Rect::new(

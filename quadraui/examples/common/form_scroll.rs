@@ -25,10 +25,10 @@
 //! - `Esc`                  → quit
 //! - `q` (name not focused) → quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormField,
-    Handled, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
-    WidgetId,
+    Handled, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormScrollApp {
@@ -161,11 +161,7 @@ impl AppLogic for FormScrollApp {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
         self.fc.render(backend, form_rect);
-        let _hits = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.build_status_bar(),
-            &InteractionState::new(),
-        );
+        let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

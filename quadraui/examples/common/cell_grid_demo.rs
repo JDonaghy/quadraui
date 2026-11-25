@@ -617,11 +617,9 @@ impl AppLogic for CellGridDemo {
             rect: bands.grid,
             widget: Box::new(grid),
         });
-        frame.push(Surface::StatusBar {
+        frame.push(Surface::Widget {
             rect: bands.status,
-            bar: self.status_bar(),
-            hovered: None,
-            pressed: None,
+            widget: Box::new(self.status_bar()),
         });
         let _ = frame.draw(backend);
     }

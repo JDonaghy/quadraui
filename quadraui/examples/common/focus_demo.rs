@@ -179,11 +179,9 @@ impl AppLogic for FocusDemo {
             rect: Rect::new(half_w, 0.0, vp.width - half_w, body_h),
             list: right,
         });
-        frame.push(Surface::StatusBar {
+        frame.push(Surface::Widget {
             rect: Rect::new(0.0, body_h, vp.width, status_h),
-            bar: status,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(status),
         });
 
         // The tab order is *derived from the layout* — the app never

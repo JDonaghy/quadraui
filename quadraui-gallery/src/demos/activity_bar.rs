@@ -61,6 +61,8 @@ impl ActivityBarDemo {
             },
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         }
     }
 

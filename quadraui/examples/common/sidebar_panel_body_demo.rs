@@ -19,10 +19,10 @@
 //! - `q` / `Esc`   quit
 
 use quadraui::compose::sidebar_panel_body::{SidebarPanelBody, SidebarPanelChrome};
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, BackendWidget, Color, Decoration, InteractionState, Key, NamedKey, Reaction,
-    Rect, Scrollbar, StatusBar, StatusBarSegment, StyledText, TreeRow, TreeStyle, TreeView,
-    UiEvent, WidgetId,
+    AppLogic, Backend, BackendWidget, Color, Decoration, Key, NamedKey, Reaction, Rect, Scrollbar,
+    StatusBar, StatusBarSegment, StyledText, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.0;
@@ -213,11 +213,7 @@ impl AppLogic for SidebarPanelBodyDemo {
             backend.draw_scrollbar(sb_rect, &sb);
         }
 
-        let _ = backend.draw_status_bar_interactive(
-            status,
-            &self.build_status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status, &self.build_status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

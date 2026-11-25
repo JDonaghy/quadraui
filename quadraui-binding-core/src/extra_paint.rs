@@ -1732,7 +1732,7 @@ impl ExtraPaint for StatusBar {
         interaction: &InteractionState,
     ) -> Vec<(Rect, WidgetId)> {
         backend
-            .draw_status_bar_interactive(area, self, interaction)
+            .draw_dyn(area, self, &())
             .hit_regions
             .into_iter()
             .filter_map(|(rect, hit)| match hit {

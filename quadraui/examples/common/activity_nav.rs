@@ -30,10 +30,10 @@
 //! | l / Enter | Activate item, return focus to editor |
 //! | Esc / h / ← | Return focus to editor |
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    ActivityBar, ActivityBarEvent, ActivityBarStyle, ActivityItem, AppLogic, Backend, Color,
-    InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent,
-    WidgetId,
+    ActivityBar, ActivityBarEvent, ActivityItem, AppLogic, Backend, Color, Key, NamedKey, Reaction,
+    Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Item descriptor for the demo bar.
@@ -115,10 +115,12 @@ impl ActivityNavApp {
             // JetBrains-style accent line. See `tui_activity_style` /
             // `gtk_activity_style` for the VS-Code-style
             // alternative (an `ActivityBarStyle::active_bg` row fill,
-            // passed to `Backend::draw_activity_bar_with_style`).
+            // set on the bar's `style`).
             active_accent: Some(Color::rgb(100, 150, 255)),
             selection_bg: Some(Color::rgb(70, 70, 100)),
             is_keyboard_focused: self.bar_focused,
+            style: Default::default(),
+            hovered: None,
         }
     }
 
@@ -218,12 +220,7 @@ impl AppLogic for ActivityNavApp {
         // Activity bar: left strip, full height minus status bar.
         let bar_w = lh * 3.0;
         let bar_rect = Rect::new(0.0, 0.0, bar_w, vp.height - lh);
-        let _ = backend.draw_activity_bar_with_style(
-            bar_rect,
-            &self.bar(),
-            None,
-            &ActivityBarStyle::default(),
-        );
+        let _ = backend.draw_dyn(bar_rect, &self.bar(), &());
 
         // "Editor" content area (placeholder).
         let editor_rect = Rect::new(bar_w, 0.0, vp.width - bar_w, vp.height - lh);
@@ -232,7 +229,7 @@ impl AppLogic for ActivityNavApp {
         } else {
             "  [ editor area has focus — press Tab to focus the bar ]"
         };
-        let _ = backend.draw_status_bar_interactive(
+        let _ = backend.draw_dyn(
             editor_rect,
             &StatusBar {
                 id: WidgetId::new("demo:editor-area"),
@@ -245,16 +242,12 @@ impl AppLogic for ActivityNavApp {
                 }],
                 right_segments: vec![],
             },
-            &InteractionState::new(),
+            &(),
         );
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, vp.height - lh, vp.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

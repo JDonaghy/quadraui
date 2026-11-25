@@ -31,9 +31,10 @@
 //! canonical example is `tui_terminal.rs` + `common/terminal_app.rs`.
 
 use quadraui::compose::app_shell::AppShellLayout;
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
-    ShellContext, StatusBar, StatusBarSegment, TextRegion, UiEvent, WidgetId,
+    Backend, Color, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext, StatusBar,
+    StatusBarSegment, TextRegion, UiEvent, WidgetId,
 };
 
 // ── Content ───────────────────────────────────────────────────────────────────
@@ -99,7 +100,7 @@ impl SelectionDemo {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar_interactive(row_rect, &bar, &InteractionState::new());
+            backend.draw_dyn(row_rect, &bar, &());
             rendered_rows = i + 1;
         }
         Rect::new(bounds.x, bounds.y, bounds.width, rendered_rows as f32 * lh)
@@ -144,7 +145,7 @@ impl ShellApp for SelectionDemo {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(status_rect, &status_bar, &InteractionState::new());
+        backend.draw_dyn(status_rect, &status_bar, &());
     }
 
     fn handle(

@@ -13,10 +13,10 @@
 //! | `k` / Up       | Scroll up        |
 //! | `q` / Esc      | Quit             |
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, MessageList, MessageListHit,
-    MessageListMeasure, MessageRow, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Key, MessageList, MessageListHit, MessageListMeasure, MessageRow,
+    MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct MessageListApp {
@@ -94,11 +94,7 @@ impl AppLogic for MessageListApp {
         backend.draw_message_list(rect, &self.list());
 
         let status_rect = Rect::new(0.0, rect.height, vp.width, vp.height - rect.height);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

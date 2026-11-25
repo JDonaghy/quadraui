@@ -7,10 +7,11 @@
 //! descriptor's `fallback_text` instead (both through one
 //! `Backend::draw_image` call).
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     resolve_bar_height, Backend, BackendCaps, Color, Image, ImageFit, ImageHit, ImageSource,
-    InteractionState, MenuBar, MenuBarHit, MenuBarItem, MouseButton, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, UiEvent, WidgetId,
+    MenuBar, MenuBarHit, MenuBarItem, MouseButton, Reaction, Rect, StatusBar, StatusBarSegment,
+    Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -134,11 +135,7 @@ impl Demo for ImageDemo {
         let _ = backend.draw_menu_bar(items_rect, &self.menu_bar);
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(), &());
     }
 
     fn handle(

@@ -698,7 +698,8 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -711,7 +712,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 
@@ -858,10 +859,11 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &self.bar(),
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 
@@ -870,8 +872,12 @@ mod tests {
             // (mirrors CLAUDE.md's "cached layout hit-test pattern" —
             // recompute the layout from state, don't repaint to hit-test).
             if let UiEvent::MouseDown { position, .. } = event {
-                let layout =
-                    backend.status_bar_layout(Rect::new(0.0, 0.0, W as f32, H as f32), &self.bar());
+                let layout = crate::DrawsPrimitives::layout_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, W as f32, H as f32),
+                    &self.bar(),
+                )
+                .layout;
                 if layout.hit_test(position.x, position.y)
                     == crate::primitives::status_bar::StatusBarHit::Segment(WidgetId::new("toggle"))
                 {
@@ -998,7 +1004,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             for (i, label) in ["row zero", "row one"].into_iter().enumerate() {
-                backend.draw_status_bar_interactive(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, i as f32 * STACKED_ROW_H, 200.0, STACKED_ROW_H),
                     &StatusBar {
                         id: WidgetId::new(format!("row-{i}")),
@@ -1011,7 +1018,7 @@ mod tests {
                         }],
                         right_segments: vec![],
                     },
-                    &crate::InteractionState::new(),
+                    &(),
                 );
             }
         }

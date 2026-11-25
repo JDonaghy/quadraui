@@ -9,10 +9,11 @@
 //! spectrum.
 
 use quadraui::primitives::data_table::DataTablePaintState;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable,
-    DataTableHit, InteractionState, Key, Reaction, Rect, SortDirection, StatusBar,
-    StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
+    DataTableHit, Key, Reaction, Rect, SortDirection, StatusBar, StatusBarSegment, Style,
+    StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -293,11 +294,7 @@ impl Demo for DataTableDemo {
         let _ = backend.draw_data_table_with_state(table_rect, &self.table(variant), &state);
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
     }
 
     fn handle(

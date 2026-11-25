@@ -198,11 +198,9 @@ impl AppLogic for FrameDemo {
             rect: list_rect,
             list,
         });
-        frame.push(Surface::StatusBar {
+        frame.push(Surface::Widget {
             rect: status_rect,
-            bar: status,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(status),
         });
 
         frame.draw(backend);

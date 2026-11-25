@@ -7,10 +7,10 @@
 //! submenu (`View → Export → {PNG, SVG}`) — `MenuSystem` resolves cascading
 //! submenus on its own, with no extra app-side state.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    resolve_bar_height, Backend, BackendCaps, Color, ContextMenuItem, InteractionState, MenuDef,
-    MenuEvent, MenuSystem, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText, UiEvent,
-    WidgetId,
+    resolve_bar_height, Backend, BackendCaps, Color, ContextMenuItem, MenuDef, MenuEvent,
+    MenuSystem, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -167,11 +167,7 @@ impl Demo for MenuBarDemo {
         // hint strip underneath it.
         let hint_h = chrome_strip_height(backend, |s| s.status_bar_height);
         let hint_rect = Rect::new(area.x, area.y + bar_rect.height, area.width, hint_h);
-        let _ = backend.draw_status_bar_interactive(
-            hint_rect,
-            &self.hint_bar(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(hint_rect, &self.hint_bar(variant), &());
 
         self.menus[variant].render(backend, bar_rect);
     }

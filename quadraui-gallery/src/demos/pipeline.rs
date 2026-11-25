@@ -5,10 +5,10 @@
 //! with a Retry action) and one where every stage already failed —
 //! `Enter` fires the focused stage's action, `←`/`→` move focus.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Key, PipelineEvent, PipelineHit, PipelineStage,
-    PipelineView, Reaction, Rect, StageStatus, StatusBar, StatusBarSegment, Style, UiEvent,
-    WidgetId,
+    Backend, BackendCaps, Color, Key, PipelineEvent, PipelineHit, PipelineStage, PipelineView,
+    Reaction, Rect, StageStatus, StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -201,11 +201,7 @@ impl Demo for PipelineDemo {
         let _ = backend.draw_pipeline_view(pv_rect, &self.view(variant));
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(), &());
     }
 
     fn handle(

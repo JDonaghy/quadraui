@@ -35,9 +35,10 @@
 //! - Enter / Escape: close the dialog
 //! - q: quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, FocusTree, InteractionState, Key, NamedKey, Point, Reaction, Rect,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, FocusTree, Key, NamedKey, Point, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 const DIALOG_ID: &str = "modal-focus:dialog";
@@ -220,7 +221,7 @@ impl ModalFocusDemo {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(rect, &bar, &());
     }
 }
 
@@ -284,7 +285,7 @@ impl AppLogic for ModalFocusDemo {
                 action_id: None,
             }],
         };
-        let _ = backend.draw_status_bar_interactive(status_rect, &status, &InteractionState::new());
+        let _ = backend.draw_dyn(status_rect, &status, &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

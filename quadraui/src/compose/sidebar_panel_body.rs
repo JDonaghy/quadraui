@@ -30,12 +30,11 @@
 //!   - [`SidebarPanelChrome::Search`] — a filter row with **no** header
 //!     above it. `draw_settings_chrome`'s row 0 is unconditionally
 //!     header-styled, so this can't reuse it — it paints a single
-//!     synthetic [`crate::StatusBar`] segment via
-//!     [`crate::Backend::draw_status_bar_interactive`] instead, the
-//!     same rasteriser every backend already implements.
+//!     synthetic [`crate::StatusBar`] segment through the widget
+//!     contract ([`crate::DrawsPrimitives::draw_dyn`]) instead.
 //!   - [`SidebarPanelChrome::StatusBars`] — one row per
 //!     [`crate::StatusBar`] (e.g. a title bar + an action bar), each
-//!     painted via [`crate::Backend::draw_status_bar_interactive`] with
+//!     painted via [`crate::DrawsPrimitives::draw_dyn`] with
 //!     its hit regions translated into panel-space and surfaced on
 //!     [`SidebarPanelBodyLayout::status_bar_hit_regions`], so the host
 //!     routes clicks against the same geometry that was painted.
@@ -100,9 +99,11 @@
 //! ```
 
 use crate::backend::BackendWidget;
+use crate::backend::DrawsPrimitives;
 use crate::event::Rect;
-use crate::interaction::InteractionState;
-use crate::primitives::status_bar::{StatusBar, StatusBarHit, StatusBarSegment};
+use crate::primitives::status_bar::{
+    StatusBar, StatusBarHit, StatusBarPrimitiveLayout, StatusBarSegment,
+};
 use crate::types::{Color, WidgetId};
 use crate::Backend;
 
@@ -146,7 +147,7 @@ pub enum SidebarPanelChrome {
     /// Reserves one row, the same as [`Self::Header`].
     ///
     /// Painted via a single synthetic [`crate::StatusBar`] segment
-    /// through [`crate::Backend::draw_status_bar_interactive`] rather
+    /// through [`crate::DrawsPrimitives::draw_dyn`] rather
     /// than `draw_settings_chrome` — that method's row 0 is
     /// unconditionally header-styled, so reusing it here would repaint
     /// a phantom header strip. [`crate::StatusBar`]/[`crate::StatusBarSegment`]
@@ -167,7 +168,7 @@ pub enum SidebarPanelChrome {
     },
     /// One row per [`crate::StatusBar`] — e.g. vimcode's Debug sidebar
     /// chrome (a title bar + a Run/Stop action bar). Each bar is
-    /// painted via [`crate::Backend::draw_status_bar_interactive`] in
+    /// painted via [`crate::DrawsPrimitives::draw_dyn`] in
     /// order, and its hit regions are translated into panel-space and
     /// appended to
     /// [`SidebarPanelBodyLayout::status_bar_hit_regions`] — the same
@@ -393,14 +394,9 @@ impl SidebarPanelBody {
                         }],
                         right_segments: Vec::new(),
                     };
-                    let _ = backend.draw_status_bar_interactive(
-                        chrome_rect,
-                        &search_bar,
-                        &InteractionState::new(),
-                    );
+                    let _ = backend.draw_dyn(chrome_rect, &search_bar, &());
                 }
                 SidebarPanelChrome::StatusBars(bars) => {
-                    let interaction = InteractionState::new();
                     let mut row_y = chrome_rect.y;
                     for bar in bars {
                         let remaining = (chrome_rect.y + chrome_rect.height - row_y).max(0.0);
@@ -409,9 +405,12 @@ impl SidebarPanelBody {
                             break;
                         }
                         let row_rect = Rect::new(chrome_rect.x, row_y, chrome_rect.width, row_h);
-                        let bar_layout =
-                            backend.draw_status_bar_interactive(row_rect, bar, &interaction);
-                        for (r, hit) in bar_layout.hit_regions {
+                        let painted = backend.draw_dyn(row_rect, bar, &());
+                        let hit_regions = painted
+                            .downcast_ref::<StatusBarPrimitiveLayout>()
+                            .map(|p| p.layout.hit_regions.clone())
+                            .unwrap_or_default();
+                        for (r, hit) in hit_regions {
                             layout.status_bar_hit_regions.push((
                                 Rect::new(row_rect.x + r.x, row_rect.y + r.y, r.width, r.height),
                                 hit,
@@ -712,21 +711,25 @@ mod tests {
     }
 
     #[test]
-    fn render_search_paints_background_then_one_status_bar_call_then_body() {
+    fn render_search_paints_background_then_one_status_bar_then_body() {
         let panel = SidebarPanelBody {
             background: Some(Color::rgb(10, 10, 10)),
             chrome: search_chrome("rust", "Search", true),
             ..Default::default()
         };
+        crate::primitive::clear_painted_widgets();
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
 
         // `draw_settings_chrome` must never fire for `Search` — its row 0
         // is unconditionally header-styled, which is exactly the
-        // phantom-header bug this variant exists to avoid.
+        // phantom-header bug this variant exists to avoid. The search row
+        // paints through the widget contract, so it shows up in the
+        // painted-widget record rather than as a backend call.
+        assert_eq!(backend.calls, vec!["draw_solid_fill", "draw_solid_fill"]);
         assert_eq!(
-            backend.calls,
-            vec!["draw_solid_fill", "draw_status_bar", "draw_solid_fill"]
+            painted_ids(),
+            vec![WidgetId::new("sidebar-panel-body:search")]
         );
     }
 
@@ -798,21 +801,24 @@ mod tests {
             chrome: SidebarPanelChrome::StatusBars(bars),
             ..Default::default()
         };
+        crate::primitive::clear_painted_widgets();
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
+        assert_eq!(backend.calls, vec!["draw_solid_fill", "draw_solid_fill"]);
         assert_eq!(
-            backend.calls,
-            vec![
-                "draw_solid_fill",
-                "draw_status_bar",
-                "draw_status_bar",
-                "draw_solid_fill",
-            ]
+            painted_ids(),
+            vec![WidgetId::new("debug:title"), WidgetId::new("debug:actions")]
         );
     }
 
+    /// Ids of the widget-contract widgets painted since the record was
+    /// last cleared, in paint order.
+    fn painted_ids() -> Vec<WidgetId> {
+        crate::primitive::with_painted_widgets(|p| p.iter().map(|w| w.id).collect())
+    }
+
     /// The hit regions `render` surfaces on `SidebarPanelBodyLayout` must
-    /// be exactly what `draw_status_bar_interactive` returned for each
+    /// be exactly the hit regions each bar's widget layout resolved, for each
     /// bar, translated from that bar's own bar-local coordinates into
     /// panel-space by adding the row's origin — nothing recomputed, no
     /// drift from what was actually painted.
@@ -829,12 +835,11 @@ mod tests {
 
         // The title bar has no clickable segment, so it contributes no
         // hit regions. The actions bar is the second row (y offset =
-        // 1 unit_h) — recompute the same char-cell layout
-        // `RecordingBackend::draw_status_bar_interactive` computes, and
+        // 1 unit_h) — resolve the same widget layout the paint used, and
         // translate by that row's origin, to get the expected entry.
-        let bar_layout = actions.layout(rect().width, 1.0, 2.0, |seg| {
-            crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
-        });
+        let bar_layout = backend
+            .layout_primitive(Rect::new(0.0, 1.0, rect().width, 1.0), &actions)
+            .layout;
         let (bar_local_rect, hit) = bar_layout.hit_regions[0].clone();
         let expected = (
             Rect::new(

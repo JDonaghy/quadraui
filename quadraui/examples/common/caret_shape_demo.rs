@@ -19,10 +19,11 @@
 //! Keys: `i` Insert (Bar), `r` Replace-pending (Underline), `n` Normal
 //! (Block). Esc quits.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine,
-    EditorStyle, EditorStyledSpan, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId,
+    EditorStyle, EditorStyledSpan, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    UiEvent, WidgetId,
 };
 
 pub struct CaretShapeDemo {
@@ -165,11 +166,7 @@ impl AppLogic for CaretShapeDemo {
         let lh = backend.line_height();
         let bar_h = if lh > 1.5 { lh * 1.5 } else { lh };
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
-        let _ = backend.draw_status_bar_interactive(
-            bar_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(bar_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

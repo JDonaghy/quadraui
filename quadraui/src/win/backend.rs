@@ -18,7 +18,6 @@ use crate::event::{Point, Rect, UiEvent, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
@@ -41,7 +40,6 @@ use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
-use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
 use crate::primitives::text_display::{TextDisplayLayout, TextDisplayLineMeasure};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
 #[cfg(target_os = "windows")]
@@ -50,13 +48,14 @@ use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, Palette, StatusBar,
-    TextDisplay, TooltipChrome, TreeView, UserPayload,
+    Accelerator, AcceleratorId, Key, ListView, Modifiers, Palette, TextDisplay, TooltipChrome,
+    TreeView, UserPayload,
 };
-// `TabBar` is only named by `#[cfg(test)]` code below — a tab strip
-// paints through its widget contract, not a method on this backend.
+// `ActivityBar`, `StatusBar` and `TabBar` are only named by `#[cfg(test)]`
+// code below — each paints through its widget contract, not a method on
+// this backend.
 #[cfg(test)]
-use crate::TabBar;
+use crate::{ActivityBar, StatusBar, TabBar};
 #[cfg(target_os = "windows")]
 use crate::{FieldKind, Theme};
 // `AcceleratorScope` is only referenced by `#[cfg(test)]` code below.
@@ -188,16 +187,6 @@ pub(super) fn toolbar_layout_with_overflow_via(
     layout.demote_lines_past(options, rect.y + rect.height);
 
     layout
-}
-
-/// [`super::status_bar::StatusMeasure`] impl backed by
-/// [`nominal_text_width`] — `bold` is ignored, a known gap in the
-/// nominal fallback (see `super::status_bar::StatusMeasure`'s doc for why
-/// bold-awareness needs its own trait).
-impl super::status_bar::StatusMeasure for NominalTextMeasure {
-    fn width_of(&self, text: &str, _bold: bool) -> f32 {
-        nominal_text_width(text, self.char_width)
-    }
 }
 
 /// [`super::spinner::SpinnerMeasureSource`] impl backed by
@@ -452,8 +441,8 @@ pub struct WinBackend {
     /// field.
     core: crate::backend_core::BackendCore,
     /// `WidgetId` of the [`ActivityBar`] that declared
-    /// `is_keyboard_focused = true` during the most recent
-    /// [`Backend::draw_activity_bar`] call, or `None` if no bar is focused.
+    /// `is_keyboard_focused = true` in the most recently painted frame
+    /// (set by [`Backend::end_frame`]), or `None` if no bar is focused.
     /// Read by `win::run::dispatch_event` to redirect a `KeyPressed` into
     /// `UiEvent::ActivityBar(...)` instead of reaching `AppLogic::handle`
     /// as a raw key — the Win-GUI twin of `GtkBackend`/`MacBackend`'s
@@ -1365,9 +1354,8 @@ impl WinBackend {
     // ── ActivityBar keyboard focus ────────────────────────────────────
 
     /// `WidgetId` of the [`ActivityBar`] that declared
-    /// `is_keyboard_focused = true` during the most recent
-    /// [`Backend::draw_activity_bar`] call, or `None` if no bar is
-    /// focused. Read by `win::run::dispatch_event` — see
+    /// `is_keyboard_focused = true` in the most recently painted frame, or
+    /// `None` if no bar is focused. Read by `win::run::dispatch_event` — see
     /// `focused_activity_bar`'s field doc for the full contract. Not
     /// `target_os`-gated: the field itself is a plain `Option<WidgetId>`
     /// with no Direct2D dependency, so this reads correctly even before
@@ -1541,38 +1529,6 @@ impl WinBackend {
         for item in &layout.visible_items {
             if item.clickable {
                 self.register_zone(item.id, item.bounds);
-            }
-        }
-    }
-
-    /// Register one zone per clickable [`StatusBarLayout`] segment — the
-    /// vimcode inline minimize/maximize/close buttons are ordinary
-    /// `action_id`-bearing status-bar segments drawn into the title-bar
-    /// band. See the section doc above.
-    ///
-    /// Unlike [`Self::register_menu_bar_item_zones`], `StatusBar::layout`/
-    /// `layout_padded` (`primitives/status_bar.rs`) returns bounds in
-    /// **bar-local** coordinates — origin `(0, 0)` at the bar's own
-    /// top-left, by design (see `compose::status_bar_interaction::
-    /// StatusBarInteraction::hit_test`, which subtracts the bar's own
-    /// `x`/`y` from an incoming click position for exactly this reason).
-    /// `rect` is the same absolute `Rect` the caller passed into
-    /// `draw_status_bar_interactive`, so every `bounds` here must be
-    /// translated by `rect.x`/`rect.y` before being handed to
-    /// `register_zone`, which — like `nc_hit_test`'s `z.bounds.contains`
-    /// check — compares against absolute, window-space coordinates
-    fn register_status_bar_segment_zones(&mut self, rect: Rect, layout: &StatusBarLayout) {
-        for (bounds, hit) in &layout.hit_regions {
-            if let StatusBarHit::Segment(id) = hit {
-                self.register_zone(
-                    *id,
-                    Rect::new(
-                        rect.x + bounds.x,
-                        rect.y + bounds.y,
-                        bounds.width,
-                        bounds.height,
-                    ),
-                );
             }
         }
     }
@@ -1972,8 +1928,8 @@ impl Backend for WinBackend {
 
     fn begin_frame(&mut self, viewport: Viewport) {
         self.viewport = viewport;
-        // Clear the focused activity bar — re-set by `draw_activity_bar`
-        // during this frame's render pass if still focused. Same
+        // Clear the focused activity bar — re-set by `end_frame` if this
+        // frame paints it focused again. Same
         // lifecycle as `GtkBackend`/`MacBackend`'s `focused_activity_bar`
         self.focused_activity_bar = None;
         // Clear per-frame text regions so stale registrations from the
@@ -2039,6 +1995,9 @@ impl Backend for WinBackend {
     }
 
     fn end_frame(&mut self) {
+        // The rail that holds keyboard focus is whichever activity bar this
+        // frame painted with `is_keyboard_focused` set.
+        self.focused_activity_bar = crate::primitives::activity_bar::painted_keyboard_focused_bar();
         // Drain the sink `begin_frame` installed, if recording was on —
         // see that method's doc for why this needs no closure-based frame
         // scope the way GTK/macOS's `enter_frame_scope` does.
@@ -2971,8 +2930,11 @@ impl Backend for WinBackend {
     // ─── Drawing ──────────────────────────────────────────────────────
 
     /// Real Direct2D/DirectWrite rasteriser via `win::tree` once a
-    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
-    /// "surface not attached yet" fallback posture. `draw_tree` returns
+    /// surface is attached. With no surface attached yet it paints
+    /// nothing and falls back to a [`NominalTextMeasure`] layout:
+    /// `self.surface`/`self.dwrite` are always populated together by
+    /// [`Self::attach_surface`], so that only happens for a standalone
+    /// `WinBackend` no window has ever attached to yet. `draw_tree` returns
     /// `()` per the trait (unlike the chrome rasterisers) — hosts get
     /// hit-test data from [`Self::tree_layout`] instead.
     ///
@@ -3097,7 +3059,7 @@ impl Backend for WinBackend {
         let _ = (rect, list, state, focus_ring_visible);
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_tree`]'s doc for the "surface not
     /// attached yet" fallback posture.
     /// `DataTable` is not `ChromePrimitive`/`EditorClassPrimitive`-listed
     /// — it's chrome by the `crate::font_role` module's default (see that
@@ -3205,7 +3167,9 @@ impl Backend for WinBackend {
     }
 
     /// Pure measurement — only needs `self.dwrite`, not a live
-    /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
+    /// render target, so this works as soon as a surface has ever been
+    /// attached (DirectWrite handles outlive device loss; see
+    /// `Self::ensure_surface`'s docs). Prefers
     /// `chrome_dwrite`, matching [`Self::draw_data_table`]'s paint font
     /// — both must resolve the same handle or column widths measured
     /// here would disagree with what the paint actually fits.
@@ -3468,7 +3432,7 @@ impl Backend for WinBackend {
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::palette` once a
-    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
+    /// surface is attached. See [`Self::draw_tree`]'s doc for the
     /// "surface not attached yet" fallback posture.
     fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
         // `Palette` is chrome — `with_chrome_surface` degrades to a
@@ -3563,7 +3527,7 @@ impl Backend for WinBackend {
         .0
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_tree`]'s doc for the "surface not
     /// attached yet" fallback posture.
     fn draw_settings_chrome(
         &mut self,
@@ -3595,169 +3559,6 @@ impl Backend for WinBackend {
         let _ = (rect, header_text, query, placeholder, active);
     }
 
-    /// Real Direct2D/DirectWrite rasteriser via `win::status_bar`
-    /// once a surface is attached. Falls back to
-    /// [`super::status_bar::win_status_bar_layout`] with a
-    /// [`NominalTextMeasure`] otherwise —
-    /// `self.surface`/`self.dwrite` are always populated together by
-    /// [`Self::attach_surface`], so that only happens for a standalone
-    /// `WinBackend` no window has ever attached to yet.
-    ///
-    /// `StatusBar` is `ChromePrimitive::StatusBar` — the segment
-    /// text is chrome, not editor content, so this paints through
-    /// [`ChromeSurface`] (routes text through `chrome_dwrite`, falling
-    /// back to the editor `dwrite` handle) rather than `self` directly
-    /// (which would paint through `self.dwrite`, the *editor* font, via
-    /// `WinBackend`'s own [`PaintSurface`] impl) — mirrors
-    /// `MacBackend::status_bar_paint_scaled`'s identical `ChromeSurface`
-    /// switch.
-    fn draw_status_bar_interactive(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-    ) -> StatusBarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() && self.dwrite.is_some() {
-            let theme = self.current_theme;
-            let mut surface = ChromeSurface { backend: self };
-            let layout = crate::primitives::status_bar::native_surface_paint::paint(
-                bar,
-                &mut surface,
-                &theme,
-                rect.x,
-                rect.y,
-                rect.width,
-                rect.height,
-                hovered_id,
-                pressed_id,
-            );
-            // A status-bar segment drawn inside the AppShell
-            // title-bar band (e.g. vimcode's inline minimize/maximize/
-            // close buttons) needs its own `register_zone` entry — see
-            // `Self::nc_hit_test`'s doc — or the whole band keeps
-            // reading as `HTCAPTION` and the OS swallows the click
-            // before it ever reaches the segment as a `MouseDown`.
-            // Harmless outside the band: `nc_hit_test` only treats a
-            // zone as an exclusion when it falls inside the registered
-            // `TITLE_BAR_DRAG_ZONE`.
-            self.register_status_bar_segment_zones(rect, &layout);
-            return layout;
-        }
-        // No surface/DWrite yet — compute the real layout via the same
-        // nominal measurer `status_bar_layout` falls back to, and paint
-        // nothing. `hovered_id`/`pressed_id` only affect
-        // painting, so they're unused on this path.
-        let _ = (hovered_id, pressed_id);
-        let layout = super::status_bar::win_status_bar_layout(
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            rect,
-            bar,
-        );
-        self.register_status_bar_segment_zones(rect, &layout);
-        layout
-    }
-
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
-    ///
-    /// `ActivityBar` is `ChromePrimitive::ActivityBar` — see
-    /// [`Self::draw_tree`]'s note for the font-swap shape.
-    fn draw_activity_bar(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-    ) -> Vec<ActivityBarRowHit> {
-        // Track keyboard focus so `win::run::dispatch_event` can redirect
-        // the next `KeyPressed` into this bar — same contract
-        // `GtkBackend`/`MacBackend::draw_activity_bar` implement. Runs
-        // regardless of whether a surface is attached yet.
-        if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id);
-        }
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::activity_bar::draw_activity_bar(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                hovered_idx,
-                &self.current_theme,
-            );
-        }
-        // No surface/DWrite yet — return the real (pure-geometry) hit
-        // list via `activity_bar_layout` and paint nothing.
-        // `hovered_idx` only affects painting, so it's unused on this
-        // path.
-        let _ = hovered_idx;
-        // `activity_bar_layout` is `#[deprecated]`; this fallback is its own plumbing.
-        #[allow(deprecated)]
-        self.activity_bar_layout(rect, bar)
-    }
-
-    /// Pure measurement — only needs `self.dwrite`, not a live
-    /// render target, so this works as soon as a surface has ever been
-    /// attached (DirectWrite handles outlive device loss; see
-    /// `Self::ensure_surface`'s docs).
-    ///
-    /// measures with `chrome_dwrite` (falling back to `dwrite`),
-    /// matching [`Self::draw_status_bar_interactive`]'s paint font — a
-    /// no-paint caller (hit-testing without repainting) must resolve the
-    /// same segment widths the paint path produced, same contract
-    /// `GtkBackend::status_bar_layout`'s `ui_font` swap documents.
-    fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout {
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::status_bar::win_status_bar_layout(dwrite, rect, bar);
-        }
-        super::status_bar::win_status_bar_layout(
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            rect,
-            bar,
-        )
-    }
-
-    /// Activity-bar layout needs no measurer at all (uniform
-    /// `ACTIVITY_ROW_DIP` row height), so unlike its siblings this
-    /// doesn't even need `self.dwrite` — only kept behind the
-    /// `target_os = "windows"` gate for consistency with every other
-    /// method in this file.
-    fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
-        // Pure geometry (uniform `ACTIVITY_ROW_DIP` row height, no measurer
-        // at all) — this is computed directly instead of reaching into the
-        // Windows-only module. `ACTIVITY_ROW_DIP`'s value (48.0) matches the
-        // module's per `PRIMITIVE_RULES.md`#713.
-        const ACTIVITY_ROW_DIP: f32 = 48.0;
-        bar.layout(rect.width, rect.height, ACTIVITY_ROW_DIP)
-            .visible_items
-            .into_iter()
-            .map(|vi| {
-                let item = match vi.side {
-                    crate::primitives::activity_bar::ActivitySide::Top => {
-                        &bar.top_items[vi.item_idx]
-                    }
-                    crate::primitives::activity_bar::ActivitySide::Bottom => {
-                        &bar.bottom_items[vi.item_idx]
-                    }
-                };
-                ActivityBarRowHit {
-                    y_start: vi.bounds.y,
-                    y_end: vi.bounds.y + vi.bounds.height,
-                    id: item.id,
-                    tooltip: item.tooltip.clone(),
-                }
-            })
-            .collect()
-    }
-
     /// See [`Backend::draw_solid_fill`]'s doc — a pixel backend
     /// can honor `rect` exactly via `PaintSurface::surface_fill_rect`,
     /// which already degrades to a no-op when no surface is attached
@@ -3769,7 +3570,7 @@ impl Backend for WinBackend {
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::text_display`
-    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
+    /// once a surface is attached. See [`Self::draw_tree`]'s doc
     /// for the "surface not attached yet" fallback posture.
     ///
     /// Shared text-display painting lives in
@@ -3804,7 +3605,7 @@ impl Backend for WinBackend {
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::command_line`
-    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
+    /// once a surface is attached. See [`Self::draw_tree`]'s doc
     /// for the "surface not attached yet" fallback posture.
     fn draw_command_line(
         &mut self,
@@ -3846,7 +3647,7 @@ impl Backend for WinBackend {
     /// live render target or `self.dwrite` (mirrors
     /// `Self::text_display_layout`'s doc for why this only needs the
     /// `target_os = "windows"` gate every method in this file shares). No
-    /// `return` in the `windows` arm — see [`Self::activity_bar_layout`]'s
+    /// `return` in the `windows` arm — see [`Self::msv_layout`]'s
     /// doc for why.
     fn command_line_layout(
         &self,
@@ -3868,7 +3669,7 @@ impl Backend for WinBackend {
     /// than real text measurement) — but still lives in a Windows-only
     /// module, so this only needs the `target_os = "windows"` gate every
     /// method in this file shares. No `return` in the `windows` arm —
-    /// see [`Self::activity_bar_layout`]'s doc for why.
+    /// see [`Self::msv_layout`]'s doc for why.
     fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
         // Pure measurement (row-count estimate off `line_height`/
         // `char_width`, no real text layout) — mirrors the shape of layout
@@ -3913,7 +3714,7 @@ impl Backend for WinBackend {
     /// Builds the layout via [`super::text_input::win_text_input_layout`]
     /// and hands it to the shared [`crate::primitives::text_input::paint`]
     /// through this backend's own [`PaintSurface`] impl, mirroring
-    /// `MacBackend::draw_text_input`'s shape. See [`Self::draw_status_bar`]'s
+    /// `MacBackend::draw_text_input`'s shape. See [`Self::draw_tree`]'s
     /// doc for the "surface not attached yet" fallback posture. The paint
     /// guard accepts either `self.chrome_dwrite` or `self.dwrite` — the
     /// shared painter's `surface_draw_text_run` resolves
@@ -3960,7 +3761,7 @@ impl Backend for WinBackend {
     /// (mirrors [`Self::command_line_layout`]'s doc for why this only
     /// needs the `target_os = "windows"` gate every method in this file
     /// shares). No `return` in the `windows` arm — see
-    /// [`Self::activity_bar_layout`]'s doc for why.
+    /// [`Self::msv_layout`]'s doc for why.
     fn text_input_layout(
         &self,
         rect: Rect,
@@ -4021,7 +3822,7 @@ impl Backend for WinBackend {
     /// Real Direct2D/DirectWrite rasteriser via `win::tooltip` once a
     /// surface is attached. Renders `TooltipChrome::default()` — see
     /// [`Self::draw_tooltip_with_chrome`] for the full-chrome entry point.
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// See [`Self::draw_tree`]'s doc for the "surface not attached
     /// yet" fallback posture.
     fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {
         self.draw_tooltip_with_chrome(tooltip, layout, &TooltipChrome::default());
@@ -4069,7 +3870,7 @@ impl Backend for WinBackend {
     /// once a surface is attached. `layout` is fully resolved upstream
     /// (see `crate::compose::menu_system`) — this only paints it and
     /// collects the per-clickable-item hit rectangles. See
-    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// [`Self::draw_tree`]'s doc for the "surface not attached yet"
     /// fallback posture.
     ///
     /// `ContextMenu` is `ChromePrimitive::ContextMenu` (whole
@@ -4186,7 +3987,7 @@ impl Backend for WinBackend {
     /// surface is attached. `layout` is fully resolved upstream (see
     /// [`crate::primitives::dialog::Dialog::layout`]) — this only paints
     /// it and returns the per-button hit rectangles in
-    /// `layout.visible_buttons` order. See [`Self::draw_status_bar`]'s
+    /// `layout.visible_buttons` order. See [`Self::draw_tree`]'s
     /// doc for the "surface not attached yet" fallback posture.
     ///
     /// `Dialog` is `ChromePrimitive::Dialog` (whole primitive, matching
@@ -4293,7 +4094,7 @@ impl Backend for WinBackend {
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
-    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
+    /// once a surface is attached. See [`Self::draw_tree`]'s doc for
     /// the "surface not attached yet" fallback posture.
     ///
     /// `MultiSectionView` is `ChromePrimitive::MultiSectionView`
@@ -4336,8 +4137,7 @@ impl Backend for WinBackend {
     /// (unlike [`Self::draw_multi_section_view`] above): on
     /// `target_os = "windows"` the `not(windows)` block below is
     /// stripped, so this block *is* the tail expression and an explicit
-    /// `return` trips `clippy::needless_return` under CI's `-D warnings`
-    /// — see [`Self::activity_bar_layout`]'s doc for the same pattern.
+    /// `return` trips `clippy::needless_return` under CI's `-D warnings`.
     fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
         // `crate::primitives::layout_metrics::msv_layout` is fully
         // portable (row-count estimate, no Direct2D/DirectWrite type) —
@@ -4425,7 +4225,7 @@ impl Backend for WinBackend {
     }
 
     /// Pure measurement — only needs `self.dwrite`, not a live
-    /// render target. See [`Self::status_bar_layout`]'s doc. Prefers
+    /// render target. See [`Self::data_table_layout`]'s doc. Prefers
     /// `chrome_dwrite`, matching [`Self::draw_form`]'s paint font — both
     /// must resolve the same handle or field widths measured here would
     /// disagree with what the paint actually fits.
@@ -4447,7 +4247,7 @@ impl Backend for WinBackend {
         })
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_tree`]'s doc for the "surface not
     /// attached yet" fallback posture. `rect` is unused on the painted
     /// path — `editor.rect` is authoritative (mirrors
     /// `GtkBackend::draw_editor`, which does the same).
@@ -4509,7 +4309,7 @@ impl Backend for WinBackend {
     /// once a surface is attached. Mirrors `GtkBackend::draw_message_list`
     /// / `MacBackend::draw_message_list` — no panel-background fill here;
     /// hosts that want one paint it before calling (see
-    /// `win::message_list`'s module doc). See [`Self::draw_status_bar`]'s
+    /// `win::message_list`'s module doc). See [`Self::draw_tree`]'s
     /// doc for the "surface not attached yet" fallback posture.
     fn draw_message_list(&mut self, rect: Rect, list: &MessageList) {
         #[cfg(target_os = "windows")]
@@ -4539,7 +4339,7 @@ impl Backend for WinBackend {
     /// regions for its own tests; the trait signature discards them (same
     /// posture as `GtkBackend::draw_rich_text_popup` — hosts that need
     /// link hit-testing query `popup.layout(...).hit_test(...)` directly).
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// See [`Self::draw_tree`]'s doc for the "surface not attached
     /// yet" fallback posture.
     /// `RichTextPopup` is `ChromePrimitive::RichTextPopup` (whole
     /// primitive, matching macOS's existing fix — see `draw_tree`'s
@@ -4602,7 +4402,7 @@ impl Backend for WinBackend {
 
     /// Real Direct2D/DirectWrite
     /// rendering via [`crate::primitives::find_replace::paint`] once a
-    /// surface is attached. See [`Self::draw_status_bar`]'s doc for the
+    /// surface is attached. See [`Self::draw_tree`]'s doc for the
     /// "surface not attached yet" fallback posture.
     fn draw_find_replace(&mut self, rect: Rect, panel: &FindReplacePanel) {
         #[cfg(target_os = "windows")]
@@ -4618,7 +4418,7 @@ impl Backend for WinBackend {
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::completions`
-    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc
+    /// once a surface is attached. See [`Self::draw_tree`]'s doc
     /// for the "surface not attached yet" fallback posture.
     fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout) {
         #[cfg(target_os = "windows")]
@@ -4642,7 +4442,7 @@ impl Backend for WinBackend {
     }
 
     /// Real Direct2D rasteriser via `win::scrollbar` once a surface
-    /// is attached. See [`Self::draw_status_bar`]'s doc for the "surface
+    /// is attached. See [`Self::draw_tree`]'s doc for the "surface
     /// not attached yet" fallback posture. `rect` is unused on the
     /// painted path — `scrollbar.track` is authoritative, mirroring
     /// `MacBackend::draw_scrollbar`/`GtkBackend::draw_scrollbar`. Paints
@@ -4666,7 +4466,7 @@ impl Backend for WinBackend {
         let _ = (rect, scrollbar);
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_tree`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
     /// `MenuBar` is `ChromePrimitive::MenuBar` — see
@@ -4749,7 +4549,7 @@ impl Backend for WinBackend {
         layout
     }
 
-    /// See [`Self::status_bar_layout`]'s doc for why this only needs
+    /// See [`Self::data_table_layout`]'s doc for why this only needs
     /// `self.dwrite`. Prefers `chrome_dwrite`, matching
     /// [`Self::draw_menu_bar`]'s paint font.
     fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
@@ -4766,7 +4566,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_tree`]'s doc for the "surface not
     /// attached yet" fallback posture. `Split` paints no text, so unlike
     /// most of that method's siblings this doesn't need `self.dwrite`.
     fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
@@ -4847,7 +4647,7 @@ impl Backend for WinBackend {
     /// per-element font size) found while unifying
     /// `gtk::board::draw_board`, `macos::board::draw_board` and
     /// `win::board::draw_board` into one implementation. See
-    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// [`Self::draw_tree`]'s doc for the "surface not attached yet"
     /// fallback posture.
     fn draw_board(&mut self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {
         #[cfg(target_os = "windows")]
@@ -4867,7 +4667,7 @@ impl Backend for WinBackend {
     /// [`Self::pipeline_view_layout`]'s doc), only kept behind the
     /// `target_os = "windows"` gate for consistency with every other
     /// method in this file. No `return` in the `windows` arm — see
-    /// [`Self::activity_bar_layout`]'s doc for why.
+    /// [`Self::msv_layout`]'s doc for why.
     fn board_layout(&self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {
         // Pure geometry (fixed DIP constants) — lifted the
         // `BoardMeasure::new(BOARD_*_PX...)` construction into
@@ -4884,7 +4684,7 @@ impl Backend for WinBackend {
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::minimap` once a
-    /// surface is attached — see [`Self::draw_status_bar`]'s doc for the
+    /// surface is attached — see [`Self::draw_tree`]'s doc for the
     /// "surface not attached yet" fallback posture.
     fn draw_minimap(
         &mut self,
@@ -4949,7 +4749,7 @@ impl Backend for WinBackend {
         self.minimap_scale = scale;
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_tree`]'s doc for the "surface not
     /// attached yet" fallback posture. Only needs `self.surface` (not
     /// `self.dwrite` too) — WIC decoding and `DrawBitmap` are pure
     /// Direct2D, no text measurement involved.
@@ -4988,7 +4788,7 @@ impl Backend for WinBackend {
         layout
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// See [`Self::draw_tree`]'s doc for the "surface not attached
     /// yet" fallback posture. Paints via the shared
     /// [`crate::primitives::toast::native_surface_paint::paint`] now,
     /// passing `&self.current_theme` — see `super::toast`'s module doc
@@ -5032,7 +4832,7 @@ impl Backend for WinBackend {
 
     /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target, so this works as soon as a surface has ever been
-    /// attached — same posture as [`Self::status_bar_layout`]. Prefers
+    /// attached — same posture as [`Self::data_table_layout`]. Prefers
     /// `chrome_dwrite`, matching `Self::draw_toast_overlay`'s paint font
     /// (chrome by `WinBackend`'s own [`PaintSurface`] default — see that
     /// impl's doc) — both must resolve the same handle or the toast's
@@ -5058,7 +4858,7 @@ impl Backend for WinBackend {
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::pipeline_view`
-    /// once a surface is attached. See [`Self::draw_status_bar`]'s doc for
+    /// once a surface is attached. See [`Self::draw_tree`]'s doc for
     /// the "surface not attached yet" fallback posture.
     /// Paint via the shared
     /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
@@ -5067,7 +4867,7 @@ impl Backend for WinBackend {
     /// unifying `gtk::pipeline_view::draw_pipeline_view`,
     /// `macos::pipeline_view::draw_pipeline_view` and
     /// `win::pipeline_view::draw_pipeline_view` into one implementation.
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// See [`Self::draw_tree`]'s doc for the "surface not attached
     /// yet" fallback posture.
     fn draw_pipeline_view(
         &mut self,
@@ -5117,7 +4917,7 @@ impl Backend for WinBackend {
     /// a surface is attached — mirrors [`Self::draw_diff_view`]. The
     /// Windows backend now passes `self.current_theme` instead of painting
     /// `Theme::default()`, matching the macOS and GTK backends. See
-    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// [`Self::draw_tree`]'s doc for the "surface not attached yet"
     /// fallback posture.
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         #[cfg(target_os = "windows")]
@@ -5161,7 +4961,7 @@ impl Backend for WinBackend {
     /// / `surface_draw_text_run`) already prefers `chrome_dwrite` over
     /// `dwrite`, the same swap [`Self::draw_palette`] documents for
     /// chrome text, so the handle resolution happens inside that impl.
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// See [`Self::draw_tree`]'s doc for the "surface not attached
     /// yet" fallback posture.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
@@ -5186,7 +4986,7 @@ impl Backend for WinBackend {
 
     /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target, so this works as soon as a surface has ever been
-    /// attached — same posture as [`Self::status_bar_layout`]. Prefers
+    /// attached — same posture as [`Self::data_table_layout`]. Prefers
     /// `chrome_dwrite`, matching [`Self::draw_spinner`]'s paint font.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
@@ -5203,7 +5003,7 @@ impl Backend for WinBackend {
         )
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
+    /// See [`Self::draw_tree`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
     /// `Toolbar` is `ChromePrimitive::Toolbar` — see
@@ -5241,7 +5041,7 @@ impl Backend for WinBackend {
         self.toolbar_layout(rect, bar)
     }
 
-    /// See [`Self::status_bar_layout`]'s doc for why this only
+    /// See [`Self::data_table_layout`]'s doc for why this only
     /// needs `self.dwrite`. Prefers `chrome_dwrite`, matching
     /// [`Self::draw_toolbar_with_options`]'s paint font.
     fn toolbar_layout(
@@ -5352,7 +5152,7 @@ impl Backend for WinBackend {
     /// while unifying `gtk::diff_view::draw_diff_view`,
     /// `macos::diff_view::draw_diff_view` and
     /// `win::diff_view::draw_diff_view` into one implementation. See
-    /// [`Self::draw_status_bar`]'s doc for the "surface not attached yet"
+    /// [`Self::draw_tree`]'s doc for the "surface not attached yet"
     /// fallback posture.
     fn draw_diff_view(
         &mut self,
@@ -5381,7 +5181,7 @@ impl Backend for WinBackend {
         Backend::diff_view_layout(self, rect, view)
     }
 
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
+    /// See [`Self::draw_tree`]'s doc for the "surface not attached
     /// yet" fallback posture.
     ///
     /// Shared chart painting lives in [`crate::primitives::chart::paint`]
@@ -6050,8 +5850,6 @@ fn win_monitor_rect(hwnd: HWND) -> ServiceResult<RECT> {
 // `PaintSurface` impls carry. [`EditorSurface`] (below) is the opt-out adapter
 // the three editor-class call sites that reach this trait wrap `self` in
 // instead, mirroring `MacBackend::EditorSurface`/`GtkBackend::EditorSurface`.
-// [`ChromeSurface`] (also below) still exists for call sites that already wrap
-// `self` in it — harmless, since it resolves the same default plain `self` does.
 impl PaintSurface for WinBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
@@ -6111,10 +5909,9 @@ impl PaintSurface for WinBackend {
 
     /// Overrides the default (which drops `bold`) —
     /// `DWrite::measure_text_styled` already exists on this backend,
-    /// matching what `win::status_bar::draw_status_bar` measured
-    /// before its paint moved to
-    /// `primitives::status_bar::native_surface_paint::paint`. Also
-    /// resolves `chrome_dwrite` now, matching
+    /// the bold-aware width
+    /// `primitives::status_bar::native_surface_paint::paint` measures
+    /// segments with. Also resolves `chrome_dwrite` now, matching
     /// [`Self::surface_measure_text`]'s doc above.
     fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
         #[cfg(not(target_os = "windows"))]
@@ -6338,208 +6135,16 @@ impl PaintSurface for WinBackend {
     }
 }
 
-/// Win-GUI twin of `MacBackend`'s `ChromeSurface` (see that
-/// struct's own doc) — wraps a `&mut WinBackend` so a primitive already
-/// migrated onto [`PaintSurface`] (today: [`Self::draw_status_bar_interactive`])
-/// paints through
-/// `chrome_dwrite` (falling back to the editor `dwrite` handle if no
-/// live chrome one exists yet — same "degrade, don't panic" convention
-/// as `WinBackend::surface_draw_text_run_with_role`) instead of
-/// `WinBackend`'s own [`PaintSurface`] impl above, which always
-/// resolves the editor `dwrite` handle. Only the four text-shaped
-/// methods below differ; every other verb forwards straight to
-/// `self.backend`.
-///
-/// Line height / char width are **not** swapped — row geometry stays
-/// seeded from the editor font's own metrics even while painting chrome
-/// text, matching [`Self::draw_dialog`]'s already-shipped behaviour (see
-/// that method's own test, "the row's clip box" paragraph, for why that
-/// divergence is already accepted on this backend). A future issue that
-/// gives `WinBackend` its own `chrome_line_height`/`chrome_char_width`
-/// fields — mirroring `MacBackend::chrome_line_height`/
-/// `chrome_char_width` — can revisit this; it is out of this issue's
-/// scope.
-// `ChromeSurface` is only ever constructed inside a `#[cfg(target_os =
-// "windows")]` block, so a non-Windows `--features win` check never
-// constructs it. This mirrors the identical
-// `#[cfg_attr(not(target_os = "windows"), allow(dead_code))]` already used
-// elsewhere in this file for the same reason.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-struct ChromeSurface<'a> {
-    backend: &'a mut WinBackend,
-}
-
-impl PaintSurface for ChromeSurface<'_> {
-    fn surface_begin_frame(&mut self, viewport: Viewport) {
-        self.backend.surface_begin_frame(viewport)
-    }
-
-    fn surface_end_frame(&mut self) {
-        self.backend.surface_end_frame()
-    }
-
-    fn surface_viewport(&self) -> Viewport {
-        self.backend.surface_viewport()
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        self.backend.surface_line_height()
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        self.backend.surface_char_width()
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        #[cfg(target_os = "windows")]
-        if let Some(d) = self
-            .backend
-            .chrome_dwrite
-            .as_ref()
-            .or(self.backend.dwrite.as_ref())
-        {
-            if let Ok(m) = d.measure_text(text) {
-                return m;
-            }
-        }
-        self.backend.surface_measure_text(text)
-    }
-
-    fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
-        #[cfg(target_os = "windows")]
-        if let Some(d) = self
-            .backend
-            .chrome_dwrite
-            .as_ref()
-            .or(self.backend.dwrite.as_ref())
-        {
-            if let Ok(m) = d.measure_text_styled(text, bold) {
-                return m;
-            }
-        }
-        self.backend.surface_measure_text_styled(text, bold)
-    }
-
-    fn surface_fill_rect(&mut self, rect: Rect, color: crate::Color) {
-        self.backend.surface_fill_rect(rect, color)
-    }
-
-    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: crate::Color) {
-        self.backend.surface_fill_rounded_rect(rect, radius, color)
-    }
-
-    fn surface_stroke_rect(&mut self, rect: Rect, color: crate::Color, stroke_width: f32) {
-        self.backend.surface_stroke_rect(rect, color, stroke_width)
-    }
-
-    fn surface_stroke_rounded_rect(
-        &mut self,
-        rect: Rect,
-        radius: f32,
-        color: crate::Color,
-        stroke_width: f32,
-    ) {
-        self.backend
-            .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
-    }
-
-    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: crate::Color) {
-        #[cfg(target_os = "windows")]
-        if let Some(surface) = &self.backend.surface {
-            let dwrite = self
-                .backend
-                .chrome_dwrite
-                .as_ref()
-                .or(self.backend.dwrite.as_ref());
-            if let Some(dwrite) = dwrite {
-                let _ = dwrite.draw_text(&surface.target, text, rect, color);
-                return;
-            }
-        }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking.
-        let _ = (rect, text, color);
-    }
-
-    /// Chrome twin of `WinBackend`'s own #810 override — same
-    /// `italic`/`underline`-unsupported posture, same `scale_x` support
-    /// via `super::text::with_horizontal_scale`, just against
-    /// `chrome_dwrite` (falling back to `dwrite`).
-    #[allow(clippy::too_many_arguments)]
-    fn surface_draw_text_run_styled(
-        &mut self,
-        rect: Rect,
-        text: &str,
-        color: crate::Color,
-        bold: bool,
-        italic: bool,
-        underline: bool,
-        scale_x: f32,
-    ) {
-        let _ = (italic, underline);
-        #[cfg(target_os = "windows")]
-        if let Some(surface) = &self.backend.surface {
-            let dwrite = self
-                .backend
-                .chrome_dwrite
-                .as_ref()
-                .or(self.backend.dwrite.as_ref());
-            if let Some(dwrite) = dwrite {
-                if (scale_x - 1.0).abs() > f32::EPSILON {
-                    super::text::with_horizontal_scale(&surface.target, scale_x, rect.x, || {
-                        let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
-                    });
-                } else {
-                    let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
-                }
-                return;
-            }
-        }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
-        // no-op instead of panicking.
-        let _ = (rect, text, color, bold, scale_x);
-    }
-
-    fn surface_draw_line(
-        &mut self,
-        from: Point,
-        to: Point,
-        color: crate::Color,
-        stroke_width: f32,
-    ) {
-        self.backend
-            .surface_draw_line(from, to, color, stroke_width)
-    }
-
-    fn surface_push_clip(&mut self, rect: Rect) {
-        self.backend.surface_push_clip(rect)
-    }
-
-    fn surface_pop_clip(&mut self) {
-        self.backend.surface_pop_clip()
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        rect: Rect,
-        image: &crate::primitives::image::Image,
-    ) -> crate::backend::ImagePaintResult {
-        self.backend.surface_draw_image(rect, image)
-    }
-}
-
-/// The editor-class twin of [`ChromeSurface`] just above — the Win-GUI
-/// twin of `MacBackend::EditorSurface`/`GtkBackend::EditorSurface` (see
-/// those types' own docs). That adapter exists to reach `chrome_dwrite`
-/// from a primitive-generic call site; this one exists to reach the
-/// editor `dwrite` handle from one, since `WinBackend`'s own
+/// The Win-GUI twin of `MacBackend::EditorSurface`/
+/// `GtkBackend::EditorSurface` (see those types' own docs): it exists to
+/// reach the editor `dwrite` handle from a primitive-generic call site, since `WinBackend`'s own
 /// [`PaintSurface`] impl (above) now defaults to `chrome_dwrite` and a
 /// handful of primitives still need the editor font. The terminal and
 /// the plain text display paint through this trait and need
 /// `EditorSurface`; the diff view also paints through this trait and
 /// needs it too. The full-screen editor paints through its own dedicated
 /// DirectWrite calls instead of this trait at all (see
-/// [`WinBackend::draw_editor`]), so it needs neither adapter. The
+/// [`WinBackend::draw_editor`]), so it needs no adapter. The
 /// minimap and the command line are `crate::font_role::EditorClassPrimitive`
 /// too, but both reach their own dedicated `win::minimap`/
 /// `win::command_line` module functions directly with the editor
@@ -6550,12 +6155,9 @@ impl PaintSurface for ChromeSurface<'_> {
 /// Every font-agnostic method (fills, strokes, clip, lines, images, frame
 /// lifecycle) forwards straight through to [`WinBackend`]'s own impl,
 /// which doesn't read the font either way. Line height / char width are
-/// **not** overridden, the same posture [`ChromeSurface`]'s own doc
-/// documents for the opposite direction — row geometry stays seeded from
-/// the editor font's own metrics regardless of which adapter wraps
-/// `self`, since `WinBackend` has no separate `chrome_line_height`/
-/// `chrome_char_width` fields to diverge from it (out of this issue's
-/// scope — see [`ChromeSurface`]'s doc).
+/// **not** overridden — row geometry stays seeded from the editor font's
+/// own metrics, since `WinBackend` has no separate `chrome_line_height`/
+/// `chrome_char_width` fields to diverge from it.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 struct EditorSurface<'a> {
     backend: &'a mut WinBackend,
@@ -7780,7 +7382,7 @@ mod tests {
     }
 
     #[test]
-    fn draw_activity_bar_tracks_keyboard_focus() {
+    fn painted_activity_bar_tracks_keyboard_focus() {
         let mut b = WinBackend::new();
         let bar = ActivityBar {
             id: WidgetId::new("demo:bar"),
@@ -7789,19 +7391,18 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: true,
+            style: Default::default(),
+            hovered: None,
         };
-        // No surface attached — every real Direct2D call in
-        // `draw_activity_bar` is behind `#[cfg(target_os = "windows")]`
-        // and this test isn't, so on a non-Windows host it falls to the
-        // `todo!()` stub *after* the focus-tracking below has already
-        // run (see that method's doc). Catch the panic so this test
-        // proves the tracking half of the contract everywhere, while
-        // `win::testing`'s headless-surface driver tests prove the paint
-        // half for real on Windows.
-        #[allow(deprecated)]
-        // regression-tests `draw_activity_bar` itself, not its `_with_style` twin.
+        // The frame's painted-widget record is what `end_frame` reads the
+        // focused rail from, so paint the bar through the widget contract
+        // and close the frame. No surface is attached, so neither call
+        // reaches Direct2D.
+        crate::primitive::clear_painted_widgets();
+        let _ =
+            crate::DrawsPrimitives::draw_dyn(&mut b, Rect::new(0.0, 0.0, 40.0, 200.0), &bar, &());
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            b.draw_activity_bar(Rect::new(0.0, 0.0, 40.0, 200.0), &bar, None);
+            b.end_frame();
         }));
         assert_eq!(
             b.focused_activity_bar_id(),
@@ -8163,11 +7764,14 @@ mod tests {
         assert_eq!(b.nc_hit_test(790.0, 16.0), Some(true));
     }
 
-    /// Same regression as above for `Backend::draw_status_bar_interactive`
-    /// — vimcode's inline minimize/maximize/close buttons are ordinary
-    /// `action_id` status-bar segments drawn into the band.
+    /// A status bar painted into the band through the widget contract
+    /// (vimcode's inline minimize/maximize/close buttons are ordinary
+    /// `action_id` status-bar segments) needs no zone of its own: its
+    /// segments are recorded as painted sub-regions, and `nc_hit_test`
+    /// reads those as `HTCLIENT`.
     #[test]
-    fn draw_status_bar_interactive_registers_its_own_segment_zones_inside_the_band() {
+    fn status_bar_segments_read_as_client_inside_the_band() {
+        use crate::backend::DrawsPrimitives;
         let mut b = WinBackend::new();
         let band = Rect::new(0.0, 0.0, 800.0, 32.0);
         Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
@@ -8192,93 +7796,34 @@ mod tests {
                 },
             ],
         };
-        let interaction = crate::interaction::InteractionState::new();
-        let status_rect = Rect::new(600.0, 0.0, 200.0, 32.0);
-        let layout = Backend::draw_status_bar_interactive(&mut b, status_rect, &bar, &interaction);
-        let (close_rect, hit) = layout
-            .hit_regions
-            .iter()
-            .find(|(_, hit)| {
-                matches!(hit, StatusBarHit::Segment(id) if *id == WidgetId::new("titlebar:close"))
-            })
-            .expect("close segment must be a registered hit region");
-        let _ = hit;
-        // `close_rect` is bar-local (the layout's own,
-        // documented contract — see `register_status_bar_segment_zones`'s
-        // doc). The probe point must be derived independently of that
-        // bar-local layout by adding `status_rect`'s own absolute origin
-        // back in, not by reusing whatever the (potentially still buggy)
-        // registered zone reports — otherwise a future regression of this
-        // exact "local vs. absolute" shape could ship past this test
-        // again undetected.
-        let (cx, cy) = (
-            status_rect.x + close_rect.x + close_rect.width / 2.0,
-            status_rect.y + close_rect.y + close_rect.height / 2.0,
-        );
-        // On the close button's real, absolute screen position: must
-        // reach the app as a normal click, not get swallowed as a
-        // caption drag.
-        assert_eq!(b.nc_hit_test(cx, cy), Some(false));
-        assert_eq!(b.nc_hit_test(10.0, 16.0), Some(true));
-    }
-
-    /// The regression above with a non-zero `rect.x`/
-    /// `rect.y` specifically targeted — the exact gap that let the bug
-    /// ship past `draw_status_bar_interactive_registers_its_own_segment_
-    /// zones_inside_the_band` above, whose non-zero `rect.x` alone wasn't
-    /// enough because its probe point was derived from the same
-    /// (buggy) bar-local layout the production code also mis-registered.
-    /// This test instead asserts directly on the *registered* zone's
-    /// `bounds`, bypassing `nc_hit_test` band containment entirely, so it
-    /// cannot pass "for the wrong reason."
-    #[test]
-    fn register_status_bar_segment_zones_translates_bar_local_bounds_by_rect_origin() {
-        let mut b = WinBackend::new();
-        let bar = StatusBar {
-            id: WidgetId::new("titlebar:controls"),
-            left_segments: vec![],
-            right_segments: vec![crate::primitives::status_bar::StatusBarSegment {
-                text: "X".into(),
-                fg: crate::types::Color::rgb(255, 255, 255),
-                bg: crate::types::Color::rgb(0, 0, 0),
-                bold: false,
-                action_id: Some(WidgetId::new("titlebar:close")),
-            }],
-        };
-        let interaction = crate::interaction::InteractionState::new();
-        // Non-zero x and y, matching real-world geometry (a controls bar anchored
-        // near the window's right edge).
-        let status_rect = Rect::new(850.0, 4.0, 150.0, 28.0);
-        let layout = Backend::draw_status_bar_interactive(&mut b, status_rect, &bar, &interaction);
+        crate::primitive::clear_painted_widgets();
+        // Non-zero x and y, so a probe derived from bar-local bounds alone
+        // would miss the painted segment.
+        let status_rect = Rect::new(600.0, 2.0, 200.0, 28.0);
+        let painted = b.draw_dyn(status_rect, &bar, &());
+        let layout = &painted
+            .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+            .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+            .layout;
         let (close_rect, _) = layout
             .hit_regions
             .iter()
             .find(|(_, hit)| {
-                matches!(hit, StatusBarHit::Segment(id) if *id == WidgetId::new("titlebar:close"))
+                matches!(
+                    hit,
+                    crate::primitives::status_bar::StatusBarHit::Segment(id)
+                        if *id == WidgetId::new("titlebar:close")
+                )
             })
-            .expect("close segment must be a registered hit region");
-
-        let registered = b
-            .zones
-            .iter()
-            .find(|z| z.id == WidgetId::new("titlebar:close"))
-            .expect("close segment zone must be registered")
-            .bounds;
-
-        // The registered zone's bounds must be `status_rect`'s absolute
-        // origin plus the layout's bar-local bounds — not the bar-local
-        // bounds verbatim (the pre-fix behaviour, which left the zone
-        // overlapping whatever was painted at the left edge of the band
-        // instead of the button's real position near the right edge).
-        assert_eq!(registered.x, status_rect.x + close_rect.x);
-        assert_eq!(registered.y, status_rect.y + close_rect.y);
-        assert_eq!(registered.width, close_rect.width);
-        assert_eq!(registered.height, close_rect.height);
-        assert!(
-            registered.x > 0.0,
-            "regression guard: bar-local bounds alone would be well under \
-             status_rect.x's 850.0, not reflecting the real absolute position"
+            .expect("close segment must be a hit region");
+        // `close_rect` is bar-local; the probe adds `status_rect`'s own
+        // absolute origin back in.
+        let (cx, cy) = (
+            status_rect.x + close_rect.x + close_rect.width / 2.0,
+            status_rect.y + close_rect.y + close_rect.height / 2.0,
         );
+        assert_eq!(b.nc_hit_test(cx, cy), Some(false));
+        assert_eq!(b.nc_hit_test(10.0, 16.0), Some(true));
     }
 
     /// Paint `cc` into `rect` through the widget contract, the way a host
@@ -8530,14 +8075,16 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_activity_bar_with_style(
+        let _ = crate::DrawsPrimitives::draw_dyn(
+            &mut backend,
             Rect::new(0.0, 0.0, W as f32, H as f32),
             &bar,
-            None,
-            &crate::ActivityBarStyle::default(),
+            &(),
         );
         backend.end_frame();
 
@@ -11242,7 +10789,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_status_bar_interactive_paints_segment_text_in_the_chrome_fonts_size() {
+    fn win_backend_status_bar_paints_segment_text_in_the_chrome_fonts_size() {
         let bar = StatusBar {
             id: WidgetId::new("status"),
             left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
@@ -11254,67 +10801,24 @@ mod tests {
             }],
             right_segments: vec![],
         };
-        let interaction = crate::interaction::InteractionState::new();
         let diff = chrome_font_diff_pixel_count(
             300,
             24,
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_status_bar_interactive(
+                let _ = crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, 300.0, 24.0),
                     &bar,
-                    &interaction,
+                    &(),
                 );
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_status_bar_interactive must paint segment text through \
-             ChromeSurface (chrome_dwrite), not WinBackend's own PaintSurface impl \
-             (the editor dwrite handle)"
-        );
-    }
-
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn win_backend_draw_activity_bar_paints_icon_glyphs_in_the_chrome_fonts_size() {
-        // the icon glyph always paints at a fixed, VS-Code-parity
-        // *size* (`ActivityBarStyle::resolved_icon_size_px`), independent
-        // of whichever `dwrite` handle's own point size is passed in —
-        // see `win::activity_bar`'s module doc — so varying only the
-        // chrome *size* (this test's siblings' approach) would prove
-        // nothing here even post-change. `win::activity_bar::draw_activity_bar`
-        // rebuilds its icon-sized `DWrite` via `dwrite.with_size`, which
-        // preserves `dwrite`'s own *family* — so varying the chrome
-        // *family* instead (holding the editor font fixed) still
-        // distinguishes "paints through chrome_dwrite" from "paints
-        // through the editor dwrite handle regardless of `set_ui_font`".
-        let bar = ActivityBar {
-            id: WidgetId::new("activity"),
-            top_items: vec![crate::primitives::activity_bar::ActivityItem {
-                id: WidgetId::new("activity:explorer"),
-                icon: crate::types::Icon::new("", "E"),
-                tooltip: String::new(),
-                is_active: false,
-                is_keyboard_selected: false,
-            }],
-            bottom_items: Vec::new(),
-            active_accent: None,
-            selection_bg: None,
-            is_keyboard_focused: false,
-        };
-        let diff =
-            chrome_font_diff_pixel_count(60, 200, "Segoe UI 12", "Courier New 12", |backend| {
-                #[allow(deprecated)]
-                // regression-tests `draw_activity_bar` itself, not its `_with_style` twin.
-                let _ = backend.draw_activity_bar(Rect::new(0.0, 0.0, 60.0, 200.0), &bar, None);
-            });
-        assert!(
-            diff > 0,
-            "#1266: draw_activity_bar must paint icon glyphs through chrome_dwrite (whose \
-             family — not its point size, fixed by #1157's icon-size override — this test \
-             varies), not the (unchanged) editor dwrite handle"
+            "a status bar must paint segment text through chrome_dwrite, not \
+             the editor dwrite handle"
         );
     }
 
@@ -11811,14 +11315,14 @@ mod tests {
     /// `WinBackend::surface_measure_text_styled`'s bold override must ask
     /// DirectWrite for a wider bold measurement, not just a synthetic bonus.
     /// Mirrors `gtk::backend::tests::gtk_backend_draw_status_bar_bold_segment_measures_wider`:
-    /// paints the same text through the real `Backend::draw_status_bar` path once
+    /// paints the same text through the widget contract once
     /// bold, once not, and asserts the bold segment's resolved (painted) width is
     /// strictly wider.
     ///
     /// **Both the editor and chrome fonts are overridden on purpose — don't drop
     /// either call.** `PaintSurface::surface_measure_text_styled` measures through
-    /// `self.dwrite` (the editor font); `Backend::draw_status_bar_interactive`
-    /// measures/paints through `chrome_dwrite` instead. Both must be set to the
+    /// `self.dwrite` (the editor font); a status bar measures/paints through
+    /// `chrome_dwrite` instead. Both must be set to the
     /// *same* `FONT`/`SIZE_PT` or the comparison would drift.
     ///
     /// `DEFAULT_EDITOR_FONT_FAMILY` (`"Consolas"`) is monospaced and shares **one
@@ -11832,7 +11336,7 @@ mod tests {
     /// `set_ui_font` to match the bold-override font.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_status_bar_bold_segment_measures_wider() {
+    fn win_backend_status_bar_bold_segment_measures_wider() {
         // `DWrite` (and `DEFAULT_UI_FONT_FAMILY` below) come from this
         // module's own `use super::*` — both are `cfg(target_os =
         // "windows")` items, same as this test.
@@ -11878,8 +11382,8 @@ mod tests {
             // `set_editor_font`'s doc — a live surface doesn't rebuild
             // them on a later font change).
             backend.set_editor_font(FONT, SIZE_PT);
-            // `draw_status_bar_interactive` now measures/paints
-            // through `chrome_dwrite`, not `self.dwrite` — see this
+            // A status bar measures/paints through `chrome_dwrite`,
+            // not `self.dwrite` — see this
             // test's own doc. Set to the same `FONT`/`SIZE_PT` as the
             // editor font above (and the probe `DWrite` instance), or
             // the final `assert_eq!` below would compare against the
@@ -11889,7 +11393,8 @@ mod tests {
                 .attach_headless(surface.target().clone(), W, H)
                 .expect("attach headless surface");
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let layout = backend.draw_status_bar_interactive(
+            let layout = crate::DrawsPrimitives::draw_dyn(
+                &mut backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("test:status-bar"),
@@ -11902,10 +11407,16 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
             backend.end_frame();
-            layout.visible_segments[0].bounds.width
+            layout
+                .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+                .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+                .layout
+                .visible_segments[0]
+                .bounds
+                .width
         };
 
         let regular_width = width_for(false);
@@ -12393,7 +11904,7 @@ mod tests {
         };
         backend.draw_multi_section_view(rect, &msv);
 
-        // `Vec<ActivityBarRowHit>` category.
+        // Widget-contract rail (fixed row geometry, no measurer).
         let activity_bar = ActivityBar {
             id: WidgetId::new("activity-bar"),
             top_items: Vec::new(),
@@ -12401,13 +11912,10 @@ mod tests {
             active_accent: None,
             selection_bg: None,
             is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
         };
-        let _ = backend.draw_activity_bar_with_style(
-            rect,
-            &activity_bar,
-            None,
-            &crate::ActivityBarStyle::default(),
-        );
+        let _ = crate::DrawsPrimitives::draw_dyn(&mut backend, rect, &activity_bar, &());
 
         // Widget-contract category (nominal-measurer fallback): a
         // `TabBar` pushed through `draw_dyn` resolves its layout and

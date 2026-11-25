@@ -1199,36 +1199,6 @@ impl crate::Backend for RecordingBackend {
     ) {
         self.record("draw_settings_chrome");
     }
-    /// Computes a real [`crate::StatusBarLayout`] via [`crate::StatusBar::layout`]
-    /// with a char-cell measurer (`self.char_width` per character,
-    /// mirroring `TuiBackend`'s own measurer) rather than a hardcoded
-    /// empty layout — `SidebarPanelBody`'s `StatusBars` chrome surfaces real
-    /// hit regions from it, and a recorder that always returns empty can
-    /// never exercise that translation.
-    fn draw_status_bar_interactive(
-        &mut self,
-        r: Rect,
-        b: &crate::primitives::status_bar::StatusBar,
-        _interaction: &crate::interaction::InteractionState,
-    ) -> crate::StatusBarLayout {
-        self.record("draw_status_bar");
-        let cw = self.char_width.max(0.0);
-        b.layout(r.width, r.height, 2.0 * cw, |seg| {
-            crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32 * cw)
-        })
-    }
-    /// Union note: see `draw_status_bar` above — `app_shell::MockBackend`'s
-    /// real body (`Vec::new()`) wins for the same reason;
-    /// `AppShell::render` calls this for real.
-    fn draw_activity_bar(
-        &mut self,
-        _r: Rect,
-        _b: &crate::primitives::activity_bar::ActivityBar,
-        _h: Option<usize>,
-    ) -> Vec<crate::primitives::activity_bar::ActivityBarRowHit> {
-        self.record("draw_activity_bar");
-        Vec::new()
-    }
     fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {
         self.record("draw_solid_fill");
     }
@@ -1252,22 +1222,6 @@ impl crate::Backend for RecordingBackend {
         _c: &crate::CommandLine,
     ) -> crate::primitives::command_line::CommandLineLayout {
         Default::default()
-    }
-    fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
-        crate::StatusBarLayout {
-            bar_width: 0.0,
-            bar_height: 0.0,
-            visible_segments: Vec::new(),
-            hit_regions: Vec::new(),
-            resolved_right_start: 0,
-        }
-    }
-    fn activity_bar_layout(
-        &self,
-        _r: Rect,
-        _b: &crate::primitives::activity_bar::ActivityBar,
-    ) -> Vec<crate::ActivityBarRowHit> {
-        Vec::new()
     }
     fn text_display_layout(&self, _r: Rect, _t: &crate::TextDisplay) -> crate::TextDisplayLayout {
         unimplemented!("RecordingBackend has no TextDisplay layout algorithm")

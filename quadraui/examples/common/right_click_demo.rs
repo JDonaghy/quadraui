@@ -11,10 +11,10 @@
 //! Layout: a single full-window `StatusBar` shows the last activated
 //! menu item. Right-click anywhere in the window to open the menu.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, ContextMenu, ContextMenuItem, ContextMenuPlacement, InteractionState,
-    Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Color, ContextMenu, ContextMenuItem, ContextMenuPlacement, Key, MouseButton,
+    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 use quadraui::accelerator::{Accelerator, AcceleratorId, AcceleratorScope, KeyBinding};
@@ -105,7 +105,7 @@ impl AppLogic for RightClickDemo {
         let viewport = backend.viewport();
         let row_h = 28.0_f32;
         let rect = Rect::new(0.0, viewport.height - row_h, viewport.width, row_h);
-        let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(rect, &bar, &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

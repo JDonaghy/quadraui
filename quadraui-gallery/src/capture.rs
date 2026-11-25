@@ -87,6 +87,7 @@
 //! whole run. Every other demo/variant/backend, and `manifest.json`
 //! itself, still gets written.
 
+use quadraui::DrawsPrimitives;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -1811,7 +1812,7 @@ mod tests {
                 }],
                 right_segments: vec![],
             };
-            let _ = backend.draw_status_bar_interactive(area, &bar, &InteractionState::new());
+            let _ = backend.draw_dyn(area, &bar, &());
         }
 
         fn handle(
@@ -2033,7 +2034,7 @@ mod tests {
                 }],
                 right_segments: vec![],
             };
-            let _ = backend.draw_status_bar_interactive(area, &bar, &InteractionState::new());
+            let _ = backend.draw_dyn(area, &bar, &());
         }
 
         fn handle(

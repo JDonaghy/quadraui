@@ -29,15 +29,16 @@
 //! add_recent_document, `c` clear_recent_documents, `k` set_dock_menu, `j`
 //! set_jump_list, `u` update_service().download_and_stage. Esc quits.
 
+use quadraui::DrawsPrimitives;
 use std::fmt::Debug;
 use std::path::PathBuf;
 
 use quadraui::backend::JumpListItem;
 use quadraui::{
     Accelerator, AcceleratorId, AcceleratorScope, AppLogic, AppPathKind, Backend, Color,
-    ContextMenu, ContextMenuPlacement, DragOutPayload, InteractionState, Key, KeyBinding,
-    LoginItemOptions, NamedKey, PowerSaveKind, Reaction, Rect, ServiceResult, StatusBar,
-    StatusBarSegment, UiEvent, UpdateInfo, WidgetId,
+    ContextMenu, ContextMenuPlacement, DragOutPayload, Key, KeyBinding, LoginItemOptions, NamedKey,
+    PowerSaveKind, Reaction, Rect, ServiceResult, StatusBar, StatusBarSegment, UiEvent, UpdateInfo,
+    WidgetId,
 };
 
 pub struct PlatformSeamsDemo {
@@ -116,11 +117,7 @@ impl AppLogic for PlatformSeamsDemo {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
