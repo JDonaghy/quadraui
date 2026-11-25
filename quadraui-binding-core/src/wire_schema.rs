@@ -2763,6 +2763,29 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("submenu", nullable(list(context_menu_item))),
         ],
     ));
+    // ── `context_menu` (a `WIDGET_KINDS` member) ───────────────────────
+    let context_menu_placement = b.define(alias(
+        "ContextMenuPlacement",
+        lit(&["AnchorPoint", "Below", "Above"]),
+    ));
+    let context_menu_glyphs = b.define(obj(
+        "ContextMenuGlyphs",
+        vec![
+            field_opt("checked", nullable(re("Icon"))),
+            field_opt("submenu_arrow", nullable(re("Icon"))),
+        ],
+    ));
+    let context_menu_descriptor = b.define(obj(
+        "ContextMenuDescriptor",
+        vec![
+            field("id", re("WidgetId")),
+            field("items", list(context_menu_item_def.clone())),
+            field("selected_idx", int_()),
+            field_opt("bg", nullable(re("Color"))),
+            field_opt("placement", context_menu_placement),
+            field_opt("glyphs", context_menu_glyphs),
+        ],
+    ));
     let menu_bar_item = b.define(obj(
         "MenuBarItemDescriptor",
         vec![
@@ -2932,6 +2955,7 @@ pub fn schema() -> Vec<DefJson> {
             "status_bar" => status_bar_descriptor.clone(),
             "activity_bar" => activity_bar_descriptor.clone(),
             "palette" => palette_descriptor.clone(),
+            "context_menu" => context_menu_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3954,20 +3978,21 @@ mod coverage {
         ButtonIconPosition, ButtonMask, ButtonRowItem, ButtonSpec, ButtonVariant, CalendarDate,
         Canvas, CanvasEvent, CardBadge, Cell, CellAlign, CellGrid, CellGridEvent, CellStyle, Chart,
         ChartEvent, ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter,
-        CommandLine, ContextMenuItem, ControlWidth, DataRow, DataTable, DataTableEvent, DateFormat,
-        DateLocale, DatePicker, Decoration, DiagnosticMark, DiagnosticSeverity, DiffEditability,
-        DiffHunk, DiffLine, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DrawOp, Editor,
-        EditorCursor, EditorCursorPos as CursorPos, EditorCursorShape as CursorShape, EditorLine,
-        EditorSelection, EditorSelectionKind as SelectionKind, EditorStyle, EditorStyledSpan,
-        EmptyBody, FieldKind, FindReplaceClickTarget, FindReplacePanel, Form, FormEvent, FormField,
-        FormSpacing, FrHitRegion, GitLineStatus, HeaderAction, Icon, IconGrid, IconGridItem, Image,
-        ImageFit, ImageSource, InlineInput, Key, KeyBinding, LabelAlign, LabelPosition, ListItem,
-        ListView, ListViewEvent, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap,
-        MinimapLine, MinimapSpan, Modifiers, MouseButton, MsvAxis, MultiSectionView, NamedKey,
-        NumberInput, Palette, PaletteEvent, PaletteItem, PaletteMode, PalettePreview,
-        PipelineStage, PipelineView, Point, PowerEventKind, ProgressBar, RadioGroup, RadioOption,
-        Rect, RowAlign, ScrollAxis, ScrollDelta, ScrollMode, ScrollView, Scrollbar, Section,
-        SectionAux, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel,
+        CommandLine, ContextMenu, ContextMenuItem, ControlWidth, DataRow, DataTable,
+        DataTableEvent, DateFormat, DateLocale, DatePicker, Decoration, DiagnosticMark,
+        DiagnosticSeverity, DiffEditability, DiffHunk, DiffLine, DiffMode, DiffPane, DiffRow,
+        DiffRowKind, DiffView, DrawOp, Editor, EditorCursor, EditorCursorPos as CursorPos,
+        EditorCursorShape as CursorShape, EditorLine, EditorSelection,
+        EditorSelectionKind as SelectionKind, EditorStyle, EditorStyledSpan, EmptyBody, FieldKind,
+        FindReplaceClickTarget, FindReplacePanel, Form, FormEvent, FormField, FormSpacing,
+        FrHitRegion, GitLineStatus, HeaderAction, Icon, IconGrid, IconGridItem, Image, ImageFit,
+        ImageSource, InlineInput, Key, KeyBinding, LabelAlign, LabelPosition, ListItem, ListView,
+        ListViewEvent, MenuBar, MenuBarItem, MessageList, MessageRow, Minimap, MinimapLine,
+        MinimapSpan, Modifiers, MouseButton, MsvAxis, MultiSectionView, NamedKey, NumberInput,
+        Palette, PaletteEvent, PaletteItem, PaletteMode, PalettePreview, PipelineStage,
+        PipelineView, Point, PowerEventKind, ProgressBar, RadioGroup, RadioOption, Rect, RowAlign,
+        ScrollAxis, ScrollDelta, ScrollMode, ScrollView, Scrollbar, Section, SectionAux,
+        SectionBody, SectionHeader, SectionSize, SelectionMode, Series, SidebarPanel,
         SortDirection, SpellMark, Spinner, StageStatus, StatusBar, StatusBarEvent,
         StatusBarSegment, StyledSpan, StyledText, Switch, SystemTheme, TabBar, TabBarEvent,
         TabBarSegment, TabItem, Terminal, TerminalCell, TerminalCursorShape, TerminalEvent,
@@ -4817,6 +4842,17 @@ mod coverage {
             buttons,
             bg,
             focused_index
+        }
+    );
+    assert_fields!(
+        assert_context_menu_fields,
+        ContextMenu {
+            id,
+            items,
+            selected_idx,
+            bg,
+            placement,
+            glyphs
         }
     );
     assert_fields!(

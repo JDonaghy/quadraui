@@ -9176,8 +9176,8 @@ fn tab_chrome_demo_click_suppresses_focus_visible() {
     );
 }
 
-// ─── ActivityStyleDemo: VS-Code-style row fill through
-//     Backend::draw_activity_bar_with_style ───────────────────────────────
+// ─── ActivityStyleDemo: VS-Code-style row fill through the ActivityBar
+//     widget contract ──────────────────────────────────────────────────────
 //
 // `ActivityBarStyle::active_bg` pairs with `ActivityBar` as a sidecar to
 // avoid breaking exhaustive literals. These drive the shipping example
@@ -9189,7 +9189,7 @@ fn tab_chrome_demo_click_suppresses_focus_visible() {
 fn activity_style_demo_paints_no_accent_glyph() {
     // `active_accent` is `None` throughout this demo — the row fill is the
     // only active-item indicator. `'▎'` is the glyph
-    // `tui::activity_bar::draw_activity_bar_with_style` paints for a
+    // the ActivityBar cell painter paints for a
     // *set* `active_accent`, so its total absence here is the observable
     // proxy for "zero accent-line pixels" that a text-only driver can
     // assert (the actual fill colour is a cell-background test, covered

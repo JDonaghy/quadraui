@@ -643,6 +643,9 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`AcceleratorScope`](#wire-acceleratorscope)
 - [`Accelerator`](#wire-accelerator)
 - [`ContextMenuItem`](#wire-contextmenuitem)
+- [`ContextMenuPlacement`](#wire-contextmenuplacement)
+- [`ContextMenuGlyphs`](#wire-contextmenuglyphs)
+- [`ContextMenuDescriptor`](#wire-contextmenudescriptor)
 - [`MenuBarItemDescriptor`](#wire-menubaritemdescriptor)
 - [`MenuBarDescriptor`](#wire-menubardescriptor)
 - [`DiffRowKind`](#wire-diffrowkind)
@@ -3526,6 +3529,31 @@ Alias for `"Global" | _AcceleratorScopeWidget | _AcceleratorScopeMode`.
 | `icon` | `Icon \| null` | no |  |
 | `submenu` | `ContextMenuItem[] \| null` | no |  |
 
+<a id="wire-contextmenuplacement"></a>
+#### `ContextMenuPlacement`
+
+Alias for `"AnchorPoint" | "Below" | "Above"`.
+
+<a id="wire-contextmenuglyphs"></a>
+#### `ContextMenuGlyphs`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `checked` | `Icon \| null` | no |  |
+| `submenu_arrow` | `Icon \| null` | no |  |
+
+<a id="wire-contextmenudescriptor"></a>
+#### `ContextMenuDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `items` | `ContextMenuItem[]` | yes |  |
+| `selected_idx` | `number` | yes |  |
+| `bg` | `Color \| null` | no |  |
+| `placement` | `ContextMenuPlacement` | no |  |
+| `glyphs` | `ContextMenuGlyphs` | no |  |
+
 <a id="wire-menubaritemdescriptor"></a>
 #### `MenuBarItemDescriptor`
 
@@ -3658,6 +3686,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `status_bar` | `StatusBarDescriptor` | no |  |
 | `activity_bar` | `ActivityBarDescriptor` | no |  |
 | `palette` | `PaletteDescriptor` | no |  |
+| `context_menu` | `ContextMenuDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3726,6 +3755,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `status_bar` | `StatusBarDescriptor \| null` | no |  |
 | `activity_bar` | `ActivityBarDescriptor \| null` | no |  |
 | `palette` | `PaletteDescriptor \| null` | no |  |
+| `context_menu` | `ContextMenuDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`

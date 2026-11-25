@@ -1836,6 +1836,22 @@ export interface ContextMenuItem {
   submenu?: ContextMenuItem[] | null;
 }
 
+export type ContextMenuPlacement = "AnchorPoint" | "Below" | "Above";
+
+export interface ContextMenuGlyphs {
+  checked?: Icon | null;
+  submenu_arrow?: Icon | null;
+}
+
+export interface ContextMenuDescriptor {
+  id: WidgetId;
+  items: ContextMenuItem[];
+  selected_idx: number;
+  bg?: Color | null;
+  placement?: ContextMenuPlacement;
+  glyphs?: ContextMenuGlyphs;
+}
+
 export interface MenuBarItemDescriptor {
   id: WidgetId;
   label: string;
@@ -1936,6 +1952,7 @@ export interface LayoutLeafNode {
   status_bar?: StatusBarDescriptor;
   activity_bar?: ActivityBarDescriptor;
   palette?: PaletteDescriptor;
+  context_menu?: ContextMenuDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -1996,6 +2013,7 @@ export interface RenderFrameDict {
   status_bar?: StatusBarDescriptor | null;
   activity_bar?: ActivityBarDescriptor | null;
   palette?: PaletteDescriptor | null;
+  context_menu?: ContextMenuDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

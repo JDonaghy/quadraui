@@ -534,7 +534,7 @@ pub enum FieldKind {
     /// Single-choice selection from a fixed list. `options` is the
     /// display list; `selected_idx` is the current choice. While the
     /// field is focused, backends show the full option list open below
-    /// the compact row (see e.g. `crate::tui::form::draw_form`); Up/Down
+    /// the compact row (see e.g. `form::cell_paint::draw_form`); Up/Down
     /// move the selection and commit it immediately, emitting
     /// `FormEvent::DropdownChanged` on every move — there's no separate
     /// open/confirm step.
@@ -2420,7 +2420,7 @@ mod native_surface_paint {
                     FieldKind::NumberInput(number) => {
                         // `vf.item_bounds`'s single entry (populated by the
                         // backend's `FieldKind::NumberInput` measure arm —
-                        // see e.g. `tui::form::tui_form_layout_with_label_width`'s
+                        // see e.g. `form::cell_layout::tui_form_layout_with_label_width`'s
                         // pixel-measurer twin in `layout_metrics.rs`) is the
                         // control's on-screen rect; reuse it rather than
                         // re-deriving `control_start` here, so paint and

@@ -536,79 +536,40 @@ impl Palette {
 
 // ── PaintSurface paint ──────────────────────────────────────────
 //
-// `gtk::draw_palette` (Cairo), `macos::palette::draw_palette`
-// (Core Graphics) and `win::palette::draw_palette` (Direct2D) each
-// independently painted the same title/query/item/scrollbar/preview
-// content with their own drawing API, and each independently
-// re-derived the *geometry* those verbs used, which had drifted three
-// ways:
+// One geometry function (`pixel_layout`) and one painter
+// (`native_surface_paint::paint`, written against
+// [`crate::paint_surface::PaintSurface`]) serve every pixel backend, so
+// no backend carries its own copy of either. The decisions they settle:
 //
-// - **`query_height`**: GTK reserved `line_height + 1.0` for the
-//   query/list separator stroke; macOS/Windows both passed plain
-//   `line_height`, making their separator 1px short of the correct
-//   row start.
-// - **Row flooring**: GTK computed `visible_rows` by flooring and fed
-//   `Palette::layout` a reduced `viewport_height` so the item list
-//   never shows a partial last row; macOS/Windows fed the full popup
-//   height, allowing a clipped, partial-height last row.
-// - **Scrollbar width**: GTK/Windows agreed on `(6.0, 8.0)`
-//   (`scrollbar_width`, `min_thumb_len`); macOS alone used `(8.0, 8.0)`.
-// - **Title row reservation**: GTK/macOS both always reserved
-//   `line_height` for the title row; `win_palette_layout` special-cased
-//   `title_h = 0.0` when `palette.title.is_empty()`. `layout` below
-//   always reserves `line_height` for the title, so empty-title popups
-//   now carry a blank title row.
-//
-// `layout` below is the shared geometry function; backend wrappers
-// become thin unit-converting wrappers over it, so no per-backend
-// geometry copy can drift again.
-//
-// `paint` below is the shared paint implementation, written against
-// [`crate::paint_surface::PaintSurface`] instead of any one backend's
-// API. Feature gaps found while unifying (adopting richer/majority
-// behaviour):
-//
-// - **Match-position highlighting** (`PaletteItem::match_positions`):
-//   GTK had it (per-character Pango `AttrColor` spans); Windows had
-//   its own `matched_runs`/`draw_matched_text` run-splitter, ported
-//   below; macOS had none. `paint` carries the run-splitter for every
-//   backend, moving GTK's item labels from one Pango-shaped run to N
-//   adjacent runs at match/non-match boundaries — a subtle text-shaping
-//   change, likely visually negligible for short ASCII labels but not
-//   covered by a shaping-sensitive test.
-
-// - **Icon rendering** (`PaletteItem::icon`): GTK painted it; macOS/Windows
-//   never did. `paint` paints it for every backend via
+// - **`query_height`** is `line_height + 1.0`: the query/list separator
+//   stroke gets its own pixel, so the first item row starts below it.
+// - **Row flooring**: `visible_rows` is floored and `Palette::layout` is
+//   fed the matching reduced `viewport_height`, so the item list never
+//   shows a partial last row.
+// - **Scrollbar width** is `(6.0, 8.0)` (`scrollbar_width`,
+//   `min_thumb_len`).
+// - **Title row**: `line_height` is always reserved for the title, so an
+//   empty-title popup carries a blank title row.
+// - **Match-position highlighting** (`PaletteItem::match_positions`)
+//   splits an item label into adjacent runs at match/non-match
+//   boundaries.
+// - **Icons** (`PaletteItem::icon`) paint through
 //   [`crate::paint_surface::PaintSurface::surface_draw_icon_glyph`].
-// - **Query cursor**: GTK/macOS both painted a filled cursor block
-//   (inverting the character underneath, terminal-style); Windows drew
-//   no cursor. `paint` gives every GUI backend a thin bar caret; the
-//   block-invert treatment is TUI-only (`tui::palette`'s `set_cell`
-//   fg/bg swap).
-// - **`PaletteMode::Input` suppression**: GTK and Windows both hide the
-//   item list in `Input` mode; macOS did not. `paint` suppresses the
-//   item list for every backend.
-// - **Preview line colour**: GTK painted each preview line span in its
-//   own `span.fg` (falling back to `fg`); macOS/Windows always painted
-//   preview lines in a single flat colour. `paint` carries GTK's
-//   per-span treatment.
-// - **Scrollbar colour**: GTK and Windows both painted the track as
-//   `theme.surface_bg * 0.7` and the thumb in flat `theme.border_fg`;
-//   macOS used `theme.scrollbar_track.with_alpha(0.4)` /
-//   `theme.scrollbar_thumb.with_alpha(0.8)`. `paint` adopts macOS's
-//   scheme because it is the only one that uses the theme's dedicated
-//   `scrollbar_track`/`scrollbar_thumb` fields; GTK/Windows's reuse
-//   looks like an accident of not having those fields available when
-//   they were written. Net visible effect: the thumb goes from
-//   `border_fg` (blue-ish, `rgb(120,160,200)`) to `scrollbar_thumb`
-//   (neutral grey, `rgb(110,115,130)`) at 0.8 alpha.
+// - **Query cursor** is a thin bar caret on every GUI backend; the
+//   block-invert treatment is the TUI cell painter's.
+// - **`PaletteMode::Input`** hides the item list.
+// - **Preview lines** paint each span in its own `span.fg`, falling back
+//   to `fg`.
+// - **Scrollbar colour** is `theme.scrollbar_track.with_alpha(0.4)` for
+//   the track and `theme.scrollbar_thumb.with_alpha(0.8)` for the thumb,
+//   the theme's dedicated scrollbar fields.
 // ── Shared pixel geometry ───────────────────────────────────────────────
 //
 // `pixel_layout` and its tokens sit outside the feature-gated
 // `native_surface_paint` module below because `Primitive::layout` resolves
 // the pixel geometry in every build, including one with no backend feature
 // at all. `native_surface_paint` re-exports them under its own names so
-// the per-backend wrappers keep one path to them.
+// its painter and tests keep one path to them.
 
 /// Scrollbar track width, shared by [`pixel_layout`] and
 /// [`native_surface_paint::paint`] so the two can't disagree on it — the
@@ -654,9 +615,9 @@ pub(crate) fn item_row_height(line_height: f32) -> f32 {
 }
 
 /// Compute the shared pixel-surface [`Palette`] layout — the one geometry
-/// [`native_surface_paint::paint`] paints from and every pixel backend's
-/// `Backend::palette_layout` exposes for hit-testing, so paint/hit-test/
-/// backend can't drift three ways.
+/// [`native_surface_paint::paint`] paints from and the widget contract's
+/// [`crate::primitive::Primitive::layout`] hands hit-testing, so paint and
+/// hit-test resolve one geometry.
 ///
 /// Returns the layout alongside `rows_h` (the item area's full row
 /// capacity in surface-native units, already floored to a whole number of
@@ -693,8 +654,9 @@ pub(crate) fn pixel_layout(
 }
 
 /// Compute the shared cell-grid [`Palette`] layout — the geometry
-/// [`cell_paint::paint`] paints from and `Backend::palette_layout`
-/// exposes for hit-testing on a terminal, so the two stay synchronized.
+/// [`cell_paint::paint`] paints from and the widget contract's
+/// [`crate::primitive::Primitive::layout`] hands hit-testing on a
+/// terminal, so the two stay synchronized.
 ///
 /// Row heights mirror the cell painter's own grid math exactly: title is
 /// always 1 row; the query area is 2 rows (query row + separator) when
@@ -2361,9 +2323,9 @@ impl Palette {
             if cells {
                 crate::text_util::display_width(text) as f32
             } else {
-                // The role every pixel backend's `draw_palette` paints
-                // item text in, asserted by `gtk_font_role`/
-                // `macos_font_role`'s own `draw_palette` cases. The icon
+                // The role the shared pixel painter paints item text in,
+                // asserted by `gtk_font_role`/`macos_font_role`'s own
+                // palette cases. The icon
                 // glyph measures in the same role because
                 // `row_content_paint::paint_row_icon` sizes it with the
                 // surface's own `surface_measure_text`.
@@ -2427,6 +2389,12 @@ impl crate::primitive::Primitive for Palette {
 
     fn capture(&self) -> crate::frame::OwnedContent {
         crate::frame::OwnedContent::Palette(self.clone())
+    }
+
+    /// The popup's drop shadow and the border stroke centred on its edge
+    /// both paint outside its box on a pixel surface.
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        crate::paint_surface::shadow_extent(style.shadow_elevation) + style.border_width
     }
 
     /// The box that shows every item at once: the widest row's own
@@ -2511,9 +2479,9 @@ impl crate::primitive::Primitive for Palette {
     /// `rect` is the popup's final box — already placed and sized by the
     /// host, the way every other overlay primitive is laid out. The
     /// geometry inside it comes from [`cell_layout`] on a cell grid and
-    /// [`pixel_layout`] on a pixel surface: the same two functions every
-    /// legacy `Backend::palette_layout` impl resolves through, so the
-    /// contract and the legacy seam can never disagree.
+    /// [`pixel_layout`] on a pixel surface, the same two functions the
+    /// painters lay out with, so paint and hit-testing can never
+    /// disagree.
     fn layout(&self, ctx: &crate::LayoutCtx, rect: Rect) -> PalettePrimitiveLayout {
         let line_height = Self::text_line_height(ctx);
         let (layout, rows_h, row_height) = if matches!(ctx.units(), crate::primitive::Units::Cells)

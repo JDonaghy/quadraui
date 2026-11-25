@@ -18,7 +18,7 @@
 use super::context_menu_controller::{
     menu_item_heights, menu_line_height, menu_viewport, paint_placed_menu,
 };
-use crate::backend::{Backend, DrawsPrimitives, ResolvedMenuStyle};
+use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::event::{Rect, UiEvent};
 use crate::primitives::context_menu::{
@@ -233,12 +233,7 @@ impl MenuSystem {
     /// [`Self::submenu_selected`], so each level's own `selected_idx`
     /// highlight is the hover cue.
     pub fn render(&self, backend: &mut dyn Backend, bar_rect: Rect) {
-        let bar = self.build_menu_bar();
-        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
-            backend.install_menu_bar(&bar);
-        } else {
-            let _ = backend.draw_dyn(bar_rect, &bar, &());
-        }
+        let _ = self.build_menu_bar().present(backend, bar_rect);
 
         let stack = self.dropdown_stack(backend, bar_rect);
         for (ctx_menu, layout) in &stack {
@@ -252,16 +247,7 @@ impl MenuSystem {
     /// platform's menu bar lives outside the window and nothing in it can
     /// be hit.
     fn bar_layout(&self, backend: &dyn Backend, bar_rect: Rect) -> MenuBarLayout {
-        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
-            return MenuBarLayout {
-                bounds: Rect::new(bar_rect.x, bar_rect.y, bar_rect.width, 0.0),
-                visible_items: Vec::new(),
-                hit_regions: Vec::new(),
-            };
-        }
-        backend
-            .layout_primitive(bar_rect, &self.build_menu_bar())
-            .layout
+        self.build_menu_bar().presented_layout(backend, bar_rect)
     }
 
     /// Process an event. Call from `handle()` before other UI routing.

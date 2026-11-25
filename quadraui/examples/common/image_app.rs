@@ -9,8 +9,8 @@
 //! `ImagePaintResult::Unsupported`, not a silent no-op).
 //!
 //! A leading icon slot on the menu bar: the bar's rect is narrowed by
-//! the icon's width before *both* `DrawsPrimitives::draw_dyn` (paint) and
-//! `DrawsPrimitives::layout_primitive` (click-routing) — see
+//! the icon's width before *both* `MenuBar::present` (paint) and
+//! `MenuBar::presented_layout` (click-routing) — see
 //! [`ImageApp::bar_rects`], computed once so paint and hit-test can never
 //! disagree. This demo narrows the rect itself rather than calling
 //! [`quadraui::MenuBar::layout_with_leading`] directly, because the
@@ -120,7 +120,7 @@ impl AppLogic for ImageApp {
         let (_full, icon_rect, items_rect) = self.bar_rects(backend);
 
         let _ = backend.draw_image(icon_rect, &self.logo());
-        let _ = backend.draw_dyn(items_rect, &self.menu_bar, &());
+        let _ = self.menu_bar.present(backend, items_rect);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
@@ -151,7 +151,7 @@ impl AppLogic for ImageApp {
                     self.last_action = Some("clicked logo".into());
                     return Reaction::Redraw;
                 }
-                let layout = backend.layout_primitive(items_rect, &self.menu_bar).layout;
+                let layout = self.menu_bar.presented_layout(backend, items_rect);
                 if let MenuBarHit::Item(idx) = layout.hit_test(position.x, position.y) {
                     self.last_action =
                         Some(format!("activated: {}", self.menu_bar.items[idx].label));

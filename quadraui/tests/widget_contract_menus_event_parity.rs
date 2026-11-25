@@ -1,11 +1,17 @@
 #![cfg(feature = "tui")]
-//! The TuiDriver leg of the three-way event parity for the menu widgets:
-//! `Toolbar`, `MenuBar` and `ContextMenu` each reach the frame as a
-//! `Surface::Widget` registered in the app's `FrameTree`, and a real
-//! mouse click through the routing engine must surface exactly the
-//! `UiEvent` the assistive-technology leg (`a11y::route_widget_action`,
-//! asserted in each widget module's own tests) and the binding-host leg
-//! (`quadraui-binding-core`'s engine tests) resolve to.
+//! The TuiDriver leg of the event parity for the menu widgets: `Toolbar`,
+//! `MenuBar` and `ContextMenu` each reach the frame as a `Surface::Widget`
+//! registered in the app's `FrameTree`, and a real mouse click through the
+//! routing engine must surface exactly the `UiEvent` the
+//! assistive-technology leg (`a11y::route_widget_action`, asserted in each
+//! widget module's own tests) resolves to.
+//!
+//! `Toolbar` and `ContextMenu` also have a binding-host leg
+//! (`quadraui-binding-core`'s engine tests). `MenuBar` has none: the
+//! binding layer's `"menu_bar"` pairs the bar with a `MenuSystem` that owns
+//! its dropdowns, so a click on a top-level item opens that dropdown
+//! inside the host instead of reporting `UiEvent::MenuActivated` for the
+//! item, as the widget contract does.
 
 use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;

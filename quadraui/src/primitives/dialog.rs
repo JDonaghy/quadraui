@@ -1849,7 +1849,7 @@ pub(crate) mod cell_paint {
                 }
                 // `FormDialogController` (`compose::form_dialog`) paints
                 // the embedded form separately, through
-                // `Backend::draw_form` inside `input_bounds`, the same
+                // the `Form` widget contract inside `input_bounds`, the same
                 // cross-backend path every other `Form` host uses —
                 // nothing to draw here.
                 DialogInput::Form(_) => {}

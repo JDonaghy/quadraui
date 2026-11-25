@@ -489,8 +489,8 @@ impl Primitive for Form {
         // Labels, values and hints are chrome — painted in the backend's
         // UI font by `super::native_surface_paint` — so this measures
         // them through the calling backend's own `Backend::measure_text`
-        // for `FontRole::Chrome`, the exact measurer every pixel
-        // `form_layout` wrapper shares. Without a measurer in reach
+        // for `FontRole::Chrome`, the same measurer every pixel
+        // rasteriser paints the form's text with. Without a measurer in reach
         // (`LayoutCtx::new`) it degrades to the `ctx.char_width`
         // approximation.
         let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
@@ -2012,7 +2012,7 @@ pub(crate) fn overlay_state(form: &mut Form, state: &FormState) {
 impl WidgetAction for FormEvent {
     /// Every outcome rides [`crate::UiEvent::Form`] under the form's own
     /// id, carrying the field-level event unchanged — the same channel a
-    /// host already matches on after `Backend::draw_form`, so routing a
+    /// host already matches on after painting a `Form`, so routing a
     /// form through the widget contract needs no new event vocabulary.
     fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
         crate::UiEvent::Form(id, self)

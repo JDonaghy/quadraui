@@ -2385,7 +2385,9 @@ impl Backend for MacBackend {
     /// has been called.
     fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
         let font = match role {
-            crate::FontRole::Chrome | crate::FontRole::Icon => &self.chrome_font,
+            crate::FontRole::Chrome | crate::FontRole::ChromeBold | crate::FontRole::Icon => {
+                &self.chrome_font
+            }
             crate::FontRole::Editor => self.current_font.as_ref().unwrap_or(&self.chrome_font),
         };
         let (w, h) = super::text::measure_text(font, text);
@@ -4306,7 +4308,9 @@ impl PaintSurface for MacBackend {
             "MacBackend::surface_draw_text_run_with_role called outside enter_frame_scope",
         );
         let font = match role {
-            crate::FontRole::Chrome | crate::FontRole::Icon => &self.chrome_font,
+            crate::FontRole::Chrome | crate::FontRole::ChromeBold | crate::FontRole::Icon => {
+                &self.chrome_font
+            }
             // Falls back to `chrome_font` — never `None` — instead of
             // panicking when a host draws `FontRole::Editor` text before
             // calling `set_current_font`.
@@ -9044,6 +9048,35 @@ mod tests {
             "a changed bar must rebuild the NSMenu tree",
         );
         assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&other));
+    }
+
+    /// A standalone `MenuBar` in a frame tree, live or replayed from its
+    /// captured `OwnedFrame`, installs as the native menu bar under the
+    /// default menu style instead of painting an in-window strip, and
+    /// reports a zero-height layout.
+    #[test]
+    fn a_frame_tree_menu_bar_installs_natively_under_the_default_menu_style() {
+        let bar = sample_menu_bar_for_native_default_tests();
+        let rect = Rect::new(0.0, 0.0, 400.0, 22.0);
+        let mut layout = crate::frame::ScreenLayout::new();
+        layout.push(crate::frame::Surface::Widget {
+            rect,
+            widget: Box::new(bar.clone()),
+        });
+
+        let mut live = MacBackend::new();
+        assert_eq!(
+            live.effective_menu_style(),
+            crate::backend::ResolvedMenuStyle::Native
+        );
+        let _ = layout.draw(&mut live);
+        assert_eq!(live.last_native_menu_bar.as_ref(), Some(&bar));
+
+        let mut replayed = MacBackend::new();
+        let _ = crate::frame::OwnedFrame::from_layout(&layout).draw(&mut replayed);
+        assert_eq!(replayed.last_native_menu_bar.as_ref(), Some(&bar));
+
+        assert_eq!(bar.presented_layout(&replayed, rect).bounds.height, 0.0);
     }
 
     /// Verifies that an activity bar painted through the widget contract

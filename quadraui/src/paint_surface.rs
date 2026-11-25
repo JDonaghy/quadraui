@@ -92,6 +92,23 @@ pub enum PathVerb {
     Close,
 }
 
+/// Widest spread of [`PaintSurface::surface_draw_shadow`]'s outermost
+/// layer, per elevation step.
+const SHADOW_SPREAD_PER_ELEVATION: f32 = 1.5;
+
+/// Downward offset of [`PaintSurface::surface_draw_shadow`]'s outermost
+/// layer, per elevation step.
+const SHADOW_OFFSET_PER_ELEVATION: f32 = 2.0;
+
+/// How far past its `rect` [`PaintSurface::surface_draw_shadow`] paints
+/// at `elevation`, on the side it reaches furthest (below the rect: the
+/// outermost layer's spread plus its downward offset). A primitive that
+/// paints a shadow reports this through
+/// [`crate::primitive::Primitive::paint_bleed`].
+pub(crate) fn shadow_extent(elevation: u8) -> f32 {
+    f32::from(elevation.min(3)) * (SHADOW_SPREAD_PER_ELEVATION + SHADOW_OFFSET_PER_ELEVATION)
+}
+
 /// The ~15 drawing verbs shared by every pixel backend, extracted from
 /// helpers each of [`crate::gtk::backend::GtkBackend`],
 /// [`crate::macos::backend::MacBackend`] and
@@ -443,8 +460,8 @@ pub trait PaintSurface {
         const LAYERS: u8 = 3;
         for layer in (1..=LAYERS).rev() {
             let t = f32::from(layer) / f32::from(LAYERS);
-            let spread = elevation * t * 1.5;
-            let offset_y = elevation * t * 2.0;
+            let spread = elevation * t * SHADOW_SPREAD_PER_ELEVATION;
+            let offset_y = elevation * t * SHADOW_OFFSET_PER_ELEVATION;
             let alpha = base_alpha * f64::from(1.0 - t) * 0.35 + base_alpha * 0.05;
             let shadow_rect = Rect::new(
                 rect.x - spread,

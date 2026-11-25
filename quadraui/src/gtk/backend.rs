@@ -1904,6 +1904,11 @@ fn role_font_description(b: &GtkBackend, role: FontRole) -> pango::FontDescripti
     let chrome = crate::gtk::chrome_font_description(&b.ui_font);
     match role {
         FontRole::Chrome => chrome,
+        FontRole::ChromeBold => {
+            let mut bold = chrome;
+            bold.set_weight(pango::Weight::Bold);
+            bold
+        }
         FontRole::Icon => crate::gtk::tab_icon_font(&chrome),
         FontRole::Editor => pango::FontDescription::from_string(&b.editor_font_pango_string()),
     }
@@ -5643,12 +5648,12 @@ mod tests {
     }
 
     /// A `FieldKind::TextArea` must measure exactly one row — matching
-    /// what `gtk::form::draw_form` actually paints — so a click on the
+    /// what the shared `Form` painter actually paints — so a click on the
     /// field painted immediately below it hits that field, not the
     /// `TextArea`'s hit region. The layout measurer and painter must
-    /// track each other: before the fix, `GtkBackend::form_layout` sized
-    /// `TextArea` as `row_h * visible_rows`, while the painter only ever
-    /// advanced one `row_h` per field, causing a mismatch.
+    /// track each other: a layout that sized `TextArea` as
+    /// `row_h * visible_rows`, while the painter advances one `row_h` per
+    /// field, would misroute those clicks.
     #[test]
     fn gtk_form_layout_textarea_does_not_swallow_the_next_fields_row() {
         use crate::primitives::form::{FieldKind, Form, FormField, FormHit};
@@ -10995,5 +11000,97 @@ mod tests {
             "a tick during an active typing pause must not flip the phase"
         );
         assert!(backend.caret_visible());
+    }
+
+    /// Paints `paint` on a white 300x300 surface and returns the RGB of
+    /// each pixel in column `x` for the `n` rows below the bottom edge
+    /// `paint` reports.
+    fn column_below_after_paint(
+        x: i32,
+        n: i32,
+        paint: impl FnOnce(&mut GtkBackend) -> f32,
+    ) -> Vec<(u8, u8, u8)> {
+        const W: i32 = 300;
+        const H: i32 = 300;
+        let mut surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                .expect("create ImageSurface");
+        let mut bottom = 0.0;
+        {
+            let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            pango_ctx.set_font_description(&pango::FontDescription::from_string("Sans 8"));
+            let layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            Backend::set_current_line_height(&mut backend, 20.0);
+            backend.enter_frame_scope(&cr, &layout, |b| bottom = paint(b));
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let y0 = bottom.ceil() as i32 + 1;
+        (y0..y0 + n)
+            .map(|y| {
+                let i = y as usize * stride + x as usize * 4;
+                (data[i + 2], data[i + 1], data[i])
+            })
+            .collect()
+    }
+
+    /// A context menu painted through the widget contract keeps its drop
+    /// shadow below its box: the paint clip is widened by the menu's
+    /// `paint_bleed`, not cut at the box edge.
+    #[test]
+    fn context_menu_shadow_paints_below_its_box() {
+        let menu = crate::ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![crate::ContextMenuItem {
+                id: Some(WidgetId::new("open")),
+                label: crate::StyledText::plain("Open"),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: Default::default(),
+            glyphs: Default::default(),
+        };
+        let below = column_below_after_paint(100, 4, |b| {
+            // The box a host hands the menu is the popup's own placed
+            // bounds, so the menu's bottom edge is the box's.
+            let placed = crate::DrawsPrimitives::layout_primitive(
+                b,
+                QRect::new(50.0, 50.0, 100.0, 200.0),
+                &menu,
+            )
+            .layout
+            .bounds;
+            crate::DrawsPrimitives::draw_dyn(b, placed, &menu, &());
+            placed.y + placed.height
+        });
+        assert!(
+            below.iter().any(|&px| px != (255, 255, 255)),
+            "the context menu's shadow must paint below its box, got {below:?}"
+        );
+    }
+
+    /// A palette painted through the widget contract keeps its drop
+    /// shadow below its box.
+    #[test]
+    fn palette_shadow_paints_below_its_box() {
+        let palette = crate::Palette {
+            id: WidgetId::new("palette"),
+            ..Default::default()
+        };
+        let rect = QRect::new(50.0, 50.0, 100.0, 100.0);
+        let below = column_below_after_paint(100, 4, |b| {
+            crate::DrawsPrimitives::draw_primitive(b, rect, &palette);
+            rect.y + rect.height
+        });
+        assert!(
+            below.iter().any(|&px| px != (255, 255, 255)),
+            "the palette's shadow must paint below its box, got {below:?}"
+        );
     }
 }

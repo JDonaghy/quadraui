@@ -128,10 +128,9 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
             ("draw_tree", "OPEN EDITORS"),
             ("draw_tree", "backend.rs"),
             ("draw_tree", "PROJECT"),
-            // `draw_activity_bar` paints icon glyphs (its labels are
-            // tooltips, which are never painted). Recorded through the
-            // rasteriser's `cr.translate(rect.x, rect.y)`, so this also
-            // pins the user→device coordinate conversion.
+            // The activity bar paints icon glyphs (its labels are
+            // tooltips, which are never painted), so this also pins the
+            // user→device coordinate conversion for its glyphs.
             //
             // `"G"` (source-control), not `ShellApp`'s first icon `"E"`:
             // `find_bounds` is a *substring* search over painted texts in
@@ -146,17 +145,16 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
     );
 }
 
-/// The activity bar is painted under an active `cr.translate(...)` (see
-/// `GtkBackend::draw_activity_bar`), which is the one place a naive
-/// current-point read would record bar-local instead of surface
-/// coordinates. Its glyphs must land inside the bar's own column.
+/// The activity bar's glyphs are the place a naive current-point read
+/// would record bar-local instead of surface coordinates. Its glyphs must
+/// land inside the bar's own column.
 ///
 /// # Needle choice
 ///
 /// Both probes must be needles *no other* painted text in this fixture
 /// contains, because [`GtkDriver::find_bounds`] is a substring search over
 /// painted texts in paint order and `AppShell` paints the sidebar's
-/// `" EXPLORER "` panel-title status bar before `draw_activity_bar` runs.
+/// `" EXPLORER "` panel-title status bar before the activity bar paints.
 /// `"G"` (source-control) and `"*"` (settings) are unique to the
 /// activity bar's own glyphs.
 #[test]

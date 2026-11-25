@@ -824,7 +824,16 @@ impl ScreenLayout {
                     backend.draw_data_table(*rect, table, *hovered);
                 }
                 Surface::Widget { rect, widget } => {
-                    backend.draw_dyn(*rect, widget.as_ref(), &());
+                    // A menu bar may be the platform's own rather than a
+                    // painted strip; `MenuBar::present` makes that call.
+                    match widget.as_ref().downcast_ref::<crate::MenuBar>() {
+                        Some(bar) => {
+                            let _ = bar.present(backend, *rect);
+                        }
+                        None => {
+                            backend.draw_dyn(*rect, widget.as_ref(), &());
+                        }
+                    }
                 }
                 Surface::Chart {
                     rect,
@@ -1289,7 +1298,7 @@ impl OwnedContent {
                 backend.draw_primitive(rect, form);
             }
             OwnedContent::MenuBar(bar) => {
-                backend.draw_primitive(rect, bar);
+                let _ = bar.present(backend, rect);
             }
             OwnedContent::Split(split) => {
                 backend.draw_split(rect, split);

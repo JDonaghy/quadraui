@@ -644,7 +644,7 @@ mod form_paint_tests {
     /// `ImageSurface` — the same adapter `gtk::multi_section_view`'s
     /// embedded-`Form` body uses. Builds its own [`crate::FormLayout`]
     /// with the shared `form_field_measure` (the same measurer
-    /// `GtkBackend::form_layout` uses) so painted rows match what
+    /// `Form`'s pixel `Primitive::layout` uses) so painted rows match what
     /// hit-testing would resolve.
     fn paint(form: &Form) {
         let surface = ImageSurface::create(Format::ARgb32, 320, 160).expect("create ImageSurface");

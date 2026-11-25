@@ -63,6 +63,12 @@ pub enum FontRole {
     /// [`crate::Backend::measure_text`] reserves the width the icon
     /// actually paints at. Everywhere else it is the chrome font.
     Icon,
+    /// The chrome font at bold weight, such as a status-bar segment
+    /// flagged `bold`. A layout measures bold chrome text in this role so
+    /// its box matches the width the rasteriser paints it at. A backend
+    /// whose text measurement does not distinguish weights (macOS)
+    /// measures it as [`Self::Chrome`].
+    ChromeBold,
 }
 
 /// Every primitive family with a `Backend::draw_*` entry point that

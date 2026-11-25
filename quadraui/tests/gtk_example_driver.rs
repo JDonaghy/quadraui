@@ -946,16 +946,16 @@ fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
     );
 }
 
-// ─── draw_solid_fill vs draw_status_bar_interactive mechanism ───────────────
+// ─── draw_solid_fill vs status bar mechanism ────────────────────────────────
 //
-// A caller that hands `draw_status_bar_interactive` a row rect taller than
+// A caller that hands a status bar a row rect taller than
 // the backend's `current_line_height` receives a fill exactly as tall as the
 // rect. `Backend::draw_solid_fill` (the replacement for dividers) also fills
 // the whole rect with no segment/text layout — a cheaper primitive.
 
 /// Paints one rect, taller than the backend's default line height, with each
-/// of the two candidate primitives — `draw_status_bar_interactive` and
-/// `draw_solid_fill` — side by side so a single frame can assert on both.
+/// of the two candidate primitives — a `StatusBar` through the widget
+/// contract and `draw_solid_fill` — side by side so a single frame can assert on both.
 struct SolidFillVsStatusBarProbe;
 
 /// Height of the probe rects — comfortably taller than any backend's
@@ -994,18 +994,18 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
     }
 }
 
-/// `GtkBackend::draw_status_bar_interactive` must fill the *whole* rect it's
-/// given — no `current_line_height` ceiling. Sampling near the bottom of a
+/// A status bar painted through the widget contract must fill the *whole*
+/// rect it's given — no `current_line_height` ceiling. Sampling near the bottom of a
 /// `PROBE_RECT_HEIGHT`-tall rect must land on the fill.
 #[test]
-fn draw_status_bar_interactive_fills_a_rect_taller_than_line_height_completely() {
+fn status_bar_fills_a_rect_taller_than_line_height_completely() {
     let mut driver = GtkDriver::new(SolidFillVsStatusBarProbe, 200, PROBE_RECT_HEIGHT as i32);
     let near_bottom_y = (PROBE_RECT_HEIGHT - 4.0) as i32;
 
     assert_eq!(
         driver.pixel(20, near_bottom_y),
         (PROBE_FILL_COLOR.r, PROBE_FILL_COLOR.g, PROBE_FILL_COLOR.b),
-        "draw_status_bar_interactive must fill all the way to the bottom of a \
+        "a status bar must fill all the way to the bottom of a \
          rect taller than current_line_height (#1179) — a caller-supplied rect \
          taller than the chrome line height must not leave an unpainted strip",
     );

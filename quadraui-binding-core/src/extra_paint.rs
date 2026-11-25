@@ -1640,8 +1640,10 @@ impl ExtraPaint for ToolbarWithOverflow {
 }
 
 impl ExtraPaint for MenuBar {
+    /// Installed as the platform's own menu bar under a native menu
+    /// style, painted otherwise — see [`MenuBar::present`].
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let _ = backend.draw_primitive(area, self);
+        let _ = self.present(backend, area);
     }
 
     fn id(&self) -> WidgetId {
@@ -1931,12 +1933,13 @@ extra_primitives! {
 /// counterpart of [`decode_extra_primitive_checked`].
 ///
 /// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`,
-/// `"command_center"`, `"terminal"`, `"status_bar"`, `"activity_bar"` and
-/// `"palette"` are this table's members: unlike every [`EXTRA_PRIMITIVE_KINDS`]
-/// entry, none of [`quadraui::IconGrid`], [`quadraui::CellGrid`],
-/// [`quadraui::Switch`], [`quadraui::RadioGroup`], [`quadraui::Button`],
-/// [`quadraui::CommandCenter`], [`quadraui::Terminal`], [`quadraui::StatusBar`],
-/// [`quadraui::ActivityBar`] or [`quadraui::Palette`] has a bespoke
+/// `"command_center"`, `"terminal"`, `"status_bar"`, `"activity_bar"`,
+/// `"palette"` and `"context_menu"` are this table's members: unlike every
+/// [`EXTRA_PRIMITIVE_KINDS`] entry, none of [`quadraui::IconGrid`],
+/// [`quadraui::CellGrid`], [`quadraui::Switch`], [`quadraui::RadioGroup`],
+/// [`quadraui::Button`], [`quadraui::CommandCenter`], [`quadraui::Terminal`],
+/// [`quadraui::StatusBar`], [`quadraui::ActivityBar`], [`quadraui::Palette`]
+/// or [`quadraui::ContextMenu`] has a bespoke
 /// [`ExtraPaint`] impl to write
 /// here — painting, whole-area hit testing and [`DynWidget::handle`]
 /// routing are already fully generic (see
@@ -1967,12 +1970,15 @@ extra_primitives! {
 /// (click-to-activate, Up/Down cursor, Enter) covers `"activity_bar"`; and
 /// [`quadraui::Palette`]'s own [`crate::interactive::Interactive`] impl
 /// (query editing, list navigation, click-to-select, Enter/Escape) covers
-/// `"palette"`. A further kind joins this table only when it
+/// `"palette"`; and [`quadraui::ContextMenu`]'s own
+/// [`crate::interactive::Interactive`] impl (row hover, click-to-activate,
+/// arrow-key selection, Enter) covers a `"context_menu"` placed as a
+/// layout leaf. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 10] = [
+pub const WIDGET_KINDS: [&str; 11] = [
     "icon_grid",
     "cell_grid",
     "switch",
@@ -1983,6 +1989,7 @@ pub const WIDGET_KINDS: [&str; 10] = [
     "status_bar",
     "activity_bar",
     "palette",
+    "context_menu",
 ];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased

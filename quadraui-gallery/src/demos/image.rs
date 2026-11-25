@@ -131,7 +131,7 @@ impl Demo for ImageDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let (_full, icon_rect, items_rect) = Self::bar_rects(area, backend);
         let _ = backend.draw_image(icon_rect, &self.logo(variant));
-        let _ = backend.draw_dyn(items_rect, &self.menu_bar, &());
+        let _ = self.menu_bar.present(backend, items_rect);
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(), &());
@@ -156,7 +156,7 @@ impl Demo for ImageDemo {
                     self.last_action = Some("clicked logo".into());
                     return Reaction::Redraw;
                 }
-                let layout = backend.layout_primitive(items_rect, &self.menu_bar).layout;
+                let layout = self.menu_bar.presented_layout(backend, items_rect);
                 if let MenuBarHit::Item(idx) = layout.hit_test(position.x, position.y) {
                     self.last_action =
                         Some(format!("activated: {}", self.menu_bar.items[idx].label));

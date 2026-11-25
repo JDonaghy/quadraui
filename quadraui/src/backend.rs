@@ -3693,7 +3693,8 @@ pub trait DrawsPrimitives: Backend {
     ///
     /// On the [`Backend::paint_surface`] path, paints inside a
     /// [`PaintSurface::surface_push_clip`]/[`PaintSurface::surface_pop_clip`]
-    /// pair scoped to `rect`, matching every bespoke `draw_*` rasteriser's
+    /// pair scoped to `rect` (widened by [`Primitive::paint_bleed`] for a
+    /// widget that paints a shadow or edge stroke outside it), matching every bespoke `draw_*` rasteriser's
     /// own convention of clipping a primitive's paint to the area it was
     /// asked to fill — a `Primitive::paint` impl that draws wider than
     /// `layout.area` (e.g. an unclamped text run) is clipped rather than
@@ -3717,8 +3718,9 @@ pub trait DrawsPrimitives: Backend {
         let layout = self.layout_primitive(rect, primitive);
         let style = self.style();
         let theme = self.theme();
+        let clip = grow_rect(rect, primitive.paint_bleed(&style));
         if let Some(surface) = self.paint_surface() {
-            surface.surface_push_clip(rect);
+            surface.surface_push_clip(clip);
             primitive.paint(&layout, surface, &theme, &style);
             surface.surface_pop_clip();
         }
@@ -3811,8 +3813,9 @@ pub trait DrawsPrimitives: Backend {
             },
             row_height: ctx.line_height,
         };
+        let clip = grow_rect(rect, w.paint_bleed(&style));
         if let Some(surface) = self.paint_surface() {
-            surface.surface_push_clip(rect);
+            surface.surface_push_clip(clip);
             w.paint(layout.as_ref(), PaintTarget::Surface(surface), &env, state);
             surface.surface_pop_clip();
         }
@@ -3848,6 +3851,21 @@ pub trait DrawsPrimitives: Backend {
         }
         layout
     }
+}
+
+/// `rect` grown by `by` on every side: the paint clip
+/// [`DrawsPrimitives::draw_primitive`] and [`DrawsPrimitives::draw_dyn`]
+/// push for a widget whose [`Primitive::paint_bleed`] is `by`.
+fn grow_rect(rect: Rect, by: f32) -> Rect {
+    if by <= 0.0 {
+        return rect;
+    }
+    Rect::new(
+        rect.x - by,
+        rect.y - by,
+        rect.width + by * 2.0,
+        rect.height + by * 2.0,
+    )
 }
 
 /// Shared `ctx` resolution for [`DrawsPrimitives::draw_primitive`] and

@@ -2823,7 +2823,8 @@ impl Backend for WinBackend {
                 _ => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
             };
             if let Some(dwrite) = dwrite {
-                if let Ok((w, h)) = dwrite.measure_text(text) {
+                let bold = role == crate::FontRole::ChromeBold;
+                if let Ok((w, h)) = dwrite.measure_text_styled(text, bold) {
                     return (w, h);
                 }
             }
@@ -5424,7 +5425,8 @@ impl PaintSurface for WinBackend {
                 _ => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
             };
             if let Some(dwrite) = dwrite {
-                let _ = dwrite.draw_text(&surface.target, text, rect, color);
+                let bold = role == crate::FontRole::ChromeBold;
+                let _ = dwrite.draw_text_styled(&surface.target, text, rect, color, bold);
                 return;
             }
         }

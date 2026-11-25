@@ -1697,32 +1697,29 @@ impl crate::primitive::Primitive for StatusBar {
     /// On a cell grid the bar is measured one cell per character by
     /// [`cell_layout`]; on a pixel surface segment widths come from the
     /// calling backend's own [`crate::Backend::measure_text`] (through
-    /// [`crate::primitive::LayoutCtx::text_width`]) and the bar reserves
+    /// [`crate::primitive::LayoutCtx::text_width`], in
+    /// [`crate::FontRole::ChromeBold`] for a bold segment so its box is as
+    /// wide as the bold text the painter draws) and the bar reserves
     /// [`PIXEL_EDGE_INSET`]/[`PIXEL_SEGMENT_PADDING`], the same insets
     /// every pixel rasteriser paints with.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> StatusBarPrimitiveLayout {
         let layout = match ctx.units() {
             crate::primitive::Units::Cells => cell_layout(self, rect),
-            _ => {
-                let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
-                    ctx,
-                    role: crate::FontRole::Chrome,
-                };
-                self.layout_padded(
-                    rect.width,
-                    rect.height,
-                    PIXEL_MIN_GAP,
-                    PIXEL_EDGE_INSET,
-                    PIXEL_SEGMENT_PADDING,
-                    |seg| {
-                        StatusSegmentMeasure::new(
-                            crate::primitives::layout_metrics::TextMeasure::width_of(
-                                &measure, &seg.text,
-                            ),
-                        )
-                    },
-                )
-            }
+            _ => self.layout_padded(
+                rect.width,
+                rect.height,
+                PIXEL_MIN_GAP,
+                PIXEL_EDGE_INSET,
+                PIXEL_SEGMENT_PADDING,
+                |seg| {
+                    let role = if seg.bold {
+                        crate::FontRole::ChromeBold
+                    } else {
+                        crate::FontRole::Chrome
+                    };
+                    StatusSegmentMeasure::new(ctx.text_width(&seg.text, role))
+                },
+            ),
         };
         StatusBarPrimitiveLayout { area: rect, layout }
     }
@@ -3228,6 +3225,35 @@ mod widget_contract_tests {
 
         assert_eq!(layout.layout.visible_segments[0].bounds.x, PIXEL_EDGE_INSET);
         assert_eq!(layout.layout.bar_height, 22.0);
+    }
+
+    /// A bold segment is measured in `FontRole::ChromeBold`, so a backend
+    /// that measures bold text wider gives the segment a wider box and
+    /// the next segment's hit region starts where the painter draws it.
+    #[test]
+    fn pixel_layout_measures_a_bold_segment_in_the_bold_chrome_role() {
+        let measurer = |text: &str, role: crate::FontRole| {
+            let base = 8.0 * text.chars().count() as f32;
+            if role == crate::FontRole::ChromeBold {
+                base + 10.0
+            } else {
+                base
+            }
+        };
+        let ctx = LayoutCtx::new(16.0, 8.0, false).with_measurer(&measurer);
+        let first_and_next = |bold: bool| {
+            let mut bar = bar();
+            bar.left_segments[0].bold = bold;
+            let layout = Primitive::layout(&bar, &ctx, Rect::new(0.0, 0.0, 600.0, 22.0));
+            (
+                layout.layout.visible_segments[0].bounds.width,
+                layout.layout.visible_segments[1].bounds.x,
+            )
+        };
+        let (regular_w, regular_next) = first_and_next(false);
+        let (bold_w, bold_next) = first_and_next(true);
+        assert_eq!(bold_w, regular_w + 10.0);
+        assert_eq!(bold_next, regular_next + 10.0);
     }
 
     #[test]

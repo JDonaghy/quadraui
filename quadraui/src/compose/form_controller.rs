@@ -590,8 +590,8 @@ impl FormController {
     // ── Keyboard: focus traversal + text editing ──────────────────────
 
     /// Resolve the focused item's on-screen rect (if any — see
-    /// [`Self::current_item_focus`]) via `backend.form_layout`'s
-    /// `item_bounds`, the same per-item geometry
+    /// [`Self::current_item_focus`]) via the `item_bounds` of the form's
+    /// [`crate::DrawsPrimitives::layout_primitive`] layout, the same per-item geometry
     /// [`crate::primitives::form::form_click_event`]'s caller already
     /// hit-tests against, and paint it through
     /// [`Backend::draw_focus_ring`] — see `primitives::form::contract`'s
@@ -901,8 +901,8 @@ fn build_scrollbar_lh(
 /// Backend-free item layout for [`FormController::handle_cached`]'s
 /// fallback path (used when no live [`Backend`] is available to hit-test
 /// against, e.g. vimcode's TUI mouse handler). Approximates the pixel
-/// backends' `GtkBackend::form_layout` / `primitives::layout_metrics`
-/// geometry proportionally to `char_w`/`row_h` — it is not cell-accurate
+/// `Form` layout (the pixel branch of `Form`'s `Primitive::layout`, via
+/// `primitives::layout_metrics`) geometry proportionally to `char_w`/`row_h` — it is not cell-accurate
 /// for the TUI grid's own `line_height() == 1.0` regime, where a
 /// [`FieldKind::Toolbar`]'s pixel-unit button padding (`ACTION_H_PAD`,
 /// `SEPARATOR_PX`) measures far wider than the cells `tui::toolbar`
@@ -1886,7 +1886,7 @@ mod tests {
         // A click left of items_start_x must miss both buttons and fall
         // through to the row's own hit region (FocusChanged on the
         // field), pinning that items_start_x is 6.0 and not 0.0 -
-        // GtkBackend::form_layout's pixel-unit row inset, not
+        // the pixel `Form` layout's row inset, not
         // tui_form_layout's flush-left TUI cell convention.
         let miss = fc.handle_cached(
             &UiEvent::MouseDown {
@@ -4874,9 +4874,8 @@ mod tests {
     //
     // Drives a real backend through a minimal `AppLogic` wrapper — see
     // `field_rect_tests`'s doc comment above for why a hand-rolled
-    // `Backend` mock won't do: `RecordingBackend::form_layout` is
-    // `unimplemented!()`, so the ring's rect (resolved via
-    // `Backend::form_layout`'s `item_bounds`, same as
+    // `Backend` mock won't do: the ring's rect (resolved via the
+    // `item_bounds` of `DrawsPrimitives::layout_primitive`, same as
     // `Self::draw_item_focus_ring`'s doc describes) needs a backend with
     // a real layout algorithm. `ItemFocusRingApp` is backend-agnostic
     // (it only ever sees `&mut dyn Backend`), shared by the TUI and GTK

@@ -332,7 +332,7 @@ impl FormDialogController {
     /// get away with — a `FieldKind::TextArea` is `visible_rows` tall, a
     /// `Top`-labelled field takes an extra row for its label line, and a
     /// focused `Dropdown` grows to fit its open option list (see
-    /// `tui::form::tui_form_layout`'s own per-kind measure). Probes with
+    /// `primitives::form::cell_layout::tui_form_layout`'s own per-kind measure). Probes with
     /// a generously tall rect so every field lands at its full,
     /// unclipped height — [`Form::layout`]'s "last row squeezed to fit
     /// the viewport" clipping never kicks in here, since this *is* how

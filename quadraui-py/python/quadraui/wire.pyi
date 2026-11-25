@@ -1704,6 +1704,20 @@ class ContextMenuItem(TypedDict):
     icon: NotRequired[Optional[Icon]]
     submenu: NotRequired[Optional[List[ContextMenuItem]]]
 
+ContextMenuPlacement = Literal['AnchorPoint', 'Below', 'Above']
+
+class ContextMenuGlyphs(TypedDict):
+    checked: NotRequired[Optional[Icon]]
+    submenu_arrow: NotRequired[Optional[Icon]]
+
+class ContextMenuDescriptor(TypedDict):
+    id: WidgetId
+    items: List[ContextMenuItem]
+    selected_idx: int
+    bg: NotRequired[Optional[Color]]
+    placement: NotRequired[ContextMenuPlacement]
+    glyphs: NotRequired[ContextMenuGlyphs]
+
 class MenuBarItemDescriptor(TypedDict):
     id: WidgetId
     label: str
@@ -1800,6 +1814,7 @@ LayoutLeafNode = TypedDict(
         "status_bar": NotRequired[StatusBarDescriptor],
         "activity_bar": NotRequired[ActivityBarDescriptor],
         "palette": NotRequired[PaletteDescriptor],
+        "context_menu": NotRequired[ContextMenuDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1862,6 +1877,7 @@ class RenderFrameDict(TypedDict):
     status_bar: NotRequired[Optional[StatusBarDescriptor]]
     activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
     palette: NotRequired[Optional[PaletteDescriptor]]
+    context_menu: NotRequired[Optional[ContextMenuDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]

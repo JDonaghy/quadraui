@@ -1037,6 +1037,12 @@ impl Primitive for ContextMenu {
         crate::frame::OwnedContent::ContextMenu(self.clone())
     }
 
+    /// The popup's drop shadow and the border stroke centred on its edge
+    /// both paint outside its box on a pixel surface.
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        crate::paint_surface::shadow_extent(style.shadow_elevation) + style.border_width
+    }
+
     /// The widest row's own content ([`Self::measure_generic_width`]) and
     /// one [`item_heights`] row per item — plus, on a cell grid, the
     /// border ring both axes spend a cell on at each edge.

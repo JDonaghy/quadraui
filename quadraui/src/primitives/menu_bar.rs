@@ -19,6 +19,7 @@
 //! activates the item whose label starts with that character.
 
 use crate::a11y::A11yAction;
+use crate::backend::{Backend, DrawsPrimitives, ResolvedMenuStyle};
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;
 use crate::event::{Key, MouseButton, NamedKey, Rect};
@@ -460,6 +461,54 @@ pub enum MenuBarEvent {
     /// Escape left the strip: the host clears both
     /// [`MenuBar::open_item`] and [`MenuBar::focused_item`].
     Closed,
+}
+
+impl MenuBar {
+    /// Shows this bar in `rect` the way `backend`'s menu style asks for,
+    /// returning the layout clicks resolve against.
+    ///
+    /// Under [`ResolvedMenuStyle::Native`] (macOS by default) the bar is
+    /// installed as the platform's own menu bar through
+    /// [`Backend::install_menu_bar`], which skips an unchanged bar, so
+    /// calling this every frame is cheap. Nothing paints in the window,
+    /// and the layout is [`Self::presented_layout`]'s zero-height one.
+    /// Otherwise the strip paints through
+    /// [`DrawsPrimitives::draw_dyn`] and the layout is the widget
+    /// contract's own.
+    ///
+    /// Every caller that shows a standalone menu bar goes through this
+    /// (frame replay, the binding layer, [`crate::compose::MenuSystem`]),
+    /// so the native-or-painted decision lives in one place.
+    pub fn present(&self, backend: &mut dyn Backend, rect: Rect) -> MenuBarLayout {
+        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
+            backend.install_menu_bar(self);
+            return native_layout(rect);
+        }
+        let _ = backend.draw_dyn(rect, self, &());
+        backend.layout_primitive(rect, self).layout
+    }
+
+    /// The layout [`Self::present`] returns for `rect`, without painting
+    /// or installing anything: a zero-height layout with no items under
+    /// [`ResolvedMenuStyle::Native`], where the platform's menu bar lives
+    /// outside the window and nothing in it can be hit; otherwise the
+    /// widget contract's own layout.
+    pub fn presented_layout(&self, backend: &dyn Backend, rect: Rect) -> MenuBarLayout {
+        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
+            return native_layout(rect);
+        }
+        backend.layout_primitive(rect, self).layout
+    }
+}
+
+/// The layout of a bar installed as the platform's own menu bar: its
+/// origin and width, no height and no items.
+fn native_layout(rect: Rect) -> MenuBarLayout {
+    MenuBarLayout {
+        bounds: Rect::new(rect.x, rect.y, rect.width, 0.0),
+        visible_items: Vec::new(),
+        hit_regions: Vec::new(),
+    }
 }
 
 impl WidgetAction for MenuBarEvent {
