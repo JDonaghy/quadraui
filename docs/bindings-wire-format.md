@@ -790,6 +790,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_ScrollbarMovedPayload`](#wire-_scrollbarmovedpayload)
 - [`_SwitchToggledPayload`](#wire-_switchtoggledpayload)
 - [`_RadioGroupSelectionChangedPayload`](#wire-_radiogroupselectionchangedpayload)
+- [`CommandCenterTarget`](#wire-commandcentertarget)
+- [`_CommandCenterActivatedPayload`](#wire-_commandcenteractivatedpayload)
 - [`_TextSelectionChangedPayload`](#wire-_textselectionchangedpayload)
 - [`_SplitDividerDraggedPayload`](#wire-_splitdividerdraggedpayload)
 - [`_TrayClickedPayload`](#wire-_trayclickedpayload)
@@ -3627,7 +3629,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
 | `command_line` | `CommandLineDescriptor` | no |  |
-| `command_center` | `CommandCenterDescriptor` | no |  |
 | `palette` | `PaletteDescriptor` | no |  |
 | `scrollbar` | `ScrollbarDescriptor` | no |  |
 | `editor` | `EditorDescriptor` | no |  |
@@ -3646,6 +3647,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `switch` | `SwitchDescriptor` | no |  |
 | `radio_group` | `RadioGroupDescriptor` | no |  |
 | `button` | `ButtonDescriptor` | no |  |
+| `command_center` | `CommandCenterDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3695,7 +3697,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
 | `command_line` | `CommandLineDescriptor \| null` | no |  |
-| `command_center` | `CommandCenterDescriptor \| null` | no |  |
 | `palette` | `PaletteDescriptor \| null` | no |  |
 | `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
 | `editor` | `EditorDescriptor \| null` | no |  |
@@ -3714,6 +3715,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `switch` | `SwitchDescriptor \| null` | no |  |
 | `radio_group` | `RadioGroupDescriptor \| null` | no |  |
 | `button` | `ButtonDescriptor \| null` | no |  |
+| `command_center` | `CommandCenterDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`
@@ -4924,6 +4926,19 @@ Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _Hi
 | `widget` | `WidgetId` | yes |  |
 | `index` | `number` | yes |  |
 
+<a id="wire-commandcentertarget"></a>
+#### `CommandCenterTarget`
+
+Alias for `"Back" | "Forward" | "Search"`.
+
+<a id="wire-_commandcenteractivatedpayload"></a>
+#### `_CommandCenterActivatedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `widget` | `WidgetId` | yes |  |
+| `target` | `CommandCenterTarget` | yes |  |
+
 <a id="wire-_textselectionchangedpayload"></a>
 #### `_TextSelectionChangedPayload`
 
@@ -5004,6 +5019,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `SwitchToggled` | `_SwitchToggledPayload` |  |
 | `RadioGroupSelectionChanged` | `_RadioGroupSelectionChangedPayload` |  |
 | `ButtonActivated` | `_WidgetPayload` |  |
+| `CommandCenterActivated` | `_CommandCenterActivatedPayload` |  |
 | `TextSelectionChanged` | `_TextSelectionChangedPayload` |  |
 | `SplitDividerDragged` | `_SplitDividerDraggedPayload` |  |
 | `MenuActivated` | `WidgetId` |  |

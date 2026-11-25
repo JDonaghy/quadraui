@@ -12,13 +12,13 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::{
     render_markdown_to_styled, ActivityBar, ActivityBarStyle, Backend, BoardModel, Canvas, Chart,
-    Column, ComboBox, CommandCenter, CommandLine, CompletionItemMeasure, DatePicker, Decoration,
-    DiffView, Editor, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon, Image,
-    InteractionState, LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize,
-    NumberInput, NumberInputHit, Palette, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown,
-    ScrollAxis, ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, Terminal,
-    TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton,
-    TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
+    Column, ComboBox, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor,
+    FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon, Image, InteractionState,
+    LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize, NumberInput,
+    NumberInputHit, Palette, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
+    ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, Terminal, TextDisplay,
+    TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable,
+    TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -1756,16 +1756,6 @@ impl ExtraPaint for CommandLine {
     }
 }
 
-impl ExtraPaint for CommandCenter {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_command_center(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
 impl ExtraPaint for Palette {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         self.paint_chrome(backend, area, &InteractionState::default());
@@ -2079,7 +2069,6 @@ extra_primitives! {
     "menu_bar" => MenuBar,
     "status_bar" => StatusBar,
     "command_line" => CommandLine,
-    "command_center" => CommandCenter,
     "palette" => Palette,
     "scrollbar" => Scrollbar,
     "editor" => Editor,
@@ -2105,11 +2094,12 @@ extra_primitives! {
 /// [`decode_widget_leaf`] is this table's own decode step, the `Widget`
 /// counterpart of [`decode_extra_primitive_checked`].
 ///
-/// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"` and
-/// `"button"` are this table's members: unlike every
+/// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`
+/// and `"command_center"` are this table's members: unlike every
 /// [`EXTRA_PRIMITIVE_KINDS`] entry, none of [`quadraui::IconGrid`],
-/// [`quadraui::CellGrid`], [`quadraui::Switch`], [`quadraui::RadioGroup`]
-/// or [`quadraui::Button`] has a bespoke [`ExtraPaint`] impl to write
+/// [`quadraui::CellGrid`], [`quadraui::Switch`], [`quadraui::RadioGroup`],
+/// [`quadraui::Button`] or [`quadraui::CommandCenter`] has a bespoke
+/// [`ExtraPaint`] impl to write
 /// here — painting, whole-area hit testing and [`DynWidget::handle`]
 /// routing are already fully generic (see
 /// [`crate::layout::LeafDescriptor::Widget`]'s own doc), so each kind's
@@ -2124,15 +2114,25 @@ extra_primitives! {
 /// [`quadraui::RadioGroup`]'s own [`crate::interactive::Interactive`] impl
 /// (arrow-key cursor, click-to-select, one [`crate::interactive::FocusStop`]
 /// per option via [`crate::interactive::FocusSpec::Children`]) covers
-/// `"radio_group"`; and [`quadraui::Button`]'s own
+/// `"radio_group"`; [`quadraui::Button`]'s own
 /// [`crate::interactive::Interactive`] impl (a single
 /// [`crate::interactive::FocusSpec::Stop`], Enter/Space/click activation)
-/// covers `"button"`. A further kind joins this table only when it
+/// covers `"button"`; and [`quadraui::CommandCenter`]'s own
+/// [`crate::interactive::Interactive`] impl (a press on an arrow or the
+/// search box, Enter/Space on the focused strip) covers
+/// `"command_center"`. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 5] = ["icon_grid", "cell_grid", "switch", "radio_group", "button"];
+pub const WIDGET_KINDS: [&str; 6] = [
+    "icon_grid",
+    "cell_grid",
+    "switch",
+    "radio_group",
+    "button",
+    "command_center",
+];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
 /// [`DynWidget`] — the `Widget` counterpart of

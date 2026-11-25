@@ -1775,7 +1775,6 @@ LayoutLeafNode = TypedDict(
         "toolbar": NotRequired[ToolbarDescriptor],
         "menu_bar": NotRequired[MenuBarDescriptor],
         "command_line": NotRequired[CommandLineDescriptor],
-        "command_center": NotRequired[CommandCenterDescriptor],
         "palette": NotRequired[PaletteDescriptor],
         "scrollbar": NotRequired[ScrollbarDescriptor],
         "editor": NotRequired[EditorDescriptor],
@@ -1794,6 +1793,7 @@ LayoutLeafNode = TypedDict(
         "switch": NotRequired[SwitchDescriptor],
         "radio_group": NotRequired[RadioGroupDescriptor],
         "button": NotRequired[ButtonDescriptor],
+        "command_center": NotRequired[CommandCenterDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1837,7 +1837,6 @@ class RenderFrameDict(TypedDict):
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
     command_line: NotRequired[Optional[CommandLineDescriptor]]
-    command_center: NotRequired[Optional[CommandCenterDescriptor]]
     palette: NotRequired[Optional[PaletteDescriptor]]
     scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
     editor: NotRequired[Optional[EditorDescriptor]]
@@ -1856,6 +1855,7 @@ class RenderFrameDict(TypedDict):
     switch: NotRequired[Optional[SwitchDescriptor]]
     radio_group: NotRequired[Optional[RadioGroupDescriptor]]
     button: NotRequired[Optional[ButtonDescriptor]]
+    command_center: NotRequired[Optional[CommandCenterDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
@@ -2483,6 +2483,12 @@ class _RadioGroupSelectionChangedPayload(TypedDict):
     widget: WidgetId
     index: int
 
+CommandCenterTarget = Literal['Back', 'Forward', 'Search']
+
+class _CommandCenterActivatedPayload(TypedDict):
+    widget: WidgetId
+    target: CommandCenterTarget
+
 class _TextSelectionChangedPayload(TypedDict):
     region: WidgetId
     anchor: Point
@@ -2535,6 +2541,7 @@ class _UiEventDict(TypedDict):
     SwitchToggled: NotRequired[_SwitchToggledPayload]
     RadioGroupSelectionChanged: NotRequired[_RadioGroupSelectionChangedPayload]
     ButtonActivated: NotRequired[_WidgetPayload]
+    CommandCenterActivated: NotRequired[_CommandCenterActivatedPayload]
     TextSelectionChanged: NotRequired[_TextSelectionChangedPayload]
     SplitDividerDragged: NotRequired[_SplitDividerDraggedPayload]
     MenuActivated: NotRequired[WidgetId]
