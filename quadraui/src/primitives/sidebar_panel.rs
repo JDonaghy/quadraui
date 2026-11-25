@@ -2,11 +2,10 @@
 //! [`Toolbar`] header at the top + a content region beneath that the
 //! host paints into.
 //!
-//! The coordination this primitive owns — reserve the header slot,
-//! paint the toolbar into it, route a click to the header before the
-//! content — is the easy-to-get-wrong part of a "panel with an action
-//! header", so a host gets it from one descriptor instead of carving the
-//! top rect by hand.
+//! Reserving the header slot, painting the toolbar into it and routing
+//! a click to the header before the content are the easy-to-get-wrong
+//! parts of a "panel with an action header", so a host gets all three
+//! from one descriptor instead of carving the top rect by hand.
 //!
 //! ## Why "SidebarPanel" and not "Sidebar"
 //!
@@ -644,9 +643,8 @@ pub(crate) mod native_surface_paint {
         use crate::types::Color;
         use crate::Image;
 
-        /// Records every surface verb this primitive's paint uses, so
-        /// this test runs on any host without Cairo/Core
-        /// Graphics/Direct2D.
+        /// Records every surface verb the header painter calls, so these
+        /// tests run on any host without Cairo/Core Graphics/Direct2D.
         #[derive(Default)]
         struct RecordingSurface {
             fills: Vec<(Rect, Color)>,

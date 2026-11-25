@@ -10145,6 +10145,10 @@ mod tests {
             pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
+            // The header's geometry is measured through
+            // `Backend::measure_text`, which reads the stored context the
+            // runner installs at realize time.
+            backend.set_pango_context(pango_ctx.clone());
             if let Some(f) = ui_font {
                 Backend::set_ui_font(&mut backend, f);
             }
