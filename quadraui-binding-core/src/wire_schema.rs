@@ -609,6 +609,8 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("icon", nullable(icon.clone())),
             field_opt("icon_position", button_icon_position.clone()),
             field_opt("icon_gap", float_()),
+            field_opt("hovered", bool_()),
+            field_opt("pressed", bool_()),
         ],
     ));
     let button_spec_descriptor = b.define(obj(
@@ -4647,7 +4649,9 @@ mod coverage {
             tooltip,
             icon,
             icon_position,
-            icon_gap
+            icon_gap,
+            hovered,
+            pressed
         }
     );
     assert_fields!(
@@ -6267,6 +6271,8 @@ mod coverage {
                 "icon",
                 "icon_position",
                 "icon_gap",
+                "hovered",
+                "pressed",
             ],
             extra: {
                 // `ButtonVariant` is itself `#[non_exhaustive]`; constructing

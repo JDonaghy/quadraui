@@ -1076,6 +1076,8 @@ Alias for `"Leading" | "Trailing"`.
 | `icon` | `Icon \| null` | no |  |
 | `icon_position` | `ButtonIconPosition` | no |  |
 | `icon_gap` | `number` | no |  |
+| `hovered` | `boolean` | no |  |
+| `pressed` | `boolean` | no |  |
 
 <a id="wire-buttonspecdescriptor"></a>
 #### `ButtonSpecDescriptor`
