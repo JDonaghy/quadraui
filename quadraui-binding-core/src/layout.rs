@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use quadraui::{
-    Button, Color, DataTable, ListView, Rect, ScrollAxis, SectionSize, SidebarPanel, Split,
-    SplitTree, Style, TabBar, TextDisplay, Theme, TreeView,
+    Color, DataTable, ListView, Rect, ScrollAxis, SectionSize, SidebarPanel, Split, SplitTree,
+    Style, TabBar, TextDisplay, Theme, TreeView,
 };
 
 use quadraui::layout::{resolve_grid_tracks, GridTrack};
@@ -1442,7 +1442,6 @@ pub struct LayoutLeaf {
 /// The decoded descriptor carried by a [`LayoutLeaf`] — one variant per
 /// primitive kind a layout tree leaf may wrap.
 pub enum LeafDescriptor {
-    Button(Button),
     TextDisplay(TextDisplay),
     List(ListView),
     Tree(TreeView),
@@ -1451,7 +1450,7 @@ pub enum LeafDescriptor {
     /// Any additive primitive kind registered in a binding's own
     /// `EXTRA_PRIMITIVES` decode table, or a `"scripted_widget"` leaf
     /// spliced in from `crate::scripted::register_scripted_widget`'s own
-    /// registry (see that function's doc). Unlike the six variants above,
+    /// registry (see that function's doc). Unlike the five variants above,
     /// neither ever adds a new `LeafDescriptor` variant — both route
     /// through this one.
     Extra(Rc<dyn ExtraPaint>),
@@ -1480,7 +1479,7 @@ pub enum LeafDescriptor {
     },
 }
 
-/// The descriptor keys a layout tree leaf dict may carry — the six names
+/// The descriptor keys a layout tree leaf dict may carry — the five names
 /// [`crate::render::RenderFrame`]'s own flat-slot `Deserialize` impl uses
 /// for its slots, each mapping to its own [`LeafDescriptor`] variant, plus
 /// `"scripted_widget"` (see [`LeafDescriptor::Extra`]'s own doc), which
@@ -1491,8 +1490,7 @@ pub enum LeafDescriptor {
 /// for a live script callback object), so it is listed here instead,
 /// handled by its own arm in `crate::wire::leaf::layout_leaf_from_value`'s
 /// per-key loop.
-pub const LEAF_KIND_KEYS: [&str; 7] = [
-    "button",
+pub const LEAF_KIND_KEYS: [&str; 6] = [
     "text_display",
     "list",
     "tree",
@@ -1610,6 +1608,8 @@ pub fn validate_unique_leaf_ids(what: &str, node: &LayoutNode) -> Result<(), Dec
 
 #[cfg(test)]
 mod tests {
+    use quadraui::Button;
+
     use super::*;
 
     /// `TuiBackend::char_width`/`line_height`'s own values — the
@@ -2205,7 +2205,10 @@ mod tests {
             }),
             node: Box::new(LayoutNode::Leaf(LayoutLeaf {
                 id: "a".to_string(),
-                descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new("a"), "A")),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "button",
+                    widget: Rc::new(Button::new(quadraui::WidgetId::new("a"), "A")),
+                },
                 scroll_px: None,
             })),
         });
@@ -2221,7 +2224,10 @@ mod tests {
         let leaf = |id: &str| {
             LayoutNode::Leaf(LayoutLeaf {
                 id: id.to_string(),
-                descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new(id), id)),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "button",
+                    widget: Rc::new(Button::new(quadraui::WidgetId::new(id), id)),
+                },
                 scroll_px: None,
             })
         };
@@ -2251,7 +2257,10 @@ mod tests {
         let leaf = |id: &str| {
             LayoutNode::Leaf(LayoutLeaf {
                 id: id.to_string(),
-                descriptor: LeafDescriptor::Button(Button::new(quadraui::WidgetId::new(id), id)),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "button",
+                    widget: Rc::new(Button::new(quadraui::WidgetId::new(id), id)),
+                },
                 scroll_px: None,
             })
         };

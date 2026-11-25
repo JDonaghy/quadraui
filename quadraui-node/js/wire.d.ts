@@ -1877,11 +1877,10 @@ export interface DiffViewDescriptor {
   has_focus: boolean;
 }
 
-/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the six core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed. */
+/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed. */
 export interface LayoutLeafNode {
   id: string;
   wire_version?: number;
-  button?: ButtonDescriptor;
   text_display?: TextDisplayDescriptor;
   list?: ListViewDescriptor;
   tree?: TreeViewDescriptor;
@@ -1929,6 +1928,7 @@ export interface LayoutLeafNode {
   cell_grid?: CellGridDescriptor;
   switch?: SwitchDescriptor;
   radio_group?: RadioGroupDescriptor;
+  button?: ButtonDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -1942,7 +1942,6 @@ export type LayoutNode = LayoutRowNode | LayoutColumnNode | LayoutGridNode | Lay
 /** The pre-layout-tree flat per-slot shape a render callback may still return instead of a `LayoutNode` tree. Every registered kind is fully typed. */
 export interface RenderFrameDict {
   wire_version?: number;
-  button?: ButtonDescriptor | null;
   text_display?: TextDisplayDescriptor | null;
   list?: ListViewDescriptor | null;
   tree?: TreeViewDescriptor | null;
@@ -1989,6 +1988,7 @@ export interface RenderFrameDict {
   cell_grid?: CellGridDescriptor | null;
   switch?: SwitchDescriptor | null;
   radio_group?: RadioGroupDescriptor | null;
+  button?: ButtonDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */
@@ -2405,10 +2405,6 @@ export interface _ExpandToggledPayload {
 /** Events a `Palette` emits back to the app -- see `quadraui/src/primitives/palette.rs`'s `PaletteEvent`. `Closed` has no payload -- bare `"Closed"`, like `TerminalEvent`'s `"SelectEnd"`. */
 export type PaletteEvent = { QueryChanged: _QueryChangedPayload; } | { SelectionChanged: _SelectionChangedIdxPayload; } | { ItemConfirmed: _ItemConfirmedPayload; } | { ExpandToggled: _ExpandToggledPayload; } | { KeyPressed: _KeyPressedStrPayload; };
 
-export interface _HitDetailButtonBody {
-  kind: "button_body";
-}
-
 export interface _HitDetailTreeRow {
   kind: "tree_row";
   row: number;
@@ -2560,7 +2556,7 @@ export interface _HitDetailScrollScrollbarTrackAfter {
 }
 
 /** The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`. */
-export type HitDetail = _HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
+export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailSidebarPanelToolbarButton | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailExtraChrome | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
 
 export interface _UiKeyPressedPayload {
   key: Key;
