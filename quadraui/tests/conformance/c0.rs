@@ -45,12 +45,11 @@ use quadraui::{
     RadioOption, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode,
     Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side,
     SidebarPanel, Spinner, Split, SplitDirection, SplitTree, StageStatus, StatusBar,
-    StatusBarSegment, StyledSpan, StyledText, Switch, Terminal, TerminalCell, TextDisplay,
-    TextDisplayLine, TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity,
-    Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOverflow,
-    ToolbarOverflowPriorities, ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder,
-    TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode,
-    TreeView, UiEvent, WidgetId,
+    StatusBarSegment, StyledSpan, StyledText, Terminal, TerminalCell, TextDisplay, TextDisplayLine,
+    TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton,
+    ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities,
+    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
+    TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -1322,30 +1321,6 @@ pub const CASES: &[Case] = &[
             group.options[0].hovered = true;
             group.options[0].pressed = true;
             let _ = b.draw_radio_group(Rect::new(0.0, 0.0, area.width, lh * 2.0), &group);
-        },
-    },
-    Case {
-        method: "draw_switch",
-        needle: None,
-        paint: |b, area| {
-            let lh = b.line_height();
-            let switch = Switch::new(id("switch"));
-            let _ = b.draw_switch(Rect::new(0.0, 0.0, area.width, lh), &switch);
-        },
-    },
-    // A hovered-and-pressed switch: `Switch::hovered`/`pressed` are ordinary
-    // descriptor fields, so `draw_switch` is the only entry point. This row
-    // proves a tinted switch still paints observable content on every
-    // backend. Chrome-only like the resting row above, so no text needle.
-    Case {
-        method: "draw_switch",
-        needle: None,
-        paint: |b, area| {
-            let lh = b.line_height();
-            let mut switch = Switch::new(id("switch-hover"));
-            switch.hovered = true;
-            switch.pressed = true;
-            let _ = b.draw_switch(Rect::new(0.0, 0.0, area.width, lh), &switch);
         },
     },
     Case {

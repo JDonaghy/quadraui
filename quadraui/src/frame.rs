@@ -1526,7 +1526,11 @@ impl OwnedContent {
                 backend.draw_toolbar_interactive(rect, bar, &interaction);
             }
             OwnedContent::Switch(switch) => {
-                backend.draw_switch(rect, switch);
+                // `impl Primitive for Switch` is unconditional, like
+                // `TabBar`'s above, so this arm needs no backend-feature
+                // guard of the kind `OwnedContent::ListWidget` below
+                // still carries.
+                backend.draw_primitive(rect, switch);
             }
             OwnedContent::RadioGroup(group) => {
                 backend.draw_radio_group(rect, group);

@@ -8,8 +8,8 @@ use quadraui::{
     ActivityBar, ActivityBarEvent, CanvasEvent, ComboBox, ComboBoxEvent, DataTableEvent,
     DatePicker, DatePickerEvent, EditOp, FormEvent, Key, ListViewEvent, Modifiers, MouseButton,
     NamedKey, NumberInput, NumberInputEvent, RadioGroup, RadioGroupEvent, StatusBar,
-    StatusBarEvent, Switch, SwitchEvent, TabBar, TabBarEvent, TextDisplayEvent, TextInput,
-    TreeEvent, TreeTable, TreeTableLayout, UiEvent, WidgetId,
+    StatusBarEvent, TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, TreeTable,
+    TreeTableLayout, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -275,7 +275,7 @@ fn date_picker_key_event(id: WidgetId, picker: &DatePicker, key: &str) -> Option
 
 /// Flips a standalone [`Checkbox`] leaf's `value` — the click half of the
 /// Space/Enter semantics [`checkbox_key_event`] gives it below. `None`
-/// when disabled, mirroring [`Switch::click`]'s own disabled guard (a
+/// when disabled, mirroring [`quadraui::Switch::click`]'s own disabled guard (a
 /// disabled extra is inert, not hidden).
 pub(crate) fn checkbox_click_event(id: WidgetId, checkbox: &Checkbox) -> Option<UiEvent> {
     if checkbox.disabled {
@@ -475,7 +475,7 @@ pub(crate) fn text_area_key_event(
 /// embedded `Button`/`ButtonRow` fields already emit — rather than adding a
 /// new `UiEvent` variant for a standalone `Button`, the same "reuse an
 /// existing shape over adding a new one" convention
-/// [`HitDetail::ExtraBody`]'s `Switch` arm already follows for
+/// [`HitDetail::ExtraBody`]'s `Checkbox` arm already follows for
 /// `FormEvent::ToggleChanged`.
 pub fn button_clicked_event(id: WidgetId) -> UiEvent {
     UiEvent::Form(id, FormEvent::ButtonClicked { id })
@@ -502,8 +502,8 @@ pub fn button_clicked_event(id: WidgetId) -> UiEvent {
 /// `MouseDown`/`DoubleClick` and its `"hit"` dict reach the binding's own
 /// event handler unchanged.
 /// [`HitDetail::ExtraBody`] resolves against the matched extra's own click
-/// semantics (currently [`Switch::click`]); an extra with no recognized
-/// click behavior still falls through to the raw `MouseDown`. `point` is
+/// semantics (currently [`Checkbox`]/[`Slider`]/[`Select`]); an extra with no
+/// recognized click behavior still falls through to the raw `MouseDown`. `point` is
 /// the absolute click position the caller already has (every caller is a
 /// `MouseDown`/`DoubleClick` branch, so it's always available) — only
 /// [`HitDetail::ExtraBody`]'s [`Slider`] arm and [`HitDetail::CanvasRegion`]'s
@@ -622,18 +622,7 @@ pub fn semantic_event_for_hit(
                 if let Some(select) = extra_as::<Select>(extra) {
                     return select_click_event(id, select);
                 }
-                let switch = extra_as::<Switch>(extra)?;
-                // Route the matched hit id, not the descriptor's embedded
-                // `SwitchEvent::Toggled::id` — a render callback may leave
-                // the descriptor's own `id` at its default and reuse it
-                // across leaves, so only the tree-address hit id is
-                // guaranteed unique. Renamed rather than destructured as
-                // `id` so the two can't silently shadow each other.
-                let SwitchEvent::Toggled {
-                    id: _switch_id,
-                    value,
-                } = switch.click()?;
-                Some(UiEvent::Form(id, FormEvent::ToggleChanged { id, value }))
+                None
             }
             _ => None,
         }),
@@ -883,19 +872,6 @@ pub fn focus_scoped_key_event(
             PaintedHit::Extra { id, extra, .. } if *id == focused => {
                 if let Some(text_input) = extra_as::<TextInput>(extra) {
                     return text_input_key_event(*id, text_input, raw_key, modifiers, text_editors);
-                }
-                if let Some(switch) = extra_as::<Switch>(extra) {
-                    // Route the matched hit id (`*id`), not the
-                    // descriptor's embedded `SwitchEvent::Toggled::id` —
-                    // see the identical comment in `semantic_event_for_hit`.
-                    let SwitchEvent::Toggled {
-                        id: _switch_id,
-                        value,
-                    } = switch.handle_key(raw_key, &modifiers)?;
-                    return Some(UiEvent::Form(
-                        *id,
-                        FormEvent::ToggleChanged { id: *id, value },
-                    ));
                 }
                 if let Some(number_input) = extra_as::<NumberInput>(extra) {
                     return number_input_key_event(*id, number_input, raw_key, &modifiers);

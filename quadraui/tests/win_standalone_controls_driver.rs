@@ -6,20 +6,23 @@
 //!
 //! Unlike the TUI twin (`tests/standalone_controls_driver.rs`), which paints
 //! a `TextDisplay` status line because TUI has no dedicated painter for
-//! these three controls, this test paints each control through its real
-//! `Backend::draw_button` / `draw_radio_group` / `draw_switch` method and
-//! hit-tests clicks through the matching backend-agnostic
-//! `Backend::button_layout` / `radio_group_layout` / `switch_layout` query —
-//! the same split a live click router uses (CLAUDE.md "Layout helpers go
-//! through `Backend` too; consumer click routers stay backend-agnostic").
-//! Mirrors `tests/gtk_standalone_controls_driver.rs` /
+//! `Button`/`RadioGroup`, this test paints those two through their real
+//! `Backend::draw_button` / `draw_radio_group` method and hit-tests clicks
+//! through the matching backend-agnostic `Backend::button_layout` /
+//! `radio_group_layout` query — the same split a live click router uses
+//! (CLAUDE.md "Layout helpers go through `Backend` too; consumer click
+//! routers stay backend-agnostic"). `Switch` has no `Backend` method of
+//! its own — it paints and hit-tests through the widget contract's
+//! `DrawsPrimitives::draw_primitive`/`layout_primitive` instead, the same
+//! backend-generic seam on every backend. Mirrors
+//! `tests/gtk_standalone_controls_driver.rs` /
 //! `tests/macos_standalone_controls_driver.rs` one-for-one.
 
 use quadraui::win::testing::WinDriver;
 use quadraui::{
-    AppLogic, Backend, Button, ButtonEvent, ButtonHit, ButtonVariant, Icon, InteractionState, Key,
-    Modifiers, MouseButton, NamedKey, Point, RadioGroup, RadioGroupEvent, RadioOption, Reaction,
-    Rect, Switch, SwitchEvent, UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonEvent, ButtonHit, ButtonVariant, DrawsPrimitives, Icon,
+    InteractionState, Key, Modifiers, MouseButton, NamedKey, Point, RadioGroup, RadioGroupEvent,
+    RadioOption, Reaction, Rect, Switch, SwitchEvent, UiEvent, WidgetId,
 };
 
 /// Which of the three standalone controls currently holds keyboard focus.
@@ -146,7 +149,7 @@ impl AppLogic for StandaloneControlsApp {
         backend.draw_button(DANGER_BOUNDS, &self.danger);
         backend.draw_button(WARNING_BOUNDS, &self.warning);
         backend.draw_radio_group(RADIOS_BOUNDS, &self.radios);
-        backend.draw_switch(SWITCH_BOUNDS, &self.switch);
+        backend.draw_primitive(SWITCH_BOUNDS, &self.switch);
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -197,7 +200,7 @@ impl AppLogic for StandaloneControlsApp {
             UiEvent::MouseDown { position, .. } => {
                 let button_layout = backend.button_layout(BUTTON_BOUNDS, &self.button);
                 let radios_layout = backend.radio_group_layout(RADIOS_BOUNDS, &self.radios);
-                let switch_layout = backend.switch_layout(SWITCH_BOUNDS, &self.switch);
+                let switch_layout = backend.layout_primitive(SWITCH_BOUNDS, &self.switch);
 
                 if button_layout.bounds.contains(position) {
                     if let Some(ButtonEvent::Activated { id }) = self.button.click() {

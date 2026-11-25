@@ -3615,7 +3615,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `combo_box` | `ComboBoxDescriptor` | no |  |
 | `date_picker` | `DatePickerDescriptor` | no |  |
 | `radio_group` | `RadioGroupDescriptor` | no |  |
-| `switch` | `SwitchDescriptor` | no |  |
 | `chart` | `ChartDescriptor` | no |  |
 | `message_list` | `MessageListDescriptor` | no |  |
 | `board` | `BoardModelDescriptor` | no |  |
@@ -3645,6 +3644,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `markdown` | `MarkdownDescriptor` | no |  |
 | `icon_grid` | `IconGridDescriptor` | no |  |
 | `cell_grid` | `CellGridDescriptor` | no |  |
+| `switch` | `SwitchDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3683,7 +3683,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `combo_box` | `ComboBoxDescriptor \| null` | no |  |
 | `date_picker` | `DatePickerDescriptor \| null` | no |  |
 | `radio_group` | `RadioGroupDescriptor \| null` | no |  |
-| `switch` | `SwitchDescriptor \| null` | no |  |
 | `chart` | `ChartDescriptor \| null` | no |  |
 | `message_list` | `MessageListDescriptor \| null` | no |  |
 | `board` | `BoardModelDescriptor \| null` | no |  |
@@ -3713,6 +3712,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `markdown` | `MarkdownDescriptor \| null` | no |  |
 | `icon_grid` | `IconGridDescriptor \| null` | no |  |
 | `cell_grid` | `CellGridDescriptor \| null` | no |  |
+| `switch` | `SwitchDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`

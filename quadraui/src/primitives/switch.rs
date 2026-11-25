@@ -1,7 +1,8 @@
 //! `Switch` primitive: a standalone on/off toggle — layout, hit-test,
-//! keyboard focus/activation, and its event. Layout/hit-test/keyboard
-//! logic lives here; backend rasterisers live in `tui::switch` and
-//! inline in each platform's `backend.rs` (see `Backend::draw_switch`).
+//! keyboard focus/activation, and its event, all on the widget contract
+//! (`Primitive` + `Interactive`, below). `Switch` reaches a frame as a
+//! type-erased `crate::frame::Surface::Widget`; there is no `Backend`
+//! method or per-platform rasteriser file of its own.
 //!
 //! Today `Form`'s `Toggle`/`ToggleGroup` field kinds cover the same
 //! on/off shape embedded inside a form. `Switch` is additive: a
@@ -71,17 +72,17 @@ pub struct Switch {
     pub focused: bool,
     /// Whether the pointer currently sits over this switch. Set by the
     /// host from its own hover tracking (an [`crate::interaction::InteractionState`]
-    /// keyed by [`Switch::id`], or any other source); read by
-    /// [`Backend::draw_switch`](crate::Backend::draw_switch) to tint the
-    /// track toward [`crate::Theme::button_hover_bg`] — the same
-    /// self-contained state convention [`Switch::focused`] already
+    /// keyed by [`Switch::id`], or any other source); read by this
+    /// type's own shared pixel painter (`native_surface_paint::paint`)
+    /// to tint the track toward [`crate::Theme::button_hover_bg`] — the
+    /// same self-contained state convention [`Switch::focused`] already
     /// follows.
     #[serde(default)]
     pub hovered: bool,
     /// Whether the pointer currently holds this switch pressed. Same
-    /// host-set convention as [`Switch::hovered`]; read by
-    /// [`Backend::draw_switch`](crate::Backend::draw_switch) to tint the
-    /// track toward [`crate::Theme::button_pressed_bg`], which wins over
+    /// host-set convention as [`Switch::hovered`]; read by that same
+    /// pixel painter to tint the track toward
+    /// [`crate::Theme::button_pressed_bg`], which wins over
     /// [`Switch::hovered`] when both are set.
     #[serde(default)]
     pub pressed: bool,
@@ -274,9 +275,11 @@ impl crate::primitive::Primitive for Switch {
         let _ = (layout, surface, theme);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_switch_layout`] because the `Buffer` ->
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] over `buf`, adapted through
+    /// [`crate::tui::cell_surface::TuiCellSurface`] — the `Buffer` ->
+    /// [`crate::CellSurface`] bridge every `tui` cell-grid painter builds
+    /// for itself, `pub(crate)` rather than private to `crate::tui` for
+    /// exactly this reach.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -284,7 +287,14 @@ impl crate::primitive::Primitive for Switch {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_switch_layout(buf, self, layout, theme);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, layout, &mut surface, theme);
     }
 }
 
@@ -356,8 +366,10 @@ impl crate::interactive::Interactive for Switch {
 }
 
 /// The cell-grid painter for [`Switch`], written against
-/// [`crate::CellSurface`] — moved from `crate::tui::switch`, which is now
-/// a thin `Buffer` -> [`crate::CellSurface`] adapter.
+/// [`crate::CellSurface`]. `Switch`'s own `paint_cells` adapts the raw
+/// `Buffer` it's called with into that seam via
+/// `crate::tui::cell_surface::TuiCellSurface`, the same bridge every
+/// `tui` cell-grid painter builds for itself.
 ///
 /// Paints a 4-cell `[● ]`/`[ ●]` track with the knob on the right when
 /// `value` is `true`, on the left when `false`. The whole cell range is

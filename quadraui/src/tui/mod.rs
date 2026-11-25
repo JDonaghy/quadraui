@@ -28,7 +28,12 @@ mod braille;
 mod button;
 mod canvas;
 mod cell_grid;
-mod cell_surface;
+// `pub(crate)` rather than private: `Switch`'s own `Primitive::paint_cells`
+// reaches `TuiCellSurface` directly to adapt its raw `Buffer` into the
+// `CellSurface` its own cell painter takes, the same "`Buffer` -> `CellSurface`
+// adapter is private to `crate::tui`" shape `command_line` below documents for
+// itself.
+pub(crate) mod cell_surface;
 // No reacher in `~/src/vimcode/src`, `~/src/coord-tui/src`, or any in-tree
 // consumer reaches either module-qualified (`crate::tui::caps::…`) —
 // `#[doc(hidden)]`: unstable, not covered by semver, like the flat
@@ -94,7 +99,6 @@ mod split;
 mod split_junction;
 mod split_tree;
 mod status_bar;
-mod switch;
 mod terminal;
 pub mod testing;
 pub mod text;
@@ -224,9 +228,6 @@ pub use split::{draw_split, tui_split_layout};
 pub use split_tree::{draw_split_tree, tui_split_tree_layout};
 #[doc(hidden)]
 pub use status_bar::draw_status_bar;
-pub(crate) use switch::draw_switch_layout;
-#[doc(hidden)]
-pub use switch::{draw_switch, tui_switch_layout};
 // The cell-measure constants live with the primitive, next to the shared
 // cell-grid painter that reads them; `tui::` re-exports them under the
 // names apps already build their `TabMeasure`s against.

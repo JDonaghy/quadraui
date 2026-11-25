@@ -4491,7 +4491,7 @@ mod tests {
         use crate::extra_paint::{Checkbox, PasswordInput, Select, Slider, TextArea};
         use quadraui::{
             ComboBox, Image, ImageFit, ImageSource, ProgressBar, RadioGroup, RadioOption, Spinner,
-            Switch, TextField, TextInput,
+            TextField, TextInput,
         };
 
         let kinds: Vec<(&str, Rc<dyn ExtraPaint>)> = vec![
@@ -4534,7 +4534,6 @@ mod tests {
                     focused: false,
                 }),
             ),
-            ("switch", Rc::new(Switch::new(WidgetId::new("switch")))),
             (
                 "radio_group",
                 Rc::new(RadioGroup::new(
@@ -4659,28 +4658,33 @@ mod tests {
 
     /// [`Switch`]'s and [`RadioGroup`]'s cross-axis (width) natural size on
     /// a cell-grid backend has to match the cell count their own TUI
-    /// rasteriser actually paints, not just [`Checkbox`]'s shape: a
+    /// painter actually paints, not just [`Checkbox`]'s shape: a
     /// `Switch` under-reporting its `4`-cell `[● ]`/`[ ●]` track collapses
-    /// `draw_switch`'s knob column so on/off paint identically, and a
-    /// `RadioGroup` under-reporting its `"(x) label"` chrome by even one
+    /// its own cell painter's knob column so on/off paint identically, and
+    /// a `RadioGroup` under-reporting its `"(x) label"` chrome by even one
     /// cell gets its last label character truncated by `draw_radio_group`
-    /// under a non-`Stretch` `Column` align.
+    /// under a non-`Stretch` `Column` align. `Switch` resolves through
+    /// [`quadraui::primitive::Primitive::measure`] (the generic
+    /// [`crate::extra_paint::WIDGET_KINDS`] seam, not [`ExtraPaint`]), so
+    /// its half of this test builds a cells-mode `LayoutCtx` from the same
+    /// backend's own metrics rather than calling `ExtraPaint::natural_size`.
     #[test]
     fn switch_and_radio_group_natural_width_matches_what_tui_paints() {
+        use quadraui::primitive::{LayoutCtx, Primitive};
         use quadraui::{RadioGroup, RadioOption, Switch};
 
         let mut backend = tui();
         let char_width = backend.char_width();
 
         let switch = Switch::new(WidgetId::new("switch"));
-        let switch_width = switch
-            .natural_size(&mut backend)
-            .width
-            .expect("Switch reports a natural width");
+        let ctx = LayoutCtx::new(backend.chrome_line_height(), char_width, false);
+        let switch_width =
+            Primitive::measure(&switch, &ctx, quadraui::primitive::Size::new(0.0, 0.0))
+                .width
+                .expect("Switch reports a natural width");
         assert_eq!(
-            switch_width,
-            4.0 * char_width,
-            "Switch's natural width should match draw_switch's 4-cell track"
+            switch_width, 4.0,
+            "Switch's natural width should match its own cell painter's 4-cell track"
         );
 
         let group = RadioGroup::new(

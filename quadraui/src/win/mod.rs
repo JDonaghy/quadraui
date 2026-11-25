@@ -210,10 +210,6 @@ mod status_bar;
 /// rasteriser modules above that consume it.
 #[cfg(target_os = "windows")]
 mod surface;
-/// Direct2D / DirectWrite rasteriser for [`crate::Switch`]. Windows-only
-/// in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod switch;
 /// Direct2D / DirectWrite rasteriser for [`crate::Terminal`] cell grids.
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -391,9 +387,6 @@ pub use split::win_split_layout;
 pub use split_tree::win_split_tree_layout;
 #[doc(hidden)]
 pub use status_bar::{win_status_bar_layout, MIN_GAP_DIP};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use switch::win_switch_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use text_display::win_text_display_layout;

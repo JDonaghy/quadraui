@@ -17,9 +17,8 @@ use quadraui::{
     InteractionState, LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize,
     NumberInput, NumberInputHit, Palette, PipelineView, Point, ProgressBar, RadioGroup, Rect,
     RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit,
-    StyledText, Switch, SwitchHit, Terminal, TextDisplay, TextDisplayLine, TextField, TextInput,
-    TextRegion, Theme, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData,
-    WidgetId,
+    StyledText, Terminal, TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme,
+    Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the six fixed
@@ -176,18 +175,14 @@ pub fn extra_as_toolbar(extra: &Rc<dyn ExtraPaint>) -> Option<&Toolbar> {
 }
 
 /// A compact boolean toggle's own box, with no label of its own
-/// ([`Checkbox`]/[`Switch`] both hide their `Form`-field label — see
-/// [`single_field_form`]): `cell_width` cells on a cell-grid backend, or
-/// two text rows' worth on a pixel backend (a nominal pill/box width, the
-/// same "no real `Style::padding` to read at this layer" caveat
+/// ([`Checkbox`] hides its `Form`-field label — see [`single_field_form`]):
+/// `cell_width` cells on a cell-grid backend, or two text rows' worth on a
+/// pixel backend (a nominal pill/box width, the same "no real
+/// `Style::padding` to read at this layer" caveat
 /// `crate::render::natural_size`'s own `Button` arm already documents for
-/// its own chrome estimate). `cell_width` differs by caller: [`Checkbox`]
-/// paints through `Form`'s `FieldKind::Toggle` control, which is `3`
-/// cells wide (`quadraui::tui::form`'s `natural_content_width`); `Switch`
-/// paints through its own `draw_switch`, a `4`-cell `[● ]`/`[ ●]` track
-/// (`quadraui::tui::switch::TUI_SWITCH_WIDTH`) — reporting `3` there
-/// collapses `draw_switch`'s knob column so the on/off states paint
-/// identically.
+/// its own chrome estimate). [`Checkbox`], its one caller below, paints
+/// through `Form`'s `FieldKind::Toggle` control, which is `3` cells wide
+/// (`quadraui::tui::form`'s `natural_content_width`).
 fn toggle_control_size(backend: &mut dyn Backend, cell_width: f32) -> (f32, f32) {
     let line_height = backend.line_height();
     let char_width = backend.char_width();
@@ -445,33 +440,6 @@ impl ExtraPaint for RadioGroup {
     }
 }
 
-impl ExtraPaint for Switch {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_switch(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        self.layout(area).hit_test(point) == SwitchHit::Body
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// Toggle box only, no label of its own. Reports the `4`-cell track
-    /// `draw_switch` actually paints on a cell-grid backend — narrower
-    /// than that collapses the knob column and makes the on/off states
-    /// paint identically (see [`toggle_control_size`]).
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let (width, height) = toggle_control_size(backend, 4.0);
-        NaturalSize::new(Some(width), Some(height))
-    }
-}
-
 impl ExtraPaint for NumberInput {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         let layout = self.layout(area);
@@ -621,8 +589,9 @@ impl ExtraPaint for DatePicker {
 /// column is hidden form-wide (there is only ever one field, with no
 /// label of its own) so the leaf's whole area goes to the control, the
 /// same "just the control, no label gutter" footprint
-/// [`quadraui::Switch`]/[`quadraui::NumberInput`]/[`quadraui::ComboBox`]
-/// already have as bare standalone extras.
+/// [`quadraui::NumberInput`]/[`quadraui::ComboBox`] already have as bare
+/// standalone extras, and [`quadraui::Switch`] has as a bare standalone
+/// generic `widget_kinds!` widget.
 fn single_field_form(id: WidgetId, kind: FieldKind, disabled: bool, focused: bool) -> Form {
     Form {
         id,
@@ -2159,7 +2128,6 @@ extra_primitives! {
     "combo_box" => ComboBox,
     "date_picker" => DatePicker,
     "radio_group" => RadioGroup,
-    "switch" => Switch,
     "chart" => Chart,
     "message_list" => MessageList,
     "board" => BoardModel,
@@ -2200,24 +2168,26 @@ extra_primitives! {
 /// [`decode_widget_leaf`] is this table's own decode step, the `Widget`
 /// counterpart of [`decode_extra_primitive_checked`].
 ///
-/// `"icon_grid"` and `"cell_grid"` are this table's two members: unlike
-/// every [`EXTRA_PRIMITIVE_KINDS`] entry, neither [`quadraui::IconGrid`]
-/// nor [`quadraui::CellGrid`] has a bespoke [`ExtraPaint`] impl to write
-/// here — painting, whole-area hit testing and [`DynWidget::handle`]
-/// routing are already fully generic (see
-/// [`crate::layout::LeafDescriptor::Widget`]'s own doc), so each kind's
-/// entire wiring is its one line in this array.
+/// `"icon_grid"`, `"cell_grid"` and `"switch"` are this table's members:
+/// unlike every [`EXTRA_PRIMITIVE_KINDS`] entry, none of
+/// [`quadraui::IconGrid`], [`quadraui::CellGrid`] or [`quadraui::Switch`]
+/// has a bespoke [`ExtraPaint`] impl to write here — painting, whole-area
+/// hit testing and [`DynWidget::handle`] routing are already fully generic
+/// (see [`crate::layout::LeafDescriptor::Widget`]'s own doc), so each
+/// kind's entire wiring is its one line in this array.
 /// [`quadraui::CellGrid`]'s own [`crate::interactive::Interactive`] impl
 /// (keyboard navigation, inline editing, click-and-drag selection) and
 /// [`quadraui::CellGrid::cells_requested`] (read generically through
 /// [`crate::engine::InteractionEngine::dyn_widget_cells_requested`]'s own
-/// downcast) cover every bit of state a `"cell_grid"` leaf needs. A
+/// downcast) cover every bit of state a `"cell_grid"` leaf needs;
+/// [`quadraui::Switch`]'s own [`crate::interactive::Interactive`] impl
+/// (Enter/Space/click toggling) covers `"switch"` the same way. A
 /// further kind joins this table only when it likewise needs nothing
 /// beyond that generic contract; a kind with its own paint-time chrome
 /// state (tab-stop children, chrome click regions, a custom
 /// whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 2] = ["icon_grid", "cell_grid"];
+pub const WIDGET_KINDS: [&str; 3] = ["icon_grid", "cell_grid", "switch"];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
 /// [`DynWidget`], via [`quadraui::decode_widget`] — the `Widget`
@@ -2356,21 +2326,23 @@ mod tests {
         assert_eq!(hits[0].1, WidgetId::new("pal"));
     }
 
-    /// A `Switch` placed directly as a `LayoutNode::Leaf` (not through the
-    /// flat-slot `extra` map) paints via [`crate::render::paint_layout`] and
-    /// a `MouseDown` landing on it round-trips through
-    /// [`crate::engine::InteractionEngine::handle`] into the same
-    /// `UiEvent::Form(.., FormEvent::ToggleChanged)` a slot-painted switch
-    /// dispatches — proving the additive-primitive leaf path
-    /// (`crate::layout::LeafDescriptor::Extra`, wired generically for every
-    /// `EXTRA_PRIMITIVE_KINDS` entry) carries an interactive form control's
-    /// semantic event all the way to the handler, not just its paint.
+    /// A `Switch` placed as a `LeafDescriptor::Widget` (not `Extra` —
+    /// [`Switch`] has no [`ExtraPaint`] impl, see
+    /// [`crate::layout::LeafDescriptor::Widget`]'s own doc) paints through
+    /// [`quadraui::DrawsPrimitives::draw_dyn`] and a `MouseDown` landing
+    /// on it round-trips through
+    /// [`crate::engine::InteractionEngine::handle`]'s `HitDetail::WidgetBody`
+    /// arm into [`quadraui::primitive::DynWidget::handle`], which — unlike
+    /// [`IconGrid`]'s own no-op — resolves [`Switch::click`] and comes back
+    /// out as a real `UiEvent::SwitchToggled`, substituted for the raw
+    /// `MouseDown` entirely (see [`InteractionEngine::dispatch_dyn_widget_click`]'s
+    /// own doc for why a resolved event clears the attached hit detail).
     #[test]
-    fn switch_leaf_click_toggles_through_the_interaction_engine() {
+    fn switch_leaf_click_toggles_through_the_dyn_widget_seam() {
         use crate::engine::InteractionEngine;
         use crate::layout::{LayoutContainer, LayoutNode, Spacing};
         use crate::render::paint_layout;
-        use quadraui::{FormEvent, Modifiers, MouseButton};
+        use quadraui::{Modifiers, MouseButton, Switch};
 
         struct SwitchLeafApp {
             engine: InteractionEngine,
@@ -2384,9 +2356,10 @@ mod tests {
                 let tree = LayoutNode::Row(LayoutContainer::new(
                     vec![LayoutNode::Leaf(LayoutLeaf {
                         id: "sw:1".into(),
-                        descriptor: LeafDescriptor::Extra(Rc::new(Switch::new(WidgetId::new(
-                            "sw:1",
-                        )))),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "switch",
+                            widget: Rc::new(Switch::new(WidgetId::new("sw:1"))),
+                        },
                         scroll_px: None,
                     })],
                     Spacing::default(),
@@ -2420,12 +2393,12 @@ mod tests {
             let hits = driver.app().engine.hit_map();
             hits.iter()
                 .find_map(|hit| match hit {
-                    PaintedHit::Extra { id, area, .. } if *id == WidgetId::new("sw:1") => {
+                    PaintedHit::Widget { id, area, .. } if *id == WidgetId::new("sw:1") => {
                         Some(*area)
                     }
                     _ => None,
                 })
-                .expect("switch leaf should have painted an Extra hit")
+                .expect("switch leaf should have painted a Widget hit")
         };
 
         driver.dispatch(UiEvent::MouseDown {
@@ -2439,10 +2412,10 @@ mod tests {
         assert!(
             dispatched.iter().any(|event| matches!(
                 event,
-                UiEvent::Form(id, FormEvent::ToggleChanged { value: true, .. })
-                    if *id == WidgetId::new("sw:1")
+                UiEvent::SwitchToggled { widget, value: true }
+                    if *widget == WidgetId::new("sw:1")
             )),
-            "expected a ToggleChanged event for the inline switch leaf, got {dispatched:?}"
+            "expected a SwitchToggled event for the inline switch leaf, got {dispatched:?}"
         );
     }
 

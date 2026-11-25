@@ -4302,32 +4302,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_radio_group_layout(group, area)
     }
 
-    fn draw_switch(
-        &mut self,
-        rect: QRect,
-        switch: &crate::primitives::switch::Switch,
-    ) -> crate::primitives::switch::SwitchLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_switch called outside enter_frame_scope"
-            );
-            return self.switch_layout(rect, switch);
-        };
-        crate::tui::draw_switch(frame.buffer_mut(), area, switch, &theme)
-    }
-
-    fn switch_layout(
-        &self,
-        rect: QRect,
-        switch: &crate::primitives::switch::Switch,
-    ) -> crate::primitives::switch::SwitchLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_switch_layout(switch, area)
-    }
-
     fn draw_command_center(
         &mut self,
         rect: QRect,
@@ -5387,22 +5361,6 @@ mod tests {
                     }
                 },
             )
-        }
-
-        fn draw_switch(
-            &mut self,
-            r: QRect,
-            switch: &crate::primitives::switch::Switch,
-        ) -> crate::primitives::switch::SwitchLayout {
-            switch.layout(crate::event::Rect::new(r.x, r.y, r.width, r.height))
-        }
-
-        fn switch_layout(
-            &self,
-            r: QRect,
-            switch: &crate::primitives::switch::Switch,
-        ) -> crate::primitives::switch::SwitchLayout {
-            switch.layout(crate::event::Rect::new(r.x, r.y, r.width, r.height))
         }
 
         fn draw_command_center(

@@ -22,9 +22,9 @@
 //! - q / Esc     quit
 
 use quadraui::{
-    AppLogic, Backend, Button, ButtonHit, ButtonVariant, Color, Icon, InteractionState, Key,
-    Modifiers, NamedKey, RadioGroup, RadioGroupHit, RadioOption, Reaction, Rect, StatusBar,
-    StatusBarSegment, Switch, SwitchHit, UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonHit, ButtonVariant, Color, DrawsPrimitives, Icon,
+    InteractionState, Key, Modifiers, NamedKey, RadioGroup, RadioGroupHit, RadioOption, Reaction,
+    Rect, StatusBar, StatusBarSegment, Switch, SwitchHit, UiEvent, WidgetId,
 };
 
 /// One row per [`ButtonVariant`] — `Primary`, `Secondary`, `Danger`,
@@ -227,7 +227,7 @@ impl AppLogic for ControlsApp {
             let _ = backend.draw_button_with_state(rect, &self.button(idx), &self.interaction);
         }
         let _ = backend.draw_radio_group(self.radio_rect(backend), &self.radio_group());
-        let _ = backend.draw_switch(self.switch_rect(backend), &self.switch());
+        let _ = backend.draw_primitive(self.switch_rect(backend), &self.switch());
         let _ = backend.draw_status_bar_interactive(
             self.status_rect(backend),
             &self.status_bar(),
@@ -339,7 +339,7 @@ impl AppLogic for ControlsApp {
                 }
 
                 let switch_layout =
-                    backend.switch_layout(self.switch_rect(backend), &self.switch());
+                    backend.layout_primitive(self.switch_rect(backend), &self.switch());
                 if matches!(switch_layout.hit_test(position), SwitchHit::Body) {
                     self.focus = Focus::Switch;
                     self.activate_focused();
