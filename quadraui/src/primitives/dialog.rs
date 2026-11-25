@@ -1843,7 +1843,9 @@ pub(crate) mod cell_paint {
                     // state on the dialog paint path.
                     if let Some(buf) = surface.ratatui_buffer() {
                         let area = ratatui::layout::Rect::new(ix, iy, iw, 1);
-                        crate::tui::draw_toolbar(buf, area, toolbar, theme, None, None);
+                        crate::primitives::toolbar::cell_paint::draw_toolbar(
+                            buf, area, toolbar, theme, None, None,
+                        );
                     }
                 }
                 // `FormDialogController` (`compose::form_dialog`) paints

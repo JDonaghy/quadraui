@@ -11,12 +11,11 @@
 //! `ui_font_desc` for the entire paint, restoring it before returning so
 //! subsequent paints in the same frame keep rendering in the editor font.
 //!
-//! `DialogInput::Toolbar` still renders through
-//! [`super::toolbar::draw_toolbar`] after the shared `paint` returns,
-//! now in the chrome font left active by that swap (a welcome side effect:
-//! [`crate::ChromePrimitive::Toolbar`] classifies the toolbar itself as chrome
-//! too, so an embedded dialog toolbar moving off the editor font is handled
-//! by this same change).
+//! `DialogInput::Toolbar` renders through
+//! `primitives::toolbar::native_surface_paint::paint_embedded` after the
+//! shared `paint` returns, in the chrome font left active by that swap —
+//! [`crate::ChromePrimitive::Toolbar`] classifies the toolbar itself as
+//! chrome too.
 //!
 //! Returns the per-button hit rectangles `(x, y, w, h)` so the caller's
 //! click handler can resolve a click to a button without re-running the
@@ -70,23 +69,20 @@ pub fn draw_dialog(
         &crate::style::Style::default(),
     );
 
-    // DialogInput::Toolbar isn't painted by the shared `paint` — the toolbar
-    // rasteriser hasn't moved onto `PaintSurface` yet — so render it here.
+    // DialogInput::Toolbar isn't painted by the shared `paint`, so render it
+    // here on the same chrome-font surface.
     if let (Some(input_b), Some(DialogInput::Toolbar(toolbar))) =
         (dialog_layout.input_bounds, dialog.input.as_ref())
     {
-        super::toolbar::draw_toolbar(
-            cr,
-            pango_layout,
-            input_b.x as f64,
-            input_b.y as f64,
-            input_b.width as f64,
-            input_b.height as f64,
+        pango_layout.set_width(-1);
+        pango_layout.set_ellipsize(pango::EllipsizeMode::None);
+        crate::primitives::toolbar::native_surface_paint::paint_embedded(
             toolbar,
+            input_b,
+            &mut surface,
             theme,
-            None,
-            None,
         );
+        pango_layout.set_attributes(None);
     }
 
     // Restore the layout's font_description so subsequent paints in the

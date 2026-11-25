@@ -147,24 +147,11 @@ impl Primitive for Toolbar {
         Some(&self.id)
     }
 
-    /// Round-trips through [`crate::frame::OwnedContent::Toolbar`] — the
-    /// same owned snapshot [`crate::frame::Surface::Toolbar`] captures
-    /// into. The replay paints through
-    /// [`crate::Backend::draw_toolbar_interactive`], which reaches this
-    /// module's own painter with the same resting hover/press state
-    /// [`Self::paint_cells`] passes it, and resolves the bar's geometry
-    /// from the method's own fixed `Clip`/`Horizontal`/`Top` arguments
-    /// rather than from the descriptor's [`Toolbar::layout_options`] /
-    /// [`Toolbar::valign`] — so a replay is byte-identical for a
-    /// default-options descriptor, and a wrapping, vertical or
-    /// bottom-aligned one replays as the clipped horizontal bar that
-    /// method paints, until `Surface::Toolbar` itself is retired in
-    /// favour of [`crate::frame::Surface::Widget`].
-    ///
-    /// The replayed bar reports
-    /// [`crate::frame::FrameZone::Toolbar`] rather than
-    /// [`crate::frame::FrameZone::Widget`], since that mapping belongs
-    /// to `OwnedContent` itself.
+    /// Round-trips through [`crate::frame::OwnedContent::Toolbar`],
+    /// which replays through
+    /// [`crate::backend::DrawsPrimitives::draw_primitive`] — this same
+    /// layout and painter, descriptor options included — and reports
+    /// [`crate::frame::FrameZone::Widget`].
     fn capture(&self) -> crate::frame::OwnedContent {
         crate::frame::OwnedContent::Toolbar(self.clone())
     }
@@ -331,15 +318,8 @@ impl Primitive for Toolbar {
         }
     }
 
-    /// Delegates to the same `super::cell_paint` entry point the legacy
-    /// `crate::tui::draw_toolbar*` wrappers and
-    /// `TuiBackend::draw_toolbar_with_options` themselves call, picked by
-    /// what the descriptor asks for — so painting a `Toolbar` through
-    /// this contract is byte-for-byte identical to painting it through
-    /// the legacy `Backend` pair by construction, not by separately
-    /// maintained parity.
-    ///
-    /// A plain `Clip`/`Horizontal` bar goes through
+    /// Delegates to the `super::cell_paint` entry point the descriptor
+    /// asks for. A plain `Clip`/`Horizontal` bar goes through
     /// [`super::cell_paint::draw_toolbar_with_options`], the only cell
     /// painter that honours [`Toolbar::valign`]; a wrapping, menu-overflow
     /// or vertical bar goes through

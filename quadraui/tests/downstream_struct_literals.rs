@@ -303,37 +303,22 @@ fn non_exhaustive_batch_builds_via_default_plus_field_assignment() {
     assert!(!float.focusable);
 }
 
-// ── `Backend::draw_toolbar*` call shapes ───────────────────────────────
+// ── Toolbar text alignment through the widget contract ─────────────────
 
-/// The call shapes a known consumer uses to paint a `Toolbar`.
-/// A function breaks a consumer by growing its parameters (`E0061`)
-/// as readily as a struct breaks by growing fields. This test catches
-/// any future parameter additions to `draw_toolbar_interactive`.
-/// ```text
-/// $ grep -rn 'draw_toolbar' ~/src/coord-tui/src ~/src/vimcode/src
-/// /home/john/src/coord-tui/src/app/render.rs:396:   backend.draw_toolbar_interactive(bar_rect, &toolbar, &InteractionState::from_parts(..))
-/// /home/john/src/coord-tui/src/app/dialogs.rs:6435: backend.draw_toolbar_interactive(bar_rect, &toolbar, &InteractionState::new())
-/// ```
+/// A toolbar painted through `DrawsPrimitives::draw_dyn` honours the
+/// descriptor's own `valign`: the button row moves within a slot taller
+/// than one text row, defaulting to `ToolbarVAlign::Top`.
 #[cfg(feature = "tui")]
-mod toolbar_paint_call_shapes {
+mod toolbar_valign_through_the_contract {
     use quadraui::tui::testing::TuiDriver;
     use quadraui::{
-        AppLogic, Backend, InteractionState, Reaction, Rect, Toolbar, ToolbarButton,
-        ToolbarPaintOptions, ToolbarVAlign, UiEvent, WidgetId,
+        AppLogic, Backend, DrawsPrimitives, Reaction, Rect, Toolbar, ToolbarButton, ToolbarVAlign,
+        UiEvent, WidgetId,
     };
 
-    /// Paints one toolbar into a 3-row slot, through whichever of the
-    /// two public entry points `call_shape` selects.
+    /// Paints one toolbar into a 3-row slot with `valign`.
     struct ToolbarPainter {
-        call_shape: CallShape,
-    }
-
-    #[derive(Clone, Copy)]
-    enum CallShape {
-        /// coord-tui's shape: `(rect, bar, &InteractionState)`.
-        Interactive,
-        /// The new method with `ToolbarPaintOptions`.
-        WithOptions(ToolbarVAlign),
+        valign: ToolbarVAlign,
     }
 
     fn bar() -> Toolbar {
@@ -356,18 +341,8 @@ mod toolbar_paint_call_shapes {
             // A 3-row slot at the top of the screen: tall enough that
             // `Top` and `Bottom` land on different rows.
             let rect = Rect::new(0.0, 0.0, backend.viewport().width, 3.0);
-            let bar = bar();
-            let _ = match self.call_shape {
-                CallShape::Interactive => {
-                    backend.draw_toolbar_interactive(rect, &bar, &InteractionState::new())
-                }
-                CallShape::WithOptions(valign) => backend.draw_toolbar_with_options(
-                    rect,
-                    &bar,
-                    &InteractionState::new(),
-                    ToolbarPaintOptions { valign },
-                ),
-            };
+            let bar = bar().with_valign(self.valign);
+            let _ = backend.draw_dyn(rect, &bar, &());
         }
 
         fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -375,8 +350,8 @@ mod toolbar_paint_call_shapes {
         }
     }
 
-    fn painted_row(call_shape: CallShape) -> u16 {
-        let mut driver = TuiDriver::new(ToolbarPainter { call_shape }, 24, 6);
+    fn painted_row(valign: ToolbarVAlign) -> u16 {
+        let mut driver = TuiDriver::new(ToolbarPainter { valign }, 24, 6);
         driver.render();
         let (_x, y) = driver
             .find("Go")
@@ -384,25 +359,11 @@ mod toolbar_paint_call_shapes {
         y as u16
     }
 
-    /// coord-tui's three-argument call still compiles **and** paints —
-    /// a forwarding shim that silently stopped painting would pass a
-    /// compile-only guard.
     #[test]
-    fn coord_tui_three_arg_interactive_call_still_paints() {
-        assert_eq!(painted_row(CallShape::Interactive), 0);
-    }
-
-    /// The new method moves the painted row, defaulting to `ToolbarVAlign::Top`.
-    #[test]
-    fn with_options_moves_the_painted_row_and_defaults_to_top() {
-        assert_eq!(painted_row(CallShape::WithOptions(ToolbarVAlign::Top)), 0);
-        assert_eq!(
-            painted_row(CallShape::WithOptions(ToolbarVAlign::Center)),
-            1
-        );
-        assert_eq!(
-            painted_row(CallShape::WithOptions(ToolbarVAlign::Bottom)),
-            2
-        );
+    fn valign_moves_the_painted_row_and_defaults_to_top() {
+        assert_eq!(painted_row(ToolbarVAlign::default()), 0);
+        assert_eq!(painted_row(ToolbarVAlign::Top), 0);
+        assert_eq!(painted_row(ToolbarVAlign::Center), 1);
+        assert_eq!(painted_row(ToolbarVAlign::Bottom), 2);
     }
 }

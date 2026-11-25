@@ -33,7 +33,7 @@ pub fn gtk_toast_stack_layout(
     line_height: f64,
 ) -> ToastStackLayout {
     pango_layout.set_attributes(None);
-    let measure = super::toolbar::PangoMeasure {
+    let measure = super::surface::PangoMeasure {
         pango_layout: Some(pango_layout),
         char_width: 0.0,
     };

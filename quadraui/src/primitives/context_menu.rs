@@ -1134,10 +1134,7 @@ impl Primitive for ContextMenu {
         let _ = (layout, surface, theme, style);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_context_menu_with_glyphs`] because the
-    /// `Buffer` → [`crate::CellSurface`] adapter is private to
-    /// `crate::tui`. [`Self::glyphs`] and
+    /// [`cell_paint::paint`] over `buf`. [`Self::glyphs`] and
     /// [`ContextMenuPrimitiveLayout::nerd_fonts_enabled`] are the two
     /// glyph inputs, so the cell path resolves the same marks the pixel
     /// path does.
@@ -1148,10 +1145,17 @@ impl Primitive for ContextMenu {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_context_menu_with_glyphs(
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
             buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(
             self,
             &layout.layout,
+            &mut surface,
             theme,
             Some(&self.glyphs),
             layout.nerd_fonts_enabled,
@@ -1930,18 +1934,103 @@ pub(crate) mod cell_paint {
 }
 
 /// The cell painter's own coverage, run against a real ratatui buffer
-/// through [`crate::tui::draw_context_menu`] and its glyph-override and
-/// submenu-stack siblings — the thin delegates that adapt a `Buffer`
-/// into the [`crate::CellSurface`] [`cell_paint::paint`] takes.
+/// through the test-local [`draw_context_menu`] and its glyph-override
+/// and submenu-stack siblings, which adapt a `Buffer` into the
+/// [`crate::CellSurface`] [`cell_paint::paint`] takes.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
     use super::*;
     use crate::theme::Theme;
-    use crate::tui::draw_context_menu_with_submenus;
-    use crate::tui::{draw_context_menu, draw_context_menu_with_glyphs};
     use crate::types::{StyledSpan, StyledText, WidgetId};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+
+    /// Paints `menu` at `layout` with its own glyphs at the ASCII half of
+    /// each icon.
+    fn draw_context_menu(
+        buf: &mut Buffer,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        theme: &Theme,
+    ) {
+        draw_context_menu_with_glyphs(buf, menu, layout, theme, None, false);
+    }
+
+    /// [`draw_context_menu`] with an override glyph set and the Nerd Font
+    /// flag; `glyphs: None` falls back to the menu's own glyphs.
+    fn draw_context_menu_with_glyphs(
+        buf: &mut Buffer,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        theme: &Theme,
+        glyphs: Option<&ContextMenuGlyphs>,
+        nerd_fonts_enabled: bool,
+    ) {
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(
+            menu,
+            layout,
+            &mut surface,
+            theme,
+            glyphs,
+            nerd_fonts_enabled,
+        );
+    }
+
+    /// Paints `root_menu` and every submenu `submenu_path` opens inside
+    /// it, each child anchored through
+    /// [`ContextMenuLayout::submenu_anchor`] in `viewport` inset by the
+    /// border ring, and carrying the root's own glyphs.
+    /// `selected_at_depth[d]` is the selected row inside the submenu at
+    /// depth `d`.
+    fn draw_context_menu_with_submenus(
+        buf: &mut Buffer,
+        root_menu: &ContextMenu,
+        root_layout: &ContextMenuLayout,
+        submenu_path: &[usize],
+        selected_at_depth: &[usize],
+        viewport: crate::event::Rect,
+        theme: &Theme,
+    ) {
+        draw_context_menu(buf, root_menu, root_layout, theme);
+        let vp = crate::event::Rect::new(
+            viewport.x + CELL_BORDER_INSET,
+            viewport.y + CELL_BORDER_INSET,
+            (viewport.width - CELL_BORDER_INSET * 2.0).max(0.0),
+            (viewport.height - CELL_BORDER_INSET * 2.0).max(0.0),
+        );
+        let mut parent_items: Vec<ContextMenuItem> = root_menu.items.clone();
+        let mut parent_layout = root_layout.clone();
+        const MENU_WIDTH: f32 = 20.0;
+        for (depth, &path_idx) in submenu_path.iter().enumerate() {
+            let Some(sub_items) = parent_items
+                .get(path_idx)
+                .and_then(|item| item.submenu.clone())
+            else {
+                break;
+            };
+            let anchor = parent_layout.submenu_anchor(path_idx, MENU_WIDTH, vp);
+            let sub_menu = ContextMenu {
+                id: WidgetId::new("tui-submenu"),
+                items: sub_items.clone(),
+                selected_idx: selected_at_depth.get(depth).copied().unwrap_or(0),
+                bg: None,
+                placement: ContextMenuPlacement::AnchorPoint,
+                glyphs: root_menu.glyphs.clone(),
+            };
+            let sub_layout = sub_menu.layout(anchor.x, anchor.y, vp, MENU_WIDTH, |_| {
+                ContextMenuItemMeasure::new(1.0)
+            });
+            draw_context_menu(buf, &sub_menu, &sub_layout, theme);
+            parent_items = sub_items;
+            parent_layout = sub_layout;
+        }
+    }
 
     fn item(label: &str, clickable: bool) -> ContextMenuItem {
         ContextMenuItem {

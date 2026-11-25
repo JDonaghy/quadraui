@@ -3,7 +3,7 @@
 //!
 //! [`ToolbarOverflowDemo`] paints the same five-button `Toolbar` into a
 //! bar deliberately narrower than its buttons' combined width, cycling
-//! `ToolbarLayoutOptions::overflow` through the three
+//! the descriptor's [`quadraui::Toolbar::overflow`] through the three
 //! [`quadraui::ToolbarOverflow`] variants:
 //!
 //! - `Clip` (today's default): the trailing-most button(s) clip at the
@@ -23,17 +23,13 @@
 //!   (macOS), pop up a native menu built from the same dropped items
 //! - q / Esc          quit
 //!
-//! TUI, GTK and macOS all render `Wrap`'s extra rows and `Menu`'s `[ » ]`
-//! affordance for real, through each backend's own
-//! [`quadraui::Backend::draw_toolbar_with_overflow`] /
-//! [`quadraui::Backend::toolbar_layout_with_overflow`] override. Win-GUI
-//! still inherits the trait's default, which forwards to today's
-//! Clip-only geometry until a per-backend issue gives it one (see
-//! `CLAUDE.md`'s "One backend per issue").
+//! Every backend renders `Wrap`'s extra rows and `Menu`'s `[ » ]`
+//! affordance through the toolbar's own widget-contract layout and
+//! painter.
 
 use quadraui::{
-    AppLogic, Backend, Color, ContextMenu, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarLayoutOptions,
+    AppLogic, Backend, Color, ContextMenu, DrawsPrimitives, InteractionState, Key, NamedKey,
+    Reaction, Rect, StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit,
     ToolbarOverflow, ToolbarOverflowPriorities, UiEvent, WidgetId,
 };
 
@@ -74,13 +70,16 @@ impl ToolbarOverflowDemo {
     }
 
     fn toolbar(&self) -> Toolbar {
-        Toolbar::new(WidgetId::new("overflow-demo:toolbar")).with_buttons(vec![
-            action("new", "New File"),
-            action("open", "Open..."),
-            action("save", "Save"),
-            action("build", "Build Project"),
-            action("deploy", "Deploy"),
-        ])
+        Toolbar::new(WidgetId::new("overflow-demo:toolbar"))
+            .with_buttons(vec![
+                action("new", "New File"),
+                action("open", "Open..."),
+                action("save", "Save"),
+                action("build", "Build Project"),
+                action("deploy", "Deploy"),
+            ])
+            .with_overflow(self.mode)
+            .with_overflow_priorities(self.priorities())
     }
 
     /// `build` is lowest priority (dropped first in `Menu` mode), `deploy`
@@ -93,10 +92,6 @@ impl ToolbarOverflowDemo {
             .with(WidgetId::new("new"), 2)
             .with(WidgetId::new("save"), 3)
             .with(WidgetId::new("deploy"), 4)
-    }
-
-    fn options(&self) -> ToolbarLayoutOptions {
-        ToolbarLayoutOptions::new().with_overflow(self.mode)
     }
 
     /// Fixed at roughly half the viewport (floored at 24 cells) — always
@@ -157,14 +152,7 @@ impl AppLogic for ToolbarOverflowDemo {
         );
 
         let rect = Self::toolbar_rect(backend);
-        let bar = self.toolbar();
-        let _ = backend.draw_toolbar_with_overflow(
-            rect,
-            &bar,
-            &self.interaction,
-            self.options(),
-            &self.priorities(),
-        );
+        let _ = backend.draw_dyn(rect, &self.toolbar(), &());
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_status_bar_interactive(
@@ -208,14 +196,10 @@ impl AppLogic for ToolbarOverflowDemo {
             // `ToolbarApp` — see that example's own doc on this arm.
             UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. } => {
                 let rect = Self::toolbar_rect(backend);
-                let bar = self.toolbar();
-                let layout = backend.toolbar_layout_with_overflow(
-                    rect,
-                    &bar,
-                    self.options(),
-                    &self.priorities(),
-                );
-                let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
+                // The widget contract's layout is bar-local: hit-test
+                // relative to the bar's own origin.
+                let layout = backend.layout_primitive(rect, &self.toolbar());
+                let hit_test = |x: f32, y: f32| match layout.hit_test(x - rect.x, y - rect.y) {
                     ToolbarHit::Button(id) => Some(id),
                     _ => None,
                 };
@@ -223,12 +207,12 @@ impl AppLogic for ToolbarOverflowDemo {
                 let changed = self.interaction.handle_mouse(&event, hit_test);
 
                 if let UiEvent::MouseUp { position, .. } = &event {
-                    match layout.hit_test(position.x, position.y) {
+                    match layout.hit_test(position.x - rect.x, position.y - rect.y) {
                         ToolbarHit::Button(release_id) if was_pressed == Some(release_id) => {
                             self.last_message = format!("Clicked: {}", release_id.as_str());
                         }
                         ToolbarHit::Overflow => {
-                            let dropped = layout.overflowed_items();
+                            let dropped = layout.layout.overflowed_items();
                             let names: Vec<String> = dropped
                                 .iter()
                                 .map(|item| {

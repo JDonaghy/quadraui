@@ -351,11 +351,9 @@ mod tests {
             ToolbarButton::Separator,
             button("stop", "Stop"),
         ]);
-        Surface::Toolbar {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 1.0),
-            bar,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(bar),
         }
     }
 

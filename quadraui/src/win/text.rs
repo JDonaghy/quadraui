@@ -55,7 +55,7 @@ use crate::Color;
 /// `pub` (with a `pub` constructor and measure/draw methods) rather than
 /// `pub(crate)`: it appears by reference in the signatures of the chrome
 /// rasterisers `super::mod` re-exports (`draw_status_bar`,
-/// `draw_activity_bar`, `draw_menu_bar`, and their `*_layout` twins), so a
+/// `draw_activity_bar`, and their `*_layout` twins), so a
 /// crate-private type here is a `private_interfaces` warning — i.e. a build
 /// failure under CI's `-D warnings`. Same posture as
 /// [`crate::macos::text`]'s `pub fn make_font` / `pub fn measure_text`,

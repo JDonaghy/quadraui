@@ -10,10 +10,10 @@
 //! button here.
 
 use quadraui::{
-    Backend, BackendCaps, Color, ContextMenuItem, EditOp, Icon, InteractionState, Key, Modifiers,
-    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText, TextField, Toolbar,
-    ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarItemWidth, ToolbarLayout, ToolbarLayoutOptions,
-    ToolbarOverflow, ToolbarOverflowPriorities, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, ContextMenuItem, DrawsPrimitives, EditOp, Icon, InteractionState,
+    Key, Modifiers, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText,
+    TextField, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarItemWidth, ToolbarLayout,
+    ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -358,12 +358,19 @@ impl ToolbarDemo {
     }
 
     /// [`Self::toolbar_for`] with [`Self::icons`] resolved against
-    /// `backend`'s Nerd-Font flag — the form actually painted and
-    /// hit-tested. `icons()` only keys the ids [`Self::toolbar`] uses, so
-    /// applying it to variant 4's different id set is a no-op for every
-    /// button it doesn't recognize.
+    /// `backend`'s Nerd-Font flag, and the variant's overflow mode and
+    /// drop priorities folded onto the descriptor — the form actually
+    /// painted and hit-tested. `icons()` only keys the ids
+    /// [`Self::toolbar`] uses, so applying it to variant 4's different id
+    /// set is a no-op for every button it doesn't recognize.
     fn painted_toolbar(&self, variant: usize, backend: &dyn Backend) -> Toolbar {
-        Self::icons().apply(&self.toolbar_for(variant), backend.nerd_fonts_enabled())
+        let bar = Self::icons().apply(&self.toolbar_for(variant), backend.nerd_fonts_enabled());
+        match Self::overflow_mode(variant) {
+            Some(mode) => bar
+                .with_layout_options(Self::overflow_options(mode))
+                .with_overflow_priorities(Self::overflow_priorities()),
+            None => bar,
+        }
     }
 
     fn toolbar_rect(area: Rect, backend: &dyn Backend) -> Rect {
@@ -622,7 +629,7 @@ impl Demo for ToolbarDemo {
             None => {
                 let rect = Self::toolbar_rect(area, backend);
                 let bar = self.painted_toolbar(variant, backend);
-                let _ = backend.draw_toolbar_interactive(rect, &bar, &self.interaction);
+                let _ = backend.draw_dyn(rect, &bar, &());
 
                 let hint_rect = Self::hint_rect(area, backend);
                 let _ = backend.draw_status_bar_interactive(
@@ -634,13 +641,7 @@ impl Demo for ToolbarDemo {
             Some(mode) => {
                 let rect = Self::overflow_rect(area, backend, mode);
                 let bar = self.painted_toolbar(variant, backend);
-                let _ = backend.draw_toolbar_with_overflow(
-                    rect,
-                    &bar,
-                    &self.interaction,
-                    Self::overflow_options(mode),
-                    &Self::overflow_priorities(),
-                );
+                let _ = backend.draw_dyn(rect, &bar, &());
 
                 let hint_rect = Self::overflow_hint_rect(area, rect, backend);
                 let _ = backend.draw_status_bar_interactive(
@@ -718,18 +719,12 @@ impl Demo for ToolbarDemo {
                     None => Self::toolbar_rect(area, backend),
                 };
                 let bar = self.painted_toolbar(variant, backend);
-                let layout: ToolbarLayout = match mode {
-                    Some(m) => backend.toolbar_layout_with_overflow(
-                        rect,
-                        &bar,
-                        Self::overflow_options(m),
-                        &Self::overflow_priorities(),
-                    ),
-                    // `Clip`'s plain layout — `Overflow` never fires here,
-                    // so it reads the same as `Empty` if it ever does.
-                    None => backend.toolbar_layout(rect, &bar),
-                };
-                let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
+                // The widget contract's layout is bar-local: every hit
+                // test runs relative to the bar's own origin. A `Clip`
+                // bar never fires `Overflow`, so it reads the same as
+                // `Empty` there.
+                let layout: ToolbarLayout = backend.layout_primitive(rect, &bar).layout;
+                let hit_test = |x: f32, y: f32| match layout.hit_test(x - rect.x, y - rect.y) {
                     ToolbarHit::Button(id) | ToolbarHit::MenuButton(id) | ToolbarHit::Field(id) => {
                         Some(id)
                     }
@@ -742,7 +737,7 @@ impl Demo for ToolbarDemo {
                 let changed = self.interaction.handle_mouse(event, hit_test);
 
                 if let UiEvent::MouseUp { position, .. } = event {
-                    match layout.hit_test(position.x, position.y) {
+                    match layout.hit_test(position.x - rect.x, position.y - rect.y) {
                         ToolbarHit::Button(release_id) if was_pressed == Some(release_id) => {
                             self.dispatch(&release_id);
                         }
@@ -776,7 +771,10 @@ impl Demo for ToolbarDemo {
                             {
                                 self.last_message = format!(
                                     "Action menu anchor: x={:.0} y={:.0} w={:.0} h={:.0}",
-                                    vis.bounds.x, vis.bounds.y, vis.bounds.width, vis.bounds.height
+                                    vis.bounds.x + rect.x,
+                                    vis.bounds.y + rect.y,
+                                    vis.bounds.width,
+                                    vis.bounds.height
                                 );
                             }
                         }
@@ -967,12 +965,7 @@ mod tui_tests {
         let mode = ToolbarDemo::overflow_mode(2).expect("variant 2 is Wrap");
         let rect = ToolbarDemo::overflow_rect(area, &backend, mode);
         let bar = demo.painted_toolbar(2, &backend);
-        let layout = backend.toolbar_layout_with_overflow(
-            rect,
-            &bar,
-            ToolbarDemo::overflow_options(mode),
-            &ToolbarDemo::overflow_priorities(),
-        );
+        let layout = backend.layout_primitive(rect, &bar).layout;
         let rows: std::collections::BTreeSet<i32> = layout
             .visible_items
             .iter()
@@ -994,12 +987,7 @@ mod tui_tests {
         let mode = ToolbarDemo::overflow_mode(3).expect("variant 3 is Menu");
         let rect = ToolbarDemo::overflow_rect(area, &backend, mode);
         let bar = demo.painted_toolbar(3, &backend);
-        let layout = backend.toolbar_layout_with_overflow(
-            rect,
-            &bar,
-            ToolbarDemo::overflow_options(mode),
-            &ToolbarDemo::overflow_priorities(),
-        );
+        let layout = backend.layout_primitive(rect, &bar).layout;
         assert!(
             !layout.overflowed_items().is_empty(),
             "Menu mode should drop at least one top-level item at this width"
@@ -1020,19 +1008,15 @@ mod tui_tests {
         let mode = ToolbarDemo::overflow_mode(3).unwrap();
         let rect = ToolbarDemo::overflow_rect(area, &backend, mode);
         let bar = demo.painted_toolbar(3, &backend);
-        let layout = backend.toolbar_layout_with_overflow(
-            rect,
-            &bar,
-            ToolbarDemo::overflow_options(mode),
-            &ToolbarDemo::overflow_priorities(),
-        );
+        let layout = backend.layout_primitive(rect, &bar).layout;
         let overflow_vis = layout
             .visible_items
             .iter()
             .find(|vis| vis.kind == quadraui::ToolbarItemKind::Overflow)
             .expect("Menu mode should paint the » affordance at this width");
-        let x = overflow_vis.bounds.x + overflow_vis.bounds.width / 2.0;
-        let y = overflow_vis.bounds.y + overflow_vis.bounds.height / 2.0;
+        // The layout is bar-local; the click lands in absolute space.
+        let x = rect.x + overflow_vis.bounds.x + overflow_vis.bounds.width / 2.0;
+        let y = rect.y + overflow_vis.bounds.y + overflow_vis.bounds.height / 2.0;
 
         demo.handle(
             3,

@@ -36,6 +36,28 @@ use crate::backend::ImagePaintResult;
 use crate::paint_surface::PaintSurface;
 use crate::{Color, Image, Point, Rect, Viewport};
 
+/// Adapts a live `pango::Layout` (falling back to a `char_width`-based
+/// estimate when none is available, e.g. from a layout-only call between
+/// paint frames) to the shared
+/// [`crate::primitives::layout_metrics::TextMeasure`] trait, so a shared
+/// layout formula never has to name a Pango type and every GTK caller
+/// measures through the exact same adapter its paint uses.
+pub(crate) struct PangoMeasure<'a> {
+    pub(crate) pango_layout: Option<&'a pango::Layout>,
+    pub(crate) char_width: f64,
+}
+
+impl crate::primitives::layout_metrics::TextMeasure for PangoMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        if let Some(pl) = self.pango_layout {
+            pl.set_text(text);
+            pl.pixel_size().0.max(0) as f32
+        } else {
+            (text.chars().count() as f64 * self.char_width).ceil() as f32
+        }
+    }
+}
+
 /// See the module doc for the two fields that carry genuine
 /// per-call-site behaviour ([`Self::layout`], [`Self::translucent_fill`]);
 /// every other [`PaintSurface`] verb below is one shared implementation.

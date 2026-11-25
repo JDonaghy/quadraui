@@ -2583,6 +2583,46 @@ pub(crate) mod native_surface_paint {
     /// shared by every backend (see module doc).
     const CORNER_RADIUS: f32 = 4.0;
 
+    /// Lay `bar` out in `rect`, measuring every item through `surface`'s
+    /// own text measurement, and paint it at rest, clipped to `rect` —
+    /// for a rasteriser that embeds a toolbar inside a larger widget (a
+    /// dialog's input row, a form's toolbar field, a section header) and
+    /// so paints it with the font that widget already set on `surface`.
+    pub(crate) fn paint_embedded(
+        bar: &Toolbar,
+        rect: Rect,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) -> ToolbarLayout {
+        struct SurfaceMeasure<'a>(&'a dyn PaintSurface);
+        impl crate::primitives::layout_metrics::TextMeasure for SurfaceMeasure<'_> {
+            fn width_of(&self, text: &str) -> f32 {
+                self.0.surface_measure_text(text).0
+            }
+        }
+        let layout = {
+            let measure = SurfaceMeasure(&*surface);
+            bar.layout(rect.x, rect.y, rect.width, rect.height, |btn| {
+                super::ToolbarItemMeasure::new(super::measure_button(&measure, btn))
+            })
+        };
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return layout;
+        }
+        surface.surface_push_clip(rect);
+        paint(
+            bar,
+            &layout,
+            surface,
+            theme,
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
+        surface.surface_pop_clip();
+        layout
+    }
+
     /// Paint a [`Toolbar`] at its caller-resolved `layout` onto
     /// `surface`. `hovered_id`/`pressed_id` select the live interaction
     /// state; see this module's own doc table for the exact

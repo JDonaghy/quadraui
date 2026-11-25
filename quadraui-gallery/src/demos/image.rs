@@ -8,9 +8,9 @@
 //! `Backend::draw_image` call).
 
 use quadraui::{
-    resolve_bar_height, Backend, BackendCaps, Color, Image, ImageFit, ImageHit, ImageSource,
-    InteractionState, MenuBar, MenuBarHit, MenuBarItem, MouseButton, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, UiEvent, WidgetId,
+    resolve_bar_height, Backend, BackendCaps, Color, DrawsPrimitives, Image, ImageFit, ImageHit,
+    ImageSource, InteractionState, MenuBar, MenuBarHit, MenuBarItem, MouseButton, Reaction, Rect,
+    StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -131,7 +131,7 @@ impl Demo for ImageDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let (_full, icon_rect, items_rect) = Self::bar_rects(area, backend);
         let _ = backend.draw_image(icon_rect, &self.logo(variant));
-        let _ = backend.draw_menu_bar(items_rect, &self.menu_bar);
+        let _ = backend.draw_dyn(items_rect, &self.menu_bar, &());
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_status_bar_interactive(
@@ -160,7 +160,7 @@ impl Demo for ImageDemo {
                     self.last_action = Some("clicked logo".into());
                     return Reaction::Redraw;
                 }
-                let layout = backend.menu_bar_layout(items_rect, &self.menu_bar);
+                let layout = backend.layout_primitive(items_rect, &self.menu_bar).layout;
                 if let MenuBarHit::Item(idx) = layout.hit_test(position.x, position.y) {
                     self.last_action =
                         Some(format!("activated: {}", self.menu_bar.items[idx].label));

@@ -624,9 +624,7 @@ impl Primitive for MenuBar {
         let _ = (layout, surface, theme);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_menu_bar`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] over `buf`.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -634,7 +632,14 @@ impl Primitive for MenuBar {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_menu_bar_layout(buf, self, &layout.layout, theme);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, &layout.layout, &mut surface, theme);
     }
 }
 
@@ -1672,9 +1677,9 @@ mod tests {
 }
 
 /// The cell painter's own paint↔click round trips, run against a real
-/// ratatui buffer through [`crate::tui::draw_menu_bar`] — the thin
-/// delegate that adapts a `Buffer` into the [`crate::CellSurface`]
-/// [`cell_paint::paint`] takes.
+/// ratatui buffer through the test-local [`draw_menu_bar`], which adapts
+/// a `Buffer` into the [`crate::CellSurface`] [`cell_paint::paint`]
+/// takes.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
     use super::*;
@@ -1683,7 +1688,31 @@ mod cell_paint_tests {
     use ratatui::style::Modifier;
 
     use crate::theme::Theme;
-    use crate::tui::{draw_menu_bar, ratatui_color};
+    use crate::tui::ratatui_color;
+
+    /// Lays `bar` out on the cell grid at `area` and paints it, returning
+    /// the layout a click is hit-tested against.
+    fn draw_menu_bar(
+        buf: &mut Buffer,
+        area: TuiRect,
+        bar: &MenuBar,
+        theme: &Theme,
+    ) -> MenuBarLayout {
+        let layout = bar.cell_layout(Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ));
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(bar, &layout, &mut surface, theme);
+        layout
+    }
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')

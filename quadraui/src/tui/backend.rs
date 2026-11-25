@@ -52,8 +52,8 @@ use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Backend, Color, CommandLine, DragState, Form,
-    ListView, MenuBar, ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split,
-    StatusBar, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    ListView, ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split, StatusBar,
+    TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
 // only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs
@@ -2853,14 +2853,6 @@ impl Backend for TuiBackend {
         h.max(0.0).round()
     }
 
-    /// `draw_context_menu` paints the menu's border on a whole cell
-    /// outside `layout.bounds`, one cell on every side — a one-character
-    /// reservation on each viewport edge keeps that border cell on-screen
-    /// when the menu is anchored flush against any of them.
-    fn context_menu_border_inset(&self) -> f32 {
-        super::context_menu::BORDER_INSET
-    }
-
     // ─── Clipping ────────────────────────────────────────────────────────
     fn push_clip(&mut self, rect: QRect) {
         // `outer` is read before `current_frame_mut` because its `&mut
@@ -3512,87 +3504,6 @@ impl Backend for TuiBackend {
         self.register_zone(tooltip.id, crate::tui::tooltip_painted_bounds(layout));
     }
 
-    fn draw_context_menu(
-        &mut self,
-        menu: &crate::ContextMenu,
-        layout: &crate::ContextMenuLayout,
-    ) -> Vec<(QRect, crate::WidgetId)> {
-        // See draw_palette for why this happens before the frame borrow.
-        self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        // Issue #1117: the returned `Vec` is derived from `layout` (an
-        // argument, not frame state) below regardless of whether painting
-        // happens, so a missing frame only skips the paint, not the hit
-        // data a host still needs to route clicks.
-        if let Some(frame) = self.current_frame_mut() {
-            // No app-supplied glyph overrides on this path (that's
-            // `draw_context_menu_with_glyphs`'s job) — but an item's own
-            // `icon` still needs `nerd_fonts_enabled` to resolve its glyph
-            // instead of always falling back to ASCII.
-            crate::tui::draw_context_menu_with_glyphs(
-                frame.buffer_mut(),
-                menu,
-                layout,
-                &theme,
-                None,
-                nerd_fonts,
-            );
-        } else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_context_menu called outside enter_frame_scope"
-            );
-        }
-        // TUI rasteriser doesn't return hit data — derive from layout.
-        // The primitive's hit_test() is the canonical way; this Vec
-        // is here for trait parity with GTK.
-        let _ = menu;
-        layout
-            .hit_regions
-            .iter()
-            .filter_map(|(rect, hit)| match hit {
-                crate::primitives::context_menu::ContextMenuHit::Item(id) => Some((*rect, *id)),
-                _ => None,
-            })
-            .collect()
-    }
-
-    fn draw_context_menu_with_glyphs(
-        &mut self,
-        menu: &crate::ContextMenu,
-        layout: &crate::ContextMenuLayout,
-        glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>,
-    ) -> Vec<(QRect, crate::WidgetId)> {
-        // See draw_palette for why this happens before the frame borrow.
-        self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        if let Some(frame) = self.current_frame_mut() {
-            crate::tui::draw_context_menu_with_glyphs(
-                frame.buffer_mut(),
-                menu,
-                layout,
-                &theme,
-                glyphs,
-                nerd_fonts,
-            );
-        } else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_context_menu_with_glyphs called outside enter_frame_scope"
-            );
-        }
-        layout
-            .hit_regions
-            .iter()
-            .filter_map(|(rect, hit)| match hit {
-                crate::primitives::context_menu::ContextMenuHit::Item(id) => Some((*rect, *id)),
-                _ => None,
-            })
-            .collect()
-    }
-
     fn draw_dialog(
         &mut self,
         dialog: &crate::primitives::dialog::Dialog,
@@ -3939,32 +3850,6 @@ impl Backend for TuiBackend {
         self.register_zone(scrollbar.id, scrollbar.track);
     }
 
-    fn draw_menu_bar(
-        &mut self,
-        rect: QRect,
-        bar: &MenuBar,
-    ) -> crate::primitives::menu_bar::MenuBarLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_menu_bar called outside enter_frame_scope"
-            );
-            return self.menu_bar_layout(rect, bar);
-        };
-        crate::tui::draw_menu_bar(frame.buffer_mut(), area, bar, &theme)
-    }
-
-    fn menu_bar_layout(
-        &self,
-        rect: QRect,
-        bar: &MenuBar,
-    ) -> crate::primitives::menu_bar::MenuBarLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_menu_bar_layout(bar, area)
-    }
-
     fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -4204,82 +4089,6 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::chart::ChartLayout {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_chart_layout(chart, area)
-    }
-
-    fn draw_toolbar_with_options(
-        &mut self,
-        rect: QRect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        interaction: &crate::interaction::InteractionState,
-        options: crate::primitives::toolbar::ToolbarPaintOptions,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_toolbar_with_options called outside enter_frame_scope"
-            );
-            return self.toolbar_layout(rect, bar);
-        };
-        crate::tui::draw_toolbar_with_options(
-            frame.buffer_mut(),
-            area,
-            bar,
-            &theme,
-            interaction.hovered(),
-            interaction.pressed(),
-            options,
-        )
-    }
-
-    fn draw_toolbar_with_overflow(
-        &mut self,
-        rect: QRect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        interaction: &crate::interaction::InteractionState,
-        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
-        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_toolbar_with_overflow called outside enter_frame_scope"
-            );
-            return self.toolbar_layout(rect, bar);
-        };
-        crate::tui::draw_toolbar_with_overflow(
-            frame.buffer_mut(),
-            area,
-            bar,
-            &theme,
-            interaction.hovered(),
-            interaction.pressed(),
-            layout_options,
-            priorities,
-        )
-    }
-
-    fn toolbar_layout(
-        &self,
-        rect: QRect,
-        bar: &crate::primitives::toolbar::Toolbar,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_toolbar_layout(bar, area)
-    }
-
-    fn toolbar_layout_with_overflow(
-        &self,
-        rect: QRect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
-        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_toolbar_layout_with_overflow(bar, area, layout_options, priorities)
     }
 
     fn draw_diff_view(
@@ -4825,13 +4634,6 @@ mod tests {
         fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
         fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {}
         fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
-        fn draw_context_menu(
-            &mut self,
-            _m: &crate::ContextMenu,
-            _l: &crate::ContextMenuLayout,
-        ) -> Vec<(QRect, crate::WidgetId)> {
-            Vec::new()
-        }
         fn draw_dialog(
             &mut self,
             _d: &crate::primitives::dialog::Dialog,
@@ -4948,28 +4750,6 @@ mod tests {
         }
 
         fn draw_scrollbar(&mut self, _r: QRect, _s: &crate::primitives::scrollbar::Scrollbar) {}
-
-        fn draw_menu_bar(
-            &mut self,
-            _r: QRect,
-            bar: &MenuBar,
-        ) -> crate::primitives::menu_bar::MenuBarLayout {
-            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
-            bar.layout(bounds, |_| {
-                crate::primitives::menu_bar::MenuBarItemMeasure::new(0.0)
-            })
-        }
-
-        fn menu_bar_layout(
-            &self,
-            _r: QRect,
-            bar: &MenuBar,
-        ) -> crate::primitives::menu_bar::MenuBarLayout {
-            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
-            bar.layout(bounds, |_| {
-                crate::primitives::menu_bar::MenuBarItemMeasure::new(0.0)
-            })
-        }
 
         fn draw_split(
             &mut self,
@@ -5148,28 +4928,6 @@ mod tests {
                     line_height: 1.0,
                 },
             )
-        }
-
-        fn draw_toolbar_with_options(
-            &mut self,
-            r: QRect,
-            bar: &crate::primitives::toolbar::Toolbar,
-            _interaction: &crate::interaction::InteractionState,
-            _options: crate::primitives::toolbar::ToolbarPaintOptions,
-        ) -> crate::primitives::toolbar::ToolbarLayout {
-            bar.layout(r.x, r.y, r.width, r.height, |_| {
-                crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
-            })
-        }
-
-        fn toolbar_layout(
-            &self,
-            r: QRect,
-            bar: &crate::primitives::toolbar::Toolbar,
-        ) -> crate::primitives::toolbar::ToolbarLayout {
-            bar.layout(r.x, r.y, r.width, r.height, |_| {
-                crate::primitives::toolbar::ToolbarItemMeasure::new(0.0)
-            })
         }
 
         fn draw_diff_view(
@@ -5558,48 +5316,58 @@ mod tests {
         );
     }
 
+    fn empty_context_menu() -> crate::ContextMenu {
+        crate::ContextMenu {
+            id: WidgetId::new("menu"),
+            items: Vec::new(),
+            selected_idx: 0,
+            bg: None,
+            placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
+            glyphs: Default::default(),
+        }
+    }
+
+    /// The widget contract's popup layout reserves TUI's one-cell box
+    /// border on all four sides of the rect it is handed, so a host that
+    /// lays a menu out over the whole surface keeps every edge's chrome
+    /// on screen.
     #[test]
-    fn tui_backend_context_menu_viewport_reserves_border_on_all_four_sides() {
+    fn tui_context_menu_layout_reserves_border_on_all_four_sides() {
         let mut backend = TuiBackend::new();
         backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
 
+        let layout = crate::DrawsPrimitives::layout_primitive(
+            &backend,
+            QRect::new(0.0, 0.0, 80.0, 24.0),
+            &empty_context_menu(),
+        );
         assert_eq!(
-            Backend::context_menu_border_inset(&backend),
-            1.0,
+            layout.border_inset, 1.0,
             "TUI paints a one-cell box border outside the item region"
         );
         assert_eq!(
-            Backend::context_menu_viewport(&backend),
+            layout.viewport,
             QRect::new(1.0, 1.0, 78.0, 22.0),
             "all four edges must be reserved, not just the top-left"
         );
     }
 
-    /// A viewport too small to hold the chrome must degrade to an empty
-    /// surface rather than a negative-width rect (which would make the
-    /// menu's own clamping arithmetic nonsense).
+    /// A rect too small to hold the chrome degrades to an empty viewport
+    /// rather than a negative-width rect (which would make the menu's own
+    /// clamping arithmetic nonsense).
     #[test]
-    fn tui_backend_context_menu_viewport_clamps_tiny_viewport_to_empty() {
+    fn tui_context_menu_layout_clamps_a_tiny_rect_to_empty() {
         let mut backend = TuiBackend::new();
         backend.begin_frame(Viewport::new(1.0, 1.0, 1.0));
 
-        let vp = Backend::context_menu_viewport(&backend);
+        let vp = crate::DrawsPrimitives::layout_primitive(
+            &backend,
+            QRect::new(0.0, 0.0, 1.0, 1.0),
+            &empty_context_menu(),
+        )
+        .viewport;
         assert_eq!(vp.width, 0.0, "width cannot go negative: {vp:?}");
         assert_eq!(vp.height, 0.0, "height cannot go negative: {vp:?}");
-    }
-
-    /// A backend that paints its menu chrome *inside* the item region
-    /// reserves nothing: with the default `0.0` inset the menu surface
-    /// is the whole viewport, so the shared helper is a no-op there.
-    #[test]
-    fn default_border_inset_leaves_the_whole_viewport_for_the_menu() {
-        let backend = MockBackend::new();
-
-        assert_eq!(Backend::context_menu_border_inset(&backend), 0.0);
-        assert_eq!(
-            Backend::context_menu_viewport(&backend),
-            QRect::new(0.0, 0.0, 80.0, 24.0)
-        );
     }
 
     /// Issue #1156: TUI has no font concept at all, so `default_fonts()`
@@ -6904,7 +6672,7 @@ mod tests {
     /// frame scope, the same production path `AppLogic` implementations
     /// use: the tab strip through its `Primitive` contract (its glyph
     /// override rides on the descriptor's own `glyphs` field), the menu
-    /// and table through their `Backend` methods.
+    /// the same way, and the table through its `Backend` method.
     #[test]
     fn backend_trait_glyph_overrides_are_reachable_and_honoured() {
         use ratatui::backend::TestBackend;
@@ -6930,7 +6698,8 @@ mod tests {
             selected_idx: 0,
             bg: None,
             placement: crate::primitives::context_menu::ContextMenuPlacement::default(),
-            glyphs: Default::default(),
+            glyphs: crate::primitives::context_menu::ContextMenuGlyphs::new()
+                .with_checked_glyph("+"),
         };
         let menu_layout = menu.layout(
             2.0,
@@ -6939,8 +6708,6 @@ mod tests {
             20.0,
             |_| crate::primitives::context_menu::ContextMenuItemMeasure::new(1.0),
         );
-        let menu_glyphs =
-            crate::primitives::context_menu::ContextMenuGlyphs::new().with_checked_glyph("+");
 
         let table = crate::DataTable {
             id: WidgetId::new("table"),
@@ -6989,7 +6756,18 @@ mod tests {
         menu_terminal
             .draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
-                    b.draw_context_menu_with_glyphs(&menu, &menu_layout, Some(&menu_glyphs));
+                    let bounds = menu_layout.bounds;
+                    crate::DrawsPrimitives::draw_dyn(
+                        b,
+                        QRect::new(
+                            bounds.x - 1.0,
+                            bounds.y - 1.0,
+                            bounds.width + 2.0,
+                            bounds.height + 2.0,
+                        ),
+                        &menu,
+                        &(),
+                    );
                 });
             })
             .expect("draw");

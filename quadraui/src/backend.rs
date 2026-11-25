@@ -57,7 +57,7 @@ use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::combo_box::{ComboBox, ComboBoxLayout};
 use crate::primitives::command_line::{CommandLine, CommandLineLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
-use crate::primitives::context_menu::{ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
+use crate::primitives::context_menu::ContextMenu;
 use crate::primitives::data_table::{
     DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
 };
@@ -70,7 +70,6 @@ use crate::primitives::float::{Float, FloatLayout};
 use crate::primitives::form::FormLayout;
 use crate::primitives::image::{Image, ImageSource};
 use crate::primitives::list::{ListPaintState, ListViewLayout};
-use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale};
 use crate::primitives::multi_section_view::{
@@ -90,9 +89,6 @@ use crate::primitives::text_display::TextDisplayLayout;
 use crate::primitives::text_field::{TextField, TextFieldLayout, TextFieldMeasure};
 use crate::primitives::text_input::{TextInput, TextInputLayout};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
-use crate::primitives::toolbar::{
-    Toolbar, ToolbarLayout, ToolbarLayoutOptions, ToolbarOverflowPriorities, ToolbarPaintOptions,
-};
 use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::{TreePaintState, TreeViewLayout};
 use crate::primitives::tree_table::TreeTableLayout;
@@ -2393,62 +2389,6 @@ pub trait Backend: sealed::Sealed {
         0.0
     }
 
-    /// Space, in this backend's native units, that [`Self::draw_context_menu`]
-    /// needs reserved along every edge of a [`crate::ContextMenu`] before
-    /// the menu's own layout is computed — i.e. how far a caller building
-    /// the `viewport` rect passed to [`crate::ContextMenu::layout`] /
-    /// [`crate::ContextMenu::layout_at`] must inset that viewport on each
-    /// side so the resulting [`crate::ContextMenuLayout`] (its `bounds`,
-    /// `visible_items`, and `hit_regions`) already accounts for the chrome
-    /// this backend paints outside the item area.
-    ///
-    /// [`Self::context_menu_viewport`] builds that inset rect; prefer it
-    /// over applying this value by hand.
-    ///
-    /// Every pixel backend strokes the menu's border centred on
-    /// `bounds` (see `native_surface_paint::paint`'s `surface_stroke_rounded_rect`
-    /// call), so the default `0.0` is correct for GTK, Win-GUI, and
-    /// macOS. The TUI rasteriser instead paints the border on a whole
-    /// cell *outside* `bounds` on every side; when a menu is anchored or
-    /// clamped flush against a viewport edge there is no outside cell
-    /// left for that border to occupy without this inset, so
-    /// [`crate::tui::backend::TuiBackend`] overrides this to `1.0` (one
-    /// cell) and the caller shrinks the viewport it hands to layout
-    /// accordingly. Doing the inset here — in the geometry `hit_test`
-    /// reads — rather than only shifting where the TUI rasteriser paints
-    /// keeps painted rows and hit-tested rows in agreement.
-    fn context_menu_border_inset(&self) -> f32 {
-        0.0
-    }
-
-    /// The rect to pass as `viewport` to [`crate::ContextMenu::layout`] /
-    /// [`crate::ContextMenu::layout_at`]: this backend's full
-    /// [`Self::viewport`], inset on all four sides by
-    /// [`Self::context_menu_border_inset`] so the chrome
-    /// [`Self::draw_context_menu`] paints outside the item area has room
-    /// on every edge, however the menu ends up placed.
-    ///
-    /// Callers that own a `Backend` handle should use this instead of
-    /// building the rect themselves — it is the one place the inset is
-    /// applied, so a backend changing its chrome does not have to chase
-    /// every menu call site. On backends whose inset is `0.0` (every
-    /// pixel backend) the result is just the viewport as a rect.
-    ///
-    /// A caller working from some sub-region rather than the whole
-    /// surface (a split pane, a popup already offset inside the window)
-    /// insets that region the same way, by
-    /// [`Self::context_menu_border_inset`] on each side.
-    fn context_menu_viewport(&self) -> Rect {
-        let vp = self.viewport();
-        let inset = self.context_menu_border_inset();
-        Rect::new(
-            inset,
-            inset,
-            (vp.width - inset * 2.0).max(0.0),
-            (vp.height - inset * 2.0).max(0.0),
-        )
-    }
-
     /// Whether this backend can render individual text rows at a larger
     /// font size (per-line scale), so layouts should reserve taller
     /// vertical space for scaled rows.
@@ -3264,60 +3204,6 @@ pub trait Backend: sealed::Sealed {
         self.draw_tooltip(tooltip, layout);
     }
 
-    /// Draw a [`ContextMenu`] popup at its caller-resolved layout.
-    /// Returns the per-clickable-item hit rectangles + their
-    /// `WidgetId`s so the caller's click handler can resolve mouse
-    /// events without re-running layout.
-    fn draw_context_menu(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-    ) -> Vec<(Rect, WidgetId)>;
-
-    /// [`Self::draw_context_menu`], reading hover/pressed state from a
-    /// single [`InteractionState`] keyed by [`WidgetId`]: a backend
-    /// that implements this tints the background of the item whose
-    /// [`ContextMenuItem::id`](crate::primitives::context_menu::ContextMenuItem::id)
-    /// matches `interaction.hovered()` / `interaction.pressed()` — see
-    /// [`crate::Theme::menu_item_hover_bg`] /
-    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
-    /// colours.
-    ///
-    /// Additive over [`Self::draw_context_menu`], not a replacement —
-    /// the default forwards to it (ignoring `interaction`), so every
-    /// existing implementor keeps compiling unchanged.
-    fn draw_context_menu_with_state(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-        _interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        self.draw_context_menu(menu, layout)
-    }
-
-    /// Draw a [`ContextMenu`] popup with an optional [`ContextMenuGlyphs`]
-    /// override for the checked-item check mark and submenu pull-right
-    /// arrow.
-    ///
-    /// Added rather than folded into [`Self::draw_context_menu`]'s
-    /// signature, and given a default body, so it breaks no existing
-    /// `Backend` implementor and no existing call site.
-    ///
-    /// The default body **ignores `glyphs`** and delegates to
-    /// [`Self::draw_context_menu`], i.e. renders the default check mark
-    /// and submenu arrow. That is the correct fallback for a backend
-    /// that hasn't opted in to overrides yet. The TUI backend overrides
-    /// it and honours `glyphs` in full.
-    fn draw_context_menu_with_glyphs(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-        glyphs: Option<&ContextMenuGlyphs>,
-    ) -> Vec<(Rect, WidgetId)> {
-        let _ = glyphs;
-        self.draw_context_menu(menu, layout)
-    }
-
     /// Draw a [`Dialog`] popup at its caller-resolved layout. Returns
     /// the per-button hit rectangles in the same order as
     /// `dialog.buttons`'s visible entries so the caller's click
@@ -3668,43 +3554,6 @@ pub trait Backend: sealed::Sealed {
     /// pulls cell/pixel background from its current theme.
     fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar);
 
-    /// Draw a [`MenuBar`]. The backend computes the layout internally
-    /// with native metrics (cells for TUI, Pango pixels for GTK) and
-    /// returns the [`MenuBarLayout`] so hosts can route clicks via
-    /// `layout.hit_test(x, y)` without re-deriving metrics. Same
-    /// coordinate frame as [`Self::menu_bar_layout`] (ABSOLUTE).
-    fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
-
-    /// [`Self::draw_menu_bar`], reading hover/pressed state from a
-    /// single [`InteractionState`] keyed by [`WidgetId`]: a backend
-    /// that implements this tints the background of the top-level item
-    /// whose [`MenuBarItem::id`](crate::primitives::menu_bar::MenuBarItem::id)
-    /// matches `interaction.hovered()` / `interaction.pressed()` — see
-    /// [`crate::Theme::menu_item_hover_bg`] /
-    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
-    /// colours.
-    ///
-    /// Additive over [`Self::draw_menu_bar`], not a replacement — the
-    /// default forwards to it (ignoring `interaction`), so every
-    /// existing implementor keeps compiling unchanged.
-    fn draw_menu_bar_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &MenuBar,
-        _interaction: &InteractionState,
-    ) -> MenuBarLayout {
-        self.draw_menu_bar(rect, bar)
-    }
-
-    /// Compute the menu-bar layout the rasteriser would produce for
-    /// `bar` in `rect`, using the backend's native metrics. Hosts
-    /// call this in click handlers to resolve hits against the same
-    /// layout that was painted — never re-derive with a hand-rolled
-    /// measurer.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
-
     /// Draw a [`Split`] divider. The backend computes the layout with
     /// its native divider thickness (1 cell for TUI, ~4px for GTK)
     /// and returns the [`SplitLayout`] so hosts can route clicks and
@@ -3849,112 +3698,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
-
-    /// Draw a [`Toolbar`] (horizontal strip of action buttons above a
-    /// content area — distinct from `StatusBar` which is read-only),
-    /// reading hover/pressed state from a single [`InteractionState`]
-    /// keyed by [`WidgetId`].
-    ///
-    /// The rasteriser tints the background of the button whose id
-    /// matches `interaction.hovered()` / `interaction.pressed()`.
-    /// Returns the [`ToolbarLayout`] so hosts can route clicks via
-    /// `layout.hit_test(x, y)` without re-deriving metrics. Same
-    /// coordinate frame as [`Self::toolbar_layout`] (ABSOLUTE).
-    ///
-    /// Equivalent to [`Self::draw_toolbar_with_options`] with
-    /// [`ToolbarPaintOptions::default()`] — kept as a separate,
-    /// **unchanged** method (rather than growing this one's argument
-    /// list) so every existing caller keeps compiling untouched. Both
-    /// known downstream consumers call this method with exactly these
-    /// three arguments (`coord-tui`'s `app/render.rs` +
-    /// `app/dialogs.rs`), so adding a parameter here is an `E0061`
-    /// break for them — see [`ToolbarPaintOptions`]'s own doc and
-    /// `CLAUDE.md`'s *Downstream consumers* rule 2.
-    ///
-    /// Backends implement [`Self::draw_toolbar_with_options`]; this is
-    /// a forwarding default.
-    fn draw_toolbar_interactive(
-        &mut self,
-        rect: Rect,
-        bar: &Toolbar,
-        interaction: &InteractionState,
-    ) -> ToolbarLayout {
-        self.draw_toolbar_with_options(rect, bar, interaction, ToolbarPaintOptions::default())
-    }
-
-    /// [`Self::draw_toolbar_interactive`], plus [`ToolbarPaintOptions`]
-    /// a host can set to override otherwise-fixed paint decisions —
-    /// currently just `valign`, which resolves where button/label text
-    /// paints within a slot taller than one text row.
-    ///
-    /// `Toolbar` itself can't carry this: both known downstream
-    /// consumers build it with exhaustive struct literals — see
-    /// [`ToolbarPaintOptions`]'s own doc.
-    ///
-    /// This is the implemented method — every `Backend` writes its
-    /// rasteriser here, and [`Self::draw_toolbar_interactive`] forwards
-    /// into it with [`ToolbarPaintOptions::default()`] (`ToolbarVAlign::Top`,
-    /// byte-identical to the plain paint on a 1-row slot).
-    fn draw_toolbar_with_options(
-        &mut self,
-        rect: Rect,
-        bar: &Toolbar,
-        interaction: &InteractionState,
-        options: ToolbarPaintOptions,
-    ) -> ToolbarLayout;
-
-    /// [`Self::draw_toolbar_with_options`], plus [`ToolbarLayoutOptions`]
-    /// (orientation, `ToolbarOverflow`) and `priorities` (read only by
-    /// [`crate::primitives::toolbar::ToolbarOverflow::Menu`]).
-    ///
-    /// **Defaulted, not required.** The default ignores `layout_options`
-    /// and `priorities` entirely and forwards to
-    /// [`Self::draw_toolbar_with_options`] — today's single-row Clip
-    /// geometry, unchanged — so a backend with no `ToolbarOverflow`
-    /// rasteriser of its own keeps compiling and painting exactly as it
-    /// does today. TUI and macOS override this with a real
-    /// [`crate::primitives::toolbar::ToolbarOverflow::Wrap`] /
-    /// [`crate::primitives::toolbar::ToolbarOverflow::Menu`] rasteriser;
-    /// GTK / Win-GUI pick that up once a per-backend issue gives them one
-    /// (see `CLAUDE.md`'s "One backend per issue").
-    fn draw_toolbar_with_overflow(
-        &mut self,
-        rect: Rect,
-        bar: &Toolbar,
-        interaction: &InteractionState,
-        _layout_options: ToolbarLayoutOptions,
-        _priorities: &ToolbarOverflowPriorities,
-    ) -> ToolbarLayout {
-        self.draw_toolbar_with_options(rect, bar, interaction, ToolbarPaintOptions::default())
-    }
-
-    /// Compute toolbar layout without painting. Hosts call this after
-    /// `ScreenLayout::draw()` to recover hit regions for click dispatch.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn toolbar_layout(&self, rect: Rect, bar: &Toolbar) -> ToolbarLayout;
-
-    /// [`Self::toolbar_layout`], plus [`ToolbarLayoutOptions`]/`priorities`
-    /// — the layout-only twin of [`Self::draw_toolbar_with_overflow`], for
-    /// a host that wants to hit-test (or read
-    /// [`ToolbarLayout::cross_extent`]/[`ToolbarLayout::overflowed_items`])
-    /// without repainting.
-    ///
-    /// **Defaulted, not required** — same rationale as
-    /// [`Self::draw_toolbar_with_overflow`]: a backend with no
-    /// `ToolbarOverflow` rasteriser of its own gets today's Clip-only
-    /// [`Self::toolbar_layout`] geometry.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn toolbar_layout_with_overflow(
-        &self,
-        rect: Rect,
-        bar: &Toolbar,
-        _layout_options: ToolbarLayoutOptions,
-        _priorities: &ToolbarOverflowPriorities,
-    ) -> ToolbarLayout {
-        self.toolbar_layout(rect, bar)
-    }
 
     /// Draw a [`Chart`] (sparkline, line, or bar). `hovered_point`
     /// carries per-frame hover state (series_idx, data_idx) so the

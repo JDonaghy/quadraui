@@ -11,12 +11,12 @@ use quadraui::compose::app_shell::AppShell;
 use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
     compute_find_replace_hit_regions, ActivityBar, ActivityItem, Color, CommandCenter, CommandLine,
-    ContextMenu, ContextMenuItem, ContextMenuItemMeasure, Dialog, DialogButton, DialogMeasure,
-    DropOverlay, FieldKind, FindReplacePanel, Form, FormField, Icon, MenuBar, MenuBarItem,
-    ProgressBar, Rect, RichTextLink, RichTextPopup, RichTextPopupMeasure, Scrollbar, Spinner,
-    Split, SplitDirection, SplitTree, StatusBar, StatusBarSegment, StyledText, Surface, TabBar,
-    TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity, ToolbarItemMeasure,
-    Tooltip, TooltipMeasure, ValidationState, WidgetId, FR_PANEL_WIDTH,
+    ContextMenu, ContextMenuItem, Dialog, DialogButton, DialogMeasure, DropOverlay, FieldKind,
+    FindReplacePanel, Form, FormField, Icon, MenuBar, MenuBarItem, ProgressBar, Rect, RichTextLink,
+    RichTextPopup, RichTextPopupMeasure, Scrollbar, Spinner, Split, SplitDirection, SplitTree,
+    StatusBar, StatusBarSegment, StyledText, Surface, TabBar, TabBarSegment, TabItem, Toast,
+    ToastCorner, ToastOverlay, ToastSeverity, ToolbarItemMeasure, Tooltip, TooltipMeasure,
+    ValidationState, WidgetId, FR_PANEL_WIDTH,
 };
 
 const VIEWPORT: Rect = Rect {
@@ -237,9 +237,9 @@ fn menu_bar_announces_names_without_alt_markers() {
         focused_item: Some(0),
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::MenuBar {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 1.0),
-            bar,
+            widget: Box::new(bar),
         })
         .with_focus(WidgetId::new("menubar"))
         .snapshot();
@@ -277,11 +277,11 @@ fn context_menu_exposes_items_checks_and_separators() {
         placement: Default::default(),
         glyphs: Default::default(),
     };
-    let layout = menu.layout(2.0, 2.0, VIEWPORT, 20.0, |_| {
-        ContextMenuItemMeasure::new(1.0)
-    });
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::ContextMenu { menu, layout })
+        .with_surface(Surface::Widget {
+            rect: Rect::new(2.0, 2.0, 20.0, 6.0),
+            widget: Box::new(menu),
+        })
         .snapshot();
 
     snapshot.assert_matches(

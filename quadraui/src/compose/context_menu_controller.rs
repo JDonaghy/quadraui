@@ -1,7 +1,6 @@
 //! `ContextMenuController` — the "one call" context-menu entry point,
-//! composed on top of the existing [`ContextMenu`] primitive,
-//! [`Backend::draw_context_menu`] rasteriser, [`Backend::show_context_menu`]
-//! native path, and [`ModalStack`].
+//! composed on top of the existing [`ContextMenu`] widget,
+//! [`Backend::show_context_menu`] native path, and [`ModalStack`].
 //!
 //! An app that wants a right-click menu writes exactly one code path,
 //! regardless of platform or [`MenuStyle`]:
@@ -89,9 +88,9 @@
 //! still holds the borrows it needs to finish its own frame
 //! (`JDonaghy/vimcode#1580`).
 
-use crate::backend::{Backend, ResolvedMenuStyle};
+use crate::backend::{Backend, DrawsPrimitives, ResolvedMenuStyle};
 use crate::compose::Handled;
-use crate::event::{Point, UiEvent};
+use crate::event::{Point, Rect, UiEvent};
 use crate::interaction::InteractionState;
 use crate::interactive::KeyEvent;
 use crate::primitives::context_menu::{
@@ -125,9 +124,8 @@ pub enum ContextMenuOutcome {
 pub struct ContextMenuController {
     open: Option<OpenMenu>,
     /// Hover/pressed state for the `Custom`-painted popup's own items,
-    /// fed from mouse events in [`Self::handle`] and painted by
-    /// [`Self::render`] via [`Backend::draw_context_menu_with_state`],
-    /// so no caller writes any hover-tracking code of its own.
+    /// fed from mouse events in [`Self::handle`], so no caller writes any
+    /// hover-tracking code of its own.
     interaction: InteractionState,
     /// The open popup's own widget state — the debounced typeahead buffer
     /// [`ContextMenu::handle_key`] extends, which is the only thing a
@@ -163,6 +161,48 @@ struct OpenMenu {
 /// share that part.
 pub(crate) fn menu_item_heights(lh: f32) -> (f32, f32) {
     crate::primitives::context_menu::item_heights(lh)
+}
+
+/// The line height a painted popup's rows derive from: the same row
+/// height [`DrawsPrimitives::draw_dyn`] resolves for the backend, so a
+/// layout placed here and the widget contract's own re-layout at paint
+/// time agree on every row's position.
+pub(crate) fn menu_line_height(backend: &dyn Backend) -> f32 {
+    crate::backend::primitive_layout_ctx(backend).line_height
+}
+
+/// The rect a host hands [`ContextMenu::layout`]/[`ContextMenu::layout_at`]
+/// as its viewport: `backend`'s whole surface, inset on every side by the
+/// border ring [`ContextMenuPrimitiveLayout::border_inset`] reserves, so a
+/// popup clamped flush against an edge still has room for the chrome a
+/// cell grid paints outside its bounds.
+///
+/// [`ContextMenuPrimitiveLayout::border_inset`]: crate::primitives::context_menu::ContextMenuPrimitiveLayout::border_inset
+pub(crate) fn menu_viewport(backend: &dyn Backend, menu: &ContextMenu) -> Rect {
+    let vp = backend.viewport();
+    backend
+        .layout_primitive(Rect::new(0.0, 0.0, vp.width, vp.height), menu)
+        .viewport
+}
+
+/// Paints `menu` at its already-placed `layout` through the widget
+/// contract. The box handed to [`DrawsPrimitives::draw_dyn`] is
+/// `layout.bounds` grown by the border ring, so the popup's own re-layout
+/// inside that box lands every row exactly where `layout` placed it.
+pub(crate) fn paint_placed_menu(
+    backend: &mut dyn Backend,
+    menu: &ContextMenu,
+    layout: &ContextMenuLayout,
+) {
+    let inset = backend.layout_primitive(layout.bounds, menu).border_inset;
+    let b = layout.bounds;
+    let rect = Rect::new(
+        b.x - inset,
+        b.y - inset,
+        b.width + inset * 2.0,
+        b.height + inset * 2.0,
+    );
+    let _ = backend.draw_dyn(rect, menu, &());
 }
 
 impl ContextMenuController {
@@ -396,7 +436,7 @@ impl ContextMenuController {
             return;
         };
         for (menu, layout) in self.menu_stack(open, backend) {
-            let _ = backend.draw_context_menu_with_state(&menu, &layout, &self.interaction);
+            paint_placed_menu(backend, &menu, &layout);
         }
     }
 
@@ -406,10 +446,10 @@ impl ContextMenuController {
         anchor: Point,
         backend: &dyn Backend,
     ) -> ContextMenuLayout {
-        let lh = backend.chrome_line_height();
+        let lh = menu_line_height(backend);
         let (item_h, sep_h) = menu_item_heights(lh);
         let menu_width = 20.0 * lh;
-        let vp = backend.context_menu_viewport();
+        let vp = menu_viewport(backend, menu);
         menu.layout(anchor.x, anchor.y, vp, menu_width, |i| {
             if menu.items[i].is_separator() {
                 ContextMenuItemMeasure::new(sep_h)
@@ -434,10 +474,10 @@ impl ContextMenuController {
         let root_layout = self.layout_for(&open.menu, open.anchor, backend);
         stack.push((open.menu.clone(), root_layout));
 
-        let lh = backend.chrome_line_height();
+        let lh = menu_line_height(backend);
         let (item_h, sep_h) = menu_item_heights(lh);
         let menu_width = 20.0 * lh;
-        let vp = backend.context_menu_viewport();
+        let vp = menu_viewport(backend, &open.menu);
 
         for (depth, &path_idx) in open.submenu_path.iter().enumerate() {
             let sub_items_opt: Option<Vec<ContextMenuItem>> = stack[depth]
