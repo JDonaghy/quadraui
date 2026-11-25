@@ -1801,6 +1801,62 @@ mod interactive_tests {
     }
 
     #[test]
+    fn a_selection_anchored_past_a_shrunken_buffer_still_types_and_copies() {
+        // The descriptor is rebuilt from the app's own fields every frame,
+        // so the buffer can shrink under a selection the state still
+        // holds: the anchor here names line 4 of a buffer that now has
+        // two lines. Both the copy read and the typed replacement clamp
+        // into the live text.
+        let ti = sample(&["alpha", "beta"]);
+        let layout = layout_of(&ti);
+        let mut host = MockHost::default();
+        let mut state = TextInputState {
+            caret: Some((1, 2)),
+            anchor: Some((4, 3)),
+        };
+        let mut cx = EventCx::new(ti.id, &mut host);
+
+        assert_eq!(
+            Interactive::handle(
+                &ti,
+                &mut state,
+                &key(Key::Char('c'), ctrl()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Event(TextInputAction::Copied("ta".into()))
+        );
+        assert_eq!(
+            Interactive::handle(
+                &ti,
+                &mut state,
+                &key(Key::Char('x'), ctrl()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Event(TextInputAction::Changed("alpha\nbe".into()))
+        );
+        assert_eq!(state.caret, Some((1, 2)));
+        assert_eq!(state.anchor, None);
+
+        // And a plain keystroke against the same stale anchor replaces
+        // the clamped span instead of panicking.
+        state.caret = Some((1, 2));
+        state.anchor = Some((4, 3));
+        assert_eq!(
+            Interactive::handle(
+                &ti,
+                &mut state,
+                &key(Key::Char('z'), Modifiers::default()),
+                &layout,
+                &mut cx
+            ),
+            Handled::Event(TextInputAction::Changed("alpha\nbez".into()))
+        );
+        assert_eq!(host.emitted, vec![crate::UiEvent::TextCopied("ta".into())]);
+    }
+
+    #[test]
     fn ctrl_right_moves_the_caret_a_whole_word() {
         let ti = sample(&["foo_bar baz"]);
         let layout = layout_of(&ti);

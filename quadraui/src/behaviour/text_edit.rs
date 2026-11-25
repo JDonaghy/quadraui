@@ -333,29 +333,51 @@ pub fn selection_range(caret: Caret, anchor: Option<Caret>) -> Option<(Caret, Ca
     })
 }
 
-/// Clamp a selection's line indices into `lines_len`'s bounds. A
-/// (`sl`, `el`) pair can arrive pointing past the end of the current
-/// buffer — the caller's position was captured against a longer
-/// `lines`, and the buffer has since shrunk — so both indices are
-/// pulled back to the last valid line (`0` for an empty buffer)
-/// before any indexing happens. `sl <= el` on the way in is preserved
-/// on the way out, since clamping is monotonic.
-fn clamp_line_range(lines_len: usize, sl: usize, el: usize) -> (usize, usize) {
-    let max = lines_len.saturating_sub(1);
-    (sl.min(max), el.min(max))
+/// Clamp a selection pair into `lines`' live bounds, ordered.
+///
+/// Either end can arrive pointing past the buffer: it was captured
+/// against a longer `lines` — a selection anchor outliving the content
+/// it was taken over — and the buffer has since shrunk. Such an end
+/// means "to the end of the text", so it snaps to the last line's last
+/// column rather than merely having its line index pulled back, which
+/// would leave a column that belongs to a different, longer line. An
+/// in-range end keeps its line and has its column clamped to that
+/// line's char count.
+///
+/// The returned pair is always ordered, so `start <= end` and, on a
+/// single line, `start.1 <= end.1` — every indexing site below can slice
+/// `start..end` without a bounds or ordering check.
+fn clamp_range(lines: &[String], start: Caret, end: Caret) -> (Caret, Caret) {
+    let last = lines.len().saturating_sub(1);
+    let line_len = |line: usize| lines.get(line).map_or(0, |l: &String| l.chars().count());
+    let clamp = |(line, col): Caret| -> Caret {
+        if line > last {
+            (last, line_len(last))
+        } else {
+            (line, col.min(line_len(line)))
+        }
+    };
+    let (start, end) = (clamp(start), clamp(end));
+    if start <= end {
+        (start, end)
+    } else {
+        (end, start)
+    }
 }
 
-/// The buffer text between two ordered positions, lines joined with
-/// `'\n'` — what [`EditView::selected_text`] answers with.
+/// The buffer text between two positions, lines joined with `'\n'` —
+/// what [`EditView::selected_text`] answers with.
+///
+/// Both ends go through [`clamp_range`] first, so a position left over
+/// from a longer buffer reads as "to the end of the text" instead of
+/// panicking on an out-of-bounds line.
 pub fn text_in_range(lines: &[String], start: Caret, end: Caret) -> String {
-    let (sl, sc) = start;
-    let (el, ec) = end;
-    let (sl, el) = clamp_line_range(lines.len(), sl, el);
+    let ((sl, sc), (el, ec)) = clamp_range(lines, start, end);
     if sl == el {
         let line = lines.get(sl).map(String::as_str).unwrap_or("");
         let sb = col_to_byte(line, sc);
         let eb = col_to_byte(line, ec);
-        return line[sb.min(eb)..sb.max(eb)].to_string();
+        return line[sb..eb].to_string();
     }
     let mut out = String::new();
     let first = lines.get(sl).map(String::as_str).unwrap_or("");
@@ -433,10 +455,18 @@ impl EditView<'_> {
     /// [`EditOp::Undo`]/[`EditOp::Redo`] are inert here and report
     /// `false`: a history outlives one op, so it belongs to the widget
     /// that owns the buffer — see the module doc.
+    ///
+    /// An empty buffer takes its canonical one-empty-line shape and the
+    /// caret is clamped into the buffer before the op runs, so a caret
+    /// or anchor captured against longer content edits the text that is
+    /// actually there instead of panicking.
     pub fn apply(&mut self, op: &EditOp) -> bool {
         if self.lines.is_empty() {
             self.lines.push(String::new());
         }
+        let (line, col) = self.clamp_pos(*self.cursor_line, *self.cursor_col);
+        *self.cursor_line = line;
+        *self.cursor_col = col;
         match op {
             EditOp::InsertChar(ch) => {
                 self.delete_selection();
@@ -634,10 +664,12 @@ impl EditView<'_> {
 
     /// Delete `start..end` and leave the caret at `start`. Clearing the
     /// selection anchor is the caller's job.
+    ///
+    /// Both ends go through [`clamp_range`] first, so a position left
+    /// over from a longer buffer deletes up to the end of the text
+    /// instead of panicking on an out-of-bounds line.
     fn delete_range(&mut self, start: Caret, end: Caret) {
-        let (sl, sc) = start;
-        let (el, ec) = end;
-        let (sl, el) = clamp_line_range(self.lines.len(), sl, el);
+        let ((sl, sc), (el, ec)) = clamp_range(self.lines, start, end);
         if sl == el {
             if let Some(line) = self.lines.get_mut(sl) {
                 let sb = col_to_byte(line, sc);
@@ -1068,5 +1100,65 @@ mod tests {
         assert_eq!(lines, vec!["a".to_string()]);
         assert_eq!(caret, (0, 1));
         assert_eq!(anchor, None);
+    }
+
+    #[test]
+    fn a_clamped_end_lands_at_the_end_of_the_last_line_not_its_old_column() {
+        // The stale end's column (6) belongs to the longer line it was
+        // taken over; clamping its line alone would select or delete a
+        // span that ends mid-text. It lands at the end of line 1 instead.
+        let lines = vec!["ab".to_string(), "cd".to_string()];
+        assert_eq!(text_in_range(&lines, (0, 0), (7, 6)), "ab\ncd");
+    }
+
+    #[test]
+    fn a_clamped_end_below_the_start_column_reads_as_an_ordered_span() {
+        // Selecting *downwards* from line 1 col 2: the caret is the low
+        // end, the anchor the high one, so clamping the anchor's line back
+        // to 1 puts both ends on one line with the end column (0, from the
+        // stale anchor) behind the start column (2). The pair reorders
+        // rather than slicing backwards.
+        let lines = vec!["abcd".to_string(), "efgh".to_string()];
+        assert_eq!(text_in_range(&lines, (1, 2), (4, 0)), "gh");
+    }
+
+    #[test]
+    fn deleting_a_selection_whose_clamped_end_precedes_its_start_does_not_panic() {
+        // Same pair, through the delete path one keystroke takes: a stale
+        // anchor past the buffer plus a caret mid-line on what is now the
+        // last line.
+        let mut lines = vec!["abcd".to_string(), "efgh".to_string()];
+        let mut caret = (1usize, 2usize);
+        let mut anchor = Some((4usize, 0usize));
+        assert!(view(&mut lines, &mut caret, &mut anchor).delete_selection());
+        assert_eq!(lines, vec!["abcd".to_string(), "ef".to_string()]);
+        assert_eq!(caret, (1, 2));
+        assert_eq!(anchor, None);
+    }
+
+    #[test]
+    fn copying_a_selection_whose_anchor_outlived_the_buffer_does_not_panic() {
+        // The Ctrl-C read of the same shape: `selected_text` goes through
+        // the same clamp, so it answers with the live text instead of
+        // indexing a line that is gone.
+        let mut lines = vec!["abcd".to_string(), "efgh".to_string()];
+        let mut caret = (0usize, 1usize);
+        let mut anchor = Some((9usize, 3usize));
+        assert_eq!(
+            view(&mut lines, &mut caret, &mut anchor).selected_text(),
+            Some("bcd\nefgh".to_string())
+        );
+    }
+
+    #[test]
+    fn applying_an_op_clamps_a_caret_left_over_from_a_longer_buffer() {
+        // The caret itself can be the stale end: line 5 against a buffer
+        // that now holds two lines. The op edits the last live line.
+        let mut lines = vec!["ab".to_string(), "cd".to_string()];
+        let mut caret = (5usize, 9usize);
+        let mut anchor = None;
+        assert!(view(&mut lines, &mut caret, &mut anchor).apply(&EditOp::DeleteBackward));
+        assert_eq!(lines, vec!["ab".to_string(), "c".to_string()]);
+        assert_eq!(caret, (1, 1));
     }
 }
