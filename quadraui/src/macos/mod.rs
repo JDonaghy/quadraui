@@ -65,8 +65,6 @@ pub mod diff_view;
 pub mod editor;
 pub mod events;
 #[doc(hidden)]
-pub mod form;
-#[doc(hidden)]
 pub mod headless;
 #[doc(hidden)]
 pub mod image;
@@ -79,8 +77,6 @@ pub mod message_list;
 pub mod minimap;
 #[doc(hidden)]
 pub mod multi_section_view;
-#[doc(hidden)]
-pub mod palette;
 #[doc(hidden)]
 pub mod pipeline_view;
 #[doc(hidden)]
@@ -150,8 +146,6 @@ pub use dialog::draw_dialog;
 #[doc(hidden)]
 pub use editor::draw_editor;
 #[doc(hidden)]
-pub use form::{draw_settings_chrome, mac_form_layout};
-#[doc(hidden)]
 pub use list::{draw_list, mac_list_layout};
 #[doc(hidden)]
 pub use message_list::draw_message_list;
@@ -159,8 +153,6 @@ pub use message_list::draw_message_list;
 pub use minimap::mac_minimap_layout;
 #[doc(hidden)]
 pub use multi_section_view::{draw_multi_section_view, mac_msv_layout, mac_msv_metrics};
-#[doc(hidden)]
-pub use palette::{draw_palette, mac_palette_layout};
 #[doc(hidden)]
 pub use pipeline_view::mac_pipeline_view_layout;
 #[doc(hidden)]

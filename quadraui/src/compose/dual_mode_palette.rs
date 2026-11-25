@@ -35,7 +35,6 @@
 
 use crate::behaviour::scroll::ensure_visible;
 use crate::compose::Handled;
-use crate::interaction::InteractionState;
 use crate::{
     Backend, Key, Modifiers, MouseButton, NamedKey, Palette, PaletteHit, PaletteItem, PaletteMode,
     Rect, UiEvent, WidgetId,
@@ -119,7 +118,8 @@ fn handled_to_event(handled: Handled<DualModePaletteAction>) -> DualModePaletteE
 /// - item list, selection, and scroll offset
 /// - keyboard event dispatch appropriate to the active mode
 ///
-/// Rendering is delegated to [`Backend::draw_palette`].
+/// Rendering paints the built [`crate::Palette`] through its widget
+/// contract.
 pub struct DualModePaletteController {
     /// Widget ID forwarded to the rendered `Palette`.
     id: WidgetId,
@@ -228,16 +228,10 @@ impl DualModePaletteController {
     /// Paint the palette modal inside `rect`.
     ///
     /// Call this from `AppLogic::render` while the controller is open.
-    /// Routes through [`Backend::draw_palette_with_state`] (an empty
-    /// [`InteractionState`] today, since this controller has no pinned
-    /// create row of its own to hover) rather than
-    /// [`Backend::draw_palette`] directly — the same seam
-    /// [`crate::compose::ContextMenuController`]/[`crate::compose::MenuSystem`]
-    /// render through, so a future create-row hover only needs feeding a
-    /// non-empty `InteractionState` here, not a new paint call site.
+    /// Paints the built [`crate::Palette`] through its widget contract.
     pub fn render(&self, rect: Rect, backend: &mut dyn Backend) {
         let palette = self.build_palette();
-        backend.draw_palette_with_state(rect, &palette, &InteractionState::new());
+        crate::backend::DrawsPrimitives::draw_primitive(backend, rect, &palette);
     }
 
     // ── Handle ────────────────────────────────────────────────────────
@@ -291,12 +285,13 @@ impl DualModePaletteController {
     ///
     /// `rect` must be the same popup rect passed to [`Self::render`] this
     /// frame, and `backend` supplies the same metrics `render` painted
-    /// with — the click is resolved through [`Backend::palette_layout`],
-    /// which returns a hit-testable, paint-matching geometry.
+    /// with — the click is resolved through
+    /// [`crate::DrawsPrimitives::layout_primitive`], the same geometry the
+    /// paint resolves.
     ///
     /// Coordinate frame: `position` is **ABSOLUTE** (surface-native,
-    /// matching every other `UiEvent::MouseDown`); `Backend::palette_layout`
-    /// returns **LOCAL** coordinates, so `rect.x`/`rect.y` are subtracted
+    /// matching every other `UiEvent::MouseDown`); the palette's layout
+    /// is in **LOCAL** coordinates, so `rect.x`/`rect.y` are subtracted
     /// here before hit-testing — `PRIMITIVE_RULES.md`'s coordinate-frame
     /// convention.
     ///
@@ -322,7 +317,8 @@ impl DualModePaletteController {
         };
 
         let palette = self.build_palette();
-        let layout = backend.palette_layout(rect, &palette);
+        let layout =
+            crate::backend::DrawsPrimitives::layout_primitive(backend, rect, &palette).layout;
         let hit = layout.hit_test(position.x - rect.x, position.y - rect.y);
 
         let result = match hit {
@@ -345,8 +341,7 @@ impl DualModePaletteController {
     /// hover-only visual: [`PaletteItem`] carries no [`WidgetId`] of its
     /// own, so `theme.selected_bg` — [`Self::selected`]'s own paint — is
     /// the one highlight channel [`Palette`]'s shared painter exposes for
-    /// an item row; see [`crate::Backend::draw_palette_with_state`]'s own
-    /// doc for why only the pinned create row gets a distinct hover tint).
+    /// an item row).
     /// A non-`MouseMoved` event, or one that misses every item row,
     /// returns [`Handled::Ignored`] — including a move that re-hits the
     /// already-selected row, so a stationary pointer doesn't churn a
@@ -365,7 +360,8 @@ impl DualModePaletteController {
         };
 
         let palette = self.build_palette();
-        let layout = backend.palette_layout(rect, &palette);
+        let layout =
+            crate::backend::DrawsPrimitives::layout_primitive(backend, rect, &palette).layout;
         let hit = layout.hit_test(position.x - rect.x, position.y - rect.y);
 
         let result = match hit {
@@ -1041,10 +1037,9 @@ mod tests {
         }
     }
 
-    /// `RecordingBackend::palette_layout` lays out with `line_height`
-    /// (default `1.0`) rows: title at row 0, query at row 1, items from
-    /// row 2 — same shape `RecordingBackend::new()` uses everywhere else
-    /// in this crate's compose tests.
+    /// `RecordingBackend::new()` measures in one-unit cells, so the
+    /// palette resolves its cell layout: title at row 0, query at row 1,
+    /// the query separator at row 2, items from row 3.
     fn recording_backend() -> crate::testing::RecordingBackend {
         crate::testing::RecordingBackend::new()
     }
@@ -1057,9 +1052,9 @@ mod tests {
 
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
-        // title(row 0) + query(row 1) -> items start at row 2; item 2 is
-        // at row 4.
-        let ev = ctrl.handle_mouse_event(&mouse_down(5.0, 4.5), &backend, rect, 10);
+        // title(row 0) + query(row 1) + separator(row 2) -> items start
+        // at row 3; item 2 is at row 5.
+        let ev = ctrl.handle_mouse_event(&mouse_down(5.0, 5.5), &backend, rect, 10);
 
         assert_eq!(ev, Handled::Consumed);
         assert_eq!(
@@ -1080,8 +1075,8 @@ mod tests {
 
         let backend = recording_backend();
         let rect = Rect::new(5.0, 3.0, 40.0, 20.0);
-        // Item 2's row is local y=4, so absolute y = rect.y + 4 = 7.
-        let ev = ctrl.handle_mouse_event(&mouse_down(10.0, 7.5), &backend, rect, 10);
+        // Item 2's row is local y=5, so absolute y = rect.y + 5 = 8.
+        let ev = ctrl.handle_mouse_event(&mouse_down(10.0, 8.5), &backend, rect, 10);
 
         assert_eq!(ev, Handled::Consumed);
         assert_eq!(ctrl.selected(), 2);
@@ -1109,8 +1104,8 @@ mod tests {
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
         // Same row geometry as `mouse_click_on_item_selects_it`: item 2
-        // sits at row 4.
-        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 4.5), &backend, rect, 10);
+        // sits at row 5.
+        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 5.5), &backend, rect, 10);
 
         assert_eq!(ev, Handled::Consumed);
         assert_eq!(

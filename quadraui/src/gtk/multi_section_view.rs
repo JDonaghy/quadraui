@@ -278,8 +278,8 @@ fn paint_body(
             // `crate::primitives::chart::paint`; this raw
             // `(&Context, &pango::Layout)` call site (no live
             // `GtkBackend` on hand) uses the same shared
-            // `super::surface::CairoSurface` adapter
-            // `form::draw_form`'s deprecated shim uses.
+            // `super::surface::CairoSurface` adapter the embedded form
+            // body uses.
             layout.set_text("M");
             let char_width = layout.pixel_size().0 as f64;
             let chart_layout =
@@ -315,8 +315,8 @@ fn paint_body(
 /// goes through the shared [`crate::primitives::form::paint`] via
 /// [`super::surface::CairoSurface`] (this call site has only a raw
 /// `cr`/`layout`, not a live [`super::backend::GtkBackend`]) —
-/// `FieldKind::Toolbar` is painted separately below, same as
-/// `GtkBackend::draw_form`, for the same reason (see that fn's doc).
+/// `FieldKind::Toolbar` is painted separately below, because the shared
+/// form painter leaves it to the caller.
 #[allow(clippy::too_many_arguments)]
 fn draw_form_body(
     cr: &Context,

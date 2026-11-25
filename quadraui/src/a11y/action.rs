@@ -572,9 +572,9 @@ mod tests {
     }
 
     fn form_surface(id: &str, fields: Vec<FormField>) -> Surface {
-        Surface::Form {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 20.0, 10.0),
-            form: Form {
+            widget: Box::new(Form {
                 id: WidgetId::new(id),
                 fields,
                 focused_field: None,
@@ -586,7 +586,7 @@ mod tests {
                 control_width: Default::default(),
                 min_control_width: None,
                 spacing: Default::default(),
-            },
+            }),
         }
     }
 

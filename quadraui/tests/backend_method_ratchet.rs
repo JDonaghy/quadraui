@@ -66,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 164;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 146;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -166,17 +166,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Spinner", "draw_spinner"),
     ("Spinner", "spinner_layout"),
     ("Scrollbar", "draw_scrollbar"),
-    // Group-C ports keep these until the group's cleanup deletes them
-    // together with their wrapper files and `Surface` variants. Each of
-    // these widgets already paints and routes through
-    // `Primitive`/`Interactive`; the bespoke methods stay only for the
-    // per-backend wrapper files still calling them. The *native* menu
-    // entry points (`install_menu_bar`, `set_menu`, `show_context_menu`,
-    // `set_dock_menu`, the `menu_style` family) are platform services,
-    // not a widget's paint path, and stay on `Backend` permanently —
-    // this list only names the custom-drawn pairs.
-    ("Form", "draw_form"),
-    ("Form", "form_layout"),
     // Group-B ports keep these until the group's cleanup deletes them
     // together with their wrapper files and `Surface` variants.
     ("TextInput", "draw_text_input"),
@@ -188,9 +177,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("CommandLine", "command_line_layout"),
     ("TextDisplay", "draw_text_display"),
     ("TextDisplay", "text_display_layout"),
-    ("Palette", "draw_palette"),
-    ("Palette", "draw_palette_with_state"),
-    ("Palette", "palette_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

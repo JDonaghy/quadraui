@@ -344,9 +344,9 @@ fn form_fields_carry_role_state_and_a_live_validation_alert() {
         spacing: Default::default(),
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::Form {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 6.0),
-            form,
+            widget: Box::new(form),
         })
         .snapshot();
 
@@ -407,9 +407,9 @@ fn a_field_that_owns_its_own_set_size_does_not_borrow_the_forms_position() {
         spacing: Default::default(),
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::Form {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 6.0),
-            form,
+            widget: Box::new(form),
         })
         .snapshot();
 

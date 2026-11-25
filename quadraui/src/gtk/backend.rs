@@ -56,10 +56,7 @@ use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, Backend, CommandLine, DragState, FieldKind, FontRole, Form,
-    GenericFamily, ListView, ModalStack, Palette, PlatformServices, PointerShape,
-    Rect as QRect, ResizeEdge, Split, SystemTheme, TextDisplay, TreeView, UiEvent, UserPayload,
-    Viewport,
+    Accelerator, AcceleratorId, Backend, CommandLine, DragState, FontRole, GenericFamily, ListView, ModalStack, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, SystemTheme, TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
 };
 // `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
 // `#[cfg(test)]` code below — they're gated to avoid unused import
@@ -2926,166 +2923,6 @@ impl Backend for GtkBackend {
         )
     }
 
-    /// Shared field-kind painting lives in
-    /// [`crate::primitives::form::paint`] now — see that fn's doc for why
-    /// `FieldKind::Toolbar` is the one variant painted here instead,
-    /// after `paint` releases its exclusive borrow of `self`.
-    fn draw_form(&mut self, rect: QRect, form: &Form) {
-        let theme = self.current_theme;
-        let flayout = self.form_layout(rect, form);
-        let origin = Point::new(rect.x, rect.y);
-        crate::primitives::form::paint(form, &flayout, self, &theme, origin);
-
-        for vf in &flayout.visible_fields {
-            let Some(field) = form.fields.get(vf.field_idx) else {
-                continue;
-            };
-            let FieldKind::Toolbar(toolbar) = &field.kind else {
-                continue;
-            };
-            let row_x = (origin.x + vf.bounds.x) as f64;
-            let row_y = (origin.y + vf.bounds.y) as f64;
-            let row_w = vf.bounds.width as f64;
-            let row_h = vf.bounds.height as f64;
-
-            let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-            let (cr, layout) = self
-                .current_frame_refs()
-                .expect("GtkBackend::draw_form called outside enter_frame_scope");
-            // A `Toolbar` field's label and embedded toolbar are
-            // chrome, like every other form field label `paint` above
-            // already paints in `ui_font` via `GtkBackend`'s own
-            // (chrome-defaulting) `PaintSurface` impl — save/swap/restore
-            // around this raw `(cr, layout)` label measurement and the
-            // toolbar paint too, the same shape `Self::draw_tree` uses.
-            let saved_font = layout.font_description();
-            layout.set_font_description(Some(&ui_font_desc));
-            let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-            let no_label = label_text.is_empty();
-            layout.set_text(&label_text);
-            let (label_w, _) = layout.pixel_size();
-            // Starts at the form's shared control column (`FormLayout::toolbar_field_rect`).
-            let (toolbar_x, toolbar_w) =
-                flayout.toolbar_field_rect(row_x, row_w, label_w as f64, no_label);
-            if toolbar_w > 0.0 {
-                layout.set_width(-1);
-                layout.set_ellipsize(pango::EllipsizeMode::None);
-                let mut surface = super::surface::CairoSurface {
-                    cr,
-                    layout: Some(layout),
-                    translucent_fill: true,
-                };
-                crate::primitives::toolbar::native_surface_paint::paint_embedded(
-                    toolbar,
-                    QRect::new(
-                        toolbar_x as f32,
-                        row_y as f32,
-                        toolbar_w as f32,
-                        row_h as f32,
-                    ),
-                    &mut surface,
-                    &theme,
-                );
-                layout.set_attributes(None);
-            }
-            layout.set_font_description(saved_font.as_ref());
-        }
-    }
-
-    fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
-        // See `modal_stack.rs`'s "Paint-consistency detection" docs —
-        // records that this palette's surface was actually painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        let line_height = self.current_line_height;
-        let style = self.style();
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        // The command palette is chrome, not editor content — same
-        // save/swap/restore as `Self::draw_tree`, since
-        // `crate::gtk::draw_palette` paints directly against whatever
-        // font `layout` carries in rather than going through
-        // `PaintSurface`. Calls the shared paint directly (rather than
-        // through `crate::gtk::draw_palette`, whose public signature
-        // stays additive-only and so cannot take a live `&Style`) so
-        // this live backend path honours `Self::set_style` overrides.
-        self.with_chrome_surface("draw_palette", |surface| {
-            if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
-                return;
-            }
-            let (palette_layout, rows_h) = crate::gtk::gtk_palette_layout(
-                rect.width as f64,
-                rect.height as f64,
-                palette,
-                line_height,
-            );
-            let area = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
-            crate::primitives::palette::native_surface_paint::paint(
-                palette,
-                area,
-                &palette_layout,
-                rows_h as f32,
-                line_height as f32,
-                nerd_fonts_enabled,
-                surface,
-                &theme,
-                &style,
-            );
-        });
-    }
-
-    /// [`Self::draw_palette`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_palette_with_state`]'s own
-    /// doc. Routes through
-    /// [`crate::primitives::palette::native_surface_paint::paint_interactive`],
-    /// the interactive twin of the plain `paint` [`Self::draw_palette`]
-    /// calls.
-    fn draw_palette_with_state(
-        &mut self,
-        rect: QRect,
-        palette: &Palette,
-        interaction: &crate::InteractionState,
-    ) {
-        self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        let line_height = self.current_line_height;
-        let style = self.style();
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        self.with_chrome_surface("draw_palette_with_state", |surface| {
-            if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
-                return;
-            }
-            let (palette_layout, rows_h) = crate::gtk::gtk_palette_layout(
-                rect.width as f64,
-                rect.height as f64,
-                palette,
-                line_height,
-            );
-            let area = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
-            crate::primitives::palette::native_surface_paint::paint_interactive(
-                palette,
-                area,
-                &palette_layout,
-                rows_h as f32,
-                line_height as f32,
-                nerd_fonts_enabled,
-                surface,
-                &theme,
-                &style,
-                interaction,
-            );
-        });
-    }
-
-    fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
-        crate::gtk::gtk_palette_layout(
-            rect.width as f64,
-            rect.height as f64,
-            palette,
-            self.current_line_height,
-        )
-        .0
-    }
-
     fn draw_settings_chrome(
         &mut self,
         rect: QRect,
@@ -3094,31 +2931,18 @@ impl Backend for GtkBackend {
         placeholder: &str,
         active: bool,
     ) {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_settings_chrome called outside enter_frame_scope");
-        // The settings panel header/search box is chrome, not editor
-        // content — save the editor font on the shared layout, paint in
-        // `ui_font`, then restore, matching `Self::draw_tree`'s
-        // save/swap/restore.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_settings_chrome(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.current_line_height,
+        let theme = self.current_theme;
+        let line_height = self.current_line_height as f32;
+        crate::compose::sidebar_panel_body::paint_settings_chrome(
+            self,
+            &theme,
+            rect,
+            line_height,
             header_text,
             query,
             placeholder,
             active,
-            &self.current_theme,
         );
-        layout.set_font_description(saved_font.as_ref());
     }
 
     // ─── Layout-passthrough primitives ─────────────────────────────────────
@@ -3400,7 +3224,7 @@ impl Backend for GtkBackend {
         dialog: &crate::Dialog,
         dialog_layout: &crate::DialogLayout,
     ) -> Vec<QRect> {
-        // See draw_palette for why this happens before the frame borrow.
+        // Marked before the frame borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let line_height = self.current_line_height;
         let theme = self.current_theme;
@@ -3442,7 +3266,7 @@ impl Backend for GtkBackend {
         float: &crate::primitives::float::Float,
         layout: &crate::primitives::float::FloatLayout,
     ) {
-        // See draw_palette for why this happens before the frame borrow.
+        // Marked before the frame borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
@@ -3504,7 +3328,7 @@ impl Backend for GtkBackend {
         crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
     }
 
-    /// Mirrors [`Self::form_layout`]'s pattern: measures the chevron
+    /// Measures the chevron
     /// glyph actually configured on `tree.style` through a real Pango
     /// layout (via [`Self::chrome_measure_layout`]) instead of
     /// `gtk_tree_layout`'s `line_height * 0.65` estimate, so a caller
@@ -3547,24 +3371,6 @@ impl Backend for GtkBackend {
 
     fn tree_paints_own_scrollbar(&self) -> bool {
         true
-    }
-
-    /// Delegates to [`crate::primitives::layout_metrics::form_field_measure`]
-    /// — the shared measurer that `macos::form::mac_form_layout` and
-    /// `win::form::win_form_layout` already use. Measures one row per field,
-    /// matching what GTK paints.
-    fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
-        let row_h = crate::primitives::layout_metrics::form_row_height(self.current_line_height);
-        let char_w = self.current_char_width as f32;
-        let pango_layout = self.chrome_measure_layout();
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-
-        form.layout(rect.width, rect.height, |i| {
-            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
-        })
     }
 
     fn draw_editor(
@@ -4963,14 +4769,14 @@ mod tests {
     /// Generic helper — minimal "app render code" that consumes
     /// `Backend` through `<B>`. Same shape as the one in
     /// `tui_main::backend::tests::paint_overlays`.
-    fn paint_overlays<B: Backend>(backend: &mut B, palette: &Palette, list: &ListView) {
-        backend.draw_palette(QRect::new(10.0, 5.0, 60.0, 14.0), palette);
+    fn paint_overlays<B: Backend>(backend: &mut B, palette: &crate::Palette, list: &ListView) {
+        crate::DrawsPrimitives::draw_dyn(backend, QRect::new(10.0, 5.0, 60.0, 14.0), palette, &());
         backend.draw_list(QRect::new(0.0, 20.0, 80.0, 4.0), list);
     }
 
     #[test]
     fn paint_overlays_compiles_against_gtk_backend() {
-        let _: fn(&mut GtkBackend, &Palette, &ListView) = paint_overlays::<GtkBackend>;
+        let _: fn(&mut GtkBackend, &crate::Palette, &ListView) = paint_overlays::<GtkBackend>;
     }
 
     // ── issue #1143: MinimapScale ────────────────────────────────────────
@@ -5922,7 +5728,7 @@ mod tests {
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 200.0);
-        let layout = backend.form_layout(rect, &form);
+        let layout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &form).layout;
 
         assert_eq!(
             layout.visible_fields.len(),
@@ -5935,7 +5741,7 @@ mod tests {
         let row_h = crate::primitives::layout_metrics::form_row_height(backend.current_line_height);
         assert_eq!(
             notes.bounds.height, row_h,
-            "TextArea must measure one row_h, matching gtk::form::draw_form's single-row paint"
+            "TextArea must measure one row_h, matching the form's single-row paint"
         );
 
         // A click at the centre of the field painted right below the
@@ -6021,7 +5827,7 @@ mod tests {
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 80.0);
-        let layout = backend.form_layout(rect, &form);
+        let layout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &form).layout;
 
         // Must have exactly one visible field.
         assert_eq!(layout.visible_fields.len(), 1, "expected one visible field");
@@ -8866,8 +8672,18 @@ mod tests {
         };
 
         let backend = GtkBackend::new();
-        let at_origin = Backend::form_layout(&backend, QRect::new(0.0, 0.0, 100.0, 50.0), &form);
-        let shifted = Backend::form_layout(&backend, QRect::new(7.0, 13.0, 100.0, 50.0), &form);
+        let at_origin = crate::DrawsPrimitives::layout_primitive(
+            &backend,
+            QRect::new(0.0, 0.0, 100.0, 50.0),
+            &form,
+        )
+        .layout;
+        let shifted = crate::DrawsPrimitives::layout_primitive(
+            &backend,
+            QRect::new(7.0, 13.0, 100.0, 50.0),
+            &form,
+        )
+        .layout;
 
         assert_eq!(
             at_origin.hit_regions, shifted.hit_regions,
@@ -9406,17 +9222,17 @@ mod tests {
         );
     }
 
-    /// `draw_palette_with_state` must tint the pinned create-action
-    /// row — the one stable id a [`Palette`] carries (`palette.id`
-    /// itself) — toward `Theme::menu_item_hover_bg` when hovered and
-    /// `Theme::menu_item_pressed_bg` when pressed, exactly like
-    /// `Backend::draw_palette_with_state`'s own doc describes.
+    /// The shared palette painter's `paint_interactive`, run on
+    /// `GtkBackend`'s own surface, must tint the pinned create-action
+    /// row — the one stable id a [`crate::Palette`] carries
+    /// (`palette.id` itself) — toward `Theme::menu_item_hover_bg` when
+    /// hovered and `Theme::menu_item_pressed_bg` when pressed.
     #[test]
     fn gtk_backend_palette_create_row_hover_and_pressed_tints() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let palette_id = WidgetId::new("test:palette");
-        let mut palette = Palette {
+        let mut palette = crate::Palette {
             id: palette_id,
             title: "Commands".into(),
             create_label: Some("Create 'op'".into()),
@@ -9443,14 +9259,33 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_palette_with_state(rect, &palette, interaction);
+                let (layout, rows_h) = crate::primitives::palette::pixel_layout(
+                    rect.width,
+                    rect.height,
+                    &palette,
+                    16.0,
+                );
+                let theme = crate::Theme::default();
+                let style = Backend::style(b);
+                crate::primitives::palette::native_surface_paint::paint_interactive(
+                    &palette,
+                    rect,
+                    &layout,
+                    rows_h,
+                    16.0,
+                    false,
+                    b,
+                    &theme,
+                    &style,
+                    interaction,
+                );
             });
             surface.flush();
             surface
         };
 
         let (layout, _rows_h) =
-            crate::gtk::gtk_palette_layout(rect.width as f64, rect.height as f64, &palette, 16.0);
+            crate::primitives::palette::pixel_layout(rect.width, rect.height, &palette, 16.0);
         let create_bounds = layout
             .create_bounds
             .expect("palette with create_label must report create_bounds");

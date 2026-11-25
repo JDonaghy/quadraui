@@ -3,7 +3,7 @@
 //! Paints the full chrome (per-section headers, optional aux rows,
 //! per-section scrollbars, optional dividers) onto a `CGContextRef`
 //! and dispatches each section's body to the appropriate quadraui
-//! body rasteriser (`draw_tree`, `draw_list`, `draw_form`, …) using
+//! body rasteriser (`draw_tree`, `draw_list`, the form painter, …) using
 //! the body bounds returned by the primitive's
 //! [`crate::MultiSectionView::layout`].
 //!
@@ -315,9 +315,9 @@ unsafe fn paint_body(
 /// Paint an embedded [`crate::Form`] section body. Field-kind
 /// painting goes through the shared [`crate::primitives::form::paint`]
 /// via [`super::surface::CgSurface`] (this call site has only a raw
-/// `CGContextRef`, not a live [`super::MacBackend`]). `FieldKind::
-/// Toolbar` is painted separately below, same as
-/// `MacBackend::draw_form`, for the same reason.
+/// `CGContextRef`, not a live [`super::MacBackend`]). A `FieldKind::
+/// Toolbar` field's embedded toolbar is painted separately below,
+/// because the shared form painter leaves it to the caller.
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw_form_body(
     ctx: CGContextRef,
@@ -331,7 +331,10 @@ unsafe fn draw_form_body(
     line_height: f64,
 ) {
     let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let flayout = super::form::mac_form_layout(form, area, line_height, font);
+    let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
+    let flayout = form.layout(area.width, area.height, |i| {
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, font)
+    });
     let origin = crate::Point::new(x as f32, y as f32);
     let mut surface = super::surface::CgSurface {
         ctx,

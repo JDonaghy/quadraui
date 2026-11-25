@@ -1,0 +1,954 @@
+//! Form painted through a real macOS backend via
+//! [`crate::DrawsPrimitives::draw_dyn`], and the settings chrome painted
+//! through `MacBackend`'s [`crate::Backend::draw_settings_chrome`],
+//! read back off a bitmap.
+
+use crate::event::Rect as QRect;
+use crate::event::Viewport;
+use crate::macos::headless::BitmapSurface;
+use crate::macos::text::make_font;
+use crate::macos::MacBackend;
+use crate::primitives::form::{ButtonRowItem, FieldKind, FormField, FormHit, ToggleGroupItem};
+use crate::primitives::form::{Form, FormLayout};
+use crate::theme::Theme;
+use crate::types::Color;
+use crate::types::{StyledText, WidgetId};
+use crate::Backend;
+use core_text::font::CTFont;
+
+/// The prefix the settings-chrome search row paints before its query.
+const SETTINGS_SEARCH_PREFIX: &str = " /  ";
+
+/// A form's pixel layout at `line_height`, measured in `font` — the
+/// geometry a pixel form paints from, built here without a backend.
+fn mac_form_layout(form: &Form, area: QRect, line_height: f64, font: &CTFont) -> FormLayout {
+    let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
+    form.layout(area.width, area.height, |i| {
+        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, font)
+    })
+}
+
+const W: u32 = 320;
+const H: u32 = 160;
+
+fn font() -> CTFont {
+    make_font("Menlo", 14.0).expect("Menlo installed")
+}
+
+fn field(id: &str, label: &str, kind: FieldKind) -> FormField {
+    FormField {
+        id: WidgetId::new(id),
+        label: StyledText::plain(label),
+        kind,
+        hint: StyledText::default(),
+        disabled: false,
+        validation: None,
+        label_position: None,
+        label_align: None,
+        label_width: None,
+        tab_index: None,
+        control_width: None,
+        min_control_width: None,
+        row_align: None,
+    }
+}
+
+fn form_of(id: &str, fields: Vec<FormField>, focused: Option<WidgetId>, has_focus: bool) -> Form {
+    Form {
+        id: WidgetId::new(id),
+        fields,
+        focused_field: focused,
+        scroll_offset: 0,
+        has_focus,
+        label_position: Default::default(),
+        label_align: Default::default(),
+        label_width: None,
+        control_width: Default::default(),
+        min_control_width: None,
+        spacing: Default::default(),
+    }
+}
+
+fn label(id: &str, text: &str) -> FormField {
+    field(id, text, FieldKind::Label)
+}
+
+fn text_input(id: &str, label_text: &str, value: &str) -> FormField {
+    field(
+        id,
+        label_text,
+        FieldKind::TextInput {
+            value: value.into(),
+            placeholder: String::new(),
+            cursor: Some(value.len()),
+            selection_anchor: None,
+        },
+    )
+}
+
+fn toggle(id: &str, label_text: &str, value: bool) -> FormField {
+    field(id, label_text, FieldKind::Toggle { value })
+}
+
+fn sample_form() -> Form {
+    form_of(
+        "settings",
+        vec![
+            label("hdr", "General"),
+            text_input("name", "Name", "alice"),
+            toggle("enabled", "Enabled", true),
+        ],
+        Some(WidgetId::new("name")),
+        true,
+    )
+}
+
+/// Paint `form` through its widget contract on a real `MacBackend`
+/// and return the painted pixels alongside the layout that paint used.
+///
+/// The layout comes from `DrawsPrimitives::layout_primitive` — the
+/// no-paint twin of the paint — rather than a local layout call with a
+/// font of the test's own choosing. A `Form` is chrome, so both
+/// resolve the *chrome* font; re-deriving the
+/// expectation here against the editor font this helper installs as
+/// `current_font` would measure per-item widths in a font nothing
+/// painted with, and every `item_bounds`-relative pixel probe below
+/// would drift by the difference between the two fonts' advances.
+/// Asking the backend is also what a host does, so paint↔hit-test
+/// agreement is part of what these tests cover.
+fn paint_via_backend(form: &Form) -> (BitmapSurface, FormLayout) {
+    let surface = BitmapSurface::new(W, H);
+    surface.fill(0.0, 0.0, 0.0, 0.0);
+    let mut backend = MacBackend::new();
+    backend.set_current_font(font());
+    backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+    let layout = std::cell::RefCell::new(None);
+    backend.enter_frame_scope(surface.context_ptr(), |b| {
+        let area = QRect::new(0.0, 0.0, W as f32, H as f32);
+        crate::DrawsPrimitives::draw_dyn(b, area, form, &());
+        *layout.borrow_mut() =
+            Some(crate::DrawsPrimitives::layout_primitive(&*b, area, form).layout);
+    });
+    backend.end_frame();
+    (surface, layout.into_inner().unwrap())
+}
+
+#[test]
+fn focused_field_paints_selected_bg() {
+    let form = sample_form();
+    let (surface, layout) = paint_via_backend(&form);
+    let theme = Theme::default();
+    let name = layout
+        .visible_fields
+        .iter()
+        .find(|v| v.id == WidgetId::new("name"))
+        .expect("name field visible");
+    // Probe near right edge to avoid the label glyph "Name".
+    let px = (name.bounds.x + name.bounds.width - 4.0) as u32;
+    let py = (name.bounds.y + name.bounds.height / 2.0) as u32;
+    let (r, g, b, _) = surface.pixel(px, py);
+    // Focused field row gets selected_bg.
+    assert_eq!(
+        (r, g, b),
+        (
+            theme.selected_bg.r,
+            theme.selected_bg.g,
+            theme.selected_bg.b
+        ),
+        "focused TextInput row should paint selected_bg",
+    );
+}
+
+#[test]
+fn header_field_paints_header_bg() {
+    let form = sample_form();
+    let (surface, layout) = paint_via_backend(&form);
+    let theme = Theme::default();
+    let hdr = layout
+        .visible_fields
+        .iter()
+        .find(|v| v.id == WidgetId::new("hdr"))
+        .expect("header visible");
+    let px = (hdr.bounds.x + hdr.bounds.width - 4.0) as u32;
+    let py = (hdr.bounds.y + hdr.bounds.height / 2.0) as u32;
+    let (r, g, b, _) = surface.pixel(px, py);
+    assert_eq!(
+        (r, g, b),
+        (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+    );
+}
+
+#[test]
+fn hit_test_resolves_field_at_painted_centre() {
+    let form = sample_form();
+    let (_surface, layout) = paint_via_backend(&form);
+    for vis in &layout.visible_fields {
+        let cx = vis.bounds.x + vis.bounds.width * 0.5;
+        let cy = vis.bounds.y + vis.bounds.height * 0.5;
+        assert_eq!(
+            layout.hit_test(cx, cy),
+            FormHit::Field(vis.id),
+            "field {:?} hit-test",
+            vis.id,
+        );
+    }
+}
+
+#[test]
+fn layout_returns_local_coords_when_area_offset() {
+    // Cross-backend contract: visible_fields.bounds, item_bounds, and hit_regions
+    // are in form-local coords (origin 0, 0), regardless of where `area` lives.
+    // Hosts subtract area.x/area.y from absolute click coords before hit_test.
+    // Matches the gtk_form_layout and mac_tree_layout contract.
+    let form = sample_form();
+    // Area offset by (0, 40) — typical when a form lives below an
+    // MSV section header.
+    let area = QRect::new(0.0, 40.0, 320.0, 120.0);
+    let layout = mac_form_layout(&form, area, 16.0, &font());
+    // Locality: first field's bounds.y must be 0, not 40.
+    let first = &layout.visible_fields[0];
+    assert_eq!(
+        first.bounds.y, 0.0,
+        "visible_fields.bounds.y must be local (0.0), got {}",
+        first.bounds.y,
+    );
+    // Round-trip: simulate a click at the absolute centre of each
+    // painted field, localise the way the AppLogic does, and assert
+    // it hits the right field. Pre-fix this returned the field N
+    // positions earlier.
+    for vis in &layout.visible_fields {
+        let abs_x = area.x + vis.bounds.x + vis.bounds.width * 0.5;
+        let abs_y = area.y + vis.bounds.y + vis.bounds.height * 0.5;
+        let local_x = abs_x - area.x;
+        let local_y = abs_y - area.y;
+        assert_eq!(
+            layout.hit_test(local_x, local_y),
+            FormHit::Field(vis.id),
+            "field {:?} click → wrong hit (coord-frame drift)",
+            vis.id,
+        );
+    }
+}
+
+fn toggle_group_field(id: &str, toggles: Vec<ToggleGroupItem>) -> FormField {
+    field(id, "", FieldKind::ToggleGroup { toggles })
+}
+
+fn search_flags_form() -> Form {
+    // Mirrors the `macos_sidebar_search` shape — three toggles with
+    // the middle one ON, no label so items start at the row's left.
+    form_of(
+        "search",
+        vec![toggle_group_field(
+            "flags",
+            vec![
+                ToggleGroupItem {
+                    id: WidgetId::new("case"),
+                    label: "Aa".into(),
+                    value: false,
+                },
+                ToggleGroupItem {
+                    id: WidgetId::new("regex"),
+                    label: ".*".into(),
+                    value: true,
+                },
+                ToggleGroupItem {
+                    id: WidgetId::new("word"),
+                    label: "W".into(),
+                    value: false,
+                },
+            ],
+        )],
+        None,
+        false,
+    )
+}
+
+#[test]
+fn toggle_group_layout_resolves_per_item_bounds() {
+    // ToggleGroup must populate item_bounds so per-toggle clicks
+    // dispatch the right `ToggleGroupItem` id rather than the
+    // parent field id.
+    let form = search_flags_form();
+    let (_surface, layout) = paint_via_backend(&form);
+    let vis = &layout.visible_fields[0];
+    assert_eq!(
+        vis.item_bounds.len(),
+        3,
+        "ToggleGroup should resolve 3 item_bounds",
+    );
+    let ids: Vec<&WidgetId> = vis.item_bounds.iter().map(|(id, _)| id).collect();
+    assert_eq!(
+        ids,
+        vec![
+            &WidgetId::new("case"),
+            &WidgetId::new("regex"),
+            &WidgetId::new("word"),
+        ],
+    );
+}
+
+/// True when at least one pixel *strictly inside* `rect` is exactly
+/// `color`.
+///
+/// Scanned rather than probed at one hard-coded offset: the only
+/// pixels a solid fill leaves un-blended are the ones no glyph's
+/// antialiasing touches, and where those sit inside an item's rect
+/// depends on the host's font metrics and Core Text's rasteriser —
+/// not on anything this crate controls. A single-offset probe
+/// therefore asserts "this exact pixel is glyph-free" (a fact about
+/// Menlo) on top of the fact under test ("the fill happened"), and
+/// fails on the former the moment the painter nudges a glyph by a
+/// fraction of a point. Same lesson as the macOS selection-highlight
+/// probe.
+///
+/// The rect is inset one pixel on every side so a *neighbouring*
+/// item's fill (segments butt up against each other with no gap)
+/// can never leak in through a boundary pixel.
+fn region_has_color(surface: &BitmapSurface, rect: &QRect, color: Color) -> bool {
+    let x0 = rect.x.ceil() as u32 + 1;
+    let x1 = ((rect.x + rect.width).floor() as u32)
+        .saturating_sub(1)
+        .min(W);
+    let y0 = rect.y.ceil() as u32 + 1;
+    let y1 = ((rect.y + rect.height).floor() as u32)
+        .saturating_sub(1)
+        .min(H);
+    for y in y0..y1 {
+        for x in x0..x1 {
+            let (r, g, b, _) = surface.pixel(x, y);
+            if (r, g, b) == (color.r, color.g, color.b) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// True when `px` carries `ink`'s colour over a `bg` backdrop —
+/// either `ink` outright, or any antialiased blend of the two.
+///
+/// Each channel must sit between the two endpoints (one unit of
+/// rounding slack either side) and the pixel must differ from `bg`,
+/// so an untouched backdrop pixel never counts as ink. For a thin
+/// fill at a fractional offset that is the strongest claim available
+/// per pixel — see the caller's comment.
+fn carries_ink_of(px: (u8, u8, u8), bg: Color, ink: Color) -> bool {
+    let on_blend_line = |v: u8, from: u8, to: u8| {
+        let lo = from.min(to).saturating_sub(1);
+        let hi = from.max(to).saturating_add(1);
+        (lo..=hi).contains(&v)
+    };
+    px != (bg.r, bg.g, bg.b)
+        && on_blend_line(px.0, bg.r, ink.r)
+        && on_blend_line(px.1, bg.g, ink.g)
+        && on_blend_line(px.2, bg.b, ink.b)
+}
+
+#[test]
+fn toggle_group_on_item_paints_selected_bg() {
+    // The "on" toggle must paint `selected_bg` behind its rect so it is visually
+    // distinguishable from the off toggles at a glance. This test stays macOS-only
+    // because `region_has_color` scans real `BitmapSurface` pixels for glyph-free
+    // ground — which pixels a Core Text-rasterised glyph does or doesn't touch is
+    // genuinely host-specific, not arithmetic. The widget-state decision is covered
+    // independently: `paint_geometry::selected_item_fill` tests the pure decision,
+    // and `native_surface_paint::tests::toggle_group_fills_selected_bg_behind_on_items_only`
+    // tests the full `paint()` pipeline via a `RecordingSurface` mock.
+    let form = search_flags_form();
+    let (surface, layout) = paint_via_backend(&form);
+    let theme = Theme::default();
+    let vis = &layout.visible_fields[0];
+    let rect_for = |name: &str| {
+        vis.item_bounds
+            .iter()
+            .find(|(id, _)| id == &WidgetId::new(name))
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| panic!("{name} toggle in layout"))
+    };
+    assert!(
+        region_has_color(&surface, &rect_for("regex"), theme.selected_bg),
+        "on-toggle should paint selected_bg behind its rect",
+    );
+    for off in ["case", "word"] {
+        assert!(
+            !region_has_color(&surface, &rect_for(off), theme.selected_bg),
+            "off-toggle {off:?} must not paint the on-state pill",
+        );
+    }
+}
+
+#[test]
+fn toggle_group_click_dispatches_individual_toggle_id() {
+    // Round-trip the acceptance criteria: click at a known
+    // on-toggle's centre, assert hit_test returns the toggle's
+    // own WidgetId (not the parent field's id).
+    let form = search_flags_form();
+    let (_surface, layout) = paint_via_backend(&form);
+    for (id, rect) in &layout.visible_fields[0].item_bounds {
+        let cx = rect.x + rect.width * 0.5;
+        let cy = rect.y + rect.height * 0.5;
+        assert_eq!(
+            layout.hit_test(cx, cy),
+            FormHit::Field(*id),
+            "click on toggle {id:?} should resolve to its own id",
+        );
+    }
+}
+
+#[test]
+fn segmented_control_selected_paints_selected_bg() {
+    // Stays macOS-only for the same reason as
+    // `toggle_group_on_item_paints_selected_bg` above — a real
+    // pixel/glyph probe, not compositing arithmetic. See that
+    // test's comment and `paint_geometry`'s module doc for the
+    // layered, host-independent coverage of the decision itself.
+    let form = form_of(
+        "seg-form",
+        vec![field(
+            "scope",
+            "",
+            FieldKind::SegmentedControl {
+                options: vec!["File".into(), "Folder".into(), "Project".into()],
+                selected_idx: 1,
+            },
+        )],
+        None,
+        false,
+    );
+    let (surface, layout) = paint_via_backend(&form);
+    let theme = Theme::default();
+    let vis = &layout.visible_fields[0];
+    // Synthetic per-segment ids `<field>__seg_<idx>` — assert the SELECTED segment
+    // paints selected_bg and its neighbours don't.
+    let rect_for = |id: &str| {
+        vis.item_bounds
+            .iter()
+            .find(|(item, _)| item.as_str() == id)
+            .map(|(_, r)| *r)
+            .unwrap_or_else(|| panic!("{id} in layout"))
+    };
+    assert!(
+        region_has_color(&surface, &rect_for("scope__seg_1"), theme.selected_bg),
+        "selected segment should paint selected_bg behind its rect",
+    );
+    for other in ["scope__seg_0", "scope__seg_2"] {
+        assert!(
+            !region_has_color(&surface, &rect_for(other), theme.selected_bg),
+            "unselected segment {other:?} must not paint the selection pill",
+        );
+    }
+}
+
+#[test]
+fn button_row_layout_resolves_per_item_bounds() {
+    let form = form_of(
+        "actions-form",
+        vec![field(
+            "actions",
+            "",
+            FieldKind::ButtonRow {
+                buttons: vec![
+                    ButtonRowItem {
+                        spec: None,
+                        id: WidgetId::new("find"),
+                        label: "Find".into(),
+                        disabled: false,
+                        icon: None,
+                    },
+                    ButtonRowItem {
+                        spec: None,
+                        id: WidgetId::new("replace"),
+                        label: "Replace".into(),
+                        disabled: false,
+                        icon: None,
+                    },
+                ],
+            },
+        )],
+        None,
+        false,
+    );
+    let (_surface, layout) = paint_via_backend(&form);
+    let vis = &layout.visible_fields[0];
+    assert_eq!(vis.item_bounds.len(), 2);
+    // Each item rect has to span the text painted inside it. The
+    // bound is measured in the chrome font the backend paints a
+    // `Form` with rather than assumed to be a count of monospace
+    // cells: a proportional UI font has no single cell width, and
+    // "wide enough for its own label" is the invariant either way.
+    let label_of = |id: &WidgetId| match id.as_str() {
+        "find" => "Find",
+        "replace" => "Replace",
+        other => panic!("unexpected button id {other:?}"),
+    };
+    for (id, rect) in &vis.item_bounds {
+        let label_w = chrome_text_width(label_of(id)) as f32;
+        assert!(
+            rect.width >= label_w,
+            "button {id:?} rect width {} too narrow for its {label_w}pt label",
+            rect.width,
+        );
+        let hit = layout.hit_test(rect.x + 1.0, rect.y + rect.height * 0.5);
+        assert_eq!(
+            hit,
+            FormHit::Field(*id),
+            "click at button {id:?} should hit its own id",
+        );
+    }
+}
+
+#[test]
+fn password_input_paints_with_mask_char() {
+    // PasswordInput should render `mask_char` repeated `value.chars().count()`
+    // times, NOT the plaintext. Verify by computing the expected
+    // masked-text width and asserting paint geometry agrees.
+    let form = form_of(
+        "auth-form",
+        vec![field(
+            "pw",
+            "",
+            FieldKind::PasswordInput {
+                value: "hunter2".into(),
+                placeholder: String::new(),
+                cursor: Some(7),
+                mask_char: '•',
+            },
+        )],
+        Some(WidgetId::new("pw")),
+        true,
+    );
+    let (surface, layout) = paint_via_backend(&form);
+    // Locate the field bounds.
+    let vis = &layout.visible_fields[0];
+    // Probe inside the field row at the very centre Y. Pre-fix
+    // this pixel would have been background (label-only fallback);
+    // post-fix the row contains painted `[`, masked text, `]`.
+    // Cheap shape-check: at least ONE pixel inside the row should
+    // be foreground (mask glyphs) rather than the focused-row bg.
+    let theme = Theme::default();
+    let mut saw_glyph = false;
+    let y = (vis.bounds.y + vis.bounds.height / 2.0) as u32;
+    for x in (vis.bounds.x as u32)..(vis.bounds.x + vis.bounds.width) as u32 {
+        let (r, g, b, _) = surface.pixel(x, y);
+        // Foreground-ish pixel: differs from both selected_bg (focused row)
+        // and pure transparent surface clear.
+        let is_bg = (r, g, b)
+            == (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b,
+            );
+        if !is_bg && !(r == 0 && g == 0 && b == 0) {
+            saw_glyph = true;
+            break;
+        }
+    }
+    assert!(
+        saw_glyph,
+        "PasswordInput row should paint masked glyphs (none found)",
+    );
+}
+
+/// `TextInput.cursor` is a host-supplied byte offset with no guarantee it lands
+/// on a char boundary. Byte officing must not panic on multibyte characters.
+#[test]
+fn text_input_with_multibyte_cursor_does_not_panic() {
+    // "café🎉" — byte 4 sits inside the 2-byte 'é' (starts at byte 3).
+    let value = "café🎉";
+    assert!(!value.is_char_boundary(4));
+    let form = form_of(
+        "settings",
+        vec![field(
+            "name",
+            "Name",
+            FieldKind::TextInput {
+                value: value.into(),
+                placeholder: String::new(),
+                cursor: Some(4),
+                selection_anchor: None,
+            },
+        )],
+        Some(WidgetId::new("name")),
+        true,
+    );
+
+    // Must not panic.
+    let _ = paint_via_backend(&form);
+}
+
+/// `PasswordInput` byte-cursor-to-mask-char-position conversion must not panic
+/// on multibyte characters.
+#[test]
+fn password_input_with_multibyte_cursor_does_not_panic() {
+    let value = "café🎉";
+    assert!(!value.is_char_boundary(4));
+    let form = form_of(
+        "settings",
+        vec![field(
+            "pw",
+            "Password",
+            FieldKind::PasswordInput {
+                value: value.into(),
+                placeholder: String::new(),
+                cursor: Some(4),
+                mask_char: '*',
+            },
+        )],
+        Some(WidgetId::new("pw")),
+        true,
+    );
+
+    // Must not panic.
+    let _ = paint_via_backend(&form);
+}
+
+// ── Settings chrome ─────────────────────────────────────────────────
+
+/// Paint the settings chrome through the real
+/// `Backend::draw_settings_chrome` path at an arbitrary origin.
+fn paint_settings_chrome_at(
+    origin: QRect,
+    header: &str,
+    query: &str,
+    placeholder: &str,
+    active: bool,
+) -> (BitmapSurface, f64) {
+    let surface = BitmapSurface::new(W, H);
+    // Known non-theme background so "did the chrome paint here?" is
+    // answerable per pixel.
+    surface.fill(1.0, 1.0, 1.0, 1.0);
+    let mut backend = MacBackend::new();
+    backend.set_current_font(font());
+    let lh = backend.line_height() as f64;
+    backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+    backend.enter_frame_scope(surface.context_ptr(), |b| {
+        b.draw_settings_chrome(origin, header, query, placeholder, active);
+    });
+    backend.end_frame();
+    (surface, lh)
+}
+
+/// Width of `text` in the font `Backend::draw_settings_chrome`
+/// actually paints with.
+///
+/// The settings header and search row are chrome, so the backend
+/// renders them through [`crate::FontRole::Chrome`] regardless of
+/// which editor font a host last installed as `current_font`.
+/// Measuring with [`Backend::measure_text`] against that role is what
+/// keeps an x-offset expectation here pointing at the glyphs on the
+/// surface; measuring with [`font`] (the editor font
+/// [`paint_settings_chrome_at`] installs, to prove it is *not* what
+/// chrome uses) would offset every probe by the difference between
+/// the two fonts' advances.
+///
+/// Measures through a fresh `MacBackend::new()` rather than the
+/// backend the caller painted with — safe only because neither
+/// caller in this module ever calls `set_chrome_font`/`set_ui_font`,
+/// so every `MacBackend` in this file resolves the identical
+/// deterministic `chrome_font` [`MacBackend::new`] seeds (a pure
+/// CoreText system-font query, not process state this file mutates).
+/// A test that *does* install a non-default chrome font must measure
+/// through the painting backend itself instead of this helper.
+fn chrome_text_width(text: &str) -> f64 {
+    MacBackend::new()
+        .measure_text(text, crate::FontRole::Chrome)
+        .0 as f64
+}
+
+#[test]
+fn settings_chrome_paints_header_then_search_row() {
+    let (surface, lh) = paint_settings_chrome_at(
+        QRect::new(0.0, 0.0, W as f32, H as f32),
+        "Settings",
+        "",
+        "type to filter",
+        false,
+    );
+    let theme = Theme::default();
+
+    // Row 0 = header strip. Probe clear of the "Settings" glyphs.
+    let (r, g, b, _) = surface.pixel(W - 4, (lh * 0.5) as u32);
+    assert_eq!(
+        (r, g, b),
+        (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+        "row 0 should be the header strip",
+    );
+
+    // Row 1 = search input, inactive → `tab_bar_bg`.
+    let (r, g, b, _) = surface.pixel(W - 4, (lh * 1.5) as u32);
+    assert_eq!(
+        (r, g, b),
+        (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+        "row 1 inactive should be the panel background",
+    );
+
+    // Row 2 is the form body's job — chrome must not paint it.
+    let (r, g, b, _) = surface.pixel(W - 4, (lh * 2.5) as u32);
+    assert_eq!(
+        (r, g, b),
+        (255, 255, 255),
+        "settings chrome paints exactly two rows",
+    );
+}
+
+#[test]
+fn settings_chrome_active_row_uses_selected_bg_and_paints_a_caret() {
+    let (surface, lh) = paint_settings_chrome_at(
+        QRect::new(0.0, 0.0, W as f32, H as f32),
+        "Settings",
+        "",
+        "type to filter",
+        true,
+    );
+    let theme = Theme::default();
+
+    let (r, g, b, _) = surface.pixel(W - 4, (lh * 1.5) as u32);
+    assert_eq!(
+        (r, g, b),
+        (
+            theme.selected_bg.r,
+            theme.selected_bg.g,
+            theme.selected_bg.b
+        ),
+        "an active search row uses `selected_bg`",
+    );
+
+    // With an empty query the caret sits right after the " /  "
+    // prefix (whose two trailing spaces leave the band scanned below
+    // free of prefix ink). Scan that band for the accent stroke.
+    //
+    // Asserting "some pixel is *exactly* `accent_fg`" would be
+    // asserting a fact about the caret's sub-pixel position rather
+    // than about the caret: Core Graphics antialiases the
+    // `SETTINGS_CURSOR_W`-wide fill, and a 1.5pt span starting at a
+    // fractional x covers no whole pixel for half of the possible
+    // fractions — it lands as two partially-covered columns blended
+    // with the row background. So the band only has to carry accent
+    // *ink*: a pixel off the row's `selected_bg` and on the
+    // `selected_bg`→`accent_fg` blend line. Same lesson as
+    // `region_has_color` above.
+    let prefix_w = chrome_text_width(SETTINGS_SEARCH_PREFIX);
+    let caret_x = (2.0 + prefix_w) as u32;
+    let row = (lh * 1.5) as u32;
+    let found = (caret_x.saturating_sub(1)..=caret_x + 2).any(|x| {
+        let (r, g, b, _) = surface.pixel(x.min(W - 1), row);
+        carries_ink_of((r, g, b), theme.selected_bg, theme.accent_fg)
+    });
+    assert!(
+        found,
+        "active chrome should paint an accent caret at x≈{caret_x}"
+    );
+}
+
+/// Non-zero-origin regression guard (LESSONS.md:159-181).
+#[test]
+fn settings_chrome_paints_at_a_nonzero_origin_only() {
+    let ox = 24.0_f32;
+    let oy = 30.0_f32;
+    let (surface, lh) = paint_settings_chrome_at(
+        QRect::new(ox, oy, W as f32 - ox, H as f32 - oy),
+        "Settings",
+        "",
+        "",
+        false,
+    );
+    let theme = Theme::default();
+
+    let (r, g, b, _) = surface.pixel(W - 4, oy as u32 + (lh * 0.5) as u32);
+    assert_eq!(
+        (r, g, b),
+        (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+        "header row should follow the requested origin",
+    );
+    assert_eq!(
+        {
+            let (r, g, b, _) = surface.pixel(4, oy as u32 + (lh * 0.5) as u32);
+            (r, g, b)
+        },
+        (255, 255, 255),
+        "nothing should paint left of the origin",
+    );
+    assert_eq!(
+        {
+            let (r, g, b, _) = surface.pixel(W - 4, oy as u32 - 4);
+            (r, g, b)
+        },
+        (255, 255, 255),
+        "nothing should paint above the origin",
+    );
+}
+
+#[test]
+fn settings_chrome_zero_width_is_a_no_op() {
+    let (surface, _lh) = paint_settings_chrome_at(
+        QRect::new(0.0, 0.0, 0.0, H as f32),
+        "Settings",
+        "",
+        "",
+        true,
+    );
+    assert_eq!(
+        {
+            let (r, g, b, _) = surface.pixel(1, 1);
+            (r, g, b)
+        },
+        (255, 255, 255),
+    );
+}
+
+/// A `rect.height` of exactly one `line_height` must not paint the search row.
+/// The second row paints only when `height >= line_height * 1.5`, so
+/// a header-only chrome strip does not overpaint content beneath it.
+#[test]
+fn settings_chrome_one_row_height_paints_no_search_row() {
+    let one_row_lh = MacBackend::new().line_height() as f64;
+    let (surface, lh) = paint_settings_chrome_at(
+        QRect::new(0.0, 0.0, W as f32, one_row_lh as f32),
+        "HEADER",
+        "",
+        "placeholder",
+        false,
+    );
+    let theme = Theme::default();
+
+    let (r, g, b, _) = surface.pixel(W - 4, (lh * 0.5) as u32);
+    assert_eq!(
+        (r, g, b),
+        (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+        "the header row must still paint even when the search row doesn't",
+    );
+
+    let (r, g, b, _) = surface.pixel(W - 4, (lh * 1.5) as u32);
+    assert_eq!(
+        (r, g, b),
+        (255, 255, 255),
+        "a 1-row-tall chrome rect must not paint a search row past its own height",
+    );
+}
+
+/// `ToggleGroup` / `ButtonRow` / `SegmentedControl` / `Toolbar`
+/// controls start at the form's shared `Left`-label column (see
+/// `primitives::form::left_control_column_start`), not right past
+/// their own narrower label.
+#[test]
+fn item_bearing_kinds_align_to_the_shared_left_label_column() {
+    use crate::primitives::form::{left_control_column_start, ButtonRowItem, ToggleGroupItem};
+    use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+    let form = form_of(
+        "settings",
+        vec![
+            field(
+                "accent",
+                "Accent colour",
+                FieldKind::TextInput {
+                    value: "red".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            ),
+            field(
+                "flags",
+                "Flags",
+                FieldKind::ToggleGroup {
+                    toggles: vec![ToggleGroupItem {
+                        id: WidgetId::new("case"),
+                        label: "Case sensitive".into(),
+                        value: true,
+                    }],
+                },
+            ),
+            field(
+                "actions",
+                "Actions",
+                FieldKind::ButtonRow {
+                    buttons: vec![ButtonRowItem {
+                        spec: None,
+                        id: WidgetId::new("run"),
+                        label: "Run action".into(),
+                        disabled: false,
+                        icon: None,
+                    }],
+                },
+            ),
+            field(
+                "scope",
+                "Scope",
+                FieldKind::SegmentedControl {
+                    options: vec!["File".into(), "Project".into()],
+                    selected_idx: 0,
+                },
+            ),
+            field(
+                "toolbar",
+                "Toolbar",
+                FieldKind::Toolbar(Toolbar::new(WidgetId::new("toolbar-field")).with_buttons(
+                    vec![ToolbarButton::Action {
+                        spec: None,
+                        id: WidgetId::new("build"),
+                        label: "Build".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: "Build".into(),
+                    }],
+                )),
+            ),
+        ],
+        None,
+        false,
+    );
+
+    let (surface, layout) = paint_via_backend(&form);
+    // Measures labels in the default chrome font, as the paint does.
+    let measurer = MacBackend::new();
+
+    for vf in &layout.visible_fields {
+        let field = &form.fields[vf.field_idx];
+        let shared_start = left_control_column_start(&form, field, vf.bounds, &measurer);
+        assert!(
+            vf.bounds.x + vf.bounds.width >= shared_start,
+            "field {:?} row doesn't even reach the shared label column \
+             (shared_start={shared_start}, bounds={:?})",
+            field.id,
+            vf.bounds,
+        );
+        for (item_id, item_rect) in &vf.item_bounds {
+            assert!(
+                item_rect.x + 0.5 >= shared_start,
+                "field {:?} item {:?} at x={} starts left of the shared column x={shared_start}",
+                field.id,
+                item_id,
+                item_rect.x,
+            );
+        }
+    }
+
+    // The embedded toolbar has no `item_bounds`; its `header_bg` bar
+    // fill must not appear left of the shared column either.
+    let toolbar_vf = layout
+        .visible_fields
+        .iter()
+        .find(|vf| vf.id == WidgetId::new("toolbar"))
+        .expect("toolbar field visible");
+    let toolbar_field = &form.fields[toolbar_vf.field_idx];
+    let shared_start =
+        left_control_column_start(&form, toolbar_field, toolbar_vf.bounds, &measurer);
+    let theme = Theme::default();
+    let bar_bg = (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b);
+    let y0 = toolbar_vf.bounds.y as u32;
+    let y1 = (toolbar_vf.bounds.y + toolbar_vf.bounds.height) as u32;
+    for x in (toolbar_vf.bounds.x as u32)..(shared_start.ceil() as u32) {
+        for y in y0..y1 {
+            let (r, g, b, _) = surface.pixel(x, y);
+            assert_ne!(
+                (r, g, b),
+                bar_bg,
+                "toolbar bar painted left of the shared column (x={x} < {shared_start})",
+            );
+        }
+    }
+}

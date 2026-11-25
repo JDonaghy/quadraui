@@ -696,11 +696,14 @@ pub struct RecordingBackend {
     /// field directly, the same two ways a real backend's own
     /// `current_style` field is written.
     pub current_style: crate::Style,
-    /// Backs [`Backend::focus_tree`] — unlike `modal_stack_handle`/
-    /// `drag_state_handle`, this one *is* real state a headless mock can
-    /// honestly fabricate, so it's included rather than
-    /// `unimplemented!()`.
+    /// Backs [`Backend::focus_tree`] — unlike `drag_state_handle`, this
+    /// one *is* real state a headless mock can honestly fabricate, so it's
+    /// included rather than `unimplemented!()`.
     pub focus_tree: crate::focus::FocusTree,
+    /// Backs [`Backend::modal_stack_handle`]: a real, shared stack, so a
+    /// widget painted through `DrawsPrimitives::draw_dyn` can mark itself
+    /// painted the way it does on every real backend.
+    pub modal_stack: std::rc::Rc<std::cell::RefCell<crate::ModalStack>>,
     /// Backs [`Backend::invalidate_rect`]/[`Backend::invalidation_log`] —
     /// pure bookkeeping, same shape every real backend's `BackendCore`
     /// delegates to.
@@ -757,6 +760,7 @@ impl Default for RecordingBackend {
             chrome_line_height: None,
             current_style: crate::Style::default(),
             focus_tree: crate::focus::FocusTree::new(),
+            modal_stack: std::rc::Rc::new(std::cell::RefCell::new(crate::ModalStack::new())),
             invalidation_log: crate::backend::InvalidationLog::new(),
             cursor_calls: Vec::new(),
             notifications_capable: false,
@@ -1047,10 +1051,7 @@ impl crate::Backend for RecordingBackend {
         &self.invalidation_log
     }
     fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
-        unimplemented!(
-            "RecordingBackend has no shared ModalStack — drive a real backend \
-             (quadraui::tui::testing::TuiDriver) if your test needs one"
-        )
+        self.modal_stack.clone()
     }
     fn focus_tree(&self) -> &crate::focus::FocusTree {
         &self.focus_tree
@@ -1173,20 +1174,6 @@ impl crate::Backend for RecordingBackend {
     fn list_layout(&self, r: Rect, l: &crate::ListView) -> crate::ListViewLayout {
         l.layout(r.width, r.height, 0.0, |_| {
             crate::primitives::list::ListItemMeasure::new(1.0)
-        })
-    }
-    fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {
-        self.record("draw_form");
-    }
-    fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {
-        self.record("draw_palette");
-    }
-    fn palette_layout(&self, r: Rect, p: &crate::Palette) -> crate::PaletteLayout {
-        let lh = self.line_height;
-        let title_h = lh;
-        let query_h = if p.show_query { lh } else { 0.0 };
-        p.layout(r.width, r.height, title_h, query_h, 0.0, 1.0, |_| {
-            crate::PaletteItemMeasure::new(lh)
         })
     }
     fn draw_settings_chrome(
@@ -1327,9 +1314,6 @@ impl crate::Backend for RecordingBackend {
         {
             false
         }
-    }
-    fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
-        unimplemented!("RecordingBackend has no Form layout algorithm")
     }
     fn draw_editor(
         &mut self,

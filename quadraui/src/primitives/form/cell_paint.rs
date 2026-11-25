@@ -11,10 +11,9 @@
 //! focused-row wash, the disabled dimming and the validation indicator
 //! can't drift between kinds.
 //!
-//! Lives next to the descriptor rather than in `crate::tui` so that
-//! painting a form through [`crate::primitive::Primitive::paint_cells`]
-//! and through the legacy `Backend::draw_form` path is the same code by
-//! construction; [`crate::tui::form`] only re-exports these names.
+//! Lives next to the descriptor rather than in `crate::tui`, so
+//! [`crate::primitive::Primitive::paint_cells`] and an embedded form
+//! body (a `MultiSectionView` section) paint through the same code.
 //!
 //! Takes `&mut ratatui::buffer::Buffer` rather than a quadraui-local
 //! cell-surface abstraction, for the reason

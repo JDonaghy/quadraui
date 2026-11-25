@@ -298,7 +298,7 @@ impl FormController {
         let (form_rect, sb_rect) = split_rect_lh(self.field_count(), lh, rect);
         let theme = backend.theme();
         let form = self.build_form(form_rect, Some(&theme));
-        backend.draw_form(form_rect, &form);
+        crate::backend::DrawsPrimitives::draw_primitive(backend, form_rect, &form);
         self.draw_item_focus_ring(backend, form_rect, &form);
         if let Some(sb_rect) = sb_rect {
             let sb = build_scrollbar_lh(
@@ -408,7 +408,8 @@ impl FormController {
     /// open popup itself as a separate overlay (see this module's
     /// "ComboBox fields" doc section) and needs the row's on-screen
     /// position to anchor it. This is that lookup: it reruns the same
-    /// [`Backend::form_layout`] call [`Self::click_inner`] already uses
+    /// [`crate::DrawsPrimitives::layout_primitive`] call
+    /// [`Self::click_inner`] already uses
     /// for hit-testing, then offsets the matching field's layout-relative
     /// `bounds` by `rect`'s origin (and the scrollbar-split form rect's,
     /// if a scrollbar is present) to hand back an on-screen rect the host
@@ -417,7 +418,8 @@ impl FormController {
         let lh = backend.line_height();
         let (form_rect, _sb_rect) = split_rect_lh(self.field_count(), lh, rect);
         let form = self.build_form(form_rect, None);
-        let layout = backend.form_layout(form_rect, &form);
+        let layout =
+            crate::backend::DrawsPrimitives::layout_primitive(backend, form_rect, &form).layout;
         layout.visible_fields.iter().find(|f| f.id == id).map(|f| {
             Rect::new(
                 form_rect.x + f.bounds.x,
@@ -608,7 +610,8 @@ impl FormController {
         let Some((item_id, _)) = items.get(idx).copied() else {
             return;
         };
-        let layout = backend.form_layout(form_rect, form);
+        let layout =
+            crate::backend::DrawsPrimitives::layout_primitive(&*backend, form_rect, form).layout;
         let Some(vf) = layout.visible_fields.iter().find(|vf| {
             form.fields
                 .get(vf.field_idx)
@@ -663,7 +666,7 @@ impl FormController {
             // geometry identical to what a themed render would produce.
             let form = self.build_form(form_rect, None);
             let layout = if let Some(be) = backend {
-                be.form_layout(form_rect, &form)
+                crate::backend::DrawsPrimitives::layout_primitive(&*be, form_rect, &form).layout
             } else {
                 let row_h = row_height(lh);
                 let char_w = lh * 0.6;
@@ -767,7 +770,7 @@ impl FormController {
         let (form_rect, _sb_rect) = split_rect_lh(self.field_count(), lh, rect);
         let form = self.build_form(form_rect, None);
         let layout = if let Some(be) = backend {
-            be.form_layout(form_rect, &form)
+            crate::backend::DrawsPrimitives::layout_primitive(&*be, form_rect, &form).layout
         } else {
             let row_h = row_height(lh);
             let char_w = lh * 0.6;
@@ -5006,13 +5009,14 @@ mod tests {
 
         /// `needle`'s item's own rect (not its text glyph's, which sits
         /// well inside the item's padded background) — the same
-        /// `Backend::form_layout` lookup `FormController::draw_item_focus_ring`
-        /// uses, so the sample point agrees with what the ring actually
-        /// outlines.
+        /// `DrawsPrimitives::layout_primitive` lookup
+        /// `FormController::draw_item_focus_ring` uses, so the sample
+        /// point agrees with what the ring actually outlines.
         fn item_rect(driver: &GtkDriver<ItemFocusRingApp>, item_id: &str) -> Rect {
             let app = driver.app();
             let form = app.fc.form().expect("form set").clone();
-            let layout = driver.backend().form_layout(app.rect, &form);
+            let layout =
+                crate::DrawsPrimitives::layout_primitive(driver.backend(), app.rect, &form).layout;
             let vf = layout
                 .visible_fields
                 .iter()

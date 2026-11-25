@@ -1086,13 +1086,6 @@ mod tests {
                 crate::primitives::list::ListItemMeasure::new(1.0)
             })
         }
-        fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {}
-        fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {}
-        fn palette_layout(&self, r: Rect, p: &crate::Palette) -> crate::PaletteLayout {
-            p.layout(r.width, r.height, 0.0, 0.0, 0.0, 1.0, |_| {
-                crate::PaletteItemMeasure::new(1.0)
-            })
-        }
         fn draw_settings_chrome(
             &mut self,
             _r: Rect,
@@ -1180,9 +1173,6 @@ mod tests {
         }
         fn tree_vscrollbar(&self, _r: Rect, _t: &crate::TreeView) -> Option<crate::Scrollbar> {
             None
-        }
-        fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
-            unimplemented!()
         }
         fn draw_editor(
             &mut self,

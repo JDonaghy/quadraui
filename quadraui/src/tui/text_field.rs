@@ -69,7 +69,7 @@ fn from_ratatui(c: RatatuiColor) -> Option<Color> {
 }
 
 /// Paint the inside-the-brackets text content shared by `TextField`'s
-/// own cell painter and [`crate::tui::form::draw_form`]'s
+/// own cell painter and the `Form` cell painter's
 /// `FieldKind::TextInput` row — a thin delegate onto
 /// [`crate::primitives::text_field::cell_paint::put_text_row`], which
 /// documents the selection highlight and caret placement.

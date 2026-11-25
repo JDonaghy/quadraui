@@ -754,7 +754,9 @@ pub(crate) mod native_surface_paint {
     // widget contract's own `Primitive::layout` can resolve it in a build
     // with no backend feature. These are the names the per-backend
     // wrappers address it by.
-    pub(crate) use super::{item_row_height, pixel_layout as layout, SB_W};
+    #[cfg(test)]
+    use super::pixel_layout as layout;
+    pub(crate) use super::{item_row_height, SB_W};
 
     /// Query-row insert-cursor width. Matches `text_input`/`command_line`'s
     /// `CURSOR_W`/`CURSOR_WIDTH` bar-caret convention for every GUI backend.
@@ -863,8 +865,7 @@ pub(crate) mod native_surface_paint {
     /// id already on this popup): `interaction.is_hovered(&palette.id)`
     /// / `is_pressed(&palette.id)` swaps its resting
     /// [`Theme::hover_bg`] fill for [`Theme::menu_item_hover_bg`] /
-    /// [`Theme::menu_item_pressed_bg`] — see
-    /// [`crate::Backend::draw_palette_with_state`]'s own doc.
+    /// [`Theme::menu_item_pressed_bg`].
     ///
     /// Keying on `palette.id` conflates "the palette is hovered" with
     /// "the create row is hovered" for a caller that resolves its hit
@@ -2398,6 +2399,24 @@ impl Palette {
     }
 }
 
+impl Palette {
+    /// The text line height the popup's title and query rows pitch at:
+    /// on a pixel surface the backend's own [`crate::Backend::line_height`]
+    /// (which item rows floor at [`item_row_height`]), on a cell grid the
+    /// ctx's row height.
+    fn text_line_height(ctx: &crate::LayoutCtx) -> f32 {
+        let line_height = match ctx.units() {
+            crate::primitive::Units::Cells => ctx.line_height,
+            crate::primitive::Units::Pixels => ctx.editor_line_height(),
+        };
+        if line_height > 0.0 {
+            line_height
+        } else {
+            1.0
+        }
+    }
+}
+
 impl crate::primitive::Primitive for Palette {
     type Layout = PalettePrimitiveLayout;
     type Event = PaletteEvent;
@@ -2427,7 +2446,7 @@ impl crate::primitive::Primitive for Palette {
         _avail: crate::primitive::Size,
     ) -> crate::NaturalSize {
         let cells = matches!(ctx.units(), crate::primitive::Units::Cells);
-        let line_height = ctx.line_height.max(1.0);
+        let line_height = Self::text_line_height(ctx).max(1.0);
         let insets = Self::row_insets(ctx);
         let gap = if cells { 1.0 } else { ctx.char_width.max(1.0) };
         let item_h = if cells {
@@ -2496,11 +2515,7 @@ impl crate::primitive::Primitive for Palette {
     /// legacy `Backend::palette_layout` impl resolves through, so the
     /// contract and the legacy seam can never disagree.
     fn layout(&self, ctx: &crate::LayoutCtx, rect: Rect) -> PalettePrimitiveLayout {
-        let line_height = if ctx.line_height > 0.0 {
-            ctx.line_height
-        } else {
-            1.0
-        };
+        let line_height = Self::text_line_height(ctx);
         let (layout, rows_h, row_height) = if matches!(ctx.units(), crate::primitive::Units::Cells)
         {
             let layout = cell_layout(self, rect.width, rect.height);
@@ -2521,9 +2536,7 @@ impl crate::primitive::Primitive for Palette {
         }
     }
 
-    /// The shared pixel painter — the same
-    /// [`native_surface_paint::paint`] every pixel backend's
-    /// `draw_palette` wrapper calls.
+    /// The shared pixel painter, [`native_surface_paint::paint`].
     fn paint(
         &self,
         layout: &PalettePrimitiveLayout,
@@ -2537,6 +2550,10 @@ impl crate::primitive::Primitive for Palette {
             all(feature = "macos", target_os = "macos")
         ))]
         {
+            // Too small to hold the title, query and one item row.
+            if layout.area.width < 20.0 || layout.area.height < layout.line_height * 4.0 {
+                return;
+            }
             native_surface_paint::paint(
                 self,
                 layout.area,
@@ -2559,11 +2576,9 @@ impl crate::primitive::Primitive for Palette {
         }
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_palette_with_style`] because the
-    /// `Buffer` → [`crate::CellSurface`] adapter is private to
-    /// `crate::tui`. The backdrop opacity rides on the layout, since this
-    /// method receives no [`crate::Style`] of its own.
+    /// [`cell_paint::paint`] over `buf`. The backdrop opacity rides on
+    /// the layout, since this method receives no [`crate::Style`] of its
+    /// own.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -2571,18 +2586,27 @@ impl crate::primitive::Primitive for Palette {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = layout.area;
-        crate::tui::draw_palette_with_style(
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
             buf,
-            ratatui::layout::Rect::new(
-                area.x as u16,
-                area.y as u16,
-                area.width as u16,
-                area.height as u16,
-            ),
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        // Snapped to whole cells the way every TUI rect is, so a
+        // fractional popup rect paints where its hit test resolves.
+        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        cell_paint::paint(
             self,
+            Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+            &mut surface,
             theme,
-            &crate::style::Style::default().with_backdrop_opacity(layout.backdrop_opacity),
+            layout.backdrop_opacity,
             layout.nerd_fonts_enabled,
         );
     }
@@ -2947,6 +2971,9 @@ impl crate::interactive::Interactive for Palette {
 /// measurement a layout container sizes this popup with: the
 /// assistive-technology action path, a host-driven focus transition, the
 /// `Input`-mode Enter the host owns, and `Primitive::measure`.
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_paint_tests;
+
 #[cfg(test)]
 mod interactive_tests {
     use super::*;
@@ -3059,6 +3086,35 @@ mod interactive_tests {
                 &mut cx
             ),
             Handled::Event(PaletteEvent::ItemConfirmed { idx: 2 })
+        );
+    }
+
+    /// Event parity's assistive-technology leg: an [`A11yAction::Click`]
+    /// routed through [`crate::a11y::route_widget_action`] confirms the
+    /// highlighted row with exactly the event Enter produces on the
+    /// `TuiDriver` leg (`tests/palette_form_event_parity.rs`) and the
+    /// binding-host leg (`quadraui-binding-core`'s engine tests).
+    #[test]
+    fn route_widget_action_click_matches_the_enter_parity_event() {
+        let mut p = popup("");
+        p.id = WidgetId::new("pal");
+        let id = p.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, area(), Box::new(p));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let events = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &cells_ctx(),
+            id,
+            A11yAction::Click,
+        );
+        assert_eq!(
+            events,
+            vec![crate::UiEvent::Palette(
+                id,
+                PaletteEvent::ItemConfirmed { idx: 0 }
+            )]
         );
     }
 
@@ -3771,7 +3827,7 @@ mod tests {
         use super::*;
         use crate::style::Style;
         use crate::theme::Theme;
-        use crate::tui::{draw_palette, ratatui_color, tui_palette_layout};
+        use crate::tui::ratatui_color;
         use crate::types::{Color, StyledSpan};
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect as RRect;
@@ -3812,10 +3868,40 @@ mod tests {
             buf[(x, y)].symbol().chars().next().unwrap_or(' ')
         }
 
-        /// The cell painter is reached through `crate::tui::draw_palette`,
-        /// which only adapts the ratatui `Buffer` into a `CellSurface`.
+        fn paint_with_opacity(
+            buf: &mut Buffer,
+            area: RRect,
+            p: &Palette,
+            theme: &Theme,
+            backdrop_opacity: f32,
+        ) {
+            let mut cursor_sink = None;
+            let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+                buf,
+                crate::backend::ColorDepth::TrueColor,
+                &mut cursor_sink,
+            );
+            cell_paint::paint(
+                p,
+                Rect::new(
+                    area.x as f32,
+                    area.y as f32,
+                    area.width as f32,
+                    area.height as f32,
+                ),
+                &mut surface,
+                theme,
+                backdrop_opacity,
+                false,
+            );
+        }
+
         fn paint(buf: &mut Buffer, area: RRect, p: &Palette, theme: &Theme) {
-            draw_palette(buf, area, p, theme, false);
+            paint_with_opacity(buf, area, p, theme, Style::default().backdrop_opacity);
+        }
+
+        fn tui_palette_layout(area: RRect, p: &Palette) -> PaletteLayout {
+            cell_layout(p, area.width as f32, area.height as f32)
         }
 
         #[test]
@@ -3834,15 +3920,7 @@ mod tests {
             let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
             let p = make_palette();
             let theme = Theme::default();
-            let style = Style::default().with_backdrop_opacity(0.5);
-            crate::tui::draw_palette_with_style(
-                &mut buf,
-                RRect::new(0, 0, 20, 10),
-                &p,
-                &theme,
-                &style,
-                false,
-            );
+            paint_with_opacity(&mut buf, RRect::new(0, 0, 20, 10), &p, &theme, 0.5);
 
             let expected_bg = ratatui_color(theme.background.blend(theme.surface_bg, 0.5));
             // (1, 1) sits inside the border, below the title row and above

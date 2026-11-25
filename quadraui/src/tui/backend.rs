@@ -51,9 +51,7 @@ use crate::backend::{ColorDepth, Screenshot, ScreenshotRun};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
-    Accelerator, AcceleratorId, Backend, Color, CommandLine, DragState, Form, ListView,
-    ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split, TerminalCellSize,
-    TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    Accelerator, AcceleratorId, Backend, Color, CommandLine, DragState, ListView, ModalStack, PlatformServices, Point, Rect as QRect, Split, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
 // only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs
@@ -926,9 +924,8 @@ impl TuiBackend {
 
     /// Update the cached quadraui style. Call once per frame from
     /// `paint`, before any `backend.draw_*` calls. Subsequent
-    /// `draw_*` invocations consume the stored style — currently only
-    /// [`Self::draw_palette`] reads it, via
-    /// [`crate::Style::backdrop_opacity`].
+    /// `draw_*` invocations and widget-contract paints consume the stored
+    /// style (a palette reads [`crate::Style::backdrop_opacity`] from it).
     pub fn set_current_style(&mut self, style: crate::Style) {
         self.current_style = style;
     }
@@ -3154,48 +3151,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_list_layout(q_rect_to_ratatui(rect), list)
     }
 
-    fn draw_form(&mut self, rect: QRect, form: &Form) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_form called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_form(frame.buffer_mut(), area, form, &theme);
-    }
-
-    fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
-        // Mark before borrowing the frame — a modal-stack entry
-        // whose id matches this palette is now known-painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let style = self.current_style;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_palette called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_palette_with_style(
-            frame.buffer_mut(),
-            area,
-            palette,
-            &theme,
-            &style,
-            nerd_fonts,
-        );
-    }
-
-    fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
-        crate::tui::tui_palette_layout(q_rect_to_ratatui(rect), palette)
-    }
-
     fn draw_settings_chrome(
         &mut self,
         rect: QRect,
@@ -3204,23 +3159,22 @@ impl Backend for TuiBackend {
         placeholder: &str,
         active: bool,
     ) {
-        let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
+        let Some(surface) = self.cell_surface() else {
             debug_assert!(
                 false,
                 "TuiBackend::draw_settings_chrome called outside enter_frame_scope"
             );
             return;
         };
-        crate::tui::draw_settings_chrome(
-            frame.buffer_mut(),
-            area,
+        crate::compose::sidebar_panel_body::paint_settings_chrome_cells(
+            surface,
+            &theme,
+            rect,
             header_text,
             query,
             placeholder,
             active,
-            &theme,
         );
     }
 
@@ -3414,7 +3368,7 @@ impl Backend for TuiBackend {
         dialog: &crate::primitives::dialog::Dialog,
         layout: &crate::primitives::dialog::DialogLayout,
     ) -> Vec<QRect> {
-        // See draw_palette for why this happens before the frame borrow.
+        // Marked before the frame borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
@@ -3448,7 +3402,7 @@ impl Backend for TuiBackend {
         float: &crate::primitives::float::Float,
         layout: &crate::primitives::float::FloatLayout,
     ) {
-        // See draw_palette for why this happens before the frame borrow.
+        // Marked before the frame borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         let Some(frame) = self.current_frame_mut() else {
@@ -3522,11 +3476,6 @@ impl Backend for TuiBackend {
             1.0,
             1.0,
         )
-    }
-
-    fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_form_layout(form, area)
     }
 
     fn draw_editor(
@@ -4251,7 +4200,6 @@ mod tests {
     #[derive(Debug, Clone, PartialEq)]
     enum DrawCall {
         List { rect: QRect, item_count: usize },
-        Palette { rect: QRect, item_count: usize },
     }
 
     struct MockBackend {
@@ -4418,20 +4366,10 @@ mod tests {
         fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
             crate::tui::tui_list_layout(q_rect_to_ratatui(rect), list)
         }
-        fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
-            self.calls.push(DrawCall::Palette {
-                rect,
-                item_count: palette.items.len(),
-            });
-        }
-        fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
-            crate::tui::tui_palette_layout(q_rect_to_ratatui(rect), palette)
-        }
 
         // The other 7 trait methods are unimplemented — this mock only
         // records the ones the cross-backend test actually exercises.
         fn draw_tree(&mut self, _r: QRect, _t: &TreeView) {}
-        fn draw_form(&mut self, _r: QRect, _f: &Form) {}
         fn draw_settings_chrome(
             &mut self,
             _r: QRect,
@@ -4573,11 +4511,6 @@ mod tests {
 
         fn tree_vscrollbar(&self, r: QRect, t: &TreeView) -> Option<crate::Scrollbar> {
             t.vscrollbar_with_track_width(r, 1.0, 1.0)
-        }
-
-        fn form_layout(&self, r: QRect, form: &Form) -> crate::primitives::form::FormLayout {
-            let area = q_rect_to_ratatui(r);
-            crate::tui::tui_form_layout(form, area)
         }
 
         fn draw_editor(
@@ -4879,7 +4812,7 @@ mod tests {
     /// `Backend` through `<B>`. Future backends slot in here without
     /// changes.
     fn paint_overlays<B: Backend>(backend: &mut B, palette: &Palette, list: &ListView) {
-        backend.draw_palette(QRect::new(10.0, 5.0, 60.0, 14.0), palette);
+        crate::DrawsPrimitives::draw_dyn(backend, QRect::new(10.0, 5.0, 60.0, 14.0), palette, &());
         backend.draw_list(QRect::new(0.0, 20.0, 80.0, 4.0), list);
     }
 
@@ -5041,13 +4974,12 @@ mod tests {
 
         paint_overlays(&mut mock, &palette, &list);
 
-        assert_eq!(mock.calls.len(), 2);
+        // The palette paints through its widget contract, which needs a
+        // paint or cell surface; the mock offers neither, so only the
+        // list reaches a recorded trait method.
+        assert_eq!(mock.calls.len(), 1);
         assert!(matches!(
             mock.calls[0],
-            DrawCall::Palette { item_count: 2, .. }
-        ));
-        assert!(matches!(
-            mock.calls[1],
             DrawCall::List { item_count: 1, .. }
         ));
     }
@@ -5062,12 +4994,11 @@ mod tests {
         let _: fn(&mut TuiBackend, &Palette, &ListView) = paint_overlays::<TuiBackend>;
     }
 
-    /// `Backend::set_style` → `TuiBackend::current_style` →
-    /// `TuiBackend::draw_palette` must carry a caller-set
-    /// `backdrop_opacity` all the way to the painted buffer — proving
-    /// the live-style wiring, not just the free `draw_palette_with_style`
-    /// function called directly with an explicit `&Style` (as the
-    /// `tui::palette` module's own tests do).
+    /// `Backend::set_style` → `TuiBackend::current_style` → a palette
+    /// painted through `DrawsPrimitives::draw_dyn` must carry a
+    /// caller-set `backdrop_opacity` all the way to the painted buffer,
+    /// proving the live-style wiring rather than the cell painter called
+    /// with an explicit opacity.
     #[test]
     fn draw_palette_paints_with_backend_live_style() {
         use ratatui::backend::TestBackend;
@@ -5082,7 +5013,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
-                    b.draw_palette(rect, &palette);
+                    crate::DrawsPrimitives::draw_dyn(b, rect, &palette, &());
                 });
             })
             .expect("draw");

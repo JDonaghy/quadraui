@@ -39,7 +39,6 @@
 //! additive (default forwards to the plain method, ignoring
 //! `interaction`), not a replacement:
 //!
-//! - [`crate::Backend::draw_palette_with_state`]
 //!
 //! ## Methods that remain positional
 //!

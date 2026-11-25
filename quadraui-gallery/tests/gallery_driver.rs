@@ -1036,7 +1036,7 @@ fn text_selection_drag_then_ctrl_c_copies() {
 
 /// Clicking the "Aa" (case-sensitive) toggle on the `Form` demo's
 /// "Search & replace" variant flips it off — proves
-/// `backend.form_layout(...).hit_test(...)` routes the click to the
+/// the form's widget-contract layout routes the click to the
 /// toggle it actually landed on, not just that the form paints.
 #[test]
 fn form_toggle_click_updates_the_status_line() {

@@ -242,6 +242,11 @@ widget_kinds! {
     "toolbar" => crate::Toolbar,
     "menu_bar" => crate::MenuBar,
     "context_menu" => crate::ContextMenu,
+    // Ungated: `Palette`'s and `Form`'s `Primitive`/`Interactive` impls
+    // carry no feature gate. The kind strings are the ones the wire
+    // schema already publishes for them.
+    "palette" => crate::Palette,
+    "form" => crate::Form,
 }
 
 #[cfg(test)]

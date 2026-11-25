@@ -115,8 +115,7 @@ pub enum FolderPickerEvent {
 ///
 /// Combines filesystem walking, fuzzy filtering, keyboard navigation, and
 /// scroll tracking into a single reusable state machine. Rendering is
-/// delegated to the existing [`Palette`] primitive via
-/// [`Backend::draw_palette`].
+/// delegated to the existing [`Palette`] primitive's widget contract.
 ///
 /// See the [module-level documentation](self) for a usage example.
 pub struct FolderPickerController {
@@ -379,7 +378,7 @@ impl FolderPickerController {
     /// Call this from `AppLogic::render` whenever the picker is open.
     pub fn render(&self, rect: Rect, backend: &mut dyn Backend) {
         let palette = self.build_palette(rect);
-        backend.draw_palette(rect, &palette);
+        crate::backend::DrawsPrimitives::draw_primitive(backend, rect, &palette);
     }
 
     // ── Handle ────────────────────────────────────────────────────────

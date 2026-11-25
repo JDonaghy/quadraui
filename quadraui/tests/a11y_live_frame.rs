@@ -48,9 +48,9 @@ fn list_surface() -> Surface {
 }
 
 fn form_surface() -> Surface {
-    Surface::Form {
+    Surface::Widget {
         rect: Rect::new(0.0, 8.0, 30.0, 4.0),
-        form: Form {
+        widget: Box::new(Form {
             id: WidgetId::new("settings"),
             fields: vec![FormField {
                 id: WidgetId::new("settings:name"),
@@ -81,7 +81,7 @@ fn form_surface() -> Surface {
             control_width: ControlWidth::default(),
             min_control_width: None,
             spacing: Default::default(),
-        },
+        }),
     }
 }
 

@@ -123,7 +123,6 @@ mod dialog;
 mod diff_view;
 mod editor;
 pub mod events;
-mod form;
 mod image;
 mod list;
 // `MenuOverlay` is the module's only `pub` item and has zero reachers —
@@ -139,7 +138,6 @@ mod minimap;
 mod multi_section_view;
 mod number_input;
 mod painted_text;
-mod palette;
 mod pipeline_view;
 mod progress;
 mod rich_text_popup;
@@ -187,8 +185,6 @@ pub use editor::{draw_editor, editor_col_at_x};
 #[doc(hidden)]
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
 #[doc(hidden)]
-pub use form::draw_settings_chrome;
-#[doc(hidden)]
 pub use image::draw_image;
 #[doc(hidden)]
 pub use list::{draw_list, draw_list_with_state, gtk_list_layout};
@@ -211,8 +207,6 @@ pub use minimap::gtk_minimap_layout;
 pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
 };
-#[doc(hidden)]
-pub use palette::{draw_palette, gtk_palette_layout};
 #[doc(hidden)]
 pub use pipeline_view::gtk_pipeline_view_layout;
 #[doc(hidden)]

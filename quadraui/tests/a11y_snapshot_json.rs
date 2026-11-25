@@ -64,9 +64,9 @@ fn tree_surface() -> Surface {
 }
 
 fn form_surface() -> Surface {
-    Surface::Form {
+    Surface::Widget {
         rect: Rect::new(0.0, 10.0, 30.0, 5.0),
-        form: Form {
+        widget: Box::new(Form {
             id: WidgetId::new("settings"),
             fields: vec![FormField {
                 id: WidgetId::new("settings:notify"),
@@ -92,7 +92,7 @@ fn form_surface() -> Surface {
             control_width: Default::default(),
             min_control_width: None,
             spacing: Default::default(),
-        },
+        }),
     }
 }
 

@@ -240,7 +240,7 @@ pub enum DialogInput {
     /// reserved hole where the form would go.
     /// [`crate::compose::form_dialog::FormDialogController`] is the
     /// intended (and today, only) way to use this variant: it paints
-    /// the form separately via [`crate::Backend::draw_form`] — the same
+    /// the form separately through its widget contract — the same
     /// cross-backend path every other `Form` host uses — after calling
     /// `draw_dialog`, and owns the Tab/Shift-Tab focus hand-off between
     /// the form's fields and this dialog's buttons.

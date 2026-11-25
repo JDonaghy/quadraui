@@ -258,7 +258,7 @@ impl FormGroupsApp {
     fn click(&mut self, backend: &mut dyn Backend, x: f32, y: f32) {
         let form = self.build_form();
         let area = Self::form_rect(backend);
-        let layout = backend.form_layout(area, &form);
+        let layout = quadraui::DrawsPrimitives::layout_primitive(&*backend, area, &form).layout;
         let hit = layout.hit_test(x, y);
         match hit {
             FormHit::Field(ref id) => {
@@ -336,7 +336,7 @@ impl AppLogic for FormGroupsApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
-        backend.draw_form(form_rect, &self.build_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, form_rect, &self.build_form());
         let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
