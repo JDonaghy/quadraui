@@ -18,8 +18,8 @@
 
 use quadraui::compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeData};
 use quadraui::{
-    Backend, BackendCaps, Color, Column, ColumnAlign, ColumnWidth, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Column, ColumnAlign, ColumnWidth, DrawsPrimitives, Reaction, Rect,
+    StatusBar, StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};

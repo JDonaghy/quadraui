@@ -5861,6 +5861,32 @@ impl PaintSurface for WinBackend {
         true
     }
 
+    /// Paints through a [`super::surface::D2dSurface`] carrying a
+    /// same-family, same-fallback clone of `chrome_dwrite` (else the
+    /// editor `dwrite`) at `size_px` — DirectWrite sizes are points at
+    /// the legacy 96/72 dpi ratio, so `size_px` is converted by
+    /// `72 / 96`. Returns `false`, painting nothing, when no surface is
+    /// attached yet.
+    fn surface_with_icon_font(
+        &mut self,
+        size_px: f32,
+        paint: &mut dyn FnMut(&mut dyn PaintSurface),
+    ) -> bool {
+        #[cfg(target_os = "windows")]
+        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
+            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
+            let icon_dwrite = dwrite.with_size(size_px * 72.0 / 96.0);
+            let icon_dwrite = icon_dwrite.as_ref().unwrap_or(dwrite);
+            paint(&mut super::surface::D2dSurface {
+                target: &surface.target,
+                dwrite: Some(icon_dwrite),
+            });
+            return true;
+        }
+        let _ = (size_px, paint);
+        false
+    }
+
     fn surface_end_frame(&mut self) {
         Backend::end_frame(self);
     }

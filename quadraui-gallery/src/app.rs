@@ -1164,19 +1164,26 @@ mod tests {
 
         // Must not panic, and must actually paint something for the
         // picker row (the two variant columns) plus the demo's own empty
-        // body — `draw_status_bar_interactive` (recorded as
-        // `"draw_status_bar"`, see `RecordingBackend`'s impl) is the one
-        // call both go through. At least 2 calls: one per variant column
-        // (`draw_variant_picker` loops `variants.len()` times).
+        // body — each is a `StatusBar` painted through the widget
+        // contract, so it lands in the frame's painted-widget record. At
+        // least 2: one per variant column (`draw_variant_picker` loops
+        // `variants.len()` times).
+        quadraui::primitive::clear_painted_widgets();
         app.render_content(&mut backend, &layout);
-        let status_bar_calls = backend
-            .calls
-            .iter()
-            .filter(|c| **c == "draw_status_bar")
-            .count();
+        let status_bars = quadraui::primitive::with_painted_widgets(|painted| {
+            painted
+                .iter()
+                .filter(|w| {
+                    w.layout
+                        .downcast_ref::<quadraui::primitives::status_bar::StatusBarPrimitiveLayout>(
+                        )
+                        .is_some()
+                })
+                .count()
+        });
         assert!(
-            status_bar_calls >= 2,
-            "expected at least 2 draw_status_bar calls (one per variant column), got {status_bar_calls}: {:?}",
+            status_bars >= 2,
+            "expected at least 2 painted status bars (one per variant column), got {status_bars}: {:?}",
             backend.calls
         );
     }

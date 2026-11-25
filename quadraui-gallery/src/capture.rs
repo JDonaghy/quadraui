@@ -87,7 +87,6 @@
 //! whole run. Every other demo/variant/backend, and `manifest.json`
 //! itself, still gets written.
 
-use quadraui::DrawsPrimitives;
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -1800,7 +1799,7 @@ mod tests {
             backend: &mut dyn quadraui::Backend,
             area: quadraui::Rect,
         ) {
-            use quadraui::{Color, InteractionState, StatusBar, StatusBarSegment, WidgetId};
+            use quadraui::{Color, DrawsPrimitives, StatusBar, StatusBarSegment, WidgetId};
             let bar = StatusBar {
                 id: WidgetId::new("test:two-variant"),
                 left_segments: vec![StatusBarSegment {
@@ -2022,7 +2021,7 @@ mod tests {
             backend: &mut dyn quadraui::Backend,
             area: quadraui::Rect,
         ) {
-            use quadraui::{Color, InteractionState, StatusBar, StatusBarSegment, WidgetId};
+            use quadraui::{Color, DrawsPrimitives, StatusBar, StatusBarSegment, WidgetId};
             let bar = StatusBar {
                 id: WidgetId::new("test:named-demo"),
                 left_segments: vec![StatusBarSegment {

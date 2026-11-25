@@ -1258,7 +1258,7 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Sync the nerd-fonts flag so icon-bearing surfaces (`draw_tree`,
-    /// `draw_multi_section_view`, `draw_activity_bar`, etc.) render
+    /// `draw_multi_section_view`, the activity bar, etc.) render
     /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.
     ///
     /// `TuiBackend` starts at `false` (fallback): Nerd Font availability in
@@ -1347,7 +1347,7 @@ pub trait Backend: sealed::Sealed {
     /// daemon. Lets an app that wants icon glyphs to resolve on
     /// macOS/Win-GUI hand the backend its own font bytes (e.g. an
     /// `include_bytes!`-embedded subset) before [`Self::set_nerd_font_fallback`]
-    /// names a family for [`Self::draw_tree`]/[`Self::draw_activity_bar`]/etc.
+    /// names a family for [`Self::draw_tree`], the activity bar, etc.
     /// to resolve glyphs against.
     ///
     /// Returns the family name(s) the font registered under (read back

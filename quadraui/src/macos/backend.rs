@@ -4749,6 +4749,27 @@ impl PaintSurface for MacBackend {
         true
     }
 
+    /// Paints through a [`super::surface::CgSurface`] carrying
+    /// `chrome_font` resized to `size_px` — Core Text points are
+    /// device-independent pixels 1:1, so no point conversion applies.
+    /// The resized font keeps `chrome_font`'s Nerd Font fallback cascade.
+    fn surface_with_icon_font(
+        &mut self,
+        size_px: f32,
+        paint: &mut dyn FnMut(&mut dyn PaintSurface),
+    ) -> bool {
+        let ctx = self.current_cg();
+        if ctx.is_null() {
+            return false;
+        }
+        let icon_font = self.chrome_font.clone_with_font_size(size_px as f64);
+        paint(&mut super::surface::CgSurface {
+            ctx,
+            font: Some(&icon_font),
+        });
+        true
+    }
+
     fn surface_end_frame(&mut self) {
         Backend::end_frame(self);
     }

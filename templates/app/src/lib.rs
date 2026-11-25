@@ -63,7 +63,10 @@ impl ShellApp for App {
             }],
         };
         let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget { rect, widget: Box::new(bar) });
+        frame.push(Surface::Widget {
+            rect,
+            widget: Box::new(bar),
+        });
         frame.draw(backend);
     }
 

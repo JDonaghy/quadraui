@@ -29,7 +29,6 @@
 //! | positional (deprecated) | implemented |
 //! |---|---|
 //! | `draw_toolbar(rect, bar, hovered_id, pressed_id)` | [`crate::Backend::draw_toolbar_interactive`] |
-//! | `draw_status_bar(rect, bar, hovered_id, pressed_id)` | [`crate::Backend::draw_status_bar_interactive`] |
 //!
 //! The positional names survive as `#[deprecated]` trait defaults that
 //! rebuild an `InteractionState` via [`InteractionState::from_parts`]
@@ -50,7 +49,6 @@
 //! Several `Backend` methods take a positional hover argument, keyed
 //! by position within a collection rather than [`WidgetId`]:
 //!
-//! - `draw_activity_bar(.., hovered_idx: Option<usize>)`
 //! - `primitives::tab_bar::native_surface_paint::TabBarPaintState`'s
 //!   `hovered_close_tab`/`hovered_tab`/`pressed_tab: Option<usize>` —
 //!   `TabItem` carries no [`WidgetId`] of its own, only `TabBar::id`

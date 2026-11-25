@@ -347,6 +347,25 @@ pub trait PaintSurface {
         false
     }
 
+    /// Run `paint` against this surface's icon-font twin — the same
+    /// target, with every text verb measuring and painting in the icon
+    /// glyph font at `size_px` device-independent pixels — and return
+    /// `true`. A rail of icon buttons (an activity bar) paints its glyphs
+    /// through it, so the icon size stays independent of the chrome
+    /// font's size.
+    ///
+    /// Defaults to returning `false` without calling `paint`: a surface
+    /// with a single font has no twin, and the caller paints through the
+    /// surface itself. Every pixel backend's own impl overrides this.
+    fn surface_with_icon_font(
+        &mut self,
+        size_px: f32,
+        paint: &mut dyn FnMut(&mut dyn PaintSurface),
+    ) -> bool {
+        let _ = (size_px, paint);
+        false
+    }
+
     /// Paint `text` (conventionally one glyph from an icon font's
     /// Private-Use-Area range, e.g. a Nerd Font codepoint) at `rect`'s
     /// top-left corner in `color`, resolving through this surface's

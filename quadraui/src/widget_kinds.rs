@@ -234,6 +234,8 @@ widget_kinds! {
     // carry no feature gate. The kind string is the one the wire schema
     // already publishes for it.
     "terminal" => crate::Terminal,
+    "status_bar" => crate::StatusBar,
+    "activity_bar" => crate::ActivityBar,
 }
 
 #[cfg(test)]

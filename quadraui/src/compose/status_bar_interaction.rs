@@ -3,8 +3,8 @@
 //! Consumers store a [`StatusBarInteraction`] alongside their status bar,
 //! call [`StatusBarInteraction::handle_event`] with each mouse event and
 //! the bar's rect, then read [`hovered_id`](StatusBarInteraction::hovered_id)
-//! and [`pressed_id`](StatusBarInteraction::pressed_id) when calling
-//! `Backend::draw_status_bar`.
+//! and [`pressed_id`](StatusBarInteraction::pressed_id) when painting the
+//! bar.
 //!
 //! The state machine itself is the widget's own
 //! ([`StatusBarState::hover`]/[`press`](StatusBarState::press)/
@@ -13,8 +13,8 @@
 //! [`crate::StatusBar`]'s [`crate::interactive::Interactive`] impl drives
 //! from a [`crate::interactive::RoutedEvent`]. This type only translates
 //! raw [`UiEvent`]s and a bar rect into those calls, for a host that
-//! paints its bar through `Backend::draw_status_bar` rather than reaching
-//! the frame as a widget.
+//! routes its own clicks rather than registering the bar in its
+//! [`crate::FrameTree`].
 
 use std::cell::RefCell;
 
@@ -50,8 +50,9 @@ impl StatusBarInteraction {
         Self::default()
     }
 
-    /// Update the stored layout. Call this after each `draw_status_bar`
-    /// with the returned `StatusBarLayout`. Takes `&self` so it can
+    /// Update the stored layout. Call this after each paint with the
+    /// bar's `StatusBarLayout` (for example
+    /// [`crate::DrawsPrimitives::layout_primitive`]'s `.layout`). Takes `&self` so it can
     /// be called from render paths where only a shared reference is available.
     pub fn set_layout(&self, layout: StatusBarLayout) {
         *self.layout.borrow_mut() = Some(layout);

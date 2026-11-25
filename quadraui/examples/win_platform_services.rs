@@ -6,7 +6,7 @@
 //! `TaskDialogIndirect`-backed message dialogs.
 //!
 //! Draws nothing — every `WinBackend::draw_*` rasteriser is still a `todo!()`
-//! stub (no `draw_status_bar` to report results in-window), so this exercises
+//! stub (no status bar to report results in-window), so this exercises
 //! `backend.services()` directly from `AppLogic::handle` and reports results to
 //! stderr instead of an in-window status bar.
 //!

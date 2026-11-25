@@ -66,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 171;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 164;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -175,13 +175,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     // `set_dock_menu`, the `menu_style` family) are platform services,
     // not a widget's paint path, and stay on `Backend` permanently —
     // this list only names the custom-drawn pairs.
-    ("StatusBar", "draw_status_bar"),
-    ("StatusBar", "draw_status_bar_interactive"),
-    ("StatusBar", "draw_status_bar_interactive_scaled"),
-    ("StatusBar", "status_bar_layout"),
-    ("ActivityBar", "draw_activity_bar"),
-    ("ActivityBar", "draw_activity_bar_with_style"),
-    ("ActivityBar", "activity_bar_layout"),
     ("Toolbar", "draw_toolbar_interactive"),
     ("Toolbar", "draw_toolbar_with_options"),
     ("Toolbar", "draw_toolbar_with_overflow"),

@@ -7339,6 +7339,169 @@ mod tests {
         }
     }
 
+    /// Mirrors [`CommandCenterLogic`], painting one generic-widget leaf
+    /// of any [`crate::extra_paint::WIDGET_KINDS`] kind.
+    struct WidgetLeafLogic {
+        kind: &'static str,
+        widget: Rc<dyn DynWidget>,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl WidgetLeafLogic {
+        fn new(kind: &'static str, widget: Rc<dyn DynWidget>) -> Self {
+            Self {
+                kind,
+                widget,
+                engine: InteractionEngine::new(),
+                sink: RefCell::new(RecordingSink::default()),
+            }
+        }
+    }
+
+    impl AppLogic for WidgetLeafLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert(self.kind.to_string(), self.widget.clone());
+            draw_bands(
+                backend,
+                RenderRefs {
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    widgets: &widgets,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.render_overlays(backend);
+            self.engine.set_hits(hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// A left press and release at `(x, y)`, the gesture every desktop
+    /// click is.
+    fn click_through_the_engine(driver: &mut TuiDriver<WidgetLeafLogic>, x: f32, y: f32) {
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+        });
+    }
+
+    /// The binding-host leg of `StatusBar`'s event parity: a click on a
+    /// clickable segment of a `"status_bar"` leaf resolves through
+    /// [`InteractionEngine::handle`] to the same
+    /// `UiEvent::StatusBar(bar, SegmentClicked { .. })` the `TuiDriver`
+    /// leg (`quadraui/tests/widget_contract_status_bar.rs`) produces.
+    /// `StatusBar` declares no a11y actions, so there is no
+    /// `a11y::route_widget_action` leg.
+    #[test]
+    fn click_on_a_status_bar_segment_dispatches_segment_clicked() {
+        let bar_id = WidgetId::new("status");
+        let segment_id = WidgetId::new("status:branch");
+        let segment = |text: &str, action_id: Option<WidgetId>| quadraui::StatusBarSegment {
+            text: text.into(),
+            fg: quadraui::Color::rgb(230, 230, 230),
+            bg: quadraui::Color::rgb(40, 80, 120),
+            bold: false,
+            action_id,
+        };
+        let bar = quadraui::StatusBar {
+            id: bar_id,
+            left_segments: vec![segment("NORMAL", None), segment(" main ", Some(segment_id))],
+            right_segments: vec![],
+        };
+        let mut driver = TuiDriver::new(WidgetLeafLogic::new("status_bar", Rc::new(bar)), 40, 5);
+
+        let (x, y) =
+            quadraui::primitive::painted_sub_center(&bar_id, quadraui::interactive::SubTarget(1))
+                .expect("the status bar records each segment it painted");
+        click_through_the_engine(&mut driver, x, y);
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| *event
+                == UiEvent::StatusBar(
+                    bar_id,
+                    quadraui::StatusBarEvent::SegmentClicked { id: segment_id }
+                )),
+            "expected SegmentClicked for the clicked segment: {dispatched:?}"
+        );
+    }
+
+    /// The binding-host leg of `ActivityBar`'s event parity: a click on
+    /// the first row of an `"activity_bar"` leaf resolves through
+    /// [`InteractionEngine::handle`] to the same
+    /// `UiEvent::ActivityBar(bar, ItemClicked { .. })` the `TuiDriver` leg
+    /// (`quadraui/tests/widget_contract_activity_bar.rs`) and the
+    /// `a11y::route_widget_action` leg (`ActivityBar`'s own
+    /// `widget_contract_tests`) produce.
+    #[test]
+    fn click_on_an_activity_bar_row_dispatches_item_clicked() {
+        let bar_id = WidgetId::new("activity");
+        let item = |id: &str, icon: &str| quadraui::ActivityItem {
+            id: WidgetId::new(id),
+            icon: icon.into(),
+            tooltip: id.into(),
+            is_active: false,
+            is_keyboard_selected: false,
+        };
+        let bar = quadraui::ActivityBar {
+            id: bar_id,
+            top_items: vec![item("activity:explorer", "E"), item("activity:search", "S")],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
+        };
+        let mut driver = TuiDriver::new(WidgetLeafLogic::new("activity_bar", Rc::new(bar)), 40, 5);
+
+        let (x, y) =
+            quadraui::primitive::painted_sub_center(&bar_id, quadraui::interactive::SubTarget(0))
+                .expect("the activity bar records each row it painted");
+        click_through_the_engine(&mut driver, x, y);
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| *event
+                == UiEvent::ActivityBar(
+                    bar_id,
+                    quadraui::ActivityBarEvent::ItemClicked {
+                        id: WidgetId::new("activity:explorer")
+                    }
+                )),
+            "expected ItemClicked for the first row: {dispatched:?}"
+        );
+    }
+
     /// Enter on a focused layout-tree `Button` round-trips through
     /// [`InteractionEngine::handle`] as the same `UiEvent::ButtonActivated`
     /// a pointer click produces — the keyboard-activation half of this

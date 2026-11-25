@@ -1097,6 +1097,10 @@ class ActivityItemDescriptor(TypedDict):
     is_active: NotRequired[bool]
     is_keyboard_selected: NotRequired[bool]
 
+class ActivityBarStyleDescriptor(TypedDict):
+    active_bg: NotRequired[Optional[Color]]
+    icon_size_px: NotRequired[Optional[float]]
+
 class ActivityBarDescriptor(TypedDict):
     id: WidgetId
     top_items: List[ActivityItemDescriptor]
@@ -1104,6 +1108,8 @@ class ActivityBarDescriptor(TypedDict):
     active_accent: NotRequired[Optional[Color]]
     selection_bg: NotRequired[Optional[Color]]
     is_keyboard_focused: NotRequired[bool]
+    style: NotRequired[ActivityBarStyleDescriptor]
+    hovered: NotRequired[Optional[int]]
 
 PaletteMode = Literal['List', 'Input']
 
@@ -1752,7 +1758,6 @@ LayoutLeafNode = TypedDict(
         "data_table": NotRequired[DataTableDescriptor],
         "tab_bar": NotRequired[TabBarDescriptor],
         "scripted_widget": NotRequired[ScriptedWidgetDescriptor],
-        "status_bar": NotRequired[StatusBarDescriptor],
         "progress": NotRequired[ProgressBarDescriptor],
         "spinner": NotRequired[SpinnerDescriptor],
         "image": NotRequired[ImageDescriptor],
@@ -1771,7 +1776,6 @@ LayoutLeafNode = TypedDict(
         "diff_view": NotRequired[DiffViewDescriptor],
         "tree_table": NotRequired[TreeTableDescriptor],
         "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
-        "activity_bar": NotRequired[ActivityBarDescriptor],
         "toolbar": NotRequired[ToolbarDescriptor],
         "menu_bar": NotRequired[MenuBarDescriptor],
         "command_line": NotRequired[CommandLineDescriptor],
@@ -1794,6 +1798,8 @@ LayoutLeafNode = TypedDict(
         "button": NotRequired[ButtonDescriptor],
         "command_center": NotRequired[CommandCenterDescriptor],
         "terminal": NotRequired[TerminalDescriptor],
+        "status_bar": NotRequired[StatusBarDescriptor],
+        "activity_bar": NotRequired[ActivityBarDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1801,7 +1807,7 @@ LayoutLeafNode = TypedDict(
         "max": NotRequired[float],
     },
 )
-"""One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed."""
+"""One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed."""
 
 # One node of a render callback's returned layout tree.
 LayoutNode = Union[LayoutRowNode, LayoutColumnNode, LayoutGridNode, LayoutSplitNode, LayoutTabsNode, LayoutSidebarPanelNode, LayoutSplitTreeNode, LayoutScrollNode, LayoutLeafNode]
@@ -1814,7 +1820,6 @@ class RenderFrameDict(TypedDict):
     tree: NotRequired[Optional[TreeViewDescriptor]]
     data_table: NotRequired[Optional[DataTableDescriptor]]
     tab_bar: NotRequired[Optional[TabBarDescriptor]]
-    status_bar: NotRequired[Optional[StatusBarDescriptor]]
     progress: NotRequired[Optional[ProgressBarDescriptor]]
     spinner: NotRequired[Optional[SpinnerDescriptor]]
     image: NotRequired[Optional[ImageDescriptor]]
@@ -1833,7 +1838,6 @@ class RenderFrameDict(TypedDict):
     diff_view: NotRequired[Optional[DiffViewDescriptor]]
     tree_table: NotRequired[Optional[TreeTableDescriptor]]
     tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
-    activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
     command_line: NotRequired[Optional[CommandLineDescriptor]]
@@ -1856,6 +1860,8 @@ class RenderFrameDict(TypedDict):
     button: NotRequired[Optional[ButtonDescriptor]]
     command_center: NotRequired[Optional[CommandCenterDescriptor]]
     terminal: NotRequired[Optional[TerminalDescriptor]]
+    status_bar: NotRequired[Optional[StatusBarDescriptor]]
+    activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]

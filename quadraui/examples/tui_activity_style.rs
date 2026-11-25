@@ -1,7 +1,7 @@
 //! `ActivityStyleDemo` `AppLogic` + `quadraui::tui::run` example.
 //!
 //! VS-Code-style activity-bar row fill:
-//! `Backend::draw_activity_bar_with_style` paints the active item's row in
+//! the bar's own `ActivityBar::style` paints the active item's row in
 //! `ActivityBarStyle::active_bg` instead of the left-edge accent line
 //! `tui_activity_nav` demonstrates — `active_accent` stays `None`, so
 //! there is zero accent-line rendering. Click an icon (or press

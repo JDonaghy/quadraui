@@ -54,8 +54,8 @@
 //! };
 //!
 //! // Backend (one of the four in-tree ones — see "Backend implementors"
-//! // below) — measure + paint:
-//! draw_status_bar(cr, &bar, &theme);
+//! // below) — measure + paint through the widget contract:
+//! backend.draw_dyn(rect, &bar, &());
 //! ```
 //!
 //! ## Backend implementors
@@ -76,7 +76,7 @@
 //! documented stable surface — the backend struct itself, `events`,
 //! `services`, `shell_runner`, `testing`, and (where it exists) `text` —
 //! plus a flat re-export of the handful of free-function rasterisers an
-//! app calls directly (`draw_status_bar`, `mac_tree_layout`, …). Everything
+//! app calls directly (`mac_tree_layout`, …). Everything
 //! else is a per-primitive painter internal: `#[doc(hidden)]` where it
 //! must stay `pub mod` for compatibility (see `src/macos/mod.rs`), or
 //! simply private where nothing outside the backend needs the submodule

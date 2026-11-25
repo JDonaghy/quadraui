@@ -46,7 +46,7 @@ impl ShellApp for Hello {
             right_segments: vec![],
         };
         let mut frame = ScreenLayout::new();
-        frame.push(Surface::StatusBar { rect, bar, hovered: None, pressed: None });
+        frame.push(Surface::Widget { rect, widget: Box::new(bar) });
         frame.draw(backend);
     }
 

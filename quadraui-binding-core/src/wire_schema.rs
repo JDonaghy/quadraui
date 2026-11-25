@@ -571,7 +571,7 @@ pub fn schema() -> Vec<DefJson> {
         ],
     ));
 
-    // ── Common "extra" primitive already typed: status_bar ─────────────
+    // ── `status_bar` (a `WIDGET_KINDS` member) ─────────────────────────
     let status_bar_segment = b.define(obj(
         "StatusBarSegment",
         vec![
@@ -1908,6 +1908,13 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("is_keyboard_selected", bool_()),
         ],
     ));
+    let activity_bar_style_descriptor = b.define(obj(
+        "ActivityBarStyleDescriptor",
+        vec![
+            field_opt("active_bg", nullable(color.clone())),
+            field_opt("icon_size_px", nullable(float_())),
+        ],
+    ));
     let activity_bar_descriptor = b.define(obj(
         "ActivityBarDescriptor",
         vec![
@@ -1917,6 +1924,8 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("active_accent", nullable(color.clone())),
             field_opt("selection_bg", nullable(color.clone())),
             field_opt("is_keyboard_focused", bool_()),
+            field_opt("style", activity_bar_style_descriptor),
+            field_opt("hovered", nullable(int_())),
         ],
     ));
     let palette_mode = b.define(alias("PaletteMode", lit(&["List", "Input"])));
@@ -2816,7 +2825,7 @@ pub fn schema() -> Vec<DefJson> {
     ));
 
     // `LayoutLeafNode`/`RenderFrameDict`'s descriptor-kind keys: the five
-    // fixed `LEAF_KIND_KEYS`, `status_bar`, every `EXTRA_PRIMITIVE_KINDS`
+    // fixed `LEAF_KIND_KEYS`, every `EXTRA_PRIMITIVE_KINDS`
     // additive kind, and every `WIDGET_KINDS` generic-widget kind are all
     // fully typed. Reading straight off the real Rust consts means a new
     // fixed, additive, or generic-widget kind always gets *a* schema entry
@@ -2864,15 +2873,7 @@ pub fn schema() -> Vec<DefJson> {
         }
         render_frame_fields.push(field_opt(key, nullable(ty)));
     }
-    leaf_fields.push(field_opt("status_bar", status_bar_descriptor.clone()));
-    render_frame_fields.push(field_opt(
-        "status_bar",
-        nullable(status_bar_descriptor.clone()),
-    ));
     for kind in EXTRA_PRIMITIVE_KINDS {
-        if kind == "status_bar" {
-            continue;
-        }
         let ty = match kind {
             "progress" => progress_bar_descriptor.clone(),
             "spinner" => spinner_descriptor.clone(),
@@ -2890,7 +2891,6 @@ pub fn schema() -> Vec<DefJson> {
             "minimap" => minimap_descriptor.clone(),
             "multi_section_view" => multi_section_view_descriptor.clone(),
             "diff_view" => diff_view_descriptor.clone(),
-            "activity_bar" => activity_bar_descriptor.clone(),
             "toolbar" => toolbar_descriptor.clone(),
             "menu_bar" => menu_bar_descriptor.clone(),
             "command_line" => command_line_descriptor.clone(),
@@ -2930,6 +2930,8 @@ pub fn schema() -> Vec<DefJson> {
             "button" => button_descriptor.clone(),
             "command_center" => command_center_descriptor.clone(),
             "terminal" => terminal_descriptor.clone(),
+            "status_bar" => status_bar_descriptor.clone(),
+            "activity_bar" => activity_bar_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -2947,7 +2949,7 @@ pub fn schema() -> Vec<DefJson> {
     let layout_leaf_node = b.define(obj_doc(
         "LayoutLeafNode",
         leaf_fields,
-        "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.",
+        "One `{\"id\", \"<kind>\": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.",
     ));
 
     b.define(union_of_doc(
@@ -5416,7 +5418,9 @@ mod coverage {
             bottom_items,
             active_accent,
             selection_bg,
-            is_keyboard_focused
+            is_keyboard_focused,
+            style,
+            hovered
         }
     );
     fn assert_palette_mode(m: PaletteMode) {

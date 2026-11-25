@@ -1067,9 +1067,11 @@ fn sidebar_panel_body_gtk_initial_paint_shows_header_and_search() {
 /// ever appears in `HeaderAndSearch` mode.
 #[test]
 fn sidebar_panel_body_gtk_header_only_mode_paints_header_without_search_placeholder() {
+    // Wide enough that the status bar's `chrome=header last: …` segment
+    // paints unclipped next to the key hint, so its text is findable.
     let mut driver = GtkDriver::new(
         SidebarPanelBodyDemo::new(),
-        SIDEBAR_PANEL_BODY_W,
+        SIDEBAR_PANEL_BODY_W * 2,
         SIDEBAR_PANEL_BODY_H,
     );
     driver.type_char('c'); // HeaderAndSearch → None

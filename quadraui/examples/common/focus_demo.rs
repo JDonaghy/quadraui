@@ -18,8 +18,10 @@
 //! backend.
 //!
 //! Layout: two side-by-side lists on the top row plus a status bar along
-//! the bottom, i.e. three tab stops whose rects are pairwise distinct in
-//! *both* axes, so the ring visibly moves right, then down, then wraps.
+//! the bottom. The two lists are the tab stops, so the ring visibly moves
+//! right, then wraps; a status bar takes no keyboard focus
+//! ([`StatusBar`]'s widget contract declares none), so `tab_stops` leaves
+//! it out.
 //!
 //! One deliberate placement: the "which widget is focused" echo lives on an
 //! **interior row of the left list**, not in the status bar. The ring is
@@ -40,7 +42,7 @@ use quadraui::{
 pub const LEFT_ID: &str = "left";
 /// Id of the right-hand list — the second tab stop.
 pub const RIGHT_ID: &str = "right";
-/// Id of the status bar — the third and last tab stop.
+/// Id of the status bar, which is painted but is not a tab stop.
 pub const STATUS_ID: &str = "status";
 
 pub struct FocusDemo {

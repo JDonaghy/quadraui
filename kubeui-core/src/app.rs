@@ -10,8 +10,8 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, MouseButton, NamedKey, Point, Reaction, Rect,
-    StatusBarHit, Theme, UiEvent, PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, Key, MouseButton, NamedKey, Point, Reaction, Rect, StatusBarHit,
+    Theme, UiEvent, PALETTE_CHROME_ROWS,
 };
 
 use crate::action::{apply_action, commit_picker_selection, Action};
@@ -131,7 +131,7 @@ impl KubeApp {
 
     /// Resolve a left-click against the status bar — the only
     /// non-picker clickable surface. Walks the same `StatusBar`
-    /// `render` painted via `Backend::status_bar_layout`, so paint and
+    /// `render` painted, laid out by `DrawsPrimitives::layout_primitive`, so paint and
     /// click never drift apart (same convention
     /// `PickerOverlay::handle_mouse` uses for the palette below).
     fn handle_status_bar_click(&mut self, backend: &dyn Backend, position: Point) -> Reaction {

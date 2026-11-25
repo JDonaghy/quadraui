@@ -727,10 +727,16 @@ pub(crate) mod native_surface_paint {
     };
     use crate::theme::Theme;
 
-    /// Paint an [`ActivityBar`] at its caller-resolved `layout` onto
-    /// `surface`. Returns per-row hit spans, **bar-relative** (see
+    /// Paint an [`ActivityBar`] at its caller-resolved, bar-relative
+    /// `layout` onto `surface`, with the rail's top-left corner at
+    /// `origin`. Returns per-row hit spans, **bar-relative** (see
     /// [`ActivityBarRowHit`]'s own doc) — callers add the bar's origin
     /// before hit-testing a click.
+    ///
+    /// The icon glyphs paint at [`ActivityBarStyle::resolved_icon_size_px`]
+    /// through [`PaintSurface::surface_with_icon_font`], independent of
+    /// the surface's chrome font size; a surface with no icon-font twin
+    /// paints them in its own font.
     ///
     /// `hovered_idx` indexes into `layout.visible_items` (bottom-pinned
     /// items first, then top — see [`ActivityBar::layout`]'s doc); it's
@@ -739,9 +745,11 @@ pub(crate) mod native_surface_paint {
     /// `nerd_fonts_enabled` selects `item.icon.glyph` vs
     /// `item.icon.fallback` — via [`ActivityBar::to_toolbar_parts`], before
     /// the painter ever sees either `ActivityBar` or `ActivityItem`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         bar: &ActivityBar,
         layout: &ActivityBarLayout,
+        origin: crate::event::Point,
         style: &ActivityBarStyle,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
@@ -760,16 +768,19 @@ pub(crate) mod native_surface_paint {
             .map(|vi| vi.bounds.height)
             .fold(0.0_f32, f32::max);
 
-        let toolbar_layout = toolbar.layout_with_options(
-            0.0,
-            0.0,
-            layout.viewport_width,
-            layout.viewport_height,
-            ToolbarLayoutOptions::new()
-                .with_orientation(ToolbarOrientation::Vertical)
-                .with_pin_trailing_overflow_to_origin(true),
-            |_btn| ToolbarItemMeasure::new(item_height),
-        );
+        let rail_layout_at = |x: f32, y: f32| {
+            toolbar.layout_with_options(
+                x,
+                y,
+                layout.viewport_width,
+                layout.viewport_height,
+                ToolbarLayoutOptions::new()
+                    .with_orientation(ToolbarOrientation::Vertical)
+                    .with_pin_trailing_overflow_to_origin(true),
+                |_btn| ToolbarItemMeasure::new(item_height),
+            )
+        };
+        let painted_layout = rail_layout_at(origin.x, origin.y);
 
         let hovered_id = hovered_idx
             .and_then(|idx| layout.visible_items.get(idx))
@@ -778,16 +789,23 @@ pub(crate) mod native_surface_paint {
                 ActivitySide::Bottom => bar.bottom_items[vi.item_idx].id,
             });
 
-        toolbar::native_surface_paint::paint_rail(
-            &toolbar,
-            &rail_style,
-            &toolbar_layout,
-            surface,
-            theme,
-            hovered_id.as_ref(),
-        );
+        let mut paint_rail = |surface: &mut dyn PaintSurface| {
+            toolbar::native_surface_paint::paint_rail(
+                &toolbar,
+                &rail_style,
+                &painted_layout,
+                surface,
+                theme,
+                hovered_id.as_ref(),
+            );
+        };
+        if !surface.surface_with_icon_font(style.resolved_icon_size_px(), &mut paint_rail) {
+            paint_rail(surface);
+        }
 
-        bar.row_hits_from_toolbar_layout(&toolbar_layout)
+        // `row_hits_from_toolbar_layout` reads a layout built at the
+        // origin, which keeps the hits bar-relative.
+        bar.row_hits_from_toolbar_layout(&rail_layout_at(0.0, 0.0))
     }
 }
 
@@ -1112,6 +1130,7 @@ impl crate::primitive::Primitive for ActivityBar {
             native_surface_paint::paint(
                 self,
                 &layout.layout,
+                crate::event::Point::new(layout.area.x, layout.area.y),
                 &self.style,
                 surface,
                 theme,
@@ -2250,6 +2269,7 @@ mod native_surface_paint_tests {
         let regions = native_surface_paint::paint(
             &bar,
             &layout,
+            Point::new(0.0, 0.0),
             &style,
             &mut surface,
             &theme,
@@ -2909,5 +2929,522 @@ mod widget_contract_tests {
                 }
             )
         );
+    }
+
+    /// Three-way event parity's in-crate leg: an [`crate::a11y::A11yAction::Click`]
+    /// routed through [`crate::a11y::route_widget_action`] on a fresh rail
+    /// (cursor on the first item) produces the same [`crate::UiEvent`] as
+    /// a mouse click on the first row. The `TuiDriver` leg lives in
+    /// `tests/widget_contract_activity_bar.rs`, the binding-host leg in
+    /// `quadraui-binding-core`'s engine tests.
+    #[test]
+    fn route_widget_action_click_matches_a_mouse_click_on_the_first_row() {
+        use crate::interactive::WidgetAction;
+
+        let bar = bar();
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(bar.id, AREA, Box::new(bar.clone()));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let via_a11y = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &cell_ctx(),
+            bar.id,
+            crate::a11y::A11yAction::Click,
+        );
+
+        let layout = Primitive::layout(&bar, &cell_ctx(), AREA);
+        let explorer = layout
+            .layout
+            .visible_items
+            .iter()
+            .find(|vi| vi.side == ActivitySide::Top && vi.item_idx == 0)
+            .expect("the first top item is visible")
+            .bounds;
+        let mut host = RecordingHost::default();
+        let mut cx = EventCx::new(bar.id, &mut host);
+        let via_mouse = Interactive::handle(
+            &bar,
+            &mut ActivityBarState::default(),
+            &pointer(
+                PointerKind::Down(MouseButton::Left),
+                explorer.x + 0.5,
+                explorer.y + 0.5,
+            ),
+            &layout,
+            &mut cx,
+        );
+
+        let expected =
+            ActivityBarAction::ItemActivated(WidgetId::new("explorer")).into_ui_event(bar.id);
+        assert_eq!(via_a11y, vec![expected.clone()]);
+        assert_eq!(
+            via_mouse.map(|a| a.into_ui_event(bar.id)),
+            Handled::Event(expected)
+        );
+    }
+}
+
+/// The macOS pixel coverage for the rail, painted through the widget
+/// contract ([`crate::DrawsPrimitives::draw_dyn`]) onto a headless
+/// Core Graphics bitmap.
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod mac_paint_tests {
+    use super::{ActivityBar, ActivityBarPrimitiveLayout, ActivityBarRowHit, ActivityItem};
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::macos::headless::BitmapSurface;
+    use crate::macos::text::{make_font, system_ui_font};
+    use crate::macos::MacBackend;
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
+    use crate::{Backend, DrawsPrimitives};
+    use core_text::font::CTFont;
+
+    const ACTIVITY_ROW_PX: f64 = super::PIXEL_ROW_HEIGHT as f64;
+
+    const W: u32 = 48;
+    const H: u32 = 240; // 5 rows × 48px
+
+    fn font() -> CTFont {
+        make_font("Menlo", 14.0).expect("Menlo installed")
+    }
+
+    fn sample_bar() -> ActivityBar {
+        ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![
+                ActivityItem {
+                    id: WidgetId::new("activity:explorer"),
+                    icon: "E".into(),
+                    tooltip: "Explorer".into(),
+                    is_active: true,
+                    is_keyboard_selected: false,
+                },
+                ActivityItem {
+                    id: WidgetId::new("activity:search"),
+                    icon: "S".into(),
+                    tooltip: "Search".into(),
+                    is_active: false,
+                    is_keyboard_selected: false,
+                },
+            ],
+            bottom_items: vec![ActivityItem {
+                id: WidgetId::new("activity:settings"),
+                icon: "G".into(),
+                tooltip: "Settings".into(),
+                is_active: false,
+                is_keyboard_selected: false,
+            }],
+            active_accent: Some(Color::rgb(80, 140, 255)),
+            selection_bg: None,
+            is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
+        }
+    }
+
+    /// Paint `bar` (with `hovered` set on it) through the widget contract
+    /// at `(x, y)` on a `canvas_w` × `canvas_h` bitmap, returning the
+    /// bitmap and the painted rail's bar-relative row hits.
+    fn paint_bar_at(
+        bar: &ActivityBar,
+        hovered: Option<usize>,
+        x: f32,
+        y: f32,
+        canvas_w: u32,
+        canvas_h: u32,
+    ) -> (BitmapSurface, Vec<ActivityBarRowHit>) {
+        let surface = BitmapSurface::new(canvas_w, canvas_h);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let mut bar = bar.clone();
+        bar.hovered = hovered;
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(canvas_w as f32, canvas_h as f32, 1.0));
+        let regions = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_dyn(QRect::new(x, y, W as f32, H as f32), &bar, &())
+                .downcast_ref::<ActivityBarPrimitiveLayout>()
+                .expect("an ActivityBar lays out as ActivityBarPrimitiveLayout")
+                .row_hits(&bar)
+        });
+        backend.end_frame();
+        (surface, regions)
+    }
+
+    fn paint_via_backend(
+        bar: &ActivityBar,
+        hovered: Option<usize>,
+    ) -> (BitmapSurface, Vec<ActivityBarRowHit>) {
+        paint_bar_at(bar, hovered, 0.0, 0.0, W, H)
+    }
+
+    fn paint_via_backend_at(
+        bar: &ActivityBar,
+        hovered: Option<usize>,
+        x: f32,
+        y: f32,
+        canvas_w: u32,
+        canvas_h: u32,
+    ) -> (BitmapSurface, Vec<ActivityBarRowHit>) {
+        paint_bar_at(bar, hovered, x, y, canvas_w, canvas_h)
+    }
+
+    fn paint_via_backend_with_style(
+        bar: &ActivityBar,
+        style: &crate::ActivityBarStyle,
+        hovered: Option<usize>,
+    ) -> (BitmapSurface, Vec<ActivityBarRowHit>) {
+        let mut bar = bar.clone();
+        bar.style = *style;
+        paint_bar_at(&bar, hovered, 0.0, 0.0, W, H)
+    }
+
+    /// Bounding-box height (device px) of every non-background pixel
+    /// within row `[y0, y1)` — used by icon-size tests.
+    /// Excludes the bar's own 1pt right-edge separator column
+    /// (`x == W - 1`), which is unconditional and would otherwise swamp
+    /// a glyph-only ink measurement.
+    fn ink_height_in_row(surface: &BitmapSurface, y0: u32, y1: u32) -> u32 {
+        let theme = Theme::default();
+        let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
+        let mut found: Option<(u32, u32)> = None;
+        for y in y0..y1 {
+            for x in 0..(W - 1) {
+                let (r, g, b, _) = surface.pixel(x, y);
+                if (r, g, b) != bg {
+                    found = Some(match found {
+                        Some((min_y, max_y)) => (min_y.min(y), max_y.max(y)),
+                        None => (y, y),
+                    });
+                }
+            }
+        }
+        found.map_or(0, |(min_y, max_y)| max_y - min_y + 1)
+    }
+
+    /// The icon glyph's ink size follows
+    /// `ActivityBarStyle::icon_size_px`, not the backend's `chrome_font`
+    /// size.
+    #[test]
+    fn icon_ink_height_follows_style_not_chrome_font_size() {
+        use crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX;
+
+        // Settings (bottom-pinned, not active): no accent strip to
+        // isolate the glyph ink from.
+        let mut bar = sample_bar();
+        bar.active_accent = None;
+        let settings_y0 = H - ACTIVITY_ROW_PX as u32;
+        let settings_y1 = H;
+
+        let paint_with = |style: &crate::ActivityBarStyle, chrome_size_pt: f64| -> u32 {
+            let surface = BitmapSurface::new(W, H);
+            surface.fill(0.0, 0.0, 0.0, 0.0);
+            let mut backend = MacBackend::new();
+            backend.set_chrome_font(system_ui_font(chrome_size_pt));
+            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+            let mut bar = bar.clone();
+            bar.style = *style;
+            backend.enter_frame_scope(surface.context_ptr(), |b| {
+                b.draw_dyn(QRect::new(0.0, 0.0, W as f32, H as f32), &bar, &());
+            });
+            backend.end_frame();
+            ink_height_in_row(&surface, settings_y0, settings_y1)
+        };
+
+        let default_style = crate::ActivityBarStyle::default();
+        let default_small_chrome = paint_with(&default_style, 6.0);
+        let default_huge_chrome = paint_with(&default_style, 40.0);
+        assert!(
+            default_small_chrome > 0,
+            "sanity: the glyph should paint some ink"
+        );
+        assert_eq!(
+            default_small_chrome, default_huge_chrome,
+            "default icon ink height must not track chrome_font's own size \
+             (6pt vs 40pt chrome font should paint identically)"
+        );
+
+        let small_style = crate::ActivityBarStyle::new().with_icon_size_px(10.0);
+        let small_icon = paint_with(&small_style, 11.0);
+        assert!(
+            small_icon < default_huge_chrome,
+            "icon_size_px(10.0) ({small_icon}px ink) should paint smaller than \
+             the {DEFAULT_ACTIVITY_ICON_SIZE_PX}px default ({default_huge_chrome}px ink)"
+        );
+    }
+
+    #[test]
+    fn background_is_tab_bar_bg() {
+        let bar = sample_bar();
+        let (surface, _) = paint_via_backend(&bar, None);
+        let theme = Theme::default();
+        // Probe deep inside the second (non-active) row, well away
+        // from any glyph centre.
+        let (r, g, b, _) = surface.pixel(W - 6, (ACTIVITY_ROW_PX as u32) + 4);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+        );
+    }
+
+    #[test]
+    fn active_item_paints_accent_strip_on_left_edge() {
+        // 2-px accent strip at x ∈ [0, 2). Probe column 0 inside the
+        // first row (active) and assert accent colour.
+        let bar = sample_bar();
+        let (surface, _) = paint_via_backend(&bar, None);
+        let accent = bar.active_accent.unwrap();
+        // y = ACTIVITY_ROW_PX/2 sits mid-row inside the first
+        // (active) item.
+        let probe_y = (ACTIVITY_ROW_PX as u32) / 2;
+        let (r, g, b, _) = surface.pixel(0, probe_y);
+        assert_eq!((r, g, b), (accent.r, accent.g, accent.b));
+        let (r2, g2, b2, _) = surface.pixel(1, probe_y);
+        assert_eq!((r2, g2, b2), (accent.r, accent.g, accent.b));
+
+        // x = 2 should already be off the accent strip — proves the
+        // strip is exactly 2 points wide. Probe at row top to dodge
+        // any wide-glyph render.
+        let (r3, g3, b3, _) = surface.pixel(2, 2);
+        let theme = Theme::default();
+        assert_eq!(
+            (r3, g3, b3),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "x=2 should be tab_bar_bg, not accent",
+        );
+    }
+
+    /// `style.active_bg: Some(..)` + `active_accent: None`
+    /// paints a filled active row with **zero** accent-line pixels — the
+    /// legacy 2-pt left-edge strip (x ∈ [0, 2)) must show the fill colour,
+    /// not any accent tint.
+    #[test]
+    fn active_bg_fills_row_with_zero_accent_pixels_when_accent_is_none() {
+        let mut bar = sample_bar();
+        bar.active_accent = None;
+        let fill = Color::rgb(49, 50, 51);
+        let style = crate::ActivityBarStyle::new().with_active_bg(fill);
+        let (surface, _) = paint_via_backend_with_style(&bar, &style, None);
+
+        let probe_y = (ACTIVITY_ROW_PX as u32) / 2;
+        for x in [0, 1] {
+            let (r, g, b, _) = surface.pixel(x, probe_y);
+            assert_eq!(
+                (r, g, b),
+                (fill.r, fill.g, fill.b),
+                "x={x} is inside the legacy accent strip; with active_accent \
+                 None it must show the active_bg fill, not any accent tint"
+            );
+        }
+        // Deep in the row, away from the glyph, should also be filled.
+        let (r, g, b, _) = surface.pixel(W - 6, probe_y);
+        assert_eq!((r, g, b), (fill.r, fill.g, fill.b));
+    }
+
+    #[test]
+    fn row_hits_cover_painted_rows() {
+        // Round-trip: returned regions must point at where the icon
+        // was painted. Verify each region's y-span matches the
+        // ACTIVITY_ROW_PX grid AND its id matches the item.
+        //
+        // `visible_items` order is now bottom-pinned-first (the
+        // shared `ActivityBar::layout`'s order — matching
+        // `gtk::activity_bar` / `win::activity_bar`), not this module's
+        // old top-first `row_plan` order. Only the *order* of these
+        // assertions changed; the y-spans themselves are unchanged.
+        let bar = sample_bar();
+        let (_surface, regions) = paint_via_backend(&bar, None);
+        // 2 top + 1 bottom = 3 visible rows.
+        assert_eq!(regions.len(), 3);
+
+        // Bottom-pinned item comes first.
+        assert_eq!(regions[0].y_start, H as f32 - ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[0].y_end, H as f32);
+        assert_eq!(regions[0].id, WidgetId::new("activity:settings"));
+
+        assert_eq!(regions[1].y_start, 0.0);
+        assert_eq!(regions[1].y_end, ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[1].id, WidgetId::new("activity:explorer"));
+
+        assert_eq!(regions[2].y_start, ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[2].y_end, 2.0 * ACTIVITY_ROW_PX as f32);
+        assert_eq!(regions[2].id, WidgetId::new("activity:search"));
+    }
+
+    #[test]
+    fn right_edge_has_separator_pixel() {
+        let bar = sample_bar();
+        let (surface, _) = paint_via_backend(&bar, None);
+        let theme = Theme::default();
+        let (r, g, b, _) = surface.pixel(W - 1, H / 2);
+        assert_eq!(
+            (r, g, b),
+            (theme.separator.r, theme.separator.g, theme.separator.b),
+        );
+    }
+
+    /// The shared `native_surface_paint::paint` fills `bar.selection_bg`
+    /// (or the `lighten(0.20)` default) for a keyboard-selected row.
+    #[test]
+    fn keyboard_selected_row_paints_selection_bg() {
+        let mut bar = sample_bar();
+        // Search (top_items[1], not active) is the keyboard-selected row.
+        bar.top_items[1].is_keyboard_selected = true;
+        let (surface, _) = paint_via_backend(&bar, None);
+        let theme = Theme::default();
+        let expected = theme.tab_bar_bg.lighten(0.20);
+
+        // Search paints at y ∈ [48, 96) — probe deep in the row, away
+        // from the glyph and the (unrelated) accent strip.
+        let probe_y = ACTIVITY_ROW_PX as u32 + ACTIVITY_ROW_PX as u32 / 2;
+        let (r, g, b, _) = surface.pixel(W - 6, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "keyboard-selected row should paint the selection background",
+        );
+    }
+
+    /// `cargo test -p quadraui --features macos -- --ignored --nocapture primitives::activity_bar::mac_paint_tests::dump_smoke_ppm`
+    ///
+    /// Paints the sample bar (2 top items + 1 bottom-pinned) into a
+    /// 48 × 240 surface and writes `/tmp/quadraui_activity_bar.ppm`.
+    /// Hover row 1 so the lightened bg is visible. Open in Preview to
+    /// confirm:
+    /// - Top item (active) has a 2-pt accent strip on the left edge.
+    /// - Middle item shows the hover-lightened bg.
+    /// - Bottom item is pinned to the bottom edge.
+    /// - Right-edge has a 1-pt separator column.
+    #[test]
+    #[ignore = "writes /tmp/quadraui_activity_bar.ppm — opt in with --ignored"]
+    fn dump_smoke_ppm() {
+        let bar = sample_bar();
+        let (surface, _) = paint_via_backend(&bar, Some(1));
+        surface.write_ppm_and_open("/tmp/quadraui_activity_bar.ppm");
+    }
+
+    #[test]
+    fn hover_lightens_row_background() {
+        let bar = sample_bar();
+        // Hover `visible_items[1]` — the explorer row (`ActivityBar::layout`
+        // orders bottom-pinned items first, so index 1 is the first top item).
+        // Hover paints unconditionally regardless of `is_active`, and the
+        // default style has no `active_bg`, so the probed pixel is still the
+        // plain hover tint either way.
+        let (surface, _) = paint_via_backend(&bar, Some(1));
+        let theme = Theme::default();
+        let expected = theme.tab_bar_bg.lighten(0.10);
+        // Explorer paints at y ∈ [0, 48) — probe deep into that row,
+        // away from the glyph centre.
+        let (r, g, b, _) = surface.pixel(W - 6, 4);
+        assert_eq!(
+            (r, g, b),
+            (expected.r, expected.g, expected.b),
+            "hovered row should paint the lightened bg",
+        );
+    }
+
+    /// [`crate::DrawsPrimitives::layout_primitive`] must return exactly
+    /// the rows the widget painted — both resolve the same
+    /// `ActivityBar::layout`, and this pins that.
+    #[test]
+    fn layout_twin_matches_the_painted_rows() {
+        let bar = sample_bar();
+        let (_surface, painted) = paint_via_backend(&bar, None);
+
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let computed = backend
+            .layout_primitive(QRect::new(0.0, 0.0, W as f32, H as f32), &bar)
+            .row_hits(&bar);
+
+        assert_eq!(painted.len(), computed.len());
+        for (p, c) in painted.iter().zip(computed.iter()) {
+            assert_eq!(p.id, c.id);
+            assert_eq!(p.tooltip, c.tooltip);
+            assert!((p.y_start - c.y_start).abs() < 0.001);
+            assert!((p.y_end - c.y_end).abs() < 0.001);
+        }
+    }
+
+    /// Spans are bar-relative: every row's `y_start` is unchanged
+    /// regardless of where the bar sits.
+    #[test]
+    fn layout_twin_spans_are_bar_relative_at_a_nonzero_origin() {
+        let bar = sample_bar();
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        let at_origin = backend
+            .layout_primitive(QRect::new(0.0, 0.0, W as f32, H as f32), &bar)
+            .row_hits(&bar);
+        let moved = backend
+            .layout_primitive(QRect::new(23.0, 41.0, W as f32, H as f32), &bar)
+            .row_hits(&bar);
+
+        assert_eq!(at_origin.len(), moved.len());
+        // `at_origin[0]` is the bottom-pinned `settings` item (`ActivityBar::layout`
+        // orders bottom-pinned items first), so its bar-relative `y_start` is
+        // `H - ACTIVITY_ROW_PX`, not `0.0`.
+        assert!((at_origin[0].y_start - (H as f32 - ACTIVITY_ROW_PX as f32)).abs() < 0.001);
+        for (a, m) in at_origin.iter().zip(moved.iter()) {
+            assert!(
+                (a.y_start - m.y_start).abs() < 0.001,
+                "row {:?} moved with the bar origin: {} vs {}",
+                a.id,
+                a.y_start,
+                m.y_start,
+            );
+        }
+    }
+
+    /// Painting at a non-zero origin must leave `(0, 0)` untouched and
+    /// land the strip's background + right-edge separator exactly at
+    /// `(rect.x, rect.y)`.
+    #[test]
+    fn background_paints_at_rect_origin_not_at_window_origin() {
+        const ORIGIN_X: f32 = 30.0;
+        const ORIGIN_Y: f32 = 28.0; // e.g. a title bar's height
+        let canvas_w = ORIGIN_X as u32 + W;
+        let canvas_h = ORIGIN_Y as u32 + H;
+
+        let bar = sample_bar();
+        let (surface, regions) =
+            paint_via_backend_at(&bar, None, ORIGIN_X, ORIGIN_Y, canvas_w, canvas_h);
+        let theme = Theme::default();
+
+        // The window's literal top-left corner must stay exactly as the
+        // surface was initialised — fully transparent — never the
+        // activity bar's background fill.
+        let (_, _, _, a) = surface.pixel(0, 0);
+        assert_eq!(
+            a, 0,
+            "window origin (0,0) must stay untouched when the bar sits at ({ORIGIN_X}, {ORIGIN_Y})",
+        );
+
+        // Deep inside the (non-active) second row, offset by the bar's
+        // real origin: activity-bar background.
+        let probe_x = ORIGIN_X as u32 + W - 6;
+        let probe_y = ORIGIN_Y as u32 + ACTIVITY_ROW_PX as u32 + 4;
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "activity bar background should paint at rect's origin, not the window origin",
+        );
+
+        // Right-edge separator (1 pt) shifts with the origin too.
+        let (sr, sg, sb, _) = surface.pixel(ORIGIN_X as u32 + W - 1, ORIGIN_Y as u32 + H / 2);
+        assert_eq!(
+            (sr, sg, sb),
+            (theme.separator.r, theme.separator.g, theme.separator.b),
+            "right-edge separator should shift with the bar's origin",
+        );
+
+        // Hit regions stay bar-relative — the paint origin must not leak
+        // into the returned spans. `regions[0]` is the bottom-pinned `settings`
+        // item (`ActivityBar::layout` orders bottom-pinned items first), so its
+        // bar-relative `y_start` is `H - ACTIVITY_ROW_PX`, not `0.0`.
+        assert_eq!(regions[0].y_start, H as f32 - ACTIVITY_ROW_PX as f32);
     }
 }

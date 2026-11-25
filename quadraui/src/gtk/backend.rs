@@ -4918,6 +4918,21 @@ impl PaintSurface for EditorSurface<'_> {
 // Every text verb forces `ui_font` (chrome) explicitly rather than trusting
 // the ambient per-frame layout font. `Self::status_bar_paint_scaled` relies
 // on this: every text verb resolves `self.ui_font` fresh on every call.
+/// The Pango description an icon glyph paints in at `size_px`
+/// device-independent pixels: the Nerd Font fallback family, then the
+/// bundled codicon family, then monospace. Pango sizes are points at the
+/// legacy 96/72 dpi ratio, so `size_px` is converted by `72 / 96`.
+fn icon_font_description(size_px: f32) -> pango::FontDescription {
+    let pt = size_px * 72.0 / 96.0;
+    let mut f = pango::FontDescription::from_string(&format!("monospace {pt}"));
+    f.set_family(&format!(
+        "{}, {}, monospace",
+        crate::gtk::current_nerd_font_fallback_family(),
+        crate::codicon::FONT_FAMILY
+    ));
+    f
+}
+
 impl PaintSurface for GtkBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
@@ -4926,6 +4941,29 @@ impl PaintSurface for GtkBackend {
     /// Paints through [`EditorSurface`], this backend's editor-font twin.
     fn surface_with_editor_font(&mut self, paint: &mut dyn FnMut(&mut dyn PaintSurface)) -> bool {
         paint(&mut EditorSurface { backend: self });
+        true
+    }
+
+    /// Paints through a [`super::surface::CairoSurface`] whose frame
+    /// layout carries [`icon_font_description`] at `size_px` for the
+    /// duration of `paint`, restoring the layout's own font afterwards.
+    fn surface_with_icon_font(
+        &mut self,
+        size_px: f32,
+        paint: &mut dyn FnMut(&mut dyn PaintSurface),
+    ) -> bool {
+        let Some((cr, layout)) = self.current_frame_refs() else {
+            return false;
+        };
+        let saved = layout.font_description();
+        layout.set_font_description(Some(&icon_font_description(size_px)));
+        layout.set_attributes(None);
+        paint(&mut super::surface::CairoSurface {
+            cr,
+            layout: Some(layout),
+            translucent_fill: true,
+        });
+        layout.set_font_description(saved.as_ref());
         true
     }
 
@@ -7356,6 +7394,10 @@ mod tests {
             pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
+            // The widget contract measures through `Backend::measure_text`,
+            // which resolves real Pango advances only against the stable
+            // context `gtk::run` installs at `DrawingArea` realize time.
+            backend.set_pango_context(pango_ctx.clone());
             backend.enter_frame_scope(&cr, &layout, |b| status_segment_width(b, rect, &bar))
         };
 
@@ -7372,6 +7414,7 @@ mod tests {
             pango_ctx.set_font_description(&small_editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
+            backend.set_pango_context(pango_ctx.clone());
             Backend::set_ui_font(&mut backend, "Sans 40");
             backend.enter_frame_scope(&cr, &layout, |b| status_segment_width(b, rect, &bar))
         };
@@ -7384,8 +7427,10 @@ mod tests {
 
     /// Driver-tier proof that `GtkBackend::surface_measure_text_styled`'s
     /// bold override actually does something against a real `pango::Layout`.
-    /// Paints the same text through the widget contract once bold, once not, and asserts the bold segment's resolved
-    /// (painted) width is strictly wider. The chrome font is pinned to a
+    /// Paints the same text through the shared status-bar pixel painter
+    /// (which measures each segment with `surface_measure_text_styled`)
+    /// once bold, once not, and asserts the bold segment's painted width
+    /// is strictly wider. The chrome font is pinned to a
     /// large explicit size rather than the backend default: at the default
     /// 13px chrome size, macOS's Pango/CoreText rounds regular and bold
     /// "READY" to the same pixel width, which would test glyph hinting
@@ -7413,7 +7458,23 @@ mod tests {
                 }],
                 right_segments: vec![],
             };
-            backend.enter_frame_scope(&cr, &layout, |b| status_segment_width(b, rect, &bar))
+            let theme = crate::Theme::default();
+            backend.enter_frame_scope(&cr, &layout, |b| {
+                crate::primitives::status_bar::native_surface_paint::paint(
+                    &bar,
+                    b,
+                    &theme,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    None,
+                    None,
+                )
+                .visible_segments[0]
+                    .bounds
+                    .width
+            })
         };
 
         let regular_width = width_for(false);
@@ -7565,6 +7626,103 @@ mod tests {
                  showing the sentinel colour",
             );
         }
+    }
+
+    /// The activity-bar icon font's default size (24px, the crate's
+    /// `DEFAULT_ACTIVITY_ICON_SIZE_PX`) is Pango's 18pt at the 96/72 dpi
+    /// ratio.
+    #[test]
+    fn icon_font_description_converts_pixels_to_points() {
+        let desc =
+            icon_font_description(crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX);
+        assert_eq!(desc.size(), 18 * pango::SCALE);
+    }
+
+    /// An activity bar's icon glyph ink height follows
+    /// `ActivityBarStyle::icon_size_px`, not the frame layout's font or
+    /// the backend's `ui_font` — `surface_with_icon_font` paints the
+    /// glyphs in their own icon font.
+    #[test]
+    fn gtk_backend_activity_bar_icon_ink_height_follows_style_not_the_frame_font() {
+        const ROW_W: i32 = 48;
+        let row_h = crate::primitives::activity_bar::PIXEL_ROW_HEIGHT as i32;
+        let bar = |style: crate::ActivityBarStyle| crate::ActivityBar {
+            id: WidgetId::new("test:activity"),
+            top_items: vec![crate::ActivityItem {
+                id: WidgetId::new("test:activity:explorer"),
+                icon: crate::types::Icon::new("E", "E"),
+                tooltip: String::new(),
+                is_active: false,
+                is_keyboard_selected: false,
+            }],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+            style,
+            hovered: None,
+        };
+
+        let ink_height = |style: crate::ActivityBarStyle, frame_font_pt: f64| -> i32 {
+            let mut surface = pangocairo::cairo::ImageSurface::create(
+                pangocairo::cairo::Format::ARgb32,
+                ROW_W,
+                row_h,
+            )
+            .expect("create ImageSurface");
+            {
+                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+                let layout = pangocairo::functions::create_layout(&cr);
+                layout.set_font_description(Some(&pango::FontDescription::from_string(&format!(
+                    "monospace {frame_font_pt}"
+                ))));
+                let mut backend = GtkBackend::new();
+                Backend::set_ui_font(&mut backend, &format!("Sans {frame_font_pt}"));
+                let bar = bar(style);
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    crate::DrawsPrimitives::draw_dyn(
+                        b,
+                        QRect::new(0.0, 0.0, ROW_W as f32, row_h as f32),
+                        &bar,
+                        &(),
+                    );
+                });
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            let theme = crate::Theme::default();
+            let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
+            let (mut min_y, mut max_y) = (i32::MAX, i32::MIN);
+            for y in 0..row_h {
+                // The last column is the rail's own 1px separator.
+                for x in 0..ROW_W - 1 {
+                    if chart_pixel(&data, stride, x, y) != bg {
+                        min_y = min_y.min(y);
+                        max_y = max_y.max(y);
+                    }
+                }
+            }
+            if min_y > max_y {
+                0
+            } else {
+                max_y - min_y + 1
+            }
+        };
+
+        let default_small = ink_height(crate::ActivityBarStyle::default(), 6.0);
+        let default_huge = ink_height(crate::ActivityBarStyle::default(), 60.0);
+        assert!(default_small > 0, "sanity: the glyph paints some ink");
+        assert_eq!(
+            default_small, default_huge,
+            "default icon ink height must not track the frame font's size"
+        );
+        let small_icon = ink_height(crate::ActivityBarStyle::new().with_icon_size_px(10.0), 14.0);
+        assert!(
+            small_icon < default_huge,
+            "icon_size_px(10.0) ({small_icon}px ink) should paint smaller than \
+             the 24px default ({default_huge}px ink)"
+        );
     }
 
     #[test]

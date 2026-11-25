@@ -10702,26 +10702,18 @@ fn focus_demo_tab_moves_the_rendered_ring_through_the_screen_layout_order() {
         driver.screen()
     );
 
-    // Stop 3: the status bar — last in reading order (largest y).
-    driver.press_named(NamedKey::Tab);
-    let status = ring_corner(&driver);
-    assert!(
-        status.1 > left.1,
-        "ring moved down to the status bar: {left:?} -> {status:?}\n{}",
-        driver.screen()
-    );
-    assert!(
-        driver.screen_contains(&format!("focus: {STATUS_ID}")),
-        "{}",
-        driver.screen()
-    );
-
-    // Wrap-around: back to stop 1, at the exact same cell it started on.
+    // Wrap-around: the status bar takes no keyboard focus, so Tab goes
+    // straight back to stop 1, at the exact same cell it started on.
     driver.press_named(NamedKey::Tab);
     assert_eq!(
         ring_corner(&driver),
         left,
         "Tab wraps from the last stop back to the first:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains(&format!("focus: {STATUS_ID}")),
+        "the status bar is never a tab stop:\n{}",
         driver.screen()
     );
 }
@@ -10730,23 +10722,10 @@ fn focus_demo_tab_moves_the_rendered_ring_through_the_screen_layout_order() {
 fn focus_demo_shift_tab_walks_the_ring_backwards() {
     let mut driver = focus_driver();
 
-    // From "nothing focused", Shift+Tab lands on the *last* stop.
-    shift_tab(&mut driver);
-    let status = ring_corner(&driver);
-    assert!(
-        driver.screen_contains(&format!("focus: {STATUS_ID}")),
-        "{}",
-        driver.screen()
-    );
-
+    // From "nothing focused", Shift+Tab lands on the *last* stop — the
+    // right list, since the status bar takes no keyboard focus.
     shift_tab(&mut driver);
     let right = ring_corner(&driver);
-    assert!(
-        right.1 < status.1,
-        "Shift+Tab retreated from the status bar up to the right list: \
-         {status:?} -> {right:?}\n{}",
-        driver.screen()
-    );
     assert!(
         driver.screen_contains(&format!("focus: {RIGHT_ID}")),
         "{}",

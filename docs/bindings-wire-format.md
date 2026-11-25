@@ -529,6 +529,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`MinimapSpanDescriptor`](#wire-minimapspandescriptor)
 - [`MinimapDescriptor`](#wire-minimapdescriptor)
 - [`ActivityItemDescriptor`](#wire-activityitemdescriptor)
+- [`ActivityBarStyleDescriptor`](#wire-activitybarstyledescriptor)
 - [`ActivityBarDescriptor`](#wire-activitybardescriptor)
 - [`PaletteMode`](#wire-palettemode)
 - [`PaletteItemDescriptor`](#wire-paletteitemdescriptor)
@@ -2490,6 +2491,14 @@ Alias for `"Pending" | "Running" | "Passed" | "Warning" | "Blocked"`.
 | `is_active` | `boolean` | no |  |
 | `is_keyboard_selected` | `boolean` | no |  |
 
+<a id="wire-activitybarstyledescriptor"></a>
+#### `ActivityBarStyleDescriptor`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `active_bg` | `Color \| null` | no |  |
+| `icon_size_px` | `number \| null` | no |  |
+
 <a id="wire-activitybardescriptor"></a>
 #### `ActivityBarDescriptor`
 
@@ -2501,6 +2510,8 @@ Alias for `"Pending" | "Running" | "Passed" | "Warning" | "Blocked"`.
 | `active_accent` | `Color \| null` | no |  |
 | `selection_bg` | `Color \| null` | no |  |
 | `is_keyboard_focused` | `boolean` | no |  |
+| `style` | `ActivityBarStyleDescriptor` | no |  |
+| `hovered` | `number \| null` | no |  |
 
 <a id="wire-palettemode"></a>
 #### `PaletteMode`
@@ -3593,7 +3604,7 @@ Alias for `"Left" | "Right"`.
 <a id="wire-layoutleafnode"></a>
 #### `LayoutLeafNode`
 
-One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.
+One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -3605,7 +3616,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `data_table` | `DataTableDescriptor` | no |  |
 | `tab_bar` | `TabBarDescriptor` | no |  |
 | `scripted_widget` | `ScriptedWidgetDescriptor` | no |  |
-| `status_bar` | `StatusBarDescriptor` | no |  |
 | `progress` | `ProgressBarDescriptor` | no |  |
 | `spinner` | `SpinnerDescriptor` | no |  |
 | `image` | `ImageDescriptor` | no |  |
@@ -3624,7 +3634,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `diff_view` | `DiffViewDescriptor` | no |  |
 | `tree_table` | `TreeTableDescriptor` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor` | no |  |
-| `activity_bar` | `ActivityBarDescriptor` | no |  |
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
 | `command_line` | `CommandLineDescriptor` | no |  |
@@ -3647,6 +3656,8 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `button` | `ButtonDescriptor` | no |  |
 | `command_center` | `CommandCenterDescriptor` | no |  |
 | `terminal` | `TerminalDescriptor` | no |  |
+| `status_bar` | `StatusBarDescriptor` | no |  |
+| `activity_bar` | `ActivityBarDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3673,7 +3684,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `tree` | `TreeViewDescriptor \| null` | no |  |
 | `data_table` | `DataTableDescriptor \| null` | no |  |
 | `tab_bar` | `TabBarDescriptor \| null` | no |  |
-| `status_bar` | `StatusBarDescriptor \| null` | no |  |
 | `progress` | `ProgressBarDescriptor \| null` | no |  |
 | `spinner` | `SpinnerDescriptor \| null` | no |  |
 | `image` | `ImageDescriptor \| null` | no |  |
@@ -3692,7 +3702,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `diff_view` | `DiffViewDescriptor \| null` | no |  |
 | `tree_table` | `TreeTableDescriptor \| null` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor \| null` | no |  |
-| `activity_bar` | `ActivityBarDescriptor \| null` | no |  |
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
 | `command_line` | `CommandLineDescriptor \| null` | no |  |
@@ -3715,6 +3724,8 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `button` | `ButtonDescriptor \| null` | no |  |
 | `command_center` | `CommandCenterDescriptor \| null` | no |  |
 | `terminal` | `TerminalDescriptor \| null` | no |  |
+| `status_bar` | `StatusBarDescriptor \| null` | no |  |
+| `activity_bar` | `ActivityBarDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`
