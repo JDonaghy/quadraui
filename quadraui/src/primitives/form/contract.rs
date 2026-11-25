@@ -36,6 +36,266 @@
 //! and leaves the popup to the host, which is why those rows are a
 //! value plus an affordance rather than the whole embedded widget.
 //!
+//! ## Per-field behaviour
+//!
+//! ### Keyboard editing
+//!
+//! Every key and every character routes to the field named by
+//! `Form.focused_field`. Deciding that this form is the active panel at
+//! all happens one level up — the routing engine only delivers a
+//! [`RoutedEvent::Key`] to a focused widget, and
+//! [`crate::compose::FormController`] gates on its own
+//! [`crate::compose::FormController::has_focus`] — so there is no such
+//! gate here.
+//!
+//! - `Tab` / `Shift+Tab` (or `BackTab`) move focus to the next/previous
+//!   non-`Label`, non-`ReadOnly`, non-disabled field, scroll it into
+//!   view, and emit [`FormEvent::FocusChanged`]. The app stores the new
+//!   id and feeds it back as `focused_field` on the next
+//!   frame — same contract [`super`]'s own module doc describes.
+//! - While a `TextInput` / `TextArea` / `PasswordInput` field is
+//!   focused, every other key is decoded through
+//!   [`crate::EditOp::from_key`] and applied via [`crate::TextEditor::apply`]
+//!   against that field's `value`, emitting
+//!   [`FormEvent::TextInputChanged`] with the new value.
+//!   `Ctrl`/`Cmd`+`<character>` combos are rejected before
+//!   `EditOp::from_key` sees them — every backend delivers those as
+//!   `Key::Char` with the modifier set, so an unregistered accelerator
+//!   (Ctrl+C, Cmd+S, ...) doesn't get typed as a literal character.
+//!   `Enter` commits instead of inserting a newline, emitting
+//!   [`FormEvent::TextInputCommitted`] — except on a `TextArea`, where
+//!   `Enter` inserts a newline, since that is the one field kind meant
+//!   to hold them. `ClipboardPaste` inserts its text via
+//!   [`crate::EditOp::InsertText`].
+//! - The cursor/selection position is **owned by [`FormState`]**, not
+//!   the app — it survives across keystrokes internally (see
+//!   `text_edit` below) even though the app only ever has to persist the
+//!   `value` string from `TextInputChanged`/`TextInputCommitted`. This is
+//!   what makes "no app-side key plumbing" true: the app's model needs a
+//!   `String` per text field, nothing else. Each keystroke builds a
+//!   throwaway [`crate::TextEditor`] (see
+//!   `text_input::apply_flat_edit_op`), so
+//!   `EditOp::Undo`/`Redo` never have history to act on for a form
+//!   field — out of scope here, since nothing in `Form`'s per-frame data
+//!   carries edit history across keystrokes.
+//!
+//! ### Date picker fields
+//!
+//! `FieldKind::DatePicker` splits ownership the same way text fields do
+//! (see "Keyboard editing" above): the app stays the source of truth for
+//! the *confirmed* value (`selected`, pushed back via
+//! [`FormEvent::DateChanged`] once `Enter` confirms a day), while
+//! this module owns the live scrubbing position between keystrokes
+//! (see [`DateCursor`]) so `Left`/`Right`/`Up`/`Down`/`PageUp`/`PageDown`
+//! keep moving the calendar without an app round-trip on every key.
+//!
+//! - While the row is focused, the renderer shows the cached scrub
+//!   position (`focused`), not `selected` — otherwise a scrub past the
+//!   first confirmed date would be invisible. Once focus moves on, the
+//!   renderer falls back to `selected` (or `focused` before any date has
+//!   ever been confirmed).
+//! - `Tab`/`Shift+Tab`/`BackTab` are excluded from the picker's own key
+//!   set, so focus traversal off a `DatePicker` field still works
+//!   normally, and `Ctrl`/`Alt`/`Cmd` + any of the picker's keys fall
+//!   through to the generic dispatch (and from there to the host) rather
+//!   than being swallowed as navigation.
+//! - A disabled focused `DatePicker` does not intercept its navigation
+//!   keys at all — they fall through to the generic dispatch below,
+//!   which is a no-op for a non-text field, the same as any other
+//!   disabled field kind.
+//! - Clicking a `DatePicker` field only changes focus (`FieldKind` has no
+//!   click-driven navigation yet); the cached scrub position is only
+//!   ever overlaid onto the field that is still focused, so a click that
+//!   moves focus elsewhere can't leave a stale scrub position visible on
+//!   the field it left.
+//!
+//! ### ComboBox fields
+//!
+//! `FieldKind::ComboBox` needs no shadow-state struct the way
+//! `DatePicker` needs [`DateCursor`]: its `text`/`open`/`highlighted`
+//! fields are already the live state, supplied fresh by the app each
+//! frame, with no separate cursor/position concept to cache across
+//! keystrokes. `handle_combo_box_key` clones the focused field's
+//! `ComboBox`, forces its `focused` flag to match `Form::focused_field`
+//! (the app isn't expected to mirror that onto the embedded primitive
+//! itself), and calls its own `handle_key` directly.
+//!
+//! - Unlike `DatePicker`'s `date_picker_key_name` pre-filter,
+//!   `handle_combo_box_key` must see every key — digits/letters and
+//!   `Backspace` edit `text`, not just navigation — so it returns
+//!   `Option` instead of an unconditional event: a `None` (Tab/BackTab,
+//!   `Escape` while closed, `Up`/`Down` over an empty filtered list)
+//!   falls through to the generic dispatch below it. For Tab/BackTab that
+//!   dispatch has a dedicated arm (focus traversal keeps working off a
+//!   `ComboBox` field normally); for `Escape`/`Up`/`Down` there is no such
+//!   arm, so they fall all the way through to `EditOp::from_key`, which
+//!   doesn't recognize them either, and resolve to
+//!   `Handled::Ignored` — the same outcome as a disabled
+//!   focused field's keys, not a second layer of dedicated handling.
+//! - The compact field row (live `text` plus a chevron) is the only
+//!   thing a form paints; the open dropdown is the host's
+//!   own popup overlay, mirroring `ColorPicker`'s contract — see
+//!   `FieldKind::ComboBox`'s doc.
+//! - A disabled focused `ComboBox` does not intercept its keys at all,
+//!   the same as a disabled `DatePicker`.
+//!
+//! ### Number input fields
+//!
+//! `FieldKind::NumberInput` needs no shadow-state struct, the same as
+//! `ComboBox` above: the embedded input's own `value`/`draft`/`focused`
+//! are already the live state the app feeds back each frame.
+//! `handle_number_input_key` clones the focused field's `NumberInput`,
+//! forces its `focused` flag to match `Form::focused_field`, and calls
+//! its own `handle_key` directly — `Up`/`Down` step the value, digits/
+//! `Backspace` edit the draft, `Enter` commits, `Escape` cancels.
+//!
+//! - Stepper clicks (the increment/decrement buttons `FieldKind::NumberInput`
+//!   paints through the real `NumberInput::layout`/backend rasteriser —
+//!   see `primitives/form.rs`'s doc) are resolved in [`click_field`]
+//!   via [`number_input_click_event`], which reads the clicked field's
+//!   single [`crate::primitives::form::VisibleFormField::item_bounds`]
+//!   entry for the control's exact on-screen rect — the same rect
+//!   `native_surface_paint::paint`/`tui::form::draw_field_number_input`
+//!   painted, so a click always lands where the stepper visually is.
+//! - A disabled focused `NumberInput` does not intercept its keys at
+//!   all, the same as a disabled `ComboBox`/`DatePicker`.
+//!
+//! ### Radio group fields
+//!
+//! `FieldKind::RadioGroup` also needs no shadow state: the embedded
+//! group's `selected`/`focused` are the live state. `handle_radio_group_key`
+//! mirrors `handle_number_input_key` — clone, force `focused`, call the
+//! embedded group's own `handle_key` (`Up`/`Left` previous option,
+//! `Down`/`Right` next, wrapping and skipping disabled options).
+//!
+//! - A click on one of the group's options resolves through the *generic*
+//!   per-item click path: each `RadioOption` gets its own
+//!   [`crate::primitives::form::VisibleFormField::item_bounds`] entry
+//!   (one per option, stacked vertically — see
+//!   [`crate::primitives::form::FormFieldMeasure::vertical`]'s doc), so
+//!   [`form_click_event`]'s `FieldKind::RadioGroup` arm resolves the
+//!   clicked option's own id directly, the same way a `ToggleGroup`
+//!   item's click already does — no extra geometry lookup needed, unlike
+//!   `NumberInput`'s stepper buttons above.
+//!
+//! ### Slider fields
+//!
+//! `FieldKind::Slider` needs no shadow state either: `value`/`min`/
+//! `max`/`step` are already the live state the app feeds back each
+//! frame. Unlike `NumberInput`/`RadioGroup`, there's no embedded
+//! primitive with its own `handle_key`/`click` to delegate to — the
+//! field's doc contract ("click-and-drag on the track updates value;
+//! arrow keys step by `step`; Home/End jump to bounds") is implemented
+//! directly against the raw fields, mirroring
+//! `quadraui-binding-core::semantic`'s `slider_click_event`/
+//! `slider_key_event`, which give the standalone leaf the same contract.
+//!
+//! - `handle_slider_key` steps `value` by `step` on Left/Down (down) and
+//!   Right/Up (up), and jumps straight to `min`/`max` on Home/End —
+//!   every other key returns `None` and falls through to the generic
+//!   dispatch exactly like an unclaimed number-input/radio-group key.
+//! - A click or drag on the track is resolved by [`slider_value_at`],
+//!   which maps the pointer's x position to a fraction of the track's
+//!   width rather than a fixed step — [`click_field`]
+//!   calls it the same way it calls [`number_input_click_event`] for a
+//!   fresh press, and arms [`FormState::slider_drag`] with the clicked
+//!   field's id whenever the press landed on a non-disabled `Slider`'s
+//!   track, regardless of whether the value actually moved. Every
+//!   subsequent pointer move with the left button held re-resolves the
+//!   same way through [`slider_drag_to`], until
+//!   the release clears it. A press that lands on the row but
+//!   off the track ([`TrackOverrun::Reject`]) only focuses the field;
+//!   a drag already captured by the track pins to its ends instead
+//!   ([`TrackOverrun::Clamp`]).
+//! - The track rect comes from the clicked field's own
+//!   [`crate::primitives::form::VisibleFormField::item_bounds`] entry,
+//!   the same lookup `NumberInput`'s stepper uses. Every layout path
+//!   populates it: the pixel backends'
+//!   `layout_metrics::form_field_measure`, `tui::form`'s cell-unit
+//!   measure, and this module's own backend-free
+//!   [`form_field_measure`] fallback each report the exact track rect
+//!   their painter fills, so a labeled field's track is as
+//!   click/drag-operable as an unlabeled one's and a click on the label
+//!   column lands outside the track rather than at `min`.
+//! - A layout from a measure closure that reports no items at all falls
+//!   back to the field's whole row (`vf.bounds`), but only if the field
+//!   has no label column to its left (an empty label, or a resolved
+//!   [`LabelPosition::Hidden`]); for every other resolved label position
+//!   [`slider_track_rect`] reports no track at all, so the click falls
+//!   through to `form_click_event`'s `FocusChanged` the same way a click
+//!   on any other field's label already does.
+//! - A disabled focused `Slider` does not intercept its keys at all, the
+//!   same as a disabled `NumberInput`/`RadioGroup`, and a click on a
+//!   disabled `Slider` falls through to `form_click_event`'s generic
+//!   `FocusChanged` rather than arming a drag.
+//!
+//! ### Toggle fields
+//!
+//! A plain `FieldKind::Toggle` (unlike the three item-bearing kinds the
+//! next section covers) has exactly one clickable target, so it needs no
+//! item-focus index — `handle_toggle_key` just flips `value` directly.
+//! `Enter`/Space while it's focused emit the same `FormEvent::ToggleChanged`
+//! [`form_click_event`]'s own `FieldKind::Toggle` arm does for a mouse
+//! click, keeping the two activation paths at parity. A
+//! `UiEvent::CharTyped(' ')` (some backends deliver Space this way instead
+//! of a `KeyPressed { key: Char(' '), .. }`) goes through
+//! [`Self::activate_focused_on_space`] first — the generic `CharTyped`
+//! arm otherwise never reaches `handle_key` at all, so this field (and
+//! the three item-bearing kinds above) would silently swallow the
+//! keystroke instead of activating.
+//!
+//! ### Item-level keyboard focus
+//!
+//! `FieldKind::ButtonRow` / `ToggleGroup` / `Toolbar` each pack more than
+//! one clickable item under a single field id — mouse clicks already
+//! resolve to the individual item via [`form_click_event`], but keyboard
+//! focus only ever named the *field*, with no way to reach any item past
+//! the first without a mouse. `self.item_focus` fixes that: an index into
+//! [`crate::primitives::form::focusable_items`]'s enumeration of the
+//! focused field's items, owned by the controller the same way
+//! `text_edit`/`date_edit` are — never by the app, and never written onto
+//! `Form` itself (see `primitives/form.rs`'s "Item-level keyboard focus"
+//! doc note for why: a per-item focus flag doesn't belong on the
+//! declarative descriptor any more than a text cursor does).
+//!
+//! - While the focused field is one of the three kinds above and isn't
+//!   disabled, `Left`/`Right` move `item_focus` by one, skipping any
+//!   disabled item, **without wrapping** — Left at the first enabled item
+//!   (or Right at the last) is a no-op, unlike [`move_focus`]'s
+//!   field-to-field wrap. `Enter`/Space activate the item currently
+//!   named by `item_focus`, emitting the same event a mouse click on that
+//!   item already does (`FormEvent::ButtonClicked`/`ToggleChanged`/
+//!   `ToolbarButtonClicked` — see [`Self::activate_item_event`]).
+//! - [`move_focus`] (Tab/Shift-Tab/BackTab) reseeds `item_focus` to
+//!   the newly-focused field's first enabled item (`None` if it has none,
+//!   or isn't one of the three kinds), and clears it when focus leaves —
+//!   mirroring how it already reseeds `text_edit`/`date_edit`. Tab/
+//!   BackTab never step *into* an item — they keep moving between fields
+//!   only, the same traversal every other field kind already gets.
+//! - [`current_item_focus`] is the single reader both
+//!   [`handle_item_row_key`] and [`Self::render`]'s focus-ring
+//!   overlay call: if `item_focus` is stale (a different field is
+//!   focused, or its index has run past a shorter item list — e.g. after
+//!   a `set_form` push that shrank it) it falls back to the first
+//!   enabled item rather than panicking or silently focusing nothing, so
+//!   a direct `focused_field` assignment that skips `move_focus`
+//!   entirely (an app-constructed `Form`, or a test) still gets a sane
+//!   starting item the first time a key/render touches it.
+//! - Painting reuses `Backend::draw_focus_ring` — the same chrome
+//!   `Button`/`TextInput` already draw their own ring through — rather
+//!   than growing `primitives/form.rs`'s painters with a bespoke
+//!   per-item indicator. [`Self::render`] resolves the focused item's
+//!   on-screen rect via [`Backend::form_layout`]'s `item_bounds` (the
+//!   same lookup [`Self::field_rect`] already does for a whole field)
+//!   and calls `draw_focus_ring` on it once, after `draw_form` paints the
+//!   row — a no-op while nothing is item-focused.
+//! - Mouse clicks on an item are unchanged: [`click_field`] still
+//!   resolves straight to the clicked item's `FormEvent` via
+//!   `form_click_event`, without touching `item_focus` at all. The next
+//!   keystroke still resolves a sane item through the fallback above
+//!   rather than one left stale from a previous keyboard session.
+//!
+//!
 //! ## Interaction state
 //!
 //! [`FormState`] is the live counterpart of what the host used to carry
@@ -1220,7 +1480,8 @@ pub(crate) fn handle_text_op(form: &Form, state: &mut FormState, op: EditOp) -> 
 
 /// Determine the `FormEvent` for a click on a form field.
 ///
-/// Used by `FormController::handle` and `SidebarSystem` click dispatch.
+/// Used by [`click_field`] and by `compose::sidebar_system`'s own
+/// click dispatch, which reaches it through `compose::form_controller`.
 pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent {
     for field in &form.fields {
         if &field.id == clicked_id {
