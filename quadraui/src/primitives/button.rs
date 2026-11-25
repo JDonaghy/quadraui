@@ -459,11 +459,10 @@ pub struct ButtonLayout {
     /// layout time (by [`crate::primitive::Primitive::layout`]) because
     /// [`crate::primitive::Primitive::paint_cells`] has no `LayoutCtx`
     /// of its own to read it from — the same seam
-    /// [`crate::primitives::tab_bar::TabBarLayout::nerd_fonts_enabled`]/
-    /// [`crate::primitives::activity_bar::ActivityBarLayout::nerd_fonts`]
-    /// already carry it through for the same reason. Defaults to
-    /// `false` for every pre-existing [`Button::layout`] call site,
-    /// which never set it.
+    /// [`crate::primitives::tab_bar::TabBarPrimitiveLayout::nerd_fonts_enabled`]/
+    /// [`crate::primitives::activity_bar::ActivityBarPrimitiveLayout::nerd_fonts`]
+    /// carry it through for the same reason. [`Button::layout`], which
+    /// has no `LayoutCtx` to consult, leaves it `false`.
     pub nerd_fonts_enabled: bool,
 }
 
