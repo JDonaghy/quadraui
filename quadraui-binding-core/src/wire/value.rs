@@ -658,6 +658,35 @@ where
     })
 }
 
+/// [`decode_value_checked`] for a [`crate::extra_paint::WIDGET_KINDS`]
+/// descriptor body, whose concrete type is named by the `kind` string
+/// rather than statically by the caller: the same unknown-key policy
+/// applies, because [`quadraui::decode_widget_from`] hands this module's
+/// own wrapping deserializer to the descriptor type's derived
+/// `Deserialize`, which reports its field list through `deserialize_struct`
+/// exactly as a `T::deserialize` call does.
+pub(crate) fn decode_widget_checked(
+    diagnostics: &DecodeDiagnostics,
+    path: &str,
+    kind: &str,
+    value: &Value,
+) -> Result<Box<dyn quadraui::primitive::DynWidget>, DecodeError> {
+    let unknown_key: Cell<Option<DecodeError>> = Cell::new(None);
+    let guard = DescriptorBodyDeserializer {
+        value,
+        diagnostics,
+        path,
+        field: kind,
+        extra_keys: &[],
+        unknown_key: &unknown_key,
+    };
+    quadraui::decode_widget_from(kind, guard).map_err(|err| {
+        unknown_key
+            .replace(None)
+            .unwrap_or_else(|| DecodeError::borrow(path, format!("invalid descriptor: {err}")))
+    })
+}
+
 // ─── Value helpers ──────────────────────────────────────────────────────────
 
 /// Reads `value[key]`, treating a `null` entry the same as a missing one —

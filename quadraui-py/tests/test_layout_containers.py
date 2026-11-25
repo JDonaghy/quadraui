@@ -778,15 +778,17 @@ def test_scroll_wheel_notch_on_the_scrollbar_dispatches_and_persists_the_new_off
     # The hit map itself must have moved with the paint, not just the
     # pixels: clicking row 0 -- Item00's old screen position -- now hits
     # "btn:3", the child the scroll brought to the top, proving the click
-    # router (not only the repainted text) is offset-aware end to end.
+    # router (not only the repainted text) is offset-aware end to end. The
+    # button leaf resolves the press to its own `ButtonActivated`, so that
+    # activation's `widget` is what names the struck child.
     received.clear()
     app.push_event(
         {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
     )
     app.run(1)
-    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
-    assert mouse_downs, received
-    assert mouse_downs[0]["widget"] == "btn:3", received
+    activations = [event["ButtonActivated"] for event in received if "ButtonActivated" in event]
+    assert activations, received
+    assert activations[0]["widget"] == "btn:3", received
 
 
 def test_scroll_page_down_on_a_focused_child_scrolls_the_whole_container():
@@ -803,7 +805,7 @@ def test_scroll_page_down_on_a_focused_child_scrolls_the_whole_container():
     # Row 5, not row 1 -- far enough from the row-0 click below (more than
     # `DoubleClickDetector`'s 1.5-cell radius) that the two don't fold
     # into a single `DoubleClick`, which would make that second click's
-    # own `MouseDown` assertion vacuous.
+    # own `ButtonActivated` assertion vacuous.
     app.push_event(
         {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 5.0}, "modifiers": {}}}
     )
@@ -826,9 +828,9 @@ def test_scroll_page_down_on_a_focused_child_scrolls_the_whole_container():
         {"MouseDown": {"button": "Left", "position": {"x": 1.0, "y": 0.0}, "modifiers": {}}}
     )
     app.run(1)
-    mouse_downs = [event["MouseDown"] for event in received if "MouseDown" in event]
-    assert mouse_downs, received
-    assert mouse_downs[0]["widget"] == "btn:10", received
+    activations = [event["ButtonActivated"] for event in received if "ButtonActivated" in event]
+    assert activations, received
+    assert activations[0]["widget"] == "btn:10", received
 
 
 def test_scroll_with_a_controlled_offset_pins_it_from_the_very_first_paint():

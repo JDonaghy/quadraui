@@ -683,22 +683,22 @@ class App {
 
   /**
    * The `{"Form": [id, {"ButtonClicked": ...}]}` half of `_dispatch`: the
-   * semantic activation a `button` leaf emits for *both* a pointer click on
-   * its body and an Enter/Space while it holds keyboard focus.
+   * semantic activation a button *embedded in a `form` leaf* emits, for both
+   * a pointer click on its body and an Enter/Space while the form holds
+   * keyboard focus. A standalone `button` leaf takes the generic
+   * `ButtonActivated` route in `_dispatch` instead.
    *
-   * Only the keyboard-originated one runs `on_click` here. The
-   * pointer-originated one carries the same `hit` dict as the raw `MouseDown`
-   * that follows it, and that raw event is what `_dispatch` fires `on_click`
-   * from -- keying the callback off the press keeps one `on_click` per press,
-   * where claiming every semantic activation would fire twice for a fast
+   * Only an activation with no `hit` dict of its own runs `on_click`: one
+   * that carries a hit is the semantic twin of a raw press the caller also
+   * sees, so keying the callback off the press alone keeps one `on_click`
+   * per press where claiming every activation would fire twice for a fast
    * double-click (whose second press arrives as `DoubleClick`, carrying its
    * own activation). Either way the semantic event is claimed rather than
    * left to fall through to `onEvent`, so a button's own activation never
    * reaches the global escape hatch.
    *
    * An id this layer registered no `on_click` for is not one of its `Button`
-   * nodes (an embedded `form` field's button, say), so its event falls
-   * through untouched.
+   * nodes, so its event falls through untouched.
    */
   private _dispatchButtonClicked(obj: Record<string, unknown>): boolean {
     const inner = obj.Form;
@@ -794,15 +794,15 @@ class App {
       return false;
     }
 
-    if ("MouseDown" in obj) {
-      const payload = obj.MouseDown as { widget: string | null };
-      const hit = obj.hit as Record<string, unknown> | undefined;
-      if (payload.widget && hit !== undefined && hit.kind === "button_body") {
-        const callback = this._registry[payload.widget]?.on_click;
-        if (callback !== undefined) {
-          callback();
-          return true;
-        }
+    // The semantic activation a standalone `button` leaf's own press
+    // resolves to -- it replaces the raw `MouseDown`/`KeyPressed` outright,
+    // so this is the only signal `onClick` has for a real pointer click.
+    if ("ButtonActivated" in obj) {
+      const payload = obj.ButtonActivated as { widget: string };
+      const callback = this._registry[payload.widget]?.on_click;
+      if (callback !== undefined) {
+        callback();
+        return true;
       }
       return false;
     }

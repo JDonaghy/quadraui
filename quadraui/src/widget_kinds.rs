@@ -74,8 +74,8 @@ impl std::error::Error for KindError {
 }
 
 /// Declare the `kind` string → descriptor type table [`decode_widget`]
-/// matches against, generating `decode_widget` itself in the invoking
-/// module.
+/// matches against, generating `decode_widget` and its
+/// deserializer-taking twin `decode_widget_from` in the invoking module.
 ///
 /// Each `$ty` must implement [`serde::de::DeserializeOwned`] and
 /// [`crate::primitive::DynWidget`] — every built-in `Primitive` that also
@@ -105,7 +105,12 @@ impl std::error::Error for KindError {
 ///     "default_row_height": 1.0,
 ///     "default_col_width": 8.0,
 /// });
-/// let widget = decode_widget("cell_grid", payload).unwrap();
+/// let widget = decode_widget("cell_grid", payload.clone()).unwrap();
+/// assert_eq!(widget.id().map(|id| id.as_str()), Some("sheet"));
+///
+/// // The same decode against a borrowed `Value` as a `Deserializer`,
+/// // which is where a wire layer substitutes its own wrapper.
+/// let widget = decode_widget_from("cell_grid", &payload).unwrap();
 /// assert_eq!(widget.id().map(|id| id.as_str()), Some("sheet"));
 /// ```
 #[macro_export]
@@ -138,6 +143,39 @@ macro_rules! widget_kinds {
                 other => ::std::result::Result::Err(
                     $crate::widget_kinds::KindError::Unknown(other.to_string())
                 ),
+            }
+        }
+
+        /// [`decode_widget`] against an arbitrary [`serde::Deserializer`]
+        /// rather than an owned `serde_json::Value` — the seam a wire
+        /// layer with its own unknown-key / diagnostics policy decodes
+        /// through, since its wrapping deserializer sees each descriptor
+        /// type's own field list via `deserialize_struct` the way a
+        /// statically-typed `T::deserialize` call does.
+        ///
+        /// The error is the deserializer's own, so an unknown `kind` is
+        /// reported as a [`serde::de::Error::custom`] message rather than
+        /// a [`KindError`]; a caller holding a kind string it has already
+        /// matched against its own table never sees that arm.
+        pub fn decode_widget_from<'de, D>(
+            kind: &str,
+            deserializer: D,
+        ) -> ::std::result::Result<::std::boxed::Box<dyn $crate::primitive::DynWidget>, D::Error>
+        where
+            D: ::serde::Deserializer<'de>,
+        {
+            use ::serde::de::Error as _;
+            match kind {
+                $(
+                    $( #[$meta] )*
+                    $kind => {
+                        let widget = <$ty as ::serde::Deserialize>::deserialize(deserializer)?;
+                        ::std::result::Result::Ok(::std::boxed::Box::new(widget))
+                    }
+                )*
+                other => ::std::result::Result::Err(D::Error::custom(::std::format!(
+                    "unknown widget kind {other:?}"
+                ))),
             }
         }
     };

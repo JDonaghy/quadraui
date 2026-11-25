@@ -489,7 +489,11 @@ def test_show_overlay_popover_paints_its_content_and_routes_a_button_click():
     row, col = _locate(app, "Submit")
     _click(app, row, col)
 
-    assert any("Form" in event for event in received), received
+    # The popover's `button` leaf rides the generic widget seam, so its
+    # click resolves to a bare `ButtonActivated` naming the leaf.
+    assert any(
+        event.get("ButtonActivated", {}).get("widget") == "submit" for event in received
+    ), received
 
 
 def test_show_overlay_popover_toggle_emits_the_normal_semantic_event():

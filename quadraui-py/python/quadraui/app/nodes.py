@@ -894,15 +894,14 @@ def Button(
     focused: Optional[bool] = None,
     disabled: Optional[bool] = None,
 ) -> Node:
-    """A `ButtonDescriptor` leaf. `quadraui` never turns a raw `MouseDown`
-    into "this button was clicked" on its own (there is no dedicated
-    `ButtonPressed` `UiEvent`) -- it only hit-tests the click and attaches
-    *which* button it landed on (`widget` plus a `button_body` `hit`). So
-    `on_click` is dispatched by `quadraui.app.runtime.App` itself, from
-    whichever of the two real signals a backend actually sends: that
-    hit-tested `MouseDown`, or an `Enter`/`Space` `KeyPressed` while this
-    button is focused (the same two paths `examples/tui_interactive_demo.py`
-    hand-rolls)."""
+    """A `ButtonDescriptor` leaf. `quadraui` hit-tests a press landing on
+    the leaf and replaces it outright with a `ButtonActivated` event naming
+    the button, for both a pointer click on its body and an `Enter`/`Space`
+    while it holds real keyboard focus. `on_click` is dispatched by
+    `quadraui.app.runtime.App` itself, from that activation or -- for a
+    button this layer marked `focused` without the engine's own focus tree
+    agreeing -- from a raw `Enter`/`Space` `KeyPressed` (the same paths
+    `examples/tui_interactive_demo.py` hand-rolls)."""
 
     def build(node_id: str, _children: Dict[str, Any]) -> Dict[str, Any]:
         payload: Dict[str, Any] = {"id": node_id, "label": label}
