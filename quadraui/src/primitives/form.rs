@@ -103,6 +103,15 @@ pub mod cell_layout;
 #[cfg(feature = "tui")]
 #[doc(hidden)]
 pub mod cell_paint;
+// The widget contract: `Primitive`, `Interactive`, and the one
+// implementation of this widget's keyboard, focus and click behaviour.
+//
+// `pub(crate)` on the module (with its API re-exported below) so
+// `crate::compose::FormController` drives the same behaviour functions
+// a `Surface::Widget` form does, rather than carrying a second copy.
+pub(crate) mod contract;
+
+pub use contract::{DateCursor, FormPrimitiveLayout, FormState, ItemCursor, TextCursor};
 
 use crate::event::Rect;
 use crate::types::{Modifiers, StyledText, WidgetId};
