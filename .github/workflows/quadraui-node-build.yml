@@ -166,7 +166,7 @@ jobs:
 
           // setRender -> screen() -> pushEvent round-trip through the
           // layout-tree API: a clicked switch leaf emits the
-          // FocusChanged/ToggleChanged semantic events it produces
+          // FocusChanged/SwitchToggled semantic events it produces
           // in-repo (quadraui-node/tests/descriptors.test.ts's
           // 'switch' INLINE_LEAF_CASES entry).
           app.setRender(() => ({
@@ -185,8 +185,8 @@ jobs:
           if (!received[0].FocusChanged || received[0].FocusChanged !== 'leaf:1') {
             throw new Error('expected FocusChanged for leaf:1, got: ' + JSON.stringify(received[0]));
           }
-          if (!received[1].Form || received[1].Form[0] !== 'leaf:1' || !received[1].Form[1].ToggleChanged) {
-            throw new Error('expected a ToggleChanged Form event for leaf:1, got: ' + JSON.stringify(received[1]));
+          if (!received[1].SwitchToggled || received[1].SwitchToggled.widget !== 'leaf:1' || received[1].SwitchToggled.value !== true) {
+            throw new Error('expected a SwitchToggled event for leaf:1, got: ' + JSON.stringify(received[1]));
           }
 
           // A malformed leaf still raises a typed, subclassable error.
