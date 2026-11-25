@@ -7372,36 +7372,23 @@ mod tests {
     use super::*;
     use quadraui::{ButtonMask, ScrollDelta};
 
-    /// Unwrap one pythonized `UiEvent::Form(id, FormEvent::ButtonClicked
-    /// { id })` payload -- `{"Form": (id, {"ButtonClicked": {"id": id}})}`
-    /// on the wire -- down to the clicked button's own id, asserting the
-    /// whole shape on the way so a drift in any layer names the layer that
-    /// drifted.
-    fn form_button_clicked_id(event: &Bound<'_, PyDict>) -> String {
-        let form = event
-            .get_item("Form")
+    /// Unwrap one pythonized `UiEvent::ButtonActivated { widget }` payload
+    /// -- `{"ButtonActivated": {"widget": id}}` on the wire -- down to the
+    /// activated button's own id, asserting the whole shape on the way so a
+    /// drift in any layer names the layer that drifted.
+    fn button_activated_widget(event: &Bound<'_, PyDict>) -> String {
+        let activated = event
+            .get_item("ButtonActivated")
             .expect("dict lookup")
-            .expect("a semantic button click must carry a Form key")
-            .cast_into::<PyTuple>()
-            .expect("Form must pythonize to a (id, event) tuple");
-        assert_eq!(form.len(), 2, "Form must carry (id, event)");
-        let inner = form
-            .get_item(1)
-            .expect("second element")
+            .expect("a semantic button activation must carry a ButtonActivated key")
             .cast_into::<PyDict>()
-            .expect("the inner FormEvent must pythonize to a dict");
-        let clicked = inner
-            .get_item("ButtonClicked")
+            .expect("ButtonActivated payload must be a dict");
+        activated
+            .get_item("widget")
             .expect("dict lookup")
-            .expect("a button click must carry a ButtonClicked key")
-            .cast_into::<PyDict>()
-            .expect("ButtonClicked payload must be a dict");
-        clicked
-            .get_item("id")
-            .expect("dict lookup")
-            .expect("id key must be present")
+            .expect("widget key must be present")
             .extract()
-            .expect("id must be a string")
+            .expect("widget must be a string")
     }
 
     /// A Rust panic raised from inside `guarded`'s body is caught and
@@ -9377,17 +9364,13 @@ def render():
 
     /// `MouseDown`'s own `widget` field arrives `None` on the wire; once a
     /// frame has painted a `button` leaf, dispatching a `MouseDown` at that
-    /// button's painted position fills `widget` in with the button's id and
-    /// attaches a `"hit"` key naming the sub-region struck -- `button_body`
-    /// for a click anywhere on its body. Located via `find_bounds`, never a
+    /// button's painted position hit-tests to the button and is replaced
+    /// outright by the semantic `UiEvent::ButtonActivated` naming it, so the
+    /// handler sees the click-to-focus `FocusChanged` and that activation --
+    /// no raw `MouseDown` falls through. Located via `find_bounds`, never a
     /// hardcoded coordinate.
-    ///
-    /// The semantic `Form` / `ButtonClicked` dispatch the click also
-    /// produces is additive: it sits between the click-to-focus
-    /// `FocusChanged` and the raw `MouseDown`, and the raw event still
-    /// arrives with its `"hit"` dict intact.
     #[test]
-    fn mouse_down_over_a_painted_button_is_enriched_with_its_widget_id() {
+    fn mouse_down_over_a_painted_button_resolves_to_a_semantic_button_activated() {
         Python::attach(|py| {
             let locals = PyDict::new(py);
             py.run(
@@ -9446,9 +9429,9 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                3,
-                "the click must emit a FocusChanged (nothing was focused yet), the \
-                 semantic Form/ButtonClicked, and the MouseDown itself"
+                2,
+                "the click must emit a FocusChanged (nothing was focused yet) and the \
+                 semantic ButtonActivated that replaces the MouseDown"
             );
             let focus_dict = received_list
                 .get_item(0)
@@ -9462,59 +9445,25 @@ def handle(event):
                 .extract()
                 .expect("FocusChanged must carry the newly focused widget's id as a string");
             assert_eq!(focused, "btn:ok", "the clicked button must receive focus");
-            assert_eq!(
-                form_button_clicked_id(
-                    &received_list
-                        .get_item(1)
-                        .expect("second item")
-                        .cast_into::<PyDict>()
-                        .expect("event payload must be a dict")
-                ),
-                "btn:ok",
-                "the semantic Form/ButtonClicked must name the clicked button"
-            );
             let event_dict = received_list
-                .get_item(2)
-                .expect("third item")
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
-            let mouse_down = event_dict
-                .get_item("MouseDown")
-                .expect("dict lookup")
-                .expect("payload must carry a MouseDown key")
-                .cast_into::<PyDict>()
-                .expect("MouseDown payload must be a dict");
-            let widget: String = mouse_down
-                .get_item("widget")
-                .expect("dict lookup")
-                .expect("widget key must be present")
-                .extract()
-                .expect("widget must be a string once populated");
             assert_eq!(
-                widget, "btn:ok",
-                "the button's own id must be filled into widget"
+                button_activated_widget(&event_dict),
+                "btn:ok",
+                "the semantic ButtonActivated must name the clicked button"
             );
-            let hit = event_dict
-                .get_item("hit")
-                .expect("dict lookup")
-                .expect("hit key must be attached alongside the MouseDown key")
-                .cast_into::<PyDict>()
-                .expect("hit must be a dict");
-            let kind: String = hit
-                .get_item("kind")
-                .expect("dict lookup")
-                .expect("kind key must be present")
-                .extract()
-                .expect("kind must be a string");
-            assert_eq!(
-                kind, "button_body",
-                "a click on the body must report button_body"
+            assert!(
+                !event_dict.contains("MouseDown").expect("dict lookup"),
+                "the activation replaces the raw MouseDown rather than following it"
             );
         });
     }
 
     /// A `MouseDown` on a painted `button` leaf focuses it (see
-    /// `mouse_down_over_a_painted_button_is_enriched_with_its_widget_id`
+    /// `mouse_down_over_a_painted_button_resolves_to_a_semantic_button_activated`
     /// above), and the TUI host's generic focus-ring convention repaints a
     /// border around that leaf's own cell on every frame after. When the
     /// leaf's cell is taller than its one row of label (this app's bare
@@ -9577,7 +9526,7 @@ def handle(event):
 
     /// A `MouseMoved` landing on a painted button's bounds dispatches a
     /// hit-tested `MouseEntered` ahead of the raw move itself, each key
-    /// the handler sees carrying the button's own id and `button_body`
+    /// the handler sees carrying the button's own id and `widget_body`
     /// `hit` -- the real hover signal a Python-side toolbar/tree/details
     /// hover tooltip needs instead of re-deriving hit-testing from the raw
     /// position. A later move off the button dispatches the matching
@@ -9678,7 +9627,7 @@ def handle(event):
                 .expect("kind key must be present")
                 .extract()
                 .expect("kind must be a string");
-            assert_eq!(entered_hit_kind, "button_body");
+            assert_eq!(entered_hit_kind, "widget_body");
             assert!(
                 received
                     .get_item(1)
@@ -9724,9 +9673,9 @@ def handle(event):
     /// whole pane with no "miss" case, so it is pushed into the hit map
     /// *before* its children are painted, letting the child's own
     /// `PaintedHit` (pushed after, so checked first in reverse paint order)
-    /// win. Without that ordering the handler below would see `widget` set
-    /// to the split's own id and `hit.kind` of `split_first_pane` instead of
-    /// the button's.
+    /// win. Without that ordering the handler below would see a raw
+    /// `MouseDown` carrying the split's own id and a `split_first_pane`
+    /// `hit.kind` instead of the button's own `ButtonActivated`.
     #[test]
     fn mouse_down_over_a_button_nested_in_a_split_pane_resolves_to_the_button_not_the_pane() {
         Python::attach(|py| {
@@ -9796,9 +9745,9 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                3,
-                "the click must emit a FocusChanged (nothing was focused yet), the \
-                 semantic Form/ButtonClicked, and the MouseDown itself"
+                2,
+                "the click must emit a FocusChanged (nothing was focused yet) and the \
+                 semantic ButtonActivated that replaces the MouseDown"
             );
             let focus_dict = received_list
                 .get_item(0)
@@ -9812,53 +9761,19 @@ def handle(event):
                 .extract()
                 .expect("FocusChanged must carry the newly focused widget's id as a string");
             assert_eq!(focused, "btn:left", "the clicked button must receive focus");
-            assert_eq!(
-                form_button_clicked_id(
-                    &received_list
-                        .get_item(1)
-                        .expect("second item")
-                        .cast_into::<PyDict>()
-                        .expect("event payload must be a dict")
-                ),
-                "btn:left",
-                "the semantic Form/ButtonClicked must name the nested button"
-            );
             let event_dict = received_list
-                .get_item(2)
-                .expect("third item")
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
-            let mouse_down = event_dict
-                .get_item("MouseDown")
-                .expect("dict lookup")
-                .expect("payload must carry a MouseDown key")
-                .cast_into::<PyDict>()
-                .expect("MouseDown payload must be a dict");
-            let widget: String = mouse_down
-                .get_item("widget")
-                .expect("dict lookup")
-                .expect("widget key must be present")
-                .extract()
-                .expect("widget must be a string once populated");
             assert_eq!(
-                widget, "btn:left",
+                button_activated_widget(&event_dict),
+                "btn:left",
                 "the nested button's own id must win over the split's generic pane hit"
             );
-            let hit = event_dict
-                .get_item("hit")
-                .expect("dict lookup")
-                .expect("hit key must be attached alongside the MouseDown key")
-                .cast_into::<PyDict>()
-                .expect("hit must be a dict");
-            let kind: String = hit
-                .get_item("kind")
-                .expect("dict lookup")
-                .expect("kind key must be present")
-                .extract()
-                .expect("kind must be a string");
-            assert_eq!(
-                kind, "button_body",
-                "the hit detail must resolve to the button, not split_first_pane"
+            assert!(
+                !event_dict.contains("MouseDown").expect("dict lookup"),
+                "the click must not fall through as a raw MouseDown on the split pane"
             );
         });
     }

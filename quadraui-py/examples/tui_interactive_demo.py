@@ -10,10 +10,9 @@ No extra feature flag is needed; just build and run in a real terminal
     python quadraui-py/examples/tui_interactive_demo.py
 
 Interaction is keyboard-only, for the same reason `native_window_demo.py`
-is: `quadraui` never turns a raw `MouseDown` into a "button click" on its
-own, and Python has no access to the layout rects a Rust `render()` would
-hit-test against, so this demo sticks to a focused button's `Enter`/`Space`
-activation instead.
+is: Python has no access to the layout rects a Rust `render()` hit-tests a
+pointer press against, so this demo reads the raw `Enter`/`Space`
+`KeyPressed` for the button it marked focused instead.
 
 A bound handler must not call back into the `QuiApp` it was invoked from --
 the same reentrant-borrow rule `appshell_demo.py` documents. That means

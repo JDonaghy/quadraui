@@ -67,15 +67,17 @@ test("scroll wheel notch on the scrollbar dispatches and persists the new offset
   // The hit map itself must have moved with the paint, not just the
   // pixels: clicking row 0 -- Item00's old screen position -- now hits
   // "btn:3", the child the scroll brought to the top, proving the click
-  // router (not only the repainted text) is offset-aware end to end.
+  // router (not only the repainted text) is offset-aware end to end. The
+  // button leaf resolves the press to its own `ButtonActivated`, so that
+  // activation's `widget` is what names the struck child.
   received.length = 0;
   app.pushEvent({ MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} } });
   app.run(1);
-  const mouseDowns = (received as any[])
-    .filter((event) => "MouseDown" in event)
-    .map((event) => event.MouseDown);
-  assert.ok(mouseDowns.length > 0, JSON.stringify(received));
-  assert.equal(mouseDowns[0].widget, "btn:3", JSON.stringify(received));
+  const activations = (received as any[])
+    .filter((event) => "ButtonActivated" in event)
+    .map((event) => event.ButtonActivated);
+  assert.ok(activations.length > 0, JSON.stringify(received));
+  assert.equal(activations[0].widget, "btn:3", JSON.stringify(received));
 });
 
 test("scroll PageDown on a focused child scrolls the whole container", () => {
@@ -90,7 +92,7 @@ test("scroll PageDown on a focused child scrolls the whole container", () => {
   // Row 5, not row 1 -- far enough from the row-0 click below (more than
   // `DoubleClickDetector`'s 1.5-cell radius) that the two don't fold
   // into a single `DoubleClick`, which would make that second click's
-  // own `MouseDown` assertion vacuous.
+  // own `ButtonActivated` assertion vacuous.
   app.pushEvent({ MouseDown: { button: "Left", position: { x: 1.0, y: 5.0 }, modifiers: {} } });
   app.run(1);
   received.length = 0;
@@ -109,11 +111,11 @@ test("scroll PageDown on a focused child scrolls the whole container", () => {
   received.length = 0;
   app.pushEvent({ MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} } });
   app.run(1);
-  const mouseDowns = (received as any[])
-    .filter((event) => "MouseDown" in event)
-    .map((event) => event.MouseDown);
-  assert.ok(mouseDowns.length > 0, JSON.stringify(received));
-  assert.equal(mouseDowns[0].widget, "btn:10", JSON.stringify(received));
+  const activations = (received as any[])
+    .filter((event) => "ButtonActivated" in event)
+    .map((event) => event.ButtonActivated);
+  assert.ok(activations.length > 0, JSON.stringify(received));
+  assert.equal(activations[0].widget, "btn:10", JSON.stringify(received));
 });
 
 test("scroll with a controlled offset pins it from the very first paint", () => {

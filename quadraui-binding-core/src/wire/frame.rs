@@ -194,6 +194,7 @@ fn extra_slot_entry(
 /// the flat-frame counterpart of [`crate::wire::leaf::layout_leaf_from_value`]'s
 /// own `WIDGET_KINDS` loop.
 fn widget_slot_entry(
+    diagnostics: &DecodeDiagnostics,
     what: &str,
     value: &Value,
     kind: &str,
@@ -203,7 +204,7 @@ fn widget_slot_entry(
             if !v.is_object() {
                 return Err(DecodeError::type_mismatch(what, kind, "an object or null"));
             }
-            Ok(Some(decode_widget_leaf(what, kind, v)?))
+            Ok(Some(decode_widget_leaf(diagnostics, what, kind, v)?))
         }
         None => Ok(None),
     }
@@ -238,7 +239,7 @@ pub(crate) fn render_frame_from_value(
     }
     let mut widgets = HashMap::new();
     for kind in WIDGET_KINDS {
-        if let Some(v) = widget_slot_entry(what, value, kind)? {
+        if let Some(v) = widget_slot_entry(diagnostics, what, value, kind)? {
             widgets.insert(kind.to_string(), v);
         }
     }

@@ -1013,14 +1013,13 @@ export interface ButtonOptions {
 }
 
 /**
- * A `ButtonDescriptor` leaf. `quadraui` never turns a raw `MouseDown` into
- * "this button was clicked" on its own (there is no dedicated
- * `ButtonPressed` `UiEvent`) -- it only hit-tests the click and attaches
- * *which* button it landed on (`widget` plus a `button_body` `hit`). So
- * `onClick` is dispatched by `./runtime.ts`'s `App` itself, from whichever
- * of the two real signals a backend actually sends: that hit-tested
- * `MouseDown`, or an `Enter`/`Space` `KeyPressed` while this button is
- * focused.
+ * A `ButtonDescriptor` leaf. `quadraui` hit-tests a press landing on the
+ * leaf and replaces it outright with a `ButtonActivated` event naming the
+ * button, for both a pointer click on its body and an `Enter`/`Space` while
+ * it holds real keyboard focus. `onClick` is dispatched by `./runtime.ts`'s
+ * `App` itself, from that activation or -- for a button this layer marked
+ * `focused` without the engine's own focus tree agreeing -- from a raw
+ * `Enter`/`Space` `KeyPressed`.
  */
 function Button(label: string, options: ButtonOptions = {}): Node {
   const { id = null, onClick, variant, icon, iconPosition, tooltip, focused, disabled } = options;

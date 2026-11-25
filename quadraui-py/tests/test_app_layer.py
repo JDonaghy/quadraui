@@ -331,10 +331,10 @@ def test_tabs_closed_dispatches_on_close_with_the_index():
 
 def _click_at(app, x=0.0, y=0.0):
     """Pushes a `MouseDown` at `(x, y)` -- the real `InteractionEngine` hit-
-    tests it against whatever actually painted there and attaches the
-    `widget`/`hit` this layer's own `on_click` dispatch reads; a test never
-    sets either by hand (there is no way to invent a correct `hit` from
-    Python -- only the Rust-side layout knows what it painted where)."""
+    tests it against whatever actually painted there and resolves it to the
+    semantic event this layer's own callback dispatch reads; a test never
+    invents that resolution by hand (there is no way to name a correct hit
+    from Python -- only the Rust-side layout knows what it painted where)."""
     app.push_event({"MouseDown": {"button": "Left", "position": {"x": x, "y": y}, "modifiers": {}}})
     app.step()
 
@@ -367,8 +367,8 @@ def test_button_on_click_fires_on_enter_while_focused():
 def test_button_on_click_fires_on_enter_after_a_click_moved_real_focus_to_it():
     # A click leaves the *backend's* own focus on the button, not just this
     # layer's `_focused_id`, so the Enter that follows resolves to the
-    # button's semantic `Form`/`ButtonClicked` activation instead of a raw
-    # `KeyPressed`. Both routes must reach the same `on_click`.
+    # button's semantic `ButtonActivated` instead of a raw `KeyPressed`.
+    # Both routes must reach the same `on_click`.
     clicks = []
     fallback = []
 
@@ -378,7 +378,7 @@ def test_button_on_click_fires_on_enter_after_a_click_moved_real_focus_to_it():
     app = App(20, 5, view=view, on_event=lambda event: fallback.append(event))
     _click_at(app)
     assert clicks == [1], "the click itself must fire on_click exactly once"
-    assert not any("Form" in event for event in fallback), (
+    assert not any("ButtonActivated" in event for event in fallback), (
         "a button's own activation must never reach the on_event escape hatch"
     )
 

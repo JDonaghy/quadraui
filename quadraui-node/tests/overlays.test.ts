@@ -714,10 +714,14 @@ test("showOverlay popover paints its content and routes a button click", () => {
   const [row, col] = locate(app, "Submit");
   click(app, row, col);
 
+  // The popover's `button` leaf rides the generic widget seam, so its
+  // click resolves to a bare `ButtonActivated` naming the leaf.
   assert.ok(
     received.some(
       (event) =>
-        typeof event === "object" && event !== null && "Form" in (event as object),
+        typeof event === "object" &&
+        event !== null &&
+        (event as any).ButtonActivated?.widget === "submit",
     ),
     JSON.stringify(received),
   );

@@ -216,7 +216,7 @@ pub(super) fn layout_leaf_from_value(
         }
         found = Some(LeafDescriptor::Widget {
             kind,
-            widget: decode_widget_leaf(&context, kind, value_dict)?,
+            widget: decode_widget_leaf(diagnostics, &context, kind, value_dict)?,
         });
     }
 
@@ -646,6 +646,59 @@ mod tests {
         assert_eq!(
             diagnostics.warned_keys(),
             HashSet::from(["tabz".to_string()])
+        );
+    }
+
+    /// A [`WIDGET_KINDS`] body gets the same treatment as the fixed leaf
+    /// above even though its concrete descriptor type is named by the kind
+    /// string rather than statically: `"labl"` inside a `"button"` dict is
+    /// a hard [`DecodeError::UnknownKey`] under `strict`, naming the key.
+    #[test]
+    fn widget_leaf_body_rejects_an_unknown_key_under_strict() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::strict();
+        let value = json!({
+            "id": "b1",
+            "button": {"id": "b1", "labl": "Go"},
+        });
+        let error = err(decode_layout_node_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &diagnostics,
+        ));
+        assert_eq!(error.code(), "unknown_key");
+        assert!(
+            error.to_string().contains("\"labl\""),
+            "{}",
+            error.to_string()
+        );
+    }
+
+    /// The same typo'd key [`widget_leaf_body_rejects_an_unknown_key_under_strict`]
+    /// rejects under `strict` only warns once, through the registered hook,
+    /// under the default (warn) policy -- the decode still succeeds, since
+    /// the dict also carries the real `"label"` key `Button` requires.
+    #[test]
+    fn widget_leaf_body_warns_once_under_default_policy() {
+        let sets = StyleSets::new();
+        let theme = Theme::default();
+        let diagnostics = DecodeDiagnostics::warn();
+        let value = json!({
+            "id": "b1",
+            "button": {"id": "b1", "label": "Go", "labl": "Go"},
+        });
+        decode_layout_node_with_styles(
+            "test",
+            &value,
+            StyleContext::new(&sets, &theme),
+            &diagnostics,
+        )
+        .expect("warn mode still decodes despite the unrecognised key");
+        assert_eq!(
+            diagnostics.warned_keys(),
+            HashSet::from(["labl".to_string()])
         );
     }
 

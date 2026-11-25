@@ -2134,21 +2134,18 @@ extra_primitives! {
 pub const WIDGET_KINDS: [&str; 5] = ["icon_grid", "cell_grid", "switch", "radio_group", "button"];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
-/// [`DynWidget`], via [`quadraui::decode_widget`] — the `Widget`
-/// counterpart of [`decode_extra_primitive_checked`]. Unlike that
-/// function, `quadraui::decode_widget` has no `DecodeDiagnostics` seam of
-/// its own yet (see that function's own doc), so an unrecognized key
-/// inside `value` is silently ignored by `serde_json::from_value` rather
-/// than reported — a known, narrower trade-off of this seam's first cut,
-/// not a goal to preserve.
+/// [`DynWidget`] — the `Widget` counterpart of
+/// [`decode_extra_primitive_checked`], and like it routed through
+/// `diagnostics`, so an unrecognized key inside `value` is a hard
+/// `unknown_key` error under `strict` and a one-shot warning under the
+/// default policy rather than being silently ignored.
 pub(crate) fn decode_widget_leaf(
+    diagnostics: &crate::wire::DecodeDiagnostics,
     what: &str,
     kind: &str,
     value: &serde_json::Value,
 ) -> Result<Rc<dyn DynWidget>, crate::DecodeError> {
-    quadraui::decode_widget(kind, value.clone())
-        .map(Rc::from)
-        .map_err(|err| crate::DecodeError::borrow(what, format!("invalid descriptor: {err}")))
+    crate::wire::decode_widget_checked(diagnostics, what, kind, value).map(Rc::from)
 }
 
 #[cfg(test)]

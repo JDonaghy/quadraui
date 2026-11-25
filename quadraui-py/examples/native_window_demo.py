@@ -16,12 +16,12 @@ extension to be built with the `gtk`, `macos`, or `win` feature:
 
 Interaction is keyboard-only, for two reasons specific to this spike:
 
-- `quadraui` itself never turns a raw `MouseDown` into a "button click" --
-  every app does its own hit-testing against the layout rects its own
-  `render()` just computed (see `quadraui/examples/common/controls.rs`).
-  Python has no access to those rects, so there is nothing to hit-test
-  against; a focused button's `Enter`/`Space` activation needs no rect at
-  all, so that is the path this demo exercises instead.
+- Resolving a pointer press to "this button was clicked" needs the layout
+  rects a `render()` just computed (see
+  `quadraui/examples/common/controls.rs`). Python has no access to those
+  rects, so there is nothing to hit-test against; the raw `Enter`/`Space`
+  `KeyPressed` for the button this demo marked focused needs no rect at
+  all, so that is the path it exercises instead.
 - A bound handler must not call back into the `QuiApp` it was invoked
   from -- the same reentrant-borrow rule `appshell_demo.py` documents.
   That means this handler can observe events and print to stdout, but it
