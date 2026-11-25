@@ -2817,13 +2817,13 @@ def _click_events(app, x, y):
 
 def test_clicking_a_switch_routes_a_hit_with_widget_set():
     # `set_render` itself never repaints -- the explicit `screen()` below
-    # forces the render that populates the hit map, so the switch -- the
-    # first (and only) extra, painted into the top 3-line band -- is
+    # forces the render that populates the hit map, so the switch -- a
+    # `WIDGET_KINDS` entry, painted into the top 3-line band -- is
     # hit-testable before the click. `Switch` is also a tab stop, so the
     # click-to-focus step fires a `FocusChanged` ahead of the click itself,
-    # and `semantic_event_for_hit` rewrites the click into a
-    # `Form`/`ToggleChanged` event rather than leaving it as a raw
-    # `MouseDown` with a `"hit"` dict.
+    # and the `HitDetail::WidgetBody` seam resolves the click through
+    # `Switch::click` into a `SwitchToggled` event rather than leaving it
+    # as a raw `MouseDown` with a `"hit"` dict.
     app = QuiApp(40, 20)
     app.set_render(lambda: {"switch": {"id": "settings:wrap"}})
     app.screen()
@@ -2835,9 +2835,7 @@ def test_clicking_a_switch_routes_a_hit_with_widget_set():
         "and the toggle itself"
     )
     assert received[0]["FocusChanged"] == "settings:wrap"
-    widget_id, form_event = received[1]["Form"]
-    assert widget_id == "settings:wrap"
-    assert form_event == {"ToggleChanged": {"id": "settings:wrap", "value": True}}
+    assert received[1]["SwitchToggled"] == {"widget": "settings:wrap", "value": True}
 
 
 def _focused_text_input_app(initial_value, click_x=1.0):
@@ -3194,10 +3192,10 @@ def test_text_input_ctrl_z_undoes_then_ctrl_shift_z_redoes():
 def test_disabled_switch_click_falls_through_with_hit_attached():
     # `Switch::tab_stop` is unconditionally `true` (disabled means inert,
     # not unfocusable), so the click still focuses it first -- but
-    # `Switch::click` returns `None` when `disabled`, so
-    # `semantic_event_for_hit` yields no semantic event for the click
-    # itself: the raw `MouseDown` (with its `"hit"` dict) reaches Python
-    # unchanged instead of being replaced by a `Form` event.
+    # `Switch::click` returns `None` when `disabled`, so the
+    # `HitDetail::WidgetBody` seam resolves no replacement event for the
+    # click itself: the raw `MouseDown` (with its `"hit"` dict) reaches
+    # Python unchanged instead of being replaced by a `SwitchToggled` event.
     app = QuiApp(40, 20)
     app.set_render(lambda: {"switch": {"id": "sw:1", "disabled": True}})
     app.screen()
@@ -3207,19 +3205,19 @@ def test_disabled_switch_click_falls_through_with_hit_attached():
     assert len(received) == 2
     assert received[0]["FocusChanged"] == "sw:1"
     click_event = received[1]
-    assert "Form" not in click_event
+    assert "SwitchToggled" not in click_event
     assert click_event["MouseDown"]["widget"] == "sw:1"
-    assert click_event["hit"] == {"kind": "extra_body"}
+    assert click_event["hit"] == {"kind": "widget_body"}
 
 
 def test_clicking_a_switch_inside_a_layout_tree_leaf_uses_the_leaf_id():
     # A render-callback leaf's own tree-address `id` ("leaf:1") and the
     # `Switch` descriptor it wraps' embedded `id` ("sw:embedded") can
-    # legitimately differ -- `paint_leaf` keys `PaintedHit::Extra` by the
+    # legitimately differ -- `paint_leaf` keys `PaintedHit::Widget` by the
     # leaf id specifically because a render callback may reuse the same
     # descriptor id across leaves. Both the click-to-focus `FocusChanged`
-    # and the `Form`/`ToggleChanged` it emits must therefore agree on
-    # "leaf:1", not fall back to the descriptor's own "sw:embedded".
+    # and the `SwitchToggled` it emits must therefore agree on "leaf:1",
+    # not fall back to the descriptor's own "sw:embedded".
     app = QuiApp(40, 20)
 
     def render():
@@ -3238,9 +3236,7 @@ def test_clicking_a_switch_inside_a_layout_tree_leaf_uses_the_leaf_id():
 
     assert len(received) == 2
     assert received[0]["FocusChanged"] == "leaf:1"
-    widget_id, form_event = received[1]["Form"]
-    assert widget_id == "leaf:1"
-    assert form_event == {"ToggleChanged": {"id": "leaf:1", "value": True}}
+    assert received[1]["SwitchToggled"] == {"widget": "leaf:1", "value": True}
 
 
 def test_text_input_enter_commits_current_value():
@@ -3272,14 +3268,16 @@ def test_text_input_enter_commits_current_value():
     assert form_event == {"TextInputCommitted": {"id": "ti:1", "value": "hello"}}
 
 
-def test_switch_enter_toggles_once_host_echoes_focus_onto_the_descriptor():
-    # `Switch::handle_key` gates on the switch's OWN `focused` field, not on
-    # the app-level `FocusManager`'s notion of "what has focus" -- so
-    # keyboard activation needs the host to have echoed the `FocusChanged`
-    # it received back onto the descriptor (`"focused": True`) before the
-    # `Enter`/`Space` arrives, same as any other per-frame extra state.
+def test_switch_enter_toggles_once_the_engines_focus_tree_names_it_focused():
+    # `Switch::handle` routes `Enter`/`Space` straight to `Switch::click`
+    # with no `self.focused` gate of its own -- the generic
+    # `HitDetail::WidgetBody` seam only ever dispatches a `KeyPressed` to
+    # whichever id the engine's own `FocusTree` already names as focused
+    # (see `InteractionEngine::dispatch_dyn_widget_key`), so the earlier
+    # click's `cx.request_focus` is what makes this `Enter` land, not any
+    # per-frame flag the descriptor itself carries.
     app = QuiApp(40, 20)
-    app.set_render(lambda: {"switch": {"id": "sw:1", "focused": True}})
+    app.set_render(lambda: {"switch": {"id": "sw:1"}})
     app.screen()
 
     focus_and_click = _click_events(app, 1.0, 1.0)
@@ -3299,9 +3297,7 @@ def test_switch_enter_toggles_once_host_echoes_focus_onto_the_descriptor():
     app.run(1)
 
     assert len(received) == 1
-    widget_id, form_event = received[0]["Form"]
-    assert widget_id == "sw:1"
-    assert form_event == {"ToggleChanged": {"id": "sw:1", "value": True}}
+    assert received[0]["SwitchToggled"] == {"widget": "sw:1", "value": True}
 
 
 def test_clicking_a_display_only_extra_attaches_no_hit():
