@@ -266,8 +266,12 @@ impl LayoutContent {
                 // this subtree's own smaller `LayoutContent`): a `Button`
                 // leaf nested in a popover/dialog needs nothing beyond a
                 // plain click-to-activate, so its activation is
-                // synthesized right here.
-                if matches!(detail, HitDetail::WidgetBody) {
+                // synthesized right here. Only the first press of a
+                // double-click activates, mirroring `Button::handle`'s own
+                // `PointerKind::Down`-only match on the main tree (which
+                // ignores `PointerKind::DoubleClick` outright) — without
+                // this guard both presses would fire `ButtonActivated`.
+                if matches!(detail, HitDetail::WidgetBody) && !double_click {
                     let is_button = dyn_widget_hit(&self.hits.borrow(), id)
                         .is_some_and(|(_, widget)| widget.as_any().is::<Button>());
                     if is_button {
@@ -309,6 +313,25 @@ impl LayoutContent {
                 }
                 if matches!(key, Key::Named(NamedKey::Escape)) {
                     return None;
+                }
+                // Mirrors the click arm above: `focus_scoped_key_event` has
+                // no `PaintedHit::Widget` arm (a focused `WIDGET_KINDS` leaf
+                // in the main tree instead reaches
+                // `InteractionEngine::dispatch_dyn_widget_key`, which keys
+                // off caches — `dyn_widget_state`/`dyn_widget_capture` —
+                // that live on the main engine, not this smaller subtree),
+                // so a focused `"button"`-kind leaf needs its own
+                // Enter/Space activation synthesized right here too.
+                if matches!(key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
+                    let is_button = dyn_widget_hit(&self.hits.borrow(), focused)
+                        .is_some_and(|(_, widget)| widget.as_any().is::<Button>());
+                    if is_button {
+                        let activated = UiEvent::ButtonActivated { widget: focused };
+                        return Some(
+                            Reaction::Redraw
+                                .merge(sink.dispatch(&activated, Some(&HitDetail::WidgetBody))),
+                        );
+                    }
                 }
                 let resolved = focus_scoped_key_event(
                     focused,
@@ -7624,7 +7647,9 @@ mod tests {
     #[test]
     fn show_popover_layout_with_a_nested_form_and_button_emits_normal_events_and_is_dismissed_by_an_outside_click(
     ) {
-        use quadraui::{Anchor, FieldKind, Float, FloatMeasure, Form, FormEvent, FormField, Side};
+        use quadraui::{
+            Anchor, FieldKind, Float, FloatMeasure, Form, FormEvent, FormField, Key, NamedKey, Side,
+        };
 
         fn field(id: &str, kind: FieldKind) -> FormField {
             FormField {
@@ -7787,6 +7812,54 @@ mod tests {
                     UiEvent::ButtonActivated { widget } if *widget == WidgetId::new("submit")
                 )),
                 "clicking the button should emit the generic ButtonActivated event: {:?}",
+                dispatched
+            );
+        }
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        // The click above left "submit" focused; Enter on it must activate
+        // it too, the same as a main-tree button already does through
+        // `InteractionEngine::dispatch_dyn_widget_key`.
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched.iter().any(|(ev, _)| matches!(
+                    ev,
+                    UiEvent::ButtonActivated { widget } if *widget == WidgetId::new("submit")
+                )),
+                "Enter on the focused popover button should emit the generic \
+                 ButtonActivated event: {:?}",
+                dispatched
+            );
+        }
+
+        driver.app().sink.borrow_mut().dispatched.clear();
+
+        // A double-click on the same button must activate it only once:
+        // `Button::handle` only matches `PointerKind::Down` on the main
+        // tree, ignoring `PointerKind::DoubleClick` outright, so this
+        // subtree's own click arm must not fire `ButtonActivated` for a
+        // `DoubleClick` either.
+        driver.dispatch(UiEvent::DoubleClick {
+            widget: None,
+            position: Point::new(
+                submit_rect.x + submit_rect.width * 0.5,
+                submit_rect.y + submit_rect.height * 0.5,
+            ),
+        });
+        {
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                !dispatched
+                    .iter()
+                    .any(|(ev, _)| matches!(ev, UiEvent::ButtonActivated { .. })),
+                "a double-click on the popover button must not emit a \
+                 second ButtonActivated: {:?}",
                 dispatched
             );
         }

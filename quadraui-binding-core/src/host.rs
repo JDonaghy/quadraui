@@ -146,12 +146,12 @@ pub struct BindingHost {
     /// this frame, via `crate::render::collect_leaf_tooltips`. Replaced
     /// wholesale by [`Self::set_leaf_tooltips`] each render; consulted by
     /// [`Self::hover_tooltip_text`] as the layout-tree counterpart of
-    /// [`Self::widgets`]'s `"button"` entry read. A binding whose render never
-    /// paints a layout tree at all (or paints only via [`Self::render_refs`]'s
-    /// five fixed slots) leaves this empty forever, so
-    /// [`Self::hover_tooltip_text`] falls through to [`Self::widgets`]
-    /// exactly as before this field existed. A [`RefCell`] (not a plain
-    /// field) because `AppLogic::render` takes `&self`, not `&mut self` --
+    /// [`Self::widgets`]'s `"button"` entry read. A binding whose render
+    /// never paints a layout tree at all (or paints only via
+    /// [`Self::render_refs`]'s five fixed slots) leaves this empty
+    /// forever, so [`Self::hover_tooltip_text`] falls through to
+    /// [`Self::widgets`] directly. A [`RefCell`] (not a plain field)
+    /// because `AppLogic::render` takes `&self`, not `&mut self` --
     /// the same reason [`Self::tooltip_clock`]/[`Self::test_clock_ms`]
     /// below are `Cell`s rather than plain fields.
     pub leaf_tooltips: RefCell<HashMap<WidgetId, String>>,
