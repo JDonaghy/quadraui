@@ -789,6 +789,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_PowerStateChangedPayload`](#wire-_powerstatechangedpayload)
 - [`_ScrollOffsetChangedPayload`](#wire-_scrolloffsetchangedpayload)
 - [`_ScrollbarMovedPayload`](#wire-_scrollbarmovedpayload)
+- [`_SwitchToggledPayload`](#wire-_switchtoggledpayload)
+- [`_RadioGroupSelectionChangedPayload`](#wire-_radiogroupselectionchangedpayload)
 - [`_TextSelectionChangedPayload`](#wire-_textselectionchangedpayload)
 - [`_SplitDividerDraggedPayload`](#wire-_splitdividerdraggedpayload)
 - [`_TrayClickedPayload`](#wire-_trayclickedpayload)
@@ -4912,6 +4914,22 @@ Alias for `_HitDetailButtonBody | _HitDetailTreeRow | _HitDetailTreeChevron | _H
 | `widget` | `WidgetId` | yes |  |
 | `fraction` | `number` | yes |  |
 
+<a id="wire-_switchtoggledpayload"></a>
+#### `_SwitchToggledPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `widget` | `WidgetId` | yes |  |
+| `value` | `boolean` | yes |  |
+
+<a id="wire-_radiogroupselectionchangedpayload"></a>
+#### `_RadioGroupSelectionChangedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `widget` | `WidgetId` | yes |  |
+| `index` | `number` | yes |  |
+
 <a id="wire-_textselectionchangedpayload"></a>
 #### `_TextSelectionChangedPayload`
 
@@ -4989,6 +5007,9 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `PowerStateChanged` | `_PowerStateChangedPayload` |  |
 | `ScrollOffsetChanged` | `_ScrollOffsetChangedPayload` |  |
 | `ScrollbarMoved` | `_ScrollbarMovedPayload` |  |
+| `SwitchToggled` | `_SwitchToggledPayload` |  |
+| `RadioGroupSelectionChanged` | `_RadioGroupSelectionChangedPayload` |  |
+| `ButtonActivated` | `_WidgetPayload` |  |
 | `TextSelectionChanged` | `_TextSelectionChangedPayload` |  |
 | `SplitDividerDragged` | `_SplitDividerDraggedPayload` |  |
 | `MenuActivated` | `WidgetId` |  |
