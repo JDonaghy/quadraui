@@ -37,10 +37,6 @@ pub mod backend;
 /// see its module docs.
 #[cfg(target_os = "windows")]
 mod board;
-/// Direct2D / DirectWrite rasteriser for [`crate::Button`]. Windows-only
-/// in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod button;
 /// Direct2D / DirectWrite rasteriser for [`crate::primitives::chart::Chart`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -292,9 +288,6 @@ pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use board::win_board_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use button::win_button_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use chart::win_chart_layout;

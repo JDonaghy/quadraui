@@ -32,9 +32,9 @@
 
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
-    BadgeStatus, BoardCard, BoardColumn, BoardModel, Button, CalendarDate, Canvas, CardBadge,
-    Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter,
-    CommandLine, CompletionItem, CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem,
+    BadgeStatus, BoardCard, BoardColumn, BoardModel, CalendarDate, Canvas, CardBadge, Chart,
+    ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine,
+    CompletionItem, CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem,
     ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration,
     Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp,
     DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
@@ -1263,34 +1263,6 @@ pub const CASES: &[Case] = &[
                 focus: None,
             };
             let _ = b.draw_toast_overlay(area, &stack);
-        },
-    },
-    Case {
-        method: "draw_button",
-        needle: Some("c0btn"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let button = Button::new(id("button"), "c0btn");
-            let _ = b.draw_button(Rect::new(0.0, 0.0, area.width, lh), &button);
-        },
-    },
-    // `draw_button_with_state` is an additive trait default that forwards to
-    // `draw_button`, ignoring the passed `InteractionState`, until a backend
-    // overrides it to tint hover/pressed. This row proves the default reaches
-    // a rasteriser and still paints observable content on every backend.
-    Case {
-        method: "draw_button_with_state",
-        needle: Some("c0btnhv"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let button_id = id("button-hover");
-            let button = Button::new(button_id.clone(), "c0btnhv");
-            let interaction = InteractionState::from_parts(Some(button_id), None);
-            let _ = b.draw_button_with_state(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &button,
-                &interaction,
-            );
         },
     },
     Case {

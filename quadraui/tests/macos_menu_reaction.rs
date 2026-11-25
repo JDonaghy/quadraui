@@ -17,7 +17,7 @@
 //! than only by clicking a real menu.
 
 use quadraui::macos::testing::MacDriver;
-use quadraui::{AppLogic, Backend, Button, Reaction, Rect, UiEvent, WidgetId};
+use quadraui::{AppLogic, Backend, Button, DrawsPrimitives, Reaction, Rect, UiEvent, WidgetId};
 
 #[path = "../examples/common/native_menu.rs"]
 mod native_menu;
@@ -41,7 +41,7 @@ impl AppLogic for MenuApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let label = if self.bold { "BOLD" } else { "plain" };
-        backend.draw_button(
+        backend.draw_primitive(
             Rect::new(10.0, 10.0, 160.0, 32.0),
             &Button::new(WidgetId::new("menu.state"), label),
         );

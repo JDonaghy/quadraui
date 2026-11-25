@@ -4,7 +4,8 @@
 //! its label visible: the ring only paints the cell's edge rows and the
 //! button centres its label on an interior row.
 
-use quadraui::tui::{draw_button, draw_focus_ring};
+use quadraui::primitive::{LayoutCtx, Primitive};
+use quadraui::tui::draw_focus_ring;
 use quadraui::{Button, Theme, WidgetId};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -15,7 +16,15 @@ fn focus_ring_over_a_tall_button_cell_keeps_the_label() {
     let rect = Rect::new(0, 0, 8, 3);
     let mut buf = Buffer::empty(rect);
     let button = Button::new(WidgetId::new("b"), "OK");
-    draw_button(&mut buf, rect, &button, &theme, false);
+    let ctx = LayoutCtx::new(1.0, 1.0, false);
+    let q_rect = quadraui::Rect::new(
+        rect.x as f32,
+        rect.y as f32,
+        rect.width as f32,
+        rect.height as f32,
+    );
+    let layout = Primitive::layout(&button, &ctx, q_rect);
+    Primitive::paint_cells(&button, &layout, &mut buf, &theme);
     draw_focus_ring(&mut buf, rect, &theme);
 
     let screen: String = (0..rect.height)

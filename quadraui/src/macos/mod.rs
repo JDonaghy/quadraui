@@ -46,8 +46,6 @@ pub mod activity_bar;
 pub mod backend;
 #[doc(hidden)]
 pub mod board;
-#[doc(hidden)]
-pub mod button;
 pub(crate) mod caret_blink;
 // Shared CoreGraphics FFI bindings + fill/stroke/rect helpers.
 mod cg;
@@ -159,8 +157,6 @@ pub use activity_bar::mac_activity_bar_layout;
 pub use backend::MacBackend;
 #[doc(hidden)]
 pub use board::mac_board_layout;
-#[doc(hidden)]
-pub use button::mac_button_layout;
 #[doc(hidden)]
 pub use chart::mac_chart_layout;
 #[doc(hidden)]

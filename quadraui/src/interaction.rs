@@ -66,7 +66,7 @@
 //!
 //! These would need stable ids for their items before moving into
 //! `InteractionState`. `ListView`/`TreeView` rows join this group rather
-//! than taking an `InteractionState` the way `draw_button_with_state`
+//! than taking an `InteractionState` the way `draw_toolbar_interactive`
 //! does: a `ListItem`/`TreeRow` carries no [`WidgetId`] of its own, and
 //! minting one per row index on the fly would permanently intern a new
 //! string per distinct (list id, row index) pair ever shown — an

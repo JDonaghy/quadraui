@@ -63,7 +63,6 @@ use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::board::{BoardLayout, BoardModel};
-use crate::primitives::button::{Button, ButtonLayout};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
@@ -4050,37 +4049,6 @@ impl Backend for MacBackend {
         let layout = canvas.layout(rect);
         crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
         layout
-    }
-    /// Paint via the shared [`crate::primitives::button::native_surface_paint::paint`].
-    fn draw_button(&mut self, rect: Rect, button: &Button) -> ButtonLayout {
-        self.draw_button_with_state(rect, button, &crate::InteractionState::new())
-    }
-
-    /// Paint via the shared [`crate::primitives::button::native_surface_paint::paint`],
-    /// passing through `interaction`'s resolved hover/pressed state for
-    /// `button.id`.
-    fn draw_button_with_state(
-        &mut self,
-        rect: Rect,
-        button: &Button,
-        interaction: &crate::InteractionState,
-    ) -> ButtonLayout {
-        let theme = self.current_theme;
-        let style = self.style();
-        let layout = crate::primitives::button::native_surface_paint::paint(
-            button,
-            self,
-            &theme,
-            rect,
-            &style,
-            interaction.is_hovered(&button.id),
-            interaction.is_pressed(&button.id),
-        );
-        self.register_zone(button.id, rect);
-        layout
-    }
-    fn button_layout(&self, rect: Rect, button: &Button) -> ButtonLayout {
-        button.layout(rect)
     }
     fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
         // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)

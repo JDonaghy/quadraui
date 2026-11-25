@@ -18,8 +18,8 @@
 
 use quadraui::layout::{resolve_grid_tracks, GridTrack};
 use quadraui::{
-    AppLogic, Backend, Button, ButtonHit, Color, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonHit, Color, DrawsPrimitives, InteractionState, Key, NamedKey,
+    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 const ROWS: usize = 2;
@@ -138,9 +138,9 @@ impl AppLogic for GridApp {
             let rect = Self::inset(cell, lh);
             // `render(&self, ...)` can't stash the returned `ButtonLayout`
             // for `handle`'s `MouseDown` arm to reuse, so that arm
-            // recomputes it via `backend.button_layout` instead — same
+            // recomputes it via `backend.layout_primitive` instead — same
             // snapped rect, just derived twice.
-            let _ = backend.draw_button(rect, &self.tile(index));
+            let _ = backend.draw_primitive(rect, &self.tile(index));
         }
     }
 
@@ -215,8 +215,8 @@ impl AppLogic for GridApp {
                     // Hit-test against the backend's own snapped layout (not
                     // the raw fractional `rect`) so the clickable region is
                     // bit-identical to what `render` actually painted via
-                    // `draw_button`.
-                    let layout = backend.button_layout(rect, &self.tile(index));
+                    // `draw_primitive`.
+                    let layout = backend.layout_primitive(rect, &self.tile(index));
                     if layout.hit_test(position) == ButtonHit::Body {
                         self.focused = index;
                         self.activate_focused();

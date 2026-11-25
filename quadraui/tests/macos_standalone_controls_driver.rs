@@ -6,20 +6,16 @@
 //!
 //! Unlike the TUI twin (`tests/standalone_controls_driver.rs`), which paints
 //! a `TextDisplay` status line because TUI has no dedicated painter for
-//! `Button`, this test paints it through its real `Backend::draw_button`
-//! method and hit-tests clicks through the matching backend-agnostic
-//! `Backend::button_layout` query — the same split a live click router
-//! uses (CLAUDE.md "Layout helpers go through `Backend` too; consumer
-//! click routers stay backend-agnostic"). `RadioGroup`/`Switch` have no
-//! `Backend` method of their own — each paints and hit-tests through the
-//! widget contract's `DrawsPrimitives::draw_primitive`/`layout_primitive`
-//! instead, the same backend-generic seam on every backend.
+//! any of the three, `Button`/`RadioGroup`/`Switch` here all paint and
+//! hit-test through the widget contract's `DrawsPrimitives::draw_primitive`/
+//! `layout_primitive` — the same backend-generic seam on every backend, no
+//! `Backend` method of their own.
 
 use quadraui::macos::testing::MacDriver;
 use quadraui::{
-    AppLogic, Backend, Button, ButtonEvent, ButtonHit, ButtonVariant, DrawsPrimitives, Icon,
-    InteractionState, Key, Modifiers, MouseButton, NamedKey, Point, RadioGroup, RadioGroupEvent,
-    RadioOption, Reaction, Rect, Switch, SwitchEvent, UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonEvent, ButtonVariant, DrawsPrimitives, Icon, Key, Modifiers,
+    MouseButton, NamedKey, Point, RadioGroup, RadioGroupEvent, RadioOption, Reaction, Rect, Switch,
+    SwitchEvent, UiEvent, WidgetId,
 };
 
 /// Which of the three standalone controls currently holds keyboard focus.
@@ -82,11 +78,6 @@ struct StandaloneControlsApp {
     danger: Button,
     warning: Button,
     events: Vec<String>,
-    /// Hover/pressed state for `button`, fed from `MouseMoved` below —
-    /// `button` is the only control here painted via
-    /// `Backend::draw_button_with_state` (B3's pointer-enter hover
-    /// story).
-    interaction: InteractionState,
 }
 
 impl StandaloneControlsApp {
@@ -118,7 +109,6 @@ impl StandaloneControlsApp {
             danger,
             warning,
             events: Vec::new(),
-            interaction: InteractionState::new(),
         }
     }
 
@@ -142,9 +132,9 @@ impl AppLogic for StandaloneControlsApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        backend.draw_button_with_state(BUTTON_BOUNDS, &self.button, &self.interaction);
-        backend.draw_button(DANGER_BOUNDS, &self.danger);
-        backend.draw_button(WARNING_BOUNDS, &self.warning);
+        backend.draw_primitive(BUTTON_BOUNDS, &self.button);
+        backend.draw_primitive(DANGER_BOUNDS, &self.danger);
+        backend.draw_primitive(WARNING_BOUNDS, &self.warning);
         backend.draw_primitive(RADIOS_BOUNDS, &self.radios);
         backend.draw_primitive(SWITCH_BOUNDS, &self.switch);
     }
@@ -184,18 +174,8 @@ impl AppLogic for StandaloneControlsApp {
                 }
                 Reaction::Redraw
             }
-            UiEvent::MouseMoved { position, .. } => {
-                let button_layout = backend.button_layout(BUTTON_BOUNDS, &self.button);
-                let hovered = matches!(button_layout.hit_test(position), ButtonHit::Body)
-                    .then_some(self.button.id);
-                if self.interaction.set_hovered(hovered) {
-                    Reaction::Redraw
-                } else {
-                    Reaction::Continue
-                }
-            }
             UiEvent::MouseDown { position, .. } => {
-                let button_layout = backend.button_layout(BUTTON_BOUNDS, &self.button);
+                let button_layout = backend.layout_primitive(BUTTON_BOUNDS, &self.button);
                 let radios_layout = backend.layout_primitive(RADIOS_BOUNDS, &self.radios);
                 let switch_layout = backend.layout_primitive(SWITCH_BOUNDS, &self.switch);
 
@@ -369,30 +349,6 @@ fn danger_and_warning_fills_differ_from_primary() {
         "Warning must not fill the same as Primary"
     );
     assert_ne!(danger, warning, "Danger and Warning must look distinct");
-}
-
-/// `Backend::draw_button_with_state` repaints the fill on pointer enter
-/// — the hover half of this issue's acceptance.
-#[test]
-fn hover_changes_the_button_fill_on_pointer_enter() {
-    let mut driver = MacDriver::new(StandaloneControlsApp::new(), CANVAS_W, CANVAS_H);
-
-    let resting = fill_pixel(&driver, BUTTON_BOUNDS);
-    driver.mouse_move(BUTTON_BOUNDS.x + FILL_PROBE_X, BUTTON_BOUNDS.y + 12.0);
-    let hovered = fill_pixel(&driver, BUTTON_BOUNDS);
-
-    assert_ne!(
-        resting, hovered,
-        "hovering the button must repaint its fill"
-    );
-
-    // Moving off the button restores the resting fill.
-    driver.mouse_move(1.0, 1.0);
-    let after = fill_pixel(&driver, BUTTON_BOUNDS);
-    assert_eq!(
-        after, resting,
-        "moving off the button must clear the hover fill"
-    );
 }
 
 /// `Button::icon` with the default `Leading` position paints before the

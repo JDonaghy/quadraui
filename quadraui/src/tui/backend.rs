@@ -4232,50 +4232,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_spinner_layout(spinner, area)
     }
 
-    fn draw_button(
-        &mut self,
-        rect: QRect,
-        button: &crate::primitives::button::Button,
-    ) -> crate::primitives::button::ButtonLayout {
-        self.draw_button_with_state(rect, button, &crate::InteractionState::new())
-    }
-
-    fn draw_button_with_state(
-        &mut self,
-        rect: QRect,
-        button: &crate::primitives::button::Button,
-        interaction: &crate::InteractionState,
-    ) -> crate::primitives::button::ButtonLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_button called outside enter_frame_scope"
-            );
-            return self.button_layout(rect, button);
-        };
-        crate::tui::draw_button_interactive(
-            frame.buffer_mut(),
-            area,
-            button,
-            &theme,
-            interaction.is_hovered(&button.id),
-            interaction.is_pressed(&button.id),
-            nerd_fonts,
-        )
-    }
-
-    fn button_layout(
-        &self,
-        rect: QRect,
-        button: &crate::primitives::button::Button,
-    ) -> crate::primitives::button::ButtonLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_button_layout(button, area)
-    }
-
     fn draw_command_center(
         &mut self,
         rect: QRect,
@@ -5285,22 +5241,6 @@ mod tests {
                 _r.y,
                 crate::primitives::spinner::SpinnerMeasure::new(_r.width, 1.0),
             )
-        }
-
-        fn draw_button(
-            &mut self,
-            r: QRect,
-            button: &crate::primitives::button::Button,
-        ) -> crate::primitives::button::ButtonLayout {
-            button.layout(crate::event::Rect::new(r.x, r.y, r.width, r.height))
-        }
-
-        fn button_layout(
-            &self,
-            r: QRect,
-            button: &crate::primitives::button::Button,
-        ) -> crate::primitives::button::ButtonLayout {
-            button.layout(crate::event::Rect::new(r.x, r.y, r.width, r.height))
         }
 
         fn draw_command_center(

@@ -1540,7 +1540,11 @@ impl OwnedContent {
                 backend.draw_primitive(rect, group);
             }
             OwnedContent::Button(button) => {
-                backend.draw_button(rect, button);
+                // `impl Primitive for Button` is unconditional, like
+                // `Switch`'s above, so this arm needs no backend-feature
+                // guard of the kind `OwnedContent::ListWidget` below
+                // still carries.
+                backend.draw_primitive(rect, button);
             }
             OwnedContent::Tooltip(_)
             | OwnedContent::ContextMenu(_)
