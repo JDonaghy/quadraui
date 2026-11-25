@@ -7,7 +7,6 @@
 //! descriptor's `fallback_text` instead (both through one
 //! `Backend::draw_image` call).
 
-use quadraui::DrawsPrimitives;
 use quadraui::{
     resolve_bar_height, Backend, BackendCaps, Color, DrawsPrimitives, Image, ImageFit, ImageHit,
     ImageSource, MenuBar, MenuBarHit, MenuBarItem, MouseButton, Reaction, Rect, StatusBar,

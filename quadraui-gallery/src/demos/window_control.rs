@@ -9,11 +9,9 @@
 //! supports `set_title` (OSC 0/2) and genuinely does not support the
 //! rest, so both outcomes are deterministic here.
 
-use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, BackendError, Color, DrawsPrimitives, InteractionState, Reaction, Rect,
-    ServiceResult, StatusBar, StatusBarSegment, Style, Toolbar, ToolbarButton, ToolbarHit, UiEvent,
-    WidgetId,
+    Backend, BackendCaps, BackendError, Color, DrawsPrimitives, Reaction, Rect, ServiceResult,
+    StatusBar, StatusBarSegment, Style, Toolbar, ToolbarButton, ToolbarHit, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};

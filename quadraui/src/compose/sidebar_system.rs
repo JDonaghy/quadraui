@@ -1060,8 +1060,7 @@ impl SidebarSystem {
                     }
                     SectionBody::Form(f) => {
                         let form_layout = if let Some(be) = backend {
-                            crate::backend::DrawsPrimitives::layout_primitive(&*be, body_b, f)
-                                .layout
+                            crate::backend::DrawsPrimitives::layout_primitive(be, body_b, f).layout
                         } else if let Some(cached) = self
                             .cached_form_layouts
                             .get(section)

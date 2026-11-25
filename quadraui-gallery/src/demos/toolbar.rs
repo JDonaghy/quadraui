@@ -9,7 +9,6 @@
 //! pull-down, both focusable the same Tab/Shift-Tab way as every other
 //! button here.
 
-use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, Color, ContextMenuItem, DrawsPrimitives, EditOp, Icon, InteractionState,
     Key, Modifiers, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText,
