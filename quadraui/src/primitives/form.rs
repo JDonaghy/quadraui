@@ -87,6 +87,23 @@
 //! No measurement-dependent state — fields are uniform-height per
 //! backend.
 
+// The cell-grid layout resolver and rasteriser for this widget. They
+// live beside the descriptor, next to `Primitive::layout`/`paint_cells`,
+// which reach them — so a form painted through the widget contract and
+// one painted through `Backend::draw_form` are the same code.
+//
+// `pub` rather than `pub(crate)` so a consumer writing its own
+// cell-grid renderer can reach the same layout/painter pair the
+// contract uses. `#[doc(hidden)]` keeps them off the documented
+// surface, the same way every `crate::tui::draw_*` rasteriser
+// re-export is hidden.
+#[cfg(feature = "tui")]
+#[doc(hidden)]
+pub mod cell_layout;
+#[cfg(feature = "tui")]
+#[doc(hidden)]
+pub mod cell_paint;
+
 use crate::event::Rect;
 use crate::types::{Modifiers, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
