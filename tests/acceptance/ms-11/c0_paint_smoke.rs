@@ -138,7 +138,7 @@ mod ms11_492_c0_paint_smoke {
     const CASES: &[PrimitiveCase] = &[
         // ── Text-bearing primitives ──────────────────────────────────────
         PrimitiveCase {
-            method: "draw_status_bar",
+            method: "draw_dyn(StatusBar)",
             needle: Some("c0stat"),
             paint: |b, area| {
                 let lh = b.line_height();
@@ -153,7 +153,7 @@ mod ms11_492_c0_paint_smoke {
                     }],
                     right_segments: vec![],
                 };
-                let _ = b.draw_status_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
+                let _ = b.draw_dyn(Rect::new(0.0, 0.0, area.width, lh), &bar, &());
             },
         },
         PrimitiveCase {
