@@ -118,7 +118,7 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "win",
         file_count: 50,
-        non_test_lines: 23042,
+        non_test_lines: 23038,
     },
 ];
 
