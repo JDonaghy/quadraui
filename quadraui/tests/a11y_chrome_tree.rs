@@ -713,9 +713,10 @@ window \"quadraui\" [focused]
     );
 }
 
-/// `OwnedContent::FindReplace` and `OwnedContent::DropOverlay` carry no
-/// payload — the frame snapshot cannot clone those two primitives — so
-/// the tree names the surface and stops there rather than dropping it.
+/// `OwnedContent::FindReplace` carries no payload, and a drop overlay
+/// captures as `OwnedContent::Opaque` — the frame snapshot cannot clone
+/// either primitive — so the tree names the surface from the role and
+/// label it knows and stops there rather than dropping it.
 #[test]
 fn payload_less_overlays_still_appear_in_the_tree() {
     let (hit_regions, _input_width) =
@@ -743,12 +744,13 @@ fn payload_less_overlays_still_appear_in_the_tree() {
                 hit_regions,
             },
         })
-        .with_surface(Surface::DropOverlay {
-            overlay: DropOverlay {
+        .with_surface(Surface::Widget {
+            rect: rect(4.0, 4.0),
+            widget: Box::new(DropOverlay {
                 highlight: Some(rect(4.0, 4.0)),
                 insertion_bar: None,
                 ghost_position: None,
-            },
+            }),
         })
         .snapshot();
 

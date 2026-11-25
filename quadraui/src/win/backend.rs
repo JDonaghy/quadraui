@@ -4772,23 +4772,6 @@ impl Backend for WinBackend {
         let _ = (rect, scrollbar);
     }
 
-    /// Paint via the shared
-    /// [`crate::primitives::drop_zone::native_surface_paint::paint`]
-    /// once a surface is attached — mirrors [`Self::draw_scrollbar`].
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
-    /// yet" fallback posture.
-    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() {
-            let theme = self.current_theme;
-            crate::primitives::drop_zone::native_surface_paint::paint(overlay, self, &theme);
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = overlay;
-    }
-
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///

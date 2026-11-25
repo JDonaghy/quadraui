@@ -1322,7 +1322,6 @@ fn describe(content: &OwnedContent) -> Described {
         // Unit variants: the source surface carries no serializable
         // content, so only the role and name survive the frame capture.
         OwnedContent::FindReplace => Described::labelled(A11yRole::Form, "Find and replace"),
-        OwnedContent::DropOverlay => Described::labelled(A11yRole::Presentation, "Drop overlay"),
         other => Described::fallback(other),
     }
 }
@@ -1399,7 +1398,6 @@ fn content_kind(content: &OwnedContent) -> &'static str {
         OwnedContent::Switch(_) => "Switch",
         OwnedContent::RadioGroup(_) => "Radio group",
         OwnedContent::Button(_) => "Button",
-        OwnedContent::DropOverlay => "Drop overlay",
         OwnedContent::FindReplace => "Find and replace",
         OwnedContent::Opaque => "Content",
     }

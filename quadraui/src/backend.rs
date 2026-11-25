@@ -65,7 +65,6 @@ use crate::primitives::data_table::{
 use crate::primitives::date_picker::{DatePicker, DatePickerLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
-use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::{CursorShape as EditorCursorShape, Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::float::{Float, FloatLayout};
@@ -3753,11 +3752,6 @@ pub trait Backend: sealed::Sealed {
     /// per-section scrollbars MSV paints internally). The backend
     /// pulls cell/pixel background from its current theme.
     fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar);
-
-    /// Draw a [`DropOverlay`] on top of the current frame during a
-    /// tab drag. Renders the highlight rect (tinted background) and/or
-    /// insertion bar (thin line at the drop position).
-    fn draw_drop_overlay(&mut self, overlay: &DropOverlay);
 
     /// Draw a [`MenuBar`]. The backend computes the layout internally
     /// with native metrics (cells for TUI, Pango pixels for GTK) and

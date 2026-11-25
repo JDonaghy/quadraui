@@ -80,11 +80,6 @@ mod dialog;
 /// full — see its module docs.
 #[cfg(target_os = "windows")]
 mod diff_view;
-/// Direct2D rasteriser for
-/// [`crate::primitives::drop_zone::DropOverlay`]. Windows-only
-/// in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod drop_overlay;
 /// Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]

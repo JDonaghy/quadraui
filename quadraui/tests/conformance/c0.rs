@@ -37,7 +37,7 @@ use quadraui::{
     CompletionItem, CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem,
     ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration,
     Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp,
-    DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
+    Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
     EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
     Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
     MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
@@ -473,21 +473,6 @@ pub const CASES: &[Case] = &[
             let cw = b.char_width();
             let lh = b.line_height();
             b.draw_focus_ring(Rect::new(cw * 2.0, lh * 2.0, cw * 20.0, lh * 3.0));
-            let _ = area;
-        },
-    },
-    Case {
-        method: "draw_drop_overlay",
-        needle: None,
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let overlay = DropOverlay {
-                highlight: Some(Rect::new(cw * 2.0, lh * 2.0, cw * 20.0, lh * 6.0)),
-                insertion_bar: None,
-                ghost_position: None,
-            };
-            b.draw_drop_overlay(&overlay);
             let _ = area;
         },
     },

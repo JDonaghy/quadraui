@@ -3980,26 +3980,6 @@ impl Backend for TuiBackend {
         self.register_zone(scrollbar.id, scrollbar.track);
     }
 
-    fn draw_drop_overlay(&mut self, overlay: &crate::primitives::drop_zone::DropOverlay) {
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_drop_overlay called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_drop_overlay(frame.buffer_mut(), overlay, &theme);
-        // `DropOverlay` carries no `WidgetId` (there is at most one
-        // overlay active at a time), so register a fixed chrome id at
-        // whichever sub-rect it actually drew — otherwise this frame is
-        // indistinguishable from one where the no-op default silently
-        // dropped the call (C0 paint smoke, contract §5b).
-        if let Some(bounds) = overlay.highlight.or(overlay.insertion_bar) {
-            self.register_zone(WidgetId::new("chrome:drop-overlay"), bounds);
-        }
-    }
-
     fn draw_menu_bar(
         &mut self,
         rect: QRect,
@@ -5076,7 +5056,6 @@ mod tests {
         }
 
         fn draw_scrollbar(&mut self, _r: QRect, _s: &crate::primitives::scrollbar::Scrollbar) {}
-        fn draw_drop_overlay(&mut self, _o: &crate::primitives::drop_zone::DropOverlay) {}
 
         fn draw_menu_bar(
             &mut self,

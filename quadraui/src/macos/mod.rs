@@ -68,8 +68,6 @@ pub mod dialog;
 #[doc(hidden)]
 pub mod diff_view;
 #[doc(hidden)]
-pub mod drop_overlay;
-#[doc(hidden)]
 pub mod editor;
 pub mod events;
 #[doc(hidden)]

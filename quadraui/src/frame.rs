@@ -40,7 +40,7 @@
 //!
 //! Every primitive that has a `Backend::draw_*` method has a matching
 //! [`Surface`] variant (`Board`, `CommandCenter`, `DiffView`,
-//! `DropOverlay`, `Image`, `MessageList`, `Minimap`, `PipelineView`,
+//! `Image`, `MessageList`, `Minimap`, `PipelineView`,
 //! `Progress`, `SidebarPanel`, `Spinner`, `SplitTree`, `TextField`,
 //! `TextInput`, `Toolbar` included). `Backend::draw_<name>` stays reachable directly
 //! for the reasons above; there is no primitive that is categorically
@@ -88,10 +88,9 @@
 //! [`Surface`] is owned-but-not-serde and takes any primitive quadraui
 //! can paint, while [`OwnedFrame`] is the serializable snapshot and is
 //! therefore limited to primitives that are themselves `serde`-capable.
-//! [`DropOverlay`] and [`FindReplacePanel`] are not, which is why
-//! [`OwnedContent`] has the contentless
-//! [`OwnedContent::DropOverlay`]/[`OwnedContent::FindReplace`]
-//! fallbacks (and [`OwnedContent::Opaque`] as the generic one). Reach
+//! [`FindReplacePanel`] is not, which is why [`OwnedContent`] has the
+//! contentless [`OwnedContent::FindReplace`] fallback (and
+//! [`OwnedContent::Opaque`] as the generic one). Reach
 //! for `Surface`/`ScreenLayout` to describe and paint a frame; reach
 //! for `OwnedFrame` when that description has to be serialized.
 //!
@@ -218,7 +217,6 @@ use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::DataTable;
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::diff_view::DiffView;
-use crate::primitives::drop_zone::DropOverlay;
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::float::{Float, FloatLayout};
@@ -406,14 +404,6 @@ pub enum Surface {
         rect: Rect,
         view: DiffView,
     },
-    /// Tab-drag highlight overlay. Unlike every other
-    /// transient-overlay variant above (`Tooltip`, `ContextMenu`,
-    /// `Dialog`, `Completions`, `RichTextPopup`), there is no `rect`
-    /// or `*Layout.bounds` to carry — [`DropOverlay::bounds`] derives
-    /// the zone rect from `overlay` itself.
-    DropOverlay {
-        overlay: DropOverlay,
-    },
     Image {
         rect: Rect,
         image: Image,
@@ -599,9 +589,6 @@ pub enum FrameZone {
         idx: usize,
     },
     DiffView {
-        idx: usize,
-    },
-    DropOverlay {
         idx: usize,
     },
     Image {
@@ -981,9 +968,6 @@ impl ScreenLayout {
                 Surface::DiffView { rect, view } => {
                     backend.draw_diff_view(*rect, view);
                 }
-                Surface::DropOverlay { overlay } => {
-                    backend.draw_drop_overlay(overlay);
-                }
                 Surface::Image { rect, image } => {
                     backend.draw_image(*rect, image);
                 }
@@ -1076,7 +1060,7 @@ impl ScreenLayout {
     /// [`WidgetId`] participate. Excluded, deliberately:
     /// - Transient overlays (`Tooltip`, `ContextMenu`, `Dialog`,
     ///   `Float`, `Completions`, `RichTextPopup`, `FindReplace`,
-    ///   `Toast`, `DropOverlay`) — these already own their own internal
+    ///   `Toast`) — these already own their own internal
     ///   focus/dismiss handling while open, and being modal, nothing
     ///   behind them should be Tab-reachable anyway. `Float` in
     ///   particular already has its own, finer-grained focus story —
@@ -1146,7 +1130,6 @@ impl ScreenLayout {
                 | Surface::Completions { .. }
                 | Surface::FindReplace { .. }
                 | Surface::RichTextPopup { .. }
-                | Surface::DropOverlay { .. }
                 | Surface::SplitTree { .. }
                 | Surface::Toast { .. } => Vec::new(),
             })
@@ -1226,7 +1209,6 @@ impl ScreenLayout {
             Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
             Surface::CommandCenter { rect, .. } => (*rect, FrameZone::CommandCenter { idx }),
             Surface::DiffView { rect, .. } => (*rect, FrameZone::DiffView { idx }),
-            Surface::DropOverlay { overlay } => (overlay.bounds(), FrameZone::DropOverlay { idx }),
             Surface::Image { rect, .. } => (*rect, FrameZone::Image { idx }),
             Surface::MessageList { rect, .. } => (*rect, FrameZone::MessageList { idx }),
             Surface::Minimap { rect, .. } => (*rect, FrameZone::Minimap { idx }),
@@ -1285,10 +1267,10 @@ impl Default for ScreenLayout {
 /// `#[non_exhaustive]` for the same reason as [`Surface`] and
 /// [`FrameZone`]: a new primitive adds a new variant here additively.
 ///
-/// [`Self::DropOverlay`] and [`Self::FindReplace`] are the fallbacks for
-/// the two [`Surface`] variants whose primitive does not (yet) implement
-/// `serde::{Serialize, Deserialize}` ([`DropOverlay`], [`FindReplacePanel`]
-/// respectively) — the node still gets a rect and its own distinct
+/// [`Self::FindReplace`] is the fallback for the [`Surface`] variant
+/// whose primitive does not (yet) implement
+/// `serde::{Serialize, Deserialize}` ([`FindReplacePanel`]) — the node
+/// still gets a rect and its own distinct
 /// [`FrameZone`] tag via [`OwnedFrame::hit_map`], but carries no content
 /// to redraw or inspect. [`Self::Opaque`] is the generic fallback for any
 /// future primitive that likewise can't be captured yet.
@@ -1369,8 +1351,6 @@ pub enum OwnedContent {
     /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the only
     /// way a standalone `Button` ever reaches a frame.
     Button(Button),
-    /// No content captured — the source [`Surface`] was [`Surface::DropOverlay`].
-    DropOverlay,
     /// No content captured — the source [`Surface`] was [`Surface::FindReplace`].
     FindReplace,
     /// No content captured — a generic fallback for any future
@@ -1389,8 +1369,8 @@ impl OwnedContent {
     ///
     /// The six overlay variants that need a non-serializable `*Layout`
     /// companion to redraw (`Tooltip`, `ContextMenu`, `Dialog`, `Float`,
-    /// `Completions`, `RichTextPopup`), plus [`Self::DropOverlay`],
-    /// [`Self::FindReplace`] and [`Self::Opaque`], are no-ops: their
+    /// `Completions`, `RichTextPopup`), plus [`Self::FindReplace`] and
+    /// [`Self::Opaque`], are no-ops: their
     /// hit-test zone still round-trips, but repainting them needs either
     /// a layout or primitive content this owned snapshot does not keep.
     fn draw(&self, rect: Rect, backend: &mut dyn Backend) {
@@ -1552,7 +1532,6 @@ impl OwnedContent {
             | OwnedContent::Float(_)
             | OwnedContent::Completions(_)
             | OwnedContent::RichTextPopup(_)
-            | OwnedContent::DropOverlay
             | OwnedContent::FindReplace
             | OwnedContent::Opaque => {}
         }
@@ -1627,7 +1606,6 @@ impl OwnedContent {
                 idx,
                 id: Some(button.id),
             },
-            OwnedContent::DropOverlay => FrameZone::DropOverlay { idx },
             OwnedContent::FindReplace => FrameZone::FindReplace { idx },
             OwnedContent::Opaque => FrameZone::Empty,
         }
@@ -1645,8 +1623,7 @@ pub struct OwnedNode {
     /// Bounding rect this node paints/hit-tests at — the same rect
     /// [`ScreenLayout::zone_for`] would have used for the source
     /// [`Surface`] (plain `rect` for most variants, `layout.bounds` for
-    /// the overlay variants that carry one, [`DropOverlay::bounds`] for
-    /// [`Surface::DropOverlay`]).
+    /// the overlay variants that carry one).
     pub rect: Rect,
     /// This node's owning widget, when the source [`Surface`] variant
     /// carries one — mirrors [`ScreenLayout::tab_stops`]'s inclusion
@@ -1767,11 +1744,20 @@ impl OwnedFrame {
             .enumerate()
             .map(|(idx, surface)| {
                 let (rect, widget_id, content) = capture_surface(surface);
+                // A widget whose content cannot be captured still describes
+                // itself to the accessibility tree through its own
+                // `A11yPrimitive` impl.
+                let a11y = match (surface, &content) {
+                    (Surface::Widget { widget, .. }, OwnedContent::Opaque) => {
+                        Some(widget.a11y_info())
+                    }
+                    _ => None,
+                };
                 OwnedNode {
                     idx,
                     rect,
                     widget_id,
-                    a11y: None,
+                    a11y,
                     content,
                 }
             })
@@ -1834,11 +1820,10 @@ impl OwnedFrame {
 /// Clone one [`Surface`]'s primitive into the `(rect, widget_id,
 /// content)` parts an [`OwnedNode`] holds. The widget-id rule mirrors
 /// [`ScreenLayout::tab_stops`]'s inclusion list exactly; the rect rule
-/// mirrors [`ScreenLayout::zone_for`]'s exactly. [`Surface::DropOverlay`]
-/// falls back to [`OwnedContent::DropOverlay`] and [`Surface::FindReplace`]
-/// falls back to [`OwnedContent::FindReplace`], because [`DropOverlay`]
-/// and [`FindReplacePanel`] do not implement `serde::{Serialize,
-/// Deserialize}` — both still keep their own distinct [`FrameZone`] tag.
+/// mirrors [`ScreenLayout::zone_for`]'s exactly. [`Surface::FindReplace`]
+/// falls back to [`OwnedContent::FindReplace`], because
+/// [`FindReplacePanel`] does not implement `serde::{Serialize,
+/// Deserialize}` — it still keeps its own distinct [`FrameZone`] tag.
 fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) {
     match surface {
         Surface::Editor { rect, editor } => {
@@ -1921,7 +1906,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::DiffView { rect, view } => {
             (*rect, Some(view.id), OwnedContent::DiffView(view.clone()))
         }
-        Surface::DropOverlay { overlay } => (overlay.bounds(), None, OwnedContent::DropOverlay),
         Surface::Image { rect, image } => (*rect, None, OwnedContent::Image(image.clone())),
         Surface::MessageList { rect, list } => (
             *rect,
@@ -2537,7 +2521,7 @@ mod tests {
             focused_pane: Default::default(),
             has_focus: false,
         };
-        let overlay = DropOverlay {
+        let overlay = crate::primitives::drop_zone::DropOverlay {
             highlight: Some(Rect::new(1.0, 1.0, 2.0, 2.0)),
             insertion_bar: None,
             ghost_position: None,
@@ -2610,8 +2594,9 @@ mod tests {
         layout.push(Surface::Board { rect, model: board });
         layout.push(Surface::CommandCenter { rect, cc });
         layout.push(Surface::DiffView { rect, view: diff });
-        layout.push(Surface::DropOverlay {
-            overlay: overlay.clone(),
+        layout.push(Surface::Widget {
+            rect: overlay.bounds(),
+            widget: Box::new(overlay.clone()),
         });
         layout.push(Surface::Image { rect, image });
         layout.push(Surface::MessageList {
@@ -2656,7 +2641,7 @@ mod tests {
         assert_eq!(zones[0], &FrameZone::Board { idx: 0 });
         assert_eq!(zones[1], &FrameZone::CommandCenter { idx: 1 });
         assert_eq!(zones[2], &FrameZone::DiffView { idx: 2 });
-        assert_eq!(zones[3], &FrameZone::DropOverlay { idx: 3 });
+        assert_eq!(zones[3], &FrameZone::Widget { idx: 3, id: None });
         assert_eq!(zones[4], &FrameZone::Image { idx: 4 });
         assert_eq!(zones[5], &FrameZone::MessageList { idx: 5 });
         assert_eq!(zones[6], &FrameZone::Minimap { idx: 6 });
@@ -2668,11 +2653,10 @@ mod tests {
         assert_eq!(zones[12], &FrameZone::TextInput { idx: 12 });
         assert_eq!(zones[13], &FrameZone::Toolbar { idx: 13 });
 
-        // `DropOverlay`'s zone rect comes from `DropOverlay::bounds()`,
-        // not a `rect` field it doesn't have.
+        // A drop overlay is pushed at `DropOverlay::bounds()`.
         assert_eq!(hit_map.zones()[3].0, overlay.bounds());
 
-        // Tab order: `DropOverlay` (transient overlay) and `SplitTree`
+        // Tab order: the non-interactive drop overlay and `SplitTree`
         // (structural chrome, like `Split`) don't participate, and
         // neither do the purely-decorative `Image`/`Spinner` or this
         // non-cancellable `Progress` (no activatable affordance).

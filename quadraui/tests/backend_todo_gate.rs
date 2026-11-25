@@ -237,11 +237,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_drop_overlay",
-        "\"Direct2D drop overlay rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_menu_bar",
         "\"Direct2D menu bar rasteriser (no surface attached yet)\"",
     ),

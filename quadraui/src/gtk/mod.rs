@@ -124,7 +124,6 @@ mod data_table;
 mod date_picker;
 mod dialog;
 mod diff_view;
-mod drop_overlay;
 mod editor;
 pub mod events;
 mod form;
