@@ -90,7 +90,6 @@ mod run;
 mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-mod sidebar_panel;
 mod solid_fill;
 mod spinner;
 mod split;
@@ -207,8 +206,6 @@ pub use scrollbar::draw_scrollbar;
 pub(crate) use scrollbar::draw_scrollbar_layout;
 #[doc(hidden)]
 pub use services::TuiPlatformServices;
-#[doc(hidden)]
-pub use sidebar_panel::{draw_sidebar_panel, tui_sidebar_panel_layout};
 #[doc(hidden)]
 pub use solid_fill::draw_solid_fill;
 pub(crate) use spinner::draw_spinner_layout;

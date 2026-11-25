@@ -28,7 +28,7 @@ fn q_area(area: Rect) -> crate::event::Rect {
 /// Compute the TUI cell-unit layout for a [`ToastOverlay`] without painting.
 ///
 /// `area`'s origin is baked into the returned bounds (absolute buffer
-/// coordinates, matching `tui_menu_bar_layout` / `tui_sidebar_panel_layout`) —
+/// coordinates, matching `tui_menu_bar_layout`) —
 /// hosts call `layout.hit_test(x, y)` with raw click coordinates, no
 /// localisation needed.
 pub fn tui_toast_stack_layout(stack: &ToastOverlay, area: Rect) -> ToastStackLayout {

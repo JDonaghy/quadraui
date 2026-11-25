@@ -6,12 +6,13 @@
 //! - **Multi-row toolbar**: the header toolbar is reserved at
 //!   2 rows so the background fills both rows and the button
 //!   row is vertically centred.
-//! - **SidebarPanel**: the host hands a single rect to
-//!   `draw_sidebar_panel`, then paints its content list into
+//! - **SidebarPanel**: the host paints the panel through
+//!   `DrawsPrimitives::draw_dyn`, then paints its content list into
 //!   `layout.content_bounds`. No manual carving.
-//! - **ToolbarHoverTracker**: hover state for the toolbar
-//!   buttons is owned by the helper — mouse-move just calls
-//!   `tracker.update(...)`.
+//! - **Widget contract**: the panel is registered in the app's
+//!   `FrameTree`, so hover, press and click on its toolbar route
+//!   through the panel's own `Interactive` impl and arrive as
+//!   `UiEvent::Toolbar(_, ButtonClicked { .. })`.
 //! - **Icon-only buttons with wide-glyph icons**: the toolbar
 //!   includes an icon-only `[ + ]` button alongside icon+label buttons
 //!   and a CJK-test glyph item.
@@ -24,10 +25,12 @@
 //! - Click a task row       select it (highlighted in content area)
 //! - q / Esc                quit
 
+use std::cell::Cell;
+
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, SidebarPanel,
-    SidebarPanelHit, StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHoverTracker,
-    UiEvent, WidgetId,
+    AppLogic, Backend, Color, DrawsPrimitives, FrameTree, InteractionState, Key, NamedKey,
+    Reaction, Rect, SidebarPanel, SidebarPanelHit, SidebarPanelLayout, StatusBar, StatusBarSegment,
+    Toolbar, ToolbarButton, ToolbarEvent, UiEvent, WidgetId,
 };
 
 const TOOLBAR_ROWS: f32 = 2.0;
@@ -37,9 +40,10 @@ pub struct SidebarPanelApp {
     selected: Option<usize>,
     filter_on: bool,
     last_message: String,
-    hover: ToolbarHoverTracker,
-    pressed: Option<WidgetId>,
     next_id: usize,
+    /// Where the panel painted last frame, for `frame_tree` to register
+    /// it at.
+    panel_rect: Cell<Rect>,
 }
 
 impl SidebarPanelApp {
@@ -53,9 +57,8 @@ impl SidebarPanelApp {
             selected: Some(0),
             filter_on: false,
             last_message: "Click toolbar buttons, then list rows. q=quit".into(),
-            hover: ToolbarHoverTracker::new(),
-            pressed: None,
             next_id: 4,
+            panel_rect: Cell::new(Rect::default()),
         }
     }
 
@@ -118,9 +121,13 @@ impl SidebarPanelApp {
         ])
     }
 
+    fn panel_id() -> WidgetId {
+        WidgetId::new("sb:panel")
+    }
+
     fn panel(&self) -> SidebarPanel {
         SidebarPanel {
-            id: WidgetId::new("sb:panel"),
+            id: Self::panel_id(),
             toolbar: Some(self.toolbar()),
             // The toolbar is 2 rows tall; background fills both rows
             toolbar_height: Some(TOOLBAR_ROWS),
@@ -215,17 +222,14 @@ impl AppLogic for SidebarPanelApp {
             &InteractionState::new(),
         );
 
-        // The panel itself.
+        // The panel itself, painted through the widget contract.
         let panel_rect = Self::panel_rect(backend);
-        // One `InteractionState` in, instead of two positional
-        // ids. `ToolbarHoverTracker` keeps owning the hover bookkeeping
-        // (Gap 3, which is what this example exists to demonstrate);
-        // this adapts it into the new call shape.
-        let layout = backend.draw_sidebar_panel_interactive(
-            panel_rect,
-            &self.panel(),
-            &InteractionState::from_parts(self.hover.current(), self.pressed),
-        );
+        self.panel_rect.set(panel_rect);
+        let layout = backend
+            .draw_dyn(panel_rect, &self.panel(), &())
+            .downcast_ref::<SidebarPanelLayout>()
+            .cloned()
+            .expect("a SidebarPanel resolves a SidebarPanelLayout");
 
         // Host paints into the returned content rect. Here: a list of
         // tasks with the selected row highlighted via reverse colours.
@@ -293,6 +297,16 @@ impl AppLogic for SidebarPanelApp {
         );
     }
 
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(
+            Self::panel_id(),
+            self.panel_rect.get(),
+            Box::new(self.panel()),
+        );
+        tree
+    }
+
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
             UiEvent::KeyPressed {
@@ -319,37 +333,17 @@ impl AppLogic for SidebarPanelApp {
                 Reaction::Continue
             }
 
-            UiEvent::MouseMoved { position, .. } => {
-                let panel_rect = Self::panel_rect(backend);
-                let layout = backend.sidebar_panel_layout(panel_rect, &self.panel());
-                // Hover applies only to the toolbar — the helper's
-                // hit_test inspects the nested ToolbarLayout when the
-                // cursor sits inside the toolbar slot, otherwise it
-                // clears.
-                let new = if let Some(tlayout) = &layout.toolbar_layout {
-                    let mut tmp = self.hover.clone();
-                    tmp.update(tlayout, position.x, position.y);
-                    tmp
-                } else {
-                    let mut tmp = self.hover.clone();
-                    tmp.clear();
-                    tmp
-                };
-                if new.current() != self.hover.current() {
-                    self.hover = new;
-                    return Reaction::Redraw;
-                }
-                Reaction::Continue
+            UiEvent::Toolbar(_, ToolbarEvent::ButtonClicked { id, .. }) => {
+                self.dispatch_toolbar(&id);
+                Reaction::Redraw
             }
 
+            // A press the panel's toolbar didn't claim bubbles here; a
+            // press in the content area selects a task row.
             UiEvent::MouseDown { position, .. } => {
                 let panel_rect = Self::panel_rect(backend);
-                let layout = backend.sidebar_panel_layout(panel_rect, &self.panel());
+                let layout = backend.layout_primitive(panel_rect, &self.panel());
                 match layout.hit_test(position.x, position.y) {
-                    SidebarPanelHit::ToolbarButton(id) => {
-                        self.pressed = Some(id);
-                        Reaction::Redraw
-                    }
                     SidebarPanelHit::Content { y, .. } => {
                         // Content rows: header row (lh) then one row
                         // per task. Header row is non-clickable.
@@ -366,21 +360,6 @@ impl AppLogic for SidebarPanelApp {
                     }
                     _ => Reaction::Continue,
                 }
-            }
-
-            UiEvent::MouseUp { position, .. } => {
-                let panel_rect = Self::panel_rect(backend);
-                let layout = backend.sidebar_panel_layout(panel_rect, &self.panel());
-                let pressed = self.pressed.take();
-                if let (Some(pressed_id), SidebarPanelHit::ToolbarButton(release_id)) =
-                    (pressed, layout.hit_test(position.x, position.y))
-                {
-                    if pressed_id == release_id {
-                        self.dispatch_toolbar(&release_id);
-                    }
-                    return Reaction::Redraw;
-                }
-                Reaction::Redraw
             }
 
             UiEvent::WindowResized { .. } => Reaction::Redraw,

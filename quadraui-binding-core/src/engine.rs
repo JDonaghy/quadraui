@@ -419,12 +419,10 @@ impl LayoutContent {
 /// can run against either [`InteractionEngine::hit_map`] (the main tree)
 /// or a `Layout`-content popover's own
 /// [`FloatContent::Layout`]-scoped hits — same filter, same order, just a
-/// different `hits` slice. `Split`/`SplitTree`/`SidebarPanel` are
-/// chrome around other content, not focusable leaves themselves, so they
-/// are skipped (their own toolbar buttons aren't recorded as
-/// separate `PaintedHit` entries — see `crate::hit::HitDetail::SidebarPanelToolbarButton`
-/// — so a future keyboard-nav pass over those specific buttons
-/// still has nothing to pick up here); `Extra` is a tab stop only when its
+/// different `hits` slice. `Split`/`SplitTree` are chrome around other
+/// content, not focusable leaves themselves, so they are skipped; a
+/// `SidebarPanel`'s header is a [`PaintedHit::Widget`] whose
+/// `FocusSpec::None` keeps it out too; `Extra` is a tab stop only when its
 /// descriptor opts in via [`crate::extra_paint::ExtraPaint::tab_stop`]
 /// (currently `TextInput`); `TextDisplay` is always one
 /// (scroll/copy need keyboard focus the same way a `Tree`/`List` does);
@@ -437,11 +435,9 @@ fn tab_stops_from_hits(hits: &[PaintedHit]) -> Vec<(WidgetId, Rect)> {
             | PaintedHit::DataTable { id, area, .. }
             | PaintedHit::TabBar { id, area, .. }
             | PaintedHit::TextDisplay { id, area, .. } => Some((*id, *area)),
-            PaintedHit::Split { .. }
-            | PaintedHit::SplitTree { .. }
-            | PaintedHit::SidebarPanel { .. } => None,
+            PaintedHit::Split { .. } | PaintedHit::SplitTree { .. } => None,
             // A `Scroll` is chrome around its own content, like
-            // `Split`/`SidebarPanel` above -- its content's own
+            // `Split` above -- its content's own
             // leaves are the tab stops, reached via their own
             // `PaintedHit` arms once scrolled into view.
             PaintedHit::Scroll { .. } => None,
@@ -2332,12 +2328,9 @@ impl InteractionEngine {
 
     /// Derives this frame's tab stops directly from the hit map
     /// [`InteractionEngine::set_hits`] last recorded, in paint order.
-    /// `Split`/`SplitTree`/`SidebarPanel` are chrome around other
-    /// content, not focusable leaves themselves, so they are skipped (their
-    /// own toolbar buttons aren't recorded as separate `PaintedHit`
-    /// entries — see `crate::hit::HitDetail::SidebarPanelToolbarButton` — so a
-    /// future keyboard-nav pass over those specific buttons still has
-    /// nothing to pick up here); `Extra` is a tab stop only when its
+    /// `Split`/`SplitTree` are chrome around other content, not focusable
+    /// leaves themselves, so they are skipped, and a `SidebarPanel`'s
+    /// pointer-only header contributes none; `Extra` is a tab stop only when its
     /// descriptor opts in via
     /// [`crate::extra_paint::ExtraPaint::tab_stop`] (currently
     /// `TextInput`); `TextDisplay` is always one (scroll/copy need
@@ -10851,11 +10844,13 @@ mod tests {
     /// Clicking a `SidebarPanel`'s toolbar button must deliver a typed
     /// `UiEvent::Toolbar(bar_id, ToolbarEvent::ButtonClicked { id, is_active })`
     /// — exercising `crate::render::paint_layout`'s `LayoutNode::SidebarPanel`
-    /// arm, which records the panel's chrome layout (and its embedded
-    /// `Toolbar` descriptor) as a [`crate::hit::PaintedHit::SidebarPanel`] so
-    /// this hit resolves through `semantic_event_for_hit`'s
-    /// `HitDetail::SidebarPanelToolbarButton` arm instead of staying a raw
-    /// `MouseDown`.
+    /// arm, which records the panel's header as a
+    /// [`crate::hit::PaintedHit::Widget`] so the click routes through
+    /// `SidebarPanel`'s own `Interactive` impl instead of staying a raw
+    /// `MouseDown`. This is the binding-host leg of the three-way event
+    /// parity whose `TuiDriver` and `a11y::route_widget_action` legs live
+    /// in `quadraui`'s `tests/widget_contract_sidebar_panel.rs` and
+    /// `primitives/sidebar_panel.rs`: all three resolve to the same event.
     #[test]
     fn clicking_a_sidebar_panel_toolbar_button_dispatches_a_toolbar_button_clicked_event() {
         use quadraui::{SidebarPanel, Toolbar, ToolbarButton};

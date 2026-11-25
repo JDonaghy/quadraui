@@ -1548,22 +1548,6 @@ impl crate::Backend for RecordingBackend {
     ) -> crate::primitives::toolbar::ToolbarLayout {
         unimplemented!("RecordingBackend has no Toolbar layout algorithm")
     }
-    fn draw_sidebar_panel_interactive(
-        &mut self,
-        _r: Rect,
-        _p: &crate::primitives::sidebar_panel::SidebarPanel,
-        _interaction: &crate::interaction::InteractionState,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        self.record("draw_sidebar_panel");
-        unimplemented!("RecordingBackend has no SidebarPanel layout algorithm")
-    }
-    fn sidebar_panel_layout(
-        &self,
-        _r: Rect,
-        _p: &crate::primitives::sidebar_panel::SidebarPanel,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        unimplemented!("RecordingBackend has no SidebarPanel layout algorithm")
-    }
     fn draw_diff_view(
         &mut self,
         _r: Rect,

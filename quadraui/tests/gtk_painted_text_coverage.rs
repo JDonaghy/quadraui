@@ -435,8 +435,8 @@ fn sidebar_panel_app_paints_locatable_toolbar_and_list_rows() {
     assert_locatable(
         &driver,
         &[
-            ("draw_sidebar_panel", "Filter (f)"),
-            ("draw_sidebar_panel", "Clear (c)"),
+            ("draw_dyn(SidebarPanel)", "Filter (f)"),
+            ("draw_dyn(SidebarPanel)", "Clear (c)"),
             ("draw_list", "Review PR #257"),
         ],
     );

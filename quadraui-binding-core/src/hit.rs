@@ -9,9 +9,9 @@ use std::rc::Rc;
 
 use quadraui::{
     Canvas, CanvasHit, DataTableHit, DataTableLayout, ListViewHit, ListViewLayout, Point,
-    PressZone, Rect, ScrollAxis, Scrollbar, SidebarPanelHit, SidebarPanelLayout, SplitHit,
-    SplitLayout, SplitTreeLayout, TabBarHit, TabBarLayout, TextDisplayHit, TextDisplayLayout,
-    Toolbar, TreePath, TreeRowEditState, TreeViewHit, TreeViewLayout, UiEvent, WidgetId,
+    PressZone, Rect, ScrollAxis, Scrollbar, SplitHit, SplitLayout, SplitTreeLayout, TabBarHit,
+    TabBarLayout, TextDisplayHit, TextDisplayLayout, TreePath, TreeRowEditState, TreeViewHit,
+    TreeViewLayout, UiEvent, WidgetId,
 };
 
 use quadraui::primitive::DynWidget;
@@ -251,22 +251,6 @@ pub enum PaintedHit {
         id: WidgetId,
         layout: SplitTreeLayout,
     },
-    /// A [`quadraui::SidebarPanel`]'s chrome layout, in the ABSOLUTE frame.
-    /// A `SidebarPanelHit::ToolbarButton` resolves
-    /// to the clicked button's own id; `SidebarPanelHit::Content` is left
-    /// to the content subtree pushed after this entry. `toolbar` is a
-    /// clone of [`quadraui::SidebarPanel::toolbar`] as painted — `None`
-    /// whenever `layout.toolbar_bounds` is (no header slot reserved);
-    /// `Some` otherwise, kept alongside the layout (which only carries
-    /// bounds, not the button descriptors) so
-    /// [`crate::semantic::semantic_event_for_hit`] can resolve a
-    /// `SidebarPanelToolbarButton` hit into a typed `UiEvent::Toolbar`
-    /// the same way [`Self::Extra`]'s own `Toolbar` chrome does.
-    SidebarPanel {
-        id: WidgetId,
-        layout: SidebarPanelLayout,
-        toolbar: Option<Toolbar>,
-    },
     /// One additive primitive (anything registered in a binding's own
     /// `EXTRA_PRIMITIVES` decode table),
     /// painted by `draw_bands`'s extras loop or by a
@@ -330,7 +314,7 @@ pub enum PaintedHit {
     /// excludes the scrollbar gutter `crate::render::paint_layout`'s
     /// `LayoutNode::Scroll` arm reserves. Pushed BEFORE that arm recurses
     /// into its (culled, offset) content, same ordering as
-    /// [`Self::SidebarPanel`]'s own chrome hit — a descendant content hit
+    /// [`Self::Split`]'s own divider hit — a descendant content hit
     /// (pushed after, so checked first in reverse order) wins over this
     /// one. Content scrolled out of view never gets its own
     /// [`PaintedHit`] at all (culled before painting), so there is nothing
@@ -421,7 +405,7 @@ pub struct ScrollChildHit {
 /// [`PaintedHit::Extra`]'s `chrome_hits` (each
 /// entry independently intersected and dropped on no overlap, the same
 /// per-entry treatment `hits` itself gets). The chrome-layout kinds
-/// (`Split`/`SplitTree`/`SidebarPanel`) carry several independent
+/// (`Split`/`SplitTree`) carry several independent
 /// sub-region rects apiece with no single outer bounds to narrow, and
 /// aren't realistic `Scroll` content — left as-is.
 pub(crate) fn clip_hits_to_viewport(hits: &mut Vec<PaintedHit>, start: usize, viewport: Rect) {
@@ -480,9 +464,7 @@ fn primary_bounds_mut(hit: &mut PaintedHit) -> Option<&mut Rect> {
         PaintedHit::Extra { area, .. } => Some(area),
         PaintedHit::Widget { area, .. } => Some(area),
         PaintedHit::Scroll { viewport, .. } => Some(viewport),
-        PaintedHit::Split { .. }
-        | PaintedHit::SplitTree { .. }
-        | PaintedHit::SidebarPanel { .. } => None,
+        PaintedHit::Split { .. } | PaintedHit::SplitTree { .. } => None,
     }
 }
 
@@ -584,16 +566,6 @@ pub enum HitDetail {
     SplitTreeDivider {
         split_index: usize,
     },
-    /// Landed on a [`quadraui::SidebarPanel`]'s toolbar button. `id`
-    /// resolves to the matched hit returned alongside this detail as the
-    /// clicked button's own id, same as a plain `Button` leaf click. `bar` is the
-    /// embedded [`quadraui::Toolbar`]'s own id (not the `SidebarPanel`'s),
-    /// carried here so [`crate::semantic::semantic_event_for_hit`] can look
-    /// the toolbar back up in the hit map and build its typed
-    /// `UiEvent::Toolbar`, mirroring `ExtraChrome::bar`.
-    SidebarPanelToolbarButton {
-        bar: WidgetId,
-    },
     /// Landed before the thumb on a tree's vertical scrollbar track
     /// (page-up zone). Handled directly in the binding's own event handler, which
     /// replaces the raw click with `UiEvent::ScrollOffsetChanged` — never
@@ -629,7 +601,7 @@ pub enum HitDetail {
     /// [`WidgetId`] (`CanvasRegion::id`), resolved
     /// through [`quadraui::CanvasLayout::region_hit_test`] ahead of
     /// [`Self::ExtraBody`]'s coarser "landed somewhere on the canvas"
-    /// answer, the same disambiguation [`Self::SidebarPanelToolbarButton`]
+    /// answer, the same disambiguation [`Self::ExtraChrome`]
     /// does for a chrome bar's own clickable children. A `Canvas` with no
     /// matching region (including one with an empty `regions` list) still
     /// falls back to `ExtraBody`.
@@ -838,22 +810,6 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     return Some((*id, HitDetail::SplitTreeDivider { split_index }));
                 }
             }
-            PaintedHit::SidebarPanel {
-                id,
-                layout,
-                toolbar,
-            } => match layout.hit_test(point.x, point.y) {
-                SidebarPanelHit::ToolbarButton(button_id) => {
-                    // `layout.toolbar_bounds` (hence this arm) is only
-                    // `Some` when the panel's own `toolbar` is `Some` too
-                    // — see `SidebarPanel::layout`'s `match &self.toolbar`.
-                    let bar = toolbar.as_ref().map(|t| t.id).unwrap_or(*id);
-                    return Some((button_id, HitDetail::SidebarPanelToolbarButton { bar }));
-                }
-                SidebarPanelHit::ToolbarEmpty
-                | SidebarPanelHit::Content { .. }
-                | SidebarPanelHit::Empty => {}
-            },
             PaintedHit::Extra {
                 id,
                 area,

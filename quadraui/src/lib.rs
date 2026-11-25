@@ -758,7 +758,7 @@ pub use primitives::scrollbar::{
     ScrollbarState, SCROLLBAR_WHEEL_VIEWPORTS_PER_NOTCH,
 };
 pub use primitives::sidebar_panel::{
-    SidebarPanel, SidebarPanelHit, SidebarPanelLayout, SidebarPanelMeasure,
+    SidebarPanel, SidebarPanelAction, SidebarPanelHit, SidebarPanelLayout, SidebarPanelState,
 };
 pub use primitives::spinner::{Spinner, SpinnerHit, SpinnerLayout, SpinnerMeasure};
 pub use primitives::split::{Split, SplitDirection, SplitHit, SplitLayout, SplitMeasure};

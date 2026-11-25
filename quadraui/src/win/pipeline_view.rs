@@ -168,7 +168,7 @@ mod tests {
     /// No-paint layout must agree byte-for-byte with what
     /// `draw_pipeline_view` painted — same contract every other `win::`
     /// rasteriser's `no_paint_layout_matches_paint_layout` test proves
-    /// (see `win::sidebar_panel`, `win::text_input`).
+    /// (see `win::text_input`).
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let view = make_view();

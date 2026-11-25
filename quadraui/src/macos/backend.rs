@@ -1057,7 +1057,7 @@ impl MacBackend {
     /// [`Self::nerd_font_fallback_family`] — the same `font_with_fallback`
     /// cascade [`Self::set_current_font`] applies. Icon glyphs in
     /// `draw_tree`/`draw_activity_bar_with_style`/
-    /// `draw_toolbar_interactive`/`draw_sidebar_panel_interactive` now
+    /// `draw_toolbar_interactive` now
     /// paint through `chrome_font`, not `current_font` — without this,
     /// a host that calls `set_nerd_font_fallback` would see icon glyphs
     /// render correctly in the editor but as tofu in every chrome
@@ -1155,8 +1155,8 @@ impl MacBackend {
         }
     }
 
-    /// Resolve a `SidebarPanel`'s default toolbar-header slot height:
-    /// `Style::toolbar_height` on a pixel backend, floored the same way
+    /// Resolve a toolbar's row height: `Style::toolbar_height` on a
+    /// pixel backend, floored the same way
     /// [`Self::resolved_row_height`] is — same shape, for the toolbar
     /// chrome metric instead of the row metric.
     fn resolved_toolbar_height(&self, candidate_line_height: f64) -> f64 {
@@ -4428,9 +4428,7 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         // `Wrap`'s per-row height — `rect.height` is the whole slot the
         // host allocated the bar, not one row's height (see
-        // `super::toolbar::mac_toolbar_layout_with_overflow`'s doc); this
-        // is the same default row height `draw_sidebar_panel_interactive`
-        // sizes its own toolbar header slot from.
+        // `super::toolbar::mac_toolbar_layout_with_overflow`'s doc).
         let row_h = self.resolved_toolbar_height(self.chrome_line_height);
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe {
@@ -4476,40 +4474,6 @@ impl Backend for MacBackend {
         )
     }
 
-    fn draw_sidebar_panel_interactive(
-        &mut self,
-        rect: Rect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        let (hovered_toolbar_id, pressed_toolbar_id) =
-            (interaction.hovered(), interaction.pressed());
-        debug_assert!(
-            !self.current_cg().is_null(),
-            "MacBackend::draw_sidebar_panel called outside enter_frame_scope",
-        );
-        // `SidebarPanel` composes a `Toolbar` header — its icon glyphs
-        // are chrome (`ChromePrimitive::SidebarPanel`), not editor
-        // content — so this paints through `ChromeSurface` (routes text
-        // through `chrome_font`), the same switch
-        // `draw_status_bar_interactive` makes. The default header slot
-        // height is `Style::toolbar_height` on a pixel backend — VS
-        // Code's own toolbar height — rather than the raw
-        // `chrome_line_height` metric, which is usually shorter.
-        let theme = self.current_theme;
-        let line_height = self.resolved_toolbar_height(self.chrome_line_height) as f32;
-        let mut surface = ChromeSurface { backend: self };
-        crate::primitives::sidebar_panel::native_surface_paint::paint(
-            panel,
-            &mut surface,
-            &theme,
-            rect,
-            line_height,
-            hovered_toolbar_id,
-            pressed_toolbar_id,
-        )
-    }
-
     /// Paint via the shared
     /// [`crate::primitives::diff_view::native_surface_paint::paint`] —
     /// see that fn's doc for the two named divergences (row/header text
@@ -4537,29 +4501,6 @@ impl Backend for MacBackend {
             &theme,
             rect,
             line_height,
-        )
-    }
-
-    fn sidebar_panel_layout(
-        &self,
-        rect: Rect,
-        panel: &crate::primitives::sidebar_panel::SidebarPanel,
-    ) -> crate::primitives::sidebar_panel::SidebarPanelLayout {
-        // No-paint twin of `draw_sidebar_panel_interactive` — must agree
-        // with what that method painted, so its header toolbar both
-        // measures against `chrome_font` and sizes its default slot
-        // height via `resolved_toolbar_height`, matching
-        // `draw_sidebar_panel_interactive` above. `chrome_font` is never
-        // `None` (seeded at construction — see its field doc), so there
-        // is no "no font installed yet" fallback to guard against here.
-        super::sidebar_panel::mac_sidebar_panel_layout(
-            panel,
-            &self.chrome_font,
-            self.resolved_toolbar_height(self.chrome_line_height),
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
         )
     }
 
@@ -9622,7 +9563,7 @@ mod tests {
     /// top edge, when the band (`Style::status_bar_height`-sized, 22px by
     /// default — wider still here at `H`) is taller than the chrome
     /// font's own line height. Mirrors
-    /// `sidebar_panel::toolbar_icon_glyph_is_vertically_centered_in_header_band`'s
+    /// `primitives::sidebar_panel`'s `toolbar_icon_glyph_is_vertically_centered_in_header_band`'s
     /// pixel-scan approach: the band is flat-filled with the segment's own
     /// `bg` before text is painted, so any pixel that doesn't match that
     /// fill colour is glyph ink.

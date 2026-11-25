@@ -477,7 +477,7 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`Float`]'s chrome (background fill + optional border
     /// stroke) at `layout.bounds`. Content is NOT painted — the host
     /// draws into `layout.content_bounds`, same contract as
-    /// `Backend::draw_sidebar_panel_interactive`. Skips the fill entirely when
+    /// [`crate::SidebarPanel`]'s own paint. Skips the fill entirely when
     /// `float.transparent` is set, leaving whatever the surface
     /// already holds in place underneath the border.
     pub(crate) fn paint(

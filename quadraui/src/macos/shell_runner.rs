@@ -8,7 +8,7 @@
 //! loop, mirroring `tui::shell_runner` / `gtk::shell_runner`.
 //!
 //! `MacBackend` already implements every `Backend` trait method `AppShell`
-//! renders through (`draw_activity_bar`, `draw_sidebar_panel`,
+//! renders through (`draw_activity_bar`,
 //! `draw_status_bar`, `draw_menu_bar`, …), so no new rasteriser
 //! work is needed here — this is pure composition, same as the TUI/GTK
 //! runners.

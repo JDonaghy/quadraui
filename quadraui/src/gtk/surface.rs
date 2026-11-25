@@ -14,7 +14,7 @@
 //! 2. **Fill translucency.** [`crate::Scrollbar`], `gtk::drop_overlay`,
 //!    `gtk::status_bar`, `gtk::diff_view` and `gtk::toast`
 //!    fill with `set_source_rgba` (honouring `color.a`); [`crate::Form`],
-//!    `gtk::sidebar_panel`, [`crate::Split`], [`crate::SplitTree`] and
+//!    [`crate::Split`], [`crate::SplitTree`] and
 //!    [`crate::TextInput`] fill with `set_source` (opaque-only).
 //!    [`CairoSurface::translucent_fill`] carries that choice per call site.
 //!

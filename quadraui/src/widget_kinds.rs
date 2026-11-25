@@ -223,6 +223,9 @@ widget_kinds! {
     "switch" => crate::Switch,
     "radio_group" => crate::RadioGroup,
     "button" => crate::Button,
+    // Ungated like `TabBar`: `SidebarPanel`'s `Primitive`/`Interactive`
+    // impls carry no feature gate.
+    "sidebar_panel" => crate::SidebarPanel,
 }
 
 #[cfg(test)]

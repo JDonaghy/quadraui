@@ -3639,11 +3639,6 @@ pub fn schema() -> Vec<DefJson> {
             &[("split_index", int_)],
         ),
         (
-            "_HitDetailSidebarPanelToolbarButton",
-            "sidebar_panel_toolbar_button",
-            &[],
-        ),
-        (
             "_HitDetailTreeScrollbarTrackBefore",
             "tree_scrollbar_track_before",
             &[],
@@ -3681,7 +3676,7 @@ pub fn schema() -> Vec<DefJson> {
         for (fname, fty) in *extra_fields {
             fields.push(field(fname, fty()));
         }
-        if *kind == "sidebar_panel_toolbar_button" || *kind == "extra_chrome" {
+        if *kind == "extra_chrome" {
             fields.push(field("bar", re("WidgetId")));
         }
         if *kind == "canvas_region" {
@@ -4405,7 +4400,6 @@ mod coverage {
             HitDetail::SplitSecondPane => {}
             HitDetail::SplitDivider => {}
             HitDetail::SplitTreeDivider { split_index: _ } => {}
-            HitDetail::SidebarPanelToolbarButton { bar: _ } => {}
             HitDetail::TreeScrollbarTrackBefore => {}
             HitDetail::TreeScrollbarThumb => {}
             HitDetail::TreeScrollbarTrackAfter => {}
