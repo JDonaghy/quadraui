@@ -529,45 +529,17 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          Win-GUI window keeps its native non-client titlebar, so no Win-drawn control overlaps \
          the app's title band; override this and delete this line when CSD lands",
     ),
-    // `terminal_layout` / `editor_layout` / `diff_view_layout` each ship with a trait
-    // default that is a pure function of `Backend::char_width()` / `Backend::line_height()`
-    // (plus, for `diff_view_layout`, `DiffView::mode`) — the exact same values every
-    // backend's own `draw_terminal` / `draw_editor` / `draw_diff_view` already resolves
-    // them to. There is no backend-specific measurement these three could add, unlike
-    // `board_layout` / `list_layout`, which route through backend-native constants and
-    // have no default at all. All four backends take the default as the honest answer.
+    // `editor_layout` / `diff_view_layout` each ship with a trait default that is a pure
+    // function of `Backend::char_width()` / `Backend::line_height()` (plus, for
+    // `diff_view_layout`, `DiffView::mode`) — the exact same values every backend's own
+    // `draw_editor` / `draw_diff_view` already resolves them to. There is no
+    // backend-specific measurement these two could add, unlike `board_layout` /
+    // `list_layout`, which route through backend-native constants and have no default at
+    // all. All four backends take the default as the honest answer.
     //
     // `diff_view_layout`'s default still holds after the row/pane geometry lift: its
     // default body keeps its own copy of the pane math rather than delegating to
     // `DiffView::layout`, differing only in one degenerate corner.
-    //
-    // `terminal_scrollbar_default_width` backs `terminal_layout`'s scrollbar-gutter
-    // reservation. GTK, macOS, and Win all default `TerminalScrollbar::width` to 8px —
-    // exactly the trait default — so the three take it as the honest answer. TUI
-    // overrides it to `1.0` (one cell).
-    (
-        "gtk",
-        "terminal_scrollbar_default_width",
-        "pixel backend default (8px) matches draw_terminal's own `unwrap_or(8.0)` fallback \
-         (issue #506 review fix)",
-    ),
-    (
-        "macos",
-        "terminal_scrollbar_default_width",
-        "pixel backend default (8px) matches draw_terminal's own `unwrap_or(8.0)` fallback \
-         (issue #506 review fix)",
-    ),
-    (
-        "win",
-        "terminal_scrollbar_default_width",
-        "pixel backend default (8px) matches draw_terminal's own `unwrap_or(8.0)` fallback \
-         (issue #506 review fix)",
-    ),
-    (
-        "tui",
-        "terminal_layout",
-        "pure fn of char_width()/line_height() — see the block comment above (#506)",
-    ),
     (
         "tui",
         "editor_layout",
@@ -577,11 +549,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "tui",
         "diff_view_layout",
         "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "gtk",
-        "terminal_layout",
-        "pure fn of char_width()/line_height() — see the block comment above (#506)",
     ),
     (
         "gtk",
@@ -595,11 +562,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     (
         "macos",
-        "terminal_layout",
-        "pure fn of char_width()/line_height() — see the block comment above (#506)",
-    ),
-    (
-        "macos",
         "editor_layout",
         "pure fn of char_width()/line_height() — see the block comment above (#506)",
     ),
@@ -607,11 +569,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "macos",
         "diff_view_layout",
         "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "win",
-        "terminal_layout",
-        "pure fn of char_width()/line_height() — see the block comment above (#506)",
     ),
     (
         "win",
@@ -625,8 +582,8 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     // `text_field_layout` is `TextField::layout` applied to
     // `char_width()`/`line_height()` — a pure fn of those two accessors
-    // plus `TextField`'s own state, same shape as `terminal_layout`/
-    // `editor_layout` above. Every backend overrides `draw_text_field`
+    // plus `TextField`'s own state, same shape as `editor_layout`
+    // above. Every backend overrides `draw_text_field`
     // itself (TUI's one-row `[ icon value × ]` painter; GTK/macOS/Win's
     // shared stroked-box painter, `primitives::text_field::
     // paint_text_field_gui`). GTK and Win paint with the same

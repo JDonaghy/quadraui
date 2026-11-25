@@ -121,6 +121,21 @@ pub trait CellSurface {
     /// second column. Mirrors `crate::tui::set_cell_wide`.
     fn put_wide(&mut self, x: u16, y: u16, ch: char, style: CellStyle);
 
+    /// Write one grapheme cluster — a base character plus any combining
+    /// marks, e.g. `"e\u{0301}"` — into the single cell at `(x, y)`, as
+    /// one glyph. A cluster containing an ASCII control character writes a
+    /// blank instead. The cell after a double-width cluster is left as
+    /// the caller painted it (a terminal grid supplies its own
+    /// continuation cell). Out-of-bounds coordinates are ignored.
+    ///
+    /// Defaults to writing the cluster's first `char` through
+    /// [`Self::put_char`] — correct for a surface whose cells hold one
+    /// `char` each.
+    fn put_grapheme(&mut self, x: u16, y: u16, grapheme: &str, style: CellStyle) {
+        let ch = grapheme.chars().next().unwrap_or(' ');
+        self.put_char(x, y, ch, style);
+    }
+
     /// Write `text` starting at `(x, y)`, stopping before the glyph that
     /// would cross `max_cols` display columns (never splitting a
     /// double-width glyph's two columns), and return the number of

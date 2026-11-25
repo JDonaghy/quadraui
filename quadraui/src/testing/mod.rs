@@ -1229,12 +1229,6 @@ impl crate::Backend for RecordingBackend {
         self.record("draw_activity_bar");
         Vec::new()
     }
-    fn draw_terminal(&mut self, _r: Rect, _t: &crate::Terminal) {
-        self.record("draw_terminal");
-    }
-    fn draw_terminal_divider(&mut self, _r: Rect) {
-        self.record("draw_terminal_divider");
-    }
     fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {
         self.record("draw_solid_fill");
     }

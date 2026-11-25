@@ -223,6 +223,10 @@ widget_kinds! {
     "switch" => crate::Switch,
     "radio_group" => crate::RadioGroup,
     "button" => crate::Button,
+    // Ungated like `Button`: `Terminal`'s `Primitive`/`Interactive` impls
+    // carry no feature gate. The kind string is the one the wire schema
+    // already publishes for it.
+    "terminal" => crate::Terminal,
 }
 
 #[cfg(test)]

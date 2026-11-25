@@ -1914,7 +1914,6 @@ export interface LayoutLeafNode {
   palette?: PaletteDescriptor;
   scrollbar?: ScrollbarDescriptor;
   editor?: EditorDescriptor;
-  terminal?: TerminalDescriptor;
   canvas?: CanvasDescriptor;
   scroll_view?: ScrollViewDescriptor;
   find_replace?: FindReplacePanelDescriptor;
@@ -1929,6 +1928,7 @@ export interface LayoutLeafNode {
   switch?: SwitchDescriptor;
   radio_group?: RadioGroupDescriptor;
   button?: ButtonDescriptor;
+  terminal?: TerminalDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -1974,7 +1974,6 @@ export interface RenderFrameDict {
   palette?: PaletteDescriptor | null;
   scrollbar?: ScrollbarDescriptor | null;
   editor?: EditorDescriptor | null;
-  terminal?: TerminalDescriptor | null;
   canvas?: CanvasDescriptor | null;
   scroll_view?: ScrollViewDescriptor | null;
   find_replace?: FindReplacePanelDescriptor | null;
@@ -1989,6 +1988,7 @@ export interface RenderFrameDict {
   switch?: SwitchDescriptor | null;
   radio_group?: RadioGroupDescriptor | null;
   button?: ButtonDescriptor | null;
+  terminal?: TerminalDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

@@ -10,10 +10,9 @@
 //!
 //! Not covered here, deliberately:
 //!
-//! * **`draw_terminal`** — the cell-grid rasteriser paints one Pango run
-//!   *per cell*, so routing it through the recorder would push thousands
-//!   of single-character entries into the map per frame. It needs the
-//!   cheaper row-coalescing path; see `src/gtk/painted_text.rs`.
+//! * **`Terminal`** — the cell-grid painter paints one Pango run *per
+//!   cell*, so a text needle spanning cells is never one recorded run. It
+//!   needs the cheaper row-coalescing path; see `src/gtk/painted_text.rs`.
 //! * **`draw_split` / `draw_split_tree` / `draw_scrollbar` /
 //!   `draw_drop_overlay`** — these paint no text at all (dividers,
 //!   tracks, tint rects), so there is nothing to record. The labels a

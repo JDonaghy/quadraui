@@ -32,8 +32,9 @@
 
 use quadraui::terminal_engine::{default_shell, TerminalMouseKind, TerminalSession};
 use quadraui::{
-    AppLogic, Backend, ButtonMask, Color, InteractionState, Key, Modifiers, MouseButton, NamedKey,
-    Reaction, Rect, ScrollDelta, StatusBar, StatusBarSegment, UiEvent, Viewport, WidgetId,
+    AppLogic, Backend, ButtonMask, Color, DrawsPrimitives, InteractionState, Key, Modifiers,
+    MouseButton, NamedKey, Reaction, Rect, ScrollDelta, StatusBar, StatusBarSegment, UiEvent,
+    Viewport, WidgetId,
 };
 
 // ── Layout ───────────────────────────────────────────────────────────────────
@@ -227,7 +228,7 @@ impl AppLogic for TerminalApp {
                 None
             };
             let snapshot = sess.to_terminal(WidgetId::new("terminal:0"), sb);
-            backend.draw_terminal(rect, &snapshot);
+            backend.draw_dyn(rect, &snapshot, &());
         } else {
             // No session — show an error in the status bar.
             let msg = if self.error_msg.is_empty() {

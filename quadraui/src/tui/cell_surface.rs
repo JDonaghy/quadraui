@@ -198,6 +198,26 @@ impl CellSurface for TuiCellSurface {
         set_cell_wide_styled(self.buf(), x, y, ch, fg, bg, modifier, underline_color);
     }
 
+    fn put_grapheme(&mut self, x: u16, y: u16, grapheme: &str, style: CellStyle) {
+        let (fg, bg, modifier, underline_color) = resolve_cell_style(style);
+        let buf = self.buf();
+        let area = buf.area;
+        if x < area.x || y < area.y || x >= area.x + area.width || y >= area.y + area.height {
+            return;
+        }
+        let cell = &mut buf[(x, y)];
+        // ratatui debug-asserts on ASCII control characters in a cell
+        // symbol, so such a cluster paints as a blank.
+        if grapheme.chars().any(|c| c.is_ascii_control()) {
+            cell.set_char(' ');
+        } else {
+            cell.set_symbol(grapheme);
+        }
+        cell.set_fg(fg).set_bg(bg);
+        cell.modifier = modifier;
+        cell.underline_color = underline_color.unwrap_or(RatatuiColor::Reset);
+    }
+
     fn put_str_clipped(
         &mut self,
         x: u16,

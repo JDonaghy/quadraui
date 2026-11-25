@@ -789,8 +789,9 @@ pub use primitives::tab_bar::{
 // backend-generic `AppLogic` type-checks.
 pub use primitives::tab_bar::TabBarPrimitiveLayout;
 pub use primitives::terminal::{
-    Terminal, TerminalCell, TerminalCellSize, TerminalCursorShape, TerminalEvent, TerminalHit,
-    TerminalLayout, TerminalScrollbar, TerminalSplitHit, TerminalSplitLayout,
+    Terminal, TerminalCell, TerminalCellSize, TerminalCursorShape, TerminalDivider,
+    TerminalDividerLayout, TerminalEvent, TerminalHit, TerminalLayout, TerminalScrollbar,
+    TerminalSplitHit, TerminalSplitLayout, TerminalState,
 };
 pub use primitives::text_display::{
     TextDisplay, TextDisplayEvent, TextDisplayHit, TextDisplayLayout, TextDisplayLine,

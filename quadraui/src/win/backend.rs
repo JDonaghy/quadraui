@@ -52,7 +52,7 @@ use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, Palette, StatusBar,
-    Terminal, TextDisplay, TooltipChrome, TreeView, UserPayload,
+    TextDisplay, TooltipChrome, TreeView, UserPayload,
 };
 // `TabBar` is only named by `#[cfg(test)]` code below — a tab strip
 // paints through its widget contract, not a method on this backend.
@@ -3784,85 +3784,6 @@ impl Backend for WinBackend {
             .collect()
     }
 
-    /// Real Direct2D/DirectWrite rasteriser via `win::terminal` once a
-    /// surface is attached. Mirrors `GtkBackend::draw_terminal`'s
-    /// scrollbar handling (subtract the gutter from the cell area, paint
-    /// cells, then paint the scrollbar over the freed strip) but skips
-    /// the dirty-row cache — see `win::terminal`'s module doc for why
-    /// that's a deliberate follow-up. See [`Self::draw_status_bar`]'s
-    /// doc for the "surface not attached yet" fallback posture.
-    /// Shared cell-grid painting lives in
-    /// [`crate::primitives::terminal::paint`] now — see that fn's doc
-    /// for the divergences (per-cell bold/italic/underline styling)
-    /// resolved while unifying `gtk::terminal::draw_terminal_cells`,
-    /// `macos::terminal::draw_terminal_cells` and
-    /// `win::terminal::draw_terminal_cells` into one implementation.
-    fn draw_terminal(&mut self, rect: Rect, term: &Terminal) {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() {
-            let lh = self.current_line_height;
-            let cw = self.current_char_width;
-            let theme = self.current_theme;
-
-            let sb_width = match &term.scrollbar {
-                Some(sb) => sb.width.map(|w| w as f32).unwrap_or(8.0),
-                None => 0.0,
-            };
-            let cell_area_w = (rect.width - sb_width).max(0.0);
-
-            // The terminal is editor-class — paint through
-            // `EditorSurface` so its cell glyphs keep painting in the
-            // editor font even though `WinBackend`'s own `PaintSurface`
-            // impl now defaults to `chrome_dwrite` (see that impl's
-            // doc).
-            let mut surface = EditorSurface { backend: self };
-            crate::primitives::terminal::paint(
-                term,
-                &mut surface,
-                &theme,
-                rect.x,
-                rect.y,
-                cell_area_w,
-                rect.height,
-                lh,
-                cw,
-                None,
-            );
-
-            if let Some(ref sb_state) = term.scrollbar {
-                let sb = crate::primitives::scrollbar::Scrollbar::vertical(
-                    term.id,
-                    Rect::new(rect.x + cell_area_w, rect.y, sb_width, rect.height),
-                    sb_state.effective_scroll_offset() as f32,
-                    sb_state.total_lines as f32,
-                    sb_state.visible_lines as f32,
-                    lh,
-                );
-                crate::primitives::scrollbar::native_surface_paint::paint(&sb, self, &theme);
-            }
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, term);
-    }
-
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture. `Terminal` paints no text, so
-    /// unlike most of that method's siblings this doesn't need
-    /// `self.dwrite`.
-    fn draw_terminal_divider(&mut self, rect: Rect) {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() {
-            let theme = self.current_theme;
-            crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = rect;
-    }
-
     /// See [`Backend::draw_solid_fill`]'s doc — a pixel backend
     /// can honor `rect` exactly via `PaintSurface::surface_fill_rect`,
     /// which already degrades to a no-op when no surface is attached
@@ -3890,9 +3811,8 @@ impl Backend for WinBackend {
             let theme = self.current_theme;
             let line_height = self.current_line_height;
             let char_width = self.current_char_width;
-            // The text display is editor-class — see the matching
-            // comment on `Self::draw_terminal` / `EditorSurface`'s own
-            // doc.
+            // The text display is editor-class — see `EditorSurface`'s
+            // own doc.
             let mut surface = EditorSurface { backend: self };
             crate::primitives::text_display::paint(
                 td,
@@ -5617,8 +5537,8 @@ impl Backend for WinBackend {
         if self.surface.is_some() && self.dwrite.is_some() {
             let theme = self.current_theme;
             let line_height = self.current_line_height;
-            // The diff view is editor-class — see the matching comment
-            // on `Self::draw_terminal` / `EditorSurface`'s own doc.
+            // The diff view is editor-class — see `EditorSurface`'s own
+            // doc.
             let mut surface = EditorSurface { backend: self };
             return crate::primitives::diff_view::native_surface_paint::paint(
                 view,
@@ -6309,6 +6229,12 @@ fn win_monitor_rect(hwnd: HWND) -> ServiceResult<RECT> {
 impl PaintSurface for WinBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
+    }
+
+    /// Paints through [`EditorSurface`], this backend's editor-font twin.
+    fn surface_with_editor_font(&mut self, paint: &mut dyn FnMut(&mut dyn PaintSurface)) -> bool {
+        paint(&mut EditorSurface { backend: self });
+        true
     }
 
     fn surface_end_frame(&mut self) {
@@ -8672,8 +8598,8 @@ mod tests {
     }
 
     /// `Backend::set_theme` must reach the rasterisers, not just be stored and
-    /// ignored — a real `HeadlessSurface` pixel probe. Tests
-    /// [`super::terminal::draw_terminal_divider`]'s painted pixel: a single flat
+    /// ignored — a real `HeadlessSurface` pixel probe. Tests a
+    /// [`crate::TerminalDivider`]'s painted pixel: a single flat
     /// `theme.separator` fill with no blending, so a non-default theme's colour
     /// must come through pixel-exact if `set_theme` is wired at all.
     #[cfg(target_os = "windows")]
@@ -8707,7 +8633,11 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         // 1 DIP wide at x=0, spanning the full probe height — see
         // `crate::terminal_style::divider_geometry`.
-        backend.draw_terminal_divider(Rect::new(0.0, 0.0, 1.0, H as f32));
+        crate::DrawsPrimitives::draw_primitive(
+            &mut backend,
+            Rect::new(0.0, 0.0, 1.0, H as f32),
+            &crate::TerminalDivider::new(WidgetId::new("divider")),
+        );
         backend.end_frame();
 
         let px = surface.pixel_at(0, H / 2);
@@ -10841,14 +10771,14 @@ mod tests {
         );
     }
 
-    /// `Terminal`'s other call site through `EditorSurface` — see
+    /// `Terminal`'s paint through `EditorSurface` — see
     /// [`win_backend_draw_text_display_does_not_vary_with_chrome_font_size`]'s
     /// doc for why this must stay pixel-identical across chrome font
     /// sizes.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_terminal_does_not_vary_with_chrome_font_size() {
-        let term = Terminal {
+    fn win_backend_terminal_does_not_vary_with_chrome_font_size() {
+        let term = crate::Terminal {
             id: WidgetId::new("terminal"),
             cells: vec![vec![crate::primitives::terminal::TerminalCell {
                 text: "Z".to_string(),
@@ -10873,19 +10803,23 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_terminal(Rect::new(0.0, 0.0, 200.0, 40.0), &term);
+                crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 40.0),
+                    &term,
+                );
             },
         );
         assert_eq!(
             diff, 0,
-            "draw_terminal is editor-class — it must keep painting cell glyphs \
+            "the terminal is editor-class — it must keep painting cell glyphs \
              through EditorSurface (the editor dwrite handle) regardless of the \
              chrome font's size"
         );
     }
 
     /// `DiffView`'s call site through `EditorSurface` — same contract as
-    /// [`win_backend_draw_terminal_does_not_vary_with_chrome_font_size`]
+    /// [`win_backend_terminal_does_not_vary_with_chrome_font_size`]
     /// above.
     #[cfg(target_os = "windows")]
     #[test]

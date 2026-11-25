@@ -11,7 +11,7 @@
 //! overlay/popup rasterisers include `tooltip`/`context_menu`/`dialog`/
 //! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
 //! indicator rasterisers include `split`/`toast`/`progress`/
-//! `spinner`; text-heavy rasterisers include `terminal`/`text_display`/
+//! `spinner`; text-heavy rasterisers include `text_display`/
 //! `message_list` — every other `draw_*`/`*_layout` rasteriser is still a
 //! `todo!()` stub; implement each one against Direct2D / DirectWrite and
 //! the compiler will tell you when you're done.
@@ -202,10 +202,6 @@ mod status_bar;
 /// rasteriser modules above that consume it.
 #[cfg(target_os = "windows")]
 mod surface;
-/// Direct2D / DirectWrite rasteriser for [`crate::Terminal`] cell grids.
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod terminal;
 /// Headless Direct2D test surface: an offscreen `ID2D1DCRenderTarget`
 /// backed by an in-memory DIB section, so `#[cfg(test)]` blocks can paint
 /// a primitive and read pixels back with no `HWND`, display, or GPU.

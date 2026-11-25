@@ -96,7 +96,7 @@ use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, FieldKind, Form, Key, ListView, Modifiers, Palette,
-    ParsedBinding, PlatformServices, StatusBar, Terminal, TextDisplay, Theme, TreeView,
+    ParsedBinding, PlatformServices, StatusBar, TextDisplay, Theme, TreeView,
 };
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this
@@ -3234,68 +3234,6 @@ impl Backend for MacBackend {
         super::activity_bar::mac_activity_bar_layout(rect.width as f64, rect.height as f64, bar)
     }
 
-    /// Shared cell-grid painting lives in
-    /// [`crate::primitives::terminal::paint`] now — see that fn's doc
-    /// for the divergences resolved while unifying
-    /// `gtk::terminal::draw_terminal_cells`,
-    /// `macos::terminal::draw_terminal_cells` and
-    /// `win::terminal::draw_terminal_cells` into one implementation.
-    fn draw_terminal(&mut self, rect: Rect, term: &Terminal) {
-        let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
-
-        let sb_width = match &term.scrollbar {
-            Some(sb) => sb.width.map(|w| w as f64).unwrap_or(8.0),
-            None => 0.0,
-        };
-        let cell_area_w = (rect.width as f64 - sb_width).max(0.0);
-
-        // The terminal is editor-class — paint through `EditorSurface`
-        // so its cell glyphs paint in `current_font` even though the
-        // plain `self` surface defaults to `chrome_font` (see
-        // `EditorSurface`'s doc). Scoped to a block so `self` is free
-        // again for the scrollbar paint below, which has no text of its
-        // own and is fine through the plain (chrome) surface.
-        {
-            let mut surface = EditorSurface { backend: self };
-            crate::primitives::terminal::paint(
-                term,
-                &mut surface,
-                &theme,
-                rect.x,
-                rect.y,
-                cell_area_w as f32,
-                rect.height,
-                line_height as f32,
-                char_width as f32,
-                None,
-            );
-        }
-
-        if let Some(ref sb_state) = term.scrollbar {
-            let sb = crate::primitives::scrollbar::Scrollbar::vertical(
-                term.id,
-                Rect::new(
-                    rect.x + cell_area_w as f32,
-                    rect.y,
-                    sb_width as f32,
-                    rect.height,
-                ),
-                sb_state.effective_scroll_offset() as f32,
-                sb_state.total_lines as f32,
-                sb_state.visible_lines as f32,
-                line_height as f32,
-            );
-            crate::primitives::scrollbar::native_surface_paint::paint(&sb, self, &theme);
-        }
-    }
-    /// Shared divider painting lives in
-    /// [`crate::primitives::terminal::paint_divider`] now.
-    fn draw_terminal_divider(&mut self, rect: Rect) {
-        let theme = self.current_theme;
-        crate::primitives::terminal::paint_divider(self, rect.x, rect.y, rect.height, &theme);
-    }
     /// See `Backend::draw_solid_fill`'s doc — a pixel backend can
     /// honor `rect` exactly via `PaintSurface::surface_fill_rect`.
     fn draw_solid_fill(&mut self, rect: Rect, color: Color) {
@@ -3314,8 +3252,7 @@ impl Backend for MacBackend {
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
         let char_width = self.current_char_width as f32;
-        // `TextDisplay` is editor-class — see `draw_terminal`'s comment
-        // / `EditorSurface`'s doc.
+        // `TextDisplay` is editor-class — see `EditorSurface`'s doc.
         let mut surface = EditorSurface { backend: self };
         crate::primitives::text_display::paint(
             td,
@@ -4526,8 +4463,7 @@ impl Backend for MacBackend {
         // each debug_assert their own `!ctx.is_null()` internally, so
         // this method needs no separate ctx/font fetch of its own.
         //
-        // `DiffView` is editor-class — see `draw_terminal`'s comment /
-        // `EditorSurface`'s doc.
+        // `DiffView` is editor-class — see `EditorSurface`'s doc.
         let theme = self.current_theme;
         let line_height = self.current_line_height as f32;
         let mut surface = EditorSurface { backend: self };
@@ -5274,6 +5210,12 @@ impl PaintSurface for EditorSurface<'_> {
 impl PaintSurface for MacBackend {
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
+    }
+
+    /// Paints through [`EditorSurface`], this backend's editor-font twin.
+    fn surface_with_editor_font(&mut self, paint: &mut dyn FnMut(&mut dyn PaintSurface)) -> bool {
+        paint(&mut EditorSurface { backend: self });
+        true
     }
 
     fn surface_end_frame(&mut self) {

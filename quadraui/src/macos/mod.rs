@@ -115,8 +115,6 @@ pub mod status_bar;
 // Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
 #[doc(hidden)]
-#[doc(hidden)]
-pub mod terminal;
 pub mod testing;
 pub mod text;
 #[doc(hidden)]

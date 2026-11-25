@@ -66,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 180;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 176;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {

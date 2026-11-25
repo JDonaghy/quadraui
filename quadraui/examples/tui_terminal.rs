@@ -2,8 +2,8 @@
 //!
 //! Spawns an interactive shell (reads `$SHELL`, falls back to `/bin/bash`)
 //! and renders its output through [`quadraui::terminal_engine::TerminalSession`]
-//! into the standard [`quadraui::Terminal`] cell-grid primitive, painted by
-//! the existing [`quadraui::tui::draw_terminal`] rasteriser.
+//! into the standard [`quadraui::Terminal`] cell-grid widget, painted
+//! through the widget contract (`DrawsPrimitives::draw_dyn`).
 //!
 //! This example is the acceptance smoke-test for issue #279.
 //!

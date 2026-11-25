@@ -159,7 +159,6 @@ mod split;
 mod split_tree;
 mod status_bar;
 mod surface;
-mod terminal;
 pub mod testing;
 mod text_display;
 mod text_input;
