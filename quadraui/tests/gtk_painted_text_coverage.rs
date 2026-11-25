@@ -511,10 +511,12 @@ impl AppLogic for CommandCenterFixtureApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut cc = CommandCenter::default();
-        cc.id = WidgetId::new("cc");
-        cc.back_enabled = true;
-        cc.search_label = "my-project".into();
+        let cc = CommandCenter {
+            id: WidgetId::new("cc"),
+            back_enabled: true,
+            search_label: "my-project".into(),
+            ..CommandCenter::default()
+        };
         let _ = quadraui::DrawsPrimitives::draw_dyn(
             backend,
             Rect::new(0.0, 0.0, W as f32, 32.0),
