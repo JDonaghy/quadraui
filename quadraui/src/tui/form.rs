@@ -6,15 +6,19 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color as RatatuiColor;
 
+use super::cell_surface::TuiCellSurface;
 use super::{draw_styled_text, ratatui_color, set_cell};
+use crate::backend::ColorDepth;
 use crate::primitives::form::{
     FieldKind, Form, FormField, FormFieldMeasure, FormItemMeasure, LabelAlign, LabelPosition,
     ValidationState,
 };
+use crate::primitives::text_field::cell_paint as text_field_cell_paint;
 use crate::primitives::toolbar::ToolbarButton;
 use crate::theme::Theme;
-use crate::types::{Decoration, WidgetId};
+use crate::types::{Color, Decoration, WidgetId};
 
 /// Shared label-column width (in cells) for every `Left`-positioned
 /// field in `form`. An explicit [`Form::resolved_label_width`] on any
@@ -776,7 +780,7 @@ fn draw_field_text_input(
             (control_start + control_width.max(2) - 1).min((area.width as usize).saturating_sub(1));
         set_cell(buf, area.x + closing_col as u16, y, ']', dim_fg, row_bg);
         let max_cols = control_width.saturating_sub(2);
-        crate::tui::text_field::draw_text_row_cells(
+        draw_text_row_cells(
             buf,
             y,
             area.x + text_col as u16,
@@ -1269,9 +1273,9 @@ fn draw_field_combo_box(
 }
 
 /// Renders the embedded [`crate::primitives::number_input::NumberInput`]
-/// through the real `crate::tui::draw_number_input` (`#[doc(hidden)]`, so
-/// not linked here) rasteriser — the bordered box plus stepper buttons,
-/// not a compact summary, since
+/// through the widget's own cell painter
+/// (`crate::primitives::number_input::cell_paint`) — the bordered box
+/// plus stepper buttons, not a compact summary, since
 /// (unlike `DatePicker`/`ComboBox`) there is no popup to keep collapsed.
 /// `visible_field.item_bounds`'s single entry (populated by
 /// `tui_form_layout_with_label_width`'s `FieldKind::NumberInput` arm) is
@@ -1324,7 +1328,10 @@ fn draw_field_number_input(
     let abs_x = area.x as f32 + item_rect.x;
     let rect = crate::event::Rect::new(abs_x, y as f32, item_rect.width, rows as f32);
     let layout = number.layout(rect);
-    super::draw_number_input(buf, number, &layout, theme);
+    // The painter never moves the cursor, so the sink is never read.
+    let mut cursor_sink = None;
+    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    crate::primitives::number_input::cell_paint::paint(number, &layout, &mut surface, theme);
 }
 
 /// Renders the embedded [`crate::primitives::radio_group::RadioGroup`]
@@ -1400,11 +1407,7 @@ fn draw_field_radio_group(
     );
     // The painter never moves the cursor, so the sink is never read.
     let mut cursor_sink = None;
-    let mut surface = super::cell_surface::TuiCellSurface::new(
-        buf,
-        crate::backend::ColorDepth::TrueColor,
-        &mut cursor_sink,
-    );
+    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
     crate::primitives::radio_group::cell_paint::paint(&group, &layout, &mut surface, theme);
 }
 
@@ -3769,4 +3772,63 @@ mod tests {
             "expected the long-label row's item further right than the short-label row's"
         );
     }
+}
+
+/// The ratatui colour this module's row painter already holds, recovered as
+/// the quadraui [`Color`] a [`crate::CellSurface`] verb takes.
+///
+/// Total for every colour this module's callers pass: each one comes from
+/// `crate::tui`'s own `qc`, which always lands
+/// [`RatatuiColor::Rgb`]. Anything else has no literal RGB to recover and
+/// maps to "the terminal's own default" — the same meaning
+/// [`crate::cell_surface::CellStyle`]'s `None` carries.
+fn from_ratatui(c: RatatuiColor) -> Option<Color> {
+    match c {
+        RatatuiColor::Rgb(r, g, b) => Some(Color::rgb(r, g, b)),
+        _ => None,
+    }
+}
+
+/// Paint the inside-the-brackets text content of a
+/// `FieldKind::TextInput` row — a thin delegate onto
+/// [`crate::primitives::text_field::cell_paint::put_text_row`], which
+/// documents the selection highlight and caret placement.
+///
+/// Takes the ratatui colours [`draw_form`] already holds rather than
+/// quadraui [`Color`]s, so the row's own colour resolution stays in one
+/// place.
+#[allow(clippy::too_many_arguments)]
+fn draw_text_row_cells(
+    buf: &mut Buffer,
+    y: u16,
+    text_col: u16,
+    right_bound: u16,
+    max_cols: usize,
+    skip_chars: usize,
+    value: &str,
+    placeholder: &str,
+    cursor: Option<usize>,
+    selection_anchor: Option<usize>,
+    field_fg: RatatuiColor,
+    dim_fg: RatatuiColor,
+    row_bg: RatatuiColor,
+) {
+    let fallback = Color::rgb(0, 0, 0);
+    let mut cursor_sink = None;
+    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    text_field_cell_paint::put_text_row(
+        &mut surface,
+        y,
+        text_col,
+        right_bound,
+        max_cols,
+        skip_chars,
+        value,
+        placeholder,
+        cursor,
+        selection_anchor,
+        from_ratatui(field_fg).unwrap_or(fallback),
+        from_ratatui(dim_fg).unwrap_or(fallback),
+        from_ratatui(row_bg).unwrap_or(fallback),
+    );
 }

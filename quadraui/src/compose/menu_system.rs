@@ -1140,22 +1140,6 @@ mod tests {
             unimplemented!()
         }
         fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {}
-        fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {}
-        fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {}
-        fn draw_command_line_selection(
-            &mut self,
-            _r: Rect,
-            _c: &crate::CommandLine,
-            _s: Option<(usize, usize)>,
-        ) {
-        }
-        fn command_line_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::CommandLine,
-        ) -> crate::primitives::command_line::CommandLineLayout {
-            Default::default()
-        }
         fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
             crate::StatusBarLayout {
                 bar_width: 0.0,
@@ -1172,35 +1156,12 @@ mod tests {
         ) -> Vec<crate::ActivityBarRowHit> {
             Vec::new()
         }
-        fn text_display_layout(
-            &self,
-            _r: Rect,
-            _t: &crate::TextDisplay,
-        ) -> crate::TextDisplayLayout {
-            unimplemented!()
-        }
-        fn draw_text_input(&mut self, _r: Rect, _t: &crate::TextInput) -> crate::TextInputLayout {
-            unimplemented!()
-        }
-        fn text_input_layout(&self, _r: Rect, _t: &crate::TextInput) -> crate::TextInputLayout {
-            unimplemented!()
-        }
-        fn draw_text_field(&mut self, _r: Rect, _t: &crate::TextField) -> crate::TextFieldLayout {
-            unimplemented!()
-        }
-        fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {}
-        fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
-        fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {}
-        fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
         fn draw_context_menu(
             &mut self,
             _m: &crate::ContextMenu,
             _l: &crate::ContextMenuLayout,
         ) -> Vec<(Rect, WidgetId)> {
             Vec::new()
-        }
-        fn draw_dialog(&mut self, _d: &crate::Dialog, _l: &crate::DialogLayout) -> Vec<Rect> {
-            unimplemented!()
         }
         fn draw_multi_section_view(&mut self, _r: Rect, _v: &crate::MultiSectionView) {}
         fn msv_layout(
@@ -1257,22 +1218,10 @@ mod tests {
             _l: &crate::primitives::message_list::MessageList,
         ) {
         }
-        fn draw_rich_text_popup(
-            &mut self,
-            _p: &crate::RichTextPopup,
-            _l: &crate::primitives::rich_text_popup::RichTextPopupLayout,
-        ) {
-        }
         fn draw_find_replace(
             &mut self,
             _r: Rect,
             _p: &crate::primitives::find_replace::FindReplacePanel,
-        ) {
-        }
-        fn draw_completions(
-            &mut self,
-            _c: &crate::Completions,
-            _l: &crate::primitives::completions::CompletionsLayout,
         ) {
         }
         fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
@@ -1289,23 +1238,6 @@ mod tests {
             unimplemented!()
         }
         fn draw_canvas(&mut self, _r: Rect, _c: &crate::Canvas) -> crate::CanvasLayout {
-            unimplemented!()
-        }
-        fn draw_float(&mut self, _f: &crate::Float, _l: &crate::FloatLayout) {
-            unimplemented!()
-        }
-        fn draw_toast_overlay(
-            &mut self,
-            _r: Rect,
-            _s: &crate::ToastOverlay,
-        ) -> crate::ToastStackLayout {
-            unimplemented!()
-        }
-        fn toast_stack_layout(
-            &self,
-            _r: Rect,
-            _s: &crate::ToastOverlay,
-        ) -> crate::ToastStackLayout {
             unimplemented!()
         }
         fn draw_pipeline_view(

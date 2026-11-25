@@ -1355,18 +1355,14 @@ impl crate::primitive::Primitive for TextInput {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = layout.area;
-        crate::tui::draw_text_input(
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
             buf,
-            ratatui::layout::Rect::new(
-                area.x as u16,
-                area.y as u16,
-                area.width as u16,
-                area.height as u16,
-            ),
-            self,
-            theme,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
         );
+        cell_paint::paint(self, &layout.layout, &mut surface, theme);
     }
 }
 

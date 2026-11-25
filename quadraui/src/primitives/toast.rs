@@ -2482,13 +2482,14 @@ impl crate::primitive::Primitive for ToastOverlay {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = ratatui::layout::Rect::new(
-            layout.area.x.round() as u16,
-            layout.area.y.round() as u16,
-            layout.area.width.round() as u16,
-            layout.area.height.round() as u16,
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
         );
-        crate::tui::draw_toast_stack(buf, area, self, theme);
+        cell_paint::paint(self, &layout.layout, &mut surface, theme, layout.area);
     }
 }
 

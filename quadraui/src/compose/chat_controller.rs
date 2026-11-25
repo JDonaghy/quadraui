@@ -125,6 +125,7 @@
 //! pasting) always returns focus to the input, regardless of where `Tab`
 //! or a transcript click last parked the cursor.
 
+use crate::backend::DrawsPrimitives;
 use crate::compose::markdown::render_markdown_to_styled;
 use crate::compose::Handled;
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
@@ -134,7 +135,7 @@ use crate::types::StyledSpan;
 use crate::{
     Backend, ButtonMask, Color, EditOp, FieldKind, Form, FormField, Key, MessageList,
     MessageListHit, MessageListMeasure, MessageRow, Modifiers, MouseButton, NamedKey, Point, Rect,
-    Scrollbar, Spinner, StyledText, TextEditor, TextInput, TextInputHit, UiEvent, WidgetId,
+    Scrollbar, Spinner, StyledText, TextEditor, TextInput, UiEvent, WidgetId,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
@@ -902,7 +903,7 @@ impl ChatController {
         // ── 6. Text input ─────────────────────────────────────────────
         let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
         let ti = self.build_text_input(col_budget);
-        backend.draw_text_input(layout.input, &ti);
+        backend.draw_dyn(layout.input, &ti, &());
 
         // ── 7. Send / Stop segment ───────────────────────────────────────
         if let Some(send_rect) = layout.send {
@@ -1738,26 +1739,17 @@ impl ChatController {
             let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
             let rows = wrap_input_rows(&self.input_editor.input.lines, col_budget);
             let ti = self.text_input_from_rows(&rows);
-            let til = backend.text_input_layout(layout.input, &ti);
-            // Find the clicked visible line and update the cursor.
-            // `line_idx` here is a VISUAL row index (into `rows`), not a
-            // logical line — map it back through `rows`.
-            let local_y = y - layout.input.y;
-            for (r, hit) in &til.hit_regions {
-                if local_y >= r.y && local_y < r.y + r.height {
-                    if let TextInputHit::Line { line_idx } = hit {
-                        let cw = backend.char_width().max(1.0);
-                        let local_x = (x - layout.input.x - r.x).max(0.0);
-                        let col = (local_x / cw).floor() as usize;
-                        let (line, col) = input_visual_to_logical(&rows, *line_idx, col);
-                        self.apply_input_op(EditOp::SetCursor {
-                            line,
-                            col,
-                            extend: false,
-                        });
-                    }
-                    break;
-                }
+            let til = backend.layout_primitive(layout.input, &ti);
+            // `caret_at` resolves the absolute point to a VISUAL row
+            // index (into `rows`) and a column, not a logical line — map
+            // the row back through `rows`.
+            if let Some((visual_line, col)) = til.caret_at(x, y) {
+                let (line, col) = input_visual_to_logical(&rows, visual_line, col);
+                self.apply_input_op(EditOp::SetCursor {
+                    line,
+                    col,
+                    extend: false,
+                });
             }
             return ChatControllerEvent::Consumed;
         }
