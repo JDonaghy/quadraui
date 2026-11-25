@@ -187,6 +187,8 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Toolbar", "draw_toolbar_with_overflow"),
     ("Toolbar", "toolbar_layout"),
     ("Toolbar", "toolbar_layout_with_overflow"),
+    ("Form", "draw_form"),
+    ("Form", "form_layout"),
     // Group-B ports keep these until the group's cleanup deletes them
     // together with their wrapper files and `Surface` variants.
     ("TextInput", "draw_text_input"),

@@ -17,12 +17,9 @@
 
 use ratatui::layout::Rect;
 
-use super::{
-    FieldKind, Form, FormField, FormFieldMeasure, FormItemMeasure, LabelPosition,
-};
+use super::{FieldKind, Form, FormField, FormFieldMeasure, FormItemMeasure, LabelPosition};
 use crate::primitives::toolbar::ToolbarButton;
 use crate::types::WidgetId;
-
 
 /// Shared label-column width (in cells) for every `Left`-positioned
 /// field in `form`. An explicit [`Form::resolved_label_width`] on any
@@ -126,7 +123,11 @@ pub(crate) fn natural_content_width(field: &FormField) -> usize {
 /// whole numbers in the descriptor (the same dual-unit convention as
 /// `label_width`), rounded up just in case a binding hands in a
 /// fractional value.
-pub(crate) fn resolved_control_width_cells(form: &Form, field: &FormField, available: usize) -> usize {
+pub(crate) fn resolved_control_width_cells(
+    form: &Form,
+    field: &FormField,
+    available: usize,
+) -> usize {
     let content_width = natural_content_width(field) as f32;
     let min_width = form.resolved_min_control_width(field);
     let width =
@@ -336,7 +337,9 @@ pub(crate) fn tui_form_layout_with_label_width(
 /// places — mirrors [`crate::tui::number_input`]'s own private copy (that
 /// module isn't reachable from here without duplicating this one-liner,
 /// since both are plain private helpers in sibling modules).
-pub(crate) fn number_input_display_text(number: &crate::primitives::number_input::NumberInput) -> String {
+pub(crate) fn number_input_display_text(
+    number: &crate::primitives::number_input::NumberInput,
+) -> String {
     match &number.draft {
         Some(draft) => draft.clone(),
         None => format!("{:.*}", number.precision as usize, number.value),

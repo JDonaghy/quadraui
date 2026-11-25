@@ -27,8 +27,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::cell_layout::{
-    field_is_focused, is_top_label, left_label_column_width,
-    resolved_control_width_cells, track_cells_within, tui_form_layout_with_label_width,
+    field_is_focused, is_top_label, left_label_column_width, resolved_control_width_cells,
+    track_cells_within, tui_form_layout_with_label_width,
 };
 use super::{FieldKind, Form, LabelAlign, LabelPosition, ValidationState};
 use crate::theme::Theme;

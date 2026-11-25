@@ -250,8 +250,6 @@ impl Primitive for Form {
     }
 }
 
-
-
 // ── Interaction state ───────────────────────────────────────────────
 
 /// Live caret and selection anchor for the field currently being typed
@@ -485,7 +483,12 @@ pub(crate) fn handle_key(
     }
     match key {
         Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
-            move_focus(form, state, if modifiers.shift { -1 } else { 1 }, viewport_rows)
+            move_focus(
+                form,
+                state,
+                if modifiers.shift { -1 } else { 1 },
+                viewport_rows,
+            )
         }
         Key::Named(NamedKey::BackTab) => move_focus(form, state, -1, viewport_rows),
         // `Enter` commits for `TextInput`/`PasswordInput` (a single
@@ -547,7 +550,11 @@ fn focused_field_is_enabled_date_picker(form: &Form) -> bool {
 /// (see `DateCursor`) without touching the app's `selected` value,
 /// while a `DateSelected` (Enter) clears the cache and hands the app
 /// [`FormEvent::DateChanged`] to persist.
-fn handle_date_picker_key(form: &Form, state: &mut FormState, key_name: &str) -> Handled<FormEvent> {
+fn handle_date_picker_key(
+    form: &Form,
+    state: &mut FormState,
+    key_name: &str,
+) -> Handled<FormEvent> {
     let Some(focused_id) = form.focused_field else {
         return Handled::Ignored;
     };
@@ -649,27 +656,27 @@ fn handle_combo_box_key(
     // a consumer can always resolve the event back to a `FormField`
     // with `form.fields.iter().find(|f| f.id == id)`.
     match combo.handle_key(key, modifiers)? {
-        ComboBoxEvent::TextChanged { text, .. } => Some(Handled::Event(
-            FormEvent::ComboBoxTextChanged {
+        ComboBoxEvent::TextChanged { text, .. } => {
+            Some(Handled::Event(FormEvent::ComboBoxTextChanged {
                 id: focused_id,
                 value: text,
-            },
-        )),
-        ComboBoxEvent::HighlightChanged { index, .. } => Some(Handled::Event(
-            FormEvent::ComboBoxHighlightChanged {
+            }))
+        }
+        ComboBoxEvent::HighlightChanged { index, .. } => {
+            Some(Handled::Event(FormEvent::ComboBoxHighlightChanged {
                 id: focused_id,
                 index,
-            },
-        )),
-        ComboBoxEvent::Committed { value, .. } => Some(Handled::Event(
-            FormEvent::ComboBoxCommitted {
+            }))
+        }
+        ComboBoxEvent::Committed { value, .. } => {
+            Some(Handled::Event(FormEvent::ComboBoxCommitted {
                 id: focused_id,
                 value,
-            },
-        )),
-        ComboBoxEvent::Cancelled { .. } => Some(Handled::Event(
-            FormEvent::ComboBoxCancelled { id: focused_id },
-        )),
+            }))
+        }
+        ComboBoxEvent::Cancelled { .. } => Some(Handled::Event(FormEvent::ComboBoxCancelled {
+            id: focused_id,
+        })),
     }
 }
 
@@ -720,21 +727,21 @@ fn handle_number_input_key(
                 value,
             }))
         }
-        NumberInputEvent::DraftChanged { draft, .. } => Some(Handled::Event(
-            FormEvent::NumberDraftChanged {
+        NumberInputEvent::DraftChanged { draft, .. } => {
+            Some(Handled::Event(FormEvent::NumberDraftChanged {
                 id: focused_id,
                 draft,
-            },
-        )),
-        NumberInputEvent::Committed { value, .. } => Some(Handled::Event(
-            FormEvent::NumberCommitted {
+            }))
+        }
+        NumberInputEvent::Committed { value, .. } => {
+            Some(Handled::Event(FormEvent::NumberCommitted {
                 id: focused_id,
                 value,
-            },
-        )),
-        NumberInputEvent::Cancelled { .. } => Some(Handled::Event(
-            FormEvent::NumberCancelled { id: focused_id },
-        )),
+            }))
+        }
+        NumberInputEvent::Cancelled { .. } => Some(Handled::Event(FormEvent::NumberCancelled {
+            id: focused_id,
+        })),
     }
 }
 
@@ -891,12 +898,10 @@ fn handle_dropdown_key(form: &Form, key: &Key) -> Option<Handled<FormEvent>> {
     if new_idx == *selected_idx {
         return None;
     }
-    Some(Handled::Event(
-        FormEvent::DropdownChanged {
-            id: focused_id,
-            selected_idx: new_idx,
-        },
-    ))
+    Some(Handled::Event(FormEvent::DropdownChanged {
+        id: focused_id,
+        selected_idx: new_idx,
+    }))
 }
 
 /// Whether the currently-focused field is a non-disabled
@@ -937,9 +942,7 @@ pub(crate) fn current_item_focus(form: &Form, state: &FormState) -> Option<ItemF
     }
     let items = focusable_items(&field.kind)?;
     let idx = match &state.item_focus {
-        Some(s)
-            if s.field_id == focused_id && items.get(s.item_idx).is_some_and(|(_, en)| *en) =>
-        {
+        Some(s) if s.field_id == focused_id && items.get(s.item_idx).is_some_and(|(_, en)| *en) => {
             s.item_idx
         }
         _ => first_enabled_item_idx(&items)?,
@@ -985,9 +988,7 @@ fn handle_item_row_key(
                 item_idx: cur_idx,
             });
             let (item_id, _) = items[cur_idx];
-            Some(Handled::Event(activate_item_event(
-                field, item_id,
-            )))
+            Some(Handled::Event(activate_item_event(field, item_id)))
         }
         _ => None,
     }
@@ -1104,17 +1105,16 @@ pub(crate) fn move_focus(
     // the newly-focused field's own `focused`/`visible_month` become
     // the starting scrubbing position, so `build_form` overlays them
     // immediately rather than waiting for the first keystroke.
-    let new_date_edit =
-        field_idx
-            .and_then(|i| form.fields.get(i))
-            .and_then(|f| match &f.kind {
-                FieldKind::DatePicker(picker) => Some(DateCursor {
-                    field_id: id,
-                    focused: picker.focused,
-                    visible_month: picker.visible_month,
-                }),
-                _ => None,
-            });
+    let new_date_edit = field_idx
+        .and_then(|i| form.fields.get(i))
+        .and_then(|f| match &f.kind {
+            FieldKind::DatePicker(picker) => Some(DateCursor {
+                field_id: id,
+                focused: picker.focused,
+                visible_month: picker.visible_month,
+            }),
+            _ => None,
+        });
     // Reseed item-focus to the newly-focused field's first enabled
     // item (see this module's "Item-level keyboard focus" doc
     // section) — `None` both clears a stale index left over from

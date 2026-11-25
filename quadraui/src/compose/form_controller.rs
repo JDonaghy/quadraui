@@ -376,10 +376,6 @@ fn handled_from_form_controller_event(event: FormControllerEvent) -> Handled<For
     }
 }
 
-
-
-
-
 pub struct FormController {
     id: String,
     form: Option<Form>,
@@ -1353,7 +1349,6 @@ mod tests {
     use crate::primitives::combo_box::ComboBox;
     use crate::primitives::date_picker::CalendarDate;
     use crate::primitives::form::contract::slider_track_rect;
-    use crate::primitives::form::LabelPosition;
     use crate::primitives::form::{FieldKind, FormField, ToggleGroupItem};
     use crate::primitives::number_input::NumberInput;
     use crate::primitives::radio_group::{RadioGroup, RadioOption};
@@ -4375,6 +4370,7 @@ mod tests {
     #[test]
     #[cfg(feature = "tui")]
     fn click_on_a_top_labelled_radio_groups_painted_row_selects_the_right_option() {
+        use crate::primitives::form::LabelPosition;
         use crate::tui::TuiBackend;
 
         let mut field = radio_group_field("g", radio_group(Some(0)), false);
