@@ -754,7 +754,7 @@ pub(crate) mod native_surface_paint {
     // widget contract's own `Primitive::layout` can resolve it in a build
     // with no backend feature. These are the names the per-backend
     // wrappers address it by.
-    pub(crate) use super::{item_row_height, pixel_layout as layout, MIN_THUMB_LEN, SB_W};
+    pub(crate) use super::{item_row_height, pixel_layout as layout, SB_W};
 
     /// Query-row insert-cursor width. Matches `text_input`/`command_line`'s
     /// `CURSOR_W`/`CURSOR_WIDTH` bar-caret convention for every GUI backend.
@@ -2145,13 +2145,11 @@ pub(crate) mod cell_paint {
                 for col in 1..end_col {
                     surface.put_char(x0 + col, create_row, ' ', style(fg, bg));
                 }
-                let mut col = 1u16;
-                for ch in "+ ".chars().chain(label.chars()) {
+                for (col, ch) in (1u16..).zip("+ ".chars().chain(label.chars())) {
                     if col >= end_col {
                         break;
                     }
                     surface.put_char(x0 + col, create_row, ch, style(accent_fg, bg));
-                    col += 1;
                 }
             }
         }
