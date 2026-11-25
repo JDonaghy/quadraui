@@ -101,7 +101,7 @@ pub mod text;
 // ...]` in Cargo.toml), so this is gated on both features, same as
 // `tests/tui_pty_smoke.rs`.
 mod text_display;
-mod text_field;
+pub(crate) mod text_field;
 mod text_input;
 mod toast;
 mod toolbar;
@@ -322,7 +322,7 @@ fn qc(c: Color) -> RatatuiColor {
 /// for double-width glyphs) rather than one buffer column per `char`, so
 /// the painted extent agrees with [`StyledText::visible_width`].
 #[allow(clippy::too_many_arguments)]
-fn draw_styled_text(
+pub(crate) fn draw_styled_text(
     buf: &mut Buffer,
     area: Rect,
     y: u16,
