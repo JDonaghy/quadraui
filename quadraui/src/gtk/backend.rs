@@ -3542,7 +3542,7 @@ impl Backend for GtkBackend {
         dialog: &crate::Dialog,
         dialog_layout: &crate::DialogLayout,
     ) -> Vec<QRect> {
-        // See draw_palette for why this happens before the frame borrow.
+        // Marked before the frame borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let line_height = self.current_line_height;
         let theme = self.current_theme;
@@ -3589,7 +3589,7 @@ impl Backend for GtkBackend {
         float: &crate::primitives::float::Float,
         layout: &crate::primitives::float::FloatLayout,
     ) {
-        // See draw_palette for why this happens before the frame borrow.
+        // Marked before the frame borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
@@ -3651,7 +3651,7 @@ impl Backend for GtkBackend {
         crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
     }
 
-    /// Mirrors [`Self::form_layout`]'s pattern: measures the chevron
+    /// Measures the chevron
     /// glyph actually configured on `tree.style` through a real Pango
     /// layout (via [`Self::chrome_measure_layout`]) instead of
     /// `gtk_tree_layout`'s `line_height * 0.65` estimate, so a caller

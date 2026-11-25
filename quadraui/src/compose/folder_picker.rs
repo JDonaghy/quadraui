@@ -115,8 +115,7 @@ pub enum FolderPickerEvent {
 ///
 /// Combines filesystem walking, fuzzy filtering, keyboard navigation, and
 /// scroll tracking into a single reusable state machine. Rendering is
-/// delegated to the existing [`Palette`] primitive via
-/// [`Backend::draw_palette`].
+/// delegated to the existing [`Palette`] primitive's widget contract.
 ///
 /// See the [module-level documentation](self) for a usage example.
 pub struct FolderPickerController {

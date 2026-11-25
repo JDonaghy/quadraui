@@ -180,7 +180,7 @@ pub fn extra_as_toolbar(extra: &Rc<dyn ExtraPaint>) -> Option<&Toolbar> {
 /// pixel backend (a nominal pill/box width — a cheap chrome estimate with
 /// no real `Style::padding` read at this layer). [`Checkbox`], its one
 /// caller below, paints through `Form`'s `FieldKind::Toggle` control,
-/// which is `3` cells wide (`quadraui::tui::form`'s
+/// which is `3` cells wide (the `Form` cell layout's
 /// `natural_content_width`).
 fn toggle_control_size(backend: &mut dyn Backend, cell_width: f32) -> (f32, f32) {
     let line_height = backend.line_height();
@@ -520,9 +520,9 @@ impl ExtraPaint for DatePicker {
 /// Wraps `kind` as the sole field of a throwaway single-field [`Form`]
 /// sharing `id` with both the form and its one field — the bridge every
 /// standalone `"checkbox"`/`"slider"`/`"select"`/`"password"`/`"textarea"`
-/// leaf below uses to paint through [`quadraui::Backend::draw_form`]
+/// leaf below uses to paint through the form's own widget contract
 /// rather than a second, leaf-specific rasteriser: a `Form`-embedded field
-/// of the same [`FieldKind`] paints through the exact same backend call,
+/// of the same [`FieldKind`] paints through the exact same painter,
 /// so there is nothing for any of these leaves to duplicate. The label
 /// column is hidden form-wide (there is only ever one field, with no
 /// label of its own) so the leaf's whole area goes to the control, the
@@ -617,9 +617,10 @@ impl ExtraPaint for Checkbox {
     }
 
     /// Toggle box only — [`single_field_form`] hides this leaf's own
-    /// `Form` label, and this leaf paints through `draw_form`, whose
-    /// `FieldKind::Toggle` control is `3` cells wide on a cell-grid
-    /// backend (`quadraui::tui::form`'s `natural_content_width`) — unlike
+    /// `Form` label, and this leaf paints through the form's widget
+    /// contract, whose `FieldKind::Toggle` control is `3` cells wide on a
+    /// cell-grid backend (the `Form` cell layout's
+    /// `natural_content_width`) — unlike
     /// [`Switch`], which paints a `4`-cell track directly.
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
         let (width, height) = toggle_control_size(backend, 3.0);

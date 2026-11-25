@@ -143,8 +143,9 @@ pub enum PickerOutcome {
 /// entirely. Neither mode is "a plain search box over a filtered
 /// list", so this type owns its own query/selection/scroll state
 /// instead, and renders through the same `quadraui::Palette`
-/// primitive and `Backend::draw_palette`/`Backend::palette_layout`
-/// the controller uses internally — it just drives the state machine
+/// primitive and widget-contract paint/layout
+/// (`DrawsPrimitives::draw_primitive`/`layout_primitive`) the controller
+/// uses internally — it just drives the state machine
 /// itself rather than through the controller's key dispatch.
 ///
 /// `filtered[row]` is the `source` index that displayed row `row`
@@ -220,7 +221,8 @@ impl PickerOverlay {
 
     /// Build the `Palette` descriptor for the current state. Public
     /// so `KubeApp::render` can paint it directly through
-    /// `Backend::draw_palette` without going through a controller.
+    /// `DrawsPrimitives::draw_primitive` without going through a
+    /// controller.
     pub fn build_palette(&self) -> Palette {
         Palette {
             id: WidgetId::new("kubeui_picker"),

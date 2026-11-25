@@ -42,7 +42,6 @@
 //! `interaction`), not a replacement:
 //!
 //! - [`crate::Backend::draw_context_menu_with_state`]
-//! - [`crate::Backend::draw_palette_with_state`]
 //! - [`crate::Backend::draw_menu_bar_with_state`]
 //!
 //! ## Methods that remain positional

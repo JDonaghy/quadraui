@@ -90,7 +90,7 @@
 // The cell-grid layout resolver and rasteriser for this widget. They
 // live beside the descriptor, next to `Primitive::layout`/`paint_cells`,
 // which reach them — so a form painted through the widget contract and
-// one painted through `Backend::draw_form` are the same code.
+// one embedded in a `MultiSectionView` section are the same code.
 //
 // `pub` rather than `pub(crate)` so a consumer writing its own
 // cell-grid renderer can reach the same layout/painter pair the
@@ -1030,8 +1030,8 @@ pub struct FormLayout {
     /// paints a `Toolbar` field's embedded control itself, rather than
     /// through the shared `paint`, reads this field instead of
     /// re-measuring the field's own label to find the same start `x` —
-    /// see `MacBackend::draw_form`'s `FieldKind::Toolbar` arm for the
-    /// reference pattern.
+    /// see the form's widget-contract layout, which places each
+    /// `FieldKind::Toolbar` field's embedded toolbar this way.
     pub left_label_width: f32,
 }
 
@@ -1040,8 +1040,8 @@ impl FormLayout {
     /// painted strip, given the row's own absolute left edge `row_x`
     /// and width `row_w`.
     ///
-    /// Every pixel backend's `draw_form` (and `MultiSectionView`'s
-    /// embedded form body) rasterises `FieldKind::Toolbar` itself,
+    /// The form's widget contract (and every `MultiSectionView`
+    /// embedded form body) paints `FieldKind::Toolbar` itself,
     /// outside [`crate::primitives::form::paint`], so it needs the
     /// same start `x` [`Self::left_label_width`]'s doc describes
     /// [`Form::layout`] already widening `VisibleFormField::item_bounds`
@@ -1447,10 +1447,10 @@ fn item_x_positions(origin_x: f32, _row_height: f32, gap: f32, widths: &[f32]) -
 // `Slider`, `ColorPicker`, `Dropdown` and `TextArea`.
 //
 // `#[allow(dead_code)]`: `paint` and its private helpers are only called
-// when a real pixel backend is compiled in — `GtkBackend::draw_form`,
-// `MacBackend::draw_form`/`draw_form_body` and `WinBackend::draw_form`/
-// `draw_form_body` are the call sites, and the Win ones live behind a
-// further `target_os = "windows"` gate (see `win::form`'s module doc).
+// when a real pixel backend is compiled in — the widget contract's
+// `Primitive::paint` and each backend's `MultiSectionView` form body are
+// the call sites, and the Win one lives behind a further
+// `target_os = "windows"` gate.
 // `--features win` alone, on a non-Windows host compiles this module but
 // reaches none of those call sites, so nothing here is "dead" in the lint
 // sense; it's the same shape `paint_surface.rs`'s own `#[allow(dead_code)]`
@@ -1627,14 +1627,13 @@ mod native_surface_paint {
     /// Paint a laid-out [`Form`] using `surface`'s [`PaintSurface`] verbs.
     ///
     /// `flayout` must be the *same* [`FormLayout`] the caller uses for
-    /// hit-testing (typically `Backend::form_layout`'s return value for this
+    /// hit-testing (typically the form's widget-contract layout for this
     /// `form`) — `paint` reads geometry only from `flayout`, never recomputes
     /// it, so paint and hit-test never disagree.
     ///
     /// `origin` places the form's local `(0, 0)` at `origin` in `surface`'s
     /// coordinate space — mirrors every other `*_layout` primitive's
-    /// "local layout + host-supplied origin" contract (see `mac_form_layout`'s
-    /// doc for the same convention stated from the hit-test side).
+    /// "local layout + host-supplied origin" contract.
     ///
     /// # `FieldKind::Toolbar` is not painted here
     ///
@@ -1647,7 +1646,8 @@ mod native_surface_paint {
     /// `Toolbar` themselves *after* `paint` returns (so the two never fight
     /// over `surface`'s exclusive borrow), using their existing per-backend
     /// toolbar rasteriser at the field's `VisibleFormField::bounds` /
-    /// `item_bounds`. See `GtkBackend::draw_form` for the reference pattern.
+    /// `item_bounds`. The widget contract's `Primitive::paint` paints it
+    /// through the toolbar's own contract.
     ///
     /// # `label_position` doesn't reach item-based field kinds
     ///
@@ -2733,8 +2733,8 @@ mod native_surface_paint {
         /// Records every drawing verb `paint` issues, so a paint
         /// assertion can run on any host — no cairo, Core Graphics or
         /// Direct2D needed. The pixel backends' own probes
-        /// (`macos::form`'s `BitmapSurface`, `gtk::form`'s
-        /// `ImageSurface`) still cover "the verb reached real pixels";
+        /// (the macOS `BitmapSurface`, GTK `ImageSurface` and Win
+        /// headless-target tests) still cover "the verb reached real pixels";
         /// this covers "the shared painter emits the right verb at all",
         /// on every leg of the quality gate rather than only the macOS
         /// one.
@@ -2831,7 +2831,7 @@ mod native_surface_paint {
             }
         }
 
-        /// Lay `form` out the way every pixel backend's `form_layout`
+        /// Lay `form` out the way the widget contract's pixel layout
         /// does, paint it through the shared painter, and hand back the
         /// recorded fills alongside the layout.
         fn paint_recorded(form: &Form) -> (RecordingSurface, FormLayout) {
@@ -3322,8 +3322,8 @@ mod native_surface_paint {
         }
 
         /// [`FormLayout::toolbar_field_rect`] is the formula every
-        /// embedded-`Toolbar` rasteriser (`GtkBackend::draw_form`,
-        /// `MacBackend::draw_form`, both `MultiSectionView` form bodies)
+        /// embedded-`Toolbar` rasteriser (the widget contract's layout, the
+        /// `MultiSectionView` form bodies)
         /// calls to find where to paint its toolbar strip. It has to
         /// report the exact `x` [`Form::layout`] already widened this
         /// same field's own `VisibleFormField::item_bounds` to — a drift
@@ -3332,7 +3332,7 @@ mod native_surface_paint {
         ///
         /// Runs on every feature config this module compiles for
         /// (`gtk`, `win`, `macos`), unlike the pixel-backend-specific
-        /// `draw_form` tests each of those backends carries, so a Linux
+        /// form paint tests each of those backends carries, so a Linux
         /// `--features gtk,tui` CI job exercises this without a real
         /// macOS host.
         ///
@@ -5666,5 +5666,73 @@ mod tests {
         };
 
         assert_eq!(item.resolved_button_spec(), explicit);
+    }
+}
+
+/// Event parity's assistive-technology leg for [`Form`]: an
+/// [`crate::a11y::A11yAction::Click`] on a form whose focused field is a
+/// toggle flips it with exactly the event a click on that row produces on
+/// the `TuiDriver` leg (`tests/palette_form_event_parity.rs`) and the
+/// binding-host leg (`quadraui-binding-core`'s engine tests).
+#[cfg(test)]
+mod event_parity_tests {
+    use super::*;
+    use crate::types::StyledText;
+
+    fn form() -> Form {
+        Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("notify"),
+                label: StyledText::plain("Notify"),
+                kind: FieldKind::Toggle { value: false },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: Some(WidgetId::new("notify")),
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    #[test]
+    fn route_widget_action_click_matches_the_toggle_click_parity_event() {
+        let f = form();
+        let id = f.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, crate::Rect::new(2.0, 1.0, 30.0, 10.0), Box::new(f));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let ctx = crate::primitive::LayoutCtx::new(1.0, 1.0, false);
+        let events = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &ctx,
+            id,
+            crate::a11y::A11yAction::Click,
+        );
+        assert_eq!(
+            events,
+            vec![crate::UiEvent::Form(
+                id,
+                FormEvent::ToggleChanged {
+                    id: WidgetId::new("notify"),
+                    value: true
+                }
+            )]
+        );
     }
 }

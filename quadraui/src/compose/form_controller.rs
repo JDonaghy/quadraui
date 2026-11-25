@@ -408,7 +408,8 @@ impl FormController {
     /// open popup itself as a separate overlay (see this module's
     /// "ComboBox fields" doc section) and needs the row's on-screen
     /// position to anchor it. This is that lookup: it reruns the same
-    /// [`Backend::form_layout`] call [`Self::click_inner`] already uses
+    /// [`crate::DrawsPrimitives::layout_primitive`] call
+    /// [`Self::click_inner`] already uses
     /// for hit-testing, then offsets the matching field's layout-relative
     /// `bounds` by `rect`'s origin (and the scrollbar-split form rect's,
     /// if a scrollbar is present) to hand back an on-screen rect the host

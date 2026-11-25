@@ -285,9 +285,9 @@
 //!   `Button`/`TextInput` already draw their own ring through — rather
 //!   than growing `primitives/form.rs`'s painters with a bespoke
 //!   per-item indicator. [`Self::render`] resolves the focused item's
-//!   on-screen rect via [`Backend::form_layout`]'s `item_bounds` (the
+//!   on-screen rect via the form layout's `item_bounds` (the
 //!   same lookup [`Self::field_rect`] already does for a whole field)
-//!   and calls `draw_focus_ring` on it once, after `draw_form` paints the
+//!   and calls `draw_focus_ring` on it once, after the form paints the
 //!   row — a no-op while nothing is item-focused.
 //! - Mouse clicks on an item are unchanged: [`click_field`] still
 //!   resolves straight to the clicked item's `FormEvent` via

@@ -931,9 +931,8 @@ impl TuiBackend {
 
     /// Update the cached quadraui style. Call once per frame from
     /// `paint`, before any `backend.draw_*` calls. Subsequent
-    /// `draw_*` invocations consume the stored style — currently only
-    /// [`Self::draw_palette`] reads it, via
-    /// [`crate::Style::backdrop_opacity`].
+    /// `draw_*` invocations and widget-contract paints consume the stored
+    /// style (a palette reads [`crate::Style::backdrop_opacity`] from it).
     pub fn set_current_style(&mut self, style: crate::Style) {
         self.current_style = style;
     }
@@ -3555,7 +3554,7 @@ impl Backend for TuiBackend {
         dialog: &crate::primitives::dialog::Dialog,
         layout: &crate::primitives::dialog::DialogLayout,
     ) -> Vec<QRect> {
-        // See draw_palette for why this happens before the frame borrow.
+        // Marked before the frame borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
@@ -3589,7 +3588,7 @@ impl Backend for TuiBackend {
         float: &crate::primitives::float::Float,
         layout: &crate::primitives::float::FloatLayout,
     ) {
-        // See draw_palette for why this happens before the frame borrow.
+        // Marked before the frame borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         let Some(frame) = self.current_frame_mut() else {

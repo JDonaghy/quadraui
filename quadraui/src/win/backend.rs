@@ -4261,8 +4261,7 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             // `MessageList` rows are chrome, not `EditorClassPrimitive`-
-            // listed — same `chrome_dwrite`-preferring swap as
-            // `Self::draw_palette`.
+            // listed — prefer `chrome_dwrite`.
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::message_list::draw_message_list(
                 &surface.target,
@@ -4370,8 +4369,7 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
             // The completions popup is chrome, not
-            // `EditorClassPrimitive`-listed — same `chrome_dwrite`-
-            // preferring swap as `Self::draw_palette`.
+            // `EditorClassPrimitive`-listed — prefer `chrome_dwrite`.
             let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
             super::completions::draw_completions(
                 &surface.target,
@@ -4905,8 +4903,7 @@ impl Backend for WinBackend {
     /// [`Self::draw_progress`]. `self`'s
     /// [`crate::paint_surface::PaintSurface`] impl (`surface_measure_text`
     /// / `surface_draw_text_run`) already prefers `chrome_dwrite` over
-    /// `dwrite`, the same swap [`Self::draw_palette`] documents for
-    /// chrome text, so the handle resolution happens inside that impl.
+    /// `dwrite` for chrome text, so the handle resolution happens inside that impl.
     /// See [`Self::draw_status_bar`]'s doc for the "surface not attached
     /// yet" fallback posture.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
@@ -8902,10 +8899,8 @@ mod tests {
         let probe_x = (create_bounds.x + 4.0) as u32;
         let probe_y = (create_bounds.y + create_bounds.height / 2.0) as u32;
 
-        // Win's `draw_palette`/`draw_palette_with_state` paint from
-        // `Theme::default()` rather than a live `self.current_theme`
-        // (see `Self::draw_palette`'s own doc) — the expected colours
-        // below match that, not a `set_theme` override.
+        // The paint above passes `Theme::default()`, so the expected
+        // colours below match that, not a `set_theme` override.
         let theme = crate::theme::Theme::default();
 
         let resting = paint_with(&InteractionState::new());
@@ -10165,11 +10160,10 @@ mod tests {
         );
     }
 
-    /// `Palette` builds its own `win::palette` adapter from whichever
-    /// `dwrite` handle `WinBackend::draw_palette` passes in, so this call
-    /// site isn't fixed by `impl PaintSurface for WinBackend`'s own
-    /// default — it needs the direct `chrome_dwrite`-preferring swap
-    /// this test pins.
+    /// A palette painted through its widget contract measures and paints
+    /// its text through `impl PaintSurface for WinBackend`, which prefers
+    /// `chrome_dwrite`; this test pins that the item text follows the
+    /// chrome font.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_palette_paints_entries_in_the_chrome_fonts_size() {
@@ -10220,8 +10214,7 @@ mod tests {
 
     /// Spinner paints through `surface_draw_text_run` (plain `self`, not
     /// a per-call adapter), so this is fixed purely by `impl PaintSurface
-    /// for WinBackend`'s inverted default, unlike `draw_palette`'s own
-    /// per-call adapter.
+    /// for WinBackend`'s inverted default.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_spinner_paints_label_in_the_chrome_fonts_size() {

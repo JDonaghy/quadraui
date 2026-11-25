@@ -1736,7 +1736,7 @@ impl Backend for MacBackend {
         // per-frame lifecycle as `zones`, matching `GtkBackend::begin_frame`.
         self.focused_activity_bar = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
+        // to earn them again (via draw_dialog/draw_context_menu/draw_dyn).
         self.modal_stack.borrow_mut().reset_frame_paint();
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`/
@@ -3165,7 +3165,7 @@ impl Backend for MacBackend {
     /// [`super::text_input::mac_text_input_layout`] and hands it to the
     /// shared [`crate::primitives::text_input::paint`] through this
     /// backend's own [`PaintSurface`] impl below, mirroring
-    /// `draw_text_display`'s / `draw_form`'s shape.
+    /// `draw_text_display`'s shape.
     fn draw_text_input(
         &mut self,
         rect: Rect,
@@ -3381,7 +3381,7 @@ impl Backend for MacBackend {
         )
     }
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
-        // See draw_palette for why this happens before the CG borrow.
+        // Marked before the CG borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         // Chrome primitives are drawn through `chrome_font` —
         // `draw_tree`'s comment explains the swap and why `line_height`
@@ -3432,7 +3432,7 @@ impl Backend for MacBackend {
         float: &crate::primitives::float::Float,
         layout: &crate::primitives::float::FloatLayout,
     ) {
-        // See draw_palette for why this happens before the CG borrow.
+        // Marked before the CG borrow: this id is now painted this frame.
         self.modal_stack.borrow_mut().mark_painted(&float.id);
         let theme = self.current_theme;
         crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
@@ -7766,7 +7766,8 @@ mod tests {
 
     // ── Form (#808, PaintSurface Phase 2a) ──────────────────────────
 
-    /// `macos::form::draw_form` routes every `FieldKind` through the
+    /// A form painted through its widget contract routes every `FieldKind`
+    /// through the
     /// shared `primitives::form::paint`, which never silently drops a
     /// variant. This scans each field's row past where its shared
     /// label column ends — `primitives::form::left_control_column_start`,
@@ -7878,7 +7879,7 @@ mod tests {
         // re-derived here: every field in this form has a non-empty
         // label and the default (`Left`) label position, which is
         // exactly `left_control_column_start`'s domain. `backend` is
-        // the same `PaintSurface` `draw_form` painted through, so the
+        // the same `PaintSurface` the form painted through, so the
         // label column it measures is the one that was painted.
         for vf in &flayout.visible_fields {
             let field = &form.fields[vf.field_idx];
@@ -7904,7 +7905,7 @@ mod tests {
                 painted_beyond_label,
                 "field {:?} ({:?}) must paint something past its shared label \
                  column (x >= {x0}) — a `_ => {{}}` fallthrough for Slider/\
-                 ColorPicker/Dropdown/TextArea in `macos::form::draw_form` would \
+                 ColorPicker/Dropdown/TextArea in the form painter would \
                  paint only the row background there",
                 field.id, field.kind,
             );

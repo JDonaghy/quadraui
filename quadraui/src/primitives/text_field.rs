@@ -507,7 +507,7 @@ pub fn cell_layout(tf: &TextField, rect: Rect) -> TextFieldLayout {
 /// focused and [`crate::Theme::muted_fg`] otherwise.
 ///
 /// [`put_text_row`] is the "paint the text between the brackets" half,
-/// shared with [`crate::tui::form::draw_form`]'s own `TextInput` row, so
+/// shared with the `Form` cell painter's own `TextInput` row, so
 /// the two can never drift apart on cursor/selection math. The field's
 /// brackets/icon/clear button paint separately from `Form`'s row because
 /// only `TextField` scrolls — `Form`'s row truncates instead.

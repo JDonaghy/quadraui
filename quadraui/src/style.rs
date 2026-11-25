@@ -271,7 +271,7 @@ pub struct Style {
     ///
     /// **TUI story: pre-blend.** See the module doc's *Where each token
     /// maps on TUI* section. Concretely,
-    /// [`crate::tui::palette::draw_palette_with_style`] blends
+    /// the palette's cell painter blends
     /// [`crate::Theme::background`] with [`crate::Theme::surface_bg`] at
     /// this opacity — a static theme token, not whatever content the
     /// ratatui `Buffer` already holds at those cells — since `Buffer` has

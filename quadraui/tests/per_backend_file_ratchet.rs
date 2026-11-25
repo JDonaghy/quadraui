@@ -103,7 +103,7 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "tui",
         file_count: 55,
-        non_test_lines: 20257,
+        non_test_lines: 20256,
     },
     BackendBaseline {
         dir: "gtk",
@@ -118,7 +118,7 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "win",
         file_count: 45,
-        non_test_lines: 22283,
+        non_test_lines: 22280,
     },
 ];
 

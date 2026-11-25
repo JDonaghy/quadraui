@@ -3089,6 +3089,35 @@ mod interactive_tests {
         );
     }
 
+    /// Event parity's assistive-technology leg: an [`A11yAction::Click`]
+    /// routed through [`crate::a11y::route_widget_action`] confirms the
+    /// highlighted row with exactly the event Enter produces on the
+    /// `TuiDriver` leg (`tests/palette_form_event_parity.rs`) and the
+    /// binding-host leg (`quadraui-binding-core`'s engine tests).
+    #[test]
+    fn route_widget_action_click_matches_the_enter_parity_event() {
+        let mut p = popup("");
+        p.id = WidgetId::new("pal");
+        let id = p.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, area(), Box::new(p));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let events = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &cells_ctx(),
+            id,
+            A11yAction::Click,
+        );
+        assert_eq!(
+            events,
+            vec![crate::UiEvent::Palette(
+                id,
+                PaletteEvent::ItemConfirmed { idx: 0 }
+            )]
+        );
+    }
+
     #[test]
     fn an_a11y_click_on_an_empty_list_reports_nothing() {
         let mut p = popup("zzz");

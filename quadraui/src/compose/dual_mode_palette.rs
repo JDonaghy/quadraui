@@ -118,7 +118,8 @@ fn handled_to_event(handled: Handled<DualModePaletteAction>) -> DualModePaletteE
 /// - item list, selection, and scroll offset
 /// - keyboard event dispatch appropriate to the active mode
 ///
-/// Rendering is delegated to [`Backend::draw_palette`].
+/// Rendering paints the built [`crate::Palette`] through its widget
+/// contract.
 pub struct DualModePaletteController {
     /// Widget ID forwarded to the rendered `Palette`.
     id: WidgetId,
@@ -284,12 +285,13 @@ impl DualModePaletteController {
     ///
     /// `rect` must be the same popup rect passed to [`Self::render`] this
     /// frame, and `backend` supplies the same metrics `render` painted
-    /// with — the click is resolved through [`Backend::palette_layout`],
-    /// which returns a hit-testable, paint-matching geometry.
+    /// with — the click is resolved through
+    /// [`crate::DrawsPrimitives::layout_primitive`], the same geometry the
+    /// paint resolves.
     ///
     /// Coordinate frame: `position` is **ABSOLUTE** (surface-native,
-    /// matching every other `UiEvent::MouseDown`); `Backend::palette_layout`
-    /// returns **LOCAL** coordinates, so `rect.x`/`rect.y` are subtracted
+    /// matching every other `UiEvent::MouseDown`); the palette's layout
+    /// is in **LOCAL** coordinates, so `rect.x`/`rect.y` are subtracted
     /// here before hit-testing — `PRIMITIVE_RULES.md`'s coordinate-frame
     /// convention.
     ///
@@ -339,8 +341,7 @@ impl DualModePaletteController {
     /// hover-only visual: [`PaletteItem`] carries no [`WidgetId`] of its
     /// own, so `theme.selected_bg` — [`Self::selected`]'s own paint — is
     /// the one highlight channel [`Palette`]'s shared painter exposes for
-    /// an item row; see [`crate::Backend::draw_palette_with_state`]'s own
-    /// doc for why only the pinned create row gets a distinct hover tint).
+    /// an item row).
     /// A non-`MouseMoved` event, or one that misses every item row,
     /// returns [`Handled::Ignored`] — including a move that re-hits the
     /// already-selected row, so a stationary pointer doesn't churn a

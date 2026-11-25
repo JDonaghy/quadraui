@@ -3,7 +3,7 @@
 //! Paints the full chrome (per-section headers, optional aux rows,
 //! per-section scrollbars, optional dividers) onto a `CGContextRef`
 //! and dispatches each section's body to the appropriate quadraui
-//! body rasteriser (`draw_tree`, `draw_list`, `draw_form`, …) using
+//! body rasteriser (`draw_tree`, `draw_list`, the form painter, …) using
 //! the body bounds returned by the primitive's
 //! [`crate::MultiSectionView::layout`].
 //!
