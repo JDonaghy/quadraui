@@ -149,15 +149,8 @@ pub struct FormController {
     scroll_offset: usize,
     has_focus: bool,
     scroll_drag: Option<ThumbDrag>,
-    /// The `FieldKind::Slider` field currently being dragged — set by a
-    /// `MouseDown` that lands on one's track (see this module's "Slider
-    /// fields" doc section), read by the next `MouseMoved` to keep
-    /// mapping the pointer's x position to a value, and cleared on
-    /// `MouseUp`. Mirrors `scroll_drag`'s own press/drag/release
-    /// lifecycle, but needs only the field's id — unlike `ThumbDrag`,
-    /// which caches geometry from the press, [`slider_track_rect`]
-    /// recomputes the track's rect fresh on every move the same way a
-    /// plain click does.
+    /// The backend's line height, cached by `render` so
+    /// `handle_cached_event` can resolve geometry without a backend.
     cached_lh: Option<f32>,
     /// Caret, scrub position, item cursor and in-flight slider drag —
     /// the widget's own interaction state, so this controller and a
@@ -599,8 +592,8 @@ impl FormController {
     /// `item_bounds`, the same per-item geometry
     /// [`crate::primitives::form::form_click_event`]'s caller already
     /// hit-tests against, and paint it through
-    /// [`Backend::draw_focus_ring`] — see this module's "Item-level
-    /// keyboard focus" doc section for why painting goes through that
+    /// [`Backend::draw_focus_ring`] — see `primitives::form::contract`'s
+    /// "Item-level keyboard focus" doc section for why painting goes through that
     /// shared chrome primitive instead of `primitives/form.rs`'s own
     /// painters. Called by [`Self::render`] right after `draw_form`; a
     /// no-op while `!self.has_focus` or nothing is item-focused.
@@ -643,15 +636,14 @@ impl FormController {
         backend: Option<&mut dyn Backend>,
     ) -> FormControllerEvent {
         // Every fresh `MouseDown` starts at most one gesture, so clear
-        // whatever `self.slider_drag` a previous press left behind up
-        // front — not just when this press lands on a field (see the
-        // `FormHit::Field` arm below, which re-arms it) — so a dropped
+        // whatever slider drag a previous press left behind up front —
+        // not just when this press lands on the form body, which the
+        // widget's own `click_field` already does — so a dropped
         // `MouseUp` (the pointer leaving the window with the button
         // still held, common on GTK) can't leave a stale slider drag
-        // that later hijacks an unrelated scrollbar-thumb drag. See this
-        // module's "Slider fields" doc section and `handle_inner`'s
-        // `MouseMoved` arm, which checks `slider_drag` before falling
-        // back to the scrollbar's own `drag_to`.
+        // that later hijacks an unrelated scrollbar-thumb drag. See
+        // `handle_inner`'s `MouseMoved` arm, which checks `slider_drag`
+        // before falling back to the scrollbar's own `drag_to`.
         self.state.slider_drag = None;
         if !rect.contains(Point::new(x, y)) {
             return FormControllerEvent::Ignored;
@@ -752,7 +744,8 @@ impl FormController {
     }
 
     /// Continues an in-flight `Slider` drag (armed by [`Self::click_inner`]
-    /// — see this module's "Slider fields" doc section) as the pointer
+    /// — see `primitives::form::contract`'s
+    /// "Slider fields" doc section) as the pointer
     /// moves to `x` within `rect` — the `MouseMoved` counterpart of
     /// [`Self::drag_to`]'s scrollbar-thumb drag. Unlike `drag_to`, which
     /// reuses geometry `ThumbDrag::begin` cached at press time, this
@@ -2640,7 +2633,7 @@ mod tests {
 
         // Realistic round-trip: the app persists `value` from the
         // emitted `TextInputChanged` (same as it already does for a
-        // toggle flip) but — per this module's "Keyboard editing" doc
+        // toggle flip) but — per `primitives::form::contract`'s "Keyboard editing" doc
         // section — never has to track `cursor` itself, so it stays
         // `None` here.
         fc.set_form(Form {
@@ -2725,8 +2718,8 @@ mod tests {
     #[test]
     fn ctrl_c_on_a_focused_text_field_is_ignored_not_typed() {
         // Every backend delivers Ctrl+C as `Key::Char('c')` with
-        // `modifiers.ctrl == true` (see this module's "Keyboard editing"
-        // doc section) — without the guard in `handle_key`, this would
+        // `modifiers.ctrl == true` (see `primitives::form::contract`'s
+        // "Keyboard editing" doc section) — without the guard in `handle_key`, this would
         // insert a literal 'c' into the field *and* report
         // `TextInputChanged`, i.e. the keystroke was "consumed" as text
         // instead of falling through to an app-level Copy accelerator.
@@ -4313,7 +4306,8 @@ mod tests {
 
     // ── Item-level keyboard focus ──────────────────────────────────────
     //
-    // See this module's "Item-level keyboard focus" doc section.
+    // See `primitives::form::contract`'s "Item-level keyboard focus"
+    // doc section.
 
     fn button_row_field(id: &str, buttons: &[(&str, bool)]) -> FormField {
         FormField {
@@ -4701,7 +4695,7 @@ mod tests {
             RECT,
         );
         // `move_focus` only emits `FocusChanged` — the app persists the new
-        // `focused_field` itself (this module's "Keyboard editing" doc
+        // `focused_field` itself (`primitives::form::contract`'s "Keyboard editing" doc
         // section) — so push it back before the next keystroke.
         fc.set_form(Form {
             focused_field: Some(WidgetId::new("row")),

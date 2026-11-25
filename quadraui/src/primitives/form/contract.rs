@@ -588,6 +588,15 @@ pub struct FormState {
     /// wheel, a page key or a scroll-into-view moves the viewport, so a
     /// host that drives scrolling itself keeps control until something
     /// here scrolls.
+    ///
+    /// Reaching a *painter* goes through [`overlay_state`], since
+    /// [`Primitive::paint`]/[`Primitive::paint_cells`] take the
+    /// descriptor alone and have no live-state channel of their own —
+    /// the same limitation every ported widget's `PaintState` has. A
+    /// host that paints through [`crate::compose::FormController`] gets
+    /// that overlay for free; one painting a `Surface::Widget` form
+    /// applies this offset onto its own descriptor, the same way it
+    /// applies a [`FormEvent`].
     pub scroll_offset: Option<usize>,
     /// Caret and selection anchor within the focused text field.
     pub text_edit: Option<TextCursor>,
@@ -1948,9 +1957,29 @@ impl WidgetAction for FormEvent {
 
 // ── Interactive ─────────────────────────────────────────────────────
 
-/// Rows a `viewport_height`-tall viewport shows, given a uniform
-/// `row_height`. Tab's scroll-into-view needs it, and both units
-/// measure it the same way — a cell grid's row height is `1.0`.
+/// The height of a form's *single*-row field, read off the resolved
+/// layout rather than from a unit constant — so this works in cells and
+/// in pixels without the `LayoutCtx` that resolved them.
+///
+/// The smallest positive row on screen, because a `TextArea`, an open
+/// `Dropdown`, a boxed `NumberInput` and a multi-option `RadioGroup`
+/// each claim several rows, and any of them can be the first field.
+/// `1.0` for a form with nothing visible, so [`viewport_rows`] never
+/// divides by zero.
+fn single_row_height(layout: &FormPrimitiveLayout) -> f32 {
+    layout
+        .layout
+        .visible_fields
+        .iter()
+        .map(|f| f.bounds.height)
+        .filter(|h| *h > 0.0)
+        .fold(f32::INFINITY, f32::min)
+        .min(layout.area.height.max(1.0))
+}
+
+/// Rows a viewport `layout.area` tall shows, given a uniform
+/// `row_height`. Tab's scroll-into-view and the wheel's row step both
+/// need it, and both units measure it the same way.
 fn viewport_rows(layout: &FormPrimitiveLayout, row_height: f32) -> usize {
     if row_height <= 0.0 {
         return 0;
@@ -1998,14 +2027,7 @@ impl Interactive for Form {
         layout: &FormPrimitiveLayout,
         cx: &mut EventCx,
     ) -> Handled<FormEvent> {
-        let row_height = layout
-            .layout
-            .visible_fields
-            .first()
-            .map(|f| f.bounds.height)
-            .filter(|h| *h > 0.0)
-            .unwrap_or(1.0);
-        let rows = viewport_rows(layout, row_height);
+        let rows = viewport_rows(layout, single_row_height(layout));
         match event {
             RoutedEvent::Pointer {
                 kind: PointerKind::Down(MouseButton::Left),
