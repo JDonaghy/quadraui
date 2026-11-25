@@ -511,3 +511,697 @@ mod tests {
         assert_eq!((off_line.r, off_line.g, off_line.b), (0, 0, 0));
     }
 }
+
+/// Form and settings-chrome paint through [`D2dSurface`] on a headless
+/// Direct2D target.
+#[cfg(test)]
+mod form_paint_tests {
+    use super::D2dSurface;
+    use crate::primitives::form::{FieldKind, Form, FormHit, FormLayout, ToggleGroupItem};
+    use crate::theme::Theme;
+    use crate::types::{Color, StyledText, WidgetId};
+    use crate::win::testing::HeadlessSurface;
+    use crate::win::text::DWrite;
+    use crate::Rect;
+
+    const W: f32 = 300.0;
+    const H: f32 = 200.0;
+    const LINE_HEIGHT: f32 = 14.0;
+
+    /// The pixel form layout at `line_height`, measured through `dwrite`
+    /// — the geometry a pixel form paints from.
+    fn win_form_layout(dwrite: &DWrite, rect: Rect, form: &Form, line_height: f32) -> FormLayout {
+        let row_h = crate::primitives::layout_metrics::form_row_height(line_height as f64);
+        form.layout(rect.width, rect.height, |i| {
+            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, dwrite)
+        })
+    }
+
+    /// Paint the settings chrome through the shared
+    /// [`crate::compose::sidebar_panel_body::paint_settings_chrome`] on a
+    /// [`D2dSurface`] over `target`.
+    #[allow(clippy::too_many_arguments)]
+    fn draw_settings_chrome(
+        target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
+        dwrite: &DWrite,
+        rect: Rect,
+        line_height: f32,
+        header_text: &str,
+        query: &str,
+        placeholder: &str,
+        active: bool,
+    ) {
+        let mut raw = D2dSurface {
+            target,
+            dwrite: Some(dwrite),
+        };
+        crate::compose::sidebar_panel_body::paint_settings_chrome(
+            &mut raw,
+            &Theme::default(),
+            rect,
+            line_height,
+            header_text,
+            query,
+            placeholder,
+            active,
+        );
+    }
+
+    /// Paint `form` via the shared [`crate::primitives::form::paint`]
+    /// through a [`D2dSurface`] over `surface`'s headless target —
+    /// the same adapter `win::multi_section_view`'s embedded-`Form` body uses.
+    fn paint(surface: &HeadlessSurface, dwrite: &DWrite, rect: Rect, form: &Form) -> FormLayout {
+        let layout = win_form_layout(dwrite, rect, form, LINE_HEIGHT);
+        let theme = Theme::default();
+        let origin = crate::Point::new(rect.x, rect.y);
+        surface
+            .paint(|target| {
+                let mut raw = D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
+                crate::primitives::form::paint(form, &layout, &mut raw, &theme, origin);
+            })
+            .expect("paint form");
+        layout
+    }
+
+    fn field(id: &str, label: &str, kind: FieldKind) -> crate::primitives::form::FormField {
+        crate::primitives::form::FormField {
+            id: WidgetId::new(id),
+            label: StyledText::plain(label.to_string()),
+            kind,
+            hint: StyledText::plain(""),
+            disabled: false,
+            validation: None,
+            label_position: None,
+            label_align: None,
+            label_width: None,
+            tab_index: None,
+            control_width: None,
+            min_control_width: None,
+            row_align: None,
+        }
+    }
+
+    fn make_form(fields: Vec<crate::primitives::form::FormField>) -> Form {
+        Form {
+            id: WidgetId::new("form"),
+            fields,
+            focused_field: None,
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    /// Paint↔click round trip across a mix of field kinds, including a
+    /// `ToggleGroup` whose per-item hit regions must land on the
+    /// correct toggle id.
+    #[test]
+    fn paint_and_hit_test_round_trip() {
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let form = make_form(vec![
+            field(
+                "name",
+                "Name",
+                FieldKind::TextInput {
+                    value: "quadraui".into(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    selection_anchor: None,
+                },
+            ),
+            field(
+                "flags",
+                "Flags",
+                FieldKind::ToggleGroup {
+                    toggles: vec![
+                        ToggleGroupItem {
+                            id: WidgetId::new("flags:a"),
+                            label: "A".into(),
+                            value: true,
+                        },
+                        ToggleGroupItem {
+                            id: WidgetId::new("flags:b"),
+                            label: "B".into(),
+                            value: false,
+                        },
+                    ],
+                },
+            ),
+        ]);
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let layout = paint(&surface, &dwrite, rect, &form);
+
+        assert_eq!(layout.visible_fields.len(), 2);
+        for vf in &layout.visible_fields {
+            let cx = vf.bounds.x + 1.0;
+            let cy = vf.bounds.y + vf.bounds.height / 2.0;
+            assert_eq!(layout.hit_test(cx, cy), FormHit::Field(vf.id));
+        }
+
+        let toggle_field = &layout.visible_fields[1];
+        assert_eq!(toggle_field.item_bounds.len(), 2);
+        for (id, item_rect) in &toggle_field.item_bounds {
+            let cx = item_rect.x + item_rect.width / 2.0;
+            let cy = item_rect.y + item_rect.height / 2.0;
+            assert_eq!(layout.hit_test(cx, cy), FormHit::Field(*id));
+        }
+    }
+
+    /// The focused row paints `selected_bg` at its own bounds.
+    #[test]
+    fn focused_row_paints_selected_bg() {
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let mut form = make_form(vec![
+            field("a", "A", FieldKind::Toggle { value: false }),
+            field("b", "B", FieldKind::Toggle { value: true }),
+        ]);
+        form.focused_field = Some(WidgetId::new("b"));
+        let rect = Rect::new(0.0, 0.0, W, H);
+
+        let layout = paint(&surface, &dwrite, rect, &form);
+
+        let theme = Theme::default();
+        let bounds = layout.visible_fields[1].bounds;
+        let px = surface.pixel_at((bounds.x + 1.0) as u32, (bounds.y + 1.0) as u32);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            )
+        );
+    }
+
+    /// Both `paint` and `win_form_layout` consume the same layout computation,
+    /// ensuring they cannot disagree on geometry. This is a smoke test that
+    /// painting a `TextInput` + `PasswordInput` pair (with cursors set) doesn't panic.
+    #[test]
+    fn paint_with_cursors_does_not_panic() {
+        let form = make_form(vec![
+            field(
+                "name",
+                "Name",
+                FieldKind::TextInput {
+                    value: "hi".into(),
+                    placeholder: String::new(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            ),
+            field(
+                "pw",
+                "Password",
+                FieldKind::PasswordInput {
+                    value: "secret".into(),
+                    placeholder: String::new(),
+                    cursor: Some(3),
+                    mask_char: '*',
+                },
+            ),
+        ]);
+        let rect = Rect::new(0.0, 0.0, W, H);
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let surface = HeadlessSurface::new(W as u32, H as u32).expect("create surface");
+
+        let _ = paint(&surface, &dwrite, rect, &form);
+    }
+
+    /// [`draw_settings_chrome`]'s two rows must paint at the shared
+    /// painter's geometry: row 0 (`y in [0, line_height)`) is `header_bg`, row 1
+    /// (`y in [line_height, 2*line_height)`) is `tab_bar_bg` when
+    /// `active` is `false`.
+    #[test]
+    fn settings_chrome_paints_header_and_inactive_search_rows() {
+        let surface = HeadlessSurface::new(200, 60).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
+        let line_height = 18.0_f32;
+
+        surface
+            .paint(|target| {
+                draw_settings_chrome(
+                    target,
+                    &dwrite,
+                    rect,
+                    line_height,
+                    "Settings",
+                    "",
+                    "search…",
+                    false,
+                );
+            })
+            .expect("paint settings chrome");
+
+        let theme = Theme::default();
+        let header_px = surface.pixel_at(150, 2);
+        assert_eq!(
+            (header_px.r, header_px.g, header_px.b),
+            (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+            "header row paints header_bg"
+        );
+
+        let search_px = surface.pixel_at(150, line_height as u32 + 2);
+        assert_eq!(
+            (search_px.r, search_px.g, search_px.b),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "inactive search row paints tab_bar_bg"
+        );
+    }
+
+    /// The search row switches to `selected_bg` while `active`.
+    #[test]
+    fn settings_chrome_active_search_row_paints_selected_bg() {
+        let surface = HeadlessSurface::new(200, 60).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let rect = Rect::new(0.0, 0.0, 200.0, 60.0);
+        let line_height = 18.0_f32;
+
+        surface
+            .paint(|target| {
+                draw_settings_chrome(
+                    target,
+                    &dwrite,
+                    rect,
+                    line_height,
+                    "Settings",
+                    "op",
+                    "",
+                    true,
+                );
+            })
+            .expect("paint settings chrome");
+
+        let theme = Theme::default();
+        let search_px = surface.pixel_at(150, line_height as u32 + 2);
+        assert_eq!(
+            (search_px.r, search_px.g, search_px.b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "active search row paints selected_bg"
+        );
+    }
+
+    /// A `rect.height` of exactly one `line_height` (the shape
+    /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`]
+    /// reserves) must not paint the search row — only the header row paints.
+    #[test]
+    fn settings_chrome_one_row_height_paints_no_search_row() {
+        let surface = HeadlessSurface::new(200, 60).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let line_height = 18.0_f32;
+        // Sentinel distinct from every colour this fn itself paints
+        // (header_bg/tab_bar_bg/selected_bg), so a search-row pixel
+        // reading the sentinel unambiguously means "nothing painted
+        // here".
+        let sentinel = Color::rgb(1, 2, 3);
+        surface
+            .fill_rect(Rect::new(0.0, 0.0, 200.0, 60.0), sentinel)
+            .expect("fill sentinel");
+
+        let one_row = Rect::new(0.0, 0.0, 200.0, line_height);
+        surface
+            .paint(|target| {
+                draw_settings_chrome(
+                    target,
+                    &dwrite,
+                    one_row,
+                    line_height,
+                    "HEADER",
+                    "",
+                    "placeholder",
+                    false,
+                );
+            })
+            .expect("paint settings chrome");
+
+        let theme = Theme::default();
+        let header_px = surface.pixel_at(150, 2);
+        assert_eq!(
+            (header_px.r, header_px.g, header_px.b),
+            (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+            "the header row must still paint even when the search row doesn't"
+        );
+
+        let search_px = surface.pixel_at(150, line_height as u32 + 2);
+        assert_eq!(
+            (search_px.r, search_px.g, search_px.b),
+            (sentinel.r, sentinel.g, sentinel.b),
+            "a 1-row-tall chrome rect must not paint a search row past its own height"
+        );
+    }
+}
+
+/// Palette paint through [`D2dSurface`] on a headless Direct2D target.
+#[cfg(test)]
+mod palette_paint_tests {
+    use super::D2dSurface;
+    use crate::primitives::palette::{
+        native_surface_paint, pixel_layout, Palette, PaletteLayout, PaletteMode,
+    };
+    use crate::theme::Theme;
+    use crate::types::{Color, StyledText, WidgetId};
+    use crate::win::testing::HeadlessSurface;
+    use crate::win::text::DWrite;
+    use crate::Rect;
+    use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
+
+    /// The pixel palette layout at `line_height` — the geometry the
+    /// palette paints from.
+    fn win_palette_layout(rect: Rect, palette: &Palette, line_height: f32) -> PaletteLayout {
+        pixel_layout(rect.width, rect.height, palette, line_height).0
+    }
+
+    /// Paint `palette` into `rect` through the shared pixel painter on a
+    /// [`D2dSurface`] over `target`, with `Theme::default()`.
+    fn draw_palette(
+        target: &ID2D1RenderTarget,
+        dwrite: &DWrite,
+        rect: Rect,
+        palette: &Palette,
+        line_height: f32,
+        nerd_fonts_enabled: bool,
+    ) {
+        let (palette_layout, rows_h) = pixel_layout(rect.width, rect.height, palette, line_height);
+        let mut surface = D2dSurface {
+            target,
+            dwrite: Some(dwrite),
+        };
+        native_surface_paint::paint(
+            palette,
+            rect,
+            &palette_layout,
+            rows_h,
+            line_height,
+            nerd_fonts_enabled,
+            &mut surface,
+            &Theme::default(),
+            &crate::style::Style::default(),
+        );
+    }
+
+    fn item(text: &str, match_positions: Vec<usize>) -> crate::primitives::palette::PaletteItem {
+        crate::primitives::palette::PaletteItem {
+            text: StyledText::plain(text),
+            detail: None,
+            icon: None,
+            match_positions,
+            depth: 0,
+            expandable: false,
+            expanded: false,
+        }
+    }
+
+    fn palette() -> Palette {
+        Palette {
+            id: WidgetId::new("pal"),
+            title: "Commands".into(),
+            query: "op".into(),
+            query_cursor: 2,
+            items: vec![item("open file", vec![0, 1]), item("close", vec![])],
+            selected_idx: 0,
+            scroll_offset: 0,
+            total_count: 0,
+            has_focus: true,
+            show_query: true,
+            create_label: None,
+            preview: None,
+            mode: PaletteMode::List,
+        }
+    }
+
+    #[test]
+    fn renders_and_highlights_match_positions() {
+        let surface = HeadlessSurface::new(300, 200).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let p = palette();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let line_height = 18.0;
+
+        surface
+            .paint(|target| {
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
+            })
+            .expect("paint palette");
+
+        let layout = win_palette_layout(rect, &p, line_height);
+        let first_item = layout.visible_items[0].bounds;
+
+        let theme = Theme::default();
+        // Scan the whole first-item row box for match-highlighted ink —
+        // matched runs ('o', 'p' at byte offsets 0, 1 of "open file")
+        // paint in `match_fg`, warm and far from every other colour on
+        // that row. Two deliberate weakenings versus an exact-equality
+        // probe at a guessed coordinate: the scan covers the row's full
+        // height (real DirectWrite glyph placement inside the row box
+        // isn't predictable ahead of a live Windows font pass), and a
+        // pixel counts when it is *nearer* `match_fg` than the row's
+        // other two colours rather than exactly equal to it, since
+        // glyph edges are antialiased blends over the selection fill.
+        let dist2 = |px: Color, c: Color| {
+            let dr = px.r as i32 - c.r as i32;
+            let dg = px.g as i32 - c.g as i32;
+            let db = px.b as i32 - c.b as i32;
+            dr * dr + dg * dg + db * db
+        };
+        let found = (first_item.y as u32..(first_item.y + first_item.height) as u32).any(|y| {
+            (first_item.x as u32..(first_item.x + first_item.width) as u32).any(|x| {
+                let px = surface.pixel_at(x, y);
+                let d_match = dist2(px, theme.match_fg);
+                d_match < dist2(px, theme.surface_fg) && d_match < dist2(px, theme.selected_bg)
+            })
+        });
+        assert!(
+            found,
+            "expected to find match_fg-coloured pixels on the matched item's row"
+        );
+    }
+
+    /// The shared `paint` gives every GUI backend, including Windows, a
+    /// thin bar caret (not a full-glyph-width block) in `theme.cursor`.
+    #[test]
+    fn query_row_paints_a_cursor_bar() {
+        let surface = HeadlessSurface::new(300, 200).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let p = palette();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let line_height = 18.0;
+
+        surface
+            .paint(|target| {
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
+            })
+            .expect("paint palette");
+
+        let layout = win_palette_layout(rect, &p, line_height);
+        let qb = layout.query_bounds.expect("query bounds present");
+        let theme = Theme::default();
+        // A cursor bar is a *solid fill* spanning the row's full height —
+        // unlike glyph ink (which never covers a whole text-row column
+        // solidly, since real fonts leave leading above ascenders and
+        // below descenders) — but only ~2px wide, not a full-glyph-width
+        // block. Scan for the column with the highest fraction of
+        // cursor-near pixels and require it to be nearly fully covered,
+        // and require most columns in the query row to NOT be covered
+        // (ruling out a block spanning the whole glyph).
+        //
+        // `draw_palette` always paints with `Theme::default()` (it takes
+        // no theme parameter — see that fn's doc), whose dark-mode
+        // `cursor` and `query_fg` happen to be the same `rgb(220, 220,
+        // 220)`, so probing `theme.cursor` below doesn't by itself
+        // distinguish a caret from glyph ink; `fully_covered_cols <= 4`
+        // (a bar is ~2px wide, a full-glyph block is not) is the
+        // assertion that actually tells them apart.
+        let dist2 = |px: Color, c: Color| {
+            let dr = px.r as i32 - c.r as i32;
+            let dg = px.g as i32 - c.g as i32;
+            let db = px.b as i32 - c.b as i32;
+            dr * dr + dg * dg + db * db
+        };
+        let rows: Vec<u32> = (qb.y as u32..(qb.y + qb.height) as u32).collect();
+        let coverage: Vec<f32> = (qb.x as u32..(qb.x + qb.width) as u32)
+            .map(|x| {
+                let covered = rows
+                    .iter()
+                    .filter(|&&y| dist2(surface.pixel_at(x, y), theme.cursor) < 400)
+                    .count();
+                covered as f32 / rows.len().max(1) as f32
+            })
+            .collect();
+        let best_coverage = coverage.iter().cloned().fold(0.0_f32, f32::max);
+        let fully_covered_cols = coverage.iter().filter(|&&c| c > 0.9).count();
+        assert!(
+            best_coverage > 0.9,
+            "expected a full-row-height cursor bar; best column coverage was {best_coverage}"
+        );
+        assert!(
+            fully_covered_cols <= 4,
+            "expected a thin ~2px bar caret, not a full-glyph-width block; \
+             {fully_covered_cols} columns were fully covered"
+        );
+    }
+
+    /// The query row height uses a formula that reserves space for a
+    /// separator pixel at the bottom: `line_height + 1.0`. The separator
+    /// stroke sits in the query band's last pixel, and the first item row
+    /// moves down by 1.0 pixel accordingly.
+    ///
+    /// Paints through the real Direct2D `HeadlessSurface` and pins all
+    /// three rows: the reserved separator pixel carries border ink, the
+    /// query text row above it does not, and the first item row below it
+    /// carries the selected row's fill — i.e. the separator neither
+    /// climbs into the text row nor steals (and get overpainted by) the
+    /// first item row.
+    #[test]
+    fn separator_paints_at_corrected_row_not_drifted_one() {
+        let surface = HeadlessSurface::new(300, 200).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let p = palette();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let line_height = 18.0_f32;
+
+        surface
+            .paint(|target| {
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
+            })
+            .expect("paint palette");
+
+        let theme = Theme::default();
+        let layout = win_palette_layout(rect, &p, line_height);
+        let qb = layout.query_bounds.expect("query bounds present");
+        assert_eq!(
+            qb.height,
+            line_height + 1.0,
+            "query band must reserve line_height + 1.0 (the +1 is the separator)",
+        );
+
+        let title_h = line_height; // native_surface_paint::layout: title_h = line_height
+        let sep_y = (qb.y + qb.height - 1.0) as u32; // corrected: the reserved pixel
+        let first_row_y = (qb.y + qb.height) as u32; // This was sep_y
+        assert_eq!(sep_y, (title_h + line_height) as u32);
+        assert_eq!(first_row_y, (title_h + line_height + 1.0) as u32);
+        assert_eq!(
+            layout.visible_items[0].bounds.y,
+            qb.y + qb.height,
+            "first item row starts immediately below the query band",
+        );
+
+        // `p`'s row 0 is the selected one, so the first item row paints
+        // `selected_bg` — the fill that must not overwrite the separator.
+        let probe_x = 150_u32;
+        let is_border = |y: u32| {
+            let px = surface.pixel_at(probe_x, y);
+            (px.r, px.g, px.b) == (theme.border_fg.r, theme.border_fg.g, theme.border_fg.b)
+        };
+        assert!(
+            is_border(sep_y),
+            "expected separator ink in the query band's reserved pixel, row {sep_y}",
+        );
+        assert!(
+            !is_border(sep_y - 1),
+            "separator climbed into the query *text* row {} — it belongs in the \
+             single pixel query_bounds reserves for it",
+            sep_y - 1,
+        );
+        let first_row_px = surface.pixel_at(probe_x, first_row_y);
+        assert_eq!(
+            (first_row_px.r, first_row_px.g, first_row_px.b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "row {first_row_y} is the first item row (selected), not the separator's",
+        );
+    }
+
+    /// The item list flooring: when available item-list height is not an
+    /// exact multiple of the resolved row height, the row count is floored
+    /// and a reduced `viewport_height` is used to prevent partial-height
+    /// last rows. The rect height (200) and `line_height` (18) are chosen
+    /// so the available item area (159px after title/query/bottom-inset)
+    /// is not an exact multiple of the row pitch — the condition that
+    /// produces a partial last row without flooring.
+    #[test]
+    fn item_list_never_shows_a_partial_last_row() {
+        let surface = HeadlessSurface::new(300, 200).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let mut p = palette();
+        p.items = (0..40)
+            .map(|i| item(&format!("item {i}"), vec![]))
+            .collect();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let line_height = 18.0_f32;
+        let row_height = native_surface_paint::item_row_height(line_height);
+
+        surface
+            .paint(|target| {
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
+            })
+            .expect("paint palette");
+
+        let layout = win_palette_layout(rect, &p, line_height);
+        let last = layout
+            .visible_items
+            .last()
+            .expect("some items should be visible");
+        assert_eq!(
+            last.bounds.height, row_height,
+            "last visible row must be full height — a partial row means the \
+             unfloored-viewport drift regressed",
+        );
+
+        // Driver-tier: paint through the real Direct2D backend and
+        // confirm no ink bleeds into the row immediately below the
+        // floored boundary — a partial 9th row would have painted glyph
+        // ink there.
+        let theme = Theme::default();
+        let boundary_y = (last.bounds.y + last.bounds.height + 1.0) as u32;
+        let probe_x = (last.bounds.x + 4.0) as u32;
+        let px = surface.pixel_at(probe_x, boundary_y);
+        assert_eq!(
+            (px.r, px.g, px.b),
+            (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
+            "expected plain surface_bg just below the floored last row, not a \
+             partially-clipped row's content",
+        );
+    }
+
+    #[test]
+    fn selected_row_paints_selection_bg() {
+        let surface = HeadlessSurface::new(300, 200).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let p = palette();
+        let rect = Rect::new(0.0, 0.0, 300.0, 200.0);
+        let line_height = 18.0;
+
+        surface
+            .paint(|target| {
+                draw_palette(target, &dwrite, rect, &p, line_height, false);
+            })
+            .expect("paint palette");
+
+        let layout = win_palette_layout(rect, &p, line_height);
+        let first_item = layout.visible_items[0].bounds;
+        let sel = Theme::default().selected_bg;
+        let px = surface.pixel_at(
+            (first_item.x + first_item.width - 2.0) as u32,
+            (first_item.y + 1.0) as u32,
+        );
+        assert_eq!((px.r, px.g, px.b), (sel.r, sel.g, sel.b));
+    }
+}

@@ -720,23 +720,6 @@ mod form_paint_tests {
         {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
-            let mut backend = crate::gtk::GtkBackend::new();
-            backend.set_current_theme(Theme::default());
-            backend.set_current_line_height(LINE_HEIGHT);
-            crate::Backend::begin_frame(
-                &mut backend,
-                crate::Viewport::new(CHROME_W as f32, CHROME_H as f32, 1.0),
-            );
-            backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                crate::Backend::draw_settings_chrome(
-                    b,
-                    crate::Rect::new(0.0, 0.0, CHROME_W as f32, height as f32),
-                    "HEADER",
-                    "",
-                    "placeholder",
-                    false,
-                );
-            });
             let theme = Theme::default();
             let row_h = crate::primitives::layout_metrics::form_row_height(14.0);
             let measure = PangoMeasure {
@@ -958,21 +941,6 @@ mod form_paint_tests {
                     false,
                 );
             });
-            let theme = Theme::default();
-            draw_settings_chrome(
-                &cr,
-                &pango_layout,
-                0.0,
-                0.0,
-                CHROME_W as f64,
-                height,
-                LINE_HEIGHT,
-                "HEADER",
-                "",
-                "placeholder",
-                false,
-                &theme,
-            );
         }
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data").to_vec();

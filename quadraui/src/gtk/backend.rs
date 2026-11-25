@@ -56,10 +56,10 @@ use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FieldKind, FontRole,
-    Form, GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
-    Rect as QRect, ResizeEdge, Split, StatusBar, SystemTheme, TextDisplay, TreeView, UiEvent,
-    UserPayload, Viewport,
+    Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FontRole,
+    GenericFamily, ListView, MenuBar, ModalStack, PlatformServices, PointerShape, Rect as QRect,
+    ResizeEdge, Split, StatusBar, SystemTheme, TextDisplay, TreeView, UiEvent, UserPayload,
+    Viewport,
 };
 // `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
 // `#[cfg(test)]` code below — they're gated to avoid unused import
@@ -5314,14 +5314,14 @@ mod tests {
     /// Generic helper — minimal "app render code" that consumes
     /// `Backend` through `<B>`. Same shape as the one in
     /// `tui_main::backend::tests::paint_overlays`.
-    fn paint_overlays<B: Backend>(backend: &mut B, palette: &Palette, list: &ListView) {
-        backend.draw_palette(QRect::new(10.0, 5.0, 60.0, 14.0), palette);
+    fn paint_overlays<B: Backend>(backend: &mut B, palette: &crate::Palette, list: &ListView) {
+        crate::DrawsPrimitives::draw_dyn(backend, QRect::new(10.0, 5.0, 60.0, 14.0), palette, &());
         backend.draw_list(QRect::new(0.0, 20.0, 80.0, 4.0), list);
     }
 
     #[test]
     fn paint_overlays_compiles_against_gtk_backend() {
-        let _: fn(&mut GtkBackend, &Palette, &ListView) = paint_overlays::<GtkBackend>;
+        let _: fn(&mut GtkBackend, &crate::Palette, &ListView) = paint_overlays::<GtkBackend>;
     }
 
     // ── issue #1143: MinimapScale ────────────────────────────────────────
@@ -6273,7 +6273,7 @@ mod tests {
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 200.0);
-        let layout = backend.form_layout(rect, &form);
+        let layout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &form).layout;
 
         assert_eq!(
             layout.visible_fields.len(),
@@ -6286,7 +6286,7 @@ mod tests {
         let row_h = crate::primitives::layout_metrics::form_row_height(backend.current_line_height);
         assert_eq!(
             notes.bounds.height, row_h,
-            "TextArea must measure one row_h, matching gtk::form::draw_form's single-row paint"
+            "TextArea must measure one row_h, matching the form's single-row paint"
         );
 
         // A click at the centre of the field painted right below the
@@ -6372,7 +6372,7 @@ mod tests {
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 80.0);
-        let layout = backend.form_layout(rect, &form);
+        let layout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &form).layout;
 
         // Must have exactly one visible field.
         assert_eq!(layout.visible_fields.len(), 1, "expected one visible field");
@@ -9143,8 +9143,18 @@ mod tests {
         };
 
         let backend = GtkBackend::new();
-        let at_origin = Backend::form_layout(&backend, QRect::new(0.0, 0.0, 100.0, 50.0), &form);
-        let shifted = Backend::form_layout(&backend, QRect::new(7.0, 13.0, 100.0, 50.0), &form);
+        let at_origin = crate::DrawsPrimitives::layout_primitive(
+            &backend,
+            QRect::new(0.0, 0.0, 100.0, 50.0),
+            &form,
+        )
+        .layout;
+        let shifted = crate::DrawsPrimitives::layout_primitive(
+            &backend,
+            QRect::new(7.0, 13.0, 100.0, 50.0),
+            &form,
+        )
+        .layout;
 
         assert_eq!(
             at_origin.hit_regions, shifted.hit_regions,
@@ -9683,17 +9693,17 @@ mod tests {
         );
     }
 
-    /// `draw_palette_with_state` must tint the pinned create-action
-    /// row — the one stable id a [`Palette`] carries (`palette.id`
-    /// itself) — toward `Theme::menu_item_hover_bg` when hovered and
-    /// `Theme::menu_item_pressed_bg` when pressed, exactly like
-    /// `Backend::draw_palette_with_state`'s own doc describes.
+    /// The shared palette painter's `paint_interactive`, run on
+    /// `GtkBackend`'s own surface, must tint the pinned create-action
+    /// row — the one stable id a [`crate::Palette`] carries
+    /// (`palette.id` itself) — toward `Theme::menu_item_hover_bg` when
+    /// hovered and `Theme::menu_item_pressed_bg` when pressed.
     #[test]
     fn gtk_backend_palette_create_row_hover_and_pressed_tints() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let palette_id = WidgetId::new("test:palette");
-        let mut palette = Palette {
+        let mut palette = crate::Palette {
             id: palette_id,
             title: "Commands".into(),
             create_label: Some("Create 'op'".into()),
@@ -9720,14 +9730,33 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_palette_with_state(rect, &palette, interaction);
+                let (layout, rows_h) = crate::primitives::palette::pixel_layout(
+                    rect.width,
+                    rect.height,
+                    &palette,
+                    16.0,
+                );
+                let theme = crate::Theme::default();
+                let style = Backend::style(b);
+                crate::primitives::palette::native_surface_paint::paint_interactive(
+                    &palette,
+                    rect,
+                    &layout,
+                    rows_h,
+                    16.0,
+                    false,
+                    b,
+                    &theme,
+                    &style,
+                    interaction,
+                );
             });
             surface.flush();
             surface
         };
 
         let (layout, _rows_h) =
-            crate::gtk::gtk_palette_layout(rect.width as f64, rect.height as f64, &palette, 16.0);
+            crate::primitives::palette::pixel_layout(rect.width, rect.height, &palette, 16.0);
         let create_bounds = layout
             .create_bounds
             .expect("palette with create_label must report create_bounds");

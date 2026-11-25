@@ -24,14 +24,7 @@ use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
-use crate::primitives::form::{Form, FormLayout};
 use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
-// Only referenced (as a bare name) inside `draw_form`'s
-// `target_os = "windows"` arm, which pattern-matches
-// `ToolbarButton::Action`/`ToolbarButton::Label` directly — every other
-// `ToolbarButton` use in this file goes through
-// `crate::primitives::toolbar::measure_button`'s inferred closure
-// parameter, which needs no import of its own.
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
@@ -44,21 +37,22 @@ use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::status_bar::{StatusBarHit, StatusBarLayout};
 use crate::primitives::text_display::{TextDisplayLayout, TextDisplayLineMeasure};
 use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
-#[cfg(target_os = "windows")]
+// Only named by the Windows tests below.
+#[cfg(all(test, target_os = "windows"))]
 use crate::primitives::toolbar::ToolbarButton;
 use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, Palette, StatusBar,
-    TextDisplay, TooltipChrome, TreeView, UserPayload,
+    Accelerator, AcceleratorId, ActivityBar, Key, ListView, Modifiers, StatusBar, TextDisplay,
+    TooltipChrome, TreeView, UserPayload,
 };
 // `TabBar` is only named by `#[cfg(test)]` code below — a tab strip
 // paints through its widget contract, not a method on this backend.
 #[cfg(test)]
 use crate::TabBar;
 #[cfg(target_os = "windows")]
-use crate::{FieldKind, Theme};
+use crate::Theme;
 // `AcceleratorScope` is only referenced by `#[cfg(test)]` code below.
 // Gate the import so a non-test build doesn't flag it as unused.
 #[cfg(test)]
@@ -5141,8 +5135,7 @@ impl Backend for WinBackend {
     /// most notably — Windows never had one before this) resolved while
     /// unifying `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
     /// `win::chart::draw_chart` into one implementation. Keeps
-    /// `Theme::default()` rather than `self.current_theme`, matching
-    /// `WinBackend::draw_form`'s own migration — see that fn's doc.
+    /// `Theme::default()` rather than `self.current_theme`.
     fn draw_chart(
         &mut self,
         rect: Rect,
@@ -8840,11 +8833,11 @@ mod tests {
         );
     }
 
-    /// `draw_palette_with_state` must tint the pinned create-action
-    /// row — the one stable id a [`Palette`] carries (`palette.id`
-    /// itself) — toward `Theme::menu_item_hover_bg` when hovered and
-    /// `Theme::menu_item_pressed_bg` when pressed, matching
-    /// `Backend::draw_palette_with_state`'s own doc.
+    /// The shared palette painter's `paint_interactive`, run on
+    /// `WinBackend`'s own surface, must tint the pinned create-action
+    /// row — the one stable id a [`crate::Palette`] carries
+    /// (`palette.id` itself) — toward `Theme::menu_item_hover_bg` when
+    /// hovered and `Theme::menu_item_pressed_bg` when pressed.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_palette_create_row_hover_and_pressed_tints() {
@@ -8855,7 +8848,7 @@ mod tests {
         const H: u32 = 200;
 
         let palette_id = WidgetId::new("test:palette");
-        let mut palette = Palette {
+        let mut palette = crate::Palette {
             id: palette_id,
             title: "Commands".into(),
             create_label: Some("Create 'op'".into()),
@@ -8881,17 +8874,28 @@ mod tests {
                 .attach_headless(surface.target().clone(), W, H)
                 .expect("attach headless surface");
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            backend.draw_palette_with_state(rect, &palette, interaction);
+            let (layout, rows_h) =
+                crate::primitives::palette::pixel_layout(rect.width, rect.height, &palette, 16.0);
+            let theme = Theme::default();
+            let style = backend.style();
+            crate::primitives::palette::native_surface_paint::paint_interactive(
+                &palette,
+                rect,
+                &layout,
+                rows_h,
+                16.0,
+                false,
+                &mut backend,
+                &theme,
+                &style,
+                interaction,
+            );
             backend.end_frame();
             surface
         };
 
-        let (layout, _rows_h) = crate::primitives::palette::native_surface_paint::layout(
-            rect.width,
-            rect.height,
-            &palette,
-            16.0,
-        );
+        let (layout, _rows_h) =
+            crate::primitives::palette::pixel_layout(rect.width, rect.height, &palette, 16.0);
         let create_bounds = layout
             .create_bounds
             .expect("palette with create_label must report create_bounds");
@@ -10169,7 +10173,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_palette_paints_entries_in_the_chrome_fonts_size() {
-        let palette = Palette {
+        let palette = crate::Palette {
             id: WidgetId::new("palette:commands"),
             title: "Commands".to_string(),
             query: String::new(),
@@ -10198,13 +10202,18 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_palette(Rect::new(0.0, 0.0, 200.0, 120.0), &palette);
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 120.0),
+                    &palette,
+                    &(),
+                );
             },
         );
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_palette must paint item text through chrome_dwrite, not the \
+             the palette must paint item text through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
         );
     }
@@ -10500,20 +10509,19 @@ mod tests {
         );
     }
 
-    /// `Form`'s `FieldKind::Toolbar` branch reads `chrome_dwrite`
-    /// directly (bypassing the inherent `Self::measure_text`/
-    /// `Self::draw_text` helpers, which always resolve the editor
-    /// handle) rather than through `impl PaintSurface for WinBackend`'s
-    /// own (now chrome-resolving) default — see `Self::draw_form`'s doc.
+    /// A `Form`'s `FieldKind::Toolbar` row paints its embedded toolbar
+    /// through the toolbar's own contract on `WinBackend`'s
+    /// chrome-resolving `PaintSurface`, so the button label follows
+    /// `chrome_dwrite`.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_form_paints_toolbar_button_label_in_the_chrome_fonts_size() {
-        let form = Form {
+        let form = crate::Form {
             id: WidgetId::new("settings"),
             fields: vec![crate::FormField {
                 id: WidgetId::new("settings:toolbar"),
                 label: crate::types::StyledText::default(),
-                kind: FieldKind::Toolbar(crate::Toolbar {
+                kind: crate::FieldKind::Toolbar(crate::Toolbar {
                     id: WidgetId::new("settings:toolbar:bar"),
                     buttons: vec![ToolbarButton::Action {
                         spec: None,
@@ -10556,13 +10564,18 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_form(Rect::new(0.0, 0.0, 200.0, 80.0), &form);
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 80.0),
+                    &form,
+                    &(),
+                );
             },
         );
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_form must paint the toolbar button's label through \
+             the form must paint the toolbar button's label through \
              chrome_dwrite, not the (unchanged) editor dwrite handle"
         );
     }
@@ -10861,18 +10874,18 @@ mod tests {
         );
     }
 
-    /// `form_layout` must measure a `FieldKind::Toolbar` item against the
-    /// same `chrome_dwrite`-preferring handle `Self::draw_form` paints
-    /// with — see that method's doc.
+    /// A form's widget-contract layout must measure a `FieldKind::Toolbar`
+    /// item against the same `chrome_dwrite`-preferring handle the paint
+    /// uses.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_form_layout_measures_a_toolbar_item_in_the_chrome_fonts_size() {
-        let form = Form {
+        let form = crate::Form {
             id: WidgetId::new("settings"),
             fields: vec![crate::FormField {
                 id: WidgetId::new("settings:toolbar"),
                 label: crate::types::StyledText::default(),
-                kind: FieldKind::Toolbar(crate::Toolbar {
+                kind: crate::FieldKind::Toolbar(crate::Toolbar {
                     id: WidgetId::new("settings:toolbar:bar"),
                     buttons: vec![ToolbarButton::Action {
                         spec: None,
@@ -10913,13 +10926,18 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let flayout = backend.form_layout(Rect::new(0.0, 0.0, 300.0, 80.0), &form);
+                let flayout = crate::DrawsPrimitives::layout_primitive(
+                    &*backend,
+                    Rect::new(0.0, 0.0, 300.0, 80.0),
+                    &form,
+                )
+                .layout;
                 flayout.visible_fields[0].item_bounds[0].1.width
             },
         );
         assert!(
             big > small * 2.0,
-            "form_layout must measure the toolbar button through \
+            "the form layout must measure the toolbar button through \
              chrome_dwrite, not the (unchanged) editor dwrite handle: \
              small={small}, big={big}"
         );

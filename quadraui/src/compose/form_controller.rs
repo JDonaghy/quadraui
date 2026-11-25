@@ -5008,13 +5008,14 @@ mod tests {
 
         /// `needle`'s item's own rect (not its text glyph's, which sits
         /// well inside the item's padded background) — the same
-        /// `Backend::form_layout` lookup `FormController::draw_item_focus_ring`
-        /// uses, so the sample point agrees with what the ring actually
-        /// outlines.
+        /// `DrawsPrimitives::layout_primitive` lookup
+        /// `FormController::draw_item_focus_ring` uses, so the sample
+        /// point agrees with what the ring actually outlines.
         fn item_rect(driver: &GtkDriver<ItemFocusRingApp>, item_id: &str) -> Rect {
             let app = driver.app();
             let form = app.fc.form().expect("form set").clone();
-            let layout = driver.backend().form_layout(app.rect, &form);
+            let layout =
+                crate::DrawsPrimitives::layout_primitive(driver.backend(), app.rect, &form).layout;
             let vf = layout
                 .visible_fields
                 .iter()
