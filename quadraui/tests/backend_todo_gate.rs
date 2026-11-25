@@ -157,16 +157,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_terminal",
-        "\"Direct2D terminal cell grid rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_terminal_divider",
-        "\"Direct2D terminal split divider rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_text_display",
         "\"Direct2D text display rasteriser (no surface attached yet)\"",
     ),

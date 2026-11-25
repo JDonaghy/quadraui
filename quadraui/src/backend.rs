@@ -100,7 +100,7 @@ use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
 use crate::{
     Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
-    PaletteLayout, StatusBar, TabBar, Terminal, TextDisplay, TreeTable, TreeView,
+    PaletteLayout, StatusBar, TabBar, TextDisplay, TreeTable, TreeView,
 };
 use serde::{Deserialize, Serialize};
 
@@ -2379,10 +2379,10 @@ pub trait Backend: sealed::Sealed {
     /// (`rect.width - backend.scrollbar_reserve()`) gets the right
     /// answer without asking which backend it's talking to.
     ///
-    /// Distinct from [`Self::terminal_scrollbar_default_width`]: that one
-    /// is the gutter width of the `Terminal` *primitive*'s own scrollbar,
-    /// which paints inside `draw_terminal`'s allotted rect and applies
-    /// even to TUI (which draws it as a real column). This one is
+    /// Distinct from a `Terminal`'s own scrollbar gutter
+    /// ([`crate::TerminalLayout::scrollbar`]), which the widget reserves
+    /// inside its own rect and applies even to TUI (which draws it as a
+    /// real column). This one is
     /// surrounding OS/toolkit scrollbar chrome that no primitive
     /// controls — TUI has none of that, so it reserves nothing.
     ///
@@ -3075,89 +3075,6 @@ pub trait Backend: sealed::Sealed {
     )]
     fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit>;
 
-    /// Draw a terminal cell grid. No hit-region data is returned;
-    /// terminal selection is driven by mouse drag against cell
-    /// dimensions, which the app already tracks.
-    fn draw_terminal(&mut self, rect: Rect, term: &Terminal);
-    /// The reserved width of a `Terminal`'s scrollbar gutter when
-    /// [`TerminalScrollbar::width`](crate::primitives::terminal::TerminalScrollbar::width)
-    /// is `None`, in this backend's own surface-native unit. Every
-    /// `draw_terminal` implementation falls back to a
-    /// hardcoded default when the caller didn't specify a width, and
-    /// that default is backend-shaped, not uniform: TUI's cells *are*
-    /// the coordinate system, so its gutter is exactly one column
-    /// (`src/tui/terminal.rs`'s `sb_cols: … .unwrap_or(1)`); GTK, macOS,
-    /// and Win all measure in pixels and use 8px
-    /// (`src/gtk/backend.rs`, `src/macos/backend.rs`,
-    /// `src/win/backend.rs`, each `sb_width: … .unwrap_or(8.0)`).
-    /// [`Self::terminal_layout`]'s default body calls this so its
-    /// scrollbar reservation matches whichever default the paint path
-    /// actually used, instead of silently assuming the pixel-backend
-    /// value for every backend (or ignoring the reservation entirely).
-    ///
-    /// Default: `8.0`, matching GTK/macOS/Win. TUI overrides this to
-    /// `1.0` — see `TuiBackend::terminal_scrollbar_default_width`.
-    fn terminal_scrollbar_default_width(&self) -> f32 {
-        8.0
-    }
-    /// Compute the viewport → grid conversion [`Self::draw_terminal`]
-    /// implicitly uses. Uses this backend's own [`Self::char_width`] /
-    /// [`Self::line_height`] as the cell dimensions — TUI's `(1.0, 1.0)`
-    /// reproduces its uniform cell grid exactly; pixel backends get the
-    /// same font metrics `draw_terminal`'s cell iteration assumes.
-    ///
-    /// When `term.scrollbar` is `Some`, the viewport width fed to
-    /// [`crate::primitives::terminal::Terminal::layout`] is first reduced
-    /// by the scrollbar's reserved width — `sb.width` when set, else
-    /// [`Self::terminal_scrollbar_default_width`] — exactly as every
-    /// backend's real `draw_terminal` reserves that gutter *before*
-    /// iterating cells (`cell_area_w = area.width.saturating_sub(sb_cols)`
-    /// on TUI; `cell_area_w = (rect.width - sb_width).max(0.0)` on
-    /// GTK/macOS/Win). Skipping this step would report `grid_cols` wide
-    /// enough to claim the scrollbar gutter itself as a clickable cell.
-    ///
-    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin; see
-    /// [`crate::primitives::terminal::TerminalLayout::hit_test`] /
-    /// [`crate::primitives::terminal::TerminalLayout::cell_bounds`],
-    /// neither of which fold in an origin offset.
-    ///
-    /// Default body: uniform for every backend, since it's a pure
-    /// function of the metrics above plus [`Self::terminal_scrollbar_default_width`]
-    /// — no backend needs to override this.
-    fn terminal_layout(
-        &self,
-        rect: Rect,
-        term: &Terminal,
-    ) -> crate::primitives::terminal::TerminalLayout {
-        let sb_reserved = match &term.scrollbar {
-            Some(sb) => sb
-                .width
-                .map(|w| w as f32)
-                .unwrap_or_else(|| self.terminal_scrollbar_default_width()),
-            None => 0.0,
-        };
-        let cell_area_w = (rect.width - sb_reserved).max(0.0);
-        term.layout(
-            cell_area_w,
-            rect.height,
-            self.char_width(),
-            self.line_height(),
-        )
-    }
-    /// Draw a vertical divider between two split terminal panes.
-    /// `rect.x` is the divider's column, `rect.y` its top row, and
-    /// `rect.height` its length; `rect.width` is ignored — the
-    /// divider is always a single cell (TUI) or 1px (GTK/macOS) wide.
-    /// See `tui::draw_terminal_divider` / `gtk::draw_terminal_divider`
-    /// for the exact glyph/fill painted.
-    ///
-    /// No default impl — every backend implementer sees this as a
-    /// compile error and fills in a real rasteriser
-    /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
-    /// Do not add a no-op default here; see
-    /// `docs/SMELL_AUDIT_2026-07.md` PORT-01 for why that pattern is a
-    /// portability risk, not a precedent to follow.
-    fn draw_terminal_divider(&mut self, rect: Rect);
     /// Fill `rect` edge-to-edge with a solid `color` — no text, no
     /// segments, no per-row seams. For chrome elements that are a plain
     /// color block (e.g. `AppShell`'s sidebar/editor resize divider),
@@ -4233,8 +4150,8 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Defaulted: a pure function of `rect` alone (`CanvasLayout {
     /// bounds: rect }`), with no backend-specific input at all — a
-    /// stronger case for a default body than `terminal_layout`/
-    /// `editor_layout` (`tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`),
+    /// stronger case for a default body than `editor_layout`
+    /// (`tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`),
     /// which still depend on `char_width()`/`line_height()`. Every
     /// backend takes this default; see `ACCEPTED_DEFAULTS`'s
     /// `canvas_layout` entries for the from-scratch justification each
@@ -4459,6 +4376,7 @@ pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCt
         backend.char_width(),
         backend.nerd_fonts_enabled(),
     )
+    .with_editor_line_height(backend.line_height())
 }
 
 impl<B: Backend + ?Sized> DrawsPrimitives for B {}

@@ -344,3 +344,267 @@ mod tests {
         );
     }
 }
+
+/// The terminal's shared pixel painter, driven through `GtkBackend`'s
+/// widget-contract paint against a Cairo `ImageSurface` and read back
+/// pixel by pixel — terminal-cell background fill, wide glyphs and cursor
+/// accents, without a display.
+#[cfg(test)]
+mod terminal_paint_tests {
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::gtk::backend::GtkBackend;
+    use crate::primitives::terminal::{Terminal, TerminalCell, TerminalCursorShape};
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
+    use crate::Backend;
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    const W: i32 = 200;
+    const H: i32 = 40;
+    const CHAR_W: f64 = 10.0;
+    const LINE_H: f64 = 20.0;
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
+    /// ARgb32 stores each pixel as [B, G, R, A] in native (little-endian)
+    /// byte order; `stride` is in bytes and may include padding.
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    fn cell(ch: char, fg: Color, bg: Color) -> TerminalCell {
+        TerminalCell {
+            text: ch.to_string(),
+            fg,
+            bg,
+            bold: false,
+            italic: false,
+            underline: false,
+            dim: false,
+            selected: false,
+            is_cursor: false,
+            is_find_match: false,
+            is_find_active: false,
+            cursor_shape: TerminalCursorShape::Block,
+            cursor_blinking: false,
+        }
+    }
+
+    fn paint(term: &Terminal) -> ImageSurface {
+        let mut backend = GtkBackend::new();
+        backend.set_current_theme(Theme::default());
+        backend.set_current_line_height(LINE_H);
+        backend.set_current_char_width(CHAR_W);
+        Backend::begin_frame(&mut backend, Viewport::new(W as f32, H as f32, 1.0));
+        let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                crate::DrawsPrimitives::draw_primitive(
+                    b,
+                    QRect::new(0.0, 0.0, W as f32, H as f32),
+                    term,
+                );
+            });
+        }
+        surface
+    }
+
+    /// A double-width glyph (CJK) followed by vt100's
+    /// blank continuation cell must have its background span both
+    /// columns — the continuation cell's own (different) background must
+    /// NOT paint over the second half of the wide glyph's cell.
+    #[test]
+    fn wide_cell_background_spans_two_columns() {
+        let magenta = Color::rgb(200, 30, 200);
+        let cyan = Color::rgb(30, 200, 200);
+        // '日' is a double-width CJK character. Its vt100-derived
+        // continuation cell carries a *different* background (cyan) to
+        // prove the rasteriser doesn't just get lucky on matching colours.
+        //
+        // The wide glyph's foreground is set equal to its background
+        // (magenta on magenta) so the glyph is invisible. This isolates the
+        // thing under test — the two-column *background* fill — from the
+        // glyph raster itself: with wide glyphs now scaled to fill the full
+        // two-cell box (`wide_glyph_x_scale`), antialiased glyph ink reaches
+        // deep into the second column and its exact colour depends on which
+        // fallback font Pango picks, which varies by machine. A white glyph
+        // here made the probe read a magenta/white blend on some hosts and
+        // fail spuriously. Painting the glyph in the background colour keeps
+        // the probe a pure, deterministic background read on every host,
+        // while the glyph-scaling maths stays covered by the dedicated
+        // `wide_glyph_x_scale` unit tests in `terminal_style`.
+        let row = vec![cell('日', magenta, magenta), cell(' ', magenta, cyan)];
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![row],
+            scrollbar: None,
+        };
+        let mut s = paint(&term);
+        s.flush();
+        let stride = s.stride() as usize;
+        let data = s.data().expect("surface data");
+
+        // Probe just past the first single-cell-width boundary, still
+        // within the wide glyph's two-column span: must be magenta, not
+        // cyan.
+        let probe_x = (CHAR_W * 1.5) as i32;
+        let (r, g, b) = pixel(&data, stride, probe_x, 5);
+        assert_eq!(
+            (r, g, b),
+            (magenta.r, magenta.g, magenta.b),
+            "wide cell's background should span both columns, not be \
+             overpainted by the continuation cell's background"
+        );
+    }
+
+    /// Companion regression: ordinary narrow (single-width) cells must
+    /// still advance by exactly `char_width` — the wide-cell fix must not
+    /// widen unrelated cells.
+    #[test]
+    fn narrow_cells_advance_by_single_char_width() {
+        let magenta = Color::rgb(200, 30, 200);
+        let cyan = Color::rgb(30, 200, 200);
+        let white = Color::rgb(255, 255, 255);
+        // 'B' (the probed cell) paints its glyph in its own background
+        // colour so antialiased glyph ink can't corrupt the background
+        // probe; 'A' keeps a visible (white) glyph as it isn't probed.
+        // This tests the *advance* logic — that 'A' occupies exactly one
+        // char_width and doesn't bleed into 'B''s column — independent of
+        // glyph rendering.
+        let row = vec![cell('A', white, magenta), cell('B', cyan, cyan)];
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![row],
+            scrollbar: None,
+        };
+        let mut s = paint(&term);
+        s.flush();
+        let stride = s.stride() as usize;
+        let data = s.data().expect("surface data");
+
+        // Just past the single-cell-width boundary: second cell's own
+        // background (cyan) should already be showing.
+        let probe_x = (CHAR_W * 1.5) as i32;
+        let (r, g, b) = pixel(&data, stride, probe_x, 5);
+        assert_eq!(
+            (r, g, b),
+            (cyan.r, cyan.g, cyan.b),
+            "narrow cells must still advance by exactly char_width"
+        );
+    }
+
+    // ── Cursor shape accent ─────────────────────────────────────────────
+    //
+    // These paint through the same shared `primitives::terminal::paint`
+    // every pixel backend's terminal paint uses — see that
+    // fn's own `cursor_accent_visible`/`cursor_accent_rect` call for the
+    // logic under test. The probed cell's text is a blank space so no
+    // glyph ink can land on the probed pixels (matching this module's
+    // other pixel-probe tests' convention), isolating the accent fill
+    // from glyph rasterisation.
+
+    /// A `Bar` cursor paints a thin accent stripe at the cell's *left*
+    /// edge in the cell's own foreground colour, and does **not** invert
+    /// the rest of the cell (unlike `Block`).
+    #[test]
+    fn bar_cursor_paints_a_left_edge_accent_stripe() {
+        let fg = Color::rgb(255, 0, 0);
+        let bg = Color::rgb(0, 0, 0);
+        let mut c = cell(' ', fg, bg);
+        c.is_cursor = true;
+        c.cursor_shape = TerminalCursorShape::Bar;
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![vec![c]],
+            scrollbar: None,
+        };
+        let mut s = paint(&term);
+        s.flush();
+        let stride = s.stride() as usize;
+        let data = s.data().expect("surface data");
+
+        // Inside the ~2px accent stripe at the cell's left edge.
+        let (r, g, b) = pixel(&data, stride, 1, 5);
+        assert_eq!(
+            (r, g, b),
+            (fg.r, fg.g, fg.b),
+            "bar cursor accent should paint at the cell's left edge"
+        );
+        // Well past the stripe, still inside the (10px-wide) cell: the
+        // cell's own (uninverted) background, not the accent colour.
+        let (r2, g2, b2) = pixel(&data, stride, 8, 5);
+        assert_eq!(
+            (r2, g2, b2),
+            (bg.r, bg.g, bg.b),
+            "bar cursor must not invert the rest of the cell"
+        );
+    }
+
+    /// An `Underline` cursor paints a thin accent stripe at the cell's
+    /// *bottom* edge, and likewise does not invert the rest of the cell.
+    #[test]
+    fn underline_cursor_paints_a_bottom_edge_accent_stripe() {
+        let fg = Color::rgb(0, 255, 0);
+        let bg = Color::rgb(0, 0, 0);
+        let mut c = cell(' ', fg, bg);
+        c.is_cursor = true;
+        c.cursor_shape = TerminalCursorShape::Underline;
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![vec![c]],
+            scrollbar: None,
+        };
+        let mut s = paint(&term);
+        s.flush();
+        let stride = s.stride() as usize;
+        let data = s.data().expect("surface data");
+
+        // Inside the ~2px accent stripe at the cell's bottom edge
+        // (LINE_H = 20.0).
+        let (r, g, b) = pixel(&data, stride, 5, 19);
+        assert_eq!(
+            (r, g, b),
+            (fg.r, fg.g, fg.b),
+            "underline cursor accent should paint at the cell's bottom edge"
+        );
+        // Near the top of the same cell: the cell's own background.
+        let (r2, g2, b2) = pixel(&data, stride, 5, 2);
+        assert_eq!(
+            (r2, g2, b2),
+            (bg.r, bg.g, bg.b),
+            "underline cursor must not invert the rest of the cell"
+        );
+    }
+
+    /// A `Block` cursor (the default shape) still inverts the
+    /// whole cell — no separate accent stripe.
+    #[test]
+    fn block_cursor_still_inverts_whole_cell() {
+        let fg = Color::rgb(255, 0, 0);
+        let bg = Color::rgb(0, 0, 0);
+        let mut c = cell(' ', fg, bg);
+        c.is_cursor = true;
+        let term = Terminal {
+            id: WidgetId::new("term"),
+            cells: vec![vec![c]],
+            scrollbar: None,
+        };
+        let mut s = paint(&term);
+        s.flush();
+        let stride = s.stride() as usize;
+        let data = s.data().expect("surface data");
+
+        let (r, g, b) = pixel(&data, stride, 5, 10);
+        assert_eq!(
+            (r, g, b),
+            (fg.r, fg.g, fg.b),
+            "block cursor should invert: the whole cell shows the cell's own fg as its background"
+        );
+    }
+
+    // The paint-level contract of repainting only the rows in `dirty_rows`
+    // is covered by `primitives::terminal::native_surface_paint::tests::
+    // dirty_rows_filter_skips_untouched_rows`, which runs on every backend.
+}

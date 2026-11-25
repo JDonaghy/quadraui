@@ -283,10 +283,6 @@ pub enum Surface {
         rect: Rect,
         cmd: CommandLine,
     },
-    Terminal {
-        rect: Rect,
-        term: Terminal,
-    },
     TextDisplay {
         rect: Rect,
         td: TextDisplay,
@@ -495,9 +491,6 @@ pub enum FrameZone {
         idx: usize,
     },
     CommandLine {
-        idx: usize,
-    },
-    Terminal {
         idx: usize,
     },
     TextDisplay {
@@ -859,9 +852,6 @@ impl ScreenLayout {
                 Surface::CommandLine { rect, cmd } => {
                     backend.draw_command_line(*rect, cmd);
                 }
-                Surface::Terminal { rect, term } => {
-                    backend.draw_terminal(*rect, term);
-                }
                 Surface::TextDisplay { rect, td } => {
                     backend.draw_text_display(*rect, td);
                 }
@@ -1063,7 +1053,6 @@ impl ScreenLayout {
                 Surface::StatusBar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::ActivityBar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::CommandLine { rect, cmd } => vec![(cmd.id, *rect)],
-                Surface::Terminal { rect, term } => vec![(term.id, *rect)],
                 Surface::TextDisplay { rect, td } => vec![(td.id, *rect)],
                 Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
                 Surface::Tree { rect, tree } => vec![(tree.id, *rect)],
@@ -1142,7 +1131,6 @@ impl ScreenLayout {
             Surface::StatusBar { rect, .. } => (*rect, FrameZone::StatusBar { idx }),
             Surface::ActivityBar { rect, .. } => (*rect, FrameZone::ActivityBar { idx }),
             Surface::CommandLine { rect, .. } => (*rect, FrameZone::CommandLine { idx }),
-            Surface::Terminal { rect, .. } => (*rect, FrameZone::Terminal { idx }),
             Surface::TextDisplay { rect, .. } => (*rect, FrameZone::TextDisplay { idx }),
             Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
             Surface::Tree { rect, .. } => (*rect, FrameZone::Tree { idx }),
@@ -1253,6 +1241,9 @@ pub enum OwnedContent {
     StatusBar(StatusBar),
     ActivityBar(ActivityBar),
     CommandLine(CommandLine),
+    /// Captured from a [`Terminal`] reached through [`Surface::Widget`] via
+    /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the only
+    /// way a `Terminal` reaches a frame.
     Terminal(Terminal),
     TextDisplay(TextDisplay),
     MultiSectionView(MultiSectionView),
@@ -1368,7 +1359,9 @@ impl OwnedContent {
                 );
             }
             OwnedContent::CommandLine(cmd) => backend.draw_command_line(rect, cmd),
-            OwnedContent::Terminal(term) => backend.draw_terminal(rect, term),
+            OwnedContent::Terminal(term) => {
+                backend.draw_primitive(rect, term);
+            }
             OwnedContent::TextDisplay(td) => backend.draw_text_display(rect, td),
             OwnedContent::MultiSectionView(view) => backend.draw_multi_section_view(rect, view),
             #[allow(deprecated)]
@@ -1526,7 +1519,10 @@ impl OwnedContent {
             OwnedContent::StatusBar(_) => FrameZone::StatusBar { idx },
             OwnedContent::ActivityBar(_) => FrameZone::ActivityBar { idx },
             OwnedContent::CommandLine(_) => FrameZone::CommandLine { idx },
-            OwnedContent::Terminal(_) => FrameZone::Terminal { idx },
+            OwnedContent::Terminal(term) => FrameZone::Widget {
+                idx,
+                id: Some(term.id),
+            },
             OwnedContent::TextDisplay(_) => FrameZone::TextDisplay { idx },
             OwnedContent::MultiSectionView(_) => FrameZone::MultiSectionView { idx },
             OwnedContent::Tree(_) => FrameZone::Tree { idx },
@@ -1817,9 +1813,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         }
         Surface::CommandLine { rect, cmd } => {
             (*rect, Some(cmd.id), OwnedContent::CommandLine(cmd.clone()))
-        }
-        Surface::Terminal { rect, term } => {
-            (*rect, Some(term.id), OwnedContent::Terminal(term.clone()))
         }
         Surface::TextDisplay { rect, td } => {
             (*rect, Some(td.id), OwnedContent::TextDisplay(td.clone()))

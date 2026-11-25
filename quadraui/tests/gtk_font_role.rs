@@ -31,7 +31,7 @@
 //! `DiffView` each paint through `EditorSurface` instead (the dedicated
 //! adapter that opts them back into the editor font), so
 //! `draw_text_display_paints_in_editor_font`,
-//! `draw_terminal_paints_in_editor_font` and
+//! `terminal_paints_in_editor_font` and
 //! `draw_diff_view_paints_in_editor_font` run the same paired-run probe
 //! with the assertion flipped, proving each call site tracks the
 //! *editor* font's size regardless of what chrome is set to.
@@ -246,9 +246,9 @@ fn draw_text_display_paints_in_editor_font() {
 /// defaults to chrome. One run per cell, so the needle is one glyph —
 /// see this file's module doc.
 #[test]
-fn draw_terminal_paints_in_editor_font() {
+fn terminal_paints_in_editor_font() {
     const CELL: &str = "Z";
-    assert_run_paints_in_editor_font("draw_terminal", CELL, |b, area| {
+    assert_run_paints_in_editor_font("Terminal", CELL, |b, area| {
         let mut term = Terminal::default();
         term.id = id("terminal");
         term.cells = vec![vec![TerminalCell {
@@ -266,7 +266,7 @@ fn draw_terminal_paints_in_editor_font() {
             is_find_match: false,
             is_find_active: false,
         }]];
-        b.draw_terminal(area, &term);
+        quadraui::DrawsPrimitives::draw_primitive(b, area, &term);
     });
 }
 

@@ -1778,7 +1778,6 @@ LayoutLeafNode = TypedDict(
         "palette": NotRequired[PaletteDescriptor],
         "scrollbar": NotRequired[ScrollbarDescriptor],
         "editor": NotRequired[EditorDescriptor],
-        "terminal": NotRequired[TerminalDescriptor],
         "canvas": NotRequired[CanvasDescriptor],
         "scroll_view": NotRequired[ScrollViewDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
@@ -1794,6 +1793,7 @@ LayoutLeafNode = TypedDict(
         "radio_group": NotRequired[RadioGroupDescriptor],
         "button": NotRequired[ButtonDescriptor],
         "command_center": NotRequired[CommandCenterDescriptor],
+        "terminal": NotRequired[TerminalDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1840,7 +1840,6 @@ class RenderFrameDict(TypedDict):
     palette: NotRequired[Optional[PaletteDescriptor]]
     scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
     editor: NotRequired[Optional[EditorDescriptor]]
-    terminal: NotRequired[Optional[TerminalDescriptor]]
     canvas: NotRequired[Optional[CanvasDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
@@ -1856,6 +1855,7 @@ class RenderFrameDict(TypedDict):
     radio_group: NotRequired[Optional[RadioGroupDescriptor]]
     button: NotRequired[Optional[ButtonDescriptor]]
     command_center: NotRequired[Optional[CommandCenterDescriptor]]
+    terminal: NotRequired[Optional[TerminalDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]

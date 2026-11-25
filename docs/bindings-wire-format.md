@@ -3631,7 +3631,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `palette` | `PaletteDescriptor` | no |  |
 | `scrollbar` | `ScrollbarDescriptor` | no |  |
 | `editor` | `EditorDescriptor` | no |  |
-| `terminal` | `TerminalDescriptor` | no |  |
 | `canvas` | `CanvasDescriptor` | no |  |
 | `scroll_view` | `ScrollViewDescriptor` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor` | no |  |
@@ -3647,6 +3646,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `radio_group` | `RadioGroupDescriptor` | no |  |
 | `button` | `ButtonDescriptor` | no |  |
 | `command_center` | `CommandCenterDescriptor` | no |  |
+| `terminal` | `TerminalDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3699,7 +3699,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `palette` | `PaletteDescriptor \| null` | no |  |
 | `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
 | `editor` | `EditorDescriptor \| null` | no |  |
-| `terminal` | `TerminalDescriptor \| null` | no |  |
 | `canvas` | `CanvasDescriptor \| null` | no |  |
 | `scroll_view` | `ScrollViewDescriptor \| null` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
@@ -3715,6 +3714,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `radio_group` | `RadioGroupDescriptor \| null` | no |  |
 | `button` | `ButtonDescriptor \| null` | no |  |
 | `command_center` | `CommandCenterDescriptor \| null` | no |  |
+| `terminal` | `TerminalDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`

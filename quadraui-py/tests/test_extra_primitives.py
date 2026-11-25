@@ -2612,7 +2612,7 @@ def test_inline_tree_leaf_editor_focuses_it_and_routes_the_hit():
     assert received[1]["MouseDown"]["widget"] == "editor:main"
 
 
-def test_inline_tree_leaf_terminal_focuses_it_and_routes_the_hit():
+def test_inline_tree_leaf_terminal_focuses_it_and_starts_a_selection():
     app = QuiApp(40, 20)
 
     def render():
@@ -2643,7 +2643,9 @@ def test_inline_tree_leaf_terminal_focuses_it_and_routes_the_hit():
 
     assert len(received) == 2
     assert received[0]["FocusChanged"] == "terminal:shell"
-    assert received[1]["MouseDown"]["widget"] == "terminal:shell"
+    widget_id, terminal_event = received[1]["Terminal"]
+    assert widget_id == "terminal:shell"
+    assert "SelectStart" in terminal_event
 
 
 def test_inline_tree_leaf_canvas_routes_the_hit_without_focusing():

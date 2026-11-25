@@ -1235,7 +1235,11 @@ mod tests {
                 separator: divider_color,
                 ..crate::theme::Theme::default()
             });
-            backend.draw_terminal_divider(Rect::new(0.0, 0.0, W as f32, H as f32));
+            crate::DrawsPrimitives::draw_primitive(
+                backend,
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &crate::TerminalDivider::new(crate::WidgetId::new("divider")),
+            );
             backend.end_frame();
         };
 
@@ -1380,7 +1384,11 @@ mod tests {
                     separator: self.divider_color,
                     ..crate::theme::Theme::default()
                 });
-                backend.draw_terminal_divider(Rect::new(0.0, 0.0, W as f32, H as f32));
+                crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, W as f32, H as f32),
+                    &crate::TerminalDivider::new(crate::WidgetId::new("divider")),
+                );
             }
 
             fn handle(&mut self, _event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {

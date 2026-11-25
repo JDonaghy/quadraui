@@ -16,7 +16,7 @@ use quadraui::{
     FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon, Image, InteractionState,
     LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize, NumberInput,
     NumberInputHit, Palette, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
-    ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, Terminal, TextDisplay,
+    ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, TextDisplay,
     TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable,
     TreeTableController, TreeTableNodeData, WidgetId,
 };
@@ -78,7 +78,7 @@ pub trait ExtraPaint: std::any::Any {
     ///
     /// Defaults to [`quadraui::NaturalSize::NONE`], correct for every
     /// extra with no single natural size to report: a viewport-filling
-    /// primitive (`Editor`, `Terminal`, `Canvas`, `ScrollView`, ...), a
+    /// primitive (`Editor`, `Canvas`, `ScrollView`, ...), a
     /// multi-cell grid (`DatePicker`), or a chrome bar meant to span
     /// its whole axis (`Toolbar`, `StatusBar`, `MenuBar`, ...). The
     /// impls below override it for the primitives with a genuinely
@@ -1830,31 +1830,6 @@ impl ExtraPaint for Editor {
     }
 }
 
-impl ExtraPaint for Terminal {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_terminal(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check — same shape as [`Editor::hit_test`]:
-    /// resolving a click to a specific cell is [`quadraui::Terminal`]'s own
-    /// `layout(..).hit_test(..)`, which a host calls itself once it has the
-    /// enriched `MouseDown` position, since mouse/keyboard interaction is
-    /// deliberately outside this paint-snapshot primitive (see the module
-    /// doc on `quadraui::Terminal`). This still gives click-to-focus so the
-    /// app can route subsequent key presses to the live PTY.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-}
-
 impl ExtraPaint for Canvas {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         let _ = backend.draw_canvas(area, self);
@@ -2072,7 +2047,6 @@ extra_primitives! {
     "palette" => Palette,
     "scrollbar" => Scrollbar,
     "editor" => Editor,
-    "terminal" => Terminal,
     "canvas" => Canvas,
     "scroll_view" => ScrollView,
     "find_replace" => FindReplacePanel,
@@ -2094,11 +2068,11 @@ extra_primitives! {
 /// [`decode_widget_leaf`] is this table's own decode step, the `Widget`
 /// counterpart of [`decode_extra_primitive_checked`].
 ///
-/// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`
-/// and `"command_center"` are this table's members: unlike every
+/// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`,
+/// `"command_center"` and `"terminal"` are this table's members: unlike every
 /// [`EXTRA_PRIMITIVE_KINDS`] entry, none of [`quadraui::IconGrid`],
 /// [`quadraui::CellGrid`], [`quadraui::Switch`], [`quadraui::RadioGroup`],
-/// [`quadraui::Button`] or [`quadraui::CommandCenter`] has a bespoke
+/// [`quadraui::Button`], [`quadraui::CommandCenter`] or [`quadraui::Terminal`] has a bespoke
 /// [`ExtraPaint`] impl to write
 /// here — painting, whole-area hit testing and [`DynWidget::handle`]
 /// routing are already fully generic (see
@@ -2117,21 +2091,24 @@ extra_primitives! {
 /// `"radio_group"`; [`quadraui::Button`]'s own
 /// [`crate::interactive::Interactive`] impl (a single
 /// [`crate::interactive::FocusSpec::Stop`], Enter/Space/click activation)
-/// covers `"button"`; and [`quadraui::CommandCenter`]'s own
+/// covers `"button"`; [`quadraui::CommandCenter`]'s own
 /// [`crate::interactive::Interactive`] impl (a press on an arrow or the
 /// search box, Enter/Space on the focused strip) covers
-/// `"command_center"`. A further kind joins this table only when it
+/// `"command_center"`; and [`quadraui::Terminal`]'s own
+/// [`crate::interactive::Interactive`] impl (click-to-focus, selection
+/// drag, wheel scroll) covers `"terminal"`. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 6] = [
+pub const WIDGET_KINDS: [&str; 7] = [
     "icon_grid",
     "cell_grid",
     "switch",
     "radio_group",
     "button",
     "command_center",
+    "terminal",
 ];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased

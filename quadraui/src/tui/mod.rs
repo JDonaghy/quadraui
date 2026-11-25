@@ -94,7 +94,6 @@ mod split;
 mod split_junction;
 mod split_tree;
 mod status_bar;
-mod terminal;
 pub mod testing;
 pub mod text;
 // vt100/ANSI-byte-stream conformance observer — needs
@@ -219,8 +218,6 @@ pub use status_bar::draw_status_bar;
 pub use crate::primitives::tab_bar::{
     TAB_CLOSE_CHAR, TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
 };
-#[doc(hidden)]
-pub use terminal::{draw_terminal, draw_terminal_divider};
 #[doc(hidden)]
 pub use text::truncate_to_width_ellipsis;
 pub use text::{char_cell_width, display_width, truncate_to_width};

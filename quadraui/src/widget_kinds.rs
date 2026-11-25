@@ -230,6 +230,10 @@ widget_kinds! {
     // impls carry no feature gate. The kind string matches the one
     // `quadraui-binding-core`'s wire schema already publishes for it.
     "command_center" => crate::CommandCenter,
+    // Ungated like `Button`: `Terminal`'s `Primitive`/`Interactive` impls
+    // carry no feature gate. The kind string is the one the wire schema
+    // already publishes for it.
+    "terminal" => crate::Terminal,
 }
 
 #[cfg(test)]

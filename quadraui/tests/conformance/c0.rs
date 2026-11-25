@@ -44,12 +44,12 @@ use quadraui::{
     PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup,
     RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
     SectionSize, SelectionMode, Series, Side, Spinner, Split, SplitDirection, SplitTree,
-    StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, Terminal, TerminalCell,
-    TextDisplay, TextDisplayLine, TextField, TextInput, Toast, ToastCorner, ToastOverlay,
-    ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayoutOptions,
-    ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions, ToolbarVAlign, Tooltip,
-    TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeTable,
-    TreeTableNode, TreeView, UiEvent, WidgetId,
+    StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, TerminalCell, TextDisplay,
+    TextDisplayLine, TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity,
+    Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOverflow,
+    ToolbarOverflowPriorities, ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder,
+    TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode,
+    TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -446,14 +446,6 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_terminal_divider",
-        needle: None,
-        paint: |b, area| {
-            let lh = b.line_height();
-            b.draw_terminal_divider(Rect::new(0.0, lh * 2.0, area.width, lh));
-        },
-    },
-    Case {
         method: "draw_solid_fill",
         needle: None,
         paint: |b, area| {
@@ -756,38 +748,6 @@ pub const CASES: &[Case] = &[
                 None,
                 &style,
             );
-        },
-    },
-    Case {
-        method: "draw_terminal",
-        // GTK's rasteriser paints cell glyphs via a raw
-        // `pangocairo::functions::show_layout` call, bypassing the
-        // `painted_text` tracking every other primitive's rasteriser routes
-        // through — so an exact-text needle cannot be asserted across
-        // backends. Observability instead comes from the zone `draw_terminal`
-        // now registers (TUI's buffer scan sees the glyphs directly either way).
-        needle: None,
-        paint: |b, area| {
-            let cell = |ch: char| TerminalCell {
-                text: ch.to_string(),
-                fg: Color::rgb(220, 220, 220),
-                bg: Color::rgb(30, 30, 30),
-                bold: false,
-                italic: false,
-                underline: false,
-                dim: false,
-                selected: false,
-                is_cursor: false,
-                cursor_shape: quadraui::TerminalCursorShape::Block,
-                cursor_blinking: false,
-                is_find_match: false,
-                is_find_active: false,
-            };
-            let row: Vec<TerminalCell> = "c0term".chars().map(cell).collect();
-            let mut term = Terminal::default();
-            term.id = id("terminal");
-            term.cells = vec![row];
-            b.draw_terminal(area, &term);
         },
     },
     Case {

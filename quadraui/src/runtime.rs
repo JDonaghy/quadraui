@@ -1165,7 +1165,9 @@ where
         // closure's shared borrow ends before the `&mut backend` calls
         // below.
         let measurer = |text: &str, role: crate::FontRole| backend.measure_text(text, role).0;
-        node.widget.layout(&ctx.with_measurer(&measurer), node.rect)
+        let style = backend.style();
+        node.widget
+            .layout(&ctx.with_measurer(&measurer).with_style(&style), node.rect)
     };
     let currently_focused = backend.focus_tree().focused().copied();
     let units = ctx.units();
