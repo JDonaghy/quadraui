@@ -2941,18 +2941,6 @@ impl Backend for GtkBackend {
     // ignored — kept for forward compatibility when the GTK
     // rasterisers are updated to consume it. Behaviour is unchanged.
 
-    // Trait extended with `&Layout` parameter. Three of the five
-    // primitives (status_bar, tab_bar, text_display) have quadraui-side
-    // rasterisers that accept `crate::Theme`; the trait impls route through
-    // them. The remaining two (activity_bar, terminal) have only in-tree
-    // `quadraui_gtk::*` shims that take the legacy `render::Theme`; until
-    // those are lifted into quadraui itself, the trait impls stay as stubs.
-    // The GTK call sites continue to use the legacy shims directly.
-
-    // `status_bar_paint_scaled` — the shared body both methods above
-    // funnel through — is defined in the inherent `impl GtkBackend` block.
-    // A trait impl block may only contain that trait's own items.
-
     /// A pixel backend can honor `rect` exactly, unlike the old
     /// per-row `StatusBar` hack this replaces — see
     /// `Backend::draw_solid_fill`'s doc for why that hack produced a
@@ -4339,8 +4327,8 @@ impl PaintSurface for EditorSurface<'_> {
 
 // PaintSurface implementation: extracted from private helpers.
 // Every text verb forces `ui_font` (chrome) explicitly rather than trusting
-// the ambient per-frame layout font. `Self::status_bar_paint_scaled` relies
-// on this: every text verb resolves `self.ui_font` fresh on every call.
+// the ambient per-frame layout font: every text verb resolves `self.ui_font`
+// fresh on every call.
 /// The Pango description an icon glyph paints in at `size_px`
 /// device-independent pixels: the Nerd Font fallback family, then the
 /// bundled codicon family, then monospace. Pango sizes are points at the

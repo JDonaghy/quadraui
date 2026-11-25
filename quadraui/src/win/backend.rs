@@ -5271,12 +5271,10 @@ impl PaintSurface for WinBackend {
         )
     }
 
-    /// Overrides the default (which drops `bold`) —
-    /// `DWrite::measure_text_styled` already exists on this backend,
-    /// the bold-aware width
-    /// `primitives::status_bar::native_surface_paint::paint` measures
-    /// segments with. Also resolves `chrome_dwrite` now, matching
-    /// [`Self::surface_measure_text`]'s doc above.
+    /// Overrides the default (which drops `bold`) with
+    /// `DWrite::measure_text_styled`, the bold-aware width the status
+    /// bar painter measures segments with, in `chrome_dwrite` as
+    /// [`Self::surface_measure_text`] does.
     fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
         #[cfg(not(target_os = "windows"))]
         let _ = bold;

@@ -718,7 +718,7 @@ pub trait Primitive: A11yPrimitive {
     /// Resolve this primitive's layout for `rect`.
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout;
 
-    /// How far past its `rect` this primitive paints on a pixel surface,
+    /// How far beyond its `rect` the implementor paints on a pixel surface,
     /// on every side: an overlay's drop shadow, or a border stroke
     /// centred on its edge. [`crate::DrawsPrimitives::draw_primitive`]
     /// and [`crate::DrawsPrimitives::draw_dyn`] widen their paint clip by
@@ -835,7 +835,7 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// [`PrimitiveLayout`] — see [`Primitive::layout`].
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Box<dyn PrimitiveLayout>;
 
-    /// How far past its `rect` this widget paints — see
+    /// How far beyond its `rect` this widget paints — see
     /// [`Primitive::paint_bleed`].
     fn paint_bleed(&self, style: &Style) -> f32;
 

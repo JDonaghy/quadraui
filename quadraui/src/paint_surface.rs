@@ -100,7 +100,7 @@ const SHADOW_SPREAD_PER_ELEVATION: f32 = 1.5;
 /// layer, per elevation step.
 const SHADOW_OFFSET_PER_ELEVATION: f32 = 2.0;
 
-/// How far past its `rect` [`PaintSurface::surface_draw_shadow`] paints
+/// How far beyond its `rect` [`PaintSurface::surface_draw_shadow`] paints
 /// at `elevation`, on the side it reaches furthest (below the rect: the
 /// outermost layer's spread plus its downward offset). A primitive that
 /// paints a shadow reports this through
