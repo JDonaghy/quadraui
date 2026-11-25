@@ -695,6 +695,14 @@ impl crate::primitive::Primitive for CommandLine {
         crate::frame::OwnedContent::CommandLine(self.clone())
     }
 
+    /// A command bar shows the user's own typed text on the editor's
+    /// monospace grid, so it is one of
+    /// [`crate::EditorClassPrimitive::ALL`] and measures/paints in the
+    /// editor font rather than the trait's chrome-by-default.
+    fn font_role(&self) -> crate::FontRole {
+        crate::FontRole::Editor
+    }
+
     /// Exactly one row tall, as wide as the text — a command bar
     /// normally stretches, so the width is advisory only.
     fn measure(

@@ -1534,6 +1534,14 @@ impl crate::primitive::Primitive for TextDisplay {
         crate::frame::OwnedContent::TextDisplay(self.clone())
     }
 
+    /// A text display shows the user's own content (a log, a console
+    /// buffer), so it is one of [`crate::EditorClassPrimitive::ALL`] and
+    /// measures/paints in the editor font rather than the trait's
+    /// chrome-by-default.
+    fn font_role(&self) -> crate::FontRole {
+        crate::FontRole::Editor
+    }
+
     /// One row per buffer line (unwrapped) plus a title row when one is
     /// set — what a container sizing this display to its content would
     /// give it.
@@ -1549,12 +1557,16 @@ impl crate::primitive::Primitive for TextDisplay {
 
     /// `rect` is the display's own area, title row included. On a cell
     /// grid the layout comes from [`cell_layout`]; on a pixel surface
-    /// from [`pixel_layout`] with the backend's own line height and
-    /// character advance.
+    /// from [`pixel_layout`] with the backend's own character advance and
+    /// — because this is an editor-class primitive — the *editor* row
+    /// pitch ([`crate::primitive::LayoutCtx::editor_line_height`]), the
+    /// same one the editor-font surface this paints through reports. Row
+    /// hit-testing and the painted rows therefore stay on one grid even
+    /// when the chrome and editor fonts have different heights.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextDisplayPrimitiveLayout {
         match ctx.units() {
             crate::primitive::Units::Cells => cell_layout(self, rect),
-            _ => pixel_layout(self, rect, ctx.line_height, ctx.char_width),
+            _ => pixel_layout(self, rect, ctx.editor_line_height(), ctx.char_width),
         }
     }
 

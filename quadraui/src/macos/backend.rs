@@ -7901,25 +7901,19 @@ mod tests {
         );
     }
 
-    /// `TextInput` paints through plain `self`, which resolves
-    /// `chrome_font` for its glyphs — so its caret grid has to use
-    /// `chrome_char_width`, not `current_char_width`, or the caret lands
-    /// somewhere other than where the glyphs it sits between actually
-    /// are. Installs a Menlo editor font and a deliberately much
-    /// narrower Menlo chrome font so the two advances can't agree by
-    /// coincidence, then checks `cursor_bounds.x` against each.
+    /// `TextInput` is a chrome primitive, so it paints through plain
+    /// `self` — which resolves `chrome_font` for its glyphs. Its caret
+    /// grid therefore has to sit on the *chrome* advance, not
+    /// `current_char_width`, or the caret lands somewhere other than
+    /// where the glyphs it sits between actually are. Installs a Menlo
+    /// editor font and a deliberately much narrower Menlo chrome font so
+    /// the two advances can't agree by coincidence, then checks
+    /// `cursor_bounds.x` against each.
     #[test]
-    fn text_input_layout_cursor_grid_uses_chrome_char_width_not_editor() {
+    fn text_input_layout_cursor_grid_uses_the_chrome_advance_not_the_editor_one() {
         let mut backend = MacBackend::new();
         backend.set_current_font(font()); // Menlo 14pt — a wide editor advance.
         backend.set_ui_font("Menlo 6"); // Menlo 6pt — a narrow chrome advance.
-        assert!(
-            (backend.chrome_char_width - backend.current_char_width).abs() > 1.0,
-            "chrome and editor char widths must differ enough that a grid built from \
-             the wrong one can't pass by coincidence: chrome={}, editor={}",
-            backend.chrome_char_width,
-            backend.current_char_width,
-        );
 
         let mut ti =
             crate::primitives::text_input::TextInput::new(WidgetId::new("chrome-grid-regression"));
@@ -7928,17 +7922,30 @@ mod tests {
         ti.cursor_col = 3;
         ti.has_focus = true;
 
+        // The advance the glyphs are actually shaped at: one character
+        // measured in the role `TextInput` paints in, through the same
+        // `Backend::measure_text` the widget contract's own measurer
+        // calls.
+        let chrome_advance = Backend::measure_text(&backend, "0", crate::FontRole::Chrome).0;
+        let editor_advance = Backend::measure_text(&backend, "0", crate::FontRole::Editor).0;
+        assert!(
+            (chrome_advance - editor_advance).abs() > 1.0,
+            "chrome and editor advances must differ enough that a grid built from \
+             the wrong one can't pass by coincidence: chrome={chrome_advance}, \
+             editor={editor_advance}",
+        );
+
         let rect = Rect::new(0.0, 0.0, 200.0, 40.0);
         let layout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &ti).layout;
         let cursor = layout.cursor_bounds.expect("cursor visible when has_focus");
 
-        let expected_x = layout.content_bounds.x + 3.0 * backend.chrome_char_width as f32;
-        let wrong_x = layout.content_bounds.x + 3.0 * backend.current_char_width as f32;
+        let expected_x = layout.content_bounds.x + 3.0 * chrome_advance;
+        let wrong_x = layout.content_bounds.x + 3.0 * editor_advance;
         assert!(
             (cursor.x - expected_x).abs() < 0.01,
-            "cursor_bounds.x must sit on the chrome_char_width grid \
-             the painter actually places glyphs on: got {}, expected {expected_x} \
-             (the current_char_width grid would have put it at {wrong_x})",
+            "cursor_bounds.x must sit on the chrome advance grid the painter actually \
+             places glyphs on: got {}, expected {expected_x} (the editor advance would \
+             have put it at {wrong_x})",
             cursor.x,
         );
     }

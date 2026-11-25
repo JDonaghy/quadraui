@@ -1298,15 +1298,24 @@ impl crate::primitive::Primitive for TextInput {
 
     /// `rect` is the input's own box. On a cell grid the layout comes
     /// from [`cell_layout`]; on a pixel surface from
-    /// [`TextInput::layout`] with the backend's own line height and
-    /// character advance.
+    /// [`TextInput::layout`] with the backend's own line height and the
+    /// advance of the font this input actually paints its glyphs in.
+    ///
+    /// That advance is measured through `ctx`'s own role-aware measurer
+    /// rather than read off [`crate::primitive::LayoutCtx::char_width`]:
+    /// `char_width` is the ambient *editor* advance, a different pitch
+    /// from the chrome one whenever the two fonts differ, and the caret
+    /// column has to sit on the same grid as the glyphs beside it.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextInputPrimitiveLayout {
         let (layout, char_width) = match ctx.units() {
             crate::primitive::Units::Cells => (cell_layout(self, rect), 1.0),
-            _ => (
-                self.layout(rect, TextInputMeasure::new(ctx.line_height, ctx.char_width)),
-                ctx.char_width.max(1.0),
-            ),
+            _ => {
+                let advance = ctx.text_width("0", self.font_role()).max(1.0);
+                (
+                    self.layout(rect, TextInputMeasure::new(ctx.line_height, advance)),
+                    advance,
+                )
+            }
         };
         TextInputPrimitiveLayout {
             area: rect,

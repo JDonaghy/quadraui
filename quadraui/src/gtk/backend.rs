@@ -10648,13 +10648,23 @@ mod tests {
         const W: i32 = 100;
         const H: i32 = 100;
 
-        fn ink_pixel_count(surface: &mut ImageSurface) -> usize {
+        /// Glyph ink only: the popup's own `bg` fills `content_bounds`
+        /// pure black, so every non-black pixel strictly inside that box
+        /// is body text. Counting the whole surface instead would be
+        /// dominated by the frame stroke, whose perimeter is the same in
+        /// both font configurations and so swamps the glyph difference
+        /// this test is about.
+        fn ink_pixel_count(surface: &mut ImageSurface, content: QRect) -> usize {
             surface.flush();
             let stride = surface.stride() as usize;
             let data = surface.data().expect("surface data");
             let mut count = 0;
-            for y in 0..H {
-                for x in 0..W {
+            let y0 = content.y.ceil().max(0.0) as i32;
+            let y1 = (content.y + content.height).floor().min(H as f32) as i32;
+            let x0 = content.x.ceil().max(0.0) as i32;
+            let x1 = (content.x + content.width).floor().min(W as f32) as i32;
+            for y in y0..y1 {
+                for x in x0..x1 {
                     let (r, g, b) = probe_pixel_417(&data, stride, x, y);
                     if r as u32 + g as u32 + b as u32 > 0 {
                         count += 1;
@@ -10694,15 +10704,17 @@ mod tests {
                 ..popup()
             };
             let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-            {
+            let content = {
                 let cr = Context::new(&surface).expect("Context::new");
                 let pango_ctx = pangocairo::functions::create_context(&cr);
                 let pango_layout = pango::Layout::new(&pango_ctx);
                 backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                    b.draw_dyn(viewport, &p, &());
-                });
-            }
-            ink_pixel_count(&mut surface)
+                    crate::DrawsPrimitives::draw_primitive(b, viewport, &p)
+                        .layout
+                        .content_bounds
+                })
+            };
+            ink_pixel_count(&mut surface, content)
         }
 
         let mut backend = GtkBackend::new();
