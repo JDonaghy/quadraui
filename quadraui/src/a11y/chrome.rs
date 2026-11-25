@@ -27,6 +27,7 @@
 use super::tree::{in_set, non_empty, plain_text, A11yChild, A11yPrimitive};
 use crate::a11y::{A11yChecked, A11yInfo, A11yLive, A11yRole, A11yValueRange};
 use crate::primitives::activity_bar::{ActivityBar, ActivityItem};
+use crate::primitives::button::Button;
 use crate::primitives::combo_box::ComboBox;
 use crate::primitives::command_center::CommandCenter;
 use crate::primitives::command_line::CommandLine;
@@ -45,6 +46,7 @@ use crate::primitives::spinner::Spinner;
 use crate::primitives::split::{Split, SplitDirection};
 use crate::primitives::split_tree::SplitTree;
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
+use crate::primitives::switch::Switch;
 use crate::primitives::tab_bar::TabBar;
 use crate::primitives::toast::{Toast, ToastOverlay, ToastSeverity};
 use crate::primitives::tooltip::Tooltip;
@@ -860,6 +862,37 @@ impl A11yPrimitive for NumberInput {
             .with_disabled(self.disabled)
             .with_value_range(A11yValueRange::new(self.value, self.min, self.max))
             .with_value(draft)
+    }
+}
+
+// ------------------------------------------------------------------ switch
+
+impl A11yPrimitive for Switch {
+    /// `A11yRole::CheckBox` — this crate's `A11yRole` has no dedicated
+    /// toggle-switch variant, and a standalone on/off control maps onto
+    /// the same AT contract a checkbox already uses (mirrors
+    /// [`FieldKind::Toggle`]'s own mapping, which this type is the
+    /// standalone counterpart of).
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::CheckBox)
+            .with_checked(if self.value {
+                A11yChecked::True
+            } else {
+                A11yChecked::False
+            })
+            .with_disabled(self.disabled)
+    }
+}
+
+// ------------------------------------------------------------------ button
+
+impl A11yPrimitive for Button {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::Button)
+            .with_label(&self.label)
+            .with_disabled(self.disabled)
     }
 }
 

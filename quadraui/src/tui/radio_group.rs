@@ -1,18 +1,18 @@
-//! TUI rasteriser for [`crate::RadioGroup`].
-//!
-//! Stacks each [`crate::RadioOption`] one per row, painting `(•) Label`
-//! for the selected option and `( ) Label` for the rest — the same
-//! bracket-glyph convention [`crate::tui::switch`] uses for its knob.
-//! Each row is its own hit target, mirroring
-//! [`crate::primitives::radio_group::RadioGroupLayout::hit_test`]'s
-//! per-option resolution.
+//! TUI entry points for [`crate::RadioGroup`] — thin delegates onto the
+//! widget's own cell painter, `crate::primitives::radio_group::cell_paint`,
+//! which documents the per-row glyph rules. This module only adapts a
+//! raw ratatui [`Buffer`] into the [`crate::CellSurface`] that painter
+//! takes, and converts a ratatui cell [`Rect`] into the quadraui one the
+//! widget's own cell layout takes.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{ratatui_color, set_cell};
+use super::cell_surface::TuiCellSurface;
+use crate::backend::ColorDepth;
+use crate::event::Rect as QRect;
 use crate::primitives::radio_group::{
-    RadioGroup, RadioGroupLayout, RadioOption, RadioOptionMeasure,
+    cell_paint, cell_radio_group_layout, RadioGroup, RadioGroupLayout,
 };
 use crate::theme::Theme;
 
@@ -22,16 +22,15 @@ use crate::theme::Theme;
 /// rather than any real text metrics (the TUI backend has no font to
 /// measure against).
 pub fn tui_radio_group_layout(group: &RadioGroup, area: Rect) -> RadioGroupLayout {
-    let bounds = crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
-    );
-    group.layout(bounds, |_option: &RadioOption| RadioOptionMeasure {
-        width: bounds.width,
-        height: 1.0,
-    })
+    cell_radio_group_layout(
+        group,
+        QRect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ),
+    )
 }
 
 /// Draw a [`RadioGroup`] into `area` on `buf`, one row per option.
@@ -43,66 +42,25 @@ pub fn draw_radio_group(
     theme: &Theme,
 ) -> RadioGroupLayout {
     let layout = tui_radio_group_layout(group, area);
-
-    if area.width == 0 || area.height == 0 {
-        return layout;
-    }
-
-    for (index, option) in group.options.iter().enumerate() {
-        let Some(row) = layout.items.get(index) else {
-            continue;
-        };
-        if row.height <= 0.0 || row.width <= 0.0 {
-            continue;
-        }
-        let y = row.y.round() as u16;
-        let x0 = row.x.round() as u16;
-        let w = row.width.round() as u16;
-        let end = x0.saturating_add(w);
-        let is_selected = group.selected == Some(index);
-
-        let bg = if is_selected {
-            ratatui_color(theme.selected_bg)
-        } else {
-            ratatui_color(theme.background)
-        };
-        let brk_fg = if option.disabled {
-            ratatui_color(theme.muted_fg)
-        } else if is_selected && group.focused {
-            ratatui_color(theme.accent_fg)
-        } else {
-            ratatui_color(theme.border_fg)
-        };
-        let label_fg = if option.disabled {
-            ratatui_color(theme.muted_fg)
-        } else {
-            ratatui_color(theme.foreground)
-        };
-
-        let glyph = if is_selected { '•' } else { ' ' };
-        let text = format!("({glyph}) {}", option.label);
-        let last_bracket_idx = 2usize; // '(', glyph, ')' — label starts after
-
-        let mut col = x0;
-        for (i, ch) in text.chars().enumerate() {
-            if col >= end {
-                break;
-            }
-            let fg = if i <= last_bracket_idx {
-                brk_fg
-            } else {
-                label_fg
-            };
-            set_cell(buf, col, y, ch, fg, bg);
-            col += 1;
-        }
-        while col < end {
-            set_cell(buf, col, y, ' ', label_fg, bg);
-            col += 1;
-        }
-    }
-
+    draw_radio_group_layout(buf, group, &layout, theme);
     layout
+}
+
+/// Draw a [`RadioGroup`] into `layout.items` on `buf`.
+///
+/// `layout` must be the same [`RadioGroupLayout`] the host hit-tests
+/// against (typically [`tui_radio_group_layout`]'s return value) so
+/// paint and click-routing can never disagree.
+pub(crate) fn draw_radio_group_layout(
+    buf: &mut Buffer,
+    group: &RadioGroup,
+    layout: &RadioGroupLayout,
+    theme: &Theme,
+) {
+    // The painter never moves the cursor, so the sink is never read.
+    let mut cursor_sink = None;
+    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    cell_paint::paint(group, layout, &mut surface, theme);
 }
 
 #[cfg(test)]

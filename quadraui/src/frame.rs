@@ -207,6 +207,7 @@ use crate::event::Rect;
 use crate::primitive::DynWidget;
 use crate::primitives::activity_bar::ActivityBar;
 use crate::primitives::board::BoardModel;
+use crate::primitives::button::Button;
 use crate::primitives::canvas::Canvas;
 use crate::primitives::cell_grid::CellGrid;
 use crate::primitives::chart::Chart;
@@ -231,6 +232,7 @@ use crate::primitives::multi_section_view::MultiSectionView;
 use crate::primitives::palette::Palette;
 use crate::primitives::pipeline_view::PipelineView;
 use crate::primitives::progress::ProgressBar;
+use crate::primitives::radio_group::RadioGroup;
 use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::sidebar_panel::SidebarPanel;
@@ -238,6 +240,7 @@ use crate::primitives::spinner::Spinner;
 use crate::primitives::split::Split;
 use crate::primitives::split_tree::SplitTree;
 use crate::primitives::status_bar::StatusBar;
+use crate::primitives::switch::Switch;
 use crate::primitives::tab_bar::TabBar;
 use crate::primitives::terminal::Terminal;
 use crate::primitives::text_display::TextDisplay;
@@ -1354,6 +1357,18 @@ pub enum OwnedContent {
     TextInput(TextInput),
     TextField(TextField),
     Toolbar(Toolbar),
+    /// Captured from a [`Switch`] reached through [`Surface::Widget`] via
+    /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the only
+    /// way a standalone `Switch` ever reaches a frame.
+    Switch(Switch),
+    /// Captured from a [`RadioGroup`] reached through [`Surface::Widget`]
+    /// via [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the
+    /// only way a standalone `RadioGroup` ever reaches a frame.
+    RadioGroup(RadioGroup),
+    /// Captured from a [`Button`] reached through [`Surface::Widget`] via
+    /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the only
+    /// way a standalone `Button` ever reaches a frame.
+    Button(Button),
     /// No content captured — the source [`Surface`] was [`Surface::DropOverlay`].
     DropOverlay,
     /// No content captured — the source [`Surface`] was [`Surface::FindReplace`].
@@ -1510,6 +1525,15 @@ impl OwnedContent {
                 let interaction = crate::interaction::InteractionState::from_parts(None, None);
                 backend.draw_toolbar_interactive(rect, bar, &interaction);
             }
+            OwnedContent::Switch(switch) => {
+                backend.draw_switch(rect, switch);
+            }
+            OwnedContent::RadioGroup(group) => {
+                backend.draw_radio_group(rect, group);
+            }
+            OwnedContent::Button(button) => {
+                backend.draw_button(rect, button);
+            }
             OwnedContent::Tooltip(_)
             | OwnedContent::ContextMenu(_)
             | OwnedContent::Dialog(_)
@@ -1579,6 +1603,18 @@ impl OwnedContent {
             OwnedContent::TextInput(_) => FrameZone::TextInput { idx },
             OwnedContent::TextField(_) => FrameZone::TextField { idx },
             OwnedContent::Toolbar(_) => FrameZone::Toolbar { idx },
+            OwnedContent::Switch(switch) => FrameZone::Widget {
+                idx,
+                id: Some(switch.id),
+            },
+            OwnedContent::RadioGroup(group) => FrameZone::Widget {
+                idx,
+                id: Some(group.id),
+            },
+            OwnedContent::Button(button) => FrameZone::Widget {
+                idx,
+                id: Some(button.id),
+            },
             OwnedContent::DropOverlay => FrameZone::DropOverlay { idx },
             OwnedContent::FindReplace => FrameZone::FindReplace { idx },
             OwnedContent::Opaque => FrameZone::Empty,

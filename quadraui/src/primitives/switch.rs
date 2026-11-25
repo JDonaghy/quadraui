@@ -183,6 +183,276 @@ pub enum SwitchEvent {
     Toggled { id: WidgetId, value: bool },
 }
 
+impl crate::interactive::WidgetAction for SwitchEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            SwitchEvent::Toggled { value, .. } => {
+                crate::UiEvent::SwitchToggled { widget: id, value }
+            }
+        }
+    }
+}
+
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+//
+// `Switch` reaches the frame type-erased as [`crate::frame::Surface::Widget`]:
+// `layout` resolves the switch's own bounds — [`pixel_switch_layout`] on a
+// pixel surface, [`cell_switch_layout`] on a cell grid, both of which are
+// just [`Switch::layout`] itself since a switch has no unit-dependent
+// geometry — `paint` runs the shared pixel painter in
+// [`native_surface_paint`], `paint_cells` runs the cell painter in
+// [`cell_paint`], and `handle` folds in [`Switch::handle_key`]/
+// [`Switch::click`].
+
+/// Resolve `switch`'s layout for a pixel surface — identical to
+/// [`cell_switch_layout`] since [`Switch::layout`] has no unit-dependent
+/// geometry of its own.
+pub(crate) fn pixel_switch_layout(switch: &Switch, rect: Rect) -> SwitchLayout {
+    switch.layout(rect)
+}
+
+/// Resolve `switch`'s layout for a cell grid — see [`pixel_switch_layout`].
+pub(crate) fn cell_switch_layout(switch: &Switch, rect: Rect) -> SwitchLayout {
+    switch.layout(rect)
+}
+
+impl crate::primitive::Primitive for Switch {
+    type Layout = SwitchLayout;
+    type Event = SwitchHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Switch(self.clone())
+    }
+
+    /// `[● ]`/`[ ●]` track: 4 cells on a cell grid, `2 * line_height` on
+    /// a pixel surface — the same width [`crate::compose`]'s own
+    /// `toggle_control_size` resolves for a `Switch` reached through a
+    /// non-contract binding host, one row/line tall either way.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        match ctx.units() {
+            crate::primitive::Units::Cells => crate::NaturalSize::new(Some(4.0), Some(1.0)),
+            _ => crate::NaturalSize::new(Some(2.0 * ctx.line_height), Some(ctx.line_height)),
+        }
+    }
+
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> SwitchLayout {
+        match ctx.units() {
+            crate::primitive::Units::Cells => cell_switch_layout(self, rect),
+            _ => pixel_switch_layout(self, rect),
+        }
+    }
+
+    /// The shared pixel painter, against the already-resolved `layout`.
+    fn paint(
+        &self,
+        layout: &SwitchLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let _ = native_surface_paint::paint(self, surface, theme, layout.bounds);
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, theme);
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_switch_layout`] because the `Buffer` ->
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &SwitchLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_switch_layout(buf, self, layout, theme);
+    }
+}
+
+impl crate::interactive::Interactive for Switch {
+    type State = ();
+    type Action = SwitchEvent;
+
+    /// One focus stop per switch — the same self-contained convention
+    /// `Switch::focused`'s own doc describes.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    fn a11y_actions(&self, _state: &()) -> Vec<crate::a11y::A11yAction> {
+        if self.disabled {
+            Vec::new()
+        } else {
+            vec![crate::a11y::A11yAction::Click]
+        }
+    }
+
+    /// `Enter`/`Space` activates — note this does *not* call
+    /// [`Switch::handle_key`], whose own `self.focused` gate is the
+    /// legacy, non-contract convention a host sets by hand before
+    /// calling it directly; the engine only ever routes a `Key` event to
+    /// whichever widget its own `FocusTree` already names as focused
+    /// (see `crate::runtime::route_widget_key`), so re-checking
+    /// `self.focused` here would wrongly ignore the key on a descriptor
+    /// a host rebuilds fresh every frame without separately mirroring
+    /// that flag. A left click activates regardless of focus (see
+    /// [`Switch::click`]), requesting focus first so a pointer
+    /// activation leaves the switch focused the same way a keyboard
+    /// activation requires it to already be.
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &crate::interactive::RoutedEvent,
+        _layout: &SwitchLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<SwitchEvent> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+        use crate::Handled;
+
+        match event {
+            RoutedEvent::Key(crate::interactive::KeyEvent {
+                key: Key::Named(NamedKey::Enter) | Key::Char(' '),
+                ..
+            }) => match self.click() {
+                Some(event) => Handled::Event(event),
+                None => Handled::Ignored,
+            },
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                ..
+            } => match self.click() {
+                Some(event) => {
+                    cx.request_focus(None);
+                    Handled::Event(event)
+                }
+                None => Handled::Ignored,
+            },
+            RoutedEvent::Action(crate::a11y::A11yAction::Click) => match self.click() {
+                Some(event) => Handled::Event(event),
+                None => Handled::Ignored,
+            },
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+/// The cell-grid painter for [`Switch`], written against
+/// [`crate::CellSurface`] — moved from `crate::tui::switch`, which is now
+/// a thin `Buffer` -> [`crate::CellSurface`] adapter.
+///
+/// Paints a 4-cell `[● ]`/`[ ●]` track with the knob on the right when
+/// `value` is `true`, on the left when `false`. The whole cell range is
+/// one hit target, same as [`Switch::layout`].
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{Switch, SwitchLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    const TUI_SWITCH_WIDTH: u16 = 4;
+
+    /// An opaque single-cell style — every glyph this painter writes
+    /// sets both colours and no modifier.
+    fn solid(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `switch` into `layout.bounds` on `surface`.
+    ///
+    /// `layout` must be the value [`super::cell_switch_layout`] returned
+    /// for the same switch and rect, so paint and
+    /// [`SwitchLayout::hit_test`] can never disagree.
+    pub(crate) fn paint(
+        switch: &Switch,
+        layout: &SwitchLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let bounds = layout.bounds;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return;
+        }
+
+        let y = bounds.y.round() as u16;
+        let x0 = bounds.x.round() as u16;
+        let w = bounds.width.round() as u16;
+        let end = x0.saturating_add(w);
+
+        let track_bg = if switch.disabled {
+            theme.surface_bg
+        } else if switch.value {
+            theme.accent_bg
+        } else {
+            theme.surface_bg
+        };
+        let brk_fg = if switch.disabled {
+            theme.muted_fg
+        } else if switch.focused {
+            theme.accent_fg
+        } else {
+            theme.border_fg
+        };
+        let knob_fg = if switch.disabled {
+            theme.muted_fg
+        } else {
+            theme.foreground
+        };
+
+        let track_w = TUI_SWITCH_WIDTH.min(w);
+        let knob_col = if track_w <= 2 {
+            x0
+        } else if switch.value {
+            x0 + track_w - 2
+        } else {
+            x0 + 1
+        };
+
+        let mut col = x0;
+        if col < end {
+            surface.put_char(col, y, '[', solid(brk_fg, track_bg));
+            col += 1;
+        }
+        while col < x0 + track_w.saturating_sub(1) && col < end {
+            let ch = if col == knob_col { '●' } else { ' ' };
+            let fg = if col == knob_col { knob_fg } else { track_bg };
+            surface.put_char(col, y, ch, solid(fg, track_bg));
+            col += 1;
+        }
+        if col < end {
+            surface.put_char(col, y, ']', solid(brk_fg, track_bg));
+            col += 1;
+        }
+        while col < end {
+            surface.put_char(col, y, ' ', solid(knob_fg, theme.background));
+            col += 1;
+        }
+    }
+}
+
 /// `paint` is the shared [`crate::paint_surface::PaintSurface`]
 /// implementation of switch painting (track/thumb), used by backends
 /// that have no dedicated native rasteriser for `Switch` — the same
@@ -532,5 +802,178 @@ mod tests {
         assert!(!s.focused);
         assert!(!s.hovered);
         assert!(!s.pressed);
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent,
+        WidgetAction,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::{Handled, MouseButton, Point};
+
+    /// Minimal [`EventHost`] mock — see `crate::interactive`'s own test
+    /// module for the shape this mirrors.
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<crate::interactive::SubTarget>>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<crate::interactive::SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<crate::interactive::SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: crate::backend::PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn key_event(key: Key) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+    }
+
+    fn down_event() -> RoutedEvent {
+        RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(1.0, 0.0),
+            mods: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn declares_a_single_focus_stop() {
+        assert_eq!(Switch::new(WidgetId::new("s")).focus(), FocusSpec::Stop);
+    }
+
+    #[test]
+    fn primitive_layout_and_paint_cells_round_trip() {
+        let mut s = Switch::new(WidgetId::new("settings:wrap"));
+        s.value = true;
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let rect = Rect::new(0.0, 0.0, 4.0, 1.0);
+        let layout = Primitive::layout(&s, &ctx, rect);
+        assert_eq!(layout.bounds, rect);
+
+        #[cfg(feature = "tui")]
+        {
+            let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 4, 1));
+            Primitive::paint_cells(&s, &layout, &mut buf, &crate::theme::Theme::default());
+            assert_eq!(buf[(1u16, 0u16)].symbol(), " ");
+            assert_eq!(buf[(2u16, 0u16)].symbol(), "●");
+        }
+    }
+
+    #[test]
+    fn enabled_switch_advertises_a_click_action() {
+        let s = Switch::new(WidgetId::new("s"));
+        assert_eq!(s.a11y_actions(&()), vec![A11yAction::Click]);
+    }
+
+    #[test]
+    fn disabled_switch_advertises_no_actions() {
+        let mut s = Switch::new(WidgetId::new("s"));
+        s.disabled = true;
+        assert!(s.a11y_actions(&()).is_empty());
+    }
+
+    #[test]
+    fn handle_enter_toggles() {
+        let s = Switch::new(WidgetId::new("s"));
+        let layout = SwitchLayout {
+            bounds: Rect::new(0.0, 0.0, 4.0, 1.0),
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(s.id, &mut host);
+        let outcome = s.handle(
+            &mut (),
+            &key_event(Key::Named(NamedKey::Enter)),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(SwitchEvent::Toggled {
+                id: s.id,
+                value: true
+            })
+        );
+    }
+
+    #[test]
+    fn handle_click_requests_focus_and_toggles() {
+        let s = Switch::new(WidgetId::new("s"));
+        let layout = SwitchLayout {
+            bounds: Rect::new(0.0, 0.0, 4.0, 1.0),
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(s.id, &mut host);
+        let outcome = s.handle(&mut (), &down_event(), &layout, &mut cx);
+        assert_eq!(
+            outcome,
+            Handled::Event(SwitchEvent::Toggled {
+                id: s.id,
+                value: true
+            })
+        );
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    /// Three-way event parity's in-crate leg: an [`A11yAction::Click`]
+    /// routed through [`crate::a11y::route_widget_action`] (the
+    /// assistive-technology path a screen reader's default action takes)
+    /// produces the exact same [`crate::UiEvent`] a direct
+    /// [`Interactive::handle`] call with the same `RoutedEvent::Action`
+    /// does. The TUI mouse-click leg lives in
+    /// `tests/widget_contract_switch.rs`, which drives the real
+    /// `event -> handle -> render` path `TuiDriver` exercises.
+    #[test]
+    fn route_widget_action_click_matches_direct_interactive_handle() {
+        let s = Switch::new(WidgetId::new("settings:wrap"));
+        let id = s.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, Rect::new(0.0, 0.0, 4.0, 1.0), Box::new(s.clone()));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+
+        let events =
+            crate::a11y::route_widget_action(&tree, &mut states, &ctx, id, A11yAction::Click);
+
+        let layout = SwitchLayout {
+            bounds: Rect::new(0.0, 0.0, 4.0, 1.0),
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(id, &mut host);
+        let direct = s.handle(
+            &mut (),
+            &RoutedEvent::Action(A11yAction::Click),
+            &layout,
+            &mut cx,
+        );
+        let expected = match direct {
+            Handled::Event(ev) => vec![ev.into_ui_event(id)],
+            _ => vec![],
+        };
+        assert_eq!(events, expected);
+        assert_eq!(
+            events,
+            vec![SwitchEvent::Toggled { id, value: true }.into_ui_event(id)]
+        );
     }
 }

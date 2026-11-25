@@ -126,6 +126,7 @@ pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::TuiBackend;
 #[doc(hidden)]
 pub use board::{draw_board, tui_board_layout};
+pub(crate) use button::draw_button_layout;
 #[doc(hidden)]
 pub use button::{draw_button, draw_button_interactive, tui_button_layout};
 #[doc(hidden)]
@@ -199,6 +200,7 @@ pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
 pub(crate) use progress::draw_progress_layout;
 #[doc(hidden)]
 pub use progress::{draw_progress, tui_progress_layout};
+pub(crate) use radio_group::draw_radio_group_layout;
 #[doc(hidden)]
 pub use radio_group::{draw_radio_group, tui_radio_group_layout};
 #[doc(hidden)]
@@ -222,6 +224,7 @@ pub use split::{draw_split, tui_split_layout};
 pub use split_tree::{draw_split_tree, tui_split_tree_layout};
 #[doc(hidden)]
 pub use status_bar::draw_status_bar;
+pub(crate) use switch::draw_switch_layout;
 #[doc(hidden)]
 pub use switch::{draw_switch, tui_switch_layout};
 // The cell-measure constants live with the primitive, next to the shared

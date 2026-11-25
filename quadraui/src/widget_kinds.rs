@@ -177,6 +177,14 @@ widget_kinds! {
     "progress" => crate::ProgressBar,
     "spinner" => crate::Spinner,
     "scrollbar" => crate::Scrollbar,
+    // Slice 1 of the Switch/RadioGroup/Button port, same ungated shape
+    // as `TabBar`/Group A above: their `Primitive`/`Interactive` impls
+    // carry no feature gate, so each is a `DynWidget` on every feature
+    // set. The kind strings match the ones `quadraui-binding-core`'s
+    // wire schema already publishes for them.
+    "switch" => crate::Switch,
+    "radio_group" => crate::RadioGroup,
+    "button" => crate::Button,
 }
 
 #[cfg(test)]
@@ -383,6 +391,46 @@ mod tests {
                 Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "tab_bar"),
                 other => panic!("expected Err(KindError::Decode), got {}", describe(other)),
             }
+        }
+    }
+
+    /// Group A slice-1's three kinds (`Switch`/`RadioGroup`/`Button`)
+    /// decode from the same wire shape their descriptors serialize to,
+    /// with every optional field defaulted.
+    #[test]
+    fn decodes_the_switch_radio_group_and_button_kinds() {
+        let switch = decode_widget("switch", serde_json::json!({"id": "settings:wrap"}))
+            .expect("switch decodes");
+        assert_eq!(switch.id().map(|id| id.as_str()), Some("settings:wrap"));
+
+        let radio_group = decode_widget(
+            "radio_group",
+            serde_json::json!({
+                "id": "settings:theme",
+                "options": [{"id": "settings:theme:light", "label": "Light"}],
+            }),
+        )
+        .expect("radio_group decodes");
+        assert_eq!(
+            radio_group.id().map(|id| id.as_str()),
+            Some("settings:theme")
+        );
+
+        let button = decode_widget(
+            "button",
+            serde_json::json!({"id": "dialog:ok", "label": "OK"}),
+        )
+        .expect("button decodes");
+        assert_eq!(button.id().map(|id| id.as_str()), Some("dialog:ok"));
+    }
+
+    #[test]
+    fn rejects_a_malformed_switch_payload() {
+        // `value` must be a bool — a string has no sensible decode.
+        let payload = serde_json::json!({"id": "settings:wrap", "value": "on"});
+        match decode_widget("switch", payload) {
+            Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "switch"),
+            other => panic!("expected Err(KindError::Decode), got {}", describe(other)),
         }
     }
 
