@@ -1064,13 +1064,13 @@ fn frame_inventory_relations_agree_tui_and_gtk() {
 // (room enough to close on every backend) specifically so this divergence never
 // fires here.
 //
-// Scope note — the tooltip-border harness below is still *two*-backend only, not
-// three. `ConformanceDriver` now has a `MacDriver` impl, but `TooltipBorderFixture`
-// below asserts on a registered zone (`border_tooltip_zone`), and
-// `macos::backend::MacBackend::draw_tooltip_with_chrome` doesn't call
-// `Backend::register_zone` the way `TuiBackend` and `GtkBackend` do — so macOS
-// still can't participate in this specific harness. macOS's side is covered instead
-// by direct pixel-probe unit tests in `src/macos/tooltip.rs`.
+// Scope note — the tooltip-border harness below is *two*-backend only, not three.
+// `ConformanceDriver` has a `MacDriver` impl, but a macOS arm only exists in a
+// build that is both `--features macos` and `target_os = "macos"`, so folding one
+// in here would make this harness host-dependent the way
+// `pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state` above is
+// deliberately kept separate to avoid. macOS's own tooltip chrome is covered by
+// the direct pixel-probe unit tests in `src/macos/tooltip.rs`.
 
 const BORDER_TOOLTIP_ID: &str = "cbp:541:tooltip";
 const BORDER_TOOLTIP_TEXT: &str = "BorderProbe";
