@@ -2476,6 +2476,14 @@ class _ScrollbarMovedPayload(TypedDict):
     widget: WidgetId
     fraction: float
 
+class _SwitchToggledPayload(TypedDict):
+    widget: WidgetId
+    value: bool
+
+class _RadioGroupSelectionChangedPayload(TypedDict):
+    widget: WidgetId
+    index: int
+
 class _TextSelectionChangedPayload(TypedDict):
     region: WidgetId
     anchor: Point
@@ -2525,6 +2533,9 @@ class _UiEventDict(TypedDict):
     PowerStateChanged: NotRequired[_PowerStateChangedPayload]
     ScrollOffsetChanged: NotRequired[_ScrollOffsetChangedPayload]
     ScrollbarMoved: NotRequired[_ScrollbarMovedPayload]
+    SwitchToggled: NotRequired[_SwitchToggledPayload]
+    RadioGroupSelectionChanged: NotRequired[_RadioGroupSelectionChangedPayload]
+    ButtonActivated: NotRequired[_WidgetPayload]
     TextSelectionChanged: NotRequired[_TextSelectionChangedPayload]
     SplitDividerDragged: NotRequired[_SplitDividerDraggedPayload]
     MenuActivated: NotRequired[WidgetId]
