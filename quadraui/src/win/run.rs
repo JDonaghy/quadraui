@@ -3398,9 +3398,9 @@ mod win32 {
     /// classification, and (in `win::backend`'s own test module) that
     /// `draw_status_bar_interactive` calls `register_zone` for its own
     /// clickable bounds, and that widget-contract menu-bar and
-    /// command-centre painted sub-regions read as client area — but the regression only showed up once a
-    /// real `WM_NCHITTEST` round-trips through a real `wndproc` on a
-    /// real `HWND`. This module creates a real top-level window, paints
+    /// command-centre painted sub-regions read as client area — but the
+    /// regression only showed up once a real `WM_NCHITTEST` round-trips
+    /// through a real `wndproc` on a real `HWND`. This module creates a real top-level window, paints
     /// real menu-bar / status-bar / command-centre widgets into its
     /// title-bar band via the real `WinBackend` paint calls (so it
     /// exercises the actual fix, not a hand-registered zone), then
