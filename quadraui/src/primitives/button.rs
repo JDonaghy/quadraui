@@ -1,8 +1,11 @@
 //! `Button` primitive: a standalone, clickable action control — primary,
 //! secondary, and icon variants, with keyboard focus/activation, plus
-//! its disabled state and event. Layout/hit-test/keyboard logic lives
-//! here; backend rasterisers live in `tui::button` and inline in each
-//! platform's `backend.rs` (see `Backend::draw_button`).
+//! its disabled state and event. Layout/hit-test/keyboard logic, and
+//! every rasteriser (the `cell_paint` cell-grid painter and the
+//! `native_surface_paint` pixel painter), live here, reached through
+//! [`crate::primitive::Primitive::paint_cells`] /
+//! [`crate::primitive::Primitive::paint`] rather than a per-backend
+//! `Backend` method.
 //!
 //! Today `Form`'s `Button`/`ButtonRow` field kinds cover the same shape
 //! embedded inside a form. `Button` is additive: a standalone control
@@ -236,14 +239,33 @@ pub struct Button {
     /// Default `4.0` — a tight but visually separated icon/label pairing.
     #[serde(default = "default_icon_gap")]
     pub icon_gap: f32,
+    /// Whether the pointer currently sits over this button. Set by the
+    /// host from its own hover tracking (an
+    /// [`crate::interaction::InteractionState`] keyed by [`Button::id`],
+    /// or any other source); read by this type's own shared painters
+    /// (`native_surface_paint::paint` / `cell_paint::paint`, reached
+    /// through [`crate::primitive::Primitive::paint`] /
+    /// [`crate::primitive::Primitive::paint_cells`]) to tint the
+    /// background toward [`crate::Theme::button_hover_bg`] — the same
+    /// self-contained state convention [`Button::focused`] already
+    /// follows, and the same field [`crate::Switch::hovered`] carries.
+    #[serde(default)]
+    pub hovered: bool,
+    /// Whether the pointer currently holds this button pressed. Same
+    /// host-set convention as [`Button::hovered`]; read by those same
+    /// painters to tint the background toward
+    /// [`crate::Theme::button_pressed_bg`], which wins over
+    /// [`Button::hovered`] when both are set.
+    #[serde(default)]
+    pub pressed: bool,
 }
 
 impl Button {
-    /// A primary, enabled, unfocused button with `label`. Set
-    /// `variant`/`disabled`/`focused` directly afterwards (every field
-    /// is `pub`) rather than via a `with_*` chain — see
-    /// `docs/PRIMITIVE_RULES.md`'s rule-8 history of why this crate
-    /// stopped adding those.
+    /// A primary, enabled, unfocused, unhovered, unpressed button with
+    /// `label`. Set `variant`/`disabled`/`focused`/`hovered`/`pressed`
+    /// directly afterwards (every field is `pub`) rather than via a
+    /// `with_*` chain — see `docs/PRIMITIVE_RULES.md`'s rule-8 history
+    /// of why this crate stopped adding those.
     pub fn new(id: WidgetId, label: impl Into<String>) -> Self {
         Self {
             id,
@@ -255,6 +277,8 @@ impl Button {
             icon: None,
             icon_position: ButtonIconPosition::Leading,
             icon_gap: default_icon_gap(),
+            hovered: false,
+            pressed: false,
         }
     }
 
@@ -400,6 +424,8 @@ impl ButtonSpec {
             icon: self.icon.clone(),
             icon_position: self.icon_position,
             icon_gap: self.icon_gap,
+            hovered: false,
+            pressed: false,
         }
     }
 
@@ -549,12 +575,27 @@ pub(crate) fn pixel_button_layout(
 }
 
 /// Resolve `button`'s layout for a cell grid — see [`pixel_button_layout`].
+///
+/// Quantises `rect` to whole cells first, the same rounding a cell-grid
+/// backend's own `Rect` -> native-grid conversion already applies before
+/// it ever paints a cell — see [`cell_paint::paint`]'s own `x0`/`w`
+/// rounding. Without this, [`ButtonLayout::hit_test`] would compare a
+/// pointer position against the raw, possibly-fractional `rect` a
+/// container handed this leaf (e.g. a ratio-split
+/// [`crate::SplitTree`] pane), one cell wider than what actually painted
+/// — mis-claiming the adjacent divider's own cell as this button's body.
 pub(crate) fn cell_button_layout(
     button: &Button,
     ctx: &crate::primitive::LayoutCtx,
     rect: Rect,
 ) -> ButtonLayout {
-    let mut layout = button.layout(rect);
+    let quantised = Rect::new(
+        rect.x.max(0.0).round(),
+        rect.y.max(0.0).round(),
+        rect.width.max(0.0).round(),
+        rect.height.max(0.0).round(),
+    );
+    let mut layout = button.layout(quantised);
     layout.nerd_fonts_enabled = ctx.nerd_fonts_enabled;
     layout
 }
@@ -622,12 +663,9 @@ impl crate::primitive::Primitive for Button {
     }
 
     /// The shared pixel painter, against the already-resolved `layout`'s
-    /// bounds — `is_hovered`/`is_pressed` both `false`, the same plain
-    /// paint every non-state `Backend::draw_button` call site already
-    /// uses (hover/pressed tinting for a contract-routed button is
-    /// future work, the same gap `crate::tui::button`'s own
-    /// `draw_button` vs. `draw_button_interactive` split already
-    /// tracks).
+    /// bounds — [`Button::hovered`]/[`Button::pressed`] thread straight
+    /// through to the hover/pressed tint, the same host-set-field
+    /// convention [`crate::Switch`]'s own `paint` already follows.
     fn paint(
         &self,
         layout: &ButtonLayout,
@@ -647,8 +685,8 @@ impl crate::primitive::Primitive for Button {
                 theme,
                 layout.bounds,
                 style,
-                false,
-                false,
+                self.hovered,
+                self.pressed,
             );
         }
         #[cfg(not(any(
@@ -663,7 +701,8 @@ impl crate::primitive::Primitive for Button {
     /// [`crate::tui::cell_surface::TuiCellSurface`] — the `Buffer` ->
     /// [`crate::CellSurface`] bridge every `tui` cell-grid painter builds
     /// for itself, `pub(crate)` rather than private to `crate::tui` for
-    /// exactly this reach.
+    /// exactly this reach. [`Button::hovered`]/[`Button::pressed`] thread
+    /// straight through, same as [`Primitive::paint`] above.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -678,7 +717,14 @@ impl crate::primitive::Primitive for Button {
             crate::backend::ColorDepth::TrueColor,
             &mut cursor_sink,
         );
-        cell_paint::paint(self, layout, &mut surface, theme, false, false);
+        cell_paint::paint(
+            self,
+            layout,
+            &mut surface,
+            theme,
+            self.hovered,
+            self.pressed,
+        );
     }
 }
 
@@ -946,17 +992,19 @@ pub(crate) mod cell_paint {
         }
 
         /// Lay out and paint `button` into `area` on a fresh [`Buffer`],
-        /// `is_hovered`/`is_pressed` both `false` — the plain paint every
-        /// non-state contract call goes through today.
+        /// `is_hovered`/`is_pressed` both `false` — the same resting
+        /// paint a [`Button`] with [`Button::hovered`]/[`Button::pressed`]
+        /// both left at their default `false` gets through the contract
+        /// path.
         fn paint_button(area: RRect, button: &Button, theme: &Theme) -> (Buffer, ButtonLayout) {
             paint_interactive(area, button, theme, false, false)
         }
 
         /// [`paint`], threading `is_hovered`/`is_pressed` through to
-        /// [`super::paint`] directly — the only way to reach this
-        /// painter's own hover/pressed tint today, since no contract
-        /// paint call wires an `InteractionState` through yet (see
-        /// [`Primitive::paint_cells`]'s own doc for that gap).
+        /// [`super::paint`] directly, independent of [`Button::hovered`]/
+        /// [`Button::pressed`] on `button` itself — exercises the shared
+        /// painter's own tint logic without needing a `Button` whose
+        /// fields already carry the state under test.
         fn paint_interactive(
             area: RRect,
             button: &Button,
@@ -1387,16 +1435,16 @@ pub(crate) mod native_surface_paint {
     /// [`ButtonLayout`] for host click dispatch. `style` supplies the
     /// corner radius the fill/border paint with.
     ///
-    /// `is_hovered` / `is_pressed` are `false` for the plain, non-state
-    /// `Backend::draw_button` call sites — identical paint to before
-    /// hover support existed. `Backend::draw_button_with_state`
-    /// implementations pass the resolved
-    /// `interaction.is_hovered(&button.id)` /
-    /// `interaction.is_pressed(&button.id)` instead, which tints `bg`
-    /// via [`Theme::button_pressed_bg`] (pressed takes priority over
-    /// hover, matching every other `InteractionState`-driven
-    /// rasteriser in this crate — a button can't be mid-press without
-    /// also being hovered).
+    /// [`crate::primitive::Primitive::paint`] calls this with
+    /// `button.hovered`/`button.pressed`, which tints `bg` via
+    /// [`Theme::button_pressed_bg`]/[`Theme::button_hover_bg`] (pressed
+    /// takes priority over hover, matching every other
+    /// host-set-field-driven rasteriser in this crate — a button can't
+    /// be mid-press without also being hovered). A caller painting a
+    /// [`ButtonSpec`]-backed action (`crate::Toolbar`, `crate::Dialog`,
+    /// `crate::Toast`, `crate::ButtonRow`) passes its own resolved
+    /// hover/pressed state directly instead, since those kinds track it
+    /// index- or id-keyed rather than on a materialised [`Button`].
     pub(crate) fn paint(
         button: &Button,
         surface: &mut dyn PaintSurface,
@@ -1830,10 +1878,9 @@ pub(crate) mod native_surface_paint {
         }
 
         /// `is_hovered: true` tints the fill toward `Theme::button_hover_bg`
-        /// — this painter's own hover story, reached today only by a
-        /// direct caller (no widget-contract paint call threads
-        /// `is_hovered`/`is_pressed` through yet; see [`Primitive::paint`]'s
-        /// own doc for that gap).
+        /// — this painter's own hover story, which
+        /// [`Primitive::paint`] reaches by passing `button.hovered`
+        /// straight through.
         #[test]
         fn hover_state_changes_the_fill_colour() {
             let button = Button::new(WidgetId::new("b"), "OK");

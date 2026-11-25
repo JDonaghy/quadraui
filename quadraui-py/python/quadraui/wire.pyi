@@ -162,6 +162,8 @@ class ButtonDescriptor(TypedDict):
     icon: NotRequired[Optional[Icon]]
     icon_position: NotRequired[ButtonIconPosition]
     icon_gap: NotRequired[float]
+    hovered: NotRequired[bool]
+    pressed: NotRequired[bool]
 
 class ButtonSpecDescriptor(TypedDict):
     label: str

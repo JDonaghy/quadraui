@@ -172,6 +172,8 @@ export interface ButtonDescriptor {
   icon?: Icon | null;
   icon_position?: ButtonIconPosition;
   icon_gap?: number;
+  hovered?: boolean;
+  pressed?: boolean;
 }
 
 export interface ButtonSpecDescriptor {
