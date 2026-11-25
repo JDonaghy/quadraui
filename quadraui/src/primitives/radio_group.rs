@@ -268,6 +268,336 @@ impl RadioGroupLayout {
     }
 }
 
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+//
+// `RadioGroup` reaches the frame type-erased as
+// [`crate::frame::Surface::Widget`]: `layout` resolves each option's own
+// row — [`pixel_radio_group_layout`] on a pixel surface,
+// [`cell_radio_group_layout`] on a cell grid — `paint` runs the shared
+// pixel painter in [`native_surface_paint`], `paint_cells` runs the cell
+// painter in [`cell_paint`], and `handle` folds in
+// [`RadioGroup::handle_key`]/[`RadioGroup::select`] plus the per-option
+// keyboard focus [`crate::interactive::FocusSpec::Children`] declares.
+
+/// Resolve `group`'s layout for a pixel surface: one row per option,
+/// `row_height` tall (the caller's resolved chrome line height).
+pub(crate) fn pixel_radio_group_layout(
+    group: &RadioGroup,
+    row_height: f32,
+    rect: Rect,
+) -> RadioGroupLayout {
+    group.layout(rect, |_option: &RadioOption| RadioOptionMeasure {
+        width: rect.width,
+        height: row_height,
+    })
+}
+
+/// Resolve `group`'s layout for a cell grid: one whole-cell row per
+/// option — the cell-grid twin of [`pixel_radio_group_layout`].
+pub(crate) fn cell_radio_group_layout(group: &RadioGroup, rect: Rect) -> RadioGroupLayout {
+    group.layout(rect, |_option: &RadioOption| RadioOptionMeasure {
+        width: rect.width,
+        height: 1.0,
+    })
+}
+
+impl crate::primitive::Primitive for RadioGroup {
+    type Layout = RadioGroupLayout;
+    type Event = RadioGroupHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::RadioGroup(self.clone())
+    }
+
+    /// One row per option, `row_height` tall; no intrinsic width — the
+    /// label sizing a `RadioGroup` needs is the host's own text metric,
+    /// same as [`crate::primitives::progress`] reports no width for
+    /// `ProgressBar`.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let row_height = match ctx.units() {
+            crate::primitive::Units::Cells => 1.0,
+            _ => ctx.line_height,
+        };
+        crate::NaturalSize::new(None, Some(self.options.len() as f32 * row_height))
+    }
+
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> RadioGroupLayout {
+        match ctx.units() {
+            crate::primitive::Units::Cells => cell_radio_group_layout(self, rect),
+            _ => pixel_radio_group_layout(self, ctx.line_height, rect),
+        }
+    }
+
+    /// The shared pixel painter, against the already-resolved `layout`.
+    fn paint(
+        &self,
+        layout: &RadioGroupLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        _style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        native_surface_paint::paint_resolved(self, layout, surface, theme);
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, theme);
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_radio_group_layout`] because the `Buffer` ->
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &RadioGroupLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_radio_group_layout(buf, self, layout, theme);
+    }
+}
+
+/// [`RadioGroup`]'s interaction state — which option's keyboard focus
+/// stop is currently live, so an assistive-technology `Click` (which
+/// carries no sub-target of its own) knows which option to activate.
+/// Kept here rather than on the geometry/selection-only descriptor,
+/// same convention [`crate::primitives::scrollbar::ScrollbarState`]
+/// follows.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RadioGroupState {
+    focused_option: Option<usize>,
+}
+
+impl crate::interactive::Interactive for RadioGroup {
+    type State = RadioGroupState;
+    type Action = RadioGroupEvent;
+
+    /// One focus stop per option — walked by the host's tab order, and
+    /// addressed back to [`crate::interactive::RoutedEvent::FocusIn`]
+    /// below by its index packed into
+    /// [`crate::interactive::SubTarget`]. `FocusSpec::None` for an
+    /// empty group: there is nothing for keyboard focus to land on.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        if self.options.is_empty() {
+            crate::interactive::FocusSpec::None
+        } else {
+            crate::interactive::FocusSpec::Children(
+                (0..self.options.len())
+                    .map(|i| crate::interactive::FocusStop {
+                        sub: crate::interactive::SubTarget(i as u64),
+                    })
+                    .collect(),
+            )
+        }
+    }
+
+    /// Every option's own row, most-specific order doesn't matter here
+    /// since rows never overlap — translated out of `layout`'s absolute
+    /// frame into the widget-local space this method is contracted to
+    /// answer in.
+    fn sub_regions(&self, layout: &RadioGroupLayout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let (ox, oy) = (layout.bounds.x, layout.bounds.y);
+        layout
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                (
+                    Rect::new(r.x - ox, r.y - oy, r.width, r.height),
+                    crate::interactive::SubTarget(i as u64),
+                )
+            })
+            .collect()
+    }
+
+    /// `Click` selects whichever option currently holds keyboard focus.
+    fn a11y_actions(&self, _state: &RadioGroupState) -> Vec<crate::a11y::A11yAction> {
+        if self.options.is_empty() {
+            Vec::new()
+        } else {
+            vec![crate::a11y::A11yAction::Click]
+        }
+    }
+
+    /// Arrow keys move the cursor (see [`RadioGroup::handle_key`] —
+    /// note this does *not* re-check `self.focused`, the legacy,
+    /// non-contract convention a host sets by hand: the engine only
+    /// ever routes a `Key` event to whichever widget its own
+    /// `FocusTree` already names as focused, so a key reaching here has
+    /// already been confirmed focused); a left click selects whichever
+    /// option it landed on (see [`RadioGroup::select`]), regardless of
+    /// prior focus.
+    fn handle(
+        &self,
+        state: &mut RadioGroupState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &RadioGroupLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<RadioGroupEvent> {
+        use crate::interactive::{KeyEvent, PointerKind, RoutedEvent};
+        use crate::Handled;
+
+        match event {
+            RoutedEvent::Key(KeyEvent { key, .. }) => {
+                let delta = match key {
+                    Key::Named(NamedKey::Up) | Key::Named(NamedKey::Left) => -1,
+                    Key::Named(NamedKey::Down) | Key::Named(NamedKey::Right) => 1,
+                    _ => return Handled::Ignored,
+                };
+                match self.move_selection(delta) {
+                    Some(index) => {
+                        state.focused_option = Some(index);
+                        cx.request_focus(Some(crate::interactive::SubTarget(index as u64)));
+                        Handled::Event(RadioGroupEvent::SelectionChanged { index })
+                    }
+                    None => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                local,
+                ..
+            } => {
+                let p = Point::new(layout.bounds.x + local.x, layout.bounds.y + local.y);
+                match layout.hit_test(p) {
+                    RadioGroupHit::Option(index) => match self.select(index) {
+                        Some(event) => {
+                            state.focused_option = Some(index);
+                            cx.request_focus(Some(crate::interactive::SubTarget(index as u64)));
+                            Handled::Event(event)
+                        }
+                        None => Handled::Ignored,
+                    },
+                    RadioGroupHit::Outside => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Action(crate::a11y::A11yAction::Click) => {
+                match state
+                    .focused_option
+                    .or(self.selected)
+                    .and_then(|i| self.select(i))
+                {
+                    Some(event) => Handled::Event(event),
+                    None => Handled::Ignored,
+                }
+            }
+            RoutedEvent::FocusIn(Some(sub)) => {
+                let idx = sub.0 as usize;
+                if idx < self.options.len() {
+                    state.focused_option = Some(idx);
+                    Handled::Consumed
+                } else {
+                    Handled::Ignored
+                }
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+/// The cell-grid painter for [`RadioGroup`], written against
+/// [`crate::CellSurface`] — moved from `crate::tui::radio_group`, which
+/// is now a thin `Buffer` -> [`crate::CellSurface`] adapter.
+///
+/// Stacks each [`RadioOption`] one per row, painting `(•) Label` for the
+/// selected option and `( ) Label` for the rest.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{RadioGroup, RadioGroupLayout};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    fn solid(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `group` into `layout.items` on `surface`.
+    ///
+    /// `layout` must be the value [`super::cell_radio_group_layout`]
+    /// returned for the same group and rect, so paint and
+    /// [`RadioGroupLayout::hit_test`] can never disagree.
+    pub(crate) fn paint(
+        group: &RadioGroup,
+        layout: &RadioGroupLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        for (index, option) in group.options.iter().enumerate() {
+            let Some(row) = layout.items.get(index) else {
+                continue;
+            };
+            if row.height <= 0.0 || row.width <= 0.0 {
+                continue;
+            }
+            let y = row.y.round() as u16;
+            let x0 = row.x.round() as u16;
+            let w = row.width.round() as u16;
+            let end = x0.saturating_add(w);
+            let is_selected = group.selected == Some(index);
+
+            let bg = if is_selected {
+                theme.selected_bg
+            } else {
+                theme.background
+            };
+            let brk_fg = if option.disabled {
+                theme.muted_fg
+            } else if is_selected && group.focused {
+                theme.accent_fg
+            } else {
+                theme.border_fg
+            };
+            let label_fg = if option.disabled {
+                theme.muted_fg
+            } else {
+                theme.foreground
+            };
+
+            let glyph = if is_selected { '•' } else { ' ' };
+            let text = format!("({glyph}) {}", option.label);
+            let last_bracket_idx = 2usize; // '(', glyph, ')' — label starts after
+
+            let mut col = x0;
+            for (i, ch) in text.chars().enumerate() {
+                if col >= end {
+                    break;
+                }
+                let fg = if i <= last_bracket_idx {
+                    brk_fg
+                } else {
+                    label_fg
+                };
+                surface.put_char(col, y, ch, solid(fg, bg));
+                col += 1;
+            }
+            while col < end {
+                surface.put_char(col, y, ' ', solid(label_fg, bg));
+                col += 1;
+            }
+        }
+    }
+}
+
 /// `paint` is the shared [`crate::paint_surface::PaintSurface`]
 /// implementation of radio-group painting (per-option marker/label),
 /// used by backends that have no dedicated native rasteriser for
@@ -307,7 +637,20 @@ pub(crate) mod native_surface_paint {
             width: rect.width,
             height: row_height,
         });
+        paint_resolved(group, &layout, surface, theme);
+        layout
+    }
 
+    /// The same paint as [`paint`], against an already-resolved
+    /// `layout` — what
+    /// [`crate::primitive::Primitive::paint`] calls, since the widget
+    /// contract hands a painter the layout rather than a rect.
+    pub(crate) fn paint_resolved(
+        group: &RadioGroup,
+        layout: &RadioGroupLayout,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) {
         for (index, option) in group.options.iter().enumerate() {
             let Some(item) = layout.items.get(index) else {
                 continue;
@@ -360,8 +703,6 @@ pub(crate) mod native_surface_paint {
                 surface.surface_draw_text_run(label_rect, &option.label, fg);
             }
         }
-
-        layout
     }
 
     #[cfg(test)]
@@ -520,6 +861,16 @@ pub(crate) mod native_surface_paint {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RadioGroupEvent {
     SelectionChanged { index: usize },
+}
+
+impl crate::interactive::WidgetAction for RadioGroupEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            RadioGroupEvent::SelectionChanged { index } => {
+                crate::UiEvent::RadioGroupSelectionChanged { widget: id, index }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -717,5 +1068,236 @@ mod tests {
         let option: RadioOption = serde_json::from_str(json).unwrap();
         assert!(!option.hovered);
         assert!(!option.pressed);
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, FocusStop, Interactive, KeyEvent, PointerKind, RoutedEvent,
+        SubTarget, WidgetAction,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::{Handled, MouseButton};
+
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<SubTarget>>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: crate::backend::PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn options() -> Vec<RadioOption> {
+        vec![
+            RadioOption::new(WidgetId::new("theme:light"), "Light"),
+            RadioOption::new(WidgetId::new("theme:dark"), "Dark"),
+        ]
+    }
+
+    fn group() -> RadioGroup {
+        RadioGroup::new(WidgetId::new("settings:theme"), options())
+    }
+
+    fn layout_for(g: &RadioGroup, rect: Rect) -> RadioGroupLayout {
+        cell_radio_group_layout(g, rect)
+    }
+
+    #[test]
+    fn declares_one_focus_stop_per_option() {
+        let g = group();
+        assert_eq!(
+            g.focus(),
+            FocusSpec::Children(vec![
+                FocusStop { sub: SubTarget(0) },
+                FocusStop { sub: SubTarget(1) },
+            ])
+        );
+    }
+
+    #[test]
+    fn empty_group_declares_no_focus_stops() {
+        assert_eq!(RadioGroup::default().focus(), FocusSpec::None);
+    }
+
+    #[test]
+    fn handle_arrow_key_selects_and_requests_focus_on_that_option() {
+        let g = group();
+        let layout = layout_for(&g, Rect::new(0.0, 0.0, 10.0, 2.0));
+        let mut state = RadioGroupState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(g.id, &mut host);
+        let outcome = g.handle(
+            &mut state,
+            &RoutedEvent::Key(KeyEvent {
+                key: Key::Named(NamedKey::Down),
+                modifiers: Modifiers::default(),
+                repeat: false,
+            }),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(RadioGroupEvent::SelectionChanged { index: 0 })
+        );
+        assert_eq!(state.focused_option, Some(0));
+        assert_eq!(host.focus_requests, vec![Some(SubTarget(0))]);
+    }
+
+    #[test]
+    fn handle_click_on_a_row_selects_it() {
+        let g = group();
+        let layout = layout_for(&g, Rect::new(0.0, 0.0, 10.0, 2.0));
+        let mut state = RadioGroupState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(g.id, &mut host);
+        let outcome = g.handle(
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(1.0, 1.0),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(RadioGroupEvent::SelectionChanged { index: 1 })
+        );
+        assert_eq!(state.focused_option, Some(1));
+    }
+
+    #[test]
+    fn a11y_click_action_selects_the_currently_focused_option() {
+        let g = group();
+        let layout = layout_for(&g, Rect::new(0.0, 0.0, 10.0, 2.0));
+        let mut state = RadioGroupState {
+            focused_option: Some(1),
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(g.id, &mut host);
+        let outcome = g.handle(
+            &mut state,
+            &RoutedEvent::Action(A11yAction::Click),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(
+            outcome,
+            Handled::Event(RadioGroupEvent::SelectionChanged { index: 1 })
+        );
+    }
+
+    #[test]
+    fn focus_in_records_the_focused_option() {
+        let g = group();
+        let layout = layout_for(&g, Rect::new(0.0, 0.0, 10.0, 2.0));
+        let mut state = RadioGroupState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(g.id, &mut host);
+        let outcome = g.handle(
+            &mut state,
+            &RoutedEvent::FocusIn(Some(SubTarget(1))),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(state.focused_option, Some(1));
+    }
+
+    #[test]
+    fn primitive_layout_and_paint_cells_round_trip() {
+        let mut g = group();
+        g.selected = Some(1);
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let rect = Rect::new(0.0, 0.0, 10.0, 2.0);
+        let layout = Primitive::layout(&g, &ctx, rect);
+        assert_eq!(layout.items.len(), 2);
+
+        #[cfg(feature = "tui")]
+        {
+            let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 10, 2));
+            Primitive::paint_cells(&g, &layout, &mut buf, &crate::theme::Theme::default());
+            let row1: String = (0..10).map(|x| buf[(x, 1)].symbol()).collect();
+            assert!(row1.starts_with("(\u{2022}) Dark") || row1.starts_with("(•) Dark"));
+        }
+    }
+
+    /// Three-way event parity's in-crate leg: an [`A11yAction::Click`]
+    /// routed through [`crate::a11y::route_widget_action`] produces the
+    /// exact same [`crate::UiEvent`] a direct [`Interactive::handle`]
+    /// call with the same `RoutedEvent::Action` does. The TUI
+    /// mouse-click leg lives in `tests/widget_contract_radio_group.rs`.
+    #[test]
+    fn route_widget_action_click_matches_direct_interactive_handle() {
+        let g = group();
+        let id = g.id;
+        let rect = Rect::new(0.0, 0.0, 10.0, 2.0);
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, rect, Box::new(g.clone()));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+
+        // Focus the second option first, through the same `FocusIn` path
+        // the engine's own click/tab routing would drive, so the `Click`
+        // action below has a target to resolve against.
+        let layout = layout_for(&g, rect);
+        {
+            let mut host = MockHost::default();
+            let mut cx = EventCx::new(id, &mut host);
+            let state = states
+                .state_for(id, &g)
+                .downcast_mut::<RadioGroupState>()
+                .unwrap();
+            let _ = g.handle(
+                state,
+                &RoutedEvent::FocusIn(Some(SubTarget(1))),
+                &layout,
+                &mut cx,
+            );
+        }
+
+        let events =
+            crate::a11y::route_widget_action(&tree, &mut states, &ctx, id, A11yAction::Click);
+
+        let mut state = RadioGroupState {
+            focused_option: Some(1),
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(id, &mut host);
+        let direct = g.handle(
+            &mut state,
+            &RoutedEvent::Action(A11yAction::Click),
+            &layout,
+            &mut cx,
+        );
+        let expected = match direct {
+            Handled::Event(ev) => vec![ev.into_ui_event(id)],
+            _ => vec![],
+        };
+        assert_eq!(events, expected);
+        assert_eq!(
+            events,
+            vec![RadioGroupEvent::SelectionChanged { index: 1 }.into_ui_event(id)]
+        );
     }
 }

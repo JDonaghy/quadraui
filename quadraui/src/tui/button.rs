@@ -1,61 +1,45 @@
-//! TUI rasteriser for [`crate::Button`].
-//!
-//! Paints `[ Label ]` bracket chrome for [`ButtonVariant::Primary`] /
-//! [`ButtonVariant::Secondary`] / [`ButtonVariant::Danger`] /
-//! [`ButtonVariant::Warning`], and the bare label for
-//! [`ButtonVariant::Icon`] (no bracket chrome — an icon button typically
-//! carries a single glyph). The whole cell range is one hit target, same
-//! as [`crate::Button::layout`]; in a taller cell the label row is centred
-//! so `crate::tui::draw_focus_ring`'s edge rows never cover it.
-//!
-//! [`ButtonVariant::Danger`]/[`ButtonVariant::Warning`] paint **no**
-//! background fill on TUI — unlike [`ButtonVariant::Primary`]'s solid
-//! `accent_bg`, intent here is carried entirely by the foreground colour
-//! ([`Theme::error_fg`]/[`Theme::warning_fg`]) on both the bracket chrome
-//! and the label text, e.g. `[ ⚠ Delete ]`. [`Button::icon`] paints
-//! [`crate::Icon::glyph`] when the backend's Nerd Fonts flag is on and
-//! [`crate::Icon::fallback`] otherwise, same convention as
-//! [`crate::tui::activity_bar::draw_activity_bar`].
-//!
-//! A focused button's bracket chrome always paints [`Theme::accent_fg`],
-//! the same cue [`crate::tui::switch`]/[`crate::tui::radio_group`] paint
-//! for their own focus state — this wins over the intent colour on the
-//! brackets so a focused `Danger`/`Warning` button stays visibly
-//! distinct from an unfocused one. The label text keeps its intent
-//! colour either way.
+//! TUI entry points for [`crate::Button`] — thin delegates onto the
+//! widget's own cell painter, `crate::primitives::button::cell_paint`,
+//! which documents the bracket-chrome/icon/intent-colour rules. This
+//! module only adapts a raw ratatui [`Buffer`] into the
+//! [`crate::CellSurface`] that painter takes, and converts a ratatui
+//! cell [`Rect`] into the quadraui one the widget's own cell layout
+//! takes.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{ratatui_color, set_cell};
-use crate::primitives::button::{Button, ButtonIconPosition, ButtonLayout, ButtonVariant};
-use crate::primitives::layout_metrics::pixel::NOMINAL_CELL_PX_WIDTH;
+use super::cell_surface::TuiCellSurface;
+use crate::backend::ColorDepth;
+use crate::event::Rect as QRect;
+use crate::primitive::LayoutCtx;
+use crate::primitives::button::{cell_button_layout, cell_paint, Button, ButtonLayout};
 use crate::theme::Theme;
 
-/// Quantise [`Button::icon_gap`] (a surface-native pixel count) to whole
-/// TUI cells, floored at one cell — see that field's own "TUI story" doc
-/// for why a zero-cell gap isn't honoured. Clamped at `max_cells` (the
-/// button's own paint width) so an unvalidated, arbitrarily large
-/// `icon_gap` (a stray `f32::MAX`/`1e9`) can neither overflow the
-/// `as usize` cast nor make `" ".repeat(..)` allocate past what the
-/// paint loop could ever use.
-fn icon_gap_cells(icon_gap: f32, max_cells: usize) -> usize {
-    if !icon_gap.is_finite() {
-        return max_cells.max(1);
-    }
-    ((icon_gap / NOMINAL_CELL_PX_WIDTH).ceil() as usize).clamp(1, max_cells.max(1))
+/// A [`LayoutCtx`] carrying only `nerd_fonts_enabled` — [`tui_button_layout`]
+/// and [`draw_button`]/[`draw_button_interactive`] take that flag as a
+/// loose `bool` parameter (their pre-existing, non-contract signature),
+/// so this builds the ctx [`cell_button_layout`] needs without a real
+/// backend in reach. `line_height`/`char_width` are nominal TUI cell
+/// values — [`cell_button_layout`] never reads either.
+fn cell_ctx(nerd_fonts_enabled: bool) -> LayoutCtx<'static> {
+    LayoutCtx::new(1.0, 1.0, nerd_fonts_enabled)
 }
 
 /// Compute the TUI cell-unit layout for a [`Button`] without painting.
 /// The control has no internal sub-regions, so `area` maps straight
 /// through to [`Button::layout`]'s bounds.
 pub fn tui_button_layout(button: &Button, area: Rect) -> ButtonLayout {
-    button.layout(crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
-    ))
+    cell_button_layout(
+        button,
+        &cell_ctx(false),
+        QRect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ),
+    )
 }
 
 /// Draw a [`Button`] into `area` on `buf`. Returns the layout for host
@@ -89,121 +73,60 @@ pub fn draw_button_interactive(
     is_pressed: bool,
     nerd_fonts_enabled: bool,
 ) -> ButtonLayout {
-    let layout = tui_button_layout(button, area);
-
-    if area.width == 0 || area.height == 0 {
-        return layout;
-    }
-
-    let x0 = layout.bounds.x.round() as u16;
-    let w = layout.bounds.width.round() as u16;
-    let end = x0.saturating_add(w);
-    let area_height = layout.bounds.height.round() as u16;
-    // Centre the label row so a focus ring's top/bottom border (painted
-    // on the cell's edge rows) never overwrites it.
-    let y = layout.bounds.y.round() as u16 + area_height.saturating_sub(1) / 2;
-
-    // `Danger`/`Warning` intent is carried entirely by foreground colour
-    // on TUI — no background fill of their own, unlike `Primary`'s solid
-    // `accent_bg` — see the module doc.
-    let intent_fg = match button.variant {
-        ButtonVariant::Danger => Some(theme.error_fg),
-        ButtonVariant::Warning => Some(theme.warning_fg),
-        ButtonVariant::Primary | ButtonVariant::Secondary | ButtonVariant::Icon => None,
-    };
-
-    let bg = if button.disabled {
-        theme.surface_bg
-    } else {
-        match button.variant {
-            ButtonVariant::Primary => theme.accent_bg,
-            ButtonVariant::Secondary | ButtonVariant::Danger | ButtonVariant::Warning => {
-                theme.surface_bg
-            }
-            ButtonVariant::Icon => theme.background,
-        }
-    };
-    let bg = if button.disabled {
-        bg
-    } else if is_pressed {
-        theme.button_pressed_bg(bg)
-    } else if is_hovered {
-        theme.button_hover_bg(bg)
-    } else {
-        bg
-    };
-    let bg = ratatui_color(bg);
-    let fg = if button.disabled {
-        ratatui_color(theme.muted_fg)
-    } else if let Some(intent) = intent_fg {
-        ratatui_color(intent)
-    } else {
-        ratatui_color(theme.foreground)
-    };
-    // `focused` wins on the bracket chrome ahead of `intent_fg` so a
-    // focused `Danger`/`Warning` button stays visually distinct from an
-    // unfocused one — same `accent_fg` focus cue `Primary`/`Secondary`
-    // already paint here, and `tui/switch.rs`/`tui/radio_group.rs` paint
-    // elsewhere. The label (`fg`, above) keeps the intent colour either
-    // way, so a focused Danger button still reads as `[ Delete ]` in
-    // `error_fg` text inside an `accent_fg` bracket, not a plain button.
-    let brk_fg = if button.disabled {
-        ratatui_color(theme.muted_fg)
-    } else if button.focused {
-        ratatui_color(theme.accent_fg)
-    } else if let Some(intent) = intent_fg {
-        ratatui_color(intent)
-    } else {
-        ratatui_color(theme.border_fg)
-    };
-
-    let is_icon = matches!(button.variant, ButtonVariant::Icon);
-    let icon_ch: Option<char> = button.icon.as_ref().map(|icon| {
-        icon.resolve(nerd_fonts_enabled)
-            .chars()
-            .next()
-            .unwrap_or(' ')
-    });
-    let inner = match icon_ch {
-        None => button.label.clone(),
-        Some(ch) => {
-            let gap = " ".repeat(icon_gap_cells(button.icon_gap, w as usize));
-            match button.icon_position {
-                ButtonIconPosition::Leading => format!("{ch}{gap}{}", button.label),
-                ButtonIconPosition::Trailing => format!("{}{gap}{ch}", button.label),
-            }
-        }
-    };
-    let text: String = if is_icon {
-        inner
-    } else {
-        format!("[ {inner} ]")
-    };
-    let last_idx = text.chars().count().saturating_sub(1);
-
-    let mut col = x0;
-    for (i, ch) in text.chars().enumerate() {
-        if col >= end {
-            break;
-        }
-        let is_bracket = !is_icon && (i == 0 || i == last_idx);
-        let ch_fg = if is_bracket { brk_fg } else { fg };
-        set_cell(buf, col, y, ch, ch_fg, bg);
-        col += 1;
-    }
-    while col < end {
-        set_cell(buf, col, y, ' ', fg, bg);
-        col += 1;
-    }
-
+    let layout = cell_button_layout(
+        button,
+        &cell_ctx(nerd_fonts_enabled),
+        QRect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ),
+    );
+    draw_button_layout_interactive(buf, button, &layout, theme, is_hovered, is_pressed);
     layout
+}
+
+/// Draw a [`Button`] into `layout.bounds` on `buf`, plain (no hover/
+/// pressed tint) — what [`crate::primitive::Primitive::paint_cells`]
+/// calls.
+///
+/// `layout` must be the same [`ButtonLayout`] the host hit-tests against
+/// (typically [`tui_button_layout`]'s return value) so paint and
+/// click-routing can never disagree.
+pub(crate) fn draw_button_layout(
+    buf: &mut Buffer,
+    button: &Button,
+    layout: &ButtonLayout,
+    theme: &Theme,
+) {
+    draw_button_layout_interactive(buf, button, layout, theme, false, false);
+}
+
+/// [`draw_button_layout`], tinting the background via
+/// `Theme::button_pressed_bg`/`Theme::button_hover_bg` — the cell-grid
+/// twin of [`draw_button_interactive`], against an already-resolved
+/// `layout` rather than a rect.
+fn draw_button_layout_interactive(
+    buf: &mut Buffer,
+    button: &Button,
+    layout: &ButtonLayout,
+    theme: &Theme,
+    is_hovered: bool,
+    is_pressed: bool,
+) {
+    // The painter never moves the cursor, so the sink is never read.
+    let mut cursor_sink = None;
+    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    cell_paint::paint(button, layout, &mut surface, theme, is_hovered, is_pressed);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event::Point;
-    use crate::primitives::button::ButtonHit;
+    use crate::primitives::button::{ButtonHit, ButtonIconPosition, ButtonVariant};
+    use crate::tui::ratatui_color;
     use crate::types::WidgetId;
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
@@ -505,10 +428,10 @@ mod tests {
         assert!(!without_nerd_fonts.contains('\u{f071}'));
     }
 
-    /// `icon_gap_cells` must clamp against the button's own paint width
-    /// rather than growing the gap string without bound — an
-    /// unvalidated `f32::MAX`/non-finite `icon_gap` must neither panic
-    /// nor allocate anywhere near that size.
+    /// A huge/non-finite `icon_gap` must neither panic nor allocate
+    /// anywhere near its raw size — the unit-level clamp is covered
+    /// directly by `crate::primitives::button::cell_paint`'s own tests;
+    /// this is the black-box "painting one doesn't blow up" check.
     #[test]
     fn huge_icon_gap_is_clamped_instead_of_overflowing_or_panicking() {
         let area = Rect::new(0, 0, 14, 1);
@@ -519,10 +442,6 @@ mod tests {
 
         let mut buf = Buffer::empty(area);
         draw_button(&mut buf, area, &button, &theme, true);
-
-        assert_eq!(icon_gap_cells(f32::MAX, 10), 10);
-        assert_eq!(icon_gap_cells(f32::INFINITY, 10), 10);
-        assert_eq!(icon_gap_cells(f32::NAN, 10), 10);
     }
 
     #[test]

@@ -261,7 +261,10 @@ impl Button {
     /// Resolve the button's hit-testable bounds. A `Button` has no
     /// internal sub-regions — the whole box is one hit target.
     pub fn layout(&self, bounds: Rect) -> ButtonLayout {
-        ButtonLayout { bounds }
+        ButtonLayout {
+            bounds,
+            nerd_fonts_enabled: false,
+        }
     }
 
     /// `Enter`/`Space` activates when focused and enabled. Any other
@@ -451,6 +454,17 @@ impl Default for ButtonSpec {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ButtonLayout {
     pub bounds: Rect,
+    /// Whether the backend has a Nerd Font icon face registered — see
+    /// [`crate::primitive::LayoutCtx::nerd_fonts_enabled`]. Baked in at
+    /// layout time (by [`crate::primitive::Primitive::layout`]) because
+    /// [`crate::primitive::Primitive::paint_cells`] has no `LayoutCtx`
+    /// of its own to read it from — the same seam
+    /// [`crate::primitives::tab_bar::TabBarLayout::nerd_fonts_enabled`]/
+    /// [`crate::primitives::activity_bar::ActivityBarLayout::nerd_fonts`]
+    /// already carry it through for the same reason. Defaults to
+    /// `false` for every pre-existing [`Button::layout`] call site,
+    /// which never set it.
+    pub nerd_fonts_enabled: bool,
 }
 
 /// Classification of a hit-test result.
@@ -501,6 +515,398 @@ impl ButtonLayout {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ButtonEvent {
     Activated { id: WidgetId },
+}
+
+impl crate::interactive::WidgetAction for ButtonEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        match self {
+            ButtonEvent::Activated { .. } => crate::UiEvent::ButtonActivated { widget: id },
+        }
+    }
+}
+
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+//
+// `Button` reaches the frame type-erased as [`crate::frame::Surface::Widget`]:
+// `layout` resolves the button's own bounds plus the backend's
+// `nerd_fonts_enabled` flag (baked in since [`Primitive::paint_cells`]
+// has no `LayoutCtx` of its own — see [`ButtonLayout::nerd_fonts_enabled`]'s
+// doc) — [`pixel_button_layout`] on a pixel surface,
+// [`cell_button_layout`] on a cell grid — `paint` runs the shared pixel
+// painter in [`native_surface_paint`], `paint_cells` runs the cell
+// painter in [`cell_paint`], and `handle` folds in
+// [`Button::handle_key`]/[`Button::click`].
+
+/// Resolve `button`'s layout for a pixel surface — bounds plus
+/// `nerd_fonts_enabled` from `ctx`.
+pub(crate) fn pixel_button_layout(
+    button: &Button,
+    ctx: &crate::primitive::LayoutCtx,
+    rect: Rect,
+) -> ButtonLayout {
+    let mut layout = button.layout(rect);
+    layout.nerd_fonts_enabled = ctx.nerd_fonts_enabled;
+    layout
+}
+
+/// Resolve `button`'s layout for a cell grid — see [`pixel_button_layout`].
+pub(crate) fn cell_button_layout(
+    button: &Button,
+    ctx: &crate::primitive::LayoutCtx,
+    rect: Rect,
+) -> ButtonLayout {
+    let mut layout = button.layout(rect);
+    layout.nerd_fonts_enabled = ctx.nerd_fonts_enabled;
+    layout
+}
+
+impl crate::primitive::Primitive for Button {
+    type Layout = ButtonLayout;
+    type Event = ButtonHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Button(self.clone())
+    }
+
+    /// `[ Label ]` bracket chrome: [`Self::min_cell_width`]-shaped
+    /// chrome plus [`Self::label`]'s own display width on a cell grid,
+    /// [`ButtonMetrics::padding_x`] on both sides plus the measured
+    /// label width on a pixel surface — a label-driven intrinsic width
+    /// no fixed-size container can supply on its own, same reasoning
+    /// [`crate::primitives::toolbar::measure_button`] already applies
+    /// to a `ToolbarButton::Action`.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let spec = ButtonSpec {
+            label: self.label.clone(),
+            variant: self.variant,
+            icon: self.icon.clone(),
+            icon_position: self.icon_position,
+            icon_gap: self.icon_gap,
+            tooltip: None,
+            disabled: self.disabled,
+        };
+        match ctx.units() {
+            crate::primitive::Units::Cells => {
+                crate::NaturalSize::new(Some(spec.min_cell_width()), Some(1.0))
+            }
+            _ => {
+                let metrics = ButtonMetrics::resolve(ctx.style());
+                let label_w = ctx.text_width(&self.label, self.font_role());
+                let icon_w = if self.icon.is_some() {
+                    metrics.height + self.icon_gap
+                } else {
+                    0.0
+                };
+                let width = if matches!(self.variant, ButtonVariant::Icon) {
+                    icon_w.max(metrics.height)
+                } else {
+                    metrics.padding_x * 2.0 + label_w + icon_w
+                };
+                crate::NaturalSize::new(Some(width), Some(metrics.height))
+            }
+        }
+    }
+
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> ButtonLayout {
+        match ctx.units() {
+            crate::primitive::Units::Cells => cell_button_layout(self, ctx, rect),
+            _ => pixel_button_layout(self, ctx, rect),
+        }
+    }
+
+    /// The shared pixel painter, against the already-resolved `layout`'s
+    /// bounds — `is_hovered`/`is_pressed` both `false`, the same plain
+    /// paint every non-state `Backend::draw_button` call site already
+    /// uses (hover/pressed tinting for a contract-routed button is
+    /// future work, the same gap `crate::tui::button`'s own
+    /// `draw_button` vs. `draw_button_interactive` split already
+    /// tracks).
+    fn paint(
+        &self,
+        layout: &ButtonLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let _ = native_surface_paint::paint(
+                self,
+                surface,
+                theme,
+                layout.bounds,
+                style,
+                false,
+                false,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, theme, style);
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_button_layout`] because the `Buffer` ->
+    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &ButtonLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        crate::tui::draw_button_layout(buf, self, layout, theme);
+    }
+}
+
+impl crate::interactive::Interactive for Button {
+    type State = ();
+    type Action = ButtonEvent;
+
+    /// One focus stop per button — the same self-contained convention
+    /// `Button::focused`'s own doc describes.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    fn a11y_actions(&self, _state: &()) -> Vec<crate::a11y::A11yAction> {
+        if self.disabled {
+            Vec::new()
+        } else {
+            vec![crate::a11y::A11yAction::Click]
+        }
+    }
+
+    /// `Enter`/`Space` activates — note this does *not* call
+    /// [`Button::handle_key`], whose own `self.focused` gate is the
+    /// legacy, non-contract convention a host sets by hand before
+    /// calling it directly; the engine only ever routes a `Key` event to
+    /// whichever widget its own `FocusTree` already names as focused
+    /// (see `crate::runtime::route_widget_key`), so re-checking
+    /// `self.focused` here would wrongly ignore the key on a descriptor
+    /// a host rebuilds fresh every frame without separately mirroring
+    /// that flag. A left click activates regardless of focus (see
+    /// [`Button::click`]), requesting focus first so a pointer
+    /// activation leaves the button focused the same way a keyboard
+    /// activation requires it to already be.
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &crate::interactive::RoutedEvent,
+        _layout: &ButtonLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<ButtonEvent> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+        use crate::Handled;
+
+        match event {
+            RoutedEvent::Key(crate::interactive::KeyEvent {
+                key: Key::Named(NamedKey::Enter) | Key::Char(' '),
+                ..
+            }) => match self.click() {
+                Some(event) => Handled::Event(event),
+                None => Handled::Ignored,
+            },
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::event::MouseButton::Left),
+                ..
+            } => match self.click() {
+                Some(event) => {
+                    cx.request_focus(None);
+                    Handled::Event(event)
+                }
+                None => Handled::Ignored,
+            },
+            RoutedEvent::Action(crate::a11y::A11yAction::Click) => match self.click() {
+                Some(event) => Handled::Event(event),
+                None => Handled::Ignored,
+            },
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+/// The cell-grid painter for [`Button`], written against
+/// [`crate::CellSurface`] — moved from `crate::tui::button`, which is
+/// now a thin `Buffer` -> [`crate::CellSurface`] adapter.
+///
+/// Paints `[ Label ]` bracket chrome for [`ButtonVariant::Primary`] /
+/// [`ButtonVariant::Secondary`] / [`ButtonVariant::Danger`] /
+/// [`ButtonVariant::Warning`], and the bare label for
+/// [`ButtonVariant::Icon`]. [`ButtonLayout::nerd_fonts_enabled`] (baked
+/// in at layout time) picks [`crate::Icon::glyph`] vs.
+/// [`crate::Icon::fallback`] for [`Button::icon`].
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{Button, ButtonIconPosition, ButtonLayout, ButtonVariant};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::primitives::layout_metrics::pixel::NOMINAL_CELL_PX_WIDTH;
+    use crate::theme::Theme;
+    use crate::types::Color;
+
+    fn solid(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Quantise [`Button::icon_gap`] to whole TUI cells — see
+    /// `crate::tui::button`'s historical doc for why a zero-cell gap
+    /// isn't honoured. Clamped at `max_cells` so an unvalidated,
+    /// arbitrarily large `icon_gap` can neither overflow the `as usize`
+    /// cast nor allocate past what the paint loop could ever use.
+    fn icon_gap_cells(icon_gap: f32, max_cells: usize) -> usize {
+        if !icon_gap.is_finite() {
+            return max_cells.max(1);
+        }
+        ((icon_gap / NOMINAL_CELL_PX_WIDTH).ceil() as usize).clamp(1, max_cells.max(1))
+    }
+
+    /// Paint `button` into `layout.bounds` on `surface`, tinting the
+    /// background via `Theme::button_pressed_bg`/`Theme::button_hover_bg`
+    /// when `is_hovered`/`is_pressed` is set — pressed takes priority
+    /// over hover, same as the GTK/macOS/Win `native_surface_paint`
+    /// path.
+    ///
+    /// `layout` must be the value [`super::cell_button_layout`] returned
+    /// for the same button and rect, so paint and
+    /// [`ButtonLayout::hit_test`] can never disagree.
+    pub(crate) fn paint(
+        button: &Button,
+        layout: &ButtonLayout,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+        is_hovered: bool,
+        is_pressed: bool,
+    ) {
+        let bounds = layout.bounds;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 {
+            return;
+        }
+
+        let x0 = bounds.x.round() as u16;
+        let w = bounds.width.round() as u16;
+        let end = x0.saturating_add(w);
+        let area_height = bounds.height.round() as u16;
+        // Centre the label row so a focus ring's top/bottom border
+        // (painted on the cell's edge rows) never overwrites it.
+        let y = bounds.y.round() as u16 + area_height.saturating_sub(1) / 2;
+
+        let intent_fg = match button.variant {
+            ButtonVariant::Danger => Some(theme.error_fg),
+            ButtonVariant::Warning => Some(theme.warning_fg),
+            ButtonVariant::Primary | ButtonVariant::Secondary | ButtonVariant::Icon => None,
+        };
+
+        let bg = if button.disabled {
+            theme.surface_bg
+        } else {
+            match button.variant {
+                ButtonVariant::Primary => theme.accent_bg,
+                ButtonVariant::Secondary | ButtonVariant::Danger | ButtonVariant::Warning => {
+                    theme.surface_bg
+                }
+                ButtonVariant::Icon => theme.background,
+            }
+        };
+        let bg = if button.disabled {
+            bg
+        } else if is_pressed {
+            theme.button_pressed_bg(bg)
+        } else if is_hovered {
+            theme.button_hover_bg(bg)
+        } else {
+            bg
+        };
+        let fg = if button.disabled {
+            theme.muted_fg
+        } else if let Some(intent) = intent_fg {
+            intent
+        } else {
+            theme.foreground
+        };
+        let brk_fg = if button.disabled {
+            theme.muted_fg
+        } else if button.focused {
+            theme.accent_fg
+        } else if let Some(intent) = intent_fg {
+            intent
+        } else {
+            theme.border_fg
+        };
+
+        let is_icon = matches!(button.variant, ButtonVariant::Icon);
+        let icon_ch: Option<char> = button.icon.as_ref().map(|icon| {
+            icon.resolve(layout.nerd_fonts_enabled)
+                .chars()
+                .next()
+                .unwrap_or(' ')
+        });
+        let inner = match icon_ch {
+            None => button.label.clone(),
+            Some(ch) => {
+                let gap = " ".repeat(icon_gap_cells(button.icon_gap, w as usize));
+                match button.icon_position {
+                    ButtonIconPosition::Leading => format!("{ch}{gap}{}", button.label),
+                    ButtonIconPosition::Trailing => format!("{}{gap}{ch}", button.label),
+                }
+            }
+        };
+        let text: String = if is_icon {
+            inner
+        } else {
+            format!("[ {inner} ]")
+        };
+        let last_idx = text.chars().count().saturating_sub(1);
+
+        let mut col = x0;
+        for (i, ch) in text.chars().enumerate() {
+            if col >= end {
+                break;
+            }
+            let is_bracket = !is_icon && (i == 0 || i == last_idx);
+            let ch_fg = if is_bracket { brk_fg } else { fg };
+            surface.put_char(col, y, ch, solid(ch_fg, bg));
+            col += 1;
+        }
+        while col < end {
+            surface.put_char(col, y, ' ', solid(fg, bg));
+            col += 1;
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        /// Must clamp against the button's own paint width rather than
+        /// growing the gap string without bound — an unvalidated
+        /// `f32::MAX`/non-finite `icon_gap` must neither panic nor
+        /// allocate anywhere near that size.
+        #[test]
+        fn icon_gap_cells_clamps_non_finite_and_huge_gaps() {
+            assert_eq!(icon_gap_cells(f32::MAX, 10), 10);
+            assert_eq!(icon_gap_cells(f32::INFINITY, 10), 10);
+            assert_eq!(icon_gap_cells(f32::NAN, 10), 10);
+        }
+    }
 }
 
 /// `paint` is the shared [`crate::paint_surface::PaintSurface`]
@@ -1475,5 +1881,185 @@ mod tests {
         assert_eq!(spec.tooltip, Some("Reload the tree".to_string()));
         assert!(spec.disabled);
         assert_eq!(spec.variant, ButtonVariant::Primary);
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::interactive::{
+        EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent,
+        WidgetAction,
+    };
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::{Handled, MouseButton, Point};
+
+    #[derive(Debug, Default)]
+    struct MockHost {
+        focus_requests: Vec<Option<crate::interactive::SubTarget>>,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<crate::interactive::SubTarget>) -> bool {
+            false
+        }
+        fn request_focus(&mut self, _id: &WidgetId, sub: Option<crate::interactive::SubTarget>) {
+            self.focus_requests.push(sub);
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: crate::backend::PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, _event: crate::UiEvent) {}
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn key_event(key: Key) -> RoutedEvent {
+        RoutedEvent::Key(KeyEvent {
+            key,
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+    }
+
+    fn down_event() -> RoutedEvent {
+        RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            sub: None,
+            local: Point::new(1.0, 0.0),
+            mods: Modifiers::default(),
+        }
+    }
+
+    #[test]
+    fn declares_a_single_focus_stop() {
+        assert_eq!(
+            Button::new(WidgetId::new("b"), "OK").focus(),
+            FocusSpec::Stop
+        );
+    }
+
+    #[test]
+    fn primitive_layout_and_paint_cells_round_trip() {
+        let b = Button::new(WidgetId::new("dialog:ok"), "OK");
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let rect = Rect::new(0.0, 0.0, 6.0, 1.0);
+        let layout = Primitive::layout(&b, &ctx, rect);
+        assert_eq!(layout.bounds, rect);
+
+        #[cfg(feature = "tui")]
+        {
+            let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 6, 1));
+            Primitive::paint_cells(&b, &layout, &mut buf, &crate::theme::Theme::default());
+            let row: String = (0..6).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+            assert!(row.contains('O'));
+        }
+    }
+
+    #[test]
+    fn enabled_button_advertises_a_click_action() {
+        let b = Button::new(WidgetId::new("b"), "OK");
+        assert_eq!(b.a11y_actions(&()), vec![A11yAction::Click]);
+    }
+
+    #[test]
+    fn disabled_button_advertises_no_actions() {
+        let mut b = Button::new(WidgetId::new("b"), "OK");
+        b.disabled = true;
+        assert!(b.a11y_actions(&()).is_empty());
+    }
+
+    #[test]
+    fn handle_enter_activates() {
+        let b = Button::new(WidgetId::new("b"), "OK");
+        let layout = ButtonLayout {
+            bounds: Rect::new(0.0, 0.0, 6.0, 1.0),
+            nerd_fonts_enabled: false,
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+        let outcome = b.handle(
+            &mut (),
+            &key_event(Key::Named(NamedKey::Enter)),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Event(ButtonEvent::Activated { id: b.id }));
+    }
+
+    #[test]
+    fn handle_click_requests_focus_and_activates() {
+        let b = Button::new(WidgetId::new("b"), "OK");
+        let layout = ButtonLayout {
+            bounds: Rect::new(0.0, 0.0, 6.0, 1.0),
+            nerd_fonts_enabled: false,
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+        let outcome = b.handle(&mut (), &down_event(), &layout, &mut cx);
+        assert_eq!(outcome, Handled::Event(ButtonEvent::Activated { id: b.id }));
+        assert_eq!(host.focus_requests, vec![None]);
+    }
+
+    #[test]
+    fn disabled_button_ignores_activation_events() {
+        let mut b = Button::new(WidgetId::new("b"), "OK");
+        b.disabled = true;
+        let layout = ButtonLayout {
+            bounds: Rect::new(0.0, 0.0, 6.0, 1.0),
+            nerd_fonts_enabled: false,
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(b.id, &mut host);
+        let outcome = b.handle(
+            &mut (),
+            &key_event(Key::Named(NamedKey::Enter)),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Ignored);
+    }
+
+    /// Three-way event parity's in-crate leg: an [`A11yAction::Click`]
+    /// routed through [`crate::a11y::route_widget_action`] produces the
+    /// exact same [`crate::UiEvent`] a direct [`Interactive::handle`]
+    /// call with the same `RoutedEvent::Action` does. The TUI
+    /// mouse-click leg lives in `tests/widget_contract_button.rs`.
+    #[test]
+    fn route_widget_action_click_matches_direct_interactive_handle() {
+        let b = Button::new(WidgetId::new("dialog:ok"), "OK");
+        let id = b.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, Rect::new(0.0, 0.0, 6.0, 1.0), Box::new(b.clone()));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+
+        let events =
+            crate::a11y::route_widget_action(&tree, &mut states, &ctx, id, A11yAction::Click);
+
+        let layout = ButtonLayout {
+            bounds: Rect::new(0.0, 0.0, 6.0, 1.0),
+            nerd_fonts_enabled: false,
+        };
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(id, &mut host);
+        let direct = b.handle(
+            &mut (),
+            &RoutedEvent::Action(A11yAction::Click),
+            &layout,
+            &mut cx,
+        );
+        let expected = match direct {
+            Handled::Event(ev) => vec![ev.into_ui_event(id)],
+            _ => vec![],
+        };
+        assert_eq!(events, expected);
+        assert_eq!(
+            events,
+            vec![ButtonEvent::Activated { id }.into_ui_event(id)]
+        );
     }
 }

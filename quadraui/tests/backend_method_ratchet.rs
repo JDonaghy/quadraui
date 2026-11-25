@@ -204,6 +204,18 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("ContextMenu", "draw_context_menu"),
     ("ContextMenu", "draw_context_menu_with_state"),
     ("ContextMenu", "draw_context_menu_with_glyphs"),
+    // Group-A slice 1 (quadraui#3005): `Switch`/`RadioGroup`/`Button`
+    // now paint through `Primitive`/`Interactive`, and keep their
+    // bespoke pairs until the sibling retirement issues (#3006-#3009)
+    // delete the methods, the per-backend wrapper files and the
+    // in-repo bindings together.
+    ("Switch", "draw_switch"),
+    ("Switch", "switch_layout"),
+    ("RadioGroup", "draw_radio_group"),
+    ("RadioGroup", "radio_group_layout"),
+    ("Button", "draw_button"),
+    ("Button", "draw_button_with_state"),
+    ("Button", "button_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

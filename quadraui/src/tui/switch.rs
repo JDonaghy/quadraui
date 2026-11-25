@@ -1,94 +1,57 @@
-//! TUI rasteriser for [`crate::Switch`].
-//!
-//! Paints a 4-cell `[● ]`/`[ ●]` track with the knob on the right when
-//! `value` is `true`, on the left when `false`. The whole cell range is
-//! one hit target, same as [`crate::Switch::layout`].
+//! TUI entry points for [`crate::Switch`] — thin delegates onto the
+//! widget's own cell painter, `crate::primitives::switch::cell_paint`,
+//! which documents the track/knob rules. This module only adapts a raw
+//! ratatui [`Buffer`] into the [`crate::CellSurface`] that painter takes,
+//! and converts a ratatui cell [`Rect`] into the quadraui one the
+//! widget's own cell layout takes.
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{ratatui_color, set_cell};
-use crate::primitives::switch::{Switch, SwitchLayout};
+use super::cell_surface::TuiCellSurface;
+use crate::backend::ColorDepth;
+use crate::event::Rect as QRect;
+use crate::primitives::switch::{cell_paint, cell_switch_layout, Switch, SwitchLayout};
 use crate::theme::Theme;
-
-const TUI_SWITCH_WIDTH: u16 = 4;
 
 /// Compute the TUI cell-unit layout for a [`Switch`] without painting.
 /// The control has no internal sub-regions, so `area` maps straight
 /// through to [`Switch::layout`]'s bounds.
 pub fn tui_switch_layout(switch: &Switch, area: Rect) -> SwitchLayout {
-    switch.layout(crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
-    ))
+    cell_switch_layout(
+        switch,
+        QRect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ),
+    )
 }
 
 /// Draw a [`Switch`] into `area` on `buf`. Returns the layout for host
 /// click dispatch.
 pub fn draw_switch(buf: &mut Buffer, area: Rect, switch: &Switch, theme: &Theme) -> SwitchLayout {
     let layout = tui_switch_layout(switch, area);
-
-    if area.width == 0 || area.height == 0 {
-        return layout;
-    }
-
-    let y = layout.bounds.y.round() as u16;
-    let x0 = layout.bounds.x.round() as u16;
-    let w = layout.bounds.width.round() as u16;
-    let end = x0.saturating_add(w);
-
-    let track_bg = if switch.disabled {
-        ratatui_color(theme.surface_bg)
-    } else if switch.value {
-        ratatui_color(theme.accent_bg)
-    } else {
-        ratatui_color(theme.surface_bg)
-    };
-    let brk_fg = if switch.disabled {
-        ratatui_color(theme.muted_fg)
-    } else if switch.focused {
-        ratatui_color(theme.accent_fg)
-    } else {
-        ratatui_color(theme.border_fg)
-    };
-    let knob_fg = if switch.disabled {
-        ratatui_color(theme.muted_fg)
-    } else {
-        ratatui_color(theme.foreground)
-    };
-
-    let track_w = TUI_SWITCH_WIDTH.min(w);
-    let knob_col = if track_w <= 2 {
-        x0
-    } else if switch.value {
-        x0 + track_w - 2
-    } else {
-        x0 + 1
-    };
-
-    let mut col = x0;
-    if col < end {
-        set_cell(buf, col, y, '[', brk_fg, track_bg);
-        col += 1;
-    }
-    while col < x0 + track_w.saturating_sub(1) && col < end {
-        let ch = if col == knob_col { '●' } else { ' ' };
-        let fg = if col == knob_col { knob_fg } else { track_bg };
-        set_cell(buf, col, y, ch, fg, track_bg);
-        col += 1;
-    }
-    if col < end {
-        set_cell(buf, col, y, ']', brk_fg, track_bg);
-        col += 1;
-    }
-    while col < end {
-        set_cell(buf, col, y, ' ', knob_fg, ratatui_color(theme.background));
-        col += 1;
-    }
-
+    draw_switch_layout(buf, switch, &layout, theme);
     layout
+}
+
+/// Draw a [`Switch`] into `layout.bounds` on `buf`.
+///
+/// `layout` must be the same [`SwitchLayout`] the host hit-tests against
+/// (typically [`tui_switch_layout`]'s return value) so paint and
+/// click-routing can never disagree.
+pub(crate) fn draw_switch_layout(
+    buf: &mut Buffer,
+    switch: &Switch,
+    layout: &SwitchLayout,
+    theme: &Theme,
+) {
+    // The painter never moves the cursor, so the sink is never read.
+    let mut cursor_sink = None;
+    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    cell_paint::paint(switch, layout, &mut surface, theme);
 }
 
 #[cfg(test)]

@@ -922,6 +922,32 @@ pub enum UiEvent {
         fraction: f32,
     },
 
+    /// A standalone [`crate::Switch`] flipped, via
+    /// [`crate::Switch::handle_key`] (`Enter`/`Space` while focused) or
+    /// [`crate::Switch::click`] (a left click, regardless of focus).
+    /// `value` is the *new* value, so a host doesn't need to re-read the
+    /// descriptor after applying the event.
+    SwitchToggled {
+        widget: WidgetId,
+        value: bool,
+    },
+
+    /// A standalone [`crate::RadioGroup`]'s selection changed, via
+    /// [`crate::RadioGroup::handle_key`] (arrow-key cursor movement) or
+    /// [`crate::RadioGroup::select`] (a click on a specific option).
+    /// `index` is into [`crate::RadioGroup::options`].
+    RadioGroupSelectionChanged {
+        widget: WidgetId,
+        index: usize,
+    },
+
+    /// A standalone [`crate::Button`] activated, via
+    /// [`crate::Button::handle_key`] (`Enter`/`Space` while focused) or
+    /// [`crate::Button::click`] (a left click, regardless of focus).
+    ButtonActivated {
+        widget: WidgetId,
+    },
+
     // ── Text selection ────────────────────────────────────────────────
     /// A mouse text-selection drag extended or finalised its range.
     /// Emitted by [`crate::dispatch::dispatch_mouse_drag`] while a
