@@ -3458,7 +3458,8 @@ mod cell_paint_tests {
     };
     use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure};
     use crate::theme::Theme;
-    use crate::tui::{draw_dialog, ratatui_color, tui_dialog_layout};
+    use super::cell_test_paint::{draw_dialog, tui_dialog_layout};
+    use crate::tui::ratatui_color;
     use crate::types::{StyledSpan, StyledText, WidgetId};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -4267,5 +4268,32 @@ mod interactive_tests {
         let without = Primitive::layout(&d, &LayoutCtx::new(1.0, 1.0, false), viewport());
         assert!(with.nerd_fonts);
         assert!(!without.nerd_fonts);
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16)>,
+    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
+        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+    }
+
+    pub fn tui_dialog_layout(dialog: &Dialog, viewport: Rect) -> DialogLayout {
+        cell_layout(dialog, viewport)
+    }
+
+    pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, theme: &Theme) {
+        let mut sink = None;
+        cell_paint::paint(dialog, layout, &mut surface(buf, &mut sink), theme, false);
     }
 }

@@ -22,6 +22,7 @@
 //! - `Esc`            → cancel the edit, revert to the committed value
 //! - `q`              → quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, ComboBox, CompletionItemMeasure, FieldKind, Form, FormController,
     FormControllerAction, FormEvent, FormField, Handled, InteractionState, Key, NamedKey, Reaction,
@@ -152,16 +153,7 @@ impl AppLogic for FormComboBoxApp {
             let vp = backend.viewport();
             let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
             let line_height = backend.line_height();
-            let layout = self.combo.layout(
-                field_bounds,
-                viewport,
-                field_bounds.width,
-                line_height * 8.0,
-                |_idx| CompletionItemMeasure {
-                    height: line_height,
-                },
-            );
-            backend.draw_combo_box(&self.combo, &layout);
+            backend.draw_dyn(field_bounds, &self.combo, &());
         }
 
         let _hits = backend.draw_status_bar_interactive(

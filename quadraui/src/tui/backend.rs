@@ -51,9 +51,9 @@ use crate::backend::{activity_bar_hits, ColorDepth, Screenshot, ScreenshotRun};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Backend, Color, CommandLine, DragState, Form,
-    ListView, MenuBar, ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split,
-    StatusBar, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    Accelerator, AcceleratorId, ActivityBar, Backend, Color, DragState, Form, ListView,
+    MenuBar, ModalStack, Palette, PlatformServices, Point, Rect as QRect, Split, StatusBar,
+    TerminalCellSize, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
 // only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs

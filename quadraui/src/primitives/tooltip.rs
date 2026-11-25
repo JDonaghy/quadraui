@@ -133,6 +133,12 @@ pub struct Tooltip {
     /// Override foreground colour.
     #[serde(default)]
     pub fg: Option<Color>,
+    /// Border and optional title — see [`TooltipChrome`]. `#[serde(default)]`
+    /// with [`TooltipChrome`]'s own `Default` (a [`TooltipBorder::Full`]
+    /// box, no title), so a frame deserialized without the key keeps the
+    /// plain box every consumer had before the knob existed.
+    #[serde(default)]
+    pub chrome: TooltipChrome,
 }
 
 /// Border chrome vocabulary for [`Tooltip`].
@@ -320,7 +326,8 @@ impl Tooltip {
     /// Construct a `Tooltip` with just the two fields every consumer must
     /// supply — `id` and `text` — and every other field at its
     /// behaviour-preserving default (`styled_lines: None`, `placement:
-    /// Bottom`, `bg: None`, `fg: None`).
+    /// Bottom`, `bg: None`, `fg: None`, `chrome:
+    /// TooltipChrome::default()`).
     pub fn new(id: WidgetId, text: impl Into<String>) -> Self {
         Self {
             id,
@@ -329,7 +336,16 @@ impl Tooltip {
             placement: TooltipPlacement::default(),
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         }
+    }
+
+    /// This tooltip with `chrome` as its border/title — the builder half
+    /// of the `chrome` field, for a consumer that wants a titled or
+    /// border-less box.
+    pub fn with_chrome(mut self, chrome: TooltipChrome) -> Self {
+        self.chrome = chrome;
+        self
     }
 
     /// Compute tooltip placement.
@@ -530,7 +546,7 @@ impl crate::primitive::Primitive for Tooltip {
             native_surface_paint::paint(
                 self,
                 layout,
-                &TooltipChrome::default(),
+                &self.chrome,
                 line_height,
                 padding_x,
                 surface,
@@ -565,7 +581,7 @@ impl crate::primitive::Primitive for Tooltip {
             crate::backend::ColorDepth::TrueColor,
             &mut cursor_sink,
         );
-        cell_paint::paint(self, layout, &TooltipChrome::default(), &mut surface, theme);
+        cell_paint::paint(self, layout, &self.chrome, &mut surface, theme);
     }
 }
 
@@ -1575,7 +1591,7 @@ mod tests {
         use super::*;
         use crate::event::Rect as QRect;
         use crate::theme::Theme;
-        use crate::tui::{draw_tooltip, draw_tooltip_with_chrome};
+        use super::super::cell_test_paint::{draw_tooltip, draw_tooltip_with_chrome};
         use crate::types::StyledSpan;
         use cell_paint::painted_bounds;
         use ratatui::buffer::Buffer;
@@ -1914,5 +1930,38 @@ mod tests {
             assert_eq!(row(3), "│ three│");
             assert_eq!(row(4), "└──────┘");
         }
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16)>,
+    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
+        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+    }
+
+    pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout, theme: &Theme) {
+        draw_tooltip_with_chrome(buf, tooltip, layout, &TooltipChrome::default(), theme);
+    }
+
+    pub fn draw_tooltip_with_chrome(
+        buf: &mut Buffer,
+        tooltip: &Tooltip,
+        layout: &TooltipLayout,
+        chrome: &TooltipChrome,
+        theme: &Theme,
+    ) {
+        let mut sink = None;
+        cell_paint::paint(tooltip, layout, chrome, &mut surface(buf, &mut sink), theme);
     }
 }

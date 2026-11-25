@@ -842,7 +842,7 @@ mod tests {
         use super::*;
         use crate::event::Point;
         use crate::theme::Theme;
-        use crate::tui::draw_float;
+        use super::super::cell_test_paint::draw_float;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect as RRect;
 
@@ -950,5 +950,28 @@ mod tests {
             draw_float(&mut direct, &float, &layout, &theme());
             assert_eq!(via_primitive, direct);
         }
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16)>,
+    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
+        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+    }
+
+    pub fn draw_float(buf: &mut Buffer, float: &Float, layout: &FloatLayout, theme: &Theme) {
+        let mut sink = None;
+        cell_paint::paint(float, layout, &mut surface(buf, &mut sink), theme);
     }
 }

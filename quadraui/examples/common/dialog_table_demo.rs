@@ -14,6 +14,7 @@
 //!   `DialogMeasure` — this dogfoods the library helper.
 //! - The `draw_dialog` table rendering path (column separators + header row)
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Dialog, DialogButton, DialogMeasure, DialogTable, FontRole, Key, NamedKey,
     Reaction, Rect, StyledText, ToolbarItemMeasure, UiEvent, WidgetId,
@@ -119,12 +120,8 @@ impl AppLogic for DialogTableDemo {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let viewport = backend.viewport();
-        let measure = self.measure(backend);
         let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        let layout = self
-            .dialog
-            .layout(viewport_rect, measure, |_| ToolbarItemMeasure::new(0.0));
-        backend.draw_dialog(&self.dialog, &layout);
+        backend.draw_dyn(viewport_rect, &self.dialog, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

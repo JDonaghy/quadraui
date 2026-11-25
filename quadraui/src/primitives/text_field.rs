@@ -1459,7 +1459,7 @@ mod cell_paint_tests {
 
     use crate::primitives::text_field::TextField;
     use crate::theme::Theme;
-    use crate::tui::draw_text_field;
+    use super::cell_test_paint::draw_text_field;
     use crate::types::{Color, Icon, WidgetId};
 
     fn theme() -> Theme {
@@ -1676,5 +1676,48 @@ mod tests {
         assert_eq!(field.value, "");
         assert_eq!(field.cursor, Some(0));
         assert_eq!(field.selection_anchor, None);
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16)>,
+    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
+        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+    }
+
+    pub fn draw_text_field(
+        buf: &mut Buffer,
+        rect: ratatui::layout::Rect,
+        tf: &TextField,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) -> TextFieldLayout {
+        let area = Rect::new(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+        );
+        let layout = cell_layout(tf, area);
+        let mut sink = None;
+        cell_paint::paint(
+            tf,
+            &layout,
+            &mut surface(buf, &mut sink),
+            theme,
+            nerd_fonts_enabled,
+        );
+        layout
     }
 }

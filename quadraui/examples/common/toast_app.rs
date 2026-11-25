@@ -11,6 +11,7 @@
 //! - click action   log action
 //! - q / Esc    quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
     StatusBarSegment, Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity,
@@ -112,7 +113,7 @@ impl AppLogic for ToastApp {
 
         // Toast stack overlays the viewport.
         let overlay_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
-        let _ = backend.draw_toast_overlay(overlay_rect, &self.stack());
+        backend.draw_dyn(overlay_rect, &self.stack(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -173,7 +174,7 @@ impl AppLogic for ToastApp {
                 let lh = backend.line_height();
                 let overlay_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
                 let stack = self.stack();
-                let layout = backend.toast_stack_layout(overlay_rect, &stack);
+                let layout = backend.layout_primitive(overlay_rect, &stack);
                 match layout.hit_test(position.x, position.y) {
                     ToastHit::Dismiss(id) => {
                         self.toasts.retain(|t| t.id != id);

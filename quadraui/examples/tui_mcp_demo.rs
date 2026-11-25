@@ -205,18 +205,18 @@ impl AppLogic for McpDemo {
             Some(item) => vec![plain_line(item.detail)],
             None => vec![plain_line("No items match the current filter.")],
         };
-        layout.push(Surface::TextDisplay {
+        layout.push(Surface::Widget {
             rect: Rect::new(list_w, 0.0, detail_w, vp.height),
-            td: TextDisplay {
+            widget: Box::new(TextDisplay {
                 lines: detail_lines,
                 title: Some(StyledText::plain("Detail")),
                 ..TextDisplay::new(WidgetId::new("detail"))
-            },
+            }),
         });
 
-        layout.push(Surface::TextDisplay {
+        layout.push(Surface::Widget {
             rect: Rect::new(list_w + detail_w, 0.0, text_w, vp.height),
-            td: TextDisplay {
+            widget: Box::new(TextDisplay {
                 lines: vec![
                     plain_line("Up/Down select, q/Esc quit."),
                     plain_line("An agent can drive this app over MCP:"),
@@ -225,7 +225,7 @@ impl AppLogic for McpDemo {
                 ],
                 title: Some(StyledText::plain("Notes")),
                 ..TextDisplay::new(WidgetId::new("notes"))
-            },
+            }),
         });
 
         layout.draw(backend);

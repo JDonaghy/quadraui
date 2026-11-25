@@ -1173,7 +1173,7 @@ mod tests {
     mod cells {
         use super::*;
         use crate::theme::Theme;
-        use crate::tui::draw_number_input;
+        use super::super::cell_test_paint::draw_number_input;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect as RRect;
 
@@ -1513,5 +1513,33 @@ mod interactive_tests {
         // three-column stepper.
         assert_eq!(size.width, Some(1.0 + 2.0 + STEPPER_WIDTH));
         assert_eq!(size.height, Some(3.0));
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16)>,
+    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
+        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+    }
+
+    pub fn draw_number_input(
+        buf: &mut Buffer,
+        number_input: &NumberInput,
+        layout: &NumberInputLayout,
+        theme: &Theme,
+    ) {
+        let mut sink = None;
+        cell_paint::paint(number_input, layout, &mut surface(buf, &mut sink), theme);
     }
 }

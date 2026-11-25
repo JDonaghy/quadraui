@@ -28,6 +28,7 @@
 //! - Esc                      close the modal, or quit when none is open
 //! - q                        quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, Dialog, DialogButton, DialogHit, DialogLayout, DialogMeasure,
     FontRole, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
@@ -236,8 +237,9 @@ impl AppLogic for ModalOcclusionDemo {
         // Modal paints last (highest z) — the ModalStack has no opinion
         // on draw order, only on hit-test precedence.
         if self.dialog_open {
-            let layout = self.dialog_layout(backend);
-            backend.draw_dialog(&self.dialog(), &layout);
+            let viewport = backend.viewport();
+            let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            backend.draw_dyn(viewport_rect, &self.dialog(), &());
         }
     }
 

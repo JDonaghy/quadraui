@@ -1484,7 +1484,7 @@ mod tests {
     mod cells {
         use super::*;
         use crate::theme::Theme;
-        use crate::tui::draw_combo_box;
+        use super::super::cell_test_paint::draw_combo_box;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect as RRect;
 
@@ -1918,5 +1918,33 @@ mod interactive_tests {
 
         let open = Primitive::measure(&combo(true), &ctx, Size::new(40.0, 10.0));
         assert_eq!(open.height, Some(4.0), "field row plus three matches");
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16)>,
+    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
+        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+    }
+
+    pub fn draw_combo_box(
+        buf: &mut Buffer,
+        combo_box: &ComboBox,
+        layout: &ComboBoxLayout,
+        theme: &Theme,
+    ) {
+        let mut sink = None;
+        cell_paint::paint(combo_box, layout, &mut surface(buf, &mut sink), theme);
     }
 }

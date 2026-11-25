@@ -13,6 +13,7 @@
 //! | `s`   | Toggle the `:select-me` selection    |
 //! | `q`/Esc | Quit                                |
 
+use quadraui::DrawsPrimitives;
 use quadraui::{AppLogic, Backend, Color, CommandLine, Reaction, Rect, UiEvent, WidgetId};
 
 pub struct CommandLineSelectionDemo {
@@ -65,8 +66,9 @@ impl AppLogic for CommandLineSelectionDemo {
             },
             cursor_offset: None,
             right_align: false,
+            selection: None,
         };
-        backend.draw_command_line(hint_rect, &hint);
+        backend.draw_dyn(hint_rect, &hint, &());
 
         let cmd_rect = Rect::new(
             0.0,
@@ -79,9 +81,9 @@ impl AppLogic for CommandLineSelectionDemo {
             text: self.text.clone(),
             cursor_offset: None,
             right_align: false,
+            selection: self.selected.then_some(self.word_range),
         };
-        let selection = self.selected.then_some(self.word_range);
-        backend.draw_command_line_selection(cmd_rect, &cmd, selection);
+        backend.draw_dyn(cmd_rect, &cmd, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

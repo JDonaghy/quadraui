@@ -50,6 +50,12 @@ pub struct CommandLine {
     /// When `true`, right-align the text (used for count/match displays).
     #[serde(default)]
     pub right_align: bool,
+    /// Active selection as a `(start, end)` byte-offset pair into
+    /// [`Self::text`], either order. `None` (or an empty range) paints no
+    /// highlight. `#[serde(default)]`, so a frame deserialized without
+    /// the key keeps the no-selection bar.
+    #[serde(default)]
+    pub selection: Option<(usize, usize)>,
 }
 
 /// Backend-supplied character metrics for [`CommandLine::layout`]. TUI
@@ -653,17 +659,9 @@ pub(crate) mod cell_paint {
 /// absolute area the bar was laid out into, the resolved
 /// [`CommandLineLayout`], and the selection the paint path highlights.
 ///
-/// # Why `selection` is always `None` here
-///
-/// A selection range is host state ([`CommandLine`] itself carries no
-/// field for one — see that type's doc), and
-/// [`crate::primitive::Primitive::layout`] sees only the descriptor. A
-/// host that tracks a drag-selection paints it by resolving
-/// [`CommandLine::layout`] itself and calling the selection-aware painter
-/// ([`crate::Backend::draw_command_line_selection`], which is the same
-/// painter with the range filled in). The field exists on this layout so
-/// that painter has exactly one source for the range, rather than a
-/// second draw entry point.
+/// `selection` is copied off [`CommandLine::selection`], so the painter
+/// has exactly one source for the range rather than a second draw entry
+/// point.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandLinePrimitiveLayout {
@@ -717,7 +715,7 @@ impl crate::primitive::Primitive for CommandLine {
         CommandLinePrimitiveLayout {
             area: rect,
             layout,
-            selection: None,
+            selection: self.selection,
         }
     }
 
@@ -1387,7 +1385,7 @@ mod cell_paint_tests {
 
     use crate::primitives::command_line::CommandLine;
     use crate::theme::Theme;
-    use crate::tui::command_line::{draw_command_line, draw_command_line_selection};
+    use super::cell_test_paint::{draw_command_line, draw_command_line_selection};
     use crate::types::{Color, WidgetId};
 
     /// The ratatui colour `crate::tui`'s own cell writers land for a
@@ -1670,5 +1668,51 @@ mod tests {
         let end = layout.hit_test(3.0);
         let r = layout.selection_bounds((start, end)).unwrap();
         assert_eq!((r.x, r.width), (1.0, 2.0));
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    pub fn draw_command_line(
+        buf: &mut Buffer,
+        area: ratatui::layout::Rect,
+        cmd: &CommandLine,
+        theme: &Theme,
+    ) -> CommandLineLayout {
+        draw_command_line_selection(buf, area, cmd, theme, None)
+    }
+
+    pub fn draw_command_line_selection(
+        buf: &mut Buffer,
+        area: ratatui::layout::Rect,
+        cmd: &CommandLine,
+        theme: &Theme,
+        selection: Option<(usize, usize)>,
+    ) -> CommandLineLayout {
+        let layout = cell_layout(
+            cmd,
+            Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+        );
+        let mut sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut sink,
+        );
+        cell_paint::paint(cmd, &layout, &mut surface, theme, selection);
+        layout
     }
 }

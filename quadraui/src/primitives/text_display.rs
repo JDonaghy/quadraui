@@ -2203,7 +2203,7 @@ mod cell_paint_tests {
 
     use super::{TextDisplay, TextDisplayHit, TextDisplayLine, TextDisplayLineMeasure};
     use crate::theme::Theme;
-    use crate::tui::{draw_text_display, tui_text_display_layout};
+    use super::cell_test_paint::{draw_text_display, tui_text_display_layout};
     use crate::types::{Color, Decoration, StyledSpan, WidgetId};
 
     fn line(text: &str) -> TextDisplayLine {
@@ -2998,4 +2998,49 @@ mod tests {
     // wrap-helper unit tests live in `wrap::tests`, next to the helpers
     // themselves — both are gated on the rasteriser features (see the
     // `wrap` module doc), so they can't sit in this ungated `mod tests`.
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16)>,
+    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
+        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+    }
+
+    pub fn tui_text_display_layout(
+        display: &TextDisplay,
+        area: ratatui::layout::Rect,
+    ) -> TextDisplayLayout {
+        cell_layout(display, q_rect(area)).layout
+    }
+
+    pub fn draw_text_display(
+        buf: &mut Buffer,
+        area: ratatui::layout::Rect,
+        display: &TextDisplay,
+        theme: &Theme,
+    ) {
+        let resolved = cell_layout(display, q_rect(area));
+        let mut sink = None;
+        cell_paint::paint(display, &resolved, &mut surface(buf, &mut sink), theme);
+    }
+
+    fn q_rect(area: ratatui::layout::Rect) -> Rect {
+        Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        )
+    }
 }

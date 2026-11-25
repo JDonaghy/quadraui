@@ -1972,7 +1972,7 @@ mod cell_paint_tests {
     use crate::event::Point;
     use crate::primitives::text_input::{TextInput, TextInputHit};
     use crate::theme::Theme;
-    use crate::tui::draw_text_input;
+    use super::cell_test_paint::draw_text_input;
     use crate::types::{Color, WidgetId};
 
     /// The ratatui colour `crate::tui`'s own cell writers land for a
@@ -2959,5 +2959,41 @@ mod tests {
         let (new_value, _, _) =
             apply_flat_edit_op(value, value.len(), Some(2), EditOp::DeleteSelection);
         assert_eq!(new_value, "h");
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16)>,
+    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
+        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+    }
+
+    pub fn draw_text_input(
+        buf: &mut Buffer,
+        rect: ratatui::layout::Rect,
+        ti: &TextInput,
+        theme: &Theme,
+    ) -> TextInputLayout {
+        let area = Rect::new(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+        );
+        let layout = cell_layout(ti, area);
+        let mut sink = None;
+        cell_paint::paint(ti, &layout, &mut surface(buf, &mut sink), theme);
+        layout
     }
 }
