@@ -90,7 +90,8 @@ use crate::transition::{lerp, Transition};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
-    Accelerator, AcceleratorId, Key, ListView, Modifiers, ParsedBinding, PlatformServices, TextDisplay, Theme, TreeView,
+    Accelerator, AcceleratorId, Key, ListView, Modifiers, ParsedBinding, PlatformServices,
+    TextDisplay, Theme, TreeView,
 };
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this

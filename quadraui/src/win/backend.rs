@@ -40,18 +40,19 @@ use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
 use crate::{
-    Accelerator, AcceleratorId, Key, ListView, Modifiers, TextDisplay, TooltipChrome, TreeView, UserPayload,
+    Accelerator, AcceleratorId, Key, ListView, Modifiers, TextDisplay, TooltipChrome, TreeView,
+    UserPayload,
 };
 // `ActivityBar`, `MenuBar`, `StatusBar` and `TabBar` are only named by
 // `#[cfg(test)]` code below — each paints through its widget contract, not a
 // method on this backend. `ContextMenu` is named only by the Windows-host
 // tests.
-#[cfg(test)]
-use crate::{ActivityBar, MenuBar, StatusBar, TabBar};
 #[cfg(all(test, target_os = "windows"))]
 use crate::ContextMenu;
 #[cfg(target_os = "windows")]
 use crate::Theme;
+#[cfg(test)]
+use crate::{ActivityBar, MenuBar, StatusBar, TabBar};
 // `AcceleratorScope` is only referenced by `#[cfg(test)]` code below.
 // Gate the import so a non-test build doesn't flag it as unused.
 #[cfg(test)]

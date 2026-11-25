@@ -51,7 +51,9 @@ use crate::backend::{ColorDepth, Screenshot, ScreenshotRun};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
-    Accelerator, AcceleratorId, Backend, Color, CommandLine, DragState, ListView, ModalStack, PlatformServices, Point, Rect as QRect, Split, TerminalCellSize, TextDisplay, TreeView, UiEvent, Viewport, WidgetId,
+    Accelerator, AcceleratorId, Backend, Color, CommandLine, DragState, ListView, ModalStack,
+    PlatformServices, Point, Rect as QRect, Split, TerminalCellSize, TextDisplay, TreeView,
+    UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
 // only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs
@@ -2319,7 +2321,7 @@ impl Backend for TuiBackend {
         self.last_cell_surface_cursor = None;
         self.cell_surface_scratch = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_palette/a painted popup).
+        // to earn them again (via draw_dialog/draw_dyn).
         self.modal_stack.borrow_mut().reset_frame_paint();
         // Clear any unbalanced push_clip left over from the previous
         // frame — see `clip_stack`'s own doc for why a stale narrowed

@@ -27,7 +27,6 @@
 //! affordance through the toolbar's own widget-contract layout and
 //! painter.
 
-use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, ContextMenu, DrawsPrimitives, InteractionState, Key, NamedKey,
     Reaction, Rect, StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit,

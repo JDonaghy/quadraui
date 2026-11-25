@@ -56,7 +56,9 @@ use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, Backend, CommandLine, DragState, FontRole, GenericFamily, ListView, ModalStack, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, SystemTheme, TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
+    Accelerator, AcceleratorId, Backend, CommandLine, DragState, FontRole, GenericFamily, ListView,
+    ModalStack, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, SystemTheme,
+    TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
 };
 // `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
 // `#[cfg(test)]` code below — they're gated to avoid unused import
@@ -515,11 +517,8 @@ impl Drop for GtkBackend {
 
 /// Adapts a live `pango::Layout` (falling back to `char_w` when no
 /// Pango context is available, e.g. in headless tests) to the shared
-/// [`crate::primitives::layout_metrics::TextMeasure`] trait so
-/// `form_field_measure` never has to name a Pango type — mirrors
-/// `macos::form::CtFontMeasure` / `win::form::DWriteMeasure`, which
-/// exist for exactly this reason. Same width formula as
-/// `GtkBackend::pango_str_width`.
+/// [`crate::primitives::layout_metrics::TextMeasure`] trait so shared
+/// layout code never has to name a Pango type.
 struct PangoTextMeasure<'a> {
     layout: &'a Option<pango::Layout>,
     char_w: f32,
@@ -1121,23 +1120,6 @@ impl GtkBackend {
         let pl = self.pango_ctx.as_ref().map(pango::Layout::new)?;
         pl.set_font_description(Some(&crate::gtk::chrome_font_description(&self.ui_font)));
         Some(pl)
-    }
-
-    /// Measure a plain string width in pixels using Pango if
-    /// available, falling back to `chars().count() * char_w`.
-    fn pango_str_width(
-        &self,
-        pango_layout: &Option<pango::Layout>,
-        text: &str,
-        char_w: f32,
-    ) -> f32 {
-        if let Some(pl) = pango_layout {
-            pl.set_text(text);
-            let (w, _) = pl.pixel_size();
-            w as f32
-        } else {
-            (text.chars().count() as f32 * char_w).ceil() + 2.0
-        }
     }
 
     /// Enter the frame-scope: stash the cairo context + pango layout
@@ -1958,7 +1940,7 @@ impl Backend for GtkBackend {
         // text_regions.
         self.focused_activity_bar = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_palette/a painted popup).
+        // to earn them again (via draw_dialog/draw_dyn).
         self.modal_stack.borrow_mut().reset_frame_paint();
     }
 

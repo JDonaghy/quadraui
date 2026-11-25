@@ -21,24 +21,9 @@
 //!
 //! ## The `Backend` trait
 //!
-//! Every `Backend` method that took a `WidgetId`-keyed hover/pressed
-//! pair now has an `*_interactive` twin that takes one
-//! `&InteractionState` instead, and **the twin is the method each
-//! backend implements**:
-//!
-//! | positional (deprecated) | implemented |
-//! |---|---|
-//!
-//! The positional names survive as `#[deprecated]` trait defaults that
-//! rebuild an `InteractionState` via [`InteractionState::from_parts`]
-//! and forward.
-//!
-//! A second group of `Backend` methods never had a positional
-//! predecessor to deprecate — they add hover/pressed to a primitive
-//! that previously took none, so the `_with_state` name is purely
-//! additive (default forwards to the plain method, ignoring
-//! `interaction`), not a replacement:
-//!
+//! No `Backend` paint method takes an `InteractionState`: a widget painted
+//! through the widget contract ([`crate::DrawsPrimitives::draw_dyn`])
+//! carries any hover state it renders on its own descriptor.
 //!
 //! ## Methods that remain positional
 //!

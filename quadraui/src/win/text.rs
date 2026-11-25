@@ -53,7 +53,7 @@ use crate::Color;
 /// second "is it attached yet" check.
 ///
 /// `pub` (with a `pub` constructor and measure/draw methods) rather than
-/// `pub(crate)`: it appears by reference in the signatures of the 
+/// `pub(crate)`: it appears by reference in the signatures of the
 /// rasterisers `super::mod` re-exports, so a
 /// crate-private type here is a `private_interfaces` warning — i.e. a build
 /// failure under CI's `-D warnings`. Same posture as
@@ -770,13 +770,7 @@ fn draw_text(
     color: Color,
 ) -> WinResult<()> {
     if crate::testing::text_run_sink_active() {
-        // Offset by the active D2D translation so text runs are recorded
-        // in surface-absolute coordinates — the space WinDriver::find
-        // returns and the hit-test path expects. Mirrors
-        // `gtk::painted_text::show_layout`'s `cr.user_to_device()`.
-        let (tx, ty) = CURRENT_TRANSLATION.get();
-        let abs_rect = Rect::new(rect.x + tx, rect.y + ty, rect.width, rect.height);
-        crate::testing::record_text_run(text, abs_rect);
+        crate::testing::record_text_run(text, rect);
     }
     let wide: Vec<u16> = text.encode_utf16().collect();
     let brush = get_or_create_brush(target, color)?;
@@ -1142,79 +1136,6 @@ pub(crate) fn draw_line(
         );
     }
     Ok(())
-}
-
-thread_local! {
-    /// The cumulative D2D translation offset active during the current
-    /// `with_translation` scope — `(0.0, 0.0)` outside any translation.
-    /// [`draw_text`] reads this to record text runs in surface-absolute
-    /// coordinates (mirroring `gtk::painted_text::show_layout`'s
-    /// `cr.user_to_device()` conversion), so [`super::testing::WinDriver::find`]
-    /// returns positions in the same coordinate space the hit-test path uses.
-    static CURRENT_TRANSLATION: Cell<(f32, f32)> = const { Cell::new((0.0, 0.0)) };
-}
-
-/// Run `f` with `target`'s transform temporarily set to a translation by
-/// `(dx, dy)` DIPs, then restore the identity transform. Returns `f`'s
-/// own return value.
-///
-/// The Direct2D twin of Cairo's `cr.translate(dx, dy)` /
-/// `CGContextTranslateCTM` — used by callers that paint a bar-relative
-/// rasteriser at a non-zero
-/// on-screen origin without threading that origin through every
-/// coordinate the rasteriser itself computes.
-///
-/// Restoring identity unconditionally (rather than the transform that was
-/// active before this call) matches [`with_horizontal_scale`] and every
-/// other rasteriser in this crate, which never leaves a non-identity
-/// transform set on the target between draw calls. **`f` must not itself
-/// leave a non-identity transform active, and callers must not nest this
-/// inside another still-open `with_translation`/`with_horizontal_scale`
-/// call** — doing so would have the inner call's unconditional identity
-/// restore clobber the outer transform rather than composing with it.
-///
-/// Text-run recording: [`draw_text`] records bounds in
-/// **surface-absolute** coordinates so [`super::testing::WinDriver::find`]
-/// returns the same click-space position the hit-test path expects —
-/// mirroring `gtk::painted_text::show_layout`'s `cr.user_to_device()`
-/// adjustment. This function pushes `(dx, dy)` onto
-/// [`CURRENT_TRANSLATION`] so `draw_text` can offset the local rect.
-pub(crate) fn with_translation<F: FnOnce() -> R, R>(
-    target: &ID2D1RenderTarget,
-    dx: f32,
-    dy: f32,
-    f: F,
-) -> R {
-    let translated = windows_numerics::Matrix3x2 {
-        M11: 1.0,
-        M12: 0.0,
-        M21: 0.0,
-        M22: 1.0,
-        M31: dx,
-        M32: dy,
-    };
-    // SAFETY: `target` is the caller's live render target; `translated`
-    // is a plain stack struct borrowed only for this call — infallible
-    // on `ID2D1RenderTarget`, per this function's own doc comment.
-    unsafe { target.SetTransform(&translated) };
-    let prev = CURRENT_TRANSLATION.get();
-    CURRENT_TRANSLATION.set((dx, dy));
-    let result = f();
-    CURRENT_TRANSLATION.set(prev);
-    let identity = windows_numerics::Matrix3x2 {
-        M11: 1.0,
-        M12: 0.0,
-        M21: 0.0,
-        M22: 1.0,
-        M31: 0.0,
-        M32: 0.0,
-    };
-    // SAFETY: same as the `translated` call above — `target` is still
-    // the live render target, `identity` a plain stack struct borrowed
-    // only for this call, restoring the bracket this function's doc
-    // comment guarantees.
-    unsafe { target.SetTransform(&identity) };
-    result
 }
 
 /// Run `f` with `target`'s transform temporarily set to a horizontal

@@ -655,8 +655,8 @@ impl Drop for TreePaintsOwnScrollbar {
 ///
 /// Every `draw_*` call appends its method name to [`Self::calls`] — the
 /// "recording" in the name — so a test can assert *what* got painted
-/// (`backend.calls.contains(&"draw_status_bar")`) without a real
-/// rasteriser. Layout getters (`tree_layout`, `status_bar_layout`, …)
+/// (`backend.calls.contains(&"draw_tree")`) without a real
+/// rasteriser. Layout getters (`tree_layout`, `list_layout`, …)
 /// are not recorded: they're queries, not paint events, and controllers
 /// call them freely (sometimes more than once a frame) as part of
 /// ordinary hit-testing.

@@ -3655,6 +3655,8 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `button` | `ButtonDescriptor` | no |  |
 | `command_center` | `CommandCenterDescriptor` | no |  |
 | `terminal` | `TerminalDescriptor` | no |  |
+| `status_bar` | `StatusBarDescriptor` | no |  |
+| `activity_bar` | `ActivityBarDescriptor` | no |  |
 | `palette` | `PaletteDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
@@ -3721,6 +3723,8 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `button` | `ButtonDescriptor \| null` | no |  |
 | `command_center` | `CommandCenterDescriptor \| null` | no |  |
 | `terminal` | `TerminalDescriptor \| null` | no |  |
+| `status_bar` | `StatusBarDescriptor \| null` | no |  |
+| `activity_bar` | `ActivityBarDescriptor \| null` | no |  |
 | `palette` | `PaletteDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>

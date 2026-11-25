@@ -41,7 +41,6 @@ use crate::drag::DragOutPayload;
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusTree;
 use crate::frame::{FrameCapture, OwnedFrame};
-use crate::interaction::InteractionState;
 use crate::login_item::LoginItemOptions;
 use crate::modal_stack::ModalStack;
 use crate::paths::AppPathKind;
@@ -92,7 +91,8 @@ use crate::primitives::tree_table::TreeTableLayout;
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
 use crate::{
-    Accelerator, AcceleratorId, GlobalShortcutId, ListView, TabBar, TextDisplay, TreeTable, TreeView,
+    Accelerator, AcceleratorId, GlobalShortcutId, ListView, TabBar, TextDisplay, TreeTable,
+    TreeView,
 };
 use serde::{Deserialize, Serialize};
 

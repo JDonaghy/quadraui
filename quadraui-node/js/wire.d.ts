@@ -1933,6 +1933,8 @@ export interface LayoutLeafNode {
   button?: ButtonDescriptor;
   command_center?: CommandCenterDescriptor;
   terminal?: TerminalDescriptor;
+  status_bar?: StatusBarDescriptor;
+  activity_bar?: ActivityBarDescriptor;
   palette?: PaletteDescriptor;
   style?: StyleValue;
   class?: ClassValue;
@@ -1991,6 +1993,8 @@ export interface RenderFrameDict {
   button?: ButtonDescriptor | null;
   command_center?: CommandCenterDescriptor | null;
   terminal?: TerminalDescriptor | null;
+  status_bar?: StatusBarDescriptor | null;
+  activity_bar?: ActivityBarDescriptor | null;
   palette?: PaletteDescriptor | null;
 }
 

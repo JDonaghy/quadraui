@@ -216,8 +216,8 @@ pub(crate) trait PreprocessBackend {
     fn selection_text_for_copy(&self) -> String;
 
     /// `WidgetId` of the `ActivityBar` that declared
-    /// `is_keyboard_focused = true` during the most recent
-    /// `Backend::draw_activity_bar` call, if any.
+    /// `is_keyboard_focused = true` among the widgets painted in the most
+    /// recent frame, if any.
     fn focused_activity_bar_id(&self) -> Option<&WidgetId>;
 
     /// Look up a registered `Global`-scope accelerator for `key`+`modifiers`.

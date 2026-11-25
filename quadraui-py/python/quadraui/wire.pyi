@@ -1797,6 +1797,8 @@ LayoutLeafNode = TypedDict(
         "button": NotRequired[ButtonDescriptor],
         "command_center": NotRequired[CommandCenterDescriptor],
         "terminal": NotRequired[TerminalDescriptor],
+        "status_bar": NotRequired[StatusBarDescriptor],
+        "activity_bar": NotRequired[ActivityBarDescriptor],
         "palette": NotRequired[PaletteDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
@@ -1857,6 +1859,8 @@ class RenderFrameDict(TypedDict):
     button: NotRequired[Optional[ButtonDescriptor]]
     command_center: NotRequired[Optional[CommandCenterDescriptor]]
     terminal: NotRequired[Optional[TerminalDescriptor]]
+    status_bar: NotRequired[Optional[StatusBarDescriptor]]
+    activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
     palette: NotRequired[Optional[PaletteDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.

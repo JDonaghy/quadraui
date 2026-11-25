@@ -10,8 +10,8 @@
 use quadraui::DrawsPrimitives;
 use quadraui::{
     resolve_bar_height, Backend, BackendCaps, Color, DrawsPrimitives, Image, ImageFit, ImageHit,
-    ImageSource, InteractionState, MenuBar, MenuBarHit, MenuBarItem, MouseButton, Reaction, Rect,
-    StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
+    ImageSource, MenuBar, MenuBarHit, MenuBarItem, MouseButton, Reaction, Rect, StatusBar,
+    StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};

@@ -17,12 +17,11 @@
 //! - ← / Esc          close deepest submenu (Esc at root closes the whole menu)
 //! - q / Esc (no menu open) → quit
 
-use quadraui::DrawsPrimitives;
 use quadraui::{
     resolve_bar_height, AppLogic, Backend, Color, ContextMenu, ContextMenuHit, ContextMenuItem,
-    ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement, DrawsPrimitives,
-    InteractionState, Key, MenuDef, MenuEvent, MenuSystem, MouseButton, NamedKey, Point, Reaction,
-    Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
+    ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement, DrawsPrimitives, Key, MenuDef,
+    MenuEvent, MenuSystem, MouseButton, NamedKey, Point, Reaction, Rect, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 // ── Context-menu state ────────────────────────────────────────────────────────

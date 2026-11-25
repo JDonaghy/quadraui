@@ -633,7 +633,7 @@ mod terminal_paint_tests {
 
 #[cfg(test)]
 mod form_paint_tests {
-    use crate::gtk::toolbar::PangoMeasure;
+    use super::PangoMeasure;
     use crate::primitives::form::{FieldKind, Form, FormField, LabelAlign, LabelPosition};
     use crate::theme::Theme;
     use crate::types::{StyledText, WidgetId};

@@ -41,7 +41,7 @@ def test_set_theme_changes_the_painted_background_colour():
     # An empty `StatusBar` fills its row with `Theme::default()`'s
     # background (`20, 22, 30` from `theme.rs`) for both halves of the
     # cell -- the fallback fill paints a blank glyph, so fg and bg are the
-    # same colour (see `draw_status_bar`'s own fallback-fill code).
+    # same colour (see the status bar's own fallback-fill code).
     assert app.cell_colors(0, 0) == ((20, 22, 30), (20, 22, 30))
 
     app.set_theme({"background": "#112233"})

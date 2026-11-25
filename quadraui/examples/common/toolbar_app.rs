@@ -28,7 +28,6 @@
 //! - v                           cycle toolbar text vertical alignment
 //! - q / Esc                     quit
 
-use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, DrawsPrimitives, Icon, InteractionState, Key, NamedKey, Reaction,
     Rect, StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons,

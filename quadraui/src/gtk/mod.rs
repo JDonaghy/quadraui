@@ -461,9 +461,8 @@ mod tests {
 
     /// [`with_nerd_font_fallback`] mirrors [`chrome_font_description`]
     /// for callers that only have a live `FontDescription` to hand (e.g.
-    /// `gtk::palette::draw_palette`'s icon-glyph swap, which must not
-    /// disturb the row's base font for the label text painted around
-    /// it) — same family-list-append behaviour, size preserved.
+    /// an icon-glyph swap that must not disturb the row's base font for
+    /// the label text painted around it) — same family-list-append behaviour, size preserved.
     #[test]
     fn with_nerd_font_fallback_appends_to_an_existing_description() {
         let base = pango::FontDescription::from_string("Monospace 13");

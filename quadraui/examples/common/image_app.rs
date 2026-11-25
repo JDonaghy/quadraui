@@ -23,11 +23,10 @@
 //! - click a menu item   show which one was activated
 //! - q / Esc              quit
 
-use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, DrawsPrimitives, Image, ImageFit, ImageHit, ImageSource,
-    InteractionState, Key, MenuBar, MenuBarHit, MenuBarItem, MouseButton, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, DrawsPrimitives, Image, ImageFit, ImageHit, ImageSource, Key,
+    MenuBar, MenuBarHit, MenuBarItem, MouseButton, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 const LOGO_PNG: &[u8] = include_bytes!("../assets/quadra_logo.png");
