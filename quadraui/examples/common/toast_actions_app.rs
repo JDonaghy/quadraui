@@ -19,8 +19,8 @@
 //! - click ×/action/body   same hit-testing as every other toast example
 //! - q          quit
 
-use quadraui::DrawsPrimitives;
 use quadraui::compose::{Handled, ToastStackAction, ToastStackController};
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
     StatusBarSegment, Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity,

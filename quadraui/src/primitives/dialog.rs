@@ -3453,12 +3453,12 @@ mod tests {
 /// `Buffer` in the `CellSurface` [`cell_paint::paint`] takes.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
+    use super::cell_test_paint::{draw_dialog, tui_dialog_layout};
     use super::{
         Dialog, DialogButton, DialogHit, DialogInput, DialogLayout, DialogMeasure, DialogTextInput,
     };
     use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemMeasure};
     use crate::theme::Theme;
-    use super::cell_test_paint::{draw_dialog, tui_dialog_layout};
     use crate::tui::ratatui_color;
     use crate::types::{StyledSpan, StyledText, WidgetId};
     use ratatui::buffer::Buffer;
@@ -4279,13 +4279,18 @@ mod interactive_tests {
 #[cfg(all(test, feature = "tui"))]
 mod cell_test_paint {
     use super::*;
+    use crate::theme::Theme;
     use ratatui::buffer::Buffer;
 
     fn surface<'a>(
         buf: &'a mut Buffer,
-        sink: &'a mut Option<(u16, u16)>,
-    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
-        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
     }
 
     pub fn tui_dialog_layout(dialog: &Dialog, viewport: Rect) -> DialogLayout {

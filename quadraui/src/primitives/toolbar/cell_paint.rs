@@ -2067,11 +2067,5 @@ fn draw_embedded_text_field(
         crate::backend::ColorDepth::TrueColor,
         &mut cursor_sink,
     );
-    crate::primitives::text_field::cell_paint::paint(
-        field,
-        &layout,
-        &mut surface,
-        theme,
-        false,
-    );
+    crate::primitives::text_field::cell_paint::paint(field, &layout, &mut surface, theme, false);
 }

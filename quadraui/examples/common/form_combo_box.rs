@@ -150,9 +150,6 @@ impl AppLogic for FormComboBoxApp {
 
         if self.combo.open {
             let field_bounds = self.field_bounds(backend);
-            let vp = backend.viewport();
-            let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
-            let line_height = backend.line_height();
             backend.draw_dyn(field_bounds, &self.combo, &());
         }
 

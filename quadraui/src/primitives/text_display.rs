@@ -2201,9 +2201,9 @@ mod cell_paint_tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
+    use super::cell_test_paint::{draw_text_display, tui_text_display_layout};
     use super::{TextDisplay, TextDisplayHit, TextDisplayLine, TextDisplayLineMeasure};
     use crate::theme::Theme;
-    use super::cell_test_paint::{draw_text_display, tui_text_display_layout};
     use crate::types::{Color, Decoration, StyledSpan, WidgetId};
 
     fn line(text: &str) -> TextDisplayLine {
@@ -3008,13 +3008,18 @@ mod tests {
 #[cfg(all(test, feature = "tui"))]
 mod cell_test_paint {
     use super::*;
+    use crate::theme::Theme;
     use ratatui::buffer::Buffer;
 
     fn surface<'a>(
         buf: &'a mut Buffer,
-        sink: &'a mut Option<(u16, u16)>,
-    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
-        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
     }
 
     pub fn tui_text_display_layout(

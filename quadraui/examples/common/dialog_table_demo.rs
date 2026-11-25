@@ -17,7 +17,7 @@
 use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Dialog, DialogButton, DialogMeasure, DialogTable, FontRole, Key, NamedKey,
-    Reaction, Rect, StyledText, ToolbarItemMeasure, UiEvent, WidgetId,
+    Reaction, Rect, StyledText, UiEvent, WidgetId,
 };
 
 pub struct DialogTableDemo {
@@ -84,6 +84,7 @@ impl DialogTableDemo {
     /// `border_chrome_inset` is `0.0`: both this repo's TUI and GTK
     /// `draw_dialog` paint the border *inside* `DialogLayout::bounds`, so no
     /// extra inset is needed.
+    #[allow(dead_code)]
     fn measure(&self, backend: &dyn Backend) -> DialogMeasure {
         let m = backend.measure();
         let viewport = backend.viewport();

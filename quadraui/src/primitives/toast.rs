@@ -2928,13 +2928,13 @@ mod tests {
 /// ratatui `Buffer` in the `CellSurface` [`cell_paint::paint`] takes.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
+    use super::cell_test_paint::draw_toast_stack;
     use super::{
         Toast, ToastButton, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastOverlay,
         ToastSeverity, CELL_BORDER_COLS, CELL_DISMISS_WIDTH, CELL_TOAST_MAX_WIDTH,
         CELL_TOAST_MIN_WIDTH,
     };
     use crate::theme::Theme;
-    use super::cell_test_paint::draw_toast_stack;
     use crate::tui::ratatui_color;
     use crate::types::WidgetId;
     use ratatui::buffer::Buffer;
@@ -3631,13 +3631,18 @@ mod interactive_tests {
 #[cfg(all(test, feature = "tui"))]
 mod cell_test_paint {
     use super::*;
+    use crate::theme::Theme;
     use ratatui::buffer::Buffer;
 
     fn surface<'a>(
         buf: &'a mut Buffer,
-        sink: &'a mut Option<(u16, u16)>,
-    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
-        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
     }
 
     pub fn draw_toast_stack(

@@ -1056,6 +1056,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let anchor = Rect::new(100.0, 50.0, 40.0, 20.0);
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -1077,6 +1078,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 100.0);
         let anchor = Rect::new(100.0, 80.0, 40.0, 16.0);
@@ -1099,6 +1101,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 100.0, 30.0);
         let anchor = Rect::new(10.0, 10.0, 20.0, 10.0);
@@ -1121,6 +1124,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let anchor = Rect::new(50.0, 50.0, 10.0, 10.0);
         let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
@@ -1142,6 +1146,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let anchor = Rect::new(50.0, 50.0, 10.0, 10.0);
         let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
@@ -1159,6 +1164,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let anchor = Rect::new(100.0, 100.0, 20.0, 20.0);
         let viewport = Rect::new(0.0, 0.0, 400.0, 400.0);
@@ -1588,10 +1594,10 @@ mod tests {
 
     #[cfg(feature = "tui")]
     mod cells {
+        use super::super::cell_test_paint::{draw_tooltip, draw_tooltip_with_chrome};
         use super::*;
         use crate::event::Rect as QRect;
         use crate::theme::Theme;
-        use super::super::cell_test_paint::{draw_tooltip, draw_tooltip_with_chrome};
         use crate::types::StyledSpan;
         use cell_paint::painted_bounds;
         use ratatui::buffer::Buffer;
@@ -1623,6 +1629,7 @@ mod tests {
         fn paints_side_borders_and_plain_text() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("hover"),
                 text: "hello".into(),
                 styled_lines: None,
@@ -1649,6 +1656,7 @@ mod tests {
         fn paints_a_full_box_when_height_allows_it() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("hover"),
                 text: "hello".into(),
                 styled_lines: None,
@@ -1678,6 +1686,7 @@ mod tests {
         fn styled_lines_paint_each_row() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("sig"),
                 text: String::new(),
                 styled_lines: Some(vec![
@@ -1705,6 +1714,7 @@ mod tests {
         fn per_tooltip_bg_overrides_theme() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("hover"),
                 text: "x".into(),
                 styled_lines: None,
@@ -1723,6 +1733,7 @@ mod tests {
         fn zero_size_is_a_no_op() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("hover"),
                 text: "x".into(),
                 styled_lines: None,
@@ -1941,16 +1952,26 @@ mod tests {
 #[cfg(all(test, feature = "tui"))]
 mod cell_test_paint {
     use super::*;
+    use crate::theme::Theme;
     use ratatui::buffer::Buffer;
 
     fn surface<'a>(
         buf: &'a mut Buffer,
-        sink: &'a mut Option<(u16, u16)>,
-    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
-        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
     }
 
-    pub fn draw_tooltip(buf: &mut Buffer, tooltip: &Tooltip, layout: &TooltipLayout, theme: &Theme) {
+    pub fn draw_tooltip(
+        buf: &mut Buffer,
+        tooltip: &Tooltip,
+        layout: &TooltipLayout,
+        theme: &Theme,
+    ) {
         draw_tooltip_with_chrome(buf, tooltip, layout, &TooltipChrome::default(), theme);
     }
 

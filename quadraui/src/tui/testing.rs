@@ -60,6 +60,7 @@ use ratatui::Terminal;
 pub use ratatui::style::{Color, Modifier};
 
 use crate::backend::Backend;
+use crate::backend::DrawsPrimitives;
 use crate::primitives::tab_bar::{tab_part_center, TabBarSubPart};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig};

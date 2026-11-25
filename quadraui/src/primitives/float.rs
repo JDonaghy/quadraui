@@ -839,10 +839,10 @@ mod tests {
 
     #[cfg(feature = "tui")]
     mod cells {
+        use super::super::cell_test_paint::draw_float;
         use super::*;
         use crate::event::Point;
         use crate::theme::Theme;
-        use super::super::cell_test_paint::draw_float;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect as RRect;
 
@@ -961,13 +961,18 @@ mod tests {
 #[cfg(all(test, feature = "tui"))]
 mod cell_test_paint {
     use super::*;
+    use crate::theme::Theme;
     use ratatui::buffer::Buffer;
 
     fn surface<'a>(
         buf: &'a mut Buffer,
-        sink: &'a mut Option<(u16, u16)>,
-    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
-        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
     }
 
     pub fn draw_float(buf: &mut Buffer, float: &Float, layout: &FloatLayout, theme: &Theme) {

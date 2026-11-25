@@ -1116,6 +1116,7 @@ mod interactive_tests {
             text: text.into(),
             cursor_offset: Some(text.len()),
             right_align: false,
+            selection: None,
         }
     }
 
@@ -1383,9 +1384,9 @@ mod cell_paint_tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
+    use super::cell_test_paint::{draw_command_line, draw_command_line_selection};
     use crate::primitives::command_line::CommandLine;
     use crate::theme::Theme;
-    use super::cell_test_paint::{draw_command_line, draw_command_line_selection};
     use crate::types::{Color, WidgetId};
 
     /// The ratatui colour `crate::tui`'s own cell writers land for a
@@ -1411,6 +1412,7 @@ mod cell_paint_tests {
             text: text.into(),
             cursor_offset: Some(2),
             right_align: false,
+            selection: None,
         };
 
         // Must not panic.
@@ -1441,6 +1443,7 @@ mod cell_paint_tests {
             text: ":wq".into(),
             cursor_offset: None,
             right_align: false,
+            selection: None,
         };
 
         let layout = draw_command_line(&mut buf, area, &cmd, &theme);
@@ -1475,6 +1478,7 @@ mod cell_paint_tests {
             text: ":wq!".into(),
             cursor_offset: None,
             right_align: false,
+            selection: None,
         };
 
         // Select ":w" -> byte offsets 0..2 -> columns 0,1 -> cells x=5,6.
@@ -1531,6 +1535,7 @@ mod tests {
             text: ":wq".into(),
             cursor_offset: Some(3),
             right_align: false,
+            selection: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         let back: CommandLine = serde_json::from_str(&json).unwrap();
@@ -1550,6 +1555,7 @@ mod tests {
 
     fn cmd(text: &str, right_align: bool) -> CommandLine {
         CommandLine {
+            selection: None,
             id: WidgetId::new("cmd"),
             text: text.into(),
             cursor_offset: None,
@@ -1679,6 +1685,7 @@ mod tests {
 #[cfg(all(test, feature = "tui"))]
 mod cell_test_paint {
     use super::*;
+    use crate::theme::Theme;
     use ratatui::buffer::Buffer;
 
     pub fn draw_command_line(

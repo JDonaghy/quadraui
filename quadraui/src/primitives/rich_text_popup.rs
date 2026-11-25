@@ -1785,9 +1785,9 @@ mod tests {
 
     #[cfg(feature = "tui")]
     mod cells {
+        use super::super::cell_test_paint::draw_rich_text_popup;
         use super::*;
         use crate::theme::Theme;
-        use super::super::cell_test_paint::draw_rich_text_popup;
         use crate::tui::ratatui_color;
         use crate::types::{Color, StyledSpan};
         use ratatui::buffer::Buffer;
@@ -2301,13 +2301,18 @@ mod tests {
 #[cfg(all(test, feature = "tui"))]
 mod cell_test_paint {
     use super::*;
+    use crate::theme::Theme;
     use ratatui::buffer::Buffer;
 
     fn surface<'a>(
         buf: &'a mut Buffer,
-        sink: &'a mut Option<(u16, u16)>,
-    ) -> crate::tui::cell_surface::TuiCellSurface<'a> {
-        crate::tui::cell_surface::TuiCellSurface::new(buf, crate::backend::ColorDepth::TrueColor, sink)
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
     }
 
     pub fn draw_rich_text_popup(

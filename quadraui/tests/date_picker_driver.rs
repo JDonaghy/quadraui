@@ -13,6 +13,7 @@
 //! and `primitives::date_picker::native_surface_paint`'s own unit tests.
 
 use quadraui::tui::testing::TuiDriver;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, CalendarDate, DateFormat, DateLocale, DatePicker, DatePickerEvent,
     Decoration, Key, NamedKey, Reaction, Rect, StyledSpan, TextDisplay, TextDisplayLine, UiEvent,
@@ -101,7 +102,7 @@ impl AppLogic for DatePickerApp {
                 selected.format(self.picker.locale.format)
             )));
         }
-        backend.draw_text_display(VIEWPORT, &display);
+        backend.draw_dyn(VIEWPORT, &display, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
