@@ -514,6 +514,52 @@ mod tests {
         assert!(std::error::Error::source(&decode_err).is_some());
     }
 
+    /// `decode_widget_from` decodes the same `kind` → type table out of a
+    /// borrowed `Value` acting as its own `Deserializer`, which is the
+    /// shape a wire layer substitutes its unknown-key-reporting wrapper
+    /// into.
+    #[test]
+    fn decodes_a_known_kind_from_a_deserializer() {
+        let payload = serde_json::json!({"id": "btn:ok", "label": "OK"});
+        match decode_widget_from("button", &payload) {
+            Ok(widget) => assert_eq!(widget.id().map(|id| id.as_str()), Some("btn:ok")),
+            Err(err) => panic!("expected a decoded button, got Err({err})"),
+        }
+    }
+
+    /// An unknown kind has no [`KindError`] to report through, since the
+    /// error type is the deserializer's own — it surfaces as a custom
+    /// serde message naming the kind instead.
+    #[test]
+    fn rejects_an_unknown_kind_from_a_deserializer() {
+        let payload = serde_json::json!({});
+        match decode_widget_from("not_a_real_kind", &payload) {
+            Err(err) => assert!(
+                err.to_string().contains("not_a_real_kind"),
+                "{}",
+                err.to_string()
+            ),
+            Ok(widget) => panic!(
+                "expected an unknown-kind error, got Ok(widget id = {:?})",
+                widget.id().map(|id| id.as_str())
+            ),
+        }
+    }
+
+    /// A malformed payload for a known kind surfaces the deserializer's
+    /// own error rather than being swallowed.
+    #[test]
+    fn rejects_a_malformed_payload_from_a_deserializer() {
+        let payload = serde_json::json!({"id": "btn:ok", "label": 7});
+        match decode_widget_from("button", &payload) {
+            Err(err) => assert!(!err.to_string().is_empty()),
+            Ok(widget) => panic!(
+                "expected a decode error, got Ok(widget id = {:?})",
+                widget.id().map(|id| id.as_str())
+            ),
+        }
+    }
+
     /// `Box<dyn DynWidget>` isn't `Debug`, so a `panic!("{other:?}")` on
     /// the `Ok` arm of a `decode_widget` result doesn't type-check —
     /// this renders just enough of it (or the real `KindError`) for a
