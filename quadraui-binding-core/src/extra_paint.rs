@@ -178,9 +178,10 @@ pub fn extra_as_toolbar(extra: &Rc<dyn ExtraPaint>) -> Option<&Toolbar> {
 /// ([`Checkbox`] hides its `Form`-field label — see [`single_field_form`]):
 /// `cell_width` cells on a cell-grid backend, or two text rows' worth on a
 /// pixel backend (a nominal pill/box width — a cheap chrome estimate with
-/// no real `Style::padding` read at this layer). [`Checkbox`], its one caller below, paints
-/// through `Form`'s `FieldKind::Toggle` control, which is `3` cells wide
-/// (`quadraui::tui::form`'s `natural_content_width`).
+/// no real `Style::padding` read at this layer). [`Checkbox`], its one
+/// caller below, paints through `Form`'s `FieldKind::Toggle` control,
+/// which is `3` cells wide (`quadraui::tui::form`'s
+/// `natural_content_width`).
 fn toggle_control_size(backend: &mut dyn Backend, cell_width: f32) -> (f32, f32) {
     let line_height = backend.line_height();
     let char_width = backend.char_width();

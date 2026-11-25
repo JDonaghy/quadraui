@@ -744,11 +744,13 @@ unsafe fn insert_descriptor(
             }
         };
 
-        // One arm per slot rather than a generic helper: each slot stores
-        // into its own named `BindingHost` field, so there's no single
-        // `field: Option<T>` to be generic over even though the decode
-        // itself — `quadraui_binding_core::decode_value` — is shared with
-        // every other binding's fixed-slot descriptor decode.
+        // One arm per slot rather than a generic helper: every slot that
+        // calls this macro stores into its own named `BindingHost` field
+        // (`QUI_SLOT_BUTTON` below is the one exception, decoding into
+        // `host.widgets` instead), so there's no single `field: Option<T>`
+        // to be generic over even though the decode itself —
+        // `quadraui_binding_core::decode_value` — is shared with every
+        // other binding's fixed-slot descriptor decode.
         macro_rules! decode_into {
             ($ty:ty, $field:ident) => {
                 match quadraui_binding_core::decode_value::<$ty, _>(label, &value) {

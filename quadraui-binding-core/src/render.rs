@@ -1688,11 +1688,13 @@ fn natural_size(backend: &mut dyn Backend, node: &LayoutNode, line_height: f32) 
             // "nothing to pass" `avail` DynWidget::measure's own default
             // (`NaturalSize::NONE`, ignoring both arguments) already
             // documents for a widget with no genuinely size-dependent
-            // answer. `IconGrid`, this seam's only member so far, is one
-            // of those (it doesn't override `measure`), so this always
-            // degrades to `NaturalSize::NONE` today; a future `WIDGET_KINDS`
-            // entry that does use `avail` still gets a real measurement
-            // once this leaf's own container passes one through here.
+            // answer. `IconGrid` is one of those (it doesn't override
+            // `measure`), so it always degrades to `NaturalSize::NONE`
+            // here; `Button`/`Switch`/`RadioGroup` each override `measure`
+            // with their own label/option-driven answer instead, and a
+            // future `WIDGET_KINDS` entry that genuinely needs `avail`
+            // still gets a real measurement once this leaf's own
+            // container passes one through here.
             let ctx = DynLayoutCtx::new(
                 line_height,
                 backend.char_width(),

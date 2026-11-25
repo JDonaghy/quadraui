@@ -106,7 +106,7 @@ fn a_host_paints_its_fixed_slots_and_no_additive_primitives() {
     );
     assert!(
         driver.screen_contains("Ready"),
-        "the text-display band must paint below it:\n{}",
+        "the text-display band must paint above it:\n{}",
         driver.screen()
     );
 }
