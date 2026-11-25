@@ -1129,6 +1129,7 @@ mod linux {
                 selected_idx: usize::MAX,
                 bg: None,
                 placement: ContextMenuPlacement::AnchorPoint,
+                glyphs: Default::default(),
             }
         }
 
