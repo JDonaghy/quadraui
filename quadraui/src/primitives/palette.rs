@@ -30,11 +30,13 @@
 //! backend, the very first check should be "is a palette / dialog
 //! open? If yes, route here instead."
 
+use crate::behaviour::nav::NavKey;
 use crate::behaviour::scroll::ensure_visible;
 use crate::event::Rect;
 use crate::primitives::row_stack;
 use crate::primitives::scrollbar::fit_thumb;
 use crate::types::{Icon, Modifiers, StyledText, WidgetId};
+use crate::Handled;
 use serde::{Deserialize, Serialize};
 
 /// Which interaction mode the palette is operating in.
@@ -42,8 +44,9 @@ use serde::{Deserialize, Serialize};
 /// - `List` (default) — the existing search-and-select behaviour: the
 ///   query row filters the item list and Enter activates the selected row.
 /// - `Input` — the query row is a standalone free-text field (e.g. "new
-///   branch name"). The item list is hidden; Enter emits
-///   [`PaletteEvent::InputConfirmed`] with the current query value.
+///   branch name"). The item list is hidden, and Enter is the host's to
+///   interpret: the palette leaves it unclaimed so the app confirms the
+///   raw query text itself.
 ///
 /// Backends that have not yet implemented mode-aware rendering can safely
 /// ignore this field — they will render the list as usual, which is a
@@ -143,8 +146,9 @@ pub struct Palette {
     pub preview: Option<PalettePreview>,
     /// Interaction mode — `List` (default) or `Input`.
     ///
-    /// In `Input` mode the item list is suppressed and Enter emits
-    /// [`PaletteEvent::InputConfirmed`] rather than activating a row.
+    /// In `Input` mode the item list is suppressed and Enter confirms the
+    /// raw query text in the host rather than activating a row — see
+    /// [`PaletteMode::Input`].
     #[serde(default)]
     pub mode: PaletteMode,
 }
@@ -598,6 +602,136 @@ impl Palette {
 //   they were written. Net visible effect: the thumb goes from
 //   `border_fg` (blue-ish, `rgb(120,160,200)`) to `scrollbar_thumb`
 //   (neutral grey, `rgb(110,115,130)`) at 0.8 alpha.
+// ── Shared pixel geometry ───────────────────────────────────────────────
+//
+// `pixel_layout` and its tokens sit outside the feature-gated
+// `native_surface_paint` module below because `Primitive::layout` resolves
+// the pixel geometry in every build, including one with no backend feature
+// at all. `native_surface_paint` re-exports them under its own names so
+// the per-backend wrappers keep one path to them.
+
+/// Scrollbar track width, shared by [`pixel_layout`] and
+/// [`native_surface_paint::paint`] so the two can't disagree on it — the
+/// `(6.0, 8.0)` pair GTK and Windows already agreed on (macOS's
+/// `(8.0, 8.0)` was the minority choice).
+///
+/// Deliberately not [`crate::style::Style::scrollbar_width`] — see that
+/// field's own doc for why `Palette`'s popup scrollbar stays at its own
+/// narrower convention instead.
+pub(crate) const SB_W: f32 = 6.0;
+/// Minimum scrollbar thumb length, shared by [`pixel_layout`] and
+/// [`native_surface_paint::paint`].
+pub(crate) const MIN_THUMB_LEN: f32 = 8.0;
+/// Breathing room reserved below the item list before the popup's own
+/// bottom edge (there is no bottom border row the way TUI has one — this
+/// is purely visual padding).
+const BOTTOM_INSET: f32 = 4.0;
+
+/// The list/tree row pitch — [`crate::style::Style::row_height`]'s own
+/// default (VS Code's list/tree row height). Item rows (and the pinned
+/// create-action row, which renders like one more item row) pitch at
+/// this instead of the chrome `line_height`, the same way
+/// `GtkBackend::resolved_row_height` floors `List`/`TreeView`/
+/// `DataTable` rows at `Style::row_height`.
+///
+/// [`pixel_layout`]/[`native_surface_paint::paint`] only ever see the
+/// chrome's own `line_height` here (not a live `&Style`), so this is the
+/// *default* token value rather than a resolved override — threading a
+/// live `Style::row_height` through would mean widening every backend's
+/// `*_palette_layout` wrapper.
+const ITEM_ROW_HEIGHT: f32 = 22.0;
+
+/// Item row height for a given chrome `line_height` — [`ITEM_ROW_HEIGHT`],
+/// floored at the font's own line height so a chrome font taller than
+/// the token isn't clipped (same rationale as
+/// `GtkBackend::resolved_row_height`/`MacBackend::resolved_row_height`).
+///
+/// `pub(crate)` so each backend's own tests can assert the painted row
+/// pitch against this token rather than against the raw chrome
+/// `line_height`.
+pub(crate) fn item_row_height(line_height: f32) -> f32 {
+    line_height.max(ITEM_ROW_HEIGHT)
+}
+
+/// Compute the shared pixel-surface [`Palette`] layout — the one geometry
+/// [`native_surface_paint::paint`] paints from and every pixel backend's
+/// `Backend::palette_layout` exposes for hit-testing, so paint/hit-test/
+/// backend can't drift three ways.
+///
+/// Returns the layout alongside `rows_h` (the item area's full row
+/// capacity in surface-native units, already floored to a whole number of
+/// rows) — the painter needs it for the scrollbar-track / preview-pane /
+/// create-row positions that sit below the last item.
+///
+/// Coordinate frame: **LOCAL** — `(0, 0)` is the popup's own top-left
+/// corner.
+pub(crate) fn pixel_layout(
+    w: f32,
+    h: f32,
+    palette: &Palette,
+    line_height: f32,
+) -> (PaletteLayout, f32) {
+    let title_h = line_height;
+    let query_h = if palette.show_query {
+        line_height + 1.0
+    } else {
+        0.0
+    };
+    let item_h = item_row_height(line_height);
+    let has_create = palette.create_label.is_some();
+    let create_reserved = if has_create { item_h } else { 0.0 };
+    let items_top = title_h + query_h;
+    let raw_items_h = (h - items_top - BOTTOM_INSET - create_reserved).max(0.0);
+    let visible_rows = (raw_items_h / item_h) as usize;
+    let rows_h = visible_rows as f32 * item_h;
+    let viewport_h = items_top + rows_h + create_reserved;
+
+    let resolved = palette.layout(w, viewport_h, title_h, query_h, SB_W, MIN_THUMB_LEN, |_| {
+        PaletteItemMeasure::new(item_h)
+    });
+    (resolved, rows_h)
+}
+
+/// Compute the shared cell-grid [`Palette`] layout — the geometry
+/// [`cell_paint::paint`] paints from and `Backend::palette_layout`
+/// exposes for hit-testing on a terminal, so the two stay synchronized.
+///
+/// Row heights mirror the cell painter's own grid math exactly: title is
+/// always 1 row; the query area is 2 rows (query row + separator) when
+/// `show_query` and not [`PaletteMode::Input`], 1 row alone in `Input`
+/// mode (no separator), 0 rows when `!show_query`; one bottom-border row
+/// is reserved by shrinking the viewport height passed to
+/// [`Palette::layout`] rather than by title/query height, matching the
+/// painter's `items_row_end = (y_end - 1) - create_reserved`.
+///
+/// Coordinate frame: **LOCAL** — `(0, 0)` is the popup's own top-left
+/// corner, matching [`Palette::layout`]'s native contract.
+///
+/// **Scrollbar is deliberately omitted** (`scrollbar_width = 0.0`): the
+/// cell painter draws its scrollbar as a single glyph inside the last
+/// item column (`sb_col = list_w - 1`), using a whole-row thumb formula
+/// (`thumb_len = visible_rows² / total`) that has no equivalent in
+/// [`Palette::layout`]'s continuous-track [`PaletteScrollbar`] — reporting
+/// a `ScrollbarThumb`/`ScrollbarTrack` hit region here would require a
+/// different formula for a click target TUI has never made draggable.
+/// This is a real, documented gap, not a placeholder.
+pub(crate) fn cell_layout(palette: &Palette, w: f32, h: f32) -> PaletteLayout {
+    // Reserve the bottom border row.
+    let h = (h - 1.0).max(0.0);
+    let title_h = 1.0;
+    let query_h = if !palette.show_query {
+        0.0
+    } else if palette.mode == PaletteMode::Input {
+        1.0
+    } else {
+        // Query row + separator row.
+        2.0
+    };
+    palette.layout(w, h, title_h, query_h, 0.0, 1.0, |_| {
+        PaletteItemMeasure::new(1.0)
+    })
+}
+
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -605,7 +739,7 @@ impl Palette {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{Palette, PaletteItemMeasure, PaletteLayout, PaletteMode};
+    use super::{Palette, PaletteLayout, PaletteMode};
     use crate::interaction::InteractionState;
     use crate::paint_surface::PaintSurface;
     use crate::primitives::row_stack;
@@ -616,87 +750,15 @@ pub(crate) mod native_surface_paint {
     use crate::Rect;
     use std::collections::HashSet;
 
-    /// Scrollbar track width, shared by [`layout`] and [`paint`] so the
-    /// two can't disagree on it — the `(6.0, 8.0)` pair GTK and Windows
-    /// already agreed on (macOS's `(8.0, 8.0)` was the minority choice).
-    ///
-    /// Deliberately not [`crate::style::Style::scrollbar_width`] — see
-    /// that field's own doc for why `Palette`'s popup scrollbar stays at
-    /// its own narrower convention instead.
-    pub(crate) const SB_W: f32 = 6.0;
-    /// Minimum scrollbar thumb length, shared by [`layout`] and [`paint`].
-    pub(crate) const MIN_THUMB_LEN: f32 = 8.0;
-    /// Breathing room reserved below the item list before the popup's
-    /// own bottom edge (there is no bottom border row the way TUI has
-    /// one — this is purely visual padding).
-    const BOTTOM_INSET: f32 = 4.0;
+    // The geometry half of this module lives one level up, ungated, so the
+    // widget contract's own `Primitive::layout` can resolve it in a build
+    // with no backend feature. These are the names the per-backend
+    // wrappers address it by.
+    pub(crate) use super::{item_row_height, pixel_layout as layout, MIN_THUMB_LEN, SB_W};
+
     /// Query-row insert-cursor width. Matches `text_input`/`command_line`'s
     /// `CURSOR_W`/`CURSOR_WIDTH` bar-caret convention for every GUI backend.
     const QUERY_CURSOR_WIDTH: f32 = 2.0;
-
-    /// The list/tree row pitch — [`crate::style::Style::row_height`]'s own
-    /// default (VS Code's list/tree row height). Item rows (and the pinned
-    /// create-action row, which renders like one more item row) pitch at
-    /// this instead of the chrome `line_height`, the same way
-    /// `GtkBackend::resolved_row_height` floors `List`/`TreeView`/
-    /// `DataTable` rows at `Style::row_height`.
-    ///
-    /// `layout`/`paint` only ever see the chrome's own `line_height` here
-    /// (not a live `&Style`), so this is the *default* token value rather
-    /// than a resolved override — threading a live `Style::row_height`
-    /// through would mean widening every backend's `*_palette_layout`
-    /// wrapper, out of scope for this primitive-local fix.
-    const ITEM_ROW_HEIGHT: f32 = 22.0;
-
-    /// Item row height for a given chrome `line_height` — [`ITEM_ROW_HEIGHT`],
-    /// floored at the font's own line height so a chrome font taller than
-    /// the token isn't clipped (same rationale as
-    /// `GtkBackend::resolved_row_height`/`MacBackend::resolved_row_height`).
-    ///
-    /// `pub(crate)` so each backend's own tests can assert the painted row
-    /// pitch against this token rather than against the raw chrome
-    /// `line_height`.
-    pub(crate) fn item_row_height(line_height: f32) -> f32 {
-        line_height.max(ITEM_ROW_HEIGHT)
-    }
-
-    /// Compute the shared [`Palette`] layout — the one geometry `paint`
-    /// paints from and every backend's `Backend::palette_layout` exposes
-    /// for hit-testing, so paint/hit-test/backend can't drift three ways.
-    ///
-    /// Returns the layout alongside `rows_h` (the item area's full row
-    /// capacity in `surface`-native units, already floored to a whole
-    /// number of rows) — `paint` needs it for the scrollbar-track /
-    /// preview-pane / create-row positions that sit below the last item.
-    ///
-    /// Coordinate frame: **LOCAL** — `(0, 0)` is the popup's own
-    /// top-left corner.
-    pub(crate) fn layout(
-        w: f32,
-        h: f32,
-        palette: &Palette,
-        line_height: f32,
-    ) -> (PaletteLayout, f32) {
-        let title_h = line_height;
-        let query_h = if palette.show_query {
-            line_height + 1.0
-        } else {
-            0.0
-        };
-        let item_h = item_row_height(line_height);
-        let has_create = palette.create_label.is_some();
-        let create_reserved = if has_create { item_h } else { 0.0 };
-        let items_top = title_h + query_h;
-        let raw_items_h = (h - items_top - BOTTOM_INSET - create_reserved).max(0.0);
-        let visible_rows = (raw_items_h / item_h) as usize;
-        let rows_h = visible_rows as f32 * item_h;
-        let viewport_h = items_top + rows_h + create_reserved;
-
-        let resolved = palette.layout(w, viewport_h, title_h, query_h, SB_W, MIN_THUMB_LEN, |_| {
-            PaletteItemMeasure::new(item_h)
-        });
-        (resolved, rows_h)
-    }
 
     /// Split `text` into contiguous `(run, highlighted)` chunks based on
     /// `match_positions` (byte offsets, one per highlighted character).
@@ -1693,6 +1755,1135 @@ pub enum PaletteEvent {
     KeyPressed { key: String, modifiers: Modifiers },
 }
 
+/// The cell-grid painter for [`Palette`], written against
+/// [`crate::CellSurface`].
+///
+/// Modal-style fuzzy picker with a title bar, query-input row, and a
+/// scrollable result list, in cell-art glyphs:
+///
+/// **List mode** (default):
+/// ```text
+/// ╭ Title  N/M ──[L]╮
+/// │ > query          │
+/// ├──────────────────┤
+/// │  Item 1          │
+/// │  Item 2          │
+/// │  Item 3  detail  │
+/// ╰──────────────────╯
+/// ```
+///
+/// **Input mode** ([`PaletteMode::Input`]):
+/// ```text
+/// ╭ Title ───────[I]╮
+/// │ > free text      │
+/// ╰──────────────────╯
+/// ```
+///
+/// Per-item [`PaletteItem::match_positions`] (byte offsets) get
+/// highlighted with [`crate::Theme::match_fg`] for fuzzy-search emphasis.
+/// The `[L]` / `[I]` badge in the title bar indicates the active mode.
+/// The same content [`native_surface_paint::paint`] puts on a pixel
+/// surface, degraded onto the cell grid (see [`crate::paint_surface`]'s
+/// module doc, "Why TUI stays out"): the query caret is a colour-swapped
+/// block rather than the GUI backends' thin bar, and the scrollbar is a
+/// single `█`/`░` glyph column instead of a continuous track.
+///
+/// Every glyph goes through [`crate::CellSurface::put_char`] one cell at a
+/// time rather than [`crate::CellSurface::put_str_clipped`]: each run here
+/// stops at a per-cell column bound that reserves the popup's own border
+/// column (`col + 1 >= w`), which `put_str_clipped`'s display-width
+/// accounting would round differently for a double-width glyph.
+#[cfg(feature = "tui")]
+pub(crate) mod cell_paint {
+    use super::{Palette, PaletteMode};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::theme::Theme;
+    use crate::types::Color;
+    use crate::Rect;
+
+    fn style(fg: Color, bg: Color) -> CellStyle {
+        CellStyle {
+            fg: Some(fg),
+            bg: Some(bg),
+            ..CellStyle::default()
+        }
+    }
+
+    /// Paint `palette` into `area` (cell units) on `surface`.
+    ///
+    /// `backdrop_opacity` is [`crate::Style::backdrop_opacity`]: a cell
+    /// grid has no compositing primitive, so this pre-blends
+    /// `theme.background.blend(theme.surface_bg, backdrop_opacity)` on the
+    /// CPU before writing opaque cells. At the default `1.0` it reproduces
+    /// `theme.surface_bg` exactly. The blend is against `theme.background`
+    /// — a static theme token, not whatever content the surface already
+    /// holds at those cells — so this is a simulated backdrop tint, not a
+    /// true read-back-and-composite over live screen content.
+    ///
+    /// `nerd_fonts_enabled` selects between item icons'
+    /// [`crate::Icon::glyph`] and [`crate::Icon::fallback`].
+    pub(crate) fn paint(
+        palette: &Palette,
+        area: Rect,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+        backdrop_opacity: f32,
+        nerd_fonts_enabled: bool,
+    ) {
+        if area.width < 4.0 || area.height < 4.0 {
+            return;
+        }
+
+        let bg = theme
+            .background
+            .blend(theme.surface_bg, backdrop_opacity as f64);
+        let fg = theme.surface_fg;
+        let query_fg = theme.query_fg;
+        let border_fg = theme.border_fg;
+        let title_fg = theme.title_fg;
+        let match_fg = theme.match_fg;
+        let sel_bg = theme.selected_bg;
+        let dim_fg = theme.muted_fg;
+        let accent_fg = theme.accent_fg;
+
+        let x0 = area.x as u16;
+        let y0 = area.y as u16;
+        let w = area.width as u16;
+        let h = area.height as u16;
+        let y_end = y0 + h;
+
+        // Clear the popup so cycling between pickers with different
+        // content lengths doesn't leave stale characters behind.
+        surface.fill(
+            Rect::new(x0 as f32, y0 as f32, w as f32, h as f32),
+            style(fg, bg),
+        );
+
+        // ── Mode badge ──────────────────────────────────────────────────
+        // "[L]" or "[I]" appears at the far-right of the title row and acts
+        // as a clickable mode-toggle target.
+        let badge = match palette.mode {
+            PaletteMode::List => "[L]",
+            PaletteMode::Input => "[I]",
+        };
+        let badge_w = badge.chars().count() as u16;
+
+        // Top border with title overlay.
+        for col in 0..w {
+            let ch = if col == 0 {
+                '╭'
+            } else if col == w - 1 {
+                '╮'
+            } else {
+                '─'
+            };
+            surface.put_char(x0 + col, y0, ch, style(border_fg, bg));
+        }
+        let title_text = if palette.total_count > 0 {
+            format!(
+                " {}  {}/{} ",
+                palette.title,
+                palette.items.len(),
+                palette.total_count
+            )
+        } else {
+            format!(" {} ", palette.title)
+        };
+        for (i, ch) in title_text.chars().enumerate() {
+            let col = 2 + i as u16;
+            if col + 1 >= w {
+                break;
+            }
+            surface.put_char(x0 + col, y0, ch, style(title_fg, bg));
+        }
+
+        // Paint the badge right-aligned inside the title border (before the
+        // ╮). Leave one cell gap between badge and ╮: the badge starts at
+        // `w - 1 - badge_w`.
+        if w > badge_w + 2 {
+            let badge_start = w - 1 - badge_w;
+            for (i, ch) in badge.chars().enumerate() {
+                surface.put_char(x0 + badge_start + i as u16, y0, ch, style(accent_fg, bg));
+            }
+        }
+
+        // Preview pane splits the popup horizontally when present.
+        let has_preview = palette.preview.is_some();
+        let list_w = if has_preview {
+            ((w as f32) * 0.4).round() as u16
+        } else {
+            w
+        };
+        let preview_x0 = x0 + list_w;
+
+        // Query line + separator (skipped when `show_query` is false).
+        let items_row0 = if palette.show_query {
+            if h >= 3 {
+                let row = y0 + 1;
+                surface.put_char(x0, row, '│', style(border_fg, bg));
+                if w >= 2 {
+                    surface.put_char(x0 + w - 1, row, '│', style(border_fg, bg));
+                }
+                let prompt = "> ";
+                let mut col = 1u16;
+                for ch in prompt.chars() {
+                    if col + 1 >= w {
+                        break;
+                    }
+                    surface.put_char(x0 + col, row, ch, style(query_fg, bg));
+                    col += 1;
+                }
+                let query_start = col;
+                for ch in palette.query.chars() {
+                    if col + 1 >= w {
+                        break;
+                    }
+                    surface.put_char(x0 + col, row, ch, style(query_fg, bg));
+                    col += 1;
+                }
+                let mut byte = 0usize;
+                let mut char_idx = 0usize;
+                for ch in palette.query.chars() {
+                    if byte >= palette.query_cursor {
+                        break;
+                    }
+                    byte += ch.len_utf8();
+                    char_idx += 1;
+                }
+                let cursor_col = query_start + char_idx as u16;
+                if cursor_col + 1 < w {
+                    let ch = palette.query.chars().nth(char_idx).unwrap_or(' ');
+                    // Block caret: swap the cell's own colours so the glyph
+                    // underneath stays legible in reverse video.
+                    surface.put_char(x0 + cursor_col, row, ch, style(bg, query_fg));
+                }
+            }
+
+            // In Input mode there is no item list, so no separator row.
+            if h >= 4 && palette.mode != PaletteMode::Input {
+                let row = y0 + 2;
+                for col in 0..w {
+                    let ch = if col == 0 {
+                        '├'
+                    } else if col == w - 1 {
+                        '┤'
+                    } else if has_preview && x0 + col == preview_x0 {
+                        '┬'
+                    } else {
+                        '─'
+                    };
+                    surface.put_char(x0 + col, row, ch, style(border_fg, bg));
+                }
+            }
+
+            // Input mode: no separator row between query and bottom border.
+            if palette.mode == PaletteMode::Input {
+                y0 + 2
+            } else {
+                y0 + 3
+            }
+        } else {
+            y0 + 1
+        };
+
+        // ── Input mode: no item list — draw the bottom border and return ─
+        if palette.mode == PaletteMode::Input {
+            // Fill any gap rows between the query row and the bottom border
+            // with side borders (the caller may have given a taller rect).
+            for row in items_row0..y_end - 1 {
+                surface.put_char(x0, row, '│', style(border_fg, bg));
+                if w >= 2 {
+                    surface.put_char(x0 + w - 1, row, '│', style(border_fg, bg));
+                }
+                for col in 1..w - 1 {
+                    surface.put_char(x0 + col, row, ' ', style(fg, bg));
+                }
+            }
+            paint_bottom_border(surface, x0, y_end - 1, w, false, preview_x0, border_fg, bg);
+            return;
+        }
+
+        // Result rows.
+        let has_create = palette.create_label.is_some();
+        let create_reserved = if has_create { 1u16 } else { 0 };
+        let items_row_end = (y_end - 1).saturating_sub(create_reserved);
+        let visible_rows = items_row_end.saturating_sub(items_row0) as usize;
+        let total = palette.items.len();
+        let has_scrollbar = total > visible_rows;
+        let item_end_col = if has_scrollbar {
+            list_w - 1
+        } else if has_preview {
+            list_w
+        } else {
+            w - 1
+        };
+
+        // The renderer is authoritative for row count: resolve
+        // `scroll_offset` against the row count it just computed, keeping
+        // the selected item visible and never leaving empty rows when there
+        // are items above we could show. This painter lays out its own cell
+        // grid rather than calling `Palette::layout`, so it calls the shared
+        // selection-visibility policy directly.
+        let resolved_offset = palette.resolved_scroll_offset(visible_rows);
+
+        for (vis_i, item) in palette
+            .items
+            .iter()
+            .enumerate()
+            .skip(resolved_offset)
+            .take(visible_rows)
+        {
+            let row = items_row0 + (vis_i - resolved_offset) as u16;
+            if row >= items_row_end {
+                break;
+            }
+            let is_selected = vis_i == palette.selected_idx && palette.has_focus;
+            let row_bg = if is_selected { sel_bg } else { bg };
+
+            surface.put_char(x0, row, '│', style(border_fg, bg));
+            if !has_preview && w >= 2 {
+                surface.put_char(x0 + w - 1, row, '│', style(border_fg, bg));
+            }
+            for col in 1..item_end_col {
+                surface.put_char(x0 + col, row, ' ', style(fg, row_bg));
+            }
+
+            let mut col = 1u16;
+
+            // Selection prefix (▶ when focused, two spaces otherwise —
+            // keeps non-selected text aligned with selected text).
+            let prefix = if is_selected { "▶ " } else { "  " };
+            for ch in prefix.chars() {
+                if col >= item_end_col {
+                    break;
+                }
+                surface.put_char(x0 + col, row, ch, style(fg, row_bg));
+                col += 1;
+            }
+
+            // Icon.
+            if let Some(ref icon) = item.icon {
+                let glyph = if nerd_fonts_enabled {
+                    icon.glyph.as_str()
+                } else {
+                    icon.fallback.as_str()
+                };
+                for ch in glyph.chars() {
+                    if col >= item_end_col {
+                        break;
+                    }
+                    surface.put_char(x0 + col, row, ch, style(fg, row_bg));
+                    col += 1;
+                }
+                if col < item_end_col {
+                    surface.put_char(x0 + col, row, ' ', style(fg, row_bg));
+                    col += 1;
+                }
+            }
+
+            // Text — per-character match highlighting based on byte offsets.
+            let full_text: String = item.text.spans.iter().map(|s| s.text.as_str()).collect();
+            let mut byte = 0usize;
+            for ch in full_text.chars() {
+                if col >= item_end_col {
+                    break;
+                }
+                let is_match = item.match_positions.contains(&byte);
+                let ch_fg = if is_match { match_fg } else { fg };
+                surface.put_char(x0 + col, row, ch, style(ch_fg, row_bg));
+                col += 1;
+                byte += ch.len_utf8();
+            }
+            let text_end_col = col;
+
+            // Detail (right-aligned, dimmed).
+            if let Some(ref detail) = item.detail {
+                let detail_text: String = detail.spans.iter().map(|s| s.text.as_str()).collect();
+                let detail_w = detail_text.chars().count() as u16;
+                if item_end_col > text_end_col + detail_w + 1 {
+                    let start = item_end_col.saturating_sub(detail_w + 1);
+                    for (dcol, ch) in (start..).zip(detail_text.chars()) {
+                        if dcol >= item_end_col {
+                            break;
+                        }
+                        surface.put_char(x0 + dcol, row, ch, style(dim_fg, row_bg));
+                    }
+                }
+            }
+
+            // Scrollbar.
+            if has_scrollbar {
+                let sb_col = list_w - 1;
+                let track_len = visible_rows;
+                let thumb_len = (visible_rows * visible_rows / total.max(1)).max(1);
+                let thumb_start = resolved_offset * track_len / total.max(1);
+                let vi_off = vis_i - resolved_offset;
+                let in_thumb = vi_off >= thumb_start && vi_off < thumb_start + thumb_len;
+                let ch = if in_thumb { '█' } else { '░' };
+                surface.put_char(x0 + sb_col, row, ch, style(border_fg, bg));
+            }
+        }
+
+        // Empty rows between the last item and the bottom border.
+        let drawn = total.saturating_sub(resolved_offset).min(visible_rows) as u16;
+        for row in items_row0 + drawn..items_row_end {
+            surface.put_char(x0, row, '│', style(border_fg, bg));
+            if !has_preview && w >= 2 {
+                surface.put_char(x0 + w - 1, row, '│', style(border_fg, bg));
+            }
+        }
+
+        // ── Create action row (pinned below items) ──────────────────────
+        if let Some(ref label) = palette.create_label {
+            let create_row = items_row_end;
+            if create_row < y_end - 1 {
+                surface.put_char(x0, create_row, '│', style(border_fg, bg));
+                if !has_preview && w >= 2 {
+                    surface.put_char(x0 + w - 1, create_row, '│', style(border_fg, bg));
+                }
+                let end_col = if has_preview { list_w } else { w - 1 };
+                for col in 1..end_col {
+                    surface.put_char(x0 + col, create_row, ' ', style(fg, bg));
+                }
+                let mut col = 1u16;
+                for ch in "+ ".chars().chain(label.chars()) {
+                    if col >= end_col {
+                        break;
+                    }
+                    surface.put_char(x0 + col, create_row, ch, style(accent_fg, bg));
+                    col += 1;
+                }
+            }
+        }
+
+        // ── Preview pane ────────────────────────────────────────────────
+        if let Some(ref preview) = palette.preview {
+            let sep_col = preview_x0;
+            let preview_content_x = sep_col + 1;
+
+            // Vertical separator + right border for all item/preview rows.
+            for row in items_row0..items_row_end {
+                surface.put_char(sep_col, row, '│', style(border_fg, bg));
+                surface.put_char(x0 + w - 1, row, '│', style(border_fg, bg));
+            }
+
+            // Preview title row (reuses the separator row area in the
+            // preview half, or the first content row if there is no title).
+            let mut preview_row0 = items_row0;
+
+            if let Some(ref title_text) = preview.title {
+                let row = items_row0;
+                if row < items_row_end {
+                    for col in preview_content_x..x0 + w - 1 {
+                        surface.put_char(col, row, ' ', style(fg, bg));
+                    }
+                    for (col, ch) in (preview_content_x + 1..).zip(title_text.chars()) {
+                        if col + 1 >= x0 + w - 1 {
+                            break;
+                        }
+                        surface.put_char(col, row, ch, style(dim_fg, bg));
+                    }
+                    preview_row0 = items_row0 + 1;
+                }
+            }
+
+            // Preview content lines.
+            let preview_visible = items_row_end.saturating_sub(preview_row0) as usize;
+            for (vi, line_idx) in (preview.scroll_offset..).take(preview_visible).enumerate() {
+                let row = preview_row0 + vi as u16;
+                if row >= items_row_end {
+                    break;
+                }
+                let is_highlight = preview.highlight_line == Some(line_idx);
+                let line_bg = if is_highlight { sel_bg } else { bg };
+
+                for col in preview_content_x..x0 + w - 1 {
+                    surface.put_char(col, row, ' ', style(fg, line_bg));
+                }
+
+                if line_idx < preview.lines.len() {
+                    let line = &preview.lines[line_idx];
+                    let mut col = preview_content_x + 1;
+                    for span in &line.spans {
+                        let span_fg = span.fg.unwrap_or(fg);
+                        for ch in span.text.chars() {
+                            if col + 1 >= x0 + w - 1 {
+                                break;
+                            }
+                            surface.put_char(col, row, ch, style(span_fg, line_bg));
+                            col += 1;
+                        }
+                    }
+                }
+            }
+        }
+
+        paint_bottom_border(
+            surface,
+            x0,
+            y_end - 1,
+            w,
+            has_preview,
+            preview_x0,
+            border_fg,
+            bg,
+        );
+    }
+
+    /// The `╰──┴──╯` closing row, with a `┴` junction under the preview
+    /// separator column when a preview pane is present.
+    #[allow(clippy::too_many_arguments)]
+    fn paint_bottom_border(
+        surface: &mut dyn CellSurface,
+        x0: u16,
+        row: u16,
+        w: u16,
+        has_preview: bool,
+        preview_x0: u16,
+        border_fg: Color,
+        bg: Color,
+    ) {
+        for col in 0..w {
+            let ch = if col == 0 {
+                '╰'
+            } else if col == w - 1 {
+                '╯'
+            } else if has_preview && x0 + col == preview_x0 {
+                '┴'
+            } else {
+                '─'
+            };
+            surface.put_char(x0 + col, row, ch, style(border_fg, bg));
+        }
+    }
+}
+
+// ── Widget contract: `Primitive` + `Interactive` ───────────────────────────
+
+/// [`Palette`]'s fully-resolved widget-contract layout: the absolute
+/// `area` the popup was laid out in, the metrics it was resolved against,
+/// and the popup-local [`PaletteLayout`] itself.
+///
+/// `#[non_exhaustive]`: produced by [`crate::Primitive::layout`], never
+/// built by a consumer via struct literal — the same convention
+/// [`PaletteLayout`] itself follows.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct PalettePrimitiveLayout {
+    /// The rect [`crate::Primitive::layout`] was called with — the
+    /// popup's whole box, already placed by the host.
+    pub area: Rect,
+    /// The resolved popup layout. Its bounds and `hit_regions` are
+    /// **local**: `(0, 0)` is [`Self::area`]'s own top-left corner, the
+    /// same frame [`crate::RoutedEvent::Pointer`]'s `local` field uses.
+    pub layout: PaletteLayout,
+    /// Item-row pitch the rows were resolved at: one cell on a cell grid,
+    /// [`item_row_height`] on a pixel surface.
+    pub row_height: f32,
+    /// Chrome line height from [`crate::LayoutCtx::line_height`] — the
+    /// pitch the title and query rows were resolved at.
+    pub line_height: f32,
+    /// The item area's full row capacity in surface-native units, already
+    /// floored to a whole number of rows. Only the pixel painter reads it
+    /// (for the scrollbar-track / preview-pane / create-row positions
+    /// below the last item); on a cell grid it is the visible row count.
+    pub rows_h: f32,
+    /// Nerd-Font toggle from [`crate::LayoutCtx`] — which of
+    /// [`Icon::glyph`]/[`Icon::fallback`] the painters paint.
+    pub nerd_fonts_enabled: bool,
+    /// [`crate::Style::backdrop_opacity`] as resolved for this frame —
+    /// carried on the layout because [`crate::Primitive::paint_cells`]
+    /// receives no [`crate::Style`] of its own.
+    pub backdrop_opacity: f32,
+}
+
+impl PalettePrimitiveLayout {
+    /// Hit-test at a position relative to [`Self::area`]'s own origin —
+    /// the space [`crate::RoutedEvent::Pointer`]'s `local` field uses,
+    /// which is also [`Self::layout`]'s own frame.
+    pub fn hit_test_local(&self, x: f32, y: f32) -> PaletteHit {
+        self.layout.hit_test(x, y)
+    }
+
+    /// How many item rows the popup shows at once — the page size
+    /// `PageUp`/`PageDown` move by. At least `1`, so a box too short for
+    /// a single row still pages one item at a time rather than standing
+    /// still.
+    pub fn page(&self) -> usize {
+        self.layout.visible_items.len().max(1)
+    }
+}
+
+impl Palette {
+    /// The widest item row's content in the units `ctx` measures in — the
+    /// selection prefix, the icon plus a one-advance gap, the label, and
+    /// (when present) a gap plus the right-aligned `detail`.
+    fn widest_row(&self, ctx: &crate::LayoutCtx) -> f32 {
+        let cells = matches!(ctx.units(), crate::primitive::Units::Cells);
+        let width_of = |text: &str| -> f32 {
+            if cells {
+                crate::text_util::display_width(text) as f32
+            } else {
+                ctx.text_width(text, crate::FontRole::Chrome)
+            }
+        };
+        let gap = if cells { 1.0 } else { ctx.char_width.max(1.0) };
+        // Every row reserves the two columns the selected row's "▶ "
+        // prefix occupies, so a selection never reflows the text.
+        let prefix = 2.0 * gap;
+        self.items
+            .iter()
+            .map(|item| {
+                let icon = item
+                    .icon
+                    .as_ref()
+                    .map(|icon| {
+                        let glyph = if ctx.nerd_fonts_enabled && !cells {
+                            &icon.glyph
+                        } else {
+                            &icon.fallback
+                        };
+                        width_of(glyph) + gap
+                    })
+                    .unwrap_or(0.0);
+                let label: f32 = item.text.spans.iter().map(|s| width_of(&s.text)).sum();
+                let detail = item
+                    .detail
+                    .as_ref()
+                    .map(|d| gap + d.spans.iter().map(|s| width_of(&s.text)).sum::<f32>())
+                    .unwrap_or(0.0);
+                prefix + icon + label + detail
+            })
+            .fold(0.0_f32, f32::max)
+    }
+}
+
+impl crate::primitive::Primitive for Palette {
+    type Layout = PalettePrimitiveLayout;
+    type Event = PaletteEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Palette(self.clone())
+    }
+
+    /// The box that shows every item at once: the widest row's own
+    /// content ([`Self::widest_row`]) plus the border/padding columns the
+    /// painters frame each row with, and a column of rows tall enough for
+    /// the title, the query area, every item, the pinned create row and
+    /// the bottom chrome.
+    ///
+    /// [`PaletteMode::Input`] suppresses the item list, so it measures
+    /// title plus query only. A palette with a preview pane is scaled up
+    /// by the 40/60 split the layout applies, so the *item* column still
+    /// fits its widest row.
+    fn measure(
+        &self,
+        ctx: &crate::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        let cells = matches!(ctx.units(), crate::primitive::Units::Cells);
+        let line_height = ctx.line_height.max(1.0);
+        let gap = if cells { 1.0 } else { ctx.char_width.max(1.0) };
+        let item_h = if cells {
+            1.0
+        } else {
+            item_row_height(line_height)
+        };
+        let title_h = if cells { 1.0 } else { line_height };
+        let query_h = if !self.show_query {
+            0.0
+        } else if cells {
+            if self.mode == PaletteMode::Input {
+                1.0
+            } else {
+                2.0
+            }
+        } else {
+            line_height + 1.0
+        };
+        let rows = if self.mode == PaletteMode::Input {
+            0
+        } else {
+            self.items.len()
+        };
+        let create_h = if self.create_label.is_some() {
+            item_h
+        } else {
+            0.0
+        };
+        let bottom = if cells { 1.0 } else { BOTTOM_INSET };
+        let height = title_h + query_h + rows as f32 * item_h + create_h + bottom;
+
+        let title_w = crate::text_util::display_width(&self.title) as f32 * gap;
+        let query_w = if self.show_query {
+            (2 + crate::text_util::display_width(&self.query)) as f32 * gap
+        } else {
+            0.0
+        };
+        // Two border columns plus one pad column either side.
+        let chrome = 4.0 * gap;
+        let content = self.widest_row(ctx).max(title_w).max(query_w);
+        let width = if self.preview.is_some() {
+            (content + chrome) / 0.4
+        } else {
+            content + chrome
+        };
+        crate::NaturalSize::new(Some(width), Some(height))
+    }
+
+    /// `rect` is the popup's final box — already placed and sized by the
+    /// host, the way every other overlay primitive is laid out. The
+    /// geometry inside it comes from [`cell_layout`] on a cell grid and
+    /// [`pixel_layout`] on a pixel surface: the same two functions every
+    /// legacy `Backend::palette_layout` impl resolves through, so the
+    /// contract and the legacy seam can never disagree.
+    fn layout(&self, ctx: &crate::LayoutCtx, rect: Rect) -> PalettePrimitiveLayout {
+        let line_height = if ctx.line_height > 0.0 {
+            ctx.line_height
+        } else {
+            1.0
+        };
+        let (layout, rows_h, row_height) = if matches!(ctx.units(), crate::primitive::Units::Cells)
+        {
+            let layout = cell_layout(self, rect.width, rect.height);
+            let rows = layout.visible_items.len() as f32;
+            (layout, rows, 1.0)
+        } else {
+            let (layout, rows_h) = pixel_layout(rect.width, rect.height, self, line_height);
+            (layout, rows_h, item_row_height(line_height))
+        };
+        PalettePrimitiveLayout {
+            area: rect,
+            layout,
+            row_height,
+            line_height,
+            rows_h,
+            nerd_fonts_enabled: ctx.nerd_fonts_enabled,
+            backdrop_opacity: ctx.style().backdrop_opacity,
+        }
+    }
+
+    /// The shared pixel painter — the same
+    /// [`native_surface_paint::paint`] every pixel backend's
+    /// `draw_palette` wrapper calls.
+    fn paint(
+        &self,
+        layout: &PalettePrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        theme: &crate::theme::Theme,
+        style: &crate::style::Style,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            native_surface_paint::paint(
+                self,
+                layout.area,
+                &layout.layout,
+                layout.rows_h,
+                layout.line_height,
+                layout.nerd_fonts_enabled,
+                surface,
+                theme,
+                style,
+            );
+        }
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        {
+            let _ = (layout, surface, theme, style);
+        }
+    }
+
+    /// [`cell_paint::paint`] over `buf`, reached through
+    /// [`crate::tui::draw_palette_with_style`] because the
+    /// `Buffer` → [`crate::CellSurface`] adapter is private to
+    /// `crate::tui`. The backdrop opacity rides on the layout, since this
+    /// method receives no [`crate::Style`] of its own.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &PalettePrimitiveLayout,
+        buf: &mut ratatui::buffer::Buffer,
+        theme: &crate::theme::Theme,
+    ) {
+        let area = layout.area;
+        crate::tui::draw_palette_with_style(
+            buf,
+            ratatui::layout::Rect::new(
+                area.x as u16,
+                area.y as u16,
+                area.width as u16,
+                area.height as u16,
+            ),
+            self,
+            theme,
+            &crate::style::Style::default().with_backdrop_opacity(layout.backdrop_opacity),
+            layout.nerd_fonts_enabled,
+        );
+    }
+}
+
+/// [`crate::Interactive::State`] for [`Palette`]: the query caret and
+/// selection anchor this widget's own key handling moves, as byte offsets
+/// into [`Palette::query`].
+///
+/// Same division of labour as
+/// [`crate::primitives::command_line::CommandLineState`] — the caret is
+/// interaction state rather than something read back off the descriptor,
+/// because a host that rewrites `query` in response to
+/// [`PaletteEvent::QueryChanged`] has no reason to also track where the
+/// caret landed. [`Palette::query_cursor`] still seeds it, so a host that
+/// *does* drive the caret keeps control.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PaletteState {
+    /// The caret byte offset this widget's own editing has moved to, or
+    /// `None` while it still follows [`Palette::query_cursor`].
+    pub cursor: Option<usize>,
+    /// The query selection's fixed end, as a byte offset.
+    pub anchor: Option<usize>,
+}
+
+impl crate::interactive::WidgetAction for PaletteEvent {
+    /// Every palette outcome already has a home in the crate's one
+    /// palette channel, [`crate::UiEvent::Palette`], so this is a
+    /// straight wrap under the popup's own [`Palette::id`].
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::Palette(id, self)
+    }
+}
+
+impl Palette {
+    /// The item a keyboard accept lands on — [`Self::selected_idx`]
+    /// clamped into `items`, or `None` for an empty list.
+    fn current_idx(&self) -> Option<usize> {
+        if self.items.is_empty() {
+            None
+        } else {
+            Some(self.selected_idx.min(self.items.len() - 1))
+        }
+    }
+
+    /// The caret one `handle` call starts from: whatever this widget's own
+    /// state has walked to, else [`Self::query_cursor`] — snapped to a
+    /// char boundary either way.
+    fn effective_cursor(&self, state: &PaletteState) -> usize {
+        crate::behaviour::text_edit::effective_flat_cursor(
+            &self.query,
+            state.cursor,
+            Some(self.query_cursor),
+        )
+    }
+
+    /// Apply one [`crate::EditOp`] against the query and the caret/anchor
+    /// in `state`, writing the resulting caret back. Returns the new query
+    /// when it changed, `None` when the op only moved the caret or the
+    /// selection.
+    fn apply_query_op(&self, state: &mut PaletteState, op: crate::EditOp) -> Option<String> {
+        let (query, cursor, anchor) = crate::behaviour::text_edit::apply_flat_edit_op(
+            &self.query,
+            self.effective_cursor(state),
+            state.anchor,
+            op,
+        );
+        state.cursor = Some(cursor);
+        state.anchor = anchor;
+        (query != self.query).then_some(query)
+    }
+
+    /// Apply `op` and report it: a query change as
+    /// [`PaletteEvent::QueryChanged`], a caret-only move as
+    /// [`Handled::Consumed`] plus a redraw request.
+    fn commit_query(
+        &self,
+        state: &mut PaletteState,
+        op: crate::EditOp,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<PaletteEvent> {
+        match self.apply_query_op(state, op) {
+            Some(value) => Handled::Event(PaletteEvent::QueryChanged { value }),
+            None => {
+                cx.request_redraw();
+                Handled::Consumed
+            }
+        }
+    }
+
+    /// The query text currently selected, as the shared flat-value
+    /// selection span resolves it — what Ctrl-C reads before emitting
+    /// [`crate::UiEvent::TextCopied`].
+    fn query_selection(&self, state: &PaletteState) -> Option<String> {
+        crate::behaviour::text_edit::flat_selected_text(
+            &self.query,
+            self.effective_cursor(state),
+            state.anchor,
+        )
+    }
+
+    /// Which [`NavKey`] a keystroke means for the *item list*.
+    ///
+    /// With the query row live, only Up/Down/PageUp/PageDown navigate:
+    /// `Home`/`End` (and Left/Right) belong to the query caret, the same
+    /// split VS Code's own command palette uses. With the query hidden
+    /// ([`Palette::show_query`] `false` — a tab switcher or branch picker
+    /// that only shows a list), the full navigation vocabulary applies.
+    fn nav_key_for(&self, key: &crate::interactive::KeyEvent, page: usize) -> Option<NavKey> {
+        use crate::event::{Key, NamedKey};
+        if !self.show_query {
+            return NavKey::from_key(key).map(|nav| magnify_page(nav, page));
+        }
+        match key.key {
+            Key::Named(NamedKey::Up) => Some(NavKey::Up),
+            Key::Named(NamedKey::Down) => Some(NavKey::Down),
+            Key::Named(NamedKey::PageUp) => Some(NavKey::PageUp(page)),
+            Key::Named(NamedKey::PageDown) => Some(NavKey::PageDown(page)),
+            _ => None,
+        }
+    }
+
+    /// Move the item highlight by `nav` and report the new index.
+    fn navigate(&self, nav: NavKey) -> Handled<PaletteEvent> {
+        let target = crate::behaviour::nav::FlatNav::mv(
+            self.items.len(),
+            self.current_idx(),
+            nav,
+            false,
+            |_| true,
+        );
+        match target {
+            Some(idx) if Some(idx) != self.current_idx() => {
+                Handled::Event(PaletteEvent::SelectionChanged { idx })
+            }
+            // Already at the edge the key moves toward: the popup owns the
+            // keystroke (an editor behind it must not also move its caret)
+            // but has nothing to report.
+            Some(_) => Handled::Consumed,
+            None => Handled::Ignored,
+        }
+    }
+
+    /// Resolve one keystroke: Escape dismisses, Enter accepts the
+    /// highlighted row, the navigation keys move the highlight, and every
+    /// remaining key is an edit against the query through the shared
+    /// flat-value editing core — so this popup, [`crate::TextField`] and
+    /// [`crate::CommandLine`] can never disagree about what a key means.
+    ///
+    /// [`PaletteMode::Input`] hides the item list, so Enter there is not
+    /// this widget's to claim: it answers [`Handled::Ignored`] and the
+    /// host's own `UiEvent::KeyPressed` handling confirms the raw query
+    /// text. `Tab` is likewise left alone — toggling
+    /// [`Palette::mode`] is host state, not a palette outcome.
+    fn handle_key(
+        &self,
+        state: &mut PaletteState,
+        key: &crate::interactive::KeyEvent,
+        layout: &PalettePrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<PaletteEvent> {
+        use crate::behaviour::text_edit::EditIntent;
+        use crate::event::{Key, NamedKey};
+        use crate::EditOp;
+
+        match key.key {
+            Key::Named(NamedKey::Escape) => return Handled::Event(PaletteEvent::Closed),
+            Key::Named(NamedKey::Enter) if self.mode == PaletteMode::List => {
+                return match self.current_idx() {
+                    Some(idx) => Handled::Event(PaletteEvent::ItemConfirmed { idx }),
+                    None => Handled::Consumed,
+                };
+            }
+            _ => {}
+        }
+
+        if self.mode == PaletteMode::List && !self.items.is_empty() {
+            if let Some(nav) = self.nav_key_for(key, layout.page()) {
+                return self.navigate(nav);
+            }
+        }
+
+        if !self.show_query {
+            return Handled::Ignored;
+        }
+
+        match EditIntent::from_key(&key.key, key.modifiers) {
+            Some(EditIntent::SelectAll) => self.commit_query(state, EditOp::SelectAll, cx),
+            Some(EditIntent::Copy) => match self.query_selection(state) {
+                Some(text) => {
+                    cx.emit(crate::UiEvent::TextCopied(text));
+                    Handled::Consumed
+                }
+                None => Handled::Consumed,
+            },
+            Some(EditIntent::Cut) => match self.query_selection(state) {
+                Some(text) => {
+                    cx.emit(crate::UiEvent::TextCopied(text));
+                    self.commit_query(state, EditOp::DeleteSelection, cx)
+                }
+                None => Handled::Consumed,
+            },
+            // Paste is the host's: the clipboard text arrives as
+            // `UiEvent::ClipboardPaste`, which a host feeds back in as
+            // `RoutedEvent::Text`.
+            Some(EditIntent::Paste) => Handled::Ignored,
+            Some(EditIntent::Op(op)) => self.commit_query(state, op, cx),
+            None => Handled::Ignored,
+        }
+    }
+}
+
+/// Re-magnify a [`NavKey`]'s page step against the rows actually on
+/// screen — [`NavKey::from_key`] can't know a popup's page size, so
+/// it reports the physical Page keys as a one-step move (see its own doc).
+fn magnify_page(nav: NavKey, page: usize) -> NavKey {
+    match nav {
+        NavKey::PageUp(_) => NavKey::PageUp(page),
+        NavKey::PageDown(_) => NavKey::PageDown(page),
+        other => other,
+    }
+}
+
+impl crate::interactive::Interactive for Palette {
+    type State = PaletteState;
+    type Action = PaletteEvent;
+
+    /// One focus stop as a whole: a palette is a modal overlay, so while
+    /// it is on screen it is the keyboard target and routes every
+    /// keystroke internally rather than declaring a stop per row.
+    /// [`Palette::has_focus`] is a *paint* flag (it gates the `▶`
+    /// selection marker), not a routing one — a palette the host chose to
+    /// render is a palette the host wants keys delivered to.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// Keyboard goes through [`Palette::handle_key`]. A single click
+    /// selects the row under the pointer (it does not confirm it — that
+    /// still takes Enter or a double-click), and every other press inside
+    /// the popup's own bounds is swallowed: a modal overlay must never let
+    /// a click fall through to the UI it covers (see this module's own
+    /// doc, "Click intercept is mandatory"). Dismiss-on-click-outside
+    /// stays the host's call, since the routing engine only delivers a
+    /// press that landed inside this widget's rect.
+    ///
+    /// The pinned create-action row ([`Palette::create_label`]) is
+    /// swallowed rather than reported: [`PaletteEvent`] names no
+    /// create outcome, so a host that offers one wires it through its own
+    /// controller.
+    fn handle(
+        &self,
+        state: &mut PaletteState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &PalettePrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<PaletteEvent> {
+        use crate::event::MouseButton;
+        use crate::interactive::{PointerKind, RoutedEvent};
+
+        match event {
+            RoutedEvent::Key(key) => self.handle_key(state, key, layout, cx),
+            RoutedEvent::Text(text) => {
+                self.commit_query(state, crate::EditOp::InsertText(text.clone()), cx)
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                local,
+                ..
+            } => {
+                cx.request_focus(None);
+                match layout.hit_test_local(local.x, local.y) {
+                    PaletteHit::Item(idx) if Some(idx) != self.current_idx() => {
+                        Handled::Event(PaletteEvent::SelectionChanged { idx })
+                    }
+                    PaletteHit::ExpandToggle(idx) => {
+                        let expanded = self
+                            .items
+                            .get(idx)
+                            .map(|item| !item.expanded)
+                            .unwrap_or(false);
+                        Handled::Event(PaletteEvent::ExpandToggled { idx, expanded })
+                    }
+                    _ => Handled::Consumed,
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::DoubleClick(MouseButton::Left),
+                local,
+                ..
+            } => match layout.hit_test_local(local.x, local.y) {
+                PaletteHit::Item(idx) => Handled::Event(PaletteEvent::ItemConfirmed { idx }),
+                _ => Handled::Consumed,
+            },
+            // `A11yAction` carries no row index through this generic seam,
+            // so `Click` activates whichever row is highlighted — the same
+            // one Enter accepts, matching the assistive-technology
+            // default-action convention.
+            RoutedEvent::Action(crate::a11y::A11yAction::Click) => match self.current_idx() {
+                Some(idx) => Handled::Event(PaletteEvent::ItemConfirmed { idx }),
+                None => Handled::Ignored,
+            },
+            RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
+                cx.request_focus(None);
+                Handled::Consumed
+            }
+            RoutedEvent::FocusIn(_) => {
+                // Re-seed from the descriptor: the host may have moved the
+                // caret while this popup was unfocused.
+                state.cursor = Some(self.query_cursor.min(self.query.len()));
+                state.anchor = None;
+                Handled::Consumed
+            }
+            RoutedEvent::FocusOut => {
+                state.cursor = None;
+                state.anchor = None;
+                Handled::Consumed
+            }
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// Focus plus the default click action a screen reader invokes to
+    /// accept the highlighted row.
+    fn a11y_actions(&self, _state: &PaletteState) -> Vec<crate::a11y::A11yAction> {
+        let mut actions = vec![crate::a11y::A11yAction::Focus];
+        if !self.items.is_empty() {
+            actions.push(crate::a11y::A11yAction::Click);
+        }
+        actions
+    }
+
+    /// One sub-part per visible item row, addressed by its index into
+    /// [`Palette::items`]. [`PalettePrimitiveLayout::layout`] is already
+    /// in this widget's own local space, so the bounds pass through
+    /// untranslated.
+    fn sub_regions(
+        &self,
+        layout: &PalettePrimitiveLayout,
+    ) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        layout
+            .layout
+            .visible_items
+            .iter()
+            .map(|vis| {
+                (
+                    vis.bounds,
+                    crate::interactive::SubTarget(vis.item_idx as u64),
+                )
+            })
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2149,5 +3340,356 @@ mod tests {
         assert_eq!(back.depth, 2);
         assert!(back.expandable);
         assert!(back.expanded);
+    }
+    // ── Cell-path paint (`cell_paint::paint`) ───────────────────────────
+
+    #[cfg(feature = "tui")]
+    mod cells {
+        use super::*;
+        use crate::style::Style;
+        use crate::theme::Theme;
+        use crate::tui::{draw_palette, ratatui_color, tui_palette_layout};
+        use crate::types::{Color, StyledSpan};
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        fn item(text: &str) -> PaletteItem {
+            PaletteItem {
+                text: StyledText {
+                    spans: vec![StyledSpan::plain(text)],
+                },
+                detail: None,
+                icon: None,
+                match_positions: Vec::new(),
+                depth: 0,
+                expandable: false,
+                expanded: false,
+            }
+        }
+
+        fn make_palette() -> Palette {
+            Palette {
+                id: WidgetId::new("p"),
+                title: "Search".into(),
+                query: "fo".into(),
+                query_cursor: 2,
+                items: vec![item("foo"), item("food"), item("foggy")],
+                selected_idx: 0,
+                scroll_offset: 0,
+                has_focus: true,
+                show_query: true,
+                create_label: None,
+                total_count: 3,
+                preview: None,
+                mode: PaletteMode::List,
+            }
+        }
+
+        fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+            buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+        }
+
+        /// The cell painter is reached through `crate::tui::draw_palette`,
+        /// which only adapts the ratatui `Buffer` into a `CellSurface`.
+        fn paint(buf: &mut Buffer, area: RRect, p: &Palette, theme: &Theme) {
+            draw_palette(buf, area, p, theme, false);
+        }
+
+        #[test]
+        fn paints_top_and_bottom_borders_with_corners() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            let p = make_palette();
+            paint(&mut buf, RRect::new(0, 0, 20, 10), &p, &Theme::default());
+            assert_eq!(cell_char(&buf, 0, 0), '╭');
+            assert_eq!(cell_char(&buf, 19, 0), '╮');
+            assert_eq!(cell_char(&buf, 0, 9), '╰');
+            assert_eq!(cell_char(&buf, 19, 9), '╯');
+        }
+
+        #[test]
+        fn backdrop_opacity_blends_background_and_surface_bg() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            let p = make_palette();
+            let theme = Theme::default();
+            let style = Style::default().with_backdrop_opacity(0.5);
+            crate::tui::draw_palette_with_style(
+                &mut buf,
+                RRect::new(0, 0, 20, 10),
+                &p,
+                &theme,
+                &style,
+                false,
+            );
+
+            let expected_bg = ratatui_color(theme.background.blend(theme.surface_bg, 0.5));
+            // (1, 1) sits inside the border, below the title row and above
+            // any query/list content — a cell only ever painted with the
+            // blended backdrop fill, never overwritten by a more specific
+            // element.
+            assert_eq!(buf[(1, 1)].bg, expected_bg);
+        }
+
+        #[test]
+        fn default_backdrop_opacity_reproduces_surface_bg_exactly() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            let p = make_palette();
+            let theme = Theme::default();
+            paint(&mut buf, RRect::new(0, 0, 20, 10), &p, &theme);
+
+            assert_eq!(buf[(1, 1)].bg, ratatui_color(theme.surface_bg));
+        }
+
+        #[test]
+        fn paints_query_with_prompt() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            let p = make_palette();
+            paint(&mut buf, RRect::new(0, 0, 20, 10), &p, &Theme::default());
+            // Query row is y=1; prompt "> " starts at col 1, query "fo"
+            // follows.
+            let row1: String = (1..6).map(|x| cell_char(&buf, x, 1)).collect();
+            assert_eq!(row1, "> fo ");
+        }
+
+        #[test]
+        fn match_positions_use_match_fg() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            let mut p = make_palette();
+            // Highlight bytes 0 and 2 of "foo".
+            p.items[0].match_positions = vec![0, 2];
+            let theme = Theme {
+                match_fg: Color::rgb(99, 99, 99),
+                ..Theme::default()
+            };
+            paint(&mut buf, RRect::new(0, 0, 20, 10), &p, &theme);
+            // Items start at row 3. Scan the row's cells for the first 'f'
+            // to get the column index in cells (NOT byte offsets — `▶`
+            // takes 1 cell but 3 bytes when collected into a String).
+            let f_col = (0..20)
+                .find(|&x| buf[(x, 3u16)].symbol().starts_with('f'))
+                .expect("expected 'f' painted in row 3");
+            let fg0 = buf[(f_col, 3u16)].fg;
+            assert_eq!(fg0, ratatui::style::Color::Rgb(99, 99, 99));
+            // 'o' at byte 2 of "foo" → second 'o' → f_col + 2.
+            let fg2 = buf[(f_col + 2, 3u16)].fg;
+            assert_eq!(fg2, ratatui::style::Color::Rgb(99, 99, 99));
+        }
+
+        #[test]
+        fn preview_pane_paints_content_and_separator() {
+            // Wide enough for a 40/60 split: 40 cells → list_w=16,
+            // preview=24.
+            let mut buf = Buffer::empty(RRect::new(0, 0, 40, 12));
+            let mut p = make_palette();
+            p.preview = Some(PalettePreview {
+                lines: vec![
+                    StyledText::plain("line one"),
+                    StyledText::plain("line two"),
+                    StyledText::plain("line three"),
+                ],
+                title: Some("preview.rs".into()),
+                scroll_offset: 0,
+                highlight_line: Some(1),
+            });
+            paint(&mut buf, RRect::new(0, 0, 40, 12), &p, &Theme::default());
+            let list_w = ((40.0_f32) * 0.4).round() as u16; // 16
+                                                            // Vertical separator on item rows.
+            assert_eq!(cell_char(&buf, list_w, 3), '│');
+            // Separator junction on the separator row.
+            assert_eq!(cell_char(&buf, list_w, 2), '┬');
+            // Bottom border junction.
+            assert_eq!(cell_char(&buf, list_w, 11), '┴');
+            // Preview title painted (first char of "preview.rs").
+            let title_col = list_w + 2;
+            assert_eq!(cell_char(&buf, title_col, 3), 'p');
+            // Preview content line 0 ("line one") at row 4 (after title).
+            let content_row = 4;
+            let content_col = list_w + 2;
+            assert_eq!(cell_char(&buf, content_col, content_row), 'l');
+            // Highlight line (line 1) uses selected_bg.
+            let highlight_row = 5;
+            let highlight_bg = buf[(content_col, highlight_row)].bg;
+            let sel_bg_color = ratatui_color(Theme::default().selected_bg);
+            assert_eq!(highlight_bg, sel_bg_color);
+        }
+
+        #[test]
+        fn preview_pane_respects_scroll_offset() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 40, 12));
+            let mut p = make_palette();
+            p.preview = Some(PalettePreview {
+                lines: vec![
+                    StyledText::plain("line zero"),
+                    StyledText::plain("line one"),
+                    StyledText::plain("visible"),
+                ],
+                title: None,
+                scroll_offset: 2,
+                highlight_line: None,
+            });
+            paint(&mut buf, RRect::new(0, 0, 40, 12), &p, &Theme::default());
+            let list_w = ((40.0_f32) * 0.4).round() as u16;
+            let content_col = list_w + 2;
+            // No title → content starts at items_row0 (row 3).
+            // scroll_offset=2 → the first visible line is "visible".
+            assert_eq!(cell_char(&buf, content_col, 3), 'v');
+        }
+
+        #[test]
+        fn show_query_false_hides_query_and_separator() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 10));
+            let mut p = make_palette();
+            p.show_query = false;
+            paint(&mut buf, RRect::new(0, 0, 20, 10), &p, &Theme::default());
+            // Row 1 should be items, not the query prompt. With
+            // show_query=false, items start at y0+1 (right after title).
+            let row1_chars: String = (1..6).map(|x| cell_char(&buf, x, 1)).collect();
+            assert_ne!(row1_chars, "> fo ");
+            // First item "foo" should appear at row 1 (with selection
+            // prefix).
+            let has_item = (0..20).any(|x| cell_char(&buf, x, 1) == 'f');
+            assert!(has_item, "expected item text at row 1 when query hidden");
+            // No separator row (├─┤) should exist at row 2.
+            assert_ne!(cell_char(&buf, 0, 2), '├');
+        }
+
+        #[test]
+        fn create_label_renders_pinned_row() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 30, 10));
+            let mut p = make_palette();
+            p.create_label = Some("Create 'foo'".into());
+            paint(&mut buf, RRect::new(0, 0, 30, 10), &p, &Theme::default());
+            // The create row is pinned at items_row_end (y_end - 1 - 1 =
+            // row 8) and shows "+ Create 'foo'" in accent_fg.
+            let create_row = 8u16;
+            let row_text: String = (1..20).map(|x| cell_char(&buf, x, create_row)).collect();
+            assert!(
+                row_text.contains("+ Create"),
+                "expected create label at pinned row, got: {row_text:?}"
+            );
+        }
+
+        /// The `[L]` / `[I]` badge is painted at the position the formula
+        /// `badge_start = w - 1 - badge_w` (3 chars) predicts.
+        #[test]
+        fn mode_badge_appears_at_computed_right_side_position() {
+            // w=20 → badge_w=3 → badge_start = 20 - 1 - 3 = 16.
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 8));
+            let p = make_palette();
+            paint(&mut buf, RRect::new(0, 0, 20, 8), &p, &Theme::default());
+            // The List-mode badge "[L]" appears at columns 16, 17, 18 of
+            // row 0.
+            assert_eq!(cell_char(&buf, 16, 0), '[', "badge '[' at col 16");
+            assert_eq!(cell_char(&buf, 17, 0), 'L', "badge 'L' at col 17");
+            assert_eq!(cell_char(&buf, 18, 0), ']', "badge ']' at col 18");
+
+            // Input-mode badge "[I]" at the same columns.
+            let mut buf2 = Buffer::empty(RRect::new(0, 0, 20, 8));
+            let mut p2 = make_palette();
+            p2.mode = PaletteMode::Input;
+            paint(&mut buf2, RRect::new(0, 0, 20, 8), &p2, &Theme::default());
+            assert_eq!(cell_char(&buf2, 16, 0), '[', "input badge '[' at col 16");
+            assert_eq!(cell_char(&buf2, 17, 0), 'I', "input badge 'I' at col 17");
+            assert_eq!(cell_char(&buf2, 18, 0), ']', "input badge ']' at col 18");
+        }
+
+        /// `Input` mode paints no `├──┤` separator at row 2, and still
+        /// closes its box at the last row the caller allocated.
+        #[test]
+        fn input_mode_no_separator_row_painted() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 8));
+            let mut p = make_palette();
+            p.mode = PaletteMode::Input;
+            paint(&mut buf, RRect::new(0, 0, 20, 8), &p, &Theme::default());
+            assert_ne!(
+                cell_char(&buf, 0, 2),
+                '├',
+                "separator must not appear in Input mode"
+            );
+            assert_eq!(cell_char(&buf, 0, 7), '╰', "bottom-left corner at last row");
+            assert_eq!(
+                cell_char(&buf, 19, 7),
+                '╯',
+                "bottom-right corner at last row"
+            );
+            assert_eq!(cell_char(&buf, 1, 1), '>', "query prompt in Input mode");
+        }
+
+        // Paint into a buffer, find where a glyph actually lands, then
+        // hit_test that exact cell and assert it resolves to the region the
+        // paint pass used it for, verifying `cell_layout` doesn't drift
+        // from `cell_paint::paint`.
+
+        #[test]
+        fn layout_title_region_covers_the_painted_title_row() {
+            let area = RRect::new(0, 0, 20, 10);
+            let p = make_palette();
+            let mut buf = Buffer::empty(area);
+            paint(&mut buf, area, &p, &Theme::default());
+            // Title text painted at row 0 (verified by the border test).
+            let layout = tui_palette_layout(area, &p);
+            assert_eq!(layout.hit_test(5.0, 0.0), PaletteHit::Title);
+        }
+
+        #[test]
+        fn layout_query_region_covers_the_painted_query_row() {
+            let area = RRect::new(0, 0, 20, 10);
+            let p = make_palette();
+            let mut buf = Buffer::empty(area);
+            paint(&mut buf, area, &p, &Theme::default());
+            // Query prompt "> " painted at row 1.
+            assert_eq!(cell_char(&buf, 1, 1), '>');
+            let layout = tui_palette_layout(area, &p);
+            assert_eq!(layout.hit_test(1.0, 1.0), PaletteHit::Query);
+        }
+
+        #[test]
+        fn layout_item_region_matches_the_painted_item_row() {
+            let area = RRect::new(0, 0, 20, 10);
+            let p = make_palette();
+            let mut buf = Buffer::empty(area);
+            paint(&mut buf, area, &p, &Theme::default());
+            // First item ("foo") painted at row 3 (items_row0 = y0+3 when
+            // show_query and not Input mode).
+            assert!((0..20).any(|x| cell_char(&buf, x, 3) == 'f'));
+            let layout = tui_palette_layout(area, &p);
+            assert_eq!(layout.hit_test(5.0, 3.0), PaletteHit::Item(0));
+        }
+
+        #[test]
+        fn layout_reserves_the_bottom_border_row() {
+            let area = RRect::new(0, 0, 20, 10);
+            let p = make_palette();
+            let layout = tui_palette_layout(area, &p);
+            // Row 9 (y_end - 1) is the bottom border — no hit region should
+            // claim it.
+            assert_eq!(layout.hit_test(5.0, 9.0), PaletteHit::Empty);
+        }
+
+        #[test]
+        fn layout_input_mode_has_no_separator_row_reserved() {
+            let area = RRect::new(0, 0, 20, 8);
+            let mut p = make_palette();
+            p.mode = PaletteMode::Input;
+            p.items = vec![];
+            let layout = tui_palette_layout(area, &p);
+            // The query area is 1 row tall in Input mode — row 1 is Query,
+            // and there is no dedicated item area to claim row 2.
+            assert_eq!(layout.hit_test(1.0, 1.0), PaletteHit::Query);
+        }
+
+        #[test]
+        fn too_small_is_a_no_op() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 10, 10));
+            let p = make_palette();
+            paint(&mut buf, RRect::new(0, 0, 3, 3), &p, &Theme::default());
+            // No corner glyphs anywhere — the painter returned early.
+            for y in 0..10 {
+                for x in 0..10 {
+                    let ch = cell_char(&buf, x, y);
+                    assert_ne!(ch, '╭');
+                    assert_ne!(ch, '╯');
+                }
+            }
+        }
     }
 }
