@@ -254,7 +254,7 @@ impl AppLogic for KubeApp {
         if let Some(picker) = self.state.picker.as_ref() {
             let popup_rect = Self::popup_rect(backend);
             let palette = picker.build_palette();
-            backend.draw_palette(popup_rect, &palette);
+            quadraui::DrawsPrimitives::draw_primitive(backend, popup_rect, &palette);
         }
     }
 

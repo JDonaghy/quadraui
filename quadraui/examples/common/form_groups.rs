@@ -335,7 +335,7 @@ impl AppLogic for FormGroupsApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
-        quadraui::DrawsPrimitives::draw_dyn(backend, form_rect, &self.build_form(), &());
+        quadraui::DrawsPrimitives::draw_primitive(backend, form_rect, &self.build_form());
         let _hits = backend.draw_status_bar_interactive(
             status_rect,
             &self.build_status_bar(),

@@ -298,7 +298,7 @@ impl FormController {
         let (form_rect, sb_rect) = split_rect_lh(self.field_count(), lh, rect);
         let theme = backend.theme();
         let form = self.build_form(form_rect, Some(&theme));
-        crate::backend::DrawsPrimitives::draw_dyn(backend, form_rect, &form, &());
+        crate::backend::DrawsPrimitives::draw_primitive(backend, form_rect, &form);
         self.draw_item_focus_ring(backend, form_rect, &form);
         if let Some(sb_rect) = sb_rect {
             let sb = build_scrollbar_lh(

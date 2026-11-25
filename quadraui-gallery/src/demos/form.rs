@@ -755,9 +755,15 @@ impl Demo for FormDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let form_rect = Self::form_rect(area, backend);
         match variant {
-            0 => backend.draw_form(area, &build_all_fields_form()),
+            0 => {
+                quadraui::DrawsPrimitives::draw_primitive(backend, area, &build_all_fields_form());
+            }
             1 => {
-                backend.draw_form(form_rect, &self.search_replace.build_form());
+                quadraui::DrawsPrimitives::draw_primitive(
+                    backend,
+                    form_rect,
+                    &self.search_replace.build_form(),
+                );
                 let bar = Self::status_bar(
                     &format!("last: {}", self.search_replace.last_action),
                     "click / Tab / Shift+Tab",
@@ -789,7 +795,13 @@ impl Demo for FormDemo {
             // matching wildcard below is reached only by variant 2
             // ("Scrolling"); each comment names its own variant so the
             // two stay in sync.
-            _ => backend.draw_form(area, &build_label_placement_form()),
+            _ => {
+                quadraui::DrawsPrimitives::draw_primitive(
+                    backend,
+                    area,
+                    &build_label_placement_form(),
+                );
+            }
         }
     }
 
@@ -809,7 +821,12 @@ impl Demo for FormDemo {
                     ..
                 } => {
                     let form_rect = Self::form_rect(area, backend);
-                    let layout = backend.form_layout(form_rect, &self.search_replace.build_form());
+                    let layout = quadraui::DrawsPrimitives::layout_primitive(
+                        &*backend,
+                        form_rect,
+                        &self.search_replace.build_form(),
+                    )
+                    .layout;
                     // `FormLayout`'s hit regions are relative to
                     // `form_rect`'s own top-left corner, not the
                     // surface origin (`compose::FormController::click_inner`

@@ -66,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 171;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 166;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -187,8 +187,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Toolbar", "draw_toolbar_with_overflow"),
     ("Toolbar", "toolbar_layout"),
     ("Toolbar", "toolbar_layout_with_overflow"),
-    ("Form", "draw_form"),
-    ("Form", "form_layout"),
     // Group-B ports keep these until the group's cleanup deletes them
     // together with their wrapper files and `Surface` variants.
     ("TextInput", "draw_text_input"),
@@ -206,9 +204,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("ContextMenu", "draw_context_menu"),
     ("ContextMenu", "draw_context_menu_with_state"),
     ("ContextMenu", "draw_context_menu_with_glyphs"),
-    ("Palette", "draw_palette"),
-    ("Palette", "draw_palette_with_state"),
-    ("Palette", "palette_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

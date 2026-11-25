@@ -15,7 +15,7 @@ use quadraui::{
     Column, ComboBox, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor,
     FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon, Image, InteractionState,
     LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize, NumberInput,
-    NumberInputHit, Palette, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
+    NumberInputHit, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
     ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, TextDisplay,
     TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable,
     TreeTableController, TreeTableNodeData, WidgetId,
@@ -289,7 +289,7 @@ impl ExtraPaint for Form {
     /// `crate::engine::InteractionEngine::sync_menu_bar` already uses for
     /// `"menu_bar"`.
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, self);
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, self);
     }
 
     fn id(&self) -> WidgetId {
@@ -601,7 +601,7 @@ impl Checkbox {
 
 impl ExtraPaint for Checkbox {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -675,7 +675,7 @@ impl Slider {
 
 impl ExtraPaint for Slider {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -737,7 +737,7 @@ impl Select {
 
 impl ExtraPaint for Select {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -842,7 +842,7 @@ impl<'de> serde::Deserialize<'de> for PasswordInput {
 
 impl ExtraPaint for PasswordInput {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -978,7 +978,7 @@ impl TextArea {
 
 impl ExtraPaint for TextArea {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -1756,44 +1756,6 @@ impl ExtraPaint for CommandLine {
     }
 }
 
-impl ExtraPaint for Palette {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        self.paint_chrome(backend, area, &InteractionState::default());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// [`quadraui::Backend::draw_palette_with_state`] only tints the
-    /// pinned create-action row — the one row in a `Palette` with a
-    /// stable id, `palette.id` itself (see that method's own doc for
-    /// why [`quadraui::PaletteItem`] rows stay out of `InteractionState`) —
-    /// so the one chrome hit recorded here is that row, when present.
-    /// Its bounds come from a no-paint [`quadraui::Backend::palette_layout`]
-    /// call — the same layout `draw_palette_with_state` paints from —
-    /// shifted into the ABSOLUTE frame [`ExtraPaint::hit_test`] uses,
-    /// mirroring [`ActivityBar::paint_chrome`]'s own translation.
-    fn paint_chrome(
-        &self,
-        backend: &mut dyn Backend,
-        area: Rect,
-        interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        backend.draw_palette_with_state(area, self, interaction);
-        backend
-            .palette_layout(area, self)
-            .create_bounds
-            .map(|b| {
-                vec![(
-                    Rect::new(area.x + b.x, area.y + b.y, b.width, b.height),
-                    self.id,
-                )]
-            })
-            .unwrap_or_default()
-    }
-}
-
 impl ExtraPaint for Scrollbar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_scrollbar(area, self);
@@ -2044,7 +2006,6 @@ extra_primitives! {
     "menu_bar" => MenuBar,
     "status_bar" => StatusBar,
     "command_line" => CommandLine,
-    "palette" => Palette,
     "scrollbar" => Scrollbar,
     "editor" => Editor,
     "canvas" => Canvas,
@@ -2069,10 +2030,11 @@ extra_primitives! {
 /// counterpart of [`decode_extra_primitive_checked`].
 ///
 /// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`,
-/// `"command_center"` and `"terminal"` are this table's members: unlike every
-/// [`EXTRA_PRIMITIVE_KINDS`] entry, none of [`quadraui::IconGrid`],
-/// [`quadraui::CellGrid`], [`quadraui::Switch`], [`quadraui::RadioGroup`],
-/// [`quadraui::Button`], [`quadraui::CommandCenter`] or [`quadraui::Terminal`] has a bespoke
+/// `"command_center"`, `"terminal"` and `"palette"` are this table's members:
+/// unlike every [`EXTRA_PRIMITIVE_KINDS`] entry, none of
+/// [`quadraui::IconGrid`], [`quadraui::CellGrid`], [`quadraui::Switch`],
+/// [`quadraui::RadioGroup`], [`quadraui::Button`], [`quadraui::CommandCenter`],
+/// [`quadraui::Terminal`] or [`quadraui::Palette`] has a bespoke
 /// [`ExtraPaint`] impl to write
 /// here — painting, whole-area hit testing and [`DynWidget::handle`]
 /// routing are already fully generic (see
@@ -2096,12 +2058,15 @@ extra_primitives! {
 /// search box, Enter/Space on the focused strip) covers
 /// `"command_center"`; and [`quadraui::Terminal`]'s own
 /// [`crate::interactive::Interactive`] impl (click-to-focus, selection
-/// drag, wheel scroll) covers `"terminal"`. A further kind joins this table only when it
+/// drag, wheel scroll) covers `"terminal"`; and [`quadraui::Palette`]'s own
+/// [`crate::interactive::Interactive`] impl (query editing, list
+/// navigation, click-to-select, Enter/Escape) covers `"palette"`. A further
+/// kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 7] = [
+pub const WIDGET_KINDS: [&str; 8] = [
     "icon_grid",
     "cell_grid",
     "switch",
@@ -2109,6 +2074,7 @@ pub const WIDGET_KINDS: [&str; 7] = [
     "button",
     "command_center",
     "terminal",
+    "palette",
 ];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
@@ -2131,9 +2097,8 @@ mod tests {
     use super::*;
     use crate::hit::PaintedHit;
     use crate::layout::{LayoutLeaf, LeafDescriptor};
-    use crate::render::paint_leaf;
     use quadraui::tui::testing::TuiDriver;
-    use quadraui::{AppLogic, FormEvent, PaletteItem, Reaction, UiEvent};
+    use quadraui::{AppLogic, FormEvent, Reaction, UiEvent};
     use std::cell::RefCell;
 
     /// Records every event an [`EventSink`] receives, in order, for a
@@ -2153,96 +2118,6 @@ mod tests {
             self.dispatched.push(event.clone());
             Reaction::Continue
         }
-    }
-
-    fn palette(create_label: Option<&str>) -> Palette {
-        Palette {
-            id: WidgetId::new("pal"),
-            title: "Commands".into(),
-            query: String::new(),
-            query_cursor: 0,
-            items: vec![PaletteItem {
-                text: quadraui::StyledText::plain("open file"),
-                detail: None,
-                icon: None,
-                match_positions: vec![],
-                depth: 0,
-                expandable: false,
-                expanded: false,
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            total_count: 0,
-            has_focus: true,
-            show_query: true,
-            create_label: create_label.map(|s| s.to_string()),
-            preview: None,
-            mode: Default::default(),
-        }
-    }
-
-    struct PaletteChromeApp {
-        palette: Palette,
-        hits: RefCell<Vec<PaintedHit>>,
-    }
-
-    impl AppLogic for PaletteChromeApp {
-        type AreaId = ();
-
-        fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let leaf = LayoutLeaf {
-                id: "pal-leaf".into(),
-                descriptor: LeafDescriptor::Extra(Rc::new(self.palette.clone())),
-                scroll_px: None,
-            };
-            let viewport = backend.viewport();
-            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-            let mut hits = Vec::new();
-            let chrome = |_id| InteractionState::default();
-            paint_leaf(backend, area, &leaf, &mut hits, &chrome);
-            *self.hits.borrow_mut() = hits;
-        }
-
-        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-            Reaction::Continue
-        }
-    }
-
-    fn chrome_hits_for(create_label: Option<&str>) -> Vec<(Rect, WidgetId)> {
-        let app = PaletteChromeApp {
-            palette: palette(create_label),
-            hits: RefCell::new(Vec::new()),
-        };
-        let mut driver = TuiDriver::new(app, 40, 20);
-        driver.render();
-        let found = driver.app().hits.borrow().iter().find_map(|hit| match hit {
-            PaintedHit::Extra { chrome_hits, .. } => Some(chrome_hits.clone()),
-            _ => None,
-        });
-        found.expect("a Palette extra was painted")
-    }
-
-    /// With no pinned create row, there is nothing to register as a
-    /// chrome hit — `chrome_hover`/`chrome_pressed` (and so
-    /// `draw_palette_with_state`'s hover tint) never fire for a plain
-    /// palette.
-    #[test]
-    fn no_create_label_means_no_chrome_hits() {
-        assert_eq!(chrome_hits_for(None), Vec::new());
-    }
-
-    /// A pinned create row is recorded as one chrome hit keyed by
-    /// `palette.id` — the same id [`Backend::draw_palette_with_state`]
-    /// checks `interaction.is_hovered`/`is_pressed` against, so a
-    /// py/node app that sets `create_label` gets hover for free the
-    /// moment `InteractionEngine::handle`'s generic `chrome_hover_hit`
-    /// bookkeeping (keyed off this exact `chrome_hits` entry) sees a
-    /// `MouseMoved` land inside it.
-    #[test]
-    fn create_label_registers_one_chrome_hit_keyed_by_palette_id() {
-        let hits = chrome_hits_for(Some("Create 'foo'"));
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].1, WidgetId::new("pal"));
     }
 
     /// A `Switch` placed as a `LeafDescriptor::Widget` (not `Extra` —

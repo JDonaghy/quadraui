@@ -3628,7 +3628,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
 | `command_line` | `CommandLineDescriptor` | no |  |
-| `palette` | `PaletteDescriptor` | no |  |
 | `scrollbar` | `ScrollbarDescriptor` | no |  |
 | `editor` | `EditorDescriptor` | no |  |
 | `canvas` | `CanvasDescriptor` | no |  |
@@ -3647,6 +3646,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `button` | `ButtonDescriptor` | no |  |
 | `command_center` | `CommandCenterDescriptor` | no |  |
 | `terminal` | `TerminalDescriptor` | no |  |
+| `palette` | `PaletteDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3696,7 +3696,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
 | `command_line` | `CommandLineDescriptor \| null` | no |  |
-| `palette` | `PaletteDescriptor \| null` | no |  |
 | `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
 | `editor` | `EditorDescriptor \| null` | no |  |
 | `canvas` | `CanvasDescriptor \| null` | no |  |
@@ -3715,6 +3714,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `button` | `ButtonDescriptor \| null` | no |  |
 | `command_center` | `CommandCenterDescriptor \| null` | no |  |
 | `terminal` | `TerminalDescriptor \| null` | no |  |
+| `palette` | `PaletteDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`

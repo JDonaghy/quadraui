@@ -379,7 +379,7 @@ impl FolderPickerController {
     /// Call this from `AppLogic::render` whenever the picker is open.
     pub fn render(&self, rect: Rect, backend: &mut dyn Backend) {
         let palette = self.build_palette(rect);
-        crate::backend::DrawsPrimitives::draw_dyn(backend, rect, &palette, &());
+        crate::backend::DrawsPrimitives::draw_primitive(backend, rect, &palette);
     }
 
     // ── Handle ────────────────────────────────────────────────────────

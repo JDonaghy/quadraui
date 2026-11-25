@@ -906,11 +906,10 @@ impl ChatController {
 
         // ── 7. Send / Stop segment ───────────────────────────────────────
         if let Some(send_rect) = layout.send {
-            crate::backend::DrawsPrimitives::draw_dyn(
+            crate::backend::DrawsPrimitives::draw_primitive(
                 backend,
                 send_rect,
                 &self.build_send_form(),
-                &(),
             );
         }
     }

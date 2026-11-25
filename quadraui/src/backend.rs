@@ -4185,6 +4185,9 @@ pub trait DrawsPrimitives: Backend {
             );
             primitive.paint_cells(&layout, buf, &theme);
         }
+        if let Some(id) = primitive.id() {
+            mark_modal_painted(self, id);
+        }
         layout
     }
 
@@ -4277,9 +4280,7 @@ pub trait DrawsPrimitives: Backend {
             w.paint(layout.as_ref(), PaintTarget::Cells(buf), &env, state);
         }
         if let Some(id) = w.id() {
-            // A modal widget (a palette, a menu) registered on the modal
-            // stack counts as painted this frame; any other id is a no-op.
-            self.modal_stack_handle().borrow_mut().mark_painted(id);
+            mark_modal_painted(self, id);
             let sub_regions = w
                 .sub_regions(layout.as_ref())
                 .into_iter()
@@ -4330,6 +4331,16 @@ pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCt
 }
 
 impl<B: Backend + ?Sized> DrawsPrimitives for B {}
+
+/// Record that the widget `id` painted this frame on `backend`'s modal
+/// stack, so a modal widget (a palette, a menu) registered there is not
+/// reported as registered-but-unpainted. An id the stack does not hold
+/// is a no-op, and a stack already borrowed elsewhere is left alone.
+fn mark_modal_painted<B: Backend + ?Sized>(backend: &B, id: &WidgetId) {
+    if let Ok(mut stack) = backend.modal_stack_handle().try_borrow_mut() {
+        stack.mark_painted(id);
+    }
+}
 
 /// Paint-side data returned by [`Backend::draw_minimap`]. See
 /// [`EditorPaintResult`] for the sibling pattern this mirrors.

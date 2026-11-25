@@ -333,7 +333,7 @@ impl PickerOverlay {
         }
 
         let palette = self.build_palette();
-        let layout = backend.palette_layout(rect, &palette);
+        let layout = quadraui::DrawsPrimitives::layout_primitive(backend, rect, &palette).layout;
         match layout.hit_test(position.x - rect.x, position.y - rect.y) {
             PaletteHit::Item(idx) if idx < self.items.len() => {
                 self.selected = idx;

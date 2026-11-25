@@ -2593,14 +2593,16 @@ impl crate::primitive::Primitive for Palette {
             crate::backend::ColorDepth::TrueColor,
             &mut cursor_sink,
         );
-        let area = layout.area;
+        // Snapped to whole cells the way every TUI rect is, so a
+        // fractional popup rect paints where its hit test resolves.
+        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         cell_paint::paint(
             self,
             Rect::new(
-                area.x as u16 as f32,
-                area.y as u16 as f32,
-                area.width as u16 as f32,
-                area.height as u16 as f32,
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
             ),
             &mut surface,
             theme,

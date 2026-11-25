@@ -1910,7 +1910,6 @@ export interface LayoutLeafNode {
   toolbar?: ToolbarDescriptor;
   menu_bar?: MenuBarDescriptor;
   command_line?: CommandLineDescriptor;
-  palette?: PaletteDescriptor;
   scrollbar?: ScrollbarDescriptor;
   editor?: EditorDescriptor;
   canvas?: CanvasDescriptor;
@@ -1929,6 +1928,7 @@ export interface LayoutLeafNode {
   button?: ButtonDescriptor;
   command_center?: CommandCenterDescriptor;
   terminal?: TerminalDescriptor;
+  palette?: PaletteDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -1970,7 +1970,6 @@ export interface RenderFrameDict {
   toolbar?: ToolbarDescriptor | null;
   menu_bar?: MenuBarDescriptor | null;
   command_line?: CommandLineDescriptor | null;
-  palette?: PaletteDescriptor | null;
   scrollbar?: ScrollbarDescriptor | null;
   editor?: EditorDescriptor | null;
   canvas?: CanvasDescriptor | null;
@@ -1989,6 +1988,7 @@ export interface RenderFrameDict {
   button?: ButtonDescriptor | null;
   command_center?: CommandCenterDescriptor | null;
   terminal?: TerminalDescriptor | null;
+  palette?: PaletteDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

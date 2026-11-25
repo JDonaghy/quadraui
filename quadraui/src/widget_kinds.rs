@@ -234,6 +234,11 @@ widget_kinds! {
     // carry no feature gate. The kind string is the one the wire schema
     // already publishes for it.
     "terminal" => crate::Terminal,
+    // Ungated: `Palette`'s and `Form`'s `Primitive`/`Interactive` impls
+    // carry no feature gate. The kind strings are the ones the wire
+    // schema already publishes for them.
+    "palette" => crate::Palette,
+    "form" => crate::Form,
 }
 
 #[cfg(test)]

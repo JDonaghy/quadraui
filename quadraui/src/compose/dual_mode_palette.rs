@@ -230,7 +230,7 @@ impl DualModePaletteController {
     /// Paints the built [`crate::Palette`] through its widget contract.
     pub fn render(&self, rect: Rect, backend: &mut dyn Backend) {
         let palette = self.build_palette();
-        crate::backend::DrawsPrimitives::draw_dyn(backend, rect, &palette, &());
+        crate::backend::DrawsPrimitives::draw_primitive(backend, rect, &palette);
     }
 
     // ── Handle ────────────────────────────────────────────────────────
@@ -1036,10 +1036,9 @@ mod tests {
         }
     }
 
-    /// `RecordingBackend::palette_layout` lays out with `line_height`
-    /// (default `1.0`) rows: title at row 0, query at row 1, items from
-    /// row 2 — same shape `RecordingBackend::new()` uses everywhere else
-    /// in this crate's compose tests.
+    /// `RecordingBackend::new()` measures in one-unit cells, so the
+    /// palette resolves its cell layout: title at row 0, query at row 1,
+    /// the query separator at row 2, items from row 3.
     fn recording_backend() -> crate::testing::RecordingBackend {
         crate::testing::RecordingBackend::new()
     }
@@ -1052,9 +1051,9 @@ mod tests {
 
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
-        // title(row 0) + query(row 1) -> items start at row 2; item 2 is
-        // at row 4.
-        let ev = ctrl.handle_mouse_event(&mouse_down(5.0, 4.5), &backend, rect, 10);
+        // title(row 0) + query(row 1) + separator(row 2) -> items start
+        // at row 3; item 2 is at row 5.
+        let ev = ctrl.handle_mouse_event(&mouse_down(5.0, 5.5), &backend, rect, 10);
 
         assert_eq!(ev, Handled::Consumed);
         assert_eq!(
@@ -1075,8 +1074,8 @@ mod tests {
 
         let backend = recording_backend();
         let rect = Rect::new(5.0, 3.0, 40.0, 20.0);
-        // Item 2's row is local y=4, so absolute y = rect.y + 4 = 7.
-        let ev = ctrl.handle_mouse_event(&mouse_down(10.0, 7.5), &backend, rect, 10);
+        // Item 2's row is local y=5, so absolute y = rect.y + 5 = 8.
+        let ev = ctrl.handle_mouse_event(&mouse_down(10.0, 8.5), &backend, rect, 10);
 
         assert_eq!(ev, Handled::Consumed);
         assert_eq!(ctrl.selected(), 2);
@@ -1104,8 +1103,8 @@ mod tests {
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
         // Same row geometry as `mouse_click_on_item_selects_it`: item 2
-        // sits at row 4.
-        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 4.5), &backend, rect, 10);
+        // sits at row 5.
+        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 5.5), &backend, rect, 10);
 
         assert_eq!(ev, Handled::Consumed);
         assert_eq!(
