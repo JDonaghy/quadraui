@@ -9,6 +9,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::backend::DrawsPrimitives;
     use crate::gtk::testing::GtkDriver;
     use crate::runner::{AppLogic, Reaction};
     use crate::{
@@ -73,8 +74,7 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let layout = self.number.layout(BOUNDS);
-            backend.draw_number_input(&self.number, &layout);
+            backend.draw_dyn(BOUNDS, &self.number, &());
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

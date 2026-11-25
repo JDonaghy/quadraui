@@ -1553,7 +1553,7 @@ pub(crate) fn cell_layout(dialog: &Dialog, viewport: Rect) -> DialogLayout {
     let item_measure = |btn: &crate::primitives::toolbar::ToolbarButton| {
         ToolbarItemMeasure::new(crate::primitives::toolbar::cell_item_width(btn))
     };
-    let centred = Dialog::layout(dialog, viewport, measure, &item_measure);
+    let centred = Dialog::layout(dialog, viewport, measure, item_measure);
     let trim_w = (viewport.width - centred.bounds.width).rem_euclid(2.0);
     let trim_h = (viewport.height - centred.bounds.height).rem_euclid(2.0);
     if trim_w == 0.0 && trim_h == 0.0 {
@@ -1567,7 +1567,7 @@ pub(crate) fn cell_layout(dialog: &Dialog, viewport: Rect) -> DialogLayout {
         viewport.width - trim_w,
         viewport.height - trim_h,
     );
-    Dialog::layout(dialog, snapped, measure, &item_measure)
+    Dialog::layout(dialog, snapped, measure, item_measure)
 }
 
 /// The cell-grid [`DialogMeasure`] a terminal paints a [`Dialog`] at:

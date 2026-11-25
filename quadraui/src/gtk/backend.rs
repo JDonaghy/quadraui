@@ -56,10 +56,10 @@ use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Backend, CommandLine, DragState, FieldKind, FontRole,
-    Form, GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
-    Rect as QRect, ResizeEdge, Split, StatusBar, SystemTheme, TextDisplay, TreeView, UiEvent,
-    UserPayload, Viewport,
+    Accelerator, AcceleratorId, ActivityBar, Backend, DragState, FieldKind, FontRole, Form,
+    GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
+    Rect as QRect, ResizeEdge, Split, StatusBar, SystemTheme, TreeView, UiEvent, UserPayload,
+    Viewport,
 };
 // `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
 // `#[cfg(test)]` code below — they're gated to avoid unused import
@@ -5055,6 +5055,7 @@ mod tests {
     // this file's own coverage of the methods it deprecates.
     #![allow(deprecated)]
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::{MenuBarItem, TerminalCell, TerminalCursorShape, WidgetId};
 
     /// Generic helper — minimal "app render code" that consumes
@@ -10100,9 +10101,10 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                let layout =
-                    b.draw_toast_overlay(QRect::new(0.0, 0.0, W as f32, H as f32), &overlay);
-                let vt = layout.visible_toasts[0].bounds;
+                let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+                let layout = b.layout_primitive(viewport, &overlay);
+                b.draw_dyn(viewport, &overlay, &());
+                let vt = layout.layout.visible_toasts[0].bounds;
                 // A tab-stop focus ring whose rect is the toast's own
                 // bounds — the worst case, a toast that lands exactly
                 // over the focused widget it was raised from.
@@ -10115,7 +10117,7 @@ mod tests {
         surface.flush();
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
-        let vt = layout.visible_toasts[0].bounds;
+        let vt = layout.layout.visible_toasts[0].bounds;
         let theme = crate::Theme::default();
         let success_bg = theme.success_bg();
 
@@ -10175,7 +10177,7 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                let _layout = b.draw_toast_overlay(focused_rect, &overlay);
+                b.draw_dyn(focused_rect, &overlay, &());
                 b.draw_focus_ring(focused_rect);
             });
         }
@@ -10218,7 +10220,7 @@ mod tests {
     fn gtk_backend_draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
-        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+        use crate::primitives::tooltip::Tooltip;
 
         const W: i32 = 200;
         const H: i32 = 100;
@@ -10237,12 +10239,8 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
             let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
-            let tooltip_layout = TooltipLayout {
-                bounds: rect,
-                resolved_placement: ResolvedPlacement::Bottom,
-            };
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_tooltip(&tooltip, &tooltip_layout);
+                b.draw_dyn(rect, &tooltip, &());
                 // The focused widget this tooltip is anchored to shares
                 // the tooltip's own bounds exactly — the ring must yield.
                 b.draw_focus_ring(rect);
@@ -10691,13 +10689,18 @@ mod tests {
             let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
             let measure = RichTextPopupMeasure::new(80.0, 80.0);
             let layout = p.layout(2.0, 2.0, viewport, measure, |_, s, e| (e - s) as f32);
+            // The descriptor carries the font role the popup measures
+            // and paints its body in.
+            let p = RichTextPopup {
+                font_role: role.unwrap_or_default(),
+                ..p
+            };
             {
                 let cr = Context::new(&surface).expect("Context::new");
                 let pango_ctx = pangocairo::functions::create_context(&cr);
                 let pango_layout = pango::Layout::new(&pango_ctx);
-                backend.enter_frame_scope(&cr, &pango_layout, |b| match role {
-                    Some(role) => b.draw_rich_text_popup_with_font_role(&p, &layout, role),
-                    None => b.draw_rich_text_popup(&p, &layout),
+                backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                    b.draw_dyn(layout.bounds, &p, &());
                 });
             }
             ink_pixel_count(&mut surface)
@@ -11149,7 +11152,7 @@ mod tests {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_text_display(QRect::new(0.0, 0.0, TD_W as f32, TD_H as f32), td);
+                b.draw_dyn(QRect::new(0.0, 0.0, TD_W as f32, TD_H as f32), td, &());
             });
         }
         surface.flush();

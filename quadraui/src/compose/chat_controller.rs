@@ -4453,16 +4453,16 @@ mod tests {
             "controller.render painted nothing into the GTK surface"
         );
 
-        // (b) text_input_layout for the input zone yields a usable layout.
+        // (b) the input zone's widget-contract layout yields usable rows.
         let mut ti = TextInput::new(WidgetId::new("probe-input"));
         ti.lines = vec!["hello".to_string()];
         ti.cursor_col = 5;
         ti.has_focus = true;
         let input_rect = Rect::new(0.0, H as f32 - 80.0, W as f32, 80.0);
-        let ti_layout = backend.text_input_layout(input_rect, &ti);
+        let ti_layout = backend.layout_primitive(input_rect, &ti);
         assert!(
-            !ti_layout.visible_lines.is_empty(),
-            "text_input_layout returned no visible lines"
+            !ti_layout.layout.visible_lines.is_empty(),
+            "the input's resolved layout has no visible lines"
         );
     }
 }

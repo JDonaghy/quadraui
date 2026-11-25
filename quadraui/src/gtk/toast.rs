@@ -51,6 +51,7 @@ pub fn gtk_toast_stack_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::primitives::toast::{Toast, ToastCorner, ToastHit, ToastOverlay, ToastSeverity};
     use crate::types::{Color, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -209,8 +210,9 @@ mod tests {
             let pango_layout = pangocairo::functions::create_layout(&cr);
             let bounds = crate::event::Rect::new(0.0, 0.0, VIEW_W as f32, VIEW_H as f32);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_text_input(bounds, &editor);
-                b.draw_toast_overlay(bounds, &stack)
+                b.draw_dyn(bounds, &editor, &());
+                b.draw_dyn(bounds, &stack, &());
+                b.layout_primitive(bounds, &stack).layout
             })
         };
         backend.end_frame();

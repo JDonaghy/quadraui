@@ -150,7 +150,19 @@ impl AppLogic for FormComboBoxApp {
 
         if self.combo.open {
             let field_bounds = self.field_bounds(backend);
-            backend.draw_dyn(field_bounds, &self.combo, &());
+            // `ComboBox` lays the field out on the first row of the rect
+            // it is given and drops its open list into the room below,
+            // so reserve eight rows of dropdown under the field, clipped
+            // to whatever the viewport actually has left.
+            let vp = backend.viewport();
+            let room_below = (vp.height - field_bounds.y).max(field_bounds.height);
+            let area = Rect::new(
+                field_bounds.x,
+                field_bounds.y,
+                field_bounds.width,
+                (field_bounds.height + backend.line_height() * 8.0).min(room_below),
+            );
+            backend.draw_dyn(area, &self.combo, &());
         }
 
         let _hits = backend.draw_status_bar_interactive(

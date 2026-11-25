@@ -91,6 +91,7 @@ mod tests {
     use gtk4::cairo::{Context, Format, ImageSurface};
 
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::event::Rect as QRect;
     use crate::primitives::tooltip::{ResolvedPlacement, TooltipBorder, TooltipPlacement};
     use crate::types::WidgetId;
@@ -129,6 +130,7 @@ mod tests {
             placement: TooltipPlacement::Bottom,
             fg: None,
             bg: None,
+            chrome: Default::default(),
         }
     }
 
@@ -498,12 +500,7 @@ mod tests {
 
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
                 if self.tracker.borrow().visible_item().is_some() {
-                    let tooltip = sample_tooltip();
-                    let layout = TooltipLayout {
-                        bounds: anchor(),
-                        resolved_placement: ResolvedPlacement::Bottom,
-                    };
-                    backend.draw_tooltip(&tooltip, &layout);
+                    backend.draw_dyn(anchor(), &sample_tooltip(), &());
                 }
             }
 

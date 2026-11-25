@@ -9,6 +9,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::backend::DrawsPrimitives;
     use crate::gtk::testing::GtkDriver;
     use crate::runner::{AppLogic, Reaction};
     use crate::{
@@ -95,8 +96,15 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let layout = sample_layout(&self.combo);
-            backend.draw_combo_box(&self.combo, &layout);
+            // The field sits on the first row of the rect, with the
+            // dropdown's room below it — see `ComboBoxPrimitiveLayout`.
+            let area = Rect::new(
+                FIELD_BOUNDS.x,
+                FIELD_BOUNDS.y,
+                FIELD_BOUNDS.width,
+                VIEWPORT.height - FIELD_BOUNDS.y,
+            );
+            backend.draw_dyn(area, &self.combo, &());
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
