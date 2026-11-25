@@ -10363,7 +10363,7 @@ mod tests {
         // tall) — row 1's `y` range is never touched by any cell paint,
         // so it must come from the blank-area fill.
         let term = crate::Terminal {
-            id: id.clone(),
+            id,
             cells: vec![term_row_417(red)],
             scrollbar: None,
         };

@@ -133,6 +133,12 @@ pub struct TerminalScrollbar {
 impl TerminalScrollbar {
     /// The themed vertical bar this state paints as on `track`, one row
     /// per `row_height`.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
     pub(crate) fn bar(&self, id: WidgetId, track: Rect, row_height: f32) -> crate::Scrollbar {
         crate::Scrollbar::vertical(
             id,
