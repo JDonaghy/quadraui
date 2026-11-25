@@ -54,8 +54,6 @@ pub mod command_line;
 #[doc(hidden)]
 pub mod completions;
 #[doc(hidden)]
-pub mod context_menu;
-#[doc(hidden)]
 pub mod data_table;
 #[doc(hidden)]
 pub mod date_picker;
@@ -74,8 +72,6 @@ pub mod headless;
 pub mod image;
 #[doc(hidden)]
 pub mod list;
-#[doc(hidden)]
-pub mod menu_bar;
 pub(crate) mod menu_bar_install;
 #[doc(hidden)]
 pub mod message_list;
@@ -120,8 +116,6 @@ pub(crate) mod text_selection;
 #[doc(hidden)]
 pub mod toast;
 #[doc(hidden)]
-pub mod toolbar;
-#[doc(hidden)]
 pub mod tooltip;
 #[doc(hidden)]
 pub mod tree;
@@ -150,8 +144,6 @@ pub use command_line::draw_command_line;
 #[doc(hidden)]
 pub use completions::draw_completions;
 #[doc(hidden)]
-pub use context_menu::draw_context_menu;
-#[doc(hidden)]
 pub use data_table::{draw_data_table, mac_data_table_layout};
 #[doc(hidden)]
 pub use dialog::draw_dialog;
@@ -161,8 +153,6 @@ pub use editor::draw_editor;
 pub use form::{draw_settings_chrome, mac_form_layout};
 #[doc(hidden)]
 pub use list::{draw_list, mac_list_layout};
-#[doc(hidden)]
-pub use menu_bar::{draw_menu_bar, mac_menu_bar_layout};
 #[doc(hidden)]
 pub use message_list::draw_message_list;
 #[doc(hidden)]
@@ -192,8 +182,6 @@ pub use split_tree::mac_split_tree_layout;
 pub use text_display::mac_text_display_layout;
 #[doc(hidden)]
 pub use toast::mac_toast_stack_layout;
-#[doc(hidden)]
-pub use toolbar::{draw_toolbar, draw_toolbar_with_options, mac_toolbar_layout};
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 #[doc(hidden)]

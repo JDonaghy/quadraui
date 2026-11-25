@@ -31,23 +31,7 @@
 //! `tests::NON_TRAIT_DRAW_FNS`.
 
 use quadraui::{
-    compute_hunks, Anchor, AppLogic, Backend, BadgeStatus, BoardCard, BoardColumn, BoardModel,
-    CalendarDate, Canvas, CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth,
-    ComboBox, CommandLine, CompletionItem, CompletionItemMeasure, Completions, ContextMenu,
-    ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, DatePicker,
-    Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView,
-    DrawOp, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
-    EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
-    Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
-    MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
-    PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction,
-    Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section,
-    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, Spinner, Split,
-    SplitDirection, SplitTree, StageStatus, StyledSpan, StyledText, TextDisplay, TextDisplayLine,
-    TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, Toolbar, ToolbarButton,
-    ToolbarItemMeasure, ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities,
-    ToolbarPaintOptions, ToolbarVAlign, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
-    TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
+    compute_hunks, Anchor, AppLogic, Backend, BadgeStatus, BoardCard, BoardColumn, BoardModel, CalendarDate, Canvas, CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandLine, CompletionItem, CompletionItemMeasure, Completions, DataRow, DataTable, DatePicker, Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette, PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, Spinner, Split, SplitDirection, SplitTree, StageStatus, StyledSpan, StyledText, TextDisplay, TextDisplayLine, TextField, TextInput, Toast, ToastCorner, ToastOverlay, ToastSeverity, ToolbarItemMeasure, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -653,70 +637,6 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_context_menu",
-        needle: Some("c0ctxm"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let menu = ContextMenu {
-                id: id("context-menu"),
-                items: vec![ContextMenuItem {
-                    id: Some(id("context-menu-item")),
-                    label: StyledText::plain("c0ctxm"),
-                    detail: None,
-                    disabled: false,
-                    key_equivalent: None,
-                    checked: None,
-                    icon: None,
-                    submenu: None,
-                }],
-                selected_idx: 0,
-                bg: None,
-                placement: ContextMenuPlacement::AnchorPoint,
-                glyphs: Default::default(),
-            };
-            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
-                ContextMenuItemMeasure::new(lh)
-            });
-            let _ = b.draw_context_menu(&menu, &layout);
-        },
-    },
-    Case {
-        // `InteractionState`-carrying counterpart to
-        // `draw_context_menu`. The state names the single item's id as
-        // hovered so a backend that honours the seam takes its tint
-        // branch; the item label must still reach the frame either way.
-        method: "draw_context_menu_with_state",
-        needle: Some("c0ctxmstate"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let item_id = id("context-menu-state-item");
-            let menu = ContextMenu {
-                id: id("context-menu-state"),
-                items: vec![ContextMenuItem {
-                    id: Some(item_id),
-                    label: StyledText::plain("c0ctxmstate"),
-                    detail: None,
-                    disabled: false,
-                    key_equivalent: None,
-                    checked: None,
-                    icon: None,
-                    submenu: None,
-                }],
-                selected_idx: 0,
-                bg: None,
-                placement: ContextMenuPlacement::AnchorPoint,
-                glyphs: Default::default(),
-            };
-            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
-                ContextMenuItemMeasure::new(lh)
-            });
-            let interaction = InteractionState::from_parts(Some(item_id), None);
-            let _ = b.draw_context_menu_with_state(&menu, &layout, &interaction);
-        },
-    },
-    Case {
         method: "draw_dialog",
         needle: Some("c0dlgb"),
         paint: |b, area| {
@@ -981,51 +901,6 @@ pub const CASES: &[Case] = &[
             b.draw_completions(&completions, &layout);
         },
     },
-    Case {
-        method: "draw_menu_bar",
-        needle: Some("c0menu"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = MenuBar {
-                id: id("menu-bar"),
-                items: vec![MenuBarItem {
-                    id: id("menu-bar-item"),
-                    label: "c0menu".to_string(),
-                    disabled: false,
-                    submenu: None,
-                }],
-                open_item: None,
-                focused_item: None,
-            };
-            let _ = b.draw_menu_bar(Rect::new(0.0, 0.0, area.width, lh), &bar);
-        },
-    },
-    Case {
-        // `InteractionState`-carrying counterpart to `draw_menu_bar`.
-        // The state names the single top-level item's id as hovered so a
-        // backend that honours the seam takes its tint branch; the item
-        // label must still reach the frame either way.
-        method: "draw_menu_bar_with_state",
-        needle: Some("c0menustate"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let item_id = id("menu-bar-state-item");
-            let bar = MenuBar {
-                id: id("menu-bar-state"),
-                items: vec![MenuBarItem {
-                    id: item_id,
-                    label: "c0menustate".to_string(),
-                    disabled: false,
-                    submenu: None,
-                }],
-                open_item: None,
-                focused_item: None,
-            };
-            let interaction = InteractionState::from_parts(Some(item_id), None);
-            let _ =
-                b.draw_menu_bar_with_state(Rect::new(0.0, 0.0, area.width, lh), &bar, &interaction);
-        },
-    },
     // ── More chrome-only primitives ────────────────────────────────────
     Case {
         method: "draw_split",
@@ -1090,93 +965,6 @@ pub const CASES: &[Case] = &[
                 focus: None,
             };
             let _ = b.draw_toast_overlay(area, &stack);
-        },
-    },
-    Case {
-        method: "draw_toolbar_interactive",
-        needle: Some("c0tbar"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = Toolbar::new(id("toolbar")).with_buttons(vec![ToolbarButton::Action {
-                spec: None,
-                id: id("toolbar-button"),
-                label: "c0tbar".to_string(),
-                icon: None,
-                key_hint: None,
-                enabled: true,
-                is_active: false,
-                tooltip: String::new(),
-            }]);
-            let _ = b.draw_toolbar_interactive(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                &InteractionState::new(),
-            );
-        },
-    },
-    // The options-taking twin backends actually implement —
-    // `draw_toolbar_interactive` above is a forwarding default over it.
-    // A C0 row here is what proves each backend's rasteriser is reached
-    // through *this* entry point too, and it paints into a slot taller
-    // than one text row with a non-default `valign` so the arm that
-    // moves the text is the one exercised.
-    Case {
-        method: "draw_toolbar_with_options",
-        needle: Some("c0tbva"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar =
-                Toolbar::new(id("toolbar-valign")).with_buttons(vec![ToolbarButton::Action {
-                    spec: None,
-                    id: id("toolbar-valign-button"),
-                    label: "c0tbva".to_string(),
-                    icon: None,
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                }]);
-            let _ = b.draw_toolbar_with_options(
-                Rect::new(0.0, 0.0, area.width, lh * 3.0),
-                &bar,
-                &InteractionState::new(),
-                ToolbarPaintOptions {
-                    valign: ToolbarVAlign::Bottom,
-                },
-            );
-        },
-    },
-    // The overflow-aware entry point. More items than the viewport's main
-    // axis can hold, so the `ToolbarOverflow::Wrap` arm a backend with its
-    // own overflow rasteriser takes is the one reached; a backend still on
-    // the trait's forwarding default clips instead. Either way the leading
-    // item — the needle — paints, which is what C0 asserts: this entry
-    // point reaches a rasteriser at all.
-    Case {
-        method: "draw_toolbar_with_overflow",
-        needle: Some("c0tbov01"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let buttons: Vec<ToolbarButton> = (1..=12)
-                .map(|n| ToolbarButton::Action {
-                    spec: None,
-                    id: id(&format!("toolbar-overflow-{n}")),
-                    label: format!("c0tbov{n:02}"),
-                    icon: None,
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                })
-                .collect();
-            let bar = Toolbar::new(id("toolbar-overflow")).with_buttons(buttons);
-            let _ = b.draw_toolbar_with_overflow(
-                Rect::new(0.0, 0.0, area.width, lh * 3.0),
-                &bar,
-                &InteractionState::new(),
-                ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap),
-                &ToolbarOverflowPriorities::new(),
-            );
         },
     },
     Case {
@@ -1361,37 +1149,6 @@ pub const CASES: &[Case] = &[
                 bordered: false,
             };
             let _ = b.draw_data_table_with_glyphs(area, &table, None, None);
-        },
-    },
-    Case {
-        // Glyph-override counterpart to `draw_context_menu`, with `None`
-        // overrides exercising the default-delegating path.
-        method: "draw_context_menu_with_glyphs",
-        needle: Some("c0ctxmg"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let menu = ContextMenu {
-                id: id("context-menu-glyphs"),
-                items: vec![ContextMenuItem {
-                    id: Some(id("context-menu-glyphs-item")),
-                    label: StyledText::plain("c0ctxmg"),
-                    detail: None,
-                    disabled: false,
-                    key_equivalent: None,
-                    checked: None,
-                    icon: None,
-                    submenu: None,
-                }],
-                selected_idx: 0,
-                bg: None,
-                placement: ContextMenuPlacement::AnchorPoint,
-                glyphs: Default::default(),
-            };
-            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
-                ContextMenuItemMeasure::new(lh)
-            });
-            let _ = b.draw_context_menu_with_glyphs(&menu, &layout, None);
         },
     },
 ];

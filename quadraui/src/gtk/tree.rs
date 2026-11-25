@@ -15,7 +15,7 @@
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::toolbar::PangoMeasure;
+use super::surface::PangoMeasure;
 use crate::event::Rect as QRect;
 use crate::primitives::layout_metrics::{tree_row_pitch, TextMeasure};
 use crate::primitives::tree::{tree_chevron_glyph, TreeRowMeasure, TreeView, TreeViewLayout};

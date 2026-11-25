@@ -122,7 +122,7 @@ pub fn draw_settings_chrome(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gtk::toolbar::PangoMeasure;
+    use crate::gtk::surface::PangoMeasure;
     use crate::primitives::form::{FieldKind, Form, FormField, LabelAlign, LabelPosition};
     use crate::types::{StyledText, WidgetId};
     use pangocairo::cairo::{Context, Format, ImageSurface};

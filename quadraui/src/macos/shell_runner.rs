@@ -8,8 +8,8 @@
 //! loop, mirroring `tui::shell_runner` / `gtk::shell_runner`.
 //!
 //! `MacBackend` already paints everything `AppShell` renders (its
-//! activity bar and status bars through the widget contract,
-//! `draw_menu_bar`, …), so no new rasteriser
+//! activity bar, status bars and menu bar through the widget contract),
+//! so no new rasteriser
 //! work is needed here — this is pure composition, same as the TUI/GTK
 //! runners.
 //!

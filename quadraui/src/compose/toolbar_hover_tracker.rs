@@ -26,8 +26,10 @@
 //! impl AppLogic for App {
 //!     fn handle(&mut self, ev: UiEvent, backend: &mut dyn Backend) -> Reaction {
 //!         if let UiEvent::MouseMoved { position, .. } = ev {
-//!             let layout = backend.toolbar_layout(self.bar_rect(backend), &self.bar());
-//!             if self.hover.update(&layout, position.x, position.y) {
+//!             // The widget contract's layout is bar-local.
+//!             let rect = self.bar_rect(backend);
+//!             let layout = backend.layout_primitive(rect, &self.bar()).layout;
+//!             if self.hover.update(&layout, position.x - rect.x, position.y - rect.y) {
 //!                 return Reaction::Redraw;
 //!             }
 //!         }
@@ -35,11 +37,7 @@
 //!     }
 //!
 //!     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-//!         backend.draw_toolbar_interactive(
-//!             self.bar_rect(backend),
-//!             &self.bar(),
-//!             &InteractionState::from_parts(self.hover.hovered_id().cloned(), None),
-//!         );
+//!         backend.draw_dyn(self.bar_rect(backend), &self.bar(), &());
 //!     }
 //! }
 //! ```

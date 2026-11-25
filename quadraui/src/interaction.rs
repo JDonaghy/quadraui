@@ -28,7 +28,6 @@
 //!
 //! | positional (deprecated) | implemented |
 //! |---|---|
-//! | `draw_toolbar(rect, bar, hovered_id, pressed_id)` | [`crate::Backend::draw_toolbar_interactive`] |
 //!
 //! The positional names survive as `#[deprecated]` trait defaults that
 //! rebuild an `InteractionState` via [`InteractionState::from_parts`]
@@ -40,9 +39,7 @@
 //! additive (default forwards to the plain method, ignoring
 //! `interaction`), not a replacement:
 //!
-//! - [`crate::Backend::draw_context_menu_with_state`]
 //! - [`crate::Backend::draw_palette_with_state`]
-//! - [`crate::Backend::draw_menu_bar_with_state`]
 //!
 //! ## Methods that remain positional
 //!
@@ -63,8 +60,8 @@
 //!
 //! These would need stable ids for their items before moving into
 //! `InteractionState`. `ListView`/`TreeView` rows join this group rather
-//! than taking an `InteractionState` the way `draw_toolbar_interactive`
-//! does: a `ListItem`/`TreeRow` carries no [`WidgetId`] of its own, and
+//! than taking an `InteractionState` the way a toolbar button's
+//! hover does: a `ListItem`/`TreeRow` carries no [`WidgetId`] of its own, and
 //! minting one per row index on the fly would permanently intern a new
 //! string per distinct (list id, row index) pair ever shown — an
 //! unbounded leak for a growing log pane. [`crate::compose::ListHoverTracker`]
@@ -101,16 +98,12 @@
 //! }
 //!
 //! // At paint time, hand the whole state to the rasteriser — one
-//! // argument, not two positional slots:
-//! // backend.draw_toolbar_interactive(rect, &bar, &interaction);
+//! // argument, not two positional slots.
 //! assert_eq!(interaction.hovered(), Some(&WidgetId::new("demo:button")));
 //! ```
 //!
 //! `examples/common/toolbar_app.rs` demonstrates the whole loop
-//! end-to-end against a real backend, and
-//! `tests/tui_example_driver.rs`'s
-//! `toolbar_hover_paints_hover_background_at_the_cursor` asserts the
-//! *painted* consequence.
+//! end-to-end against a real backend.
 
 use crate::event::{MouseButton, UiEvent};
 use crate::types::WidgetId;

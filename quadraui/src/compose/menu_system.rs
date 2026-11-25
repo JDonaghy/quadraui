@@ -15,16 +15,17 @@
 //! }
 //! ```
 
-use super::context_menu_controller::menu_item_heights;
-use crate::backend::{Backend, ResolvedMenuStyle};
+use super::context_menu_controller::{
+    menu_item_heights, menu_line_height, menu_viewport, paint_placed_menu,
+};
+use crate::backend::{Backend, DrawsPrimitives, ResolvedMenuStyle};
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::event::{Rect, UiEvent};
-use crate::interaction::InteractionState;
 use crate::primitives::context_menu::{
     ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
     ContextMenuPlacement,
 };
-use crate::primitives::menu_bar::{MenuBar, MenuBarHit, MenuBarItem};
+use crate::primitives::menu_bar::{MenuBar, MenuBarHit, MenuBarItem, MenuBarLayout};
 use crate::types::WidgetId;
 use crate::{FontRole, Key, Modifiers, MouseButton, NamedKey};
 
@@ -223,45 +224,44 @@ impl MenuSystem {
 
     /// Draw the menu bar and any open dropdown (including nested submenus).
     ///
-    /// The dropdown/submenu levels paint through the plain
-    /// [`Backend::draw_context_menu`], not
-    /// [`Backend::draw_context_menu_with_state`]: a dropdown row's hover
-    /// already drives [`Self::dropdown_selected`] /
-    /// [`Self::submenu_selected`] (keyboard and mouse both move the same
-    /// selection cursor, which the submenu machinery below keys off of),
-    /// so `draw_context_menu`'s `is_selected` highlight already is the
-    /// hover cue there — a second, independent `InteractionState` feed
-    /// would just double the bookkeeping for the same visual signal.
+    /// Under [`ResolvedMenuStyle::Native`] the bar is installed as the
+    /// platform's own menu bar through [`Backend::install_menu_bar`]
+    /// (which skips an unchanged bar, so this runs every frame) and
+    /// nothing paints in the window; otherwise the strip paints through
+    /// the widget contract.
+    /// A dropdown row's hover already drives [`Self::dropdown_selected`] /
+    /// [`Self::submenu_selected`], so each level's own `selected_idx`
+    /// highlight is the hover cue.
     pub fn render(&self, backend: &mut dyn Backend, bar_rect: Rect) {
         let bar = self.build_menu_bar();
-        let _ = backend.draw_menu_bar_with_state(bar_rect, &bar, &self.bar_interaction());
+        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
+            backend.install_menu_bar(&bar);
+        } else {
+            let _ = backend.draw_dyn(bar_rect, &bar, &());
+        }
 
         let stack = self.dropdown_stack(backend, bar_rect);
         for (ctx_menu, layout) in &stack {
-            let _ = backend.draw_context_menu(ctx_menu, layout);
+            paint_placed_menu(backend, ctx_menu, layout);
         }
     }
 
-    /// The top-level bar's own hover state, derived from
-    /// [`Self::focused_item`] rather than tracked separately — no
-    /// caller feeds this by hand, so a py/node app gets the hover tint
-    /// for free the moment it registers a `MenuBar` wire extra.
-    ///
-    /// Empty (nothing hovered) while a dropdown is open: `focused_item`
-    /// only updates in [`Self::handle_mouse_moved`]'s closed-bar branch,
-    /// and the open item already gets [`crate::Theme::tab_active_bg`]'s
-    /// stronger treatment in `primitives::menu_bar::native_surface_paint`
-    /// — layering the plain hover tint on top of it there would read as
-    /// a *lighter* highlight than "active", the wrong direction.
-    fn bar_interaction(&self) -> InteractionState {
-        if self.open_item.is_some() {
-            return InteractionState::new();
+    /// The bar's layout for `bar_rect`, as [`Self::render`] paints it: the
+    /// widget contract's own layout for a painted strip, or a zero-height
+    /// layout with no items under [`ResolvedMenuStyle::Native`], where the
+    /// platform's menu bar lives outside the window and nothing in it can
+    /// be hit.
+    fn bar_layout(&self, backend: &dyn Backend, bar_rect: Rect) -> MenuBarLayout {
+        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
+            return MenuBarLayout {
+                bounds: Rect::new(bar_rect.x, bar_rect.y, bar_rect.width, 0.0),
+                visible_items: Vec::new(),
+                hit_regions: Vec::new(),
+            };
         }
-        let hovered = self
-            .focused_item
-            .and_then(|i| self.menus.get(i))
-            .map(|m| m.id);
-        InteractionState::from_parts(hovered, None)
+        backend
+            .layout_primitive(bar_rect, &self.build_menu_bar())
+            .layout
     }
 
     /// Process an event. Call from `handle()` before other UI routing.
@@ -277,9 +277,9 @@ impl MenuSystem {
     ) -> MenuEvent {
         match event {
             // ── Native menu-bar activation ────────────────────────────
-            // `Backend::draw_menu_bar` installs a real `NSMenu` instead
-            // of painting whenever `effective_menu_style()` resolves
-            // `Native` (macOS, by default) — see that method's doc.
+            // `Self::render` installs a real `NSMenu` instead of painting
+            // whenever `effective_menu_style()` resolves `Native` (macOS,
+            // by default) — see that method's doc.
             // AppKit then reports a click as a top-level
             // `UiEvent::MenuActivated`, not a hit on this struct's own
             // `bar_rect`-relative dropdown state (there is none; the
@@ -497,8 +497,7 @@ impl MenuSystem {
         backend: &mut dyn Backend,
         bar_rect: Rect,
     ) -> MenuEvent {
-        let bar = self.build_menu_bar();
-        let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
+        let bar_layout = self.bar_layout(backend, bar_rect);
 
         match bar_layout.hit_test(position.x, position.y) {
             MenuBarHit::Item(i) => {
@@ -572,13 +571,12 @@ impl MenuSystem {
         backend: &mut dyn Backend,
         bar_rect: Rect,
     ) -> MenuEvent {
-        let bar = self.build_menu_bar();
-        let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
+        let bar_layout = self.bar_layout(backend, bar_rect);
 
         if self.open_item.is_some() {
             // Hovering a different top-level menu label → switch.
             if let MenuBarHit::Item(i) = bar_layout.hit_test(position.x, position.y) {
-                if !bar.items[i].disabled && self.open_item != Some(i) {
+                if !self.menus[i].disabled && self.open_item != Some(i) {
                     self.close(backend);
                     self.open_menu(i, backend, bar_rect);
                     return MenuEvent::StateChanged;
@@ -641,7 +639,7 @@ impl MenuSystem {
             MenuEvent::Ignored
         } else {
             let new_focus = match bar_layout.hit_test(position.x, position.y) {
-                MenuBarHit::Item(i) if !bar.items[i].disabled => Some(i),
+                MenuBarHit::Item(i) if !self.menus[i].disabled => Some(i),
                 _ => None,
             };
             if new_focus != self.focused_item {
@@ -663,8 +661,7 @@ impl MenuSystem {
             return MenuEvent::Ignored;
         }
 
-        let bar = self.build_menu_bar();
-        let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
+        let bar_layout = self.bar_layout(backend, bar_rect);
 
         // Clicks landing on the menu bar itself (open/close/switch)
         // are `MouseDown`'s job — leave them alone here.
@@ -745,9 +742,8 @@ impl MenuSystem {
         if self.menus[open_idx].items.is_empty() {
             return None;
         }
-        let lh = backend.chrome_line_height();
-        let bar = self.build_menu_bar();
-        let bar_layout = backend.menu_bar_layout(bar_rect, &bar);
+        let lh = menu_line_height(backend);
+        let bar_layout = self.bar_layout(backend, bar_rect);
         // A backend that resolves `ResolvedMenuStyle::Native` reports a
         // zero-height layout with no visible items, because its menu bar
         // is the platform's own and lives outside the window. There is
@@ -760,8 +756,8 @@ impl MenuSystem {
             raw_anchor.width,
             raw_anchor.height + pad,
         );
-        let viewport_rect = backend.context_menu_viewport();
         let ctx_menu = self.build_dropdown(open_idx);
+        let viewport_rect = menu_viewport(backend, &ctx_menu);
         let menu_width = dropdown_width(backend, &ctx_menu.items, lh);
         let (item_h, sep_h) = menu_item_heights(lh);
         let layout = ctx_menu.layout_at(anchor, viewport_rect, menu_width, |i| {
@@ -789,9 +785,9 @@ impl MenuSystem {
         };
         stack.push((root_menu, root_layout));
 
-        let lh = backend.chrome_line_height();
+        let lh = menu_line_height(backend);
         let (item_h, sep_h) = menu_item_heights(lh);
-        let vp = backend.context_menu_viewport();
+        let vp = menu_viewport(backend, &stack[0].0);
 
         for (depth, &path_idx) in self.submenu_path.iter().enumerate() {
             // Extract parent data before we push so the borrow checker is happy.
@@ -977,17 +973,6 @@ mod tests {
                 ..Self::new()
             }
         }
-
-        fn mock_menu_bar_layout(&self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
-            if self.native_menu_bar {
-                return crate::MenuBarLayout {
-                    bounds: Rect::new(rect.x, rect.y, rect.width, 0.0),
-                    visible_items: Vec::new(),
-                    hit_regions: Vec::new(),
-                };
-            }
-            bar.layout(rect, |_| crate::MenuBarItemMeasure::new(10.0))
-        }
     }
 
     impl crate::backend::sealed::Sealed for MockBackend {}
@@ -1061,12 +1046,6 @@ mod tests {
                 ui_family: String::new(),
                 ui_size_pt: 0.0,
             }
-        }
-        fn menu_bar_layout(&self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
-            self.mock_menu_bar_layout(rect, bar)
-        }
-        fn draw_menu_bar(&mut self, rect: Rect, bar: &crate::MenuBar) -> crate::MenuBarLayout {
-            self.mock_menu_bar_layout(rect, bar)
         }
         fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {}
         fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {}
@@ -1160,13 +1139,6 @@ mod tests {
         fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
         fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {}
         fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
-        fn draw_context_menu(
-            &mut self,
-            _m: &crate::ContextMenu,
-            _l: &crate::ContextMenuLayout,
-        ) -> Vec<(Rect, WidgetId)> {
-            Vec::new()
-        }
         fn draw_dialog(&mut self, _d: &crate::Dialog, _l: &crate::DialogLayout) -> Vec<Rect> {
             unimplemented!()
         }
@@ -1300,22 +1272,6 @@ mod tests {
             unimplemented!()
         }
         fn spinner_layout(&self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
-            unimplemented!()
-        }
-        fn draw_toolbar_with_options(
-            &mut self,
-            _r: Rect,
-            _b: &crate::primitives::toolbar::Toolbar,
-            _interaction: &crate::interaction::InteractionState,
-            _options: crate::primitives::toolbar::ToolbarPaintOptions,
-        ) -> crate::primitives::toolbar::ToolbarLayout {
-            unimplemented!()
-        }
-        fn toolbar_layout(
-            &self,
-            _r: Rect,
-            _b: &crate::primitives::toolbar::Toolbar,
-        ) -> crate::primitives::toolbar::ToolbarLayout {
             unimplemented!()
         }
         fn draw_diff_view(
@@ -1520,7 +1476,7 @@ mod tests {
     }
 
     /// A native `NSMenu` activation (`UiEvent::MenuActivated`,
-    /// what AppKit reports once `Backend::draw_menu_bar` installs rather
+    /// what AppKit reports once `MenuSystem::render` installs rather
     /// than paints) must translate to the same `MenuEvent::Activated` the
     /// painted dropdown path produces — same shape as
     /// `ContextMenuController` already uses for its own native event —
@@ -1624,31 +1580,6 @@ mod tests {
         assert!(!ms.is_open());
         assert_eq!(ms.open_item, None);
         assert_eq!(ms.focused_item, None);
-    }
-
-    #[test]
-    fn bar_interaction_is_empty_with_nothing_focused() {
-        let ms = MenuSystem::new(sample_menus());
-        assert_eq!(ms.bar_interaction().hovered(), None);
-    }
-
-    #[test]
-    fn bar_interaction_hovers_the_focused_item_s_id() {
-        let mut ms = MenuSystem::new(sample_menus());
-        ms.focused_item = Some(0);
-        assert_eq!(ms.bar_interaction().hovered(), Some(&ms.menus[0].id));
-    }
-
-    #[test]
-    fn bar_interaction_clears_once_a_dropdown_is_open() {
-        // `focused_item` is stale ("whatever it was before the dropdown
-        // opened"), but `bar_interaction` must not paint a hover tint
-        // over the stronger "active" treatment the open item already
-        // gets — see `bar_interaction`'s own doc.
-        let mut ms = MenuSystem::new(sample_menus());
-        ms.focused_item = Some(0);
-        ms.open_item = Some(0);
-        assert_eq!(ms.bar_interaction().hovered(), None);
     }
 
     #[test]
@@ -1778,11 +1709,9 @@ mod tests {
     /// `build_menu_bar`'s `MenuBarItem::submenu` must carry this
     /// `MenuDef`'s real dropdown items, not the stale `None` a native
     /// backend's `Backend::install_menu_bar` would silently bake into an
-    /// empty `NSMenu`/`HMENU` submenu — `MenuSystem::render` calls
-    /// `Backend::draw_menu_bar_with_state` with this `MenuBar` every
-    /// frame, after the frame's own plain paint already installed one
-    /// with the correct submenus, so this is the value a native install
-    /// actually ends up showing.
+    /// empty `NSMenu`/`HMENU` submenu — `MenuSystem::render` installs
+    /// this `MenuBar` under the native style, so this is the value a
+    /// native install actually ends up showing.
     #[test]
     fn build_menu_bar_carries_each_menus_own_dropdown_items_as_submenu() {
         let ms = MenuSystem::new(sample_menus());

@@ -1258,15 +1258,6 @@ impl crate::Backend for RecordingBackend {
     }
     /// Union note: `app_shell::MockBackend` was the only one with a real
     /// body (`Vec::new()`); the other two `unimplemented!()`d.
-    fn draw_context_menu(
-        &mut self,
-        _m: &crate::ContextMenu,
-        _l: &crate::ContextMenuLayout,
-    ) -> Vec<(Rect, WidgetId)> {
-        self.record("draw_context_menu");
-        Vec::new()
-    }
-    /// Union note: see `draw_context_menu` above.
     fn draw_dialog(&mut self, _d: &crate::Dialog, _l: &crate::DialogLayout) -> Vec<Rect> {
         self.record("draw_dialog");
         Vec::new()
@@ -1375,13 +1366,6 @@ impl crate::Backend for RecordingBackend {
     fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
         self.record("draw_scrollbar");
     }
-    fn draw_menu_bar(&mut self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
-        self.record("draw_menu_bar");
-        unimplemented!("RecordingBackend has no MenuBar layout algorithm")
-    }
-    fn menu_bar_layout(&self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
-        unimplemented!("RecordingBackend has no MenuBar layout algorithm")
-    }
     fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
         self.record("draw_split");
         unimplemented!("RecordingBackend has no Split layout algorithm")
@@ -1460,23 +1444,6 @@ impl crate::Backend for RecordingBackend {
         _c: &crate::primitives::chart::Chart,
     ) -> crate::primitives::chart::ChartLayout {
         unimplemented!("RecordingBackend has no Chart layout algorithm")
-    }
-    fn draw_toolbar_with_options(
-        &mut self,
-        _r: Rect,
-        _b: &crate::primitives::toolbar::Toolbar,
-        _interaction: &crate::interaction::InteractionState,
-        _options: crate::primitives::toolbar::ToolbarPaintOptions,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        self.record("draw_toolbar");
-        unimplemented!("RecordingBackend has no Toolbar layout algorithm")
-    }
-    fn toolbar_layout(
-        &self,
-        _r: Rect,
-        _b: &crate::primitives::toolbar::Toolbar,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        unimplemented!("RecordingBackend has no Toolbar layout algorithm")
     }
     fn draw_diff_view(
         &mut self,

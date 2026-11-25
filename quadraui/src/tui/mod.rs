@@ -47,7 +47,6 @@ mod combo_box;
 // `CellSurface` adapter, which cannot be built outside `crate::tui`.
 pub(crate) mod command_line;
 mod completions;
-mod context_menu;
 mod data_table;
 mod date_picker;
 mod dialog;
@@ -74,7 +73,6 @@ mod image_decode;
 // emit_osc52_with` reuses them instead of carrying its own copy.
 mod kitty_graphics;
 mod list;
-mod menu_bar;
 mod message_list;
 mod minimap;
 mod multi_section_view;
@@ -102,7 +100,6 @@ mod text_display;
 pub(crate) mod text_field;
 mod text_input;
 mod toast;
-mod toolbar;
 mod tooltip;
 mod tree;
 #[cfg(feature = "terminal")]
@@ -130,11 +127,6 @@ pub use chart::{draw_chart, tui_chart_layout};
 pub use combo_box::draw_combo_box;
 #[doc(hidden)]
 pub use completions::draw_completions;
-#[doc(hidden)]
-pub use context_menu::{
-    draw_context_menu, draw_context_menu_with_glyphs, draw_context_menu_with_submenus,
-    BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
-};
 pub use data_table::draw_data_table;
 #[doc(hidden)]
 pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_table_with_state};
@@ -166,9 +158,6 @@ pub use list::{
     draw_list, draw_list_with_scroll_px, draw_list_with_state, tui_list_layout,
     tui_list_layout_with_scroll_px,
 };
-pub(crate) use menu_bar::draw_menu_bar_layout;
-#[doc(hidden)]
-pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
 #[doc(hidden)]
 pub use message_list::draw_message_list;
 pub use minimap::draw_minimap;
@@ -223,12 +212,6 @@ pub use text_field::{draw_text_field, tui_text_field_layout};
 pub use text_input::{draw_text_input, tui_text_input_layout};
 #[doc(hidden)]
 pub use toast::{draw_toast_stack, tui_toast_stack_layout};
-pub use toolbar::tui_toolbar_layout;
-#[doc(hidden)]
-pub use toolbar::{
-    draw_toolbar, draw_toolbar_oriented, draw_toolbar_with_options, draw_toolbar_with_overflow,
-    tui_toolbar_layout_with_options, tui_toolbar_layout_with_overflow,
-};
 #[doc(hidden)]
 pub use tooltip::{
     draw_tooltip, draw_tooltip_with_chrome, painted_bounds as tooltip_painted_bounds,

@@ -19,12 +19,10 @@ use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::completions::{Completions, CompletionsLayout};
-use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::form::{Form, FormLayout};
-use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 // Only referenced (as a bare name) inside `draw_form`'s
 // `target_os = "windows"` arm, which pattern-matches
 // `ToolbarButton::Action`/`ToolbarButton::Label` directly — every other
@@ -51,11 +49,14 @@ use crate::{
     Accelerator, AcceleratorId, Key, ListView, Modifiers, Palette, TextDisplay, TooltipChrome,
     TreeView, UserPayload,
 };
-// `ActivityBar`, `StatusBar` and `TabBar` are only named by `#[cfg(test)]`
-// code below — each paints through its widget contract, not a method on
-// this backend.
+// `ActivityBar`, `MenuBar`, `StatusBar` and `TabBar` are only named by
+// `#[cfg(test)]` code below — each paints through its widget contract, not a
+// method on this backend. `ContextMenu` is named only by the Windows-host
+// tests.
 #[cfg(test)]
-use crate::{ActivityBar, StatusBar, TabBar};
+use crate::{ActivityBar, MenuBar, StatusBar, TabBar};
+#[cfg(all(test, target_os = "windows"))]
+use crate::ContextMenu;
 #[cfg(target_os = "windows")]
 use crate::{FieldKind, Theme};
 // `AcceleratorScope` is only referenced by `#[cfg(test)]` code below.
@@ -146,47 +147,6 @@ impl crate::primitives::layout_metrics::TextMeasure for NominalTextMeasure {
     fn width_of(&self, text: &str) -> f32 {
         nominal_text_width(text, self.char_width)
     }
-}
-
-/// Shared implementation behind
-/// [`super::toolbar::win_toolbar_layout_with_overflow`] and
-/// [`WinBackend::toolbar_layout_with_overflow`]'s no-DWrite fallback, so
-/// the live-`DWrite` and nominal-char-width measurers can never
-/// independently drift on which rows a `Wrap` toolbar reports as
-/// clickable. Lives here (not `win::toolbar`, which is
-/// `#[cfg(target_os = "windows")]`-only) because the fallback branch must
-/// keep compiling — and keep applying this same clamp — on a non-Windows
-/// `--features win` type-check host. The GTK sibling
-/// (`gtk::toolbar::gtk_toolbar_layout_with_overflow`) needs no equivalent
-/// because it already funnels both its measurers through one function.
-pub(super) fn toolbar_layout_with_overflow_via(
-    measure: &dyn crate::primitives::layout_metrics::TextMeasure,
-    rect: Rect,
-    bar: &crate::primitives::toolbar::Toolbar,
-    line_height: f32,
-    options: crate::primitives::toolbar::ToolbarLayoutOptions,
-    priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
-) -> crate::primitives::toolbar::ToolbarLayout {
-    use crate::primitives::toolbar::{measure_button, ToolbarItemMeasure, ToolbarOverflow};
-
-    let line_h = if options.overflow == ToolbarOverflow::Wrap {
-        line_height
-    } else {
-        rect.height
-    };
-    let mut layout = bar.layout_with_overflow(
-        rect.x,
-        rect.y,
-        rect.width,
-        line_h,
-        options,
-        priorities,
-        |btn| ToolbarItemMeasure::new(measure_button(measure, btn)),
-    );
-
-    layout.demote_lines_past(options, rect.y + rect.height);
-
-    layout
 }
 
 /// [`super::spinner::SpinnerMeasureSource`] impl backed by
@@ -1522,17 +1482,6 @@ impl WinBackend {
     // for the common case and mirrors how `AppShell::render` already registers
     // every activity-bar item's zone regardless of position.
 
-    /// Register one zone per clickable [`MenuBarLayout`] item — the
-    /// File/Edit/... labels in the drawn menu row. See the section doc
-    /// above.
-    fn register_menu_bar_item_zones(&mut self, layout: &MenuBarLayout) {
-        for item in &layout.visible_items {
-            if item.clickable {
-                self.register_zone(item.id, item.bounds);
-            }
-        }
-    }
-
     // ── Paint-time text-run recording ───────────────────────────────────
 
     /// Enable/disable the paint-time text-run recording that backs
@@ -2736,7 +2685,7 @@ impl Backend for WinBackend {
                 // the native caption back. So Win-GUI now matches `GtkBackend`/
                 // `TuiBackend`: no `Backend` override at all, taking the trait's
                 // no-op default — `install_menu_bar` callers get a painted in-window
-                // `MenuBar` (`draw_menu_bar`) instead. Left `false` rather than
+                // `MenuBar` widget instead. Left `false` rather than
                 // declared and unprovable — the honesty check requires *no*
                 // `install_menu_bar`/`show_context_menu` override to back a `false`
                 // here, which holds: this backend has neither.
@@ -3316,7 +3265,7 @@ impl Backend for WinBackend {
     /// [`crate::primitives::form::paint`] now — see that fn's doc for
     /// why `FieldKind::Toolbar` is painted here instead (as plain
     /// per-button text, matching this backend's behaviour —
-    /// `win::toolbar`'s full chrome isn't wired into `Form` fields; see
+    /// the toolbar widget's full chrome isn't wired into `Form` fields; see
     /// `win::form`'s module doc), after `paint` releases its exclusive
     /// borrow of `self`.
     fn draw_form(&mut self, rect: Rect, form: &Form) {
@@ -3866,123 +3815,6 @@ impl Backend for WinBackend {
         }
     }
 
-    /// Real Direct2D/DirectWrite rasteriser via `win::context_menu`
-    /// once a surface is attached. `layout` is fully resolved upstream
-    /// (see `crate::compose::menu_system`) — this only paints it and
-    /// collects the per-clickable-item hit rectangles. See
-    /// [`Self::draw_tree`]'s doc for the "surface not attached yet"
-    /// fallback posture.
-    ///
-    /// `ContextMenu` is `ChromePrimitive::ContextMenu` (whole
-    /// primitive, same posture as `draw_dialog`'s fix — `layout`
-    /// is pre-resolved upstream, so only the paint font needs to change
-    /// here) — paints through `chrome_dwrite`, falling back to the
-    /// editor `dwrite` handle if no live chrome one exists yet.
-    fn draw_context_menu(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-    ) -> Vec<(Rect, WidgetId)> {
-        let style = self.style();
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        // `None` keeps `paint_with_glyphs`'s check/arrow defaults; the
-        // flag resolves an item's own `ContextMenuItem::icon`.
-        self.with_chrome_surface(|surf| {
-            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
-                menu,
-                layout,
-                crate::accelerator::Platform::Windows,
-                surf,
-                &theme,
-                &style,
-                None,
-                nerd_fonts_enabled,
-            )
-        })
-        // `layout` is already fully resolved, so a pure extraction from
-        // it needs no surface/DWrite at all when none is attached yet.
-        .unwrap_or_else(|| {
-            layout
-                .visible_items
-                .iter()
-                .filter(|vis| vis.clickable)
-                .filter_map(|vis| menu.items[vis.item_idx].id.map(|id| (vis.bounds, id)))
-                .collect()
-        })
-    }
-
-    /// [`Self::draw_context_menu`], but honouring an optional
-    /// [`crate::primitives::context_menu::ContextMenuGlyphs`] override for
-    /// the check-mark / submenu-arrow glyphs — `glyphs: None` reproduces
-    /// [`Self::draw_context_menu`] exactly.
-    fn draw_context_menu_with_glyphs(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-        glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>,
-    ) -> Vec<(Rect, WidgetId)> {
-        let style = self.style();
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        self.with_chrome_surface(|surf| {
-            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
-                menu,
-                layout,
-                crate::accelerator::Platform::Windows,
-                surf,
-                &theme,
-                &style,
-                glyphs,
-                nerd_fonts_enabled,
-            )
-        })
-        .unwrap_or_else(|| self.draw_context_menu(menu, layout))
-    }
-
-    /// [`Self::draw_context_menu`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_context_menu_with_state`]'s
-    /// own doc. Routes through
-    /// [`crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive`]
-    /// (the same `paint_with_glyphs` pipeline as [`Self::draw_context_menu`],
-    /// plus the interactive hover/pressed tint), with `glyphs: None`
-    /// so this reproduces [`Self::draw_context_menu`]'s check-mark /
-    /// submenu-arrow glyphs exactly.
-    fn draw_context_menu_with_state(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-        interaction: &crate::InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        let style = self.style();
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        self.with_chrome_surface(|surf| {
-            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive(
-                menu,
-                layout,
-                crate::accelerator::Platform::Windows,
-                surf,
-                &theme,
-                &style,
-                None,
-                nerd_fonts_enabled,
-                interaction,
-            )
-        })
-        // `layout` is already fully resolved, so a pure extraction from
-        // it needs no surface/DWrite at all when none is attached yet —
-        // same fallback as `Self::draw_context_menu`.
-        .unwrap_or_else(|| {
-            layout
-                .visible_items
-                .iter()
-                .filter(|vis| vis.clickable)
-                .filter_map(|vis| menu.items[vis.item_idx].id.map(|id| (vis.bounds, id)))
-                .collect()
-        })
-    }
-
     /// Real Direct2D/DirectWrite rasteriser via `win::dialog` once a
     /// surface is attached. `layout` is fully resolved upstream (see
     /// [`crate::primitives::dialog::Dialog::layout`]) — this only paints
@@ -4467,106 +4299,6 @@ impl Backend for WinBackend {
     }
 
     /// See [`Self::draw_tree`]'s doc for the "surface not
-    /// attached yet" fallback posture.
-    ///
-    /// `MenuBar` is `ChromePrimitive::MenuBar` — see
-    /// [`Self::draw_tree`]'s note for the font-swap shape. Unlike
-    /// `draw_tree`, `win_menu_bar_layout` (called internally by
-    /// `super::menu_bar::draw_menu_bar`) does real `TextMeasure`
-    /// measurement against whichever `DWrite` handle is passed, so
-    /// passing `chrome_dwrite` here keeps layout and paint in agreement
-    /// — see [`Self::menu_bar_layout`]'s doc for the no-paint twin that
-    /// must resolve the same widths.
-    fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let layout = super::menu_bar::draw_menu_bar(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                &self.current_theme,
-            );
-            // See "Band-content zone registration" above —
-            // without this, every point over "File"/"Edit"/... reads as
-            // `HTCAPTION` and the OS swallows the click before the app
-            // ever sees it.
-            self.register_menu_bar_item_zones(&layout);
-            return layout;
-        }
-        // No surface/DWrite yet — compute the real layout via the same
-        // nominal measurer `menu_bar_layout` falls back to, and paint
-        // nothing.
-        let layout = super::menu_bar::win_menu_bar_layout(
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            rect,
-            bar,
-        );
-        self.register_menu_bar_item_zones(&layout);
-        layout
-    }
-
-    /// [`Self::draw_menu_bar`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_menu_bar_with_state`]'s own
-    /// doc. Routes through [`super::menu_bar::draw_menu_bar_with_state`]
-    /// instead of [`super::menu_bar::draw_menu_bar`]; every other step
-    /// (zone registration, no-surface-yet fallback) mirrors
-    /// [`Self::draw_menu_bar`] exactly.
-    fn draw_menu_bar_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &MenuBar,
-        interaction: &crate::InteractionState,
-    ) -> MenuBarLayout {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let layout = super::menu_bar::draw_menu_bar_with_state(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                &self.current_theme,
-                interaction,
-            );
-            self.register_menu_bar_item_zones(&layout);
-            return layout;
-        }
-        // No surface/DWrite yet — `interaction` only affects painting,
-        // same fallback posture as `Self::draw_menu_bar`'s own.
-        let _ = interaction;
-        let layout = super::menu_bar::win_menu_bar_layout(
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            rect,
-            bar,
-        );
-        self.register_menu_bar_item_zones(&layout);
-        layout
-    }
-
-    /// See [`Self::data_table_layout`]'s doc for why this only needs
-    /// `self.dwrite`. Prefers `chrome_dwrite`, matching
-    /// [`Self::draw_menu_bar`]'s paint font.
-    fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::menu_bar::win_menu_bar_layout(dwrite, rect, bar);
-        }
-        super::menu_bar::win_menu_bar_layout(
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            rect,
-            bar,
-        )
-    }
-
-    /// See [`Self::draw_tree`]'s doc for the "surface not
     /// attached yet" fallback posture. `Split` paints no text, so unlike
     /// most of that method's siblings this doesn't need `self.dwrite`.
     fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
@@ -5000,143 +4732,6 @@ impl Backend for WinBackend {
             },
             rect,
             spinner,
-        )
-    }
-
-    /// See [`Self::draw_tree`]'s doc for the "surface not
-    /// attached yet" fallback posture.
-    ///
-    /// `Toolbar` is `ChromePrimitive::Toolbar` — see
-    /// [`Self::draw_menu_bar`]'s note for why passing
-    /// `chrome_dwrite` here keeps `win_toolbar_layout`'s internal
-    /// measurement and the paint in agreement; see
-    /// [`Self::toolbar_layout`]'s doc for the no-paint twin that must
-    /// resolve the same widths.
-    fn draw_toolbar_with_options(
-        &mut self,
-        rect: Rect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        interaction: &crate::interaction::InteractionState,
-        options: crate::primitives::toolbar::ToolbarPaintOptions,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::toolbar::draw_toolbar_with_options(
-                &surface.target,
-                dwrite,
-                rect,
-                bar,
-                hovered_id,
-                pressed_id,
-                options,
-            );
-        }
-        // No surface/DWrite yet — compute the real layout via the same
-        // nominal measurer `toolbar_layout` falls back to, and paint
-        // nothing. `hovered_id`/`pressed_id`/`options` only
-        // affect painting, so they're unused on this path.
-        let _ = (hovered_id, pressed_id, options);
-        self.toolbar_layout(rect, bar)
-    }
-
-    /// See [`Self::data_table_layout`]'s doc for why this only
-    /// needs `self.dwrite`. Prefers `chrome_dwrite`, matching
-    /// [`Self::draw_toolbar_with_options`]'s paint font.
-    fn toolbar_layout(
-        &self,
-        rect: Rect,
-        bar: &crate::primitives::toolbar::Toolbar,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::toolbar::win_toolbar_layout(dwrite, rect, bar);
-        }
-        // No live DWrite handle — nominal char-width estimate instead
-        let measure = NominalTextMeasure {
-            char_width: self.current_char_width,
-        };
-        bar.layout(rect.x, rect.y, rect.width, rect.height, |btn| {
-            crate::primitives::toolbar::ToolbarItemMeasure::new(
-                crate::primitives::toolbar::measure_button(&measure, btn),
-            )
-        })
-    }
-
-    /// [`Self::draw_toolbar_with_options`], plus
-    /// [`crate::primitives::toolbar::ToolbarLayoutOptions`]: `layout_options.overflow`
-    /// picks how items that don't fit are handled — see
-    /// [`super::toolbar::draw_toolbar_with_overflow`]'s doc for the
-    /// per-variant painting contract. Same "surface not attached yet"
-    /// fallback posture as [`Self::draw_toolbar_with_options`].
-    fn draw_toolbar_with_overflow(
-        &mut self,
-        rect: Rect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        interaction: &crate::interaction::InteractionState,
-        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
-        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            return super::toolbar::draw_toolbar_with_overflow(
-                &surface.target,
-                dwrite,
-                rect,
-                self.current_line_height,
-                bar,
-                hovered_id,
-                pressed_id,
-                layout_options,
-                priorities,
-            );
-        }
-        // No surface/DWrite yet — compute the real layout via the same
-        // nominal measurer `toolbar_layout_with_overflow` falls back to,
-        // and paint nothing.
-        let _ = (hovered_id, pressed_id);
-        self.toolbar_layout_with_overflow(rect, bar, layout_options, priorities)
-    }
-
-    /// See [`Self::toolbar_layout`]'s doc for why this only needs
-    /// `self.dwrite`. The layout-only twin of
-    /// [`Self::draw_toolbar_with_overflow`].
-    fn toolbar_layout_with_overflow(
-        &self,
-        rect: Rect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
-        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::toolbar::win_toolbar_layout_with_overflow(
-                dwrite,
-                rect,
-                bar,
-                self.current_line_height,
-                layout_options,
-                priorities,
-            );
-        }
-        // No live DWrite handle — nominal char-width estimate instead,
-        // same fallback measurer `toolbar_layout` uses. Routed through
-        // `toolbar_layout_with_overflow_via`, the same helper the
-        // live-DWrite branch above uses, so both branches apply the
-        // identical "rows past `rect.height` are un-clickable" clamp.
-        let measure = NominalTextMeasure {
-            char_width: self.current_char_width,
-        };
-        toolbar_layout_with_overflow_via(
-            &measure,
-            rect,
-            bar,
-            self.current_line_height,
-            layout_options,
-            priorities,
         )
     }
 
@@ -7744,13 +7339,12 @@ mod tests {
         assert_eq!(b.nc_hit_test(100.0, 16.0), Some(true));
     }
 
-    /// End-to-end regression: nothing ever registered a zone for the real
-    /// widgets a host paints inside the title-bar band — this test drives the
-    /// real paint path: register the band, call `Backend::draw_menu_bar` with a
-    /// real `MenuBar` sitting inside it, and confirm a click on the label now
-    /// excludes itself from `HTCAPTION` — with no hand-registered zone of its own.
+    /// End-to-end: a `MenuBar` painted through the widget contract inside
+    /// the title-bar band records its items as sub-regions, so a click on a
+    /// label excludes itself from `HTCAPTION` with no hand-registered zone
+    /// of its own.
     #[test]
-    fn draw_menu_bar_registers_its_own_item_zones_inside_the_band() {
+    fn menu_bar_painted_through_the_contract_excludes_its_items_from_the_band() {
         let mut b = WinBackend::new();
         let band = Rect::new(0.0, 0.0, 800.0, 32.0);
         Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
@@ -7774,7 +7368,9 @@ mod tests {
             open_item: None,
             focused_item: None,
         };
-        let layout = Backend::draw_menu_bar(&mut b, Rect::new(0.0, 0.0, 300.0, 32.0), &bar);
+        let bar_rect = Rect::new(0.0, 0.0, 300.0, 32.0);
+        let _ = crate::DrawsPrimitives::draw_dyn(&mut b, bar_rect, &bar, &());
+        let layout = crate::DrawsPrimitives::layout_primitive(&b, bar_rect, &bar).layout;
         let file_item = layout
             .visible_items
             .iter()
@@ -8157,7 +7753,12 @@ mod tests {
         };
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_menu_bar(Rect::new(0.0, 0.0, W as f32, H as f32), &bar);
+        let _ = crate::DrawsPrimitives::draw_dyn(
+            &mut backend,
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            &bar,
+            &(),
+        );
         backend.end_frame();
 
         let px = surface.pixel_at(W / 2, H / 2);
@@ -8171,9 +7772,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_context_menu() {
-        use crate::primitives::context_menu::{
-            ContextMenuItem, ContextMenuItemMeasure, ContextMenuPlacement,
-        };
+        use crate::primitives::context_menu::{ContextMenuItem, ContextMenuPlacement};
         use crate::theme::Theme;
         use crate::types::{Color, StyledText};
         use crate::win::testing::HeadlessSurface;
@@ -8198,10 +7797,9 @@ mod tests {
             ..Theme::default()
         });
 
-        // Two real items, because `ContextMenu::layout_at` derives the
-        // popup's height from the summed per-item measures: an empty
-        // `items` gives `bounds.height == 0`, `draw_context_menu`
-        // early-returns without painting a single pixel, and the probe
+        // Two real items, because the popup's height is the summed
+        // per-item heights: an empty `items` gives `bounds.height == 0`,
+        // the painter early-returns without painting a single pixel, and the probe
         // reads `begin_frame`'s clear colour instead of the fill under
         // test. Each item carries an `id` (an `id`-less item *is* the
         // separator — `ContextMenuItem::is_separator`), a one-char label
@@ -8222,13 +7820,13 @@ mod tests {
             placement: ContextMenuPlacement::AnchorPoint,
             glyphs: Default::default(),
         };
-        let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = menu.layout(4.0, 4.0, viewport, 60.0, |_| {
-            ContextMenuItemMeasure::new(20.0)
-        });
-
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_context_menu(&menu, &layout);
+        let layout = crate::DrawsPrimitives::draw_primitive(
+            &mut backend,
+            Rect::new(4.0, 4.0, 60.0, H as f32 - 8.0),
+            &menu,
+        )
+        .layout;
         backend.end_frame();
 
         assert!(
@@ -8751,154 +8349,6 @@ mod tests {
             (px.r, px.g, px.b),
             (pressed_expected.r, pressed_expected.g, pressed_expected.b),
             "pressing the create row must tint it toward Theme::menu_item_pressed_bg",
-        );
-        assert_ne!(
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "pressed and hover tints must read as visibly different colours",
-        );
-    }
-
-    /// `draw_context_menu_with_state` must tint a hovered item's row
-    /// toward `Theme::menu_item_hover_bg` and a pressed item's row
-    /// toward `Theme::menu_item_pressed_bg`, matching
-    /// `Backend::draw_context_menu_with_state`'s own doc.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn win_backend_context_menu_item_hover_and_pressed_tints() {
-        use crate::win::testing::HeadlessSurface;
-        use crate::InteractionState;
-
-        const W: u32 = 300;
-        const H: u32 = 60;
-        const ITEM_H: f32 = 30.0;
-
-        let item_id = WidgetId::new("test:menu:item");
-        let menu = ContextMenu {
-            id: WidgetId::new("test:menu"),
-            items: vec![crate::primitives::context_menu::ContextMenuItem {
-                id: Some(item_id),
-                label: crate::types::StyledText::plain("Copy".to_string()),
-                ..Default::default()
-            }],
-            // Out of range so no item ever paints as keyboard-selected —
-            // the selection highlight isn't what this test measures.
-            selected_idx: 99,
-            bg: None,
-            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
-            glyphs: Default::default(),
-        };
-        let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
-        let menu_layout = menu.layout_at(Rect::new(0.0, 0.0, 0.0, 0.0), viewport, 200.0, |_| {
-            crate::primitives::context_menu::ContextMenuItemMeasure::new(ITEM_H)
-        });
-        let row = menu_layout.visible_items[0].bounds;
-        let probe_x = (row.x + 4.0) as u32;
-        let probe_y = (row.y + row.height / 2.0) as u32;
-
-        let paint_with = |interaction: &InteractionState| -> HeadlessSurface {
-            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
-            let mut backend = WinBackend::new();
-            backend
-                .attach_headless(surface.target().clone(), W, H)
-                .expect("attach headless surface");
-            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let _ = backend.draw_context_menu_with_state(&menu, &menu_layout, interaction);
-            backend.end_frame();
-            surface
-        };
-
-        let theme = crate::theme::Theme::default();
-        let bg = menu.bg.unwrap_or(theme.hover_bg);
-
-        let hover_interaction = InteractionState::from_parts(Some(item_id), None);
-        let hovered = paint_with(&hover_interaction);
-        let px = hovered.pixel_at(probe_x, probe_y);
-        let hover_expected = theme.menu_item_hover_bg(bg);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "hovering a context-menu item must tint its row toward Theme::menu_item_hover_bg",
-        );
-
-        let pressed_interaction = InteractionState::from_parts(Some(item_id), Some(item_id));
-        let pressed = paint_with(&pressed_interaction);
-        let px = pressed.pixel_at(probe_x, probe_y);
-        let pressed_expected = theme.menu_item_pressed_bg(bg);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            "pressing a context-menu item must tint its row toward Theme::menu_item_pressed_bg",
-        );
-        assert_ne!(
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "pressed and hover tints must read as visibly different colours",
-        );
-    }
-
-    /// `draw_menu_bar_with_state` must tint a hovered top-level item
-    /// toward `Theme::menu_item_hover_bg` and a pressed one toward
-    /// `Theme::menu_item_pressed_bg`, matching
-    /// `Backend::draw_menu_bar_with_state`'s own doc.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn win_backend_menu_bar_item_hover_and_pressed_tints() {
-        use crate::win::testing::HeadlessSurface;
-        use crate::InteractionState;
-
-        const W: u32 = 300;
-        const H: u32 = 24;
-
-        let item_id = WidgetId::new("test:bar:file");
-        let bar = MenuBar {
-            id: WidgetId::new("test:bar"),
-            items: vec![crate::primitives::menu_bar::MenuBarItem {
-                id: item_id,
-                label: "&File".into(),
-                disabled: false,
-                submenu: None,
-            }],
-            open_item: None,
-            focused_item: None,
-        };
-        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-
-        let paint_with = |interaction: &InteractionState| -> (HeadlessSurface, MenuBarLayout) {
-            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
-            let mut backend = WinBackend::new();
-            backend
-                .attach_headless(surface.target().clone(), W, H)
-                .expect("attach headless surface");
-            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let layout = backend.draw_menu_bar_with_state(rect, &bar, interaction);
-            backend.end_frame();
-            (surface, layout)
-        };
-
-        let theme = crate::theme::Theme::default();
-
-        let hover_interaction = InteractionState::from_parts(Some(item_id), None);
-        let (hovered, layout) = paint_with(&hover_interaction);
-        let row = layout.visible_items[0].bounds;
-        let probe_x = (row.x + 4.0) as u32;
-        let probe_y = (row.y + row.height / 2.0) as u32;
-        let px = hovered.pixel_at(probe_x, probe_y);
-        let hover_expected = theme.menu_item_hover_bg(theme.tab_bar_bg);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "hovering a menu-bar item must tint its background toward Theme::menu_item_hover_bg",
-        );
-
-        let pressed_interaction = InteractionState::from_parts(Some(item_id), Some(item_id));
-        let (pressed, _) = paint_with(&pressed_interaction);
-        let px = pressed.pixel_at(probe_x, probe_y);
-        let pressed_expected = theme.menu_item_pressed_bg(theme.tab_bar_bg);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            "pressing a menu-bar item must tint its background toward Theme::menu_item_pressed_bg",
         );
         assert_ne!(
             (pressed_expected.r, pressed_expected.g, pressed_expected.b),
@@ -9802,7 +9252,8 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_menu_bar_paints_item_labels_in_the_chrome_fonts_size() {
+    fn win_backend_menu_bar_paints_item_labels_in_the_chrome_fonts_size() {
+        use crate::backend::DrawsPrimitives;
         let bar = MenuBar {
             id: WidgetId::new("bar"),
             items: vec![crate::primitives::menu_bar::MenuBarItem {
@@ -9820,19 +9271,20 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_menu_bar(Rect::new(0.0, 0.0, 300.0, 32.0), &bar);
+                let _ = backend.draw_dyn(Rect::new(0.0, 0.0, 300.0, 32.0), &bar, &());
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_menu_bar must paint item labels through chrome_dwrite, not \
-             the (unchanged) editor dwrite handle"
+            "the menu bar must paint item labels through chrome_dwrite, not the \
+             (unchanged) editor dwrite handle"
         );
     }
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_context_menu_paints_item_labels_in_the_chrome_fonts_size() {
+    fn win_backend_context_menu_paints_item_labels_in_the_chrome_fonts_size() {
+        use crate::backend::DrawsPrimitives;
         let menu = ContextMenu {
             id: WidgetId::new("ctx"),
             items: vec![crate::primitives::context_menu::ContextMenuItem {
@@ -9845,23 +9297,19 @@ mod tests {
             placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
             glyphs: Default::default(),
         };
-        let viewport = Rect::new(0.0, 0.0, 200.0, 100.0);
-        let layout = menu.layout(10.0, 10.0, viewport, 120.0, |_| {
-            crate::primitives::context_menu::ContextMenuItemMeasure::new(20.0)
-        });
         let diff = chrome_font_diff_pixel_count(
             200,
             100,
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_context_menu(&menu, &layout);
+                let _ = backend.draw_dyn(Rect::new(10.0, 10.0, 120.0, 80.0), &menu, &());
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_context_menu must paint item labels through chrome_dwrite, \
-             not the (unchanged) editor dwrite handle"
+            "the context menu must paint item labels through chrome_dwrite, not the \
+             (unchanged) editor dwrite handle"
         );
     }
 
@@ -10850,7 +10298,8 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_toolbar_interactive_paints_button_labels_in_the_chrome_fonts_size() {
+    fn win_backend_toolbar_paints_button_labels_in_the_chrome_fonts_size() {
+        use crate::backend::DrawsPrimitives;
         let bar = crate::primitives::toolbar::Toolbar {
             id: WidgetId::new("tb"),
             buttons: vec![ToolbarButton::Action {
@@ -10867,24 +10316,19 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let interaction = crate::interaction::InteractionState::new();
         let diff = chrome_font_diff_pixel_count(
             100,
             32,
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_toolbar_interactive(
-                    Rect::new(0.0, 0.0, 100.0, 32.0),
-                    &bar,
-                    &interaction,
-                );
+                let _ = backend.draw_dyn(Rect::new(0.0, 0.0, 100.0, 32.0), &bar, &());
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_toolbar_interactive must paint button labels through \
-             chrome_dwrite, not the (unchanged) editor dwrite handle"
+            "the toolbar must paint button labels through chrome_dwrite, not the \
+             (unchanged) editor dwrite handle"
         );
     }
 
@@ -11958,8 +11402,8 @@ mod tests {
         };
         let _ = crate::DrawsPrimitives::draw_dyn(&mut backend, rect, &tab_bar, &());
 
-        // `ToolbarLayout` category (nominal-measurer fallback via
-        // `measure_button`).
+        // A `Toolbar` through `draw_dyn` takes the same nominal-measurer
+        // fallback.
         let toolbar = crate::primitives::toolbar::Toolbar {
             id: WidgetId::new("toolbar"),
             buttons: Vec::new(),
@@ -11967,8 +11411,7 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let interaction = crate::interaction::InteractionState::default();
-        let _ = backend.draw_toolbar_interactive(rect, &toolbar, &interaction);
+        let _ = crate::DrawsPrimitives::draw_dyn(&mut backend, rect, &toolbar, &());
 
         // `MinimapPaintResult` category (`painted: false`, real layout).
         let minimap = sample_minimap();
@@ -12549,67 +11992,5 @@ mod tests {
                 "the tooltip must hide as soon as the pointer leaves its anchor"
             );
         }
-    }
-
-    /// Cross-platform (no `target_os = "windows"` gate): a fresh
-    /// [`WinBackend::new`] has no `dwrite`/`surface`, so
-    /// `toolbar_layout_with_overflow` always takes the no-DWrite
-    /// `NominalTextMeasure` fallback on every `--features win` host,
-    /// Windows included. It must still apply the "rows past `rect.height`
-    /// are un-clickable" clamp `toolbar_layout_with_overflow_via` shares
-    /// with the live-`DWrite` branch — this is the only test in this repo
-    /// that exercises that clamp on a non-Windows host, where
-    /// `win::toolbar`'s own `#[cfg(target_os = "windows")]`-gated tests
-    /// never run at all.
-    #[test]
-    fn win_backend_toolbar_layout_with_overflow_fallback_clamps_rows_past_rect_height() {
-        let backend = WinBackend::new();
-        let action = |id: &str| crate::primitives::toolbar::ToolbarButton::Action {
-            spec: None,
-            id: WidgetId::new(id),
-            label: "AAAA".into(),
-            icon: None,
-            key_hint: None,
-            enabled: true,
-            is_active: false,
-            tooltip: String::new(),
-        };
-        let bar = crate::primitives::toolbar::Toolbar {
-            id: WidgetId::new("tb"),
-            buttons: vec![action("a"), action("b"), action("c")],
-            bg: None,
-            focused_index: None,
-            ..Default::default()
-        };
-        let options = crate::primitives::toolbar::ToolbarLayoutOptions::new()
-            .with_overflow(crate::primitives::toolbar::ToolbarOverflow::Wrap);
-        let priorities = crate::primitives::toolbar::ToolbarOverflowPriorities::new();
-
-        // "AAAA" at the default `current_char_width` (8.0) measures to
-        // 4*8 + 2*ACTION_H_PAD = 48.0 wide — a 60.0-wide rect fits exactly
-        // one button per row, so the three buttons wrap onto three
-        // separate rows at `current_line_height` (16.0) apart.
-        let rect = Rect::new(0.0, 0.0, 60.0, 16.0);
-        let layout = backend.toolbar_layout_with_overflow(rect, &bar, options, &priorities);
-
-        assert_eq!(
-            layout.visible_items.len(),
-            3,
-            "all three buttons must still be reported, just not all clickable"
-        );
-        assert!(
-            layout.visible_items[0].clickable,
-            "the first row (y=0) starts inside a 16.0-tall rect and must stay clickable"
-        );
-        assert!(
-            !layout.visible_items[1].clickable,
-            "the second row (y=16.0) starts at rect's bottom edge and must be clamped \
-             un-clickable, matching win_toolbar_layout_with_overflow's live-DWrite branch"
-        );
-        assert!(
-            !layout.visible_items[2].clickable,
-            "the third row (y=32.0) is well past rect's bottom edge and must be clamped \
-             un-clickable"
-        );
     }
 }

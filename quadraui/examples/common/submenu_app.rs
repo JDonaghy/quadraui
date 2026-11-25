@@ -20,9 +20,9 @@
 use quadraui::DrawsPrimitives;
 use quadraui::{
     resolve_bar_height, AppLogic, Backend, Color, ContextMenu, ContextMenuHit, ContextMenuItem,
-    ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement, Key, MenuDef, MenuEvent,
-    MenuSystem, MouseButton, NamedKey, Point, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledText, UiEvent, WidgetId,
+    ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement, DrawsPrimitives,
+    InteractionState, Key, MenuDef, MenuEvent, MenuSystem, MouseButton, NamedKey, Point, Reaction,
+    Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 // ── Context-menu state ────────────────────────────────────────────────────────
@@ -240,12 +240,12 @@ impl SubmenuApp {
             self.menu_system.close(backend);
         }
         let lh = backend.line_height();
-        // `context_menu_viewport` is the paint surface with room already
+        // `menu_metrics`'s viewport is the paint surface with room already
         // reserved for whatever chrome the backend draws outside the
         // menu's item region (one cell of box border on TUI), so the
         // layout this anchors — and the rows it hit-tests — stay inside
         // the surface even when the click is on the very first row.
-        let vp = backend.context_menu_viewport();
+        let (vp, item_h, sep_h) = menu_metrics(backend);
         let menu = ContextMenu {
             id: WidgetId::new("ctx-menu"),
             items: Self::ctx_menu_items(),
@@ -257,9 +257,9 @@ impl SubmenuApp {
         // Push to modal stack with root bounds so clicks inside don't leak.
         let layout = menu.layout(anchor.x, anchor.y, vp, 20.0 * lh, |i| {
             ContextMenuItemMeasure::new(if menu.items[i].is_separator() {
-                (lh * 0.5).max(1.0)
+                sep_h
             } else {
-                lh
+                item_h
             })
         });
         backend
@@ -285,10 +285,8 @@ impl SubmenuApp {
     /// Render the in-window context menu (root + all open submenus).
     fn render_ctx_menu(state: &CtxState, backend: &mut dyn Backend) {
         let lh = backend.line_height();
-        let vp = backend.context_menu_viewport();
+        let (vp, item_h, sep_h) = menu_metrics(backend);
         let menu_w = 20.0 * lh;
-        let item_h = lh;
-        let sep_h = (lh * 0.5_f32).max(1.0_f32);
 
         let root_layout = state
             .menu
@@ -299,7 +297,7 @@ impl SubmenuApp {
                     item_h
                 })
             });
-        let _ = backend.draw_context_menu(&state.menu, &root_layout);
+        paint_menu(backend, &state.menu, &root_layout);
 
         // Draw each open submenu level.
         let mut parent_items: Vec<ContextMenuItem> = state.menu.items.clone();
@@ -344,7 +342,7 @@ impl SubmenuApp {
                     item_h
                 })
             });
-            let _ = backend.draw_context_menu(&sub_menu, &sub_layout);
+            paint_menu(backend, &sub_menu, &sub_layout);
 
             parent_items = sub_items;
             parent_bounds = sub_layout.bounds;
@@ -419,10 +417,8 @@ impl SubmenuApp {
                 // Same viewport the render pass uses, so the rows hit
                 // here are the rows that were painted.
                 let lh = backend.line_height();
-                let vp = backend.context_menu_viewport();
+                let (vp, item_h, sep_h) = menu_metrics(backend);
                 let menu_w = 20.0 * lh;
-                let item_h = lh;
-                let sep_h = (lh * 0.5_f32).max(1.0_f32);
 
                 // Build the stack of (items, anchor_x, anchor_y) for each level.
                 let mut levels: Vec<(Vec<ContextMenuItem>, f32, f32)> = Vec::new();
@@ -534,10 +530,8 @@ impl SubmenuApp {
             UiEvent::MouseMoved { position, .. } => {
                 // Update hover selection at deepest level containing cursor.
                 let lh = backend.line_height();
-                let vp = backend.context_menu_viewport();
+                let (vp, item_h, sep_h) = menu_metrics(backend);
                 let menu_w = 20.0 * lh;
-                let item_h = lh;
-                let sep_h = (lh * 0.5_f32).max(1.0_f32);
 
                 let state = self.ctx_menu.as_mut().unwrap();
                 let mut par_items = state.menu.items.clone();
@@ -731,4 +725,43 @@ fn mi_action(id: &str, label: &str) -> ContextMenuItem {
 
 fn mi_sep() -> ContextMenuItem {
     ContextMenuItem::default()
+}
+
+/// The viewport, item height and separator height the widget contract
+/// paints a popup with on `backend`: one layout of an empty popup over the
+/// whole surface reports the border-inset viewport and the row pitch its
+/// own re-layout at paint time uses, so a layout placed with them is the
+/// one that paints.
+fn menu_metrics(backend: &dyn Backend) -> (Rect, f32, f32) {
+    let vp = backend.viewport();
+    let probe = ContextMenu {
+        id: WidgetId::new("ctx-menu"),
+        items: Vec::new(),
+        selected_idx: 0,
+        bg: None,
+        placement: ContextMenuPlacement::AnchorPoint,
+        glyphs: Default::default(),
+    };
+    let layout = backend.layout_primitive(Rect::new(0.0, 0.0, vp.width, vp.height), &probe);
+    (layout.viewport, layout.item_height, layout.separator_height)
+}
+
+/// Paints `menu` at its already-placed `layout`: the box handed to the
+/// widget contract is `layout.bounds` grown by the border ring, so the
+/// popup's own re-layout inside it lands every row where `layout` put it.
+/// Marks the popup painted on the modal stack it was registered on.
+fn paint_menu(backend: &mut dyn Backend, menu: &ContextMenu, layout: &ContextMenuLayout) {
+    let inset = backend.layout_primitive(layout.bounds, menu).border_inset;
+    let b = layout.bounds;
+    let rect = Rect::new(
+        b.x - inset,
+        b.y - inset,
+        b.width + inset * 2.0,
+        b.height + inset * 2.0,
+    );
+    let _ = backend.draw_dyn(rect, menu, &());
+    backend
+        .modal_stack_handle()
+        .borrow_mut()
+        .mark_painted(&menu.id);
 }

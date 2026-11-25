@@ -658,7 +658,7 @@ fn shell_app_clicking_a_sidebar_tree_row_selects_it() {
     );
 }
 
-/// `MenuBarApp`'s items are painted by `draw_menu_bar`. Clicking one by
+/// `MenuBarApp`'s items are painted by the menu bar widget. Clicking one by
 /// text opens its dropdown — and the dropdown's own items become
 /// locatable in the same map, so the whole menu interaction is now
 /// scriptable coordinate-free on GTK.
@@ -1166,7 +1166,7 @@ fn context_menu_style_demo_gtk_escape_dismisses() {
 // ─── SubmenuApp: pull-right cascading submenus ──────────────────────────────
 //
 // Same `SubmenuApp` as `tui_submenu`/`gtk_submenu` — driven entirely through
-// `Backend::draw_context_menu` / `MenuSystem`, proving that GTK's shared
+// the `ContextMenu` widget / `MenuSystem`, proving that GTK's shared
 // `native_surface_paint::paint` renders the `▶` affordance and that the
 // cascading open/close/click state machine behaves the same as it does on TUI.
 

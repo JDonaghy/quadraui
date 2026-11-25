@@ -186,8 +186,8 @@ pub(crate) fn draw_dialog_with_style(
                     // the value is empty. The leading magnifier, the
                     // clear button and the caret come from
                     // `crate::primitives::toolbar::native_surface_paint::paint`,
-                    // which `win::toolbar` delegates to and this block
-                    // doesn't share yet — the same follow-up its own
+                    // which the toolbar widget paints through and this
+                    // block doesn't share yet — the same follow-up its own
                     // `Separator` note names.
                     ToolbarItemKind::Field => {
                         if let Some(crate::primitives::toolbar::ToolbarButton::Field {

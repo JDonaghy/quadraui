@@ -356,8 +356,16 @@ unsafe fn draw_form_body(
         // Starts at the form's shared control column (`FormLayout::toolbar_field_rect`).
         let (toolbar_x, toolbar_w) = flayout.toolbar_field_rect(row_x, row_w, label_w, no_label);
         if toolbar_w > 0.0 {
-            super::toolbar::draw_toolbar(
-                ctx, font, toolbar_x, row_y, toolbar_w, row_h, toolbar, theme, None, None,
+            crate::primitives::toolbar::native_surface_paint::paint_embedded(
+                toolbar,
+                QRect::new(
+                    toolbar_x as f32,
+                    row_y as f32,
+                    toolbar_w as f32,
+                    row_h as f32,
+                ),
+                &mut surface,
+                theme,
             );
         }
     }

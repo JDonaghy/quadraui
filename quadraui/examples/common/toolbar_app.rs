@@ -30,8 +30,8 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, Icon, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons, ToolbarPaintOptions,
+    AppLogic, Backend, Color, DrawsPrimitives, Icon, InteractionState, Key, NamedKey, Reaction,
+    Rect, StatusBar, StatusBarSegment, Toolbar, ToolbarButton, ToolbarHit, ToolbarIcons,
     ToolbarVAlign, UiEvent, WidgetId,
 };
 
@@ -42,9 +42,8 @@ pub struct ToolbarApp {
     running: bool,
     /// Last status line message (echoes the most recent click / keypress).
     last_message: String,
-    /// Hovered/pressed toolbar button, keyed by `WidgetId`.
-    /// Handed to `Backend::draw_toolbar_interactive` whole —
-    /// the rasteriser reads hover and pressed state out of it.
+    /// Hovered/pressed toolbar button, keyed by `WidgetId` — the
+    /// press half decides whether a release is a click.
     interaction: InteractionState,
     /// Index into `self.toolbar().buttons` of the keyboard-focused button,
     /// or `None` when the toolbar has no keyboard focus.
@@ -350,15 +349,9 @@ impl AppLogic for ToolbarApp {
 
         // Toolbar in the second row.
         let rect = Self::toolbar_rect(backend);
-        let bar = self.resolved_toolbar(backend);
-        let _ = backend.draw_toolbar_with_options(
-            rect,
-            &bar,
-            &self.interaction,
-            ToolbarPaintOptions {
-                valign: self.valign,
-            },
-        );
+        let mut bar = self.resolved_toolbar(backend);
+        bar.valign = self.valign;
+        let _ = backend.draw_dyn(rect, &bar, &());
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
@@ -487,29 +480,27 @@ impl AppLogic for ToolbarApp {
             // ── Mouse: hover / press / release ────────────────────────────
             // One arm, one convention: `self.interaction`
             // (an `InteractionState`) owns *all* hover/pressed
-            // bookkeeping for every mouse event, and `render` hands the
-            // whole thing to `draw_toolbar_interactive` above. This app
+            // bookkeeping for every mouse event. This app
             // supplies only the one thing the store can't know — how to
             // resolve a screen position to a `WidgetId` against the
             // toolbar layout it just painted.
             //
-            // Two `InteractionState` behaviours are load-bearing here
-            // and differ from the hand-rolled arms this replaced:
-            // a non-left `MouseDown` never lights the pressed highlight,
-            // and a left `MouseDown` that misses every button clears a
-            // stale pressed id instead of leaving it lit. Both are
-            // covered by `quadraui::interaction`'s unit tests and by
-            // `toolbar_press_highlights_only_on_left_button` /
-            // `toolbar_press_then_click_empty_space_clears_the_highlight`
-            // in `tests/tui_example_driver.rs`.
+            // Two `InteractionState` behaviours are load-bearing here:
+            // a non-left `MouseDown` never arms a press, and a left
+            // `MouseDown` that misses every button clears a stale pressed
+            // id, so a later release can't complete a click it never
+            // started. Both are covered by `quadraui::interaction`'s unit
+            // tests.
             UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. } => {
                 let rect = Self::toolbar_rect(backend);
                 // The *resolved* bar, exactly as painted — a two-cell
                 // Nerd glyph makes every button to its right start two
                 // cells later, and the click router has to agree.
                 let bar = self.resolved_toolbar(backend);
-                let layout = backend.toolbar_layout(rect, &bar);
-                let hit_test = |x: f32, y: f32| match layout.hit_test(x, y) {
+                // The widget contract's layout is bar-local: hit-test
+                // relative to the bar's own origin.
+                let layout = backend.layout_primitive(rect, &bar);
+                let hit_test = |x: f32, y: f32| match layout.hit_test(x - rect.x, y - rect.y) {
                     ToolbarHit::Button(id) => Some(id),
                     // This demo never opts into `ToolbarOverflow::Menu`,
                     // so `Overflow` never actually fires — reads the
@@ -525,9 +516,10 @@ impl AppLogic for ToolbarApp {
 
                 // Release on the same button that was pressed = a click.
                 if let UiEvent::MouseUp { position, .. } = &event {
-                    if let (Some(pressed_id), ToolbarHit::Button(release_id)) =
-                        (was_pressed, layout.hit_test(position.x, position.y))
-                    {
+                    if let (Some(pressed_id), ToolbarHit::Button(release_id)) = (
+                        was_pressed,
+                        layout.hit_test(position.x - rect.x, position.y - rect.y),
+                    ) {
                         if pressed_id == release_id {
                             self.dispatch(&release_id);
                         }

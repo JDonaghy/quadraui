@@ -3396,9 +3396,8 @@ mod win32 {
     /// A live-window `WM_NCHITTEST` round trip. Every other test in
     /// this file proves the Rust-side half — `nc_hit_test`'s
     /// classification, and (in `win::backend`'s own test module) that
-    /// `draw_menu_bar` calls `register_zone` for its own clickable bounds,
-    /// and that widget-contract status bars' and command centres' painted
-    /// sub-regions read as client area — but the regression only showed up once a
+    /// widget-contract menu bars', status bars' and command centres'
+    /// painted sub-regions read as client area — but the regression only showed up once a
     /// real `WM_NCHITTEST` round-trips through a real `wndproc` on a
     /// real `HWND`. This module creates a real top-level window, paints
     /// real menu-bar / status-bar / command-centre widgets into its
@@ -3457,8 +3456,10 @@ mod win32 {
                     open_item: None,
                     focused_item: None,
                 };
-                let menu_layout = backend
-                    .draw_menu_bar(crate::event::Rect::new(0.0, 0.0, 100.0, band_height), &bar);
+                let bar_rect = crate::event::Rect::new(0.0, 0.0, 100.0, band_height);
+                let _ = crate::DrawsPrimitives::draw_dyn(&mut *backend, bar_rect, &bar, &());
+                let menu_layout =
+                    crate::DrawsPrimitives::layout_primitive(&*backend, bar_rect, &bar).layout;
 
                 let status = crate::StatusBar {
                     id: crate::types::WidgetId::new("probe:status"),
@@ -3694,8 +3695,8 @@ mod win32 {
         /// title/menu band must reach the app as an ordinary `MouseDown`,
         /// not get swallowed as a title-bar drag. The test above proves
         /// `nc_hit_test`'s classification is right when the band and its
-        /// widgets are hand-registered (`LiveWindowApp::render` calls
-        /// `Backend::register_zone`/`draw_menu_bar` directly) — this one
+        /// widgets are painted directly (`LiveWindowApp::render` calls
+        /// `Backend::register_zone`/`draw_dyn` itself) — this one
         /// proves the same real `WM_NCHITTEST` round trip when the band
         /// comes from the actual consumer-shaped composition instead:
         /// `AppShell`'s title-bar band (`ShellConfig::with_title_bar`)
@@ -3724,7 +3725,8 @@ mod win32 {
                 self.menu_system.render(backend, bar_rect);
 
                 let bar = self.menu_system.menu_bar();
-                let menu_layout = backend.menu_bar_layout(bar_rect, &bar);
+                let menu_layout =
+                    crate::DrawsPrimitives::layout_primitive(&*backend, bar_rect, &bar).layout;
                 let file_item = menu_layout
                     .visible_items
                     .iter()

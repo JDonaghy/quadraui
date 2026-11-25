@@ -117,7 +117,6 @@ mod chart;
 mod combo_box;
 mod command_line;
 mod completions;
-mod context_menu;
 mod data_table;
 mod date_picker;
 mod dialog;
@@ -127,7 +126,6 @@ pub mod events;
 mod form;
 mod image;
 mod list;
-mod menu_bar;
 // `MenuOverlay` is the module's only `pub` item and has zero reachers —
 // see the `pub use` block below for the full unused-flat-re-export
 // inventory this mirrors. `pub mod` (not `mod`): narrowing to `pub(crate)`
@@ -158,7 +156,6 @@ pub mod testing;
 mod text_display;
 mod text_input;
 mod toast;
-mod toolbar;
 mod tooltip;
 mod tray;
 mod tree;
@@ -185,8 +182,6 @@ pub use chart::gtk_chart_layout;
 #[doc(hidden)]
 pub use completions::draw_completions;
 #[doc(hidden)]
-pub use context_menu::draw_context_menu;
-#[doc(hidden)]
 pub use dialog::draw_dialog;
 pub use editor::{draw_editor, editor_col_at_x};
 #[doc(hidden)]
@@ -197,8 +192,6 @@ pub use form::draw_settings_chrome;
 pub use image::draw_image;
 #[doc(hidden)]
 pub use list::{draw_list, draw_list_with_state, gtk_list_layout};
-#[doc(hidden)]
-pub use menu_bar::{draw_menu_bar, draw_menu_bar_with_state, gtk_menu_bar_layout};
 #[doc(hidden)]
 pub use menu_overlay::MenuOverlay;
 #[doc(hidden)]
@@ -238,17 +231,11 @@ pub use split::gtk_split_layout;
 #[doc(hidden)]
 pub use split_tree::gtk_split_tree_layout;
 #[doc(hidden)]
-#[doc(hidden)]
 pub use text_display::{draw_text_display, gtk_text_display_layout};
 #[doc(hidden)]
 pub use text_input::{draw_text_input, gtk_text_input_layout};
 #[doc(hidden)]
 pub use toast::gtk_toast_stack_layout;
-#[doc(hidden)]
-pub use toolbar::{
-    draw_toolbar, draw_toolbar_with_options, draw_toolbar_with_overflow, gtk_toolbar_layout,
-    gtk_toolbar_layout_with_overflow,
-};
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 pub use tree::draw_tree;

@@ -5,10 +5,10 @@
 //! uses real WinAPI calls gated on `cfg(target_os = "windows")` so `cargo
 //! check --features win` still type-checks `WinBackend`'s trait
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
-//! `win` feature comment). Chrome-strip rasterisers include
-//! `menu_bar`; content-area
+//! `win` feature comment). Chrome strips (menu, status and
+//! activity bars) paint through their widget contracts; content-area
 //! rasterisers include `tree`/`list`/`form`/`data_table`/`editor`/`chart`;
-//! overlay/popup rasterisers include `tooltip`/`context_menu`/`dialog`/
+//! overlay/popup rasterisers include `tooltip`/`dialog`/
 //! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
 //! indicator rasterisers include `split`/`toast`/`progress`/
 //! `spinner`; text-heavy rasterisers include `text_display`/
@@ -51,10 +51,6 @@ mod command_line;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod completions;
-/// Direct2D / DirectWrite rasteriser for [`crate::ContextMenu`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod context_menu;
 /// Direct2D / DirectWrite rasteriser for [`crate::DataTable`]. Issue
 /// Only its paint fn is Windows-only — see its module docs.
 mod data_table;
@@ -95,9 +91,6 @@ mod image;
 /// everywhere; only [`list::draw_list`] is Windows-only — see that
 /// module's docs.
 mod list;
-/// Direct2D / DirectWrite rasteriser for [`crate::MenuBar`]. Issue
-/// Only its paint fn is Windows-only — see its module docs.
-mod menu_bar;
 /// Direct2D / DirectWrite rasteriser for [`crate::MessageList`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -226,11 +219,6 @@ mod text_input;
 /// Only its deprecated paint shim is Windows-only — see its
 /// module docs.
 mod toast;
-/// Direct2D / DirectWrite rasteriser for
-/// [`crate::primitives::toolbar::Toolbar`]. Windows-only in full
-/// — see its module docs.
-#[cfg(target_os = "windows")]
-mod toolbar;
 /// Direct2D / DirectWrite rasteriser for [`crate::Tooltip`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -270,9 +258,6 @@ pub use command_line::{draw_command_line, draw_command_line_selection, win_comma
 pub use completions::draw_completions;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
-pub use context_menu::draw_context_menu;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
 pub use data_table::draw_data_table;
 #[doc(hidden)]
 pub use data_table::win_data_table_layout;
@@ -293,11 +278,6 @@ pub use image::draw_image;
 pub use list::draw_list;
 #[doc(hidden)]
 pub use list::win_list_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use menu_bar::draw_menu_bar;
-#[doc(hidden)]
-pub use menu_bar::win_menu_bar_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use message_list::draw_message_list;
@@ -344,9 +324,6 @@ pub use text_display::win_text_display_layout;
 pub use text_input::win_text_input_layout;
 #[doc(hidden)]
 pub use toast::win_toast_stack_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use toolbar::{draw_toolbar, draw_toolbar_with_options, win_toolbar_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};

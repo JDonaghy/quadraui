@@ -175,11 +175,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     // `set_dock_menu`, the `menu_style` family) are platform services,
     // not a widget's paint path, and stay on `Backend` permanently —
     // this list only names the custom-drawn pairs.
-    ("Toolbar", "draw_toolbar_interactive"),
-    ("Toolbar", "draw_toolbar_with_options"),
-    ("Toolbar", "draw_toolbar_with_overflow"),
-    ("Toolbar", "toolbar_layout"),
-    ("Toolbar", "toolbar_layout_with_overflow"),
     ("Form", "draw_form"),
     ("Form", "form_layout"),
     // Group-B ports keep these until the group's cleanup deletes them
@@ -193,12 +188,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("CommandLine", "command_line_layout"),
     ("TextDisplay", "draw_text_display"),
     ("TextDisplay", "text_display_layout"),
-    ("MenuBar", "draw_menu_bar"),
-    ("MenuBar", "draw_menu_bar_with_state"),
-    ("MenuBar", "menu_bar_layout"),
-    ("ContextMenu", "draw_context_menu"),
-    ("ContextMenu", "draw_context_menu_with_state"),
-    ("ContextMenu", "draw_context_menu_with_glyphs"),
     ("Palette", "draw_palette"),
     ("Palette", "draw_palette_with_state"),
     ("Palette", "palette_layout"),

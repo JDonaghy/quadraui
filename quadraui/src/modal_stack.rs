@@ -89,8 +89,8 @@
 //! builds) about any entry that's registered but was never marked
 //! painted that frame. See `TuiBackend::draw_dialog` /
 //! `GtkBackend::draw_dialog` / `MacBackend::draw_dialog` (and the
-//! `draw_palette` / `draw_context_menu` siblings) for where the mark
-//! happens, and the same backends' `begin_frame` / `end_frame` for
+//! `draw_palette` siblings, and `compose::context_menu_controller`'s
+//! popup painter) for where the mark happens, and the same backends' `begin_frame` / `end_frame` for
 //! where the reset/check happens.
 
 use crate::event::{Point, Rect};
@@ -250,8 +250,8 @@ impl ModalStack {
     /// or ghost content by id outside the modal stack, and that isn't
     /// the "registered but invisible" defect this exists to catch.
     ///
-    /// Call from a backend's `draw_dialog` / `draw_palette` /
-    /// `draw_context_menu` (and any future modal-capable rasteriser)
+    /// Call from a backend's `draw_dialog` / `draw_palette` (and any
+    /// other modal-capable painter, such as a context-menu popup)
     /// with the primitive's own `id` field, right where it already
     /// paints — see `TuiBackend::draw_dialog` for the pattern.
     pub fn mark_painted(&mut self, id: &WidgetId) {

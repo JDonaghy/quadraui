@@ -330,7 +330,7 @@ fn draw_form_body(
     line_height: f64,
 ) {
     let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
-    let measure = super::toolbar::PangoMeasure {
+    let measure = super::surface::PangoMeasure {
         pango_layout: Some(layout),
         char_width: 8.0,
     };
@@ -364,17 +364,23 @@ fn draw_form_body(
         let (toolbar_x, toolbar_w) =
             flayout.toolbar_field_rect(row_x, row_w, label_w as f64, no_label);
         if toolbar_w > 0.0 {
-            super::toolbar::draw_toolbar(
+            layout.set_width(-1);
+            layout.set_ellipsize(pango::EllipsizeMode::None);
+            let mut toolbar_surface = super::surface::CairoSurface {
                 cr,
-                layout,
-                toolbar_x,
-                row_y,
-                toolbar_w,
-                toolbar_row_h,
+                layout: Some(layout),
+                translucent_fill: true,
+            };
+            crate::primitives::toolbar::native_surface_paint::paint_embedded(
                 toolbar,
+                QRect::new(
+                    toolbar_x as f32,
+                    row_y as f32,
+                    toolbar_w as f32,
+                    toolbar_row_h as f32,
+                ),
+                &mut toolbar_surface,
                 theme,
-                None,
-                None,
             );
             layout.set_attributes(None);
         }

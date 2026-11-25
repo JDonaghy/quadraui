@@ -10,6 +10,7 @@
 use std::rc::Rc;
 
 use quadraui::primitive::DynWidget;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     render_markdown_to_styled, Backend, BoardModel, Canvas, Chart, Column, ComboBox, CommandLine,
     CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor, FieldKind, FindReplacePanel,
@@ -1443,24 +1444,27 @@ impl ExtraPaint for TreeTableControllerDescriptor {
     }
 }
 
-/// Converts a [`quadraui::ToolbarLayout`]'s `visible_items` into the
-/// `(Rect, WidgetId)` chrome-hit list [`ExtraPaint::paint_chrome`] returns —
-/// shared by [`Toolbar`]'s own impl and [`ToolbarWithOverflow`]'s so the two
-/// wire shapes (plain Clip-only vs. [`quadraui::ToolbarOverflow`]-aware)
-/// agree on exactly which items become clickable.
+/// Paints `bar` through the widget contract and converts the resolved
+/// layout's `visible_items` into the `(Rect, WidgetId)` chrome-hit list
+/// [`ExtraPaint::paint_chrome`] returns — shared by [`Toolbar`]'s own impl
+/// and [`ToolbarWithOverflow`]'s so the two wire shapes agree on exactly
+/// which items become clickable.
 ///
-/// [`quadraui::Backend::draw_toolbar_interactive`]/
-/// [`quadraui::Backend::draw_toolbar_with_overflow`]'s own
-/// [`quadraui::ToolbarLayout::visible_items`] is already in the ABSOLUTE
-/// frame [`ExtraPaint::hit_test`] uses, so no translation is needed —
-/// unlike a bar-relative layout's spans. Disabled
-/// actions and non-action items (separators, labels) have no `action_id` or
-/// aren't `clickable`, so they never become a hit region, matching
-/// [`quadraui::ToolbarLayout::hit_test`]'s own skip rule. A
+/// The contract's layout is bar-local, so every bound is shifted by
+/// `area`'s origin into the ABSOLUTE frame [`ExtraPaint::hit_test`] uses.
+/// Disabled actions and non-action items (separators, labels) have no
+/// `action_id` or aren't `clickable`, so they never become a hit region,
+/// matching [`quadraui::ToolbarLayout::hit_test`]'s own skip rule. A
 /// [`quadraui::ToolbarButton::Group`] item is itself never clickable — its
 /// `group_children` are walked instead, same split
 /// [`quadraui::ToolbarLayout::hit_test`] makes.
-fn toolbar_chrome_hits(layout: quadraui::ToolbarLayout) -> Vec<(Rect, WidgetId)> {
+fn paint_toolbar_chrome(
+    backend: &mut dyn Backend,
+    area: Rect,
+    bar: &Toolbar,
+) -> Vec<(Rect, WidgetId)> {
+    let layout = backend.draw_primitive(area, bar).layout;
+    let absolute = |r: Rect| Rect::new(r.x + area.x, r.y + area.y, r.width, r.height);
     layout
         .visible_items
         .into_iter()
@@ -1469,11 +1473,11 @@ fn toolbar_chrome_hits(layout: quadraui::ToolbarLayout) -> Vec<(Rect, WidgetId)>
                 item.group_children
                     .into_iter()
                     .filter(|child| child.clickable)
-                    .filter_map(|child| child.action_id.map(|id| (child.bounds, id)))
+                    .filter_map(|child| child.action_id.map(|id| (absolute(child.bounds), id)))
                     .collect()
             } else if item.clickable {
                 item.action_id
-                    .map(|id| (item.bounds, id))
+                    .map(|id| (absolute(item.bounds), id))
                     .into_iter()
                     .collect()
             } else {
@@ -1514,9 +1518,9 @@ impl ExtraPaint for Toolbar {
         &self,
         backend: &mut dyn Backend,
         area: Rect,
-        interaction: &InteractionState,
+        _interaction: &InteractionState,
     ) -> Vec<(Rect, WidgetId)> {
-        toolbar_chrome_hits(backend.draw_toolbar_interactive(area, self, interaction))
+        paint_toolbar_chrome(backend, area, self)
     }
 
     fn tab_stop(&self) -> bool {
@@ -1540,17 +1544,14 @@ pub struct ToolbarOverflowPriorityEntry {
 /// Wire-decoded shape of the `"toolbar"` extra when its dict carries an
 /// `"overflow"` and/or `"overflow_priorities"` key — reached via the same
 /// `"toolbar"` kind [`Toolbar`] itself decodes, see
-/// [`Self::deserialize`]. Both knobs are decoded here, rather than read
-/// off the [`quadraui::Toolbar`] fields of the same names, because
-/// [`Self::paint_chrome`] hands them to
-/// [`quadraui::Backend::draw_toolbar_with_overflow`] as the per-call
-/// [`quadraui::ToolbarLayoutOptions`]/[`quadraui::ToolbarOverflowPriorities`]
-/// arguments that method takes. Both are
-/// `#[serde(default)]` on the wire (`Self::deserialize`'s `Wire` shape):
-/// a payload with neither key decodes to `overflow:
-/// ToolbarOverflow::Clip` and empty `overflow_priorities`, which
-/// [`Self::paint_chrome`] paints byte-identically to a plain [`Toolbar`]
-/// extra — unchanged from today's rendering.
+/// [`Self::deserialize`]. The wire's priorities are a list of
+/// `{"id", "priority"}` entries rather than [`quadraui::Toolbar`]'s own
+/// table, so both knobs are decoded here and folded onto the descriptor
+/// at paint time. Both are `#[serde(default)]` on the wire
+/// (`Self::deserialize`'s `Wire` shape): a payload with neither key
+/// decodes to `overflow: ToolbarOverflow::Clip` and empty
+/// `overflow_priorities`, which [`Self::paint_chrome`] paints
+/// byte-identically to a plain [`Toolbar`] extra.
 #[derive(Debug, Clone)]
 pub struct ToolbarWithOverflow {
     pub toolbar: Toolbar,
@@ -1563,8 +1564,8 @@ pub struct ToolbarWithOverflow {
 
 impl ToolbarWithOverflow {
     /// [`Self::overflow_priorities`] folded into the
-    /// [`quadraui::ToolbarOverflowPriorities`] table
-    /// [`quadraui::Backend::draw_toolbar_with_overflow`] takes.
+    /// [`quadraui::ToolbarOverflowPriorities`] table the descriptor
+    /// carries.
     pub fn priorities(&self) -> quadraui::ToolbarOverflowPriorities {
         self.overflow_priorities.iter().fold(
             quadraui::ToolbarOverflowPriorities::new(),
@@ -1615,27 +1616,21 @@ impl ExtraPaint for ToolbarWithOverflow {
         self.toolbar.id
     }
 
-    /// Always routes through [`quadraui::Backend::draw_toolbar_with_overflow`]
-    /// — for `overflow: ToolbarOverflow::Clip` with no registered
-    /// priorities (today's default), that method is byte-for-byte
-    /// identical to [`quadraui::Backend::draw_toolbar_interactive`] (see
-    /// `quadraui::Toolbar::layout_with_overflow`'s own doc), so decoding a
-    /// payload with neither new key changes nothing about how it paints.
+    /// Paints the descriptor with [`Self::overflow`] and
+    /// [`Self::priorities`] folded on — for `ToolbarOverflow::Clip` with no
+    /// registered priorities, identical to a plain [`Toolbar`] extra.
     fn paint_chrome(
         &self,
         backend: &mut dyn Backend,
         area: Rect,
-        interaction: &InteractionState,
+        _interaction: &InteractionState,
     ) -> Vec<(Rect, WidgetId)> {
-        let options = quadraui::ToolbarLayoutOptions::new().with_overflow(self.overflow);
-        let priorities = self.priorities();
-        toolbar_chrome_hits(backend.draw_toolbar_with_overflow(
-            area,
-            &self.toolbar,
-            interaction,
-            options,
-            &priorities,
-        ))
+        let bar = self
+            .toolbar
+            .clone()
+            .with_overflow(self.overflow)
+            .with_overflow_priorities(self.priorities());
+        paint_toolbar_chrome(backend, area, &bar)
     }
 
     fn tab_stop(&self) -> bool {
@@ -1645,7 +1640,7 @@ impl ExtraPaint for ToolbarWithOverflow {
 
 impl ExtraPaint for MenuBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_menu_bar(area, self);
+        let _ = backend.draw_primitive(area, self);
     }
 
     fn id(&self) -> WidgetId {
