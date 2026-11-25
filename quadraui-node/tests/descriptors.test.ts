@@ -331,7 +331,11 @@ test("extra primitives coexist with the primitive leaves in one render object", 
 // render callback returns. Each case dispatches the events a real app
 // would push (a focusing click, then a key/char where the kind needs one)
 // and asserts the final event the handler receives. `progress`/`spinner`/
-// `image` have no event at all, so neither appears here.
+// `image` have no event at all, so neither appears here. `switch` and
+// `radio_group` ride the generic `WIDGET_KINDS` seam rather than
+// `ExtraPaint`, and emit a bare top-level event instead of a `Form`-wrapped
+// one, but are kept here too for parity coverage of the same literal-leaf
+// shape.
 const INLINE_LEAF_CASES: Array<{
   name: string;
   tree: unknown;
@@ -389,8 +393,17 @@ const INLINE_LEAF_CASES: Array<{
     ],
     expected: [
       { FocusChanged: "rg:1" },
-      null, // the focusing click itself falls through unclaimed
-      ["rg:1", { SegmentedControlChanged: { id: "rg:1", selected_idx: 0 } }],
+      // `RadioGroup::select` resolves a click straight to the clicked
+      // option -- no `Form` wrapper, since `RadioGroup` is a
+      // `WIDGET_KINDS` member, not an `EXTRA_PRIMITIVE_KINDS` one.
+      { RadioGroupSelectionChanged: { widget: "rg:1", index: 1 } },
+      // The arrow key routes through `InteractionEngine`'s own
+      // dyn-widget-key dispatch, which attaches a `hit` dict even to a
+      // non-`MouseDown` event.
+      {
+        RadioGroupSelectionChanged: { widget: "rg:1", index: 0 },
+        hit: { kind: "widget_body" },
+      },
     ],
   },
   {
@@ -524,9 +537,9 @@ const INLINE_LEAF_CASES: Array<{
     ],
     expected: [
       { FocusChanged: "se:1" },
-      // Unlike `radio_group`'s click (unclaimed), a click on a standalone
-      // `select` leaf steps the selection itself, so it reaches the
-      // handler as `DropdownChanged` too, not `null`.
+      // Unlike `slider`'s focusing click above, which only focuses, a
+      // click on a standalone `select` leaf steps the selection itself,
+      // so it reaches the handler as `DropdownChanged` too, not `null`.
       ["se:1", { DropdownChanged: { id: "se:1", selected_idx: 1 } }],
       ["se:1", { DropdownChanged: { id: "se:1", selected_idx: 1 } }],
     ],
