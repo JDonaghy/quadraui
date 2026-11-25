@@ -216,6 +216,9 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Button", "draw_button"),
     ("Button", "draw_button_with_state"),
     ("Button", "button_layout"),
+    ("Palette", "draw_palette"),
+    ("Palette", "draw_palette_with_state"),
+    ("Palette", "palette_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
