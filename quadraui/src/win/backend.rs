@@ -56,9 +56,12 @@ use crate::{
 #[cfg(test)]
 use crate::TabBar;
 // Like `TabBar`, the menu widgets paint through their widget contract and
-// are only named by `#[cfg(test)]` code below.
+// are only named by `#[cfg(test)]` code below — `ContextMenu` only by the
+// Windows-host tests.
+#[cfg(all(test, target_os = "windows"))]
+use crate::ContextMenu;
 #[cfg(test)]
-use crate::{ContextMenu, MenuBar};
+use crate::MenuBar;
 #[cfg(target_os = "windows")]
 use crate::{FieldKind, Theme};
 // `AcceleratorScope` is only referenced by `#[cfg(test)]` code below.
@@ -3302,7 +3305,7 @@ impl Backend for WinBackend {
     /// [`crate::primitives::form::paint`] now — see that fn's doc for
     /// why `FieldKind::Toolbar` is painted here instead (as plain
     /// per-button text, matching this backend's behaviour —
-    /// `win::toolbar`'s full chrome isn't wired into `Form` fields; see
+    /// the toolbar widget's full chrome isn't wired into `Form` fields; see
     /// `win::form`'s module doc), after `paint` releases its exclusive
     /// borrow of `self`.
     fn draw_form(&mut self, rect: Rect, form: &Form) {

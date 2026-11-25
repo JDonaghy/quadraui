@@ -2052,7 +2052,7 @@ impl Backend for GtkBackend {
         // text_regions.
         self.focused_activity_bar = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
+        // to earn them again (via draw_dialog/draw_palette/a painted popup).
         self.modal_stack.borrow_mut().reset_frame_paint();
     }
 
@@ -8470,6 +8470,7 @@ mod tests {
         const ITEM_H: f32 = 40.0;
 
         let row_text_extent = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
+            let row;
             let mut surface =
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
@@ -8513,18 +8514,19 @@ mod tests {
                 if let Some(f) = ui_font {
                     Backend::set_ui_font(&mut backend, f);
                 }
-                backend.enter_frame_scope(&cr, &layout, |b| {
-                    crate::DrawsPrimitives::draw_dyn(b, menu_layout.bounds, &menu, &());
+                let painted = backend.enter_frame_scope(&cr, &layout, |b| {
+                    crate::DrawsPrimitives::draw_primitive(b, menu_layout.bounds, &menu).layout
                 });
+                row = painted.visible_items[0].bounds;
             }
             surface.flush();
             let stride = surface.stride() as usize;
             let data = surface.data().expect("surface data");
-            // Rightmost non-white pixel within the first (only) item
-            // row's vertical span — proxy for the painted label's glyph
-            // extent. The row spans `[0, ITEM_H)` regardless of font.
-            let y = (ITEM_H / 2.0) as usize;
-            (0..W as usize)
+            // Rightmost non-white pixel on the first (only) item row's
+            // centre line, inside the popup's border — proxy for the
+            // painted label's glyph extent.
+            let y = (row.y + row.height / 2.0) as usize;
+            (0..(row.x + row.width - 3.0) as usize)
                 .rev()
                 .find(|&x| {
                     let off = y * stride + x * 4;
@@ -8718,6 +8720,9 @@ mod tests {
             pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
+            // The widget contract measures through the backend's stable
+            // Pango context, which `gtk::run::activate` seeds on realize.
+            backend.set_pango_context(pangocairo::functions::create_context(&cr));
             if let Some(f) = ui_font {
                 Backend::set_ui_font(&mut backend, f);
             }

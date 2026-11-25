@@ -1488,4 +1488,38 @@ mod tests {
             .with_pin_trailing_overflow_to_origin(true);
         assert_eq!(bar().with_layout_options(options).layout_options(), options);
     }
+
+    /// Event parity's in-crate leg: an [`A11yAction::Click`] routed
+    /// through [`crate::a11y::route_widget_action`] resolves to the same
+    /// `UiEvent::Toolbar(.., ButtonClicked)` a pointer click on the first
+    /// enabled button does. The pointer legs (TuiDriver and the binding
+    /// host) assert the same event in
+    /// `tests/widget_contract_menus_event_parity.rs` and
+    /// `quadraui-binding-core`'s engine tests.
+    #[test]
+    fn route_widget_action_click_matches_the_parity_event() {
+        let bar = bar();
+        let id = bar.id;
+        let area = Rect::new(3.0, 2.0, 40.0, 1.0);
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, area, Box::new(bar));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let events = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &LayoutCtx::new(1.0, 1.0, false),
+            id,
+            A11yAction::Click,
+        );
+        assert_eq!(
+            events,
+            vec![crate::UiEvent::Toolbar(
+                id,
+                ToolbarEvent::ButtonClicked {
+                    id: WidgetId::new("tb:a"),
+                    is_active: true,
+                },
+            )]
+        );
+    }
 }

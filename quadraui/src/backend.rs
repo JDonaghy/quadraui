@@ -990,8 +990,8 @@ pub enum ResolvedMenuStyle {
     /// ([`Backend::show_context_menu`] on macOS).
     Native,
     /// Paint in-window — [`crate::compose::ContextMenuController`] (or
-    /// an app's own state + [`Backend::draw_context_menu`]) owns this
-    /// path.
+    /// an app's own state painting the [`crate::ContextMenu`] widget)
+    /// owns this path.
     Custom,
 }
 
@@ -1673,13 +1673,14 @@ pub trait Backend: sealed::Sealed {
     /// event queue as [`UiEvent::MenuActivated`].
     ///
     /// TUI / GTK / Win-GUI: no-op default. Apps that want an in-window
-    /// menu keep calling `draw_menu_bar` from their render path; `WinBackend`
-    /// and `GtkBackend` both use the same drawn-menu-row + `draw_menu_bar`
-    /// approach, since a native menu bar would conflict with their custom
-    /// window chrome.
+    /// menu paint the [`crate::MenuBar`] widget from their render path;
+    /// `WinBackend` and `GtkBackend` both use that drawn menu row, since
+    /// a native menu bar would conflict with their custom window chrome.
     ///
-    /// Apps typically call this once during `AppLogic::setup`. Re-calling
-    /// replaces the previously-installed menu wholesale.
+    /// Apps typically call this once during `AppLogic::setup`;
+    /// [`crate::compose::MenuSystem::render`] calls it every frame under
+    /// the native menu style. Re-calling with a changed bar replaces the
+    /// previously-installed menu wholesale.
     fn install_menu_bar(&mut self, _bar: &crate::primitives::menu_bar::MenuBar) {}
 
     /// Show `menu` as a native right-click context menu at `anchor`
@@ -1693,9 +1694,9 @@ pub trait Backend: sealed::Sealed {
     /// [`UiEvent::ContextMenuDismissed`].
     ///
     /// TUI / GTK / Win-GUI: no-op default. Apps that want a painted
-    /// right-click menu on those backends continue to manage their
-    /// own `ContextMenu` state and call `draw_context_menu` from
-    /// their render path — or let
+    /// right-click menu on those backends manage their own
+    /// `ContextMenu` state and paint the widget from their render
+    /// path — or let
     /// [`crate::compose::ContextMenuController`] own that state for
     /// them (it calls this method for the `Native` half of the
     /// resolved style and manages painting/hit-testing itself for the
@@ -3208,13 +3209,12 @@ pub trait Backend: sealed::Sealed {
     /// the per-button hit rectangles in the same order as
     /// `dialog.buttons`'s visible entries so the caller's click
     /// handler can resolve a click to a button without re-running
-    /// layout. Mirrors [`draw_context_menu`](Self::draw_context_menu).
+    /// layout.
     fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect>;
 
     /// Draw a [`Float`]'s chrome — background fill + optional border
     /// stroke — at its caller-resolved layout. Like
-    /// [`Self::draw_tooltip`]/[`Self::draw_context_menu`]/
-    /// [`Self::draw_dialog`] above, the caller computes the layout
+    /// [`Self::draw_tooltip`]/[`Self::draw_dialog`] above, the caller computes the layout
     /// itself (`float.layout(viewport, measure)`, see [`Float`]'s own
     /// module doc) rather than this trait exposing a separate
     /// `float_layout` method — there is nothing backend-specific left

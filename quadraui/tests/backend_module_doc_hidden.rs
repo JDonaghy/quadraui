@@ -85,7 +85,6 @@ const BACKENDS: &[BackendModule] = &[
             "display_width",
             "draw_form",
             "truncate_to_width",
-            "tui_toolbar_layout",
             "run",
             "run_with",
             "RunConfig",

@@ -11355,6 +11355,105 @@ mod tests {
         );
     }
 
+    /// The binding-host leg of the menu widgets' three-way event parity:
+    /// a click on the first enabled button of a standalone `"toolbar"`
+    /// extra dispatches exactly the event the widget contract's own
+    /// TuiDriver leg (`quadraui/tests/widget_contract_menus_event_parity.rs`)
+    /// and its `a11y::route_widget_action` leg resolve the same bar to.
+    #[test]
+    fn toolbar_click_matches_the_widget_contract_parity_event() {
+        use quadraui::{Toolbar, ToolbarButton};
+
+        let action = |id: &str, label: &str, enabled: bool| ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new(id),
+            label: label.to_string(),
+            icon: None,
+            key_hint: None,
+            enabled,
+            is_active: false,
+            tooltip: String::new(),
+        };
+        let logic = ToolbarLogic {
+            toolbar: Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+                action("tb:a", "A", true),
+                ToolbarButton::Separator,
+                action("tb:b", "B", false),
+            ]),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 5);
+        driver.render();
+        let (x, y) = driver.find("A").expect("the first button paints");
+        driver.click(x, y);
+
+        let dispatched: Vec<UiEvent> = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .map(|(event, _)| event.clone())
+            .collect();
+        assert_eq!(
+            dispatched,
+            vec![UiEvent::Toolbar(
+                WidgetId::new("tb"),
+                ToolbarEvent::ButtonClicked {
+                    id: WidgetId::new("tb:a"),
+                    is_active: true,
+                },
+            )]
+        );
+    }
+
+    /// The binding-host leg of the context menu's event parity: a click
+    /// on a popup row opened through [`InteractionEngine::open_context_menu`]
+    /// dispatches the `UiEvent::ContextMenuItemActivated` the widget
+    /// contract's TuiDriver and `a11y::route_widget_action` legs resolve
+    /// the same row to.
+    #[test]
+    fn context_menu_click_matches_the_widget_contract_parity_event() {
+        use quadraui::ContextMenuItem;
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        {
+            let (backend, app) = driver.parts_mut();
+            let item = |id: &str, label: &str| ContextMenuItem {
+                id: Some(WidgetId::new(id)),
+                label: quadraui::types::StyledText::plain(label),
+                ..Default::default()
+            };
+            app.engine.open_context_menu(
+                vec![item("copy", "Copy"), item("paste", "Paste")],
+                Point::new(1.0, 1.0),
+                backend,
+            );
+        }
+        driver.render();
+        let (x, y) = driver.find("Copy").expect("the popup paints its rows");
+        driver.click(x, y);
+
+        let dispatched: Vec<UiEvent> = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .map(|(event, _)| event.clone())
+            .collect();
+        assert_eq!(
+            dispatched,
+            vec![UiEvent::ContextMenuItemActivated(WidgetId::new("copy"))]
+        );
+    }
+
     /// Tab must land focus on a standalone toolbar (it now opts into
     /// [`crate::extra_paint::ExtraPaint::tab_stop`] whenever it has at least
     /// one enabled `Action`), and Enter on the focused toolbar must activate

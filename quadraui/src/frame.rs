@@ -2602,14 +2602,15 @@ mod tests {
         // non-cancellable `Progress` (no activatable affordance).
         let stops = layout.tab_stops();
         let stop_ids: Vec<&str> = stops.iter().map(|(id, _)| id.as_str()).collect();
-        for id in ["board", "cc", "diff", "ml", "mm", "pv", "ti", "tb"] {
+        for id in ["board", "cc", "diff", "ml", "mm", "pv", "ti"] {
             assert!(stop_ids.contains(&id), "{id} should be a tab stop");
         }
-        // A `SidebarPanel` is pointer-only (`FocusSpec::None`).
-        for id in ["img", "sn", "pb", "leaf", "sp"] {
+        // A `SidebarPanel` is pointer-only (`FocusSpec::None`), and a
+        // toolbar with no button has nothing to focus.
+        for id in ["img", "sn", "pb", "leaf", "sp", "tb"] {
             assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
         }
-        assert_eq!(stop_ids.len(), 8);
+        assert_eq!(stop_ids.len(), 7);
     }
 
     /// A cancellable `Progress` bar *does* get a tab stop — the cancel

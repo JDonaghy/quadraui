@@ -2327,7 +2327,7 @@ impl Backend for TuiBackend {
         self.last_cell_surface_cursor = None;
         self.cell_surface_scratch = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
+        // to earn them again (via draw_dialog/draw_palette/a painted popup).
         self.modal_stack.borrow_mut().reset_frame_paint();
         // Clear any unbalanced push_clip left over from the previous
         // frame — see `clip_stack`'s own doc for why a stale narrowed
@@ -3513,8 +3513,8 @@ impl Backend for TuiBackend {
         self.modal_stack.borrow_mut().mark_painted(&dialog.id);
         let theme = self.current_theme;
         let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        // Issue #1117: same rationale as `draw_context_menu` just above —
-        // the returned `Vec` comes from `layout`, not frame state.
+        // The returned `Vec` comes from `layout`, not frame state, so a
+        // missing frame only skips the paint.
         if let Some(frame) = self.current_frame_mut() {
             crate::tui::draw_dialog_with_nerd_fonts(
                 frame.buffer_mut(),
@@ -5290,12 +5290,6 @@ mod tests {
         assert_eq!(chrome_w, editor_w, "role has nothing to select on TUI");
     }
 
-    /// `Backend::context_menu_viewport` is the surface a caller lays a
-    /// context menu out in: the viewport inset on all four sides by
-    /// `context_menu_border_inset`, so the chrome the rasteriser paints
-    /// *outside* the menu's item region has a cell to live on. TUI's box
-    /// border is one cell, so each edge moves in by one and both
-    /// dimensions shrink by two.
     /// A script-authored widget reads `Backend::cell_grid` to decide
     /// whether to lay out in whole cells or in sub-cell pixels, and
     /// `Viewport::scale` cannot tell it apart: a pixel backend at scale

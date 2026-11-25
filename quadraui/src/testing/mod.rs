@@ -1302,7 +1302,8 @@ impl crate::Backend for RecordingBackend {
     fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {
         self.record("draw_tooltip");
     }
-    /// Union note: see `draw_context_menu` above.
+    /// Union note: `app_shell::MockBackend` was the only one with a real
+    /// body (`Vec::new()`); the other two `unimplemented!()`d.
     fn draw_dialog(&mut self, _d: &crate::Dialog, _l: &crate::DialogLayout) -> Vec<Rect> {
         self.record("draw_dialog");
         Vec::new()

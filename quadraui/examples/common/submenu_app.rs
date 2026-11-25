@@ -752,6 +752,7 @@ fn menu_metrics(backend: &dyn Backend) -> (Rect, f32, f32) {
 /// Paints `menu` at its already-placed `layout`: the box handed to the
 /// widget contract is `layout.bounds` grown by the border ring, so the
 /// popup's own re-layout inside it lands every row where `layout` put it.
+/// Marks the popup painted on the modal stack it was registered on.
 fn paint_menu(backend: &mut dyn Backend, menu: &ContextMenu, layout: &ContextMenuLayout) {
     let inset = backend.layout_primitive(layout.bounds, menu).border_inset;
     let b = layout.bounds;
@@ -762,4 +763,8 @@ fn paint_menu(backend: &mut dyn Backend, menu: &ContextMenu, layout: &ContextMen
         b.height + inset * 2.0,
     );
     let _ = backend.draw_dyn(rect, menu, &());
+    backend
+        .modal_stack_handle()
+        .borrow_mut()
+        .mark_painted(&menu.id);
 }

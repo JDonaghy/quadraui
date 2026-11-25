@@ -81,10 +81,9 @@ pub struct MenuBarItem {
     #[serde(default)]
     pub disabled: bool,
     /// Declarative dropdown items. When `Some`, native menu installers
-    /// build the dropdown directly from this list. In-window
-    /// rasterisers (TUI / GTK `draw_menu_bar`) ignore the field today;
-    /// apps that draw their own dropdown via the `MenuSystem` compose
-    /// helper continue to wire that path independently.
+    /// build the dropdown directly from this list. The in-window
+    /// painters ignore the field; apps that draw their own dropdown via
+    /// the `MenuSystem` compose helper wire that path independently.
     #[serde(default)]
     pub submenu: Option<Vec<crate::primitives::context_menu::ContextMenuItem>>,
 }
@@ -117,7 +116,7 @@ pub const BAR_HEIGHT: f32 = 30.0;
 /// `candidate_line_height.max(`[`BAR_HEIGHT`]`)` — the in-canvas bar is
 /// floored at the fixed metric, same as every other resolver of this
 /// shape in the crate (`GtkBackend::resolved_row_height`,
-/// `resolved_toolbar_height`, `palette::item_row_height`), so a chrome
+/// `palette::item_row_height`), so a chrome
 /// font taller than the token still gets the room it measured instead of
 /// being clipped. On TUI (`candidate_line_height <= 1.0`, the cell-grid
 /// convention where one row is `1.0` "unit" tall) the candidate passes
@@ -591,9 +590,8 @@ impl Primitive for MenuBar {
         }
     }
 
-    /// The shared pixel painter — the same
-    /// `native_surface_paint::paint` every pixel backend's
-    /// `draw_menu_bar` wrapper calls, in its no-mnemonic form on macOS
+    /// The shared pixel painter, `native_surface_paint::paint`, in its
+    /// no-mnemonic form on macOS
     /// (that platform has no Alt-mnemonic convention, so underlining a
     /// character nothing responds to would be a visual lie).
     fn paint(
@@ -809,8 +807,7 @@ pub(crate) mod native_surface_paint {
     /// whose [`MenuBarItem::id`](super::MenuBarItem::id) matches
     /// `interaction.hovered()` / `interaction.pressed()` paints with
     /// [`Theme::menu_item_hover_bg`] / [`Theme::menu_item_pressed_bg`]
-    /// instead of its plain resting fill — see
-    /// [`crate::Backend::draw_menu_bar_with_state`]'s own doc.
+    /// instead of its plain resting fill.
     pub(crate) fn paint_interactive(
         bar: &MenuBar,
         layout: &MenuBarLayout,
@@ -2323,5 +2320,33 @@ mod widget_contract_tests {
             crate::frame::OwnedContent::MenuBar(captured) => assert_eq!(captured, bar),
             other => panic!("expected OwnedContent::MenuBar, got {other:?}"),
         }
+    }
+
+    /// Event parity's in-crate leg: an [`A11yAction::Click`] routed
+    /// through [`crate::a11y::route_widget_action`] opens the menu the
+    /// cursor sits on — the same `UiEvent::MenuActivated` a pointer click
+    /// on that item produces. The pointer leg (TuiDriver) asserts the
+    /// same event in `tests/widget_contract_menus_event_parity.rs`.
+    #[test]
+    fn route_widget_action_click_matches_the_parity_event() {
+        let bar = MenuBar {
+            focused_item: Some(0),
+            ..bar()
+        };
+        let id = bar.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, AREA, Box::new(bar));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let events = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &cell_ctx(),
+            id,
+            A11yAction::Click,
+        );
+        assert_eq!(
+            events,
+            vec![UiEvent::MenuActivated(WidgetId::new("menu:file"))]
+        );
     }
 }

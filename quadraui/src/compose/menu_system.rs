@@ -277,9 +277,9 @@ impl MenuSystem {
     ) -> MenuEvent {
         match event {
             // ── Native menu-bar activation ────────────────────────────
-            // `Backend::draw_menu_bar` installs a real `NSMenu` instead
-            // of painting whenever `effective_menu_style()` resolves
-            // `Native` (macOS, by default) — see that method's doc.
+            // `Self::render` installs a real `NSMenu` instead of painting
+            // whenever `effective_menu_style()` resolves `Native` (macOS,
+            // by default) — see that method's doc.
             // AppKit then reports a click as a top-level
             // `UiEvent::MenuActivated`, not a hit on this struct's own
             // `bar_rect`-relative dropdown state (there is none; the
@@ -1508,7 +1508,7 @@ mod tests {
     }
 
     /// A native `NSMenu` activation (`UiEvent::MenuActivated`,
-    /// what AppKit reports once `Backend::draw_menu_bar` installs rather
+    /// what AppKit reports once `MenuSystem::render` installs rather
     /// than paints) must translate to the same `MenuEvent::Activated` the
     /// painted dropdown path produces — same shape as
     /// `ContextMenuController` already uses for its own native event —
@@ -1741,11 +1741,9 @@ mod tests {
     /// `build_menu_bar`'s `MenuBarItem::submenu` must carry this
     /// `MenuDef`'s real dropdown items, not the stale `None` a native
     /// backend's `Backend::install_menu_bar` would silently bake into an
-    /// empty `NSMenu`/`HMENU` submenu — `MenuSystem::render` calls
-    /// `Backend::draw_menu_bar_with_state` with this `MenuBar` every
-    /// frame, after the frame's own plain paint already installed one
-    /// with the correct submenus, so this is the value a native install
-    /// actually ends up showing.
+    /// empty `NSMenu`/`HMENU` submenu — `MenuSystem::render` installs
+    /// this `MenuBar` under the native style, so this is the value a
+    /// native install actually ends up showing.
     #[test]
     fn build_menu_bar_carries_each_menus_own_dropdown_items_as_submenu() {
         let ms = MenuSystem::new(sample_menus());

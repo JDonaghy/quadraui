@@ -488,15 +488,12 @@ impl AppLogic for ToolbarApp {
             // resolve a screen position to a `WidgetId` against the
             // toolbar layout it just painted.
             //
-            // Two `InteractionState` behaviours are load-bearing here
-            // and differ from the hand-rolled arms this replaced:
-            // a non-left `MouseDown` never lights the pressed highlight,
-            // and a left `MouseDown` that misses every button clears a
-            // stale pressed id instead of leaving it lit. Both are
-            // covered by `quadraui::interaction`'s unit tests and by
-            // `toolbar_press_highlights_only_on_left_button` /
-            // `toolbar_press_then_click_empty_space_clears_the_highlight`
-            // in `tests/tui_example_driver.rs`.
+            // Two `InteractionState` behaviours are load-bearing here:
+            // a non-left `MouseDown` never arms a press, and a left
+            // `MouseDown` that misses every button clears a stale pressed
+            // id, so a later release can't complete a click it never
+            // started. Both are covered by `quadraui::interaction`'s unit
+            // tests.
             UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. } => {
                 let rect = Self::toolbar_rect(backend);
                 // The *resolved* bar, exactly as painted — a two-cell

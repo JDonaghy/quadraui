@@ -188,7 +188,9 @@ pub(crate) fn menu_viewport(backend: &dyn Backend, menu: &ContextMenu) -> Rect {
 /// Paints `menu` at its already-placed `layout` through the widget
 /// contract. The box handed to [`DrawsPrimitives::draw_dyn`] is
 /// `layout.bounds` grown by the border ring, so the popup's own re-layout
-/// inside that box lands every row exactly where `layout` placed it.
+/// inside that box lands every row exactly where `layout` placed it. The
+/// popup is marked painted on the modal stack, so a registered popup that
+/// never reaches the screen still shows up in the frame's paint check.
 pub(crate) fn paint_placed_menu(
     backend: &mut dyn Backend,
     menu: &ContextMenu,
@@ -203,6 +205,10 @@ pub(crate) fn paint_placed_menu(
         b.height + inset * 2.0,
     );
     let _ = backend.draw_dyn(rect, menu, &());
+    backend
+        .modal_stack_handle()
+        .borrow_mut()
+        .mark_painted(&menu.id);
 }
 
 impl ContextMenuController {
@@ -586,7 +592,7 @@ impl ContextMenuController {
 // is cheap and needs no real terminal for anything this controller
 // touches (`modal_stack_handle`, `viewport`, `line_height`,
 // `effective_menu_style`, `show_context_menu`) — the one thing it
-// *can't* do headless is `draw_context_menu` (needs a live
+// *can't* do headless is paint the popup (needs a live
 // `ratatui::Frame` via `enter_frame_scope`), so `render()` itself is
 // covered by the `TuiDriver`-based example-driver test instead
 // (`tests/tui_example_driver.rs`), which does have one.
@@ -647,8 +653,8 @@ mod tests {
         let mut ctl = ContextMenuController::new();
         ctl.open(menu(), Point::new(0.0, 0.0), &mut backend);
 
-        // Anchored flush at the viewport's top-left corner: `TuiBackend`'s
-        // `context_menu_viewport` keeps row/column 0 for the box border,
+        // Anchored flush at the viewport's top-left corner: the TUI
+        // popup's border ring keeps row/column 0 for the box border,
         // so the first item ("copy") lands at (1.0, 1.0), not at the raw
         // anchor origin.
         let outcome = ctl.handle(

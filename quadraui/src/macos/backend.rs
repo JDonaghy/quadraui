@@ -1042,9 +1042,8 @@ impl MacBackend {
     /// Unlike previous versions, `chrome_font` now *does* consult
     /// [`Self::nerd_font_fallback_family`] — the same `font_with_fallback`
     /// cascade [`Self::set_current_font`] applies. Icon glyphs in
-    /// `draw_tree`/`draw_activity_bar_with_style`/
-    /// `draw_toolbar_interactive` now
-    /// paint through `chrome_font`, not `current_font` — without this,
+    /// `draw_tree`/`draw_activity_bar_with_style` and the toolbar widget
+    /// now paint through `chrome_font`, not `current_font` — without this,
     /// a host that calls `set_nerd_font_fallback` would see icon glyphs
     /// render correctly in the editor but as tofu in every chrome
     /// primitive, since `chrome_font` would never have received the
@@ -1657,7 +1656,7 @@ impl Backend for MacBackend {
         // per-frame lifecycle as `zones`, matching `GtkBackend::begin_frame`.
         self.focused_activity_bar = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
+        // to earn them again (via draw_dialog/draw_palette/a painted popup).
         self.modal_stack.borrow_mut().reset_frame_paint();
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`/
