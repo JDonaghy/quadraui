@@ -16,7 +16,12 @@
 //!    or shrinks the line count must lower the matching baseline in the
 //!    same change, or this fails instead of recording slack — the same
 //!    down-only rule `backend_method_ratchet.rs` enforces for `Backend`'s
-//!    method count.
+//!    method count. `RATCHET_WRITE=1 cargo test -p quadraui --features tui
+//!    --test per_backend_file_ratchet` rewrites `BACKEND_BASELINES` below
+//!    to the real measured values instead of panicking, the same way
+//!    `scripts/backend_loc_ratchet.py --write` self-heals its own
+//!    baseline — re-run without the env var afterward to confirm the
+//!    ratchet is tight again.
 //!
 //! 2. [`primitive_coverage_gap_may_only_grow_smaller`] — counts
 //!    `frame::Surface` variants whose resolved widget type has no `impl
@@ -184,36 +189,100 @@ fn non_test_line_count(path: &Path, file: &syn::File) -> usize {
     total_lines - excluded.len()
 }
 
+/// Counts `dir`'s `.rs` files and their total non-test line count, applying
+/// `allowed`'s [`ALLOWED_NEW_FILES`] exemptions — the measurement both the
+/// assertion path and [`write_backend_baselines`]'s `RATCHET_WRITE` path
+/// need, kept in one place so they can never disagree with each other.
+fn measure_backend_dir(
+    root: &Path,
+    dir: &str,
+    allowed: &std::collections::HashSet<(&str, &str)>,
+) -> (usize, usize) {
+    let path = root.join("src").join(dir);
+    let mut files = Vec::new();
+    collect_rs_files(&path, &mut files);
+    assert!(
+        !files.is_empty(),
+        "expected at least one .rs file under src/{dir}/"
+    );
+
+    let counted_files: Vec<&PathBuf> = files
+        .iter()
+        .filter(|path| {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            !allowed.contains(&(dir, name))
+        })
+        .collect();
+
+    let file_count = counted_files.len();
+    let non_test_lines: usize = counted_files
+        .iter()
+        .map(|path| non_test_line_count(path, &parse_rust_file(path)))
+        .sum();
+    (file_count, non_test_lines)
+}
+
+/// Rewrites this file's own `BACKEND_BASELINES` array to `measured`'s
+/// `(dir, file_count, non_test_lines)` triples, in `BACKEND_BASELINES`'s
+/// existing order. The opt-in side of the `RATCHET_WRITE` env var — see the
+/// module doc.
+fn write_backend_baselines(root: &Path, measured: &[(&str, usize, usize)]) {
+    const START_MARKER: &str = "const BACKEND_BASELINES: &[BackendBaseline] = &[\n";
+    const END_MARKER: &str = "\n];\n";
+
+    let path = root.join("tests").join("per_backend_file_ratchet.rs");
+    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+
+    let (before, rest) = src
+        .split_once(START_MARKER)
+        .unwrap_or_else(|| panic!("could not find BACKEND_BASELINES in {}", path.display()));
+    let (_old_block, after) = rest.split_once(END_MARKER).unwrap_or_else(|| {
+        panic!(
+            "could not find BACKEND_BASELINES' closing `];` in {}",
+            path.display()
+        )
+    });
+
+    let mut block = String::new();
+    for (dir, file_count, non_test_lines) in measured {
+        block.push_str(&format!(
+            "    BackendBaseline {{\n        dir: \"{dir}\",\n        file_count: {file_count},\n        non_test_lines: {non_test_lines},\n    }},\n"
+        ));
+    }
+    block.pop(); // the trailing '\n' END_MARKER itself supplies
+
+    let new_src = format!("{before}{START_MARKER}{block}{END_MARKER}{after}");
+    std::fs::write(&path, new_src).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+
+    eprintln!(
+        "RATCHET_WRITE: rewrote BACKEND_BASELINES in {}",
+        path.display()
+    );
+    for (dir, file_count, non_test_lines) in measured {
+        eprintln!("  {dir:<6} file_count={file_count} non_test_lines={non_test_lines}");
+    }
+}
+
 #[test]
 fn per_backend_widget_file_count_and_line_count_may_only_shrink() {
     let root = repo_root();
     let allowed: std::collections::HashSet<(&str, &str)> =
         ALLOWED_NEW_FILES.iter().copied().collect();
 
-    for baseline in BACKEND_BASELINES {
-        let dir = root.join("src").join(baseline.dir);
-        let mut files = Vec::new();
-        collect_rs_files(&dir, &mut files);
-        assert!(
-            !files.is_empty(),
-            "expected at least one .rs file under src/{}/",
-            baseline.dir
-        );
+    let measured: Vec<(&str, usize, usize)> = BACKEND_BASELINES
+        .iter()
+        .map(|baseline| {
+            let (file_count, non_test_lines) = measure_backend_dir(&root, baseline.dir, &allowed);
+            (baseline.dir, file_count, non_test_lines)
+        })
+        .collect();
 
-        let counted_files: Vec<&PathBuf> = files
-            .iter()
-            .filter(|path| {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                !allowed.contains(&(baseline.dir, name))
-            })
-            .collect();
+    if std::env::var_os("RATCHET_WRITE").is_some() {
+        write_backend_baselines(&root, &measured);
+        return;
+    }
 
-        let file_count = counted_files.len();
-        let non_test_lines: usize = counted_files
-            .iter()
-            .map(|path| non_test_line_count(path, &parse_rust_file(path)))
-            .sum();
-
+    for (baseline, &(_dir, file_count, non_test_lines)) in BACKEND_BASELINES.iter().zip(&measured) {
         assert!(
             file_count <= baseline.file_count,
             "src/{}/ grew from {} counted .rs files to {} — a new per-backend widget extends \
@@ -231,7 +300,8 @@ fn per_backend_widget_file_count_and_line_count_may_only_shrink() {
             "src/{}/ shrank from {} counted .rs files to {} — lower BACKEND_BASELINES' \
              file_count for \"{}\" in tests/per_backend_file_ratchet.rs to {} in the same \
              change that removed the file, so the ratchet stays tight instead of recording \
-             slack.",
+             slack. RATCHET_WRITE=1 cargo test -p quadraui --features tui --test \
+             per_backend_file_ratchet does this for you.",
             baseline.dir, baseline.file_count, file_count, baseline.dir, file_count,
         );
 
@@ -250,7 +320,8 @@ fn per_backend_widget_file_count_and_line_count_may_only_shrink() {
             "src/{}/'s non-test line count shrank from {} to {} — lower BACKEND_BASELINES' \
              non_test_lines for \"{}\" in tests/per_backend_file_ratchet.rs to {} in the same \
              change that removed the lines, so the ratchet stays tight instead of recording \
-             slack.",
+             slack. RATCHET_WRITE=1 cargo test -p quadraui --features tui --test \
+             per_backend_file_ratchet does this for you.",
             baseline.dir, baseline.non_test_lines, non_test_lines, baseline.dir, non_test_lines,
         );
     }
