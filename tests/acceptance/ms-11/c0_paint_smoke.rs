@@ -89,7 +89,7 @@ mod ms11_492_c0_paint_smoke {
         DiffMode, DiffPane, DiffView, DropOverlay, ListItem, ListView, MessageList, MessageRow,
         PipelineStage, PipelineView, ProgressBar, Reaction, Rect, ScrollAxis, Scrollbar,
         SelectionMode, Spinner, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
-        TabBar, TabItem, TextDisplay, TextDisplayLine, Tooltip, TooltipMeasure, TooltipPlacement,
+        TabBar, TabItem, TerminalDivider, TextDisplay, TextDisplayLine, Tooltip, TooltipMeasure, TooltipPlacement,
         TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
     };
 
@@ -402,15 +402,18 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_terminal_divider",
+            method: "draw_dyn(TerminalDivider)",
             needle: None,
             paint: |b, area| {
                 let lh = b.line_height();
-                b.draw_terminal_divider(Rect::new(0.0, lh * 2.0, area.width, lh));
+                let rect = Rect::new(0.0, lh * 2.0, area.width, lh);
+                let divider = TerminalDivider::new(id("terminal-divider"));
+                let _ = b.draw_dyn(rect, &divider, &());
+                b.register_zone(id("terminal-divider"), rect);
             },
         },
         PrimitiveCase {
-            method: "draw_drop_overlay",
+            method: "draw_dyn(DropOverlay)",
             needle: None,
             paint: |b, area| {
                 let cw = b.char_width();
@@ -420,7 +423,9 @@ mod ms11_492_c0_paint_smoke {
                     insertion_bar: None,
                     ghost_position: None,
                 };
-                b.draw_drop_overlay(&overlay);
+                let bounds = overlay.bounds();
+                let _ = b.draw_dyn(bounds, &overlay, &());
+                b.register_zone(WidgetId::new(quadraui::DROP_OVERLAY_ZONE_ID), bounds);
                 let _ = area;
             },
         },
