@@ -265,9 +265,8 @@ impl LayoutContent {
                 // `dyn_widget_capture` caches live on the main engine, not
                 // this subtree's own smaller `LayoutContent`): a `Button`
                 // leaf nested in a popover/dialog needs nothing beyond a
-                // plain click-to-activate, so it's synthesized directly
-                // the same way the retired fixed `Button` leaf slot's own
-                // click used to be.
+                // plain click-to-activate, so its activation is
+                // synthesized right here.
                 if matches!(detail, HitDetail::WidgetBody) {
                     let is_button = dyn_widget_hit(&self.hits.borrow(), id)
                         .is_some_and(|(_, widget)| widget.as_any().is::<Button>());
