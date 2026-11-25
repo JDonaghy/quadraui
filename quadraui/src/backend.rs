@@ -2382,10 +2382,10 @@ pub trait Backend: sealed::Sealed {
     /// (`rect.width - backend.scrollbar_reserve()`) gets the right
     /// answer without asking which backend it's talking to.
     ///
-    /// Distinct from [`Self::terminal_scrollbar_default_width`]: that one
-    /// is the gutter width of the `Terminal` *primitive*'s own scrollbar,
-    /// which paints inside `draw_terminal`'s allotted rect and applies
-    /// even to TUI (which draws it as a real column). This one is
+    /// Distinct from a `Terminal`'s own scrollbar gutter
+    /// ([`crate::TerminalLayout::scrollbar`]), which the widget reserves
+    /// inside its own rect and applies even to TUI (which draws it as a
+    /// real column). This one is
     /// surrounding OS/toolkit scrollbar chrome that no primitive
     /// controls — TUI has none of that, so it reserves nothing.
     ///
@@ -4194,8 +4194,8 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Defaulted: a pure function of `rect` alone (`CanvasLayout {
     /// bounds: rect }`), with no backend-specific input at all — a
-    /// stronger case for a default body than `terminal_layout`/
-    /// `editor_layout` (`tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`),
+    /// stronger case for a default body than `editor_layout`
+    /// (`tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`),
     /// which still depend on `char_width()`/`line_height()`. Every
     /// backend takes this default; see `ACCEPTED_DEFAULTS`'s
     /// `canvas_layout` entries for the from-scratch justification each

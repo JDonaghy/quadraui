@@ -57,12 +57,10 @@
 //!
 //! # Divider geometry
 //!
-//! `gtk`, `macos`, and `win` each paint a terminal-split divider as a
-//! rectangle from `(x, y)` down to `y + height`, 1 unit wide.
-//! [`divider_geometry`] is the single definition of that rectangle; each
-//! backend's `draw_terminal_divider` now only computes it and hands the
-//! four numbers to its own paint primitive (`cr.rectangle` /
-//! `CGContextFillRect` / `FillRectangle`).
+//! On a pixel surface a terminal-split divider
+//! ([`crate::TerminalDivider`]) is a rectangle from `(x, y)` down to
+//! `y + height`, 1 unit wide. [`divider_geometry`] is the single
+//! definition of that rectangle; the divider's pixel paint fills it.
 
 use crate::primitives::terminal::{TerminalCell, TerminalCursorShape};
 use crate::text_util::display_width;
@@ -98,7 +96,7 @@ use crate::Rect;
 /// through to steps 2-5 for colour, and the accent itself is painted
 /// separately: pixel-based rasterisers via [`cursor_accent_rect`] (see
 /// [`crate::primitives::terminal`]'s `paint`), the TUI rasteriser via a
-/// best-effort `Modifier::UNDERLINED` overlay (`tui::terminal::draw_terminal`)
+/// best-effort underline overlay (the terminal's cell painter)
 /// — see that primitive's "Embedded TUI applicability" note on why TUI
 /// can't distinguish `Bar` from `Underline` in a character-cell grid.
 ///
@@ -280,11 +278,9 @@ pub fn wide_glyph_x_scale(natural_w: f64, cell_w: f64) -> f64 {
 /// exactly one native unit wide (1 px for GTK/Direct2D DIPs, 1pt for
 /// Core Text), spanning from `(x, y)` down to `y + height`.
 ///
-/// Shared by every pixel-based rasteriser's `draw_terminal_divider` free
-/// function (`gtk::terminal`, `macos::terminal`, `win::terminal`) so the
-/// "1 unit wide" invariant is defined once instead of copied into three
-/// near-identical `rectangle` calls. Not used by
-/// `tui::terminal::draw_terminal_divider`, which draws a themed `'│'`
+/// Used by [`crate::TerminalDivider`]'s pixel paint, so the "1 unit wide"
+/// invariant is defined once. Not used by its cell paint, which draws a
+/// themed `'│'`
 /// character cell rather than pixel geometry.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DividerGeometry {
