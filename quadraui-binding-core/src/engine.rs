@@ -7012,6 +7012,100 @@ mod tests {
         );
     }
 
+    /// Mirrors [`MinimalLogic`], painting one `"command_center"` widget
+    /// leaf instead of a `Button`.
+    struct CommandCenterLogic {
+        cc: quadraui::CommandCenter,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for CommandCenterLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert("command_center".to_string(), Rc::new(self.cc.clone()));
+            draw_bands(
+                backend,
+                RenderRefs {
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    widgets: &widgets,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.render_overlays(backend);
+            self.engine.set_hits(hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// The binding-host leg of `CommandCenter`'s event parity: a
+    /// `MouseDown` on each part of a `"command_center"` leaf resolves
+    /// through [`InteractionEngine::handle`] to the same
+    /// `UiEvent::CommandCenterActivated` the `TuiDriver` leg
+    /// (`quadraui/tests/widget_contract_command_center.rs`) and the
+    /// `a11y::route_widget_action` leg produce.
+    #[test]
+    fn click_on_a_command_center_part_dispatches_command_center_activated() {
+        use quadraui::CommandCenterTarget;
+
+        let id = WidgetId::new("titlebar:cc");
+        let logic = CommandCenterLogic {
+            cc: quadraui::CommandCenter {
+                id,
+                back_enabled: true,
+                forward_enabled: true,
+                search_label: "my-project".into(),
+            },
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 5);
+
+        for target in [
+            CommandCenterTarget::Back,
+            CommandCenterTarget::Forward,
+            CommandCenterTarget::Search,
+        ] {
+            let (x, y) = quadraui::primitive::painted_sub_center(&id, target.sub_target())
+                .expect("the command center records each part it painted");
+            driver.dispatch(UiEvent::MouseDown {
+                widget: None,
+                button: MouseButton::Left,
+                position: Point::new(x, y),
+                modifiers: Modifiers::default(),
+            });
+            let dispatched = &driver.app().sink.borrow().dispatched;
+            assert!(
+                dispatched
+                    .iter()
+                    .any(|(event, _)| *event
+                        == UiEvent::CommandCenterActivated { widget: id, target }),
+                "expected CommandCenterActivated {target:?}: {dispatched:?}"
+            );
+        }
+    }
+
     /// Enter on a focused layout-tree `Button` round-trips through
     /// [`InteractionEngine::handle`] as the same `UiEvent::ButtonActivated`
     /// a pointer click produces — the keyboard-activation half of this

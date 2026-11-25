@@ -39,7 +39,7 @@
 //! ## `Surface` coverage
 //!
 //! Every primitive that has a `Backend::draw_*` method has a matching
-//! [`Surface`] variant (`Board`, `CommandCenter`, `DiffView`,
+//! [`Surface`] variant (`Board`, `DiffView`,
 //! `DropOverlay`, `Image`, `MessageList`, `Minimap`, `PipelineView`,
 //! `Progress`, `Spinner`, `SplitTree`, `TextField`,
 //! `TextInput`, `Toolbar` included). `Backend::draw_<name>` stays reachable directly
@@ -398,10 +398,6 @@ pub enum Surface {
         rect: Rect,
         model: BoardModel,
     },
-    CommandCenter {
-        rect: Rect,
-        cc: CommandCenter,
-    },
     DiffView {
         rect: Rect,
         view: DiffView,
@@ -585,9 +581,6 @@ pub enum FrameZone {
         idx: usize,
     },
     Board {
-        idx: usize,
-    },
-    CommandCenter {
         idx: usize,
     },
     DiffView {
@@ -964,9 +957,6 @@ impl ScreenLayout {
                 Surface::Board { rect, model } => {
                     backend.draw_board(*rect, model);
                 }
-                Surface::CommandCenter { rect, cc } => {
-                    backend.draw_command_center(*rect, cc);
-                }
                 Surface::DiffView { rect, view } => {
                     backend.draw_diff_view(*rect, view);
                 }
@@ -1102,7 +1092,6 @@ impl ScreenLayout {
                 Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
                 Surface::Chart { rect, chart, .. } => vec![(chart.id, *rect)],
                 Surface::Board { rect, model } => vec![(model.id, *rect)],
-                Surface::CommandCenter { rect, cc } => vec![(cc.id, *rect)],
                 Surface::DiffView { rect, view } => vec![(view.id, *rect)],
                 Surface::MessageList { rect, list } => vec![(list.id, *rect)],
                 Surface::Minimap { rect, minimap } => vec![(minimap.id, *rect)],
@@ -1202,7 +1191,6 @@ impl ScreenLayout {
             Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
             Surface::Canvas { rect, .. } => (*rect, FrameZone::Canvas { idx }),
             Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
-            Surface::CommandCenter { rect, .. } => (*rect, FrameZone::CommandCenter { idx }),
             Surface::DiffView { rect, .. } => (*rect, FrameZone::DiffView { idx }),
             Surface::DropOverlay { overlay } => (overlay.bounds(), FrameZone::DropOverlay { idx }),
             Surface::Image { rect, .. } => (*rect, FrameZone::Image { idx }),
@@ -1321,6 +1309,10 @@ pub enum OwnedContent {
     Chart(Chart),
     Canvas(Canvas),
     Board(BoardModel),
+    /// Captured from a [`CommandCenter`] reached through
+    /// [`Surface::Widget`] via [`DynWidget::capture`] — maps to
+    /// [`FrameZone::Widget`], the only way a `CommandCenter` reaches a
+    /// frame.
     CommandCenter(CommandCenter),
     DiffView(DiffView),
     Image(Image),
@@ -1466,7 +1458,10 @@ impl OwnedContent {
                 backend.draw_board(rect, model);
             }
             OwnedContent::CommandCenter(cc) => {
-                backend.draw_command_center(rect, cc);
+                // `impl Primitive for CommandCenter` is unconditional, like
+                // `TabBar`'s above, so this arm needs no backend-feature
+                // guard.
+                backend.draw_primitive(rect, cc);
             }
             OwnedContent::DiffView(view) => {
                 backend.draw_diff_view(rect, view);
@@ -1582,7 +1577,10 @@ impl OwnedContent {
             OwnedContent::Chart(_) => FrameZone::Chart { idx },
             OwnedContent::Canvas(_) => FrameZone::Canvas { idx },
             OwnedContent::Board(_) => FrameZone::Board { idx },
-            OwnedContent::CommandCenter(_) => FrameZone::CommandCenter { idx },
+            OwnedContent::CommandCenter(cc) => FrameZone::Widget {
+                idx,
+                id: Some(cc.id),
+            },
             OwnedContent::DiffView(_) => FrameZone::DiffView { idx },
             OwnedContent::Image(_) => FrameZone::Image { idx },
             OwnedContent::MessageList(_) => FrameZone::MessageList { idx },
@@ -1897,9 +1895,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::Canvas { rect, canvas } => (*rect, None, OwnedContent::Canvas(canvas.clone())),
         Surface::Board { rect, model } => {
             (*rect, Some(model.id), OwnedContent::Board(model.clone()))
-        }
-        Surface::CommandCenter { rect, cc } => {
-            (*rect, Some(cc.id), OwnedContent::CommandCenter(cc.clone()))
         }
         Surface::DiffView { rect, view } => {
             (*rect, Some(view.id), OwnedContent::DiffView(view.clone()))
@@ -2586,7 +2581,10 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
         let mut layout = ScreenLayout::new();
         layout.push(Surface::Board { rect, model: board });
-        layout.push(Surface::CommandCenter { rect, cc });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(cc),
+        });
         layout.push(Surface::DiffView { rect, view: diff });
         layout.push(Surface::DropOverlay {
             overlay: overlay.clone(),
@@ -2630,7 +2628,13 @@ mod tests {
 
         let zones: Vec<&FrameZone> = hit_map.zones().iter().map(|(_, z)| z).collect();
         assert_eq!(zones[0], &FrameZone::Board { idx: 0 });
-        assert_eq!(zones[1], &FrameZone::CommandCenter { idx: 1 });
+        assert_eq!(
+            zones[1],
+            &FrameZone::Widget {
+                idx: 1,
+                id: Some("cc".into())
+            }
+        );
         assert_eq!(zones[2], &FrameZone::DiffView { idx: 2 });
         assert_eq!(zones[3], &FrameZone::DropOverlay { idx: 3 });
         assert_eq!(zones[4], &FrameZone::Image { idx: 4 });

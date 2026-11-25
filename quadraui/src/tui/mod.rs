@@ -43,7 +43,6 @@ mod chart;
 #[doc(hidden)]
 pub mod color;
 mod combo_box;
-mod command_center;
 // `pub(crate)` rather than private: `CommandLine`'s own
 // `Primitive::paint_cells` reaches this module's `Buffer` →
 // `CellSurface` adapter, which cannot be built outside `crate::tui`.
@@ -135,8 +134,6 @@ pub use cell_grid::{draw_cell_grid, tui_cell_grid_layout};
 pub use chart::{draw_chart, tui_chart_layout};
 #[doc(hidden)]
 pub use combo_box::draw_combo_box;
-#[doc(hidden)]
-pub use command_center::{draw_command_center, tui_command_center_layout};
 #[doc(hidden)]
 pub use completions::draw_completions;
 #[doc(hidden)]

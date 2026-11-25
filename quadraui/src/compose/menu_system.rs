@@ -1337,20 +1337,6 @@ mod tests {
         fn spinner_layout(&self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
             unimplemented!()
         }
-        fn draw_command_center(
-            &mut self,
-            _r: Rect,
-            _c: &crate::CommandCenter,
-        ) -> crate::CommandCenterLayout {
-            unimplemented!()
-        }
-        fn command_center_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::CommandCenter,
-        ) -> crate::CommandCenterLayout {
-            unimplemented!()
-        }
         fn draw_toolbar_with_options(
             &mut self,
             _r: Rect,

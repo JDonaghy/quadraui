@@ -948,6 +948,15 @@ pub enum UiEvent {
         widget: WidgetId,
     },
 
+    /// A [`crate::CommandCenter`]'s back arrow, forward arrow or search
+    /// box was activated — a left press on that part, or an
+    /// assistive-technology `Click` (which activates the search box).
+    /// `target` names which part.
+    CommandCenterActivated {
+        widget: WidgetId,
+        target: crate::CommandCenterTarget,
+    },
+
     // ── Text selection ────────────────────────────────────────────────
     /// A mouse text-selection drag extended or finalised its range.
     /// Emitted by [`crate::dispatch::dispatch_mouse_drag`] while a

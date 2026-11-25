@@ -33,19 +33,19 @@
 use quadraui::{
     compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, Anchor, AppLogic, Backend,
     BadgeStatus, BoardCard, BoardColumn, BoardModel, CalendarDate, Canvas, CardBadge, Chart,
-    ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandCenter, CommandLine,
-    CompletionItem, CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem,
-    ContextMenuItemMeasure, ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration,
-    Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp,
-    DropOverlay, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle,
-    EditorStyledSpan, FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField,
-    Image, ImageFit, ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem,
-    MessageList, MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette,
-    PaletteItem, PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction,
-    Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section,
-    SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Side, Spinner, Split,
-    SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText,
-    Terminal, TerminalCell, TextDisplay, TextDisplayLine, TextField, TextInput, Toast, ToastCorner,
+    ChartKind, Color, Column, ColumnAlign, ColumnWidth, ComboBox, CommandLine, CompletionItem,
+    CompletionItemMeasure, Completions, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
+    ContextMenuPlacement, DataRow, DataTable, DatePicker, Decoration, Dialog, DialogButton,
+    DialogMeasure, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, DropOverlay, Editor,
+    EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan,
+    FieldKind, FindReplacePanel, Float, FloatMeasure, FontRole, Form, FormField, Image, ImageFit,
+    ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList,
+    MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, NumberInput, Palette, PaletteItem,
+    PaletteMode, PipelineStage, PipelineView, PopupPlacement, ProgressBar, Reaction, Rect,
+    RichTextPopup, RichTextPopupMeasure, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody,
+    SectionHeader, SectionSize, SelectionMode, Series, Side, Spinner, Split, SplitDirection,
+    SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledSpan, StyledText, Terminal,
+    TerminalCell, TextDisplay, TextDisplayLine, TextField, TextInput, Toast, ToastCorner,
     ToastOverlay, ToastSeverity, Toolbar, ToolbarButton, ToolbarItemMeasure, ToolbarLayoutOptions,
     ToolbarOverflow, ToolbarOverflowPriorities, ToolbarPaintOptions, ToolbarVAlign, Tooltip,
     TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement, TreeRow, TreeStyle, TreeTable,
@@ -1263,18 +1263,6 @@ pub const CASES: &[Case] = &[
                 focus: None,
             };
             let _ = b.draw_toast_overlay(area, &stack);
-        },
-    },
-    Case {
-        method: "draw_command_center",
-        needle: Some("c0ccnt"),
-        paint: |b, area| {
-            let mut cc = CommandCenter::default();
-            cc.id = id("command-center");
-            cc.back_enabled = true;
-            cc.forward_enabled = true;
-            cc.search_label = "c0ccnt".to_string();
-            let _ = b.draw_command_center(area, &cc);
         },
     },
     Case {

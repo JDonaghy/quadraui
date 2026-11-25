@@ -55,7 +55,6 @@ use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::combo_box::{ComboBox, ComboBoxLayout};
-use crate::primitives::command_center::{CommandCenter, CommandCenterLayout};
 use crate::primitives::command_line::{CommandLine, CommandLineLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
@@ -3939,16 +3938,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
-
-    /// Draw a [`CommandCenter`] (nav arrows + search box). Returns the
-    /// [`CommandCenterLayout`] so hosts can route clicks. Same
-    /// coordinate frame as [`Self::command_center_layout`] (ABSOLUTE).
-    fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
-
-    /// Compute command-center layout without painting.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout;
 
     /// Draw a [`Toolbar`] (horizontal strip of action buttons above a
     /// content area — distinct from `StatusBar` which is read-only),

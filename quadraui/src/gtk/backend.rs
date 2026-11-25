@@ -4657,60 +4657,6 @@ impl Backend for GtkBackend {
         )
     }
 
-    fn draw_command_center(
-        &mut self,
-        rect: QRect,
-        cc: &crate::primitives::command_center::CommandCenter,
-    ) -> crate::primitives::command_center::CommandCenterLayout {
-        let line_height = self.current_line_height;
-        let theme = self.current_theme;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_command_center called outside enter_frame_scope");
-        // The back/forward arrows and search label are chrome, not editor content.
-        // Save/swap/restore the font like other chrome primitives for consistency.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let layout = crate::gtk::draw_command_center(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            cc,
-            &theme,
-            line_height,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        layout
-    }
-
-    fn command_center_layout(
-        &self,
-        rect: QRect,
-        cc: &crate::primitives::command_center::CommandCenter,
-    ) -> crate::primitives::command_center::CommandCenterLayout {
-        // Search-box width comes from the shared char-width formula
-        // (`CommandCenterMeasure::from_char_width`) rather than an inline
-        // copy — this no-paint query has no live Pango layout on hand
-        // (unlike `draw_command_center`'s `gtk_command_center_layout`,
-        // which measures the label's real pixel width), so it estimates
-        // from `current_char_width` exactly like `win::command_center`
-        // does from its own DirectWrite char width.
-        let char_w = self.current_char_width as f32;
-        let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
-        cc.layout(
-            bounds,
-            crate::primitives::command_center::CommandCenterMeasure::from_char_width(
-                &cc.search_label,
-                char_w,
-                rect.height,
-            ),
-        )
-    }
-
     /// Shared chart painting lives in [`crate::primitives::chart::paint`] now.
     fn draw_chart(
         &mut self,
@@ -9266,40 +9212,42 @@ mod tests {
         );
     }
 
-    /// `draw_command_center` painted its arrows/search label with
-    /// whatever font the frame's editor-content layout happened to
-    /// carry, same gap as `draw_context_menu` above. Unlike the pixel-scan
-    /// tests above, `gtk_command_center_layout` measures the search
-    /// label's width against the same shared Pango layout it paints
-    /// with, so the returned `search_bounds.width` is itself a direct
-    /// font-size probe — no pixel scan needed.
+    /// A `CommandCenter` painted through the widget contract measures its
+    /// search label through `Backend::measure_text` in the chrome role,
+    /// so the reserved search box tracks `ui_font` and ignores whatever
+    /// font the frame's editor-content layout carries.
     #[test]
-    fn gtk_backend_draw_command_center_uses_ui_font_not_editor_font() {
+    fn command_center_search_box_is_measured_in_the_ui_font() {
+        use crate::backend::DrawsPrimitives;
+
         let small_editor_font = pango::FontDescription::from_string("Sans 8");
         let large_editor_font = pango::FontDescription::from_string("Sans 40");
         let surface =
-            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, 400, 40)
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, 2000, 40)
                 .expect("create ImageSurface");
         let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
         let cc = crate::primitives::command_center::CommandCenter {
             id: WidgetId::new("test:command-center"),
             back_enabled: true,
             forward_enabled: true,
-            search_label: "mmmmmmmmmm".to_string(),
+            search_label: "m".repeat(20),
         };
-        let rect = QRect::new(0.0, 0.0, 400.0, 24.0);
+        let rect = QRect::new(0.0, 0.0, 2000.0, 24.0);
 
         let search_width_at = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
             let pango_ctx = pangocairo::functions::create_context(&cr);
             pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
+            backend.set_pango_context(pango_ctx.clone());
             if let Some(f) = ui_font {
                 Backend::set_ui_font(&mut backend, f);
             }
             backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_command_center(rect, &cc)
-                    .search_bounds
+                let painted = b.draw_dyn(rect, &cc, &());
+                painted
+                    .downcast_ref::<crate::primitives::command_center::CommandCenterLayout>()
+                    .and_then(|l| l.search_bounds)
                     .expect("non-empty search_label produces search_bounds")
                     .width
             })
@@ -9316,41 +9264,9 @@ mod tests {
         let ui_font_width = search_width_at(&small_editor_font, Some("Sans 40"));
         assert!(
             ui_font_width > small_editor_width * 1.5,
-            "changing ui_font alone must visibly widen the painted search box: \
+            "changing ui_font alone must visibly widen the search box: \
              default_ui_font={small_editor_width}, ui_font_Sans_40={ui_font_width}"
         );
-    }
-
-    /// `GtkBackend::command_center_layout` (the no-paint query path) must
-    /// delegate straight to `CommandCenterMeasure::from_char_width` rather
-    /// than keeping a private reimplementation of its formula. This test
-    /// verifies the two agree, and asserts the same for
-    /// `win::command_center::win_command_center_layout` against the
-    /// identical shared constructor, so gtk and win compute the same
-    /// command-center layout for the same char width.
-    #[test]
-    fn command_center_layout_delegates_to_shared_char_width_formula() {
-        let mut backend = GtkBackend::new();
-        backend.set_current_char_width(9.0);
-        let cc = crate::primitives::command_center::CommandCenter {
-            id: WidgetId::new("test:command-center"),
-            back_enabled: true,
-            forward_enabled: true,
-            search_label: "project-name".to_string(),
-        };
-        let rect = QRect::new(3.0, 5.0, 400.0, 24.0);
-
-        let layout = Backend::command_center_layout(&backend, rect, &cc);
-
-        let expected = crate::primitives::command_center::CommandCenterMeasure::from_char_width(
-            &cc.search_label,
-            9.0,
-            rect.height,
-        );
-        let search = layout
-            .search_bounds
-            .expect("non-empty search_label produces search_bounds");
-        assert_eq!(search.width, expected.search_box_width);
     }
 
     fn ui_font_test_toolbar() -> crate::primitives::toolbar::Toolbar {

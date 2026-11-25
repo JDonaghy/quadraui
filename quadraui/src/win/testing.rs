@@ -1036,8 +1036,8 @@ impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
             // Zones registered this frame via `Backend::register_zone` —
             // `AppShell::render`'s shell-chrome zones (activity-bar items,
             // sidebar header/content, status bar, title bar, ...) plus
-            // `WinBackend::draw_menu_bar`/`draw_status_bar_interactive`/
-            // `draw_command_center`'s own band-content zones. Primitives
+            // `WinBackend::draw_menu_bar`/`draw_status_bar_interactive`'s
+            // own band-content zones. Primitives
             // that don't yet call `register_zone` contribute no zone,
             // mirroring `GtkDriver::inventory`/`MacDriver::inventory`.
             zones: self.core.backend().zones.clone(),

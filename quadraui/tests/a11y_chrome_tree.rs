@@ -165,14 +165,14 @@ window \"quadraui\" [focused]
 #[test]
 fn command_center_and_command_line_expose_their_controls() {
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::CommandCenter {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 1.0),
-            cc: CommandCenter {
+            widget: Box::new(CommandCenter {
                 id: WidgetId::new("cc"),
                 back_enabled: false,
                 forward_enabled: true,
                 search_label: "Search files".to_string(),
-            },
+            }),
         })
         .with_surface(Surface::CommandLine {
             rect: rect(23.0, 1.0),

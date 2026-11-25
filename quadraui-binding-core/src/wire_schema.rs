@@ -2894,7 +2894,6 @@ pub fn schema() -> Vec<DefJson> {
             "toolbar" => toolbar_descriptor.clone(),
             "menu_bar" => menu_bar_descriptor.clone(),
             "command_line" => command_line_descriptor.clone(),
-            "command_center" => command_center_descriptor.clone(),
             "palette" => palette_descriptor.clone(),
             "scrollbar" => scrollbar_descriptor.clone(),
             "editor" => editor_descriptor.clone(),
@@ -2930,6 +2929,7 @@ pub fn schema() -> Vec<DefJson> {
             "switch" => switch_descriptor.clone(),
             "radio_group" => radio_group_descriptor.clone(),
             "button" => button_descriptor.clone(),
+            "command_center" => command_center_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3779,6 +3779,17 @@ pub fn schema() -> Vec<DefJson> {
         "_RadioGroupSelectionChangedPayload",
         vec![field("widget", re("WidgetId")), field("index", int_())],
     ));
+    let command_center_target = b.define(alias(
+        "CommandCenterTarget",
+        lit(&["Back", "Forward", "Search"]),
+    ));
+    let command_center_activated_payload = b.define(obj(
+        "_CommandCenterActivatedPayload",
+        vec![
+            field("widget", re("WidgetId")),
+            field("target", command_center_target),
+        ],
+    ));
     let text_selection_changed_payload = b.define(obj(
         "_TextSelectionChangedPayload",
         vec![
@@ -3859,6 +3870,7 @@ pub fn schema() -> Vec<DefJson> {
             ("SwitchToggled", switch_toggled_payload),
             ("RadioGroupSelectionChanged", radio_group_selection_changed_payload),
             ("ButtonActivated", widget_payload),
+            ("CommandCenterActivated", command_center_activated_payload),
             ("TextSelectionChanged", text_selection_changed_payload),
             ("SplitDividerDragged", split_divider_dragged_payload),
             ("MenuActivated", re("WidgetId")),
@@ -4043,6 +4055,10 @@ mod coverage {
                 index: _,
             } => {}
             UiEvent::ButtonActivated { widget: _ } => {}
+            UiEvent::CommandCenterActivated {
+                widget: _,
+                target: _,
+            } => {}
             UiEvent::TextSelectionChanged {
                 region: _,
                 anchor: _,
@@ -6506,16 +6522,16 @@ mod coverage {
             ]
         );
 
-        /// The three standalone-control events serialize as an
+        /// The standalone-control events serialize as an
         /// externally-tagged `{"<Tag>": {payload}}` map, so it is the
         /// *payload's* key set -- not the one-key wrapper's -- that
         /// [`super::super::schema`]'s `_SwitchToggledPayload`,
-        /// `_RadioGroupSelectionChangedPayload` and `_WidgetPayload`
-        /// entries describe. Unwrap the tag first, then apply the same
+        /// `_RadioGroupSelectionChangedPayload`, `_WidgetPayload` and
+        /// `_CommandCenterActivatedPayload` entries describe. Unwrap the tag first, then apply the same
         /// key-set check [`value_shape_test!`] applies to a descriptor.
         #[test]
         fn standalone_control_event_payload_keys_match_the_schema_field_lists() {
-            let cases: [(UiEvent, &str, &[&str]); 3] = [
+            let cases: [(UiEvent, &str, &[&str]); 4] = [
                 (
                     UiEvent::SwitchToggled {
                         widget: WidgetId::new("switch"),
@@ -6538,6 +6554,14 @@ mod coverage {
                     },
                     "ButtonActivated",
                     &["widget"],
+                ),
+                (
+                    UiEvent::CommandCenterActivated {
+                        widget: WidgetId::new("command_center"),
+                        target: quadraui::CommandCenterTarget::Search,
+                    },
+                    "CommandCenterActivated",
+                    &["widget", "target"],
                 ),
             ];
 
@@ -6788,6 +6812,7 @@ mod coverage {
                 "SwitchToggled",
                 "RadioGroupSelectionChanged",
                 "ButtonActivated",
+                "CommandCenterActivated",
                 "TextSelectionChanged",
                 "SplitDividerDragged",
                 "MenuActivated",

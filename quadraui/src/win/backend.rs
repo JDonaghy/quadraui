@@ -19,7 +19,6 @@ use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
 use crate::primitives::activity_bar::ActivityBarRowHit;
-use crate::primitives::command_center::{CommandCenter, CommandCenterHit, CommandCenterLayout};
 use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::dialog::{Dialog, DialogLayout};
@@ -1487,11 +1486,15 @@ impl WinBackend {
     ///   why no `begin_window_drag`/`begin_window_resize` call is needed
     ///   here).
     /// - `Some(false)` — the point is in the band but also inside another
-    ///   registered zone strictly smaller than the band (a button, the
-    ///   command-centre search box, or any other interactive widget a
-    ///   host paints into the row) — report `HTCLIENT` instead, so the
-    ///   click reaches that widget as an ordinary `UiEvent::MouseDown`
-    ///   rather than being swallowed by the OS move/maximize gesture.
+    ///   registered zone strictly smaller than the band (a button, or any
+    ///   other interactive widget a host paints into the row), or inside
+    ///   an addressable sub-part of a widget-contract widget painted this
+    ///   frame (a command center's arrows and search box, recorded by
+    ///   [`crate::DrawsPrimitives::draw_dyn`] into
+    ///   [`crate::primitive::PaintedWidgets`]) — report `HTCLIENT`
+    ///   instead, so the click reaches that widget as an ordinary
+    ///   `UiEvent::MouseDown` rather than being swallowed by the OS
+    ///   move/maximize gesture.
     ///
     /// Zones whose bounds are *not* strictly smaller than the band (e.g.
     /// `AppShell`'s own `"app-shell:window"` whole-window zone, which
@@ -1514,13 +1517,17 @@ impl WinBackend {
             z.id.as_str() != Self::TITLE_BAR_DRAG_ZONE
                 && z.bounds.contains(point)
                 && z.bounds.width * z.bounds.height < band_area
+        }) || crate::primitive::with_painted_widgets(|painted| {
+            painted
+                .iter()
+                .any(|w| w.sub_regions.iter().any(|(r, _)| r.contains(point)))
         });
         Some(!excluded)
     }
 
     // ── Band-content zone registration ──────────────────────────────────
     //
-    // These three helpers register zones at the one place each widget's real
+    // These helpers register zones at the one place each widget's real
     // screen bounds are known: right after its `draw_*` call. Called
     // unconditionally — a zone outside the band is simply never found by
     // `nc_hit_test`'s `band.bounds.contains(point)` check, so this is harmless
@@ -1543,8 +1550,7 @@ impl WinBackend {
     /// `action_id`-bearing status-bar segments drawn into the title-bar
     /// band. See the section doc above.
     ///
-    /// Unlike [`Self::register_menu_bar_item_zones`]/
-    /// [`Self::register_command_center_zones`], `StatusBar::layout`/
+    /// Unlike [`Self::register_menu_bar_item_zones`], `StatusBar::layout`/
     /// `layout_padded` (`primitives/status_bar.rs`) returns bounds in
     /// **bar-local** coordinates — origin `(0, 0)` at the bar's own
     /// top-left, by design (see `compose::status_bar_interaction::
@@ -1568,27 +1574,6 @@ impl WinBackend {
                     ),
                 );
             }
-        }
-    }
-
-    /// Register a zone for each present [`CommandCenterLayout`] hit
-    /// region (back/forward nav arrows, the search box) — the
-    /// command-centre strip the issue names explicitly. `CommandCenterHit`
-    /// carries no `WidgetId` of its own, so each zone is keyed off `cc`'s
-    /// id with a fixed suffix, mirroring `"titlebar:minimize-button"`-style
-    /// synthetic ids already used by this file's unit tests below.
-    fn register_command_center_zones(&mut self, cc_id: &WidgetId, layout: &CommandCenterLayout) {
-        for (bounds, hit) in &layout.hit_regions {
-            let suffix = match hit {
-                CommandCenterHit::Back => "back",
-                CommandCenterHit::Forward => "forward",
-                CommandCenterHit::SearchBox => "search",
-                CommandCenterHit::Bar | CommandCenterHit::Outside => continue,
-            };
-            self.register_zone(
-                WidgetId::new(format!("{}:{}", cc_id.as_str(), suffix)),
-                *bounds,
-            );
         }
     }
 
@@ -5318,58 +5303,6 @@ impl Backend for WinBackend {
     /// See [`Self::draw_status_bar`]'s doc for the "surface not
     /// attached yet" fallback posture.
     ///
-    /// `CommandCenter` is `ChromePrimitive::CommandCenter` — see
-    /// [`Self::draw_tree`]'s note for the font-swap shape.
-    /// `char_width` (the search-box width estimate's own input) stays
-    /// at the editor's value, same as [`Self::command_center_layout`]
-    /// already uses — only the paint font changes here, matching
-    /// `GtkBackend::draw_command_center`'s identical split (layout
-    /// estimate stays char-width-based; only the Pango paint swaps to
-    /// `ui_font`).
-    fn draw_command_center(&mut self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let layout = super::command_center::draw_command_center(
-                &surface.target,
-                dwrite,
-                self.current_char_width,
-                self.current_line_height,
-                rect,
-                cc,
-                &self.current_theme,
-            );
-            // See "Band-content zone registration" above — the
-            // command-centre search box the issue names explicitly.
-            self.register_command_center_zones(&cc.id, &layout);
-            return layout;
-        }
-        // No surface yet — return the real (pure `char_width` estimate)
-        // layout via `command_center_layout` and paint nothing.
-        let layout = self.command_center_layout(rect, cc);
-        self.register_command_center_zones(&cc.id, &layout);
-        layout
-    }
-
-    /// Pure `char_width` estimate (via the shared
-    /// [`crate::primitives::command_center::CommandCenterMeasure::from_char_width`]
-    /// formula) — no live `DWrite` measurer is needed at all, so this is
-    /// computed directly rather than reaching into the Windows-only
-    /// `super::command_center` module.
-    fn command_center_layout(&self, rect: Rect, cc: &CommandCenter) -> CommandCenterLayout {
-        cc.layout(
-            rect,
-            crate::primitives::command_center::CommandCenterMeasure::from_char_width(
-                &cc.search_label,
-                self.current_char_width,
-                rect.height,
-            ),
-        )
-    }
-
-    /// See [`Self::draw_status_bar`]'s doc for the "surface not
-    /// attached yet" fallback posture.
-    ///
     /// `Toolbar` is `ChromePrimitive::Toolbar` — see
     /// [`Self::draw_menu_bar`]'s note for why passing
     /// `chrome_dwrite` here keeps `win_toolbar_layout`'s internal
@@ -8439,21 +8372,36 @@ mod tests {
         );
     }
 
-    /// Same regression for `Backend::draw_command_center` — the
-    /// command-centre search box the issue names explicitly.
+    /// Paint `cc` into `rect` through the widget contract, the way a host
+    /// pushes it as a `Surface::Widget`, and hand back its layout.
+    fn draw_command_center_widget(
+        b: &mut WinBackend,
+        rect: Rect,
+        cc: &crate::CommandCenter,
+    ) -> crate::CommandCenterLayout {
+        use crate::backend::DrawsPrimitives;
+        b.draw_dyn(rect, cc, &())
+            .downcast_ref::<crate::CommandCenterLayout>()
+            .expect("a CommandCenter lays out as a CommandCenterLayout")
+            .clone()
+    }
+
+    /// A widget-contract `CommandCenter` painted into the band needs no
+    /// zone of its own: its arrows and search box are recorded as
+    /// painted sub-regions, and `nc_hit_test` reads those as `HTCLIENT`.
     #[test]
-    fn draw_command_center_registers_its_own_zones_inside_the_band() {
+    fn command_center_sub_regions_read_as_client_inside_the_band() {
         let mut b = WinBackend::new();
         let band = Rect::new(0.0, 0.0, 800.0, 32.0);
         Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
 
-        let cc = CommandCenter {
+        let cc = crate::CommandCenter {
             id: WidgetId::new("titlebar:cc"),
             back_enabled: true,
             forward_enabled: true,
             search_label: "project-name".into(),
         };
-        let layout = Backend::draw_command_center(&mut b, Rect::new(300.0, 0.0, 400.0, 32.0), &cc);
+        let layout = draw_command_center_widget(&mut b, Rect::new(300.0, 0.0, 400.0, 32.0), &cc);
         let search = layout.search_bounds.expect("search box must be laid out");
         let (cx, cy) = (
             search.x + search.width / 2.0,
@@ -8473,7 +8421,7 @@ mod tests {
     /// container with unclaimed room — this test probes the gap between the
     /// container's left edge and the centred content instead.
     #[test]
-    fn draw_command_center_leaves_its_own_container_padding_as_caption() {
+    fn command_center_leaves_its_own_container_padding_as_caption() {
         let mut b = WinBackend::new();
         let band = Rect::new(0.0, 0.0, 900.0, 32.0);
         Backend::register_zone(&mut b, WidgetId::new(WinBackend::TITLE_BAR_DRAG_ZONE), band);
@@ -8482,14 +8430,14 @@ mod tests {
         // search-box width, so the centred content (2 arrows + 2 gaps +
         // the 280px floor) is well short of the 400px-wide container
         // below — leaving real padding on both sides to probe.
-        let cc = CommandCenter {
+        let cc = crate::CommandCenter {
             id: WidgetId::new("titlebar:cc"),
             back_enabled: true,
             forward_enabled: true,
             search_label: "x".into(),
         };
         let container = Rect::new(300.0, 0.0, 400.0, 32.0);
-        let layout = Backend::draw_command_center(&mut b, container, &cc);
+        let layout = draw_command_center_widget(&mut b, container, &cc);
 
         let back = layout.back_bounds.expect("back arrow must be laid out");
         assert!(
@@ -10433,8 +10381,9 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_command_center_paints_the_search_label_in_the_chrome_fonts_size() {
-        let cc = CommandCenter {
+    fn win_backend_command_center_paints_the_search_label_in_the_chrome_fonts_size() {
+        use crate::backend::DrawsPrimitives;
+        let cc = crate::CommandCenter {
             id: WidgetId::new("cc"),
             back_enabled: true,
             forward_enabled: true,
@@ -10446,12 +10395,12 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_command_center(Rect::new(0.0, 0.0, 300.0, 32.0), &cc);
+                let _ = backend.draw_dyn(Rect::new(0.0, 0.0, 300.0, 32.0), &cc, &());
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_command_center must paint the search label through \
+            "#1266: CommandCenter must paint the search label through \
              chrome_dwrite, not the (unchanged) editor dwrite handle"
         );
     }

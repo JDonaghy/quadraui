@@ -116,7 +116,6 @@ pub mod backend;
 mod board;
 mod chart;
 mod combo_box;
-mod command_center;
 mod command_line;
 mod completions;
 mod context_menu;
@@ -190,8 +189,6 @@ pub use backend::GtkBackend;
 pub use board::gtk_board_layout;
 #[doc(hidden)]
 pub use chart::gtk_chart_layout;
-#[doc(hidden)]
-pub use command_center::{draw_command_center, gtk_command_center_layout};
 #[doc(hidden)]
 pub use completions::draw_completions;
 #[doc(hidden)]

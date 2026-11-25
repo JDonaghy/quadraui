@@ -630,7 +630,8 @@ pub use primitives::chart::{
 };
 pub use primitives::combo_box::{ComboBox, ComboBoxEvent, ComboBoxHit, ComboBoxLayout};
 pub use primitives::command_center::{
-    CommandCenter, CommandCenterHit, CommandCenterLayout, CommandCenterMeasure,
+    CommandCenter, CommandCenterAction, CommandCenterHit, CommandCenterLayout,
+    CommandCenterMeasure, CommandCenterTarget,
 };
 pub use primitives::command_line::{CommandLine, CommandLineLayout, CommandLineMeasure};
 pub use primitives::completions::{
