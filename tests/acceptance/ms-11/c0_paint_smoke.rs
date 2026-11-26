@@ -253,7 +253,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_tree",
+            method: "draw_dyn(TreeView)",
             needle: Some("c0tree"),
             paint: |b, area| {
                 let tree = TreeView {
@@ -274,7 +274,7 @@ mod ms11_492_c0_paint_smoke {
                     style: TreeStyle::default(),
                     has_focus: false,
                 };
-                b.draw_tree(area, &tree);
+                let _ = b.draw_dyn(area, &tree, &());
             },
         },
         PrimitiveCase {
