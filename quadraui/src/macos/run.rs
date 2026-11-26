@@ -225,9 +225,9 @@ type TickFn = Box<dyn Fn() -> Reaction + 'static>;
 ///   `TextSelection`/scrollbar/split-divider drag (armed by the
 ///   `MouseDown` branch above) emits its synthetic event alongside the
 ///   plain `MouseMoved`, mirroring `gtk::run`'s motion controller /
-///   `win::run::route_mouse_move`.
+///   `win::run::route_mouse_move`, then on to `preprocess_event`.
 /// - `MouseUp`: routes through [`crate::dispatch::dispatch_mouse_up`]
-///   so an in-progress drag ends cleanly.
+///   so a drag ends cleanly, then on to `preprocess_event`.
 ///
 /// Everything else — double-click folding, ActivityBar keyboard-focus
 /// redirect, Tab/Shift+Tab focus cycling, global accelerator
@@ -301,12 +301,10 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     // (`TextSelectionChanged`/`ScrollOffsetChanged`/`SplitDividerDragged`)
     // alongside the plain `MouseMoved` — mirrors gtk::run's motion
     // controller / win::run::route_mouse_move. The plain `MouseMoved`
-    // goes straight to `app.handle` (nothing in the shared pipeline
-    // matches it); the extra event, if any, recurses into `dispatch_event`
-    // so its own pre-processing (`TextSelectionChanged`, via
-    // `preprocess_event`) applies uniformly — safe because
-    // `dispatch_mouse_drag` never emits a second `MouseMoved`, so this
-    // can't loop.
+    // goes to `preprocess_event` (pointer hover, widget Enter/Leave); the
+    // extra event, if any, recurses into `dispatch_event` so its own
+    // pre-processing applies uniformly — safe because
+    // `dispatch_mouse_drag` never emits a second `MouseMoved`.
     if let UiEvent::MouseMoved { .. } = &event {
         let events = {
             let stack_rc = backend.modal_stack_handle();
@@ -323,7 +321,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         let mut outcome = EventOutcome::Continue;
         for ev in events {
             let step = if matches!(ev, UiEvent::MouseMoved { .. }) {
-                app.handle(ev, backend)
+                runtime::preprocess_event(ev, backend, app)
             } else {
                 dispatch_event(ev, backend, app, caret_visible, caret_pause)
             };
@@ -341,7 +339,8 @@ pub(crate) fn dispatch_event<A: AppLogic>(
     // in-progress drag ends cleanly — mirrors gtk::run's
     // `connect_released` / win::run::route_mouse_up. `dispatch_mouse_up`
     // always returns exactly one `MouseUp` (see its doc), rewritten with
-    // `widget` when the release lands inside an open modal.
+    // `widget` when the release lands inside an open modal, then goes to
+    // `preprocess_event` like every other backend's release.
     if let UiEvent::MouseUp { .. } = &event {
         let ev = {
             let stack_rc = backend.modal_stack_handle();
@@ -358,7 +357,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             .next()
             .expect("dispatch_mouse_up always returns exactly one MouseUp")
         };
-        return app.handle(ev, backend);
+        return runtime::preprocess_event(ev, backend, app);
     }
 
     // Everything else — double-click folding, ActivityBar redirect,
