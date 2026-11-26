@@ -470,6 +470,13 @@ distinct."
 
 ## D-005 — `*_layout` coordinate-frame convention (issue #505)
 
+**Status:** Superseded by D-021 (2026-11-20) and D-022 (2026-11-21).
+There are no per-widget `Backend::*_layout` methods under the widget
+contract; the coordinate frames are fixed by `Interactive::sub_regions`
+and `RoutedEvent::Pointer` (widget-local) and `PaintedWidgets`
+(absolute). The frame-agreement and non-zero-origin testing rules this
+entry argues for carry over (`LESSONS.md`).
+
 ### Question
 
 `LESSONS.md` records a rule from a shipped bug (`mac_tree_layout` /
@@ -550,6 +557,12 @@ Future primitive decisions should cite this file when they hit the
 same fork.
 
 ## D-006 — `Surface`/`ScreenLayout` is canonical; `Backend::draw_*` is the low-level entry point (issue #456)
+
+**Status:** Superseded by D-021 (2026-11-20) and D-023 (2026-11-21).
+`ScreenLayout` stays canonical, but its widget surfaces are one
+`Surface::Widget` variant, and the low-level entry point is
+`DrawsPrimitives::draw_dyn` / `draw_primitive`, not a per-widget
+`Backend::draw_*` method.
 
 ### Question
 
@@ -657,6 +670,10 @@ regardless of `Surface` coverage) still holds.
   "every primitive must have one."
 
 ## D-007 — `Backend` trait symmetry: missing `*_layout` methods, off-trait rasteriser fns (issue #506)
+
+**Status:** Superseded by D-021 (2026-11-20). The question assumed every
+widget has a `Backend::draw_*`/`*_layout` pair; under the widget
+contract no widget has one, so there is no symmetry to keep.
 
 ### Question
 
@@ -2783,3 +2800,395 @@ instead grew a `pub(crate) draw_dialog_with_style` sibling the existing
   names as not yet migrated onto a `native_surface_paint` module at
   all. They are out of scope here the same way they were out of scope
   for every earlier `PaintSurface` slice.
+
+---
+
+## D-021 — The widget contract: one implementation per widget, backends are platform services (epic #2828)
+
+**Status:** Decided 2026-11-20 (operator approval, as the gate for taking
+quadraui public). Shipped in 0.12.
+
+**Date:** 2026-11-20.
+
+### Question
+
+Every widget had one implementation per backend: a `Backend::draw_<widget>`
+/ `<widget>_layout` pair, implemented four times (TUI, GTK, macOS, Win),
+plus a separate binding-core path for the Python/Node bindings. Audit 6
+counted 202 `Backend` methods, and found the documented rule "every
+primitive MUST have a Backend method" producing new legacy code (TreeTable
+added `draw_tree_table`/`tree_table_layout`). Each copy could drift from
+the others in paint, hit-testing and behaviour. Should a widget keep one
+implementation per backend, or own all of its behaviour in one place?
+
+### Decision
+
+**A widget is one module that owns its measurement, layout, pixel paint,
+cell paint and behaviour, through two required traits: `Primitive` and
+`Interactive`.**
+
+1. `Primitive` (`src/primitive.rs`): `layout(ctx, rect) -> Self::Layout`,
+   `measure`, `paint(layout, &mut dyn PaintSurface, &PaintEnv)` for the
+   pixel backends, `paint_cells(layout, &mut dyn CellSurface, &PaintEnv)`
+   for TUI, plus `paint_bleed`, `paint_zone`, `font_role` and
+   `native_presentation`.
+2. `Interactive` (`src/interactive.rs`, D-022): focus, `handle`,
+   sub-regions, popups, persistent state.
+3. **Backends supply platform services and rasterisers only**: a window,
+   an event loop, fonts and text measurement, a `PaintSurface` or
+   `CellSurface`, clipboard, dialogs and the other `PlatformServices`.
+   They have no per-widget methods. A widget reaches a backend through
+   `DrawsPrimitives::draw_dyn` / `draw_primitive` / `layout_primitive`,
+   which are generic over every widget and not part of the sealed
+   `Backend` trait.
+4. `frame::Surface` has two variants: `Widget` and `Opaque`.
+5. One runtime, one focus model (`FocusTree`), one `FrameTree`, one
+   pointer-capture mechanism, shared by Rust apps, the Python/Node
+   bindings and accessibility actions.
+6. **Breaking changes are allowed throughout 0.12, with no shims or
+   façades.** vimcode and coord-tui stay on 0.11 and migrate later.
+
+When a widget needs a drawing capability no surface verb offers, the
+change is a new `PaintSurface` / `CellSurface` verb that every backend
+implements — one backend-neutral operation — never a widget-shaped
+`Backend` method.
+
+### Why
+
+- **Drift is impossible by construction.** One `layout` feeds paint, cell
+  paint, hit-testing and `handle` on every backend (`LESSONS.md`,
+  *Paint/click drift*). Four copies of a widget cannot agree by review
+  alone; audit after audit found them disagreeing.
+- **An out-of-crate widget is a first-class widget.** `Backend` is sealed
+  (D-013), so a per-widget-method design means a third-party widget can
+  never paint on a pixel backend. Under the contract it implements the
+  same two traits a built-in does (`tests/primitive_public_api.rs`).
+- **The binding layer stops re-implementing widgets.** With one erased
+  widget shape (`DynWidget`), binding-core decodes a kind into a widget
+  and hands it to the same runtime, instead of carrying its own paint,
+  hit and semantic tables per kind.
+- **A new backend is a bounded job.** It implements platform services and
+  two drawing surfaces, not one method pair per widget.
+
+### What this does NOT mean
+
+- It does not make `Backend` implementable outside the crate. D-013
+  stands.
+- It does not move theming into widgets: a widget paints with the
+  `Theme` and `Style` its `PaintEnv` carries, and `Backend::set_theme` /
+  `set_style` still decide them.
+- It does not promise API stability before 1.0 (D-019).
+
+---
+
+## D-022 — Behaviour is a separate trait, `Interactive`, routed by the runtime (issue #2817)
+
+**Status:** Decided and shipped 2026-11-21.
+
+**Date:** 2026-11-21.
+
+### Question
+
+D-021 gives every widget its own behaviour. Does behaviour fold into
+`Primitive`, and how does an event reach a widget?
+
+### Decision
+
+1. **A separate trait, `Interactive: Primitive`.** A widget's paint shape
+   (`Layout`) and behaviour shape (`State`, `Action`) vary independently,
+   and a widget with no behaviour (`Progress`, a static divider) opts out
+   in one line with `non_interactive!`.
+2. **`handle(&self, &mut State, &RoutedEvent, &Self::Layout, &mut EventCx)
+   -> Handled<Action>`.** The widget hit-tests against the same layout
+   its paint used. `RoutedEvent` arrives already resolved by the runtime:
+   pointer positions in the widget's own local space, the sub-target
+   under the pointer, keystrokes only while focused, IME text,
+   accessibility actions, focus in/out, and popup events (D-027).
+   `RoutedEvent` is `#[non_exhaustive]`.
+3. **The widget talks back through `EventCx` over an `EventHost`**:
+   request focus, capture or release the pointer, set the cursor, request
+   a redraw, emit a `UiEvent`. It never sees a concrete backend type.
+4. **`Action: WidgetAction`** turns into the `UiEvent` the app routes
+   (`into_ui_event(self, id)`), so the same gesture produces the same
+   `UiEvent` whether it arrived as a click, a direct `handle` call from a
+   binding host, or an accessibility action.
+5. **`focus() -> FocusSpec`** (`None`, `Stop`, or `Children` sub-target
+   stops) and **`sub_regions(layout)`** (widget-local rects, most specific
+   first) let the host build tab order and hit-test sub-parts without
+   knowing the widget's internals.
+
+### Why
+
+- One `handle` serves the Rust runtime, the bindings and accessibility,
+  which is what makes three-way event parity testable per widget.
+- Local coordinates mean a widget's behaviour never depends on where it
+  was painted, and a unit test needs no backend.
+
+---
+
+## D-023 — Type erasure and routing: `DynWidget`, `Surface::Widget`, `FrameTree`, `WidgetStateStore` (issues #2818, #2885)
+
+**Status:** Decided and shipped 2026-11-21.
+
+**Date:** 2026-11-21.
+
+### Question
+
+`Primitive` has associated `Layout` and `Event` types and so cannot be a
+trait object. How do the frame, the runtime and the bindings hold "any
+widget" without one code path per widget type, and where does a widget's
+state live when widget values are rebuilt every frame?
+
+### Decision
+
+1. **`DynWidget`**, implemented for every `Interactive` widget by one
+   blanket impl, never by hand. It erases `Layout` behind
+   `PrimitiveLayout` (downcastable) and `State` behind `dyn Any`.
+2. **`Surface::Widget { rect, widget: Box<dyn DynWidget> }`** is the one
+   frame variant for every widget, painted by `draw_dyn`.
+3. **`FrameTree`** is the routing input: `(id, rect, widget)` nodes an app
+   returns from `AppLogic::frame_tree`, usually
+   `ScreenLayout::into_frame_tree`. It is rebuilt for each routed event,
+   not cached across a frame, because routing calls `handle` on the
+   widget value itself and that value does not outlive a `render`.
+4. **`WidgetStateStore`**, keyed by `WidgetId`, holds each widget's
+   `Interactive::State` across those rebuilds. It is per-thread: the
+   routing engine writes it and `draw_dyn` reads it into
+   `PaintEnv::widget_state`, both on the thread that owns the event loop,
+   with no new `Backend` method.
+5. **`PaintedWidgets`**: `draw_dyn` records each identified widget's
+   rect, layout and absolute sub-regions for the frame, so drivers and
+   binding layers can address a widget or sub-part generically
+   (`painted_hit`, `painted_sub_center`).
+
+### Why
+
+- One code path each for paint, hit-test, focus and event delivery.
+- Widget descriptors stay cheap immediate-mode values; only the state
+  that must persist is stored.
+- A per-thread store keeps the `Backend` method count falling (the
+  backend method ratchet only moves down).
+
+---
+
+## D-024 — TUI paints through `paint_cells` on a `CellSurface`, not a cell-quantised `PaintSurface` (issues #2815, #2946)
+
+**Status:** Decided 2026-11-21 (`CellSurface`); final signature
+2026-11-26.
+
+**Date:** 2026-11-21.
+
+### Question
+
+Should TUI implement `PaintSurface` with every verb quantised to cells, so
+a widget has one paint method?
+
+### Decision
+
+**No. A widget has a second paint method, `Primitive::paint_cells(layout,
+&mut dyn CellSurface, &PaintEnv)`, and TUI implements `CellSurface`.**
+`CellSurface` is backend-neutral: `put_char`, `put_wide`,
+`put_grapheme`, `put_str_clipped`, `fill`, `draw_border` (named
+box-drawing sets), `get`, `set_cursor`, `emit_graphics`, `color_depth`.
+No `ratatui` type appears in the contract.
+
+### Why
+
+- Terminal chrome is glyph choice, not geometry: a bordered list picks a
+  specific box-drawing glyph per corner, which no `PaintSurface` verb can
+  express without becoming a terminal API in disguise.
+- Text on a cell grid is counted in display columns (double-width CJK
+  occupies two), which a pixel-shaped text run has no notion of.
+- Both gaps are structural, not missing verbs, so a second method is the
+  honest shape. A widget with no TUI story leaves `paint_cells` as its
+  default no-op and still gets a real, hit-testable layout on TUI.
+
+---
+
+## D-025 — One hover/press channel: `PaintEnv` (issues #3024, #2946)
+
+**Status:** Decided and shipped 2026-11-26. #3024 and #2946 were
+implemented as one sweep, since both rewrote every `paint`/`paint_cells`
+signature.
+
+**Date:** 2026-11-26.
+
+### Question
+
+Hover and press reached widgets several ways: `hovered`/`pressed` fields
+on descriptors, binding-side chrome-hover plumbing, per-widget hover
+trackers, row-index `PaintState`s. Which one is the contract?
+
+### Decision
+
+1. **Every paint call takes a `PaintEnv`**: theme and style
+   (`PaintServices`), the frame's resolved row height, the caller's
+   per-call `PaintState`, the resolved `InteractionState` (hover and
+   press, with sub-targets), and the widget's persistent state (D-027).
+   `PaintEnv` is `#[non_exhaustive]` and built with `PaintEnv::new` plus
+   `with_*` builders, so a field added later reaches every widget without
+   another signature change.
+2. **The runtime tracks one ambient pointer state** (`interaction`
+   module). `draw_dyn(rect, w, &())` paints with it; a caller passes an
+   explicit `InteractionState` to pin one instead. When the ambient hover
+   names the widget being painted, it is resolved again against the rect
+   and sub-parts it is painted at now, so a tint stays with what is under
+   the pointer when content moves.
+3. **Descriptors carry no `hovered`/`pressed` fields.** The one exception
+   is `Scrollbar`, whose hover and drag state are part of its sealed test
+   literals.
+
+### Why
+
+- One channel means a hover fix lands once for every widget and backend,
+  and the four `hover_channel_<backend>.rs` tests check every tinting
+  widget against the same board.
+
+---
+
+## D-026 — Controlled mode for visible state (0.12 execution plan)
+
+**Status:** Decided 2026-11-26, with the 0.12 execution plan.
+
+**Date:** 2026-11-26.
+
+### Question
+
+When a widget's visible state (selection, scroll offset, open/closed,
+collapsed sections, chart crosshair) can change through `handle`, does it
+live in the widget's `Interactive::State` or on the descriptor the app
+owns?
+
+### Decision
+
+**Controlled mode everywhere.** Visible state stays a descriptor field
+the app owns. `handle` emits the event that asks the app to change it;
+the app applies it and repaints. `Interactive::State` holds only gesture
+data: an in-progress drag, a pressed index, typeahead.
+
+### Why
+
+- Apps, bindings and tests already construct descriptors with these
+  fields; keeping them avoids a second source of truth.
+- One state owner per value: the app can persist, undo or synchronise
+  visible state without reaching into the widget store.
+
+---
+
+## D-027 — Popups and persistent state belong to the widget (issue #3028)
+
+**Status:** Decided and shipped 2026-11-26.
+
+**Date:** 2026-11-26.
+
+### Question
+
+Dropdowns, calendars and submenus need to paint above the whole frame and
+be hit-tested first. Some widgets also need their `Interactive::State`
+at paint time. Who owns open popups, and how does state reach paint?
+
+### Decision
+
+1. **`Interactive::popups(state, layout) -> Vec<Popup>`**, asked only of
+   widgets that set `const OPENS_POPUPS: bool = true`. The runtime keeps
+   **no popup state**: the answer *is* the set of open popups, read from a
+   descriptor field (controlled mode, D-026) or the widget's own state.
+2. The runtime paints open popups after the app's frame, hit-tests them
+   before any widget, and delivers their events to the owner as
+   `RoutedEvent::PopupEvent` (resolved against the popup) and
+   `RoutedEvent::PopupDismissed` (outside press or Escape). A popup
+   swallows the events that land on it. While a modal is open, popups
+   neither paint nor route.
+3. **`PaintEnv::widget_state`** carries the widget's persistent state
+   into paint (`widget_state_as::<T>()`), filled by `draw_dyn` from the
+   per-thread store (D-023).
+4. **`Primitive::native_presentation(backend, rect)`** lets a widget
+   present itself through the platform instead of painting (the macOS
+   menu bar installed as the system one). The frame asks every widget,
+   so no frame code downcasts to a concrete widget type.
+
+### Why
+
+- Popup state in the runtime would be a second copy of "is it open",
+  which is exactly the drift D-021 removes.
+- `ComboBox` and `DatePicker` proved the shape before the remaining
+  widgets were ported onto it.
+
+---
+
+## D-028 — A composite publishes its regions as zones `"<id>:<name>"` (0.12 execution plan, issue #2954)
+
+**Status:** Decided 2026-11-26.
+
+**Date:** 2026-11-26.
+
+### Question
+
+Structural tests assert on named regions (`app-shell:status-bar`), which
+the app shell registered by hand with `Backend::register_zone`. Once a
+composite paints its own children through the contract, how do those
+regions stay observable?
+
+### Decision
+
+**`draw_dyn` publishes them.** A widget names a sub-part with
+`Interactive::sub_region_name(sub) -> Option<&'static str>`, and
+`draw_dyn` registers that sub-part's painted rect as the zone
+`"<widget id>:<name>"`. A widget's whole-rect zone comes from
+`Primitive::paint_zone`. A composite that lays out the whole window but
+reacts to the pointer only on a few parts sets
+`Interactive::HOVER_ON_SUB_REGIONS_ONLY`.
+
+The alternative, each composite registering its own zones by hand from
+inside paint, was rejected: it makes the zone ratchet tautological and
+puts backend calls back into widget code.
+
+---
+
+## D-029 — 0.12 ships the complete widget contract (epic #2828)
+
+**Status:** Decided 2026-11-26 (operator decision). Replaces the earlier
+plan to split the contract across 0.12 and 0.13.
+
+**Date:** 2026-11-26.
+
+### Decision
+
+0.12 is released only when D-021's definition of done holds:
+
+1. Every widget kind, including the binding-only checkbox, slider,
+   select, password and textarea, implements `Primitive` and
+   `Interactive`.
+2. `Backend` has no per-widget draw or layout methods: platform services
+   plus the erased draw only.
+3. The per-backend directories (`src/tui`, `src/gtk`, `src/macos`,
+   `src/win`) hold platform modules only.
+4. `frame::Surface` is `Widget` plus `Opaque`.
+5. One focus model, one `ensure_visible`, one navigation core, one text
+   editor, one pointer-capture mechanism, one `FrameTree`; a deny-list
+   test keeps the old duplicates out, including
+   `CellSurface::ratatui_buffer`.
+6. The same input produces the same `UiEvent`s in a Rust app, a py/node
+   app and through `a11y::route_action`, for every interactive widget.
+7. binding-core is translation only, and the wire schema is derived.
+8. An out-of-crate widget lays out, paints in pixels and cells, takes
+   focus, handles input and is reachable from Python through the kind
+   registry (`tests/primitive_public_api.rs`).
+
+Binding-side decisions taken with the execution plan, landing with the
+binding-core collapse (#2976–#2979):
+
+- The `menu_bar` wire kind decodes to `AppMenu`.
+- The wire key `"TreeTableController"` and the bottom-panel `WidgetId`
+  strings are preserved.
+- The imperative overlay APIs (`show_toast`, `open_*_dialog`, …) stay, as
+  a binding-host overlay stack of generic `DynWidget` entries.
+- The py/node removals `list_char_width`, `scrollbar_reserve` and the
+  tree-table `set_tree_table_children` / sort-override setters are
+  accepted breaks for 0.12, each listed under the release's removed
+  changes.
+
+### Why
+
+- Shipping half a contract would publish two ways to write a widget, and
+  the first public release would teach the one that is being deleted.

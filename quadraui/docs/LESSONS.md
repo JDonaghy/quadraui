@@ -3,25 +3,43 @@
 Durable rules that came out of real failures. Each one is load-bearing —
 read at session start; apply as you work. New lessons get appended
 (date + one-line incident summary). Lessons don't get removed unless
-they turn out wrong.
+they turn out wrong; when the code a lesson names changes shape, the
+rule is restated against the new shape.
+
+The rules below are written against the widget contract. A widget is one
+type that implements `Primitive` (layout and paint, `src/primitive.rs`)
+and `Interactive` (behaviour, `src/interactive.rs`). It is painted
+through `DrawsPrimitives::draw_dyn` or `Surface::Widget`, and routed
+through a `FrameTree`. Backends are platform services and rasterisers;
+they have no per-widget methods.
 
 ## Paint/click drift is the structural bug class quadraui exists to eliminate
 
-When a primitive's paint code computes one set of coordinates and its
-hit_test code computes another, every consumer eventually sees "I
+When a widget's paint code computes one set of coordinates and its
+hit-test code computes another, every consumer eventually sees "I
 clicked X but Y was selected" — and each consumer works around it in a
 different ad-hoc way. The library's job is to make that impossible by
 construction:
 
-- **One layout, two consumers.** Paint and hit_test must consume the
-  *same* `Layout` instance. Never let either side re-derive bounds.
+- **One layout, every consumer.** `Primitive::layout` resolves
+  `Self::Layout` once. `paint`, `paint_cells`, `Interactive::handle` and
+  `Interactive::sub_regions` all receive that same value. None of them
+  re-derives bounds on its own.
+- **`layout` is pure.** Same `LayoutCtx`, same `rect`, same layout.
+  `draw_dyn` records a second resolution of the painted layout into
+  `PaintedWidgets`, and the routing engine re-lays out each `FrameTree`
+  node when an event arrives; both rely on this. A layout that reads a
+  clock, a counter or interior-mutable state breaks hit-testing in a way
+  no paint test sees.
 - **Coordinate-system agreement is structural.** When a backend rounds
-  to a discrete unit (TUI cells, integer pixels), the layout itself
-  must snap to that unit *before* emitting bounds — not at paint time.
-  See `LayoutMetrics::cell_quantum` for the TUI case.
+  to a discrete unit (TUI cells, integer pixels), the layout itself must
+  snap to that unit *before* emitting bounds — not at paint time. A
+  layout branches on `ctx.units()` (`Units::Cells` on TUI) and resolves
+  cell geometry against whole cells, so a fractional rect from a ratio
+  split does not hit-test one cell wider than it painted.
 - **Round-trip coverage proves agreement.** A test that paints, finds
-  the painted region, and hit_tests at that exact position is the only
-  test that catches drift across paint/hit_test formulae. Unit tests of
+  the painted region, and clicks at that exact position is the only test
+  that catches drift across the paint and hit-test paths. Unit tests of
   either side alone will miss it.
 
 ## The band-aid trap
@@ -34,18 +52,27 @@ derive independently; if they ever diverge in inputs *or* in
 derivation, the bug returns in a new shape.
 
 The structural fix is always one derivation consumed by both paint
-and click. Two ways to achieve this:
+and click. The contract gives three ways to get it:
 
-1. **`Backend::*_layout()` re-derivation** — safe when inputs are
-   guaranteed identical (AppLogic runner pattern).
-2. **Cache the layout output** — paint computes the layout, stores
-   it (`RefCell<Option<Layout>>`); click reads it verbatim. Safe
-   when paint and click run in different contexts and inputs may
-   differ (vimcode's `terminal.draw()` closure vs event loop).
+1. **Let the routing engine do it.** Put the widget in the frame's
+   `FrameTree` (`AppLogic::frame_tree`, usually
+   `ScreenLayout::into_frame_tree`). The runtime lays it out against the
+   backend's own metrics and hands that layout to `Interactive::handle`.
+   The app writes no hit-test code at all.
+2. **Re-derive with identical inputs.** `DrawsPrimitives::layout_primitive`
+   resolves a layout exactly as `draw_primitive`/`draw_dyn` do (same row
+   height, char width and text measurer). Safe when the widget value and
+   the rect are the ones that painted.
+3. **Read back the painted output.** `draw_dyn` returns the layout it
+   painted, and `primitive::with_painted_widgets(|p| p.painted_layout(&id))`
+   returns this frame's painted rect and layout for any identified
+   widget. Safe when paint and click run in different contexts and
+   inputs may differ (a host whose paint runs inside `terminal.draw()`
+   and whose event loop runs outside it).
 
-Option 2 is **not** Cell-smuggling. Cell-smuggling caches *inputs*
-to bridge two independent derivations. Layout caching stores the
-*output* of one derivation — there is no second derivation to
+Option 3 is **not** Cell-smuggling. Cell-smuggling caches *inputs* to
+bridge two independent derivations. Reading back the painted layout
+uses the *output* of one derivation — there is no second derivation to
 diverge.
 
 ## Theory-only iteration doesn't converge
@@ -53,27 +80,30 @@ diverge.
 When a migration breaks and the agent can't run the consumer (common
 with TUI apps needing a real terminal), each "plausibly correct from
 code reading" fix ships a new bug. The only escape is a harness that
-exercises paint->hit_test agreement automatically, in unit-test time,
+exercises paint→hit-test agreement automatically, in unit-test time,
 without a human in the loop. **The harness is the gate.** Don't ship
-a primitive change or a consumer migration without one.
+a widget change or a consumer migration without one. See
+[`TESTING.md`](TESTING.md) for the drivers.
 
 ## Migration discipline (corollary)
 
-Migrating a consumer onto a primitive is a contract change, not a
-refactor. The consumer commits to the primitive's `layout()` as the
-source of truth for widget bounds. Every migration MUST add a
+Migrating a consumer onto a widget is a contract change, not a
+refactor. The consumer commits to the widget's `layout()` as the
+source of truth for its bounds. Every migration MUST add a
 *consumer-state* round-trip test before merging:
 
-1. Paint the consumer's MSV / TreeView / etc. into a buffer.
-2. Find painted regions in that buffer.
-3. Simulate the consumer's click handler at those coordinates.
-4. Assert consumer-state mutation matches the painted UI — right
+1. Drive the consumer's `AppLogic` through `TuiDriver` (and the pixel
+   drivers where the consumer runs there).
+2. Locate the painted target (`find`, `find_bounds`, or
+   `primitive::painted_sub_center` for a sub-part with no unique text).
+3. Click, type or drag at that location.
+4. Assert the consumer's state matches the painted UI — right
    section activated, right item selected, right scroll offset moved.
 
-A green primitive test does not prove the consumer integration is
+A green widget test does not prove the consumer integration is
 correct.
 
-## Shared AppLogic code must not hardcode backend-native units
+## Shared app code must not hardcode backend-native units
 
 The first shared `AppLogic` refactor (#14) shipped with
 `STATUS_BAR_PX = 24.0` — a pixel-based constant that zeroed out
@@ -81,20 +111,20 @@ the sidebar on TUI (viewport is ~24 cells, so `24 - 24 = 0`).
 The fix: `backend.line_height() * 1.5` — portable across cells,
 pixels, and DIPs.
 
-Anywhere a shared `AppLogic` computes a rect size or position,
-it MUST derive from `backend.line_height()`, `backend.viewport()`,
-or the layout returned by `backend.msv_layout(...)` /
-`backend.tree_layout(...)`. **No hardcoded px / cell / DIP
-constants in shared render or event-handling code.** Constants
-belong on the backend, not on the consumer.
+Anywhere shared app or widget code computes a rect size or position, it
+MUST derive it from the metrics it was given: `LayoutCtx`'s
+`line_height`, `chrome_line_height()`, `editor_line_height()`,
+`text_width()` and `units()` inside a `Primitive::layout`, or
+`backend.line_height()` and `backend.viewport()` in an `AppLogic`.
+**No hardcoded px / cell / DIP constants in shared layout or
+event-handling code.** Constants belong on the backend, not on the
+consumer.
 
-**Update (issue #1098):** this and "Dropdown item sizing must use
-backend-native units" below are the two incidents `docs/decisions/DECISIONS.md`
-D-016 audited when asked whether a `Px`/`Cell` newtype would have
-caught them. It would not have — both are "hardcoded a literal instead
-of deriving" bugs, not type-confusion a newtype prevents. D-016 is the
-canonical record of `Rect`/`Point`'s unit contract; `quadraui/src/event.rs`'s
-module doc states it on the types themselves now, not only here.
+A `Px`/`Cell` newtype would not have caught this one or the dropdown
+sizing incident below: both are "hardcoded a literal instead of
+deriving", not type confusion. `docs/decisions/DECISIONS.md` D-016 is the
+record of `Rect`/`Point`'s unit contract, and `quadraui/src/event.rs`'s
+module doc states it on the types themselves.
 
 ## All runners must fire all UiEvent variants the consumer pattern needs
 
@@ -104,114 +134,91 @@ never wired an `EventControllerMotion` to fire it. So
 on GTK. Fixed in #14 by adding the motion controller to `gtk::run`.
 
 When adding a consumer pattern that consumes a particular
-`UiEvent` variant, verify that **every runner** (TUI, GTK, and
-future Win-GUI / macOS) actually produces that event.
+`UiEvent` variant, verify that **every runner** (TUI, GTK, macOS,
+Win-GUI) actually produces that event. Hover and press tints depend on
+`MouseMoved` too: the ambient pointer state `draw_dyn` paints with is
+fed from the runner's motion events, so a runner that drops them paints
+no hover at all.
 
-## Backend `_layout` methods must work outside the frame scope
+## Layout must work outside the frame scope
 
 GTK's `handle()` runs from signal handlers (click, key, motion)
 which fire **outside** the `draw` callback. The Cairo `Context`
-and `pango::Layout` only exist inside the draw callback (the
-"frame scope"). So `Backend::foo_layout(&self, ...)` methods —
-which apps call from `handle()` to hit-test clicks — **cannot
-use pango or cairo handles**.
+and the frame's `pango::Layout` only exist inside the draw callback
+(the "frame scope").
 
-Use stored metrics instead: `current_line_height`,
-`current_char_width`, etc. These are set once per
-`set_current_line_height` / `set_current_char_width` call and
-remain valid across the entire event cycle.
+Layout runs outside it. The routing engine lays out every `FrameTree`
+node when an event arrives, and a host calls `layout_primitive` from its
+click handler. So `Primitive::layout`, and every `LayoutCtx::text_width`
+call it makes, must not need a frame-scope handle. The measurer
+`DrawsPrimitives` attaches is `Backend::measure_text`, which on GTK
+measures against the stored widget-realized `pango_ctx`, not the
+per-frame layout. A backend's `measure_text` must keep that property:
+it answers the same width inside and outside a frame.
 
-The `draw_*(&mut self, ...)` methods *can* use the frame scope
-because they're called from `render()`, which runs inside the
-draw callback. This asymmetry is structural to GTK's rendering
-model and will apply to any retained-mode backend (Win-GUI,
-macOS). TUI doesn't have this constraint because ratatui's
-`Frame` is available throughout the event loop.
+Paint (`paint` / `paint_cells`) *can* use the frame scope, because it is
+called from `render()`, inside the draw callback. This asymmetry is
+structural to GTK's rendering model and applies to any retained-mode
+backend (Win-GUI, macOS). TUI doesn't have this constraint because
+ratatui's `Frame` is available throughout the event loop.
 
-First hit: `menu_bar_layout` panicked on GTK because it called
-`current_frame_refs()` from a click handler. Fixed by switching
-to `current_char_width`-based measurement.
+First hit: the GTK menu-bar layout panicked because it reached for the
+frame's Pango layout from a click handler. Fixed by measuring with
+stored metrics instead.
 
-## Real apps need layout caching, not layout re-derivation
+## Paint and hit-test must be handed the same rect
 
-The `Backend::*_layout()` methods (e.g. `msv_layout`, `tree_layout`,
-`menu_bar_layout`) exist so click handlers can get the same layout
-paint used — **but only when inputs are guaranteed identical.**
-In practice, real apps beyond the demo stage often can't guarantee
-this: paint runs inside ratatui's `terminal.draw(|frame| ...)` closure
-or GTK's draw callback, click runs in the event loop outside it.
+First hit: GTK's menu-bar paint passed `self.current_line_height` to the
+rasteriser while its hit-test layout used `rect.height`. When consumers
+passed a bar rect taller than the line height, the dropdown anchored
+below the full rect in hit-testing but painted at line height —
+producing a gap and broken clicks.
 
-The fix: cache the layout paint produced, read it in click.
-`RefCell<Option<MultiSectionViewLayout>>` on the host state, set
-by paint, consumed by click. One derivation, zero drift — by
-construction.
+Under the contract a widget has one `layout(ctx, rect)`, so the remaining
+place for this bug is the host: the rect a widget is painted at
+(`Surface::Widget { rect, .. }`, or `draw_dyn(rect, ..)`) and the rect
+its `FrameTree` node carries must be the same rect. Build both from one
+place: a helper that returns the frame's `ScreenLayout` for a given rect,
+which `render` draws and `frame_tree` turns into routing nodes with
+`ScreenLayout::into_frame_tree`. When the rect depends on backend
+metrics `frame_tree` cannot see (a pixel line height), `render` records
+the rect it painted at (a `Cell<Rect>` on the app) and `frame_tree` reads
+that back. That records paint's *output*, not an input to a second
+derivation. Inside `layout`, size from `rect` and the `LayoutCtx`
+metrics, never from a backend field a second caller cannot see.
 
-This is NOT the "band-aid trap" (caching inputs to bridge two
-independent derivations). Layout caching stores the output of one
-derivation. There is no second derivation that can diverge.
+## Every layout states its coordinate frame, and is tested off the origin
 
-## Backend draw_* and *_layout must agree on which dimensions they use
+A layout's rects must be in a frame every consumer agrees on. First
+hit: the macOS tree and form layouts shifted their hit regions by
+`(area.x, area.y)` to absolute coordinates while their TUI/GTK twins
+returned local ones, and every consumer localised the click before
+hit-testing — so on macOS the click drifted by `area.y`. Surfaced by
+`macos_search_panel` (#44), the first consumer with a non-zero
+`area.y`; every earlier test used `area = (0, 0)`, where the shift is a
+no-op and the bug is invisible.
 
-When a `Backend` trait method pair (`draw_foo` / `foo_layout`) uses
-different dimensions for the same parameter, paint and hit-testing
-diverge. First hit: GTK's `draw_menu_bar` passed
-`self.current_line_height` to the rasteriser while `menu_bar_layout`
-used `rect.height`. When consumers passed a bar_rect taller than
-line_height, the dropdown anchored below the full rect in hit-testing
-but painted at line_height — producing a gap and broken clicks.
+The contract fixes the frames:
 
-Rule: for every `(draw_foo, foo_layout)` pair, audit that they
-pass the same rect/height/width to the underlying layout
-computation.
+- `RoutedEvent::Pointer`'s `local` and `Interactive::sub_regions` are in
+  the **widget's own local space** (origin at its painted rect).
+- `Self::Layout` may bake in absolute geometry its `paint` needs. A
+  layout that holds both converts once, in one helper (as
+  `ShellViewLayout`'s `local` does), not at each call site.
+- `PaintedWidgets` translates sub-regions to **absolute** space, the
+  space a `UiEvent::MouseDown` arrives in.
 
-## Layout helpers must return coords in the same frame across backends
-
-A `*_layout()` helper's `hit_regions` and `visible_*.bounds` must be
-in the **same coordinate frame** as its TUI/GTK twin — typically
-*local to the layout area* (origin `(0, 0)`), so the consumer
-subtracts `area.x` / `area.y` from absolute click coords before
-calling `hit_test`.
-
-First hit: `mac_tree_layout` and `mac_form_layout` both shifted
-their hit_regions by `(area.x, area.y)` to absolute coords (so the
-internal paint loop could iterate `bounds` directly). TUI/GTK twins
-returned local coords, and every consumer (`tree_controller` compose
-helper, `SidebarSystem`, AppLogic) localised position before
-`hit_test` per the documented contract — so on macOS the click
-drifted by `area.y`. Surfaced by `macos_search_panel` (#44) — the
-first non-zero-offset consumer of `mac_tree_layout`. Existing tests
-all used `area=(0, 0)` so the shift was a no-op and the bug
-invisible.
-
-Rule (superseded — see below): layout helpers return local-frame
-coords. Paint loops shift inline (`bounds.x + area.x`). Every layout
-helper needs at least one regression test using non-zero `area.y` —
-`area=(0, 0)` is the case where the bug doesn't manifest.
-
-**Update (issue #505):** the #505 audit of every `Backend::*_layout`
-trait method found that "always local" was never actually the norm —
-of 20 audited methods, only 5 are LOCAL (including `mac_tree_layout`'s
-fixed frame); the other 15 are deliberately **ABSOLUTE** (shifted by
-`rect.x`/`rect.y`), and every backend agrees with its own siblings on
-which one, with no live cross-backend mismatch found. The part of this
-rule that still holds, unconditionally: **a `*_layout` method and its
-TUI/GTK/macOS twins must agree on frame with each other**, that
-agreement must be stated on the trait doc comment (not just implied),
-and every `*_layout` method needs a non-zero-origin regression test —
-`area=(0, 0)` is exactly the case that hides a mixup, as it did here.
-The "which frame" decision itself now lives in
-`PRIMITIVE_RULES.md`'s "Coordinate frames for `*_layout` methods" and
-`docs/decisions/DECISIONS.md` D-005, not in a blanket "local by default" claim.
+Every widget needs at least one test laid out at a non-zero origin.
+`area = (0, 0)` is exactly the case that hides a frame mix-up.
 
 ## Dropdown item sizing must use backend-native units
 
-`MenuSystem::dropdown_layout()` computes item heights from
-`backend.line_height()`. Adding a constant (`lh + 4.0`) assumes
-pixel units — in TUI where `lh = 1.0` cell, `lh + 4.0 = 5.0`
-cells per item. Multiplicative scaling (`lh * 1.4`) is safe
-across unit systems, but fractional values (1.4 cells) cause
-items to land on non-integer rows with blank gaps. Fix: round
-to the nearest integer (`(lh * 1.4).round()`). For TUI this
+Menu dropdown rows compute their height from the line height. Adding
+a constant (`lh + 4.0`) assumes pixel units — in TUI where `lh = 1.0`
+cell, `lh + 4.0 = 5.0` cells per item. Multiplicative scaling
+(`lh * 1.4`) is safe across unit systems, but fractional values (1.4
+cells) cause items to land on non-integer rows with blank gaps. Fix:
+round to the nearest integer (`(lh * 1.4).round()`). For TUI this
 snaps to 1 cell; for GTK the rounding is sub-pixel and invisible.
 
 ## `[patch.crates-io]` in quadraui's manifest does not reach downstream consumers
@@ -233,106 +240,80 @@ sufficient — the consumer's own root `Cargo.toml` must add a matching
 location. Document that companion requirement explicitly wherever the
 quadraui-side patch is added; don't assume it propagates.
 
-## GTK chrome glyphs need an explicit Nerd-Font fallback family, not implicit fontconfig fallback
+## Paint and measurement resolve the font from one `FontRole`
 
-`GtkBackend::draw_tree`/`draw_status_bar`/`draw_tab_bar`/etc. paint
-`Icon::glyph` and consumer-composed status-bar text through a shared
-`pango::Layout` whose font description came straight from `ui_font`
-(e.g. `"Sans 11"`, `#624`). Nerd-Font icon glyphs live in Private-Use-Area
-codepoints that "Sans" (or any ordinary system UI font) has zero
-coverage for — Pango's automatic per-character fallback then has to
-guess at *some* installed font that claims coverage of that codepoint
-range, and PUA ranges are exactly where unrelated fonts (icon fonts for
-other toolkits, private vendor glyphs) squat on the same numbers. The
-result is nondeterministic: works on one machine's font set, renders
-tofu/blank or the wrong glyph on another's, with no error anywhere.
+Incident (#416, #624): GTK chrome painted Nerd-Font icon glyphs through
+a Pango layout whose font description was the bare `ui_font` (e.g.
+`"Sans 11"`). Icon glyphs live in Private-Use-Area codepoints that no
+ordinary UI font covers, so Pango's implicit per-character fallback
+guessed at whichever installed font claimed that range — correct on one
+machine, tofu or the wrong glyph on another, with no error anywhere.
+Some rasterisers also painted in whatever font the editor content had
+left on the shared layout.
 
-Two more rasterisers had a *worse* version of the same gap: `draw_list`
-and `draw_palette` never swapped the shared layout onto `ui_font` at
-all (`draw_tree`/`draw_status_bar`/`draw_tab_bar` did, per #624) — their
-icon glyphs painted in whatever font the frame's *editor* content
-happened to leave behind, which is a doubly-wrong font for both the row
-label and the icon. The two didn't get identical treatment, though:
-`draw_list` (and `draw_multi_section_view`) got the full `draw_tree`-style
-save/swap/restore, so its row label *and* icon both paint in
-`chrome_font_description(ui_font)`. `draw_palette` only got a narrow
-per-glyph `with_nerd_font_fallback` swap scoped to `item.icon`'s glyph —
-its title/query/row-label/detail text still paints in whatever font was
-live going in, because `draw_palette` also paints an optional preview
-pane through the same layout, and that pane's content (a file/diff
-preview) must keep the caller's own font rather than being forced onto
-chrome's `ui_font`. Widening `draw_palette`'s swap to match `draw_list`
-would fix the row-label gap but incorrectly drag the preview pane onto
-`ui_font` too — left as a follow-up, not folded into #416.
+A second failure hid behind the first. When one toolbar's paint moved to
+the chrome font, its clicks broke: the hit-test layout still measured
+with the old font, so the button the user clicked was no longer the one
+the hit test reported. The test harness missed it, because with no Pango
+context it measured `chars().count() * char_width`, which is right only
+for a monospace font.
 
-`draw_toolbar` and `draw_sidebar_panel` (which composes a `Toolbar`
-header internally) got the same gap too, and #416 gave both the full
-`draw_list`-style save/swap/restore around the whole paint call —
-unlike `draw_palette`, a toolbar has no "preview pane" content sharing
-the layout, so there's no reason to scope the swap narrower than the
-whole button strip.
+The rules:
 
-**Moving a rasteriser's paint font moves its hit regions too.** The
-first cut of that toolbar change swapped only `GtkBackend::draw_toolbar`
-and broke every toolbar *click*: `AppLogic::handle` hit-tests by calling
-`Backend::toolbar_layout` between frames, and that method still measured
-with whatever font was live, so the button the user visibly clicked was
-no longer the one the hit test reported. Any `draw_*` font swap must be
-mirrored into its `*_layout` twin — the same contract #624 wrote into
-`status_bar_layout` ("measure with `ui_font`, matching the paint font").
-Two related traps sit behind it: those `*_layout` calls run *outside*
-`enter_frame_scope`, so they fall back to the persistent `pango_ctx`,
-and if there is no `pango_ctx` either they fall back again to
-`chars().count() * char_width` — an estimate that is only right for a
-monospace font and silently drifts under a proportional `ui_font`. That
-second fallback is what hid the bug from `GtkDriver`-based tests until
-the driver started seeding `pango_ctx` the way `gtk::run::activate`
-does. Prefer production parity in the harness over a "close enough"
-measurement fallback; a fallback that is accurate only for the font you
-happened to be using is a test that stops testing the moment the font
-changes.
+- **One font per role, for paint and measurement alike.** A widget
+  declares `Primitive::font_role()`. Paint resolves that role on the
+  surface (`draw_dyn` switches an `Editor`-role widget onto the editor
+  font), and `LayoutCtx::text_width(text, role)` measures through
+  `Backend::measure_text(text, role)`, which resolves the same
+  description. A widget never builds its own font description.
+- **Chrome glyphs get an explicit fallback family.** On GTK the chrome
+  role's description is `gtk::chrome_font_description(ui_font)`, which
+  *appends* `Symbols Nerd Font` (`gtk::NERD_FONT_FALLBACK_FAMILY`) to the
+  family list. Pango consults the appended family only for characters
+  the primary one can't cover, so ordinary text is unaffected. Any GTK
+  code that paints a glyph outside the common BMP range goes through
+  `chrome_font_description` / `with_nerd_font_fallback`, never a bare
+  `pango::FontDescription::from_string`.
+- **Prefer production parity in the harness over a "close enough"
+  measurement fallback.** `GtkDriver` seeds `pango_ctx` the way
+  `gtk::run` does. A fallback that is accurate only for the font you
+  happened to be using is a test that stops testing the moment the font
+  changes.
 
-Fix (#416): a shared `gtk::chrome_font_description(ui_font)` /
-`gtk::with_nerd_font_fallback(base)` pair *appends*
-`Symbols Nerd Font` to the family list instead of relying on implicit
-fallback — Pango only consults the appended family for characters the
-primary one can't cover, so ordinary text is unaffected. `draw_tab_bar`
-icons and `ActivityBar` icons (#620) already used this append/replace
-pattern in isolation; #416 generalized it into one named constant
-(`gtk::NERD_FONT_FALLBACK_FAMILY`) so every chrome glyph path resolves
-against the same font, instead of five call sites each hand-rolling
-(or omitting) their own version of the same fix.
+## Ambient hover is per-thread state; reset it in tests that read tints
 
-Rule: any GTK rasteriser that paints a glyph outside the BMP-common
-range — an icon, a status/badge symbol, anything sourced from an
-`Icon`/similar glyph+fallback pair — must build its `FontDescription`
-through `chrome_font_description`/`with_nerd_font_fallback`, not a bare
-`pango::FontDescription::from_string`. And when adding a new
-icon-bearing chrome rasteriser: check whether it also needs the
-`ui_font`-not-editor-font swap `draw_tree` established in #624 — don't
-assume a new `draw_*` inherits the right font just because it shares
-the frame's `pango::Layout` with rasterisers that got it right.
+`draw_dyn(.., &())` paints with the ambient pointer state
+(`interaction::ambient_interaction()`), which the runtime updates from
+pointer events. It is thread-local and survives across frames, so a
+driver test that clicks a widget and then reads its colour sees the
+hover or press the click left behind. Under `--test-threads=1` every
+test runs on one thread and inherits the previous test's pointer state.
+
+Rule: a test whose assertions read hover or press tints, or paint
+output under a pointer an earlier step left on screen, calls
+`interaction::reset_ambient_interaction()` first (when it builds its
+driver, or before the repaint it samples). Never weaken a tint
+assertion to tolerate leftover hover. A test that needs a specific hover
+pins it instead: pass an explicit `InteractionState` as `draw_dyn`'s
+`state`, or build a `PaintEnv` with `with_interaction`.
 
 ## What NOT to do
 
 - **Don't re-derive layouts with different inputs in click vs paint.**
   Two independent layout computations that can diverge is the
-  structural bug class quadraui eliminates. Two safe patterns:
+  structural bug class quadraui eliminates. Use the routing engine, an
+  identical-input `layout_primitive`, or the painted-layout record (see
+  *The band-aid trap*).
 
-  1. **AppLogic runner (demos, simple apps):** `render()` and
-     `handle()` call the same `backend.*_layout()` with identical
-     inputs. Works when app state hasn't changed between render
-     and handle.
-
-  2. **Layout caching (vimcode, complex apps):** Paint stores the
-     layout output (`RefCell<Option<Layout>>`), click reads it
-     verbatim. One derivation, two consumers. NOT Cell-smuggling —
-     smuggling caches *inputs* to bridge two derivations; layout
-     caching stores the *output* of one.
+- **Don't add a per-widget method to `Backend`.** A widget's layout,
+  paint, cell paint and behaviour live on the widget, in one module.
+  When a widget needs a capability no `PaintSurface` / `CellSurface`
+  verb offers, add the verb (one backend-neutral drawing operation that
+  every backend implements), not a `draw_<widget>`.
 
 - **Don't import vimcode-specific patterns.** The library is pre-1.0
   but we still want it API-stable enough that downstream consumers
   besides vimcode can adopt it.
 
-- **Don't migrate a consumer onto a primitive without writing the
+- **Don't migrate a consumer onto a widget without writing the
   paint/click harness first.** The harness is the gate.
