@@ -8,41 +8,29 @@
 //! corrupt bytes, unrecognised format) — see
 //! [`crate::backend::Backend::draw_image`]'s doc comment for why.
 //!
-//! Painting is always clipped to the caller's `rect` — the only
-//! [`crate::primitives::image::ImageFit`] variants that can extend past
-//! it are `Cover` and `None`, and neither should bleed into whatever the
-//! host paints next to it (same [`super::text::push_clip`]/`pop_clip`
-//! pair `super::panel` uses for its own
-//! overflow-prone content).
+//! Painting is always clipped to the caller's `rect`, so a `Cover` or
+//! `None` fit never bleeds into whatever the host paints next to it.
 //!
-//! # No decode cache here yet
+//! # Decode cache
 //!
 //! An [`ID2D1Bitmap`] is bound to the [`ID2D1RenderTarget`]
-//! `CreateBitmapFromWicBitmap` built it from. `WinBackend::ensure_surface`'s
-//! device-lost recovery (`D2DERR_RECREATE_TARGET`, see `win::backend`'s
-//! module docs) can replace that target, so a cache would hand back a
-//! bitmap bound to a target that no longer exists post-recovery.
-//! Wiring this in correctly needs the cache to be invalidated in lockstep
-//! with `ensure_surface`'s rebuild, which needs verifying against a real
-//! Direct2D device-loss cycle — out of scope for now.
+//! `CreateBitmapFromWicBitmap` built it from, so [`draw_image_cached`]'s
+//! cache lives on the backend's surface beside that target and is dropped
+//! with it whenever device-lost recovery rebuilds the target. [`draw_image`]
+//! stays uncached, one decode per call.
 //!
 //! # Why WIC instead of `ID2D1RenderTarget::CreateBitmap` from raw pixels
 //!
-//! `CreateBitmap` takes already-decoded pixel bytes at a known stride —
-//! it has no PNG/JPEG decoder of its own. WIC is Direct2D's designated
-//! decode partner for exactly this (`CreateBitmapFromWicBitmap`, gated in
-//! the `windows` crate on the `Win32_Graphics_Imaging` feature added
-//! alongside this module — see `Cargo.toml`'s comment on that feature).
+//! `CreateBitmap` takes already-decoded pixels and has no PNG/JPEG decoder
+//! of its own; WIC is Direct2D's designated decode partner
+//! (`CreateBitmapFromWicBitmap`, behind the `windows` crate's
+//! `Win32_Graphics_Imaging` feature).
 //!
 //! # Why COM must be initialized first
 //!
-//! `CoCreateInstance(CLSID_WICImagingFactory, ..)` needs
-//! `CoInitializeEx` to have run on the calling thread first, exactly like
-//! the `IFileOpenDialog`/`IFileSaveDialog` construction in
-//! `super::services`. Reuses that module's
-//! [`super::services::ensure_com_initialized`] thread-local guard rather
-//! than duplicating it — both call sites want "COM is ready on this
-//! thread," not two independent `Cell<bool>` dances.
+//! `CoCreateInstance(CLSID_WICImagingFactory, ..)` needs `CoInitializeEx`
+//! on the calling thread first, so this reuses
+//! [`super::services::ensure_com_initialized`]'s thread-local guard.
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
 //! `#[cfg(target_os = "windows")] mod image;` and `backend.rs`'s module
@@ -65,17 +53,13 @@ use super::services::ensure_com_initialized;
 use super::text::{pop_clip, push_clip};
 use crate::backend::ImagePaintResult;
 use crate::event::Rect;
+use crate::image_cache::ImageCache;
 use crate::primitives::image::{Image, ImageSource};
 
 /// Decode `source`'s encoded bytes into an [`ID2D1Bitmap`] bound to
-/// `target`, or `None` on any failure. `Path` and `Bytes` funnel through
-/// the same in-memory-stream path (`SHCreateMemStream` +
-/// `CreateDecoderFromStream`) rather than WIC's separate
-/// `CreateDecoderFromFilename` entry point, so both sources are sniffed
-/// from content identically — mirroring
-/// [`crate::gtk::image::load_pixbuf`]'s "the decoder sniffs the format,
-/// no separate MIME hint" contract (see `primitives::image`'s module
-/// docs).
+/// `target`, or `None` on any failure. `Path` and `Bytes` both go through
+/// an in-memory stream (`SHCreateMemStream` + `CreateDecoderFromStream`),
+/// so both are sniffed from content identically, with no MIME hint.
 fn decode_bitmap(target: &ID2D1RenderTarget, source: &ImageSource) -> Option<ID2D1Bitmap> {
     let bytes: Vec<u8> = match source {
         ImageSource::Path(path) => std::fs::read(path).ok()?,
@@ -101,9 +85,7 @@ fn decode_bitmap(target: &ID2D1RenderTarget, source: &ImageSource) -> Option<ID2
     // than borrowing the slice, per the documented API contract.
     let stream = unsafe { SHCreateMemStream(Some(&bytes)) }?;
     // SAFETY: `stream` is the live `IStream` returned above; `null()` for
-    // the vendor GUID asks WIC to sniff the format from content, matching
-    // this function's own doc comment on why `Path`/`Bytes` are decoded
-    // identically.
+    // the vendor GUID asks WIC to sniff the format from content.
     let decoder = unsafe {
         factory.CreateDecoderFromStream(&stream, std::ptr::null(), WICDecodeMetadataCacheOnLoad)
     }
@@ -135,22 +117,34 @@ fn decode_bitmap(target: &ID2D1RenderTarget, source: &ImageSource) -> Option<ID2
     .ok()?;
 
     // SAFETY: `target` is the caller's live `ID2D1RenderTarget`;
-    // `converter` was just initialized above into the one pixel format
-    // this call is guaranteed to accept, per the comment on
-    // `converter.Initialize` above.
+    // `converter` was initialized above into the one pixel format this
+    // call is guaranteed to accept.
     unsafe { target.CreateBitmapFromWicBitmap(&converter, None) }.ok()
 }
 
 /// Paint `image` within `rect` (DIPs, target-relative), honoring
-/// `image.fit`. See the module docs.
+/// `image.fit`, decoding afresh on every call. See the module docs.
 pub fn draw_image(target: &ID2D1RenderTarget, rect: Rect, image: &Image) -> ImagePaintResult {
+    draw_image_cached(target, rect, image, &mut ImageCache::with_capacity(1))
+}
+
+/// [`draw_image`], decoding through `cache` — see the module docs'
+/// "Decode cache". The bitmap is decoded at its own size and stretched at
+/// paint time, so the cache key's size and scale stay constant.
+pub(crate) fn draw_image_cached(
+    target: &ID2D1RenderTarget,
+    rect: Rect,
+    image: &Image,
+    cache: &mut ImageCache<ID2D1Bitmap>,
+) -> ImagePaintResult {
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return ImagePaintResult::Unsupported;
     }
-    let Some(bitmap) = decode_bitmap(target, &image.source) else {
+    let source = &image.source;
+    let Some(bitmap) = cache.get_or_decode(source, 0, 0, 1.0, || decode_bitmap(target, source))
+    else {
         return ImagePaintResult::Unsupported;
     };
-
     let dest = image.layout(rect).bounds;
     let dest_f = D2D_RECT_F {
         left: dest.x,
@@ -158,16 +152,13 @@ pub fn draw_image(target: &ID2D1RenderTarget, rect: Rect, image: &Image) -> Imag
         right: dest.x + dest.width,
         bottom: dest.y + dest.height,
     };
-
     push_clip(target, rect);
-    // SAFETY: `target` is the caller's live `ID2D1RenderTarget`; `bitmap`
-    // came from `decode_bitmap` above, bound to this same `target` (see
-    // the module doc's "No decode cache here yet" note on why a bitmap
-    // must stay bound to the target that created it). `dest_f` is a
-    // plain stack struct borrowed for the duration of this call.
+    // SAFETY: `target` is the caller's live render target, and `bitmap`
+    // is bound to it (see the module doc's "Decode cache"); `dest_f` is a
+    // stack struct borrowed for the duration of this call.
     unsafe {
         target.DrawBitmap(
-            &bitmap,
+            bitmap,
             Some(&dest_f),
             1.0,
             D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
@@ -175,7 +166,6 @@ pub fn draw_image(target: &ID2D1RenderTarget, rect: Rect, image: &Image) -> Imag
         );
     }
     pop_clip(target);
-
     ImagePaintResult::Painted
 }
 

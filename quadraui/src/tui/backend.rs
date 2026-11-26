@@ -308,20 +308,14 @@ pub struct TuiBackend {
     /// regardless of the flag above — there is no correct way to place a
     /// graphic without knowing the cell's pixel size.
     kitty_graphics_cell_px: Option<(u16, u16)>,
-    /// Decode cache, id registry, and queued transmit/placement/delete
-    /// bytes [`Self::draw_image`] drives when [`Self::kitty_graphics`]
-    /// is `Some` — see [`crate::tui::image::KittyImageState`]'s doc.
-    /// Absent on a bare `tui` build (no `tui-images`, no decoder to
-    /// cache anything from).
+    /// The image caches every frame's [`Self::cell_surface`] paints
+    /// through — the Kitty tier's decode cache, id registry and queued
+    /// transmit/placement/delete bytes, and the half-block tier's decode
+    /// cache. See [`super::cell_surface::ImageGraphicsState`]'s doc.
+    /// Absent on a bare `tui` build (no `tui-images`, no decoder to cache
+    /// anything from).
     #[cfg(feature = "tui-images")]
-    kitty_image_state: crate::tui::image::KittyImageState,
-    /// Decode cache [`Self::draw_image`] drives for the half-block
-    /// mosaic fallback on a truecolor terminal that hasn't confirmed
-    /// Kitty graphics — see
-    /// [`crate::tui::image::HalfBlockImageState`]'s doc. Absent on a
-    /// bare `tui` build, same reason as `kitty_image_state` above.
-    #[cfg(feature = "tui-images")]
-    halfblock_image_state: crate::tui::image::HalfBlockImageState,
+    image_graphics: super::cell_surface::ImageGraphicsState,
     /// Single owner of keyboard focus — see [`crate::focus`]'s module
     /// doc. Mutated by [`Self::set_focus`] (whole-widget focus changes)
     /// and by the shared Tab/Shift+Tab intercept in
@@ -496,9 +490,7 @@ impl TuiBackend {
             kitty_graphics_supported: super::caps::detect_kitty_graphics(),
             kitty_graphics_cell_px: None,
             #[cfg(feature = "tui-images")]
-            kitty_image_state: crate::tui::image::KittyImageState::new(),
-            #[cfg(feature = "tui-images")]
-            halfblock_image_state: crate::tui::image::HalfBlockImageState::new(),
+            image_graphics: super::cell_surface::ImageGraphicsState::new(),
             focus_tree: crate::focus::FocusTree::new(),
             user_events: crate::runtime::UserEventQueue::new(),
             frame_scheduler: crate::runtime::FrameScheduler::new(),
@@ -1021,7 +1013,7 @@ impl TuiBackend {
     }
 
     /// Drain this frame's queued Kitty-graphics transmit/placement/
-    /// delete escape bytes (see [`crate::tui::image::KittyImageState::pending_writes`]).
+    /// delete escape bytes (see [`super::cell_surface::KittyImageState::pending_writes`]).
     /// Called by [`super::run::flush_kitty_graphics_writes`] right after
     /// `terminal.draw` returns — raw APC bytes can't go through
     /// `ratatui::buffer::Buffer`'s cell grid, so they're queued here
@@ -1030,7 +1022,7 @@ impl TuiBackend {
     pub(crate) fn take_pending_kitty_graphics_writes(&mut self) -> Vec<u8> {
         #[cfg(feature = "tui-images")]
         {
-            std::mem::take(&mut self.kitty_image_state.pending_writes)
+            std::mem::take(&mut self.image_graphics.kitty.pending_writes)
         }
         #[cfg(not(feature = "tui-images"))]
         {
@@ -2326,13 +2318,13 @@ impl Backend for TuiBackend {
         // frame — see `clip_stack`'s own doc for why a stale narrowed
         // clip must never leak into the next frame's painting.
         self.clip_stack.clear();
-        // Age every live Kitty-graphics id by one frame — `draw_image`
-        // resets an id's idle counter back to 0 for every image it
+        // Age every live Kitty-graphics id by one frame — the graphics
+        // channel resets an id's idle counter back to 0 for every image it
         // actually touches this frame (see `KittyImageState::registry`),
         // so one that stops appearing (scrolled off, removed) ages
         // until `end_frame` expires and deletes it.
         #[cfg(feature = "tui-images")]
-        self.kitty_image_state.registry.begin_frame();
+        self.image_graphics.kitty.registry.begin_frame();
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
@@ -2358,17 +2350,19 @@ impl Backend for TuiBackend {
         // itself.
         //
         // Expire any Kitty-graphics id `begin_frame` aged past the
-        // idle threshold (not touched by a `draw_image` call this
+        // idle threshold (not touched by an image paint this
         // frame) and queue its delete bytes — see
         // `KITTY_IMAGE_EXPIRE_IDLE_FRAMES`'s doc for why that threshold
         // is 1, not a multi-frame grace period.
         #[cfg(feature = "tui-images")]
         for id in self
-            .kitty_image_state
+            .image_graphics
+            .kitty
             .registry
             .expire(KITTY_IMAGE_EXPIRE_IDLE_FRAMES)
         {
-            self.kitty_image_state
+            self.image_graphics
+                .kitty
                 .pending_writes
                 .extend(crate::tui::kitty_graphics::delete_image(id).into_bytes());
         }
@@ -2794,8 +2788,16 @@ impl Backend for TuiBackend {
         // raw pointer.
         let cursor_sink: *mut Option<(u16, u16, crate::CursorShape)> =
             &mut self.last_cell_surface_cursor;
+        #[cfg(feature = "tui-images")]
+        let graphics = super::cell_surface::GraphicsChannel {
+            state: &mut self.image_graphics,
+            kitty_cell_px: self.kitty_graphics().map(|kg| kg.cell_px),
+            background: self.current_theme.background,
+        };
         let buf = self.current_frame_mut()?.buffer_mut();
         let surface = super::cell_surface::TuiCellSurface::over(buf, depth, cursor_sink);
+        #[cfg(feature = "tui-images")]
+        let surface = surface.with_graphics(graphics);
         Some(self.cell_surface_scratch.insert(surface))
     }
 
@@ -3485,12 +3487,15 @@ impl Backend for TuiBackend {
             );
             return self.canvas_layout(rect, canvas);
         };
-        // Raw pointer, not a kept-around `&mut Buffer` — see
-        // `Self::draw_image`'s identical comment on its own `buf_ptr`
-        // for why a second touch of `frame` after a `&mut self` borrow
-        // needs this.
+        // Raw pointer, not a kept-around `&mut Buffer`: the borrow
+        // checker ties `current_frame_mut`'s loan on `self` to every later
+        // use of anything derived from `frame`, so the
+        // `&mut self.image_graphics.kitty` borrow below would conflict with
+        // it. A raw pointer carries no such region for the checker to track.
         let buf_ptr: *mut ratatui::buffer::Buffer = frame.buffer_mut();
-        // SAFETY: see `Self::draw_image`'s matching comment.
+        // SAFETY: `buf_ptr` points at the real frame buffer
+        // `enter_frame_scope` set up for this call; nothing else aliases
+        // it for the duration of this method.
         let layout = crate::tui::draw_canvas(unsafe { &mut *buf_ptr }, area, canvas, &theme);
         #[cfg(feature = "tui-images")]
         if let Some(kg) = kitty {
@@ -3505,7 +3510,7 @@ impl Backend for TuiBackend {
                     canvas,
                     &theme,
                     kg.cell_px,
-                    &mut self.kitty_image_state,
+                    &mut self.image_graphics.kitty,
                 );
             }
         }
@@ -3745,21 +3750,17 @@ impl Backend for TuiBackend {
         self.editor_right_reserve_w = px.map(|v| v.max(0.0).round());
     }
 
+    /// Paints through the widget's own cell painter on this frame's
+    /// [`Self::cell_surface`], so the graphics channel and the fallback
+    /// text are the ones a `Surface::Widget` image gets.
     fn draw_image(
         &mut self,
         rect: QRect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
-        // Resolved before taking `frame` below, from plain `&self`
-        // accessors — see `Self::kitty_graphics`'s doc for exactly what
-        // "confirmed" means (live probe, env heuristic, or the
-        // `QUADRAUI_TUI_GRAPHICS=kitty` override, plus a measured cell
-        // pixel size).
-        let kitty = self.kitty_graphics();
-        let truecolor = self.color_depth() == ColorDepth::TrueColor;
-        let Some(frame) = self.current_frame_mut() else {
+        let layout = image.layout(rect);
+        let Some(cells) = self.cell_surface() else {
             debug_assert!(
                 false,
                 "TuiBackend::draw_image called outside enter_frame_scope"
@@ -3768,45 +3769,7 @@ impl Backend for TuiBackend {
             // no zone registered either, since nothing was painted.
             return crate::backend::ImagePaintResult::Unsupported;
         };
-        // Raw pointer, not a second `&mut Buffer` borrow kept around:
-        // the borrow checker ties `current_frame_mut`'s loan on `self`
-        // to every later use of anything derived from `frame` (its
-        // `'static` return type notwithstanding — see that method's
-        // doc), so a `&mut self.kitty_image_state` borrow below plus a
-        // `self.register_opaque_rect` call further down, both needing
-        // `frame`'s buffer again, would conflict with that loan. A raw
-        // pointer carries no such region for the checker to track.
-        let buf_ptr: *mut ratatui::buffer::Buffer = frame.buffer_mut();
-        #[cfg(feature = "tui-images")]
-        let result = match kitty {
-            // SAFETY: `buf_ptr` points at the real frame buffer
-            // `enter_frame_scope` set up for this call; nothing else
-            // aliases it for the duration of this method.
-            Some(kg) if truecolor => crate::tui::image::draw_image_kitty(
-                unsafe { &mut *buf_ptr },
-                area,
-                image,
-                &theme,
-                kg.cell_px,
-                &mut self.kitty_image_state,
-            ),
-            // No confirmed Kitty graphics, but the terminal is truecolor:
-            // a half-block mosaic beats plain fallback text — see
-            // `crate::tui::image::draw_image_halfblock`'s doc.
-            _ if truecolor => crate::tui::image::draw_image_halfblock(
-                unsafe { &mut *buf_ptr },
-                area,
-                image,
-                &theme,
-                &mut self.halfblock_image_state,
-            ),
-            _ => crate::tui::draw_image(unsafe { &mut *buf_ptr }, area, image, &theme),
-        };
-        #[cfg(not(feature = "tui-images"))]
-        let result = {
-            let _ = (kitty, truecolor);
-            crate::tui::draw_image(unsafe { &mut *buf_ptr }, area, image, &theme)
-        };
+        let result = image.paint_cells_reporting(&layout, cells, &theme);
         if result == crate::backend::ImagePaintResult::Painted {
             // Real pixels now sit under these cells — shield them from
             // selection/copy the same way any other non-text rasteriser
@@ -3814,7 +3777,16 @@ impl Backend for TuiBackend {
             // the plain zone a fallback-text paint gets below.
             let fallback_text =
                 (!image.fallback_text.is_empty()).then(|| image.fallback_text.clone());
-            // SAFETY: see the comment above `buf_ptr`'s declaration.
+            // A raw pointer, not a `&Buffer` borrow: `current_frame_mut`'s
+            // loan on `self` would otherwise conflict with the `&mut self`
+            // `register_opaque_rect` call below.
+            let buf_ptr: *const ratatui::buffer::Buffer = match self.current_frame_mut() {
+                Some(frame) => frame.buffer_mut(),
+                None => return result,
+            };
+            // SAFETY: `buf_ptr` points at the live frame buffer the cell
+            // surface above painted into; nothing mutates it for the
+            // duration of this call.
             self.register_opaque_rect(image.id, rect, unsafe { &*buf_ptr }, fallback_text);
         } else {
             self.register_zone(image.id, rect);

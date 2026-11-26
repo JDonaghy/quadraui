@@ -1,15 +1,15 @@
 //! Small fixed-capacity LRU cache for decoded/rasterised images, shared by
-//! every pixel backend's `Backend::draw_image`.
+//! every pixel surface's `PaintSurface::surface_draw_image`.
 //!
 //! # Why
 //!
 //! `Image` deliberately carries no cache itself (see
 //! [`crate::primitives::image`]'s module docs) — decoding is a backend
-//! concern. Each `draw_image` call decodes `image.source` on demand and caches
+//! concern. Each `surface_draw_image` call decodes `image.source` on demand and caches
 //! the result keyed on a cheap hash of the encoded bytes/path, the resolved
 //! paint size, and DPI scale. Two calls for the same source at the same size
 //! and scale reuse the same decoded value; a cache miss still leaves the
-//! `draw_image` implementation to decide what to decode (e.g. GTK can cache
+//! `surface_draw_image` implementation to decide what to decode (e.g. GTK can cache
 //! the already-scaled `Pixbuf` since `scale_simple` has non-trivial cost).
 //!
 //! # Shape

@@ -293,30 +293,20 @@ pub mod terminal_engine;
 #[cfg_attr(docsrs, doc(cfg(feature = "layout")))]
 pub mod flex;
 
-// Small LRU cache for decoded image rasterisations, shared by every pixel
-// backend's `Backend::draw_image` that actually uses it.
-// Crate-internal — only backend modules need it. `gtk` needs no
-// `target_os` gate (gdk_pixbuf runs anywhere); `macos` mirrors `mod
-// macos`'s own `all(feature = "macos", target_os = "macos")` gate below,
-// since `macos::image` (the only user) is itself gated the same way.
-// `win` deliberately does NOT wire this cache in yet — see
-// `win::image`'s "No decode cache here yet" module doc for why
-// (an `ID2D1Bitmap` is bound to the render target that created it, so
-// caching one across `WinBackend::ensure_surface`'s device-lost recovery
-// needs its own invalidation logic this change doesn't add) — so `win`
-// stays off this gate: turning it on with no real user would leave the
-// module provably dead code under `cargo check --features win` on
-// Linux (`win::image` itself is `target_os = "windows"`-gated, so that
-// check never reaches a call site) and fail that leg's `-D warnings`.
-// `tui` needs it not at all — it paints `Image::fallback_text` instead,
-// see `tui::image`'s module doc. `tui-images` wires it in for a
-// different reason: `tui::image_decode`'s decode-cache keyed on
-// `(ImageSource, target size, scale)`, same shape as every other
-// backend's decode cache, just with `tui::image_decode::DecodedImage` as
-// the cached value type `T` instead of a backend-native bitmap.
+// Small LRU cache for decoded image rasterisations, shared by every
+// surface's `PaintSurface::surface_draw_image` (and TUI's graphics
+// channel). Crate-internal — only backend modules need it. `gtk` needs no
+// `target_os` gate (gdk_pixbuf runs anywhere); `macos` and `win` mirror
+// their image modules' own `target_os` gates, so a cross-platform
+// `cargo check` never compiles the cache without a call site and fails
+// `-D warnings` on dead code. `tui` alone paints `Image::fallback_text`
+// and needs no cache; `tui-images` keys `tui::image_decode`'s decode
+// cache on the same `(ImageSource, target size, scale)` shape, with
+// `tui::image_decode::DecodedImage` as the cached value type.
 #[cfg(any(
     feature = "gtk",
     all(feature = "macos", target_os = "macos"),
+    all(feature = "win", target_os = "windows"),
     feature = "tui-images"
 ))]
 pub(crate) mod image_cache;

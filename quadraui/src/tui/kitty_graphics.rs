@@ -136,7 +136,7 @@ fn chunk_transmit(control_data: &str, payload_b64: &str) -> Vec<String> {
 /// — callers get that shape for free from
 /// [`crate::tui::image_decode::DecodedImage`].
 ///
-/// Only called from `tui::image::draw_image_kitty`, which is itself
+/// Only called from `tui::cell_surface::draw_image_kitty`, which is itself
 /// behind the `tui-images` Cargo feature — unused (and `allow`ed) on a
 /// bare `tui` build with no image decoder to feed it.
 #[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
@@ -151,7 +151,7 @@ pub(crate) fn transmit_rgba(id: u32, width: u32, height: u32, rgba: &[u8]) -> Ve
 /// [`chunk_transmit`]; width/height are read from the PNG data itself by
 /// the terminal, so no `s`/`v` keys are needed.
 ///
-/// No paint-path caller yet — `tui::image::draw_image_kitty` always
+/// No paint-path caller yet — `tui::cell_surface::draw_image_kitty` always
 /// decodes through [`crate::tui::image_decode`]'s RGBA path (one shape
 /// to cache and transmit, matching every other primitive's decode-to-
 /// RGBA backends), so this PNG-passthrough fast path stays unused until
@@ -203,7 +203,7 @@ pub(crate) const PLACEHOLDER_BASE: char = '\u{10EEEE}';
 /// decomposition mapping, Unicode 6.0.0). 297 entries — a placeholder
 /// grid wider or taller than that has no diacritic and falls back to
 /// the "inherit from the cell to the left" rule the spec describes,
-/// which this module does not implement — `tui::image::draw_image_kitty`
+/// which this module does not implement — `tui::cell_surface::draw_image_kitty`
 /// simply skips a cell past this range (see [`placeholder_cell_text`]'s
 /// `None` case).
 ///
@@ -344,7 +344,7 @@ pub(crate) enum IdLookup {
 /// Tracks which kitty image ids are currently live across frames, so a
 /// caller transmits each source/size combination exactly once and knows
 /// when to free an id that stopped appearing. Owned per-session by
-/// `tui::image::KittyImageState`, driven once per frame from
+/// `tui::cell_surface::KittyImageState`, driven once per frame from
 /// `TuiBackend::begin_frame`/`end_frame`.
 ///
 /// Same `tui-images`-only reachability as [`transmit_rgba`].

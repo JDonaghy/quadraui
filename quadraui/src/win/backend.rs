@@ -313,6 +313,8 @@ struct Surface {
     /// starts from an empty cache — see `super::text`'s `Brush cache`
     /// section for how paint helpers reach it.
     brushes: BrushCache,
+    /// Decoded images bound to `target`, dropped with it like `brushes`.
+    images: crate::image_cache::ImageCache<windows::Win32::Graphics::Direct2D::ID2D1Bitmap>,
 }
 
 /// Position tolerance, in DIPs, for [`WinBackend::fold_double_click`]'s
@@ -1049,6 +1051,7 @@ impl WinBackend {
             factory: Some(factory),
             target: RenderTarget::Hwnd(target),
             brushes: new_brush_cache(),
+            images: Default::default(),
         });
         self.hwnd = Some(hwnd);
         // Keep the waker's live mirror in sync — see `Self::hwnd_raw`'s doc
@@ -1142,6 +1145,7 @@ impl WinBackend {
             factory: None,
             target: RenderTarget::Dc(target),
             brushes: new_brush_cache(),
+            images: Default::default(),
         });
 
         // Same DirectWrite bootstrap as `attach_surface` — text formats
@@ -1216,6 +1220,7 @@ impl WinBackend {
                 factory: None,
                 target: RenderTarget::Dc(target),
                 brushes: new_brush_cache(),
+                images: Default::default(),
             });
             return Ok(());
         }
@@ -3721,24 +3726,12 @@ impl Backend for WinBackend {
         self.minimap_scale = scale;
     }
 
-    /// See [`Self::draw_tree`]'s doc for the "surface not
-    /// attached yet" fallback posture. Only needs `self.surface` (not
-    /// `self.dwrite` too) — WIC decoding and `DrawBitmap` are pure
-    /// Direct2D, no text measurement involved.
     fn draw_image(
         &mut self,
         rect: Rect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        #[cfg(target_os = "windows")]
-        if let Some(surface) = &self.surface {
-            return super::image::draw_image(&surface.target, rect, image);
-        }
-        // No surface yet — matches `MacBackend::draw_image`'s categorical
-        // `Unsupported`: no pixels to rasterise onto, so report it
-        // rather than panic.
-        let _ = (rect, image);
-        crate::backend::ImagePaintResult::Unsupported
+        image.paint_reporting(&image.layout(rect), self)
     }
 
     /// Unlike [`Self::draw_toast_overlay`] above,
@@ -4975,12 +4968,25 @@ impl PaintSurface for WinBackend {
         // no-op instead of panicking.
     }
 
+    /// See [`Self::draw_tree`]'s doc for the "surface not attached yet"
+    /// posture: no pixels to rasterise onto reports `Unsupported`. WIC
+    /// decoding and `DrawBitmap` are pure Direct2D, no `self.dwrite`.
     fn surface_draw_image(
         &mut self,
         rect: Rect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        Backend::draw_image(self, rect, image)
+        #[cfg(target_os = "windows")]
+        if let Some(surface) = &mut self.surface {
+            return super::image::draw_image_cached(
+                &surface.target,
+                rect,
+                image,
+                &mut surface.images,
+            );
+        }
+        let _ = (rect, image);
+        crate::backend::ImagePaintResult::Unsupported
     }
 }
 

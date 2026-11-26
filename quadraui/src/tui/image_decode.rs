@@ -7,7 +7,7 @@
 //! the same way it is for [`crate::primitives::image::Image`] — or
 //! WebP) into tightly-packed RGBA8 pixels, already shrunk to fit a
 //! caller-given target pixel size; [`crate::tui::kitty_graphics`] turns
-//! that pixel buffer into protocol bytes. `tui::image::draw_image_kitty`
+//! that pixel buffer into protocol bytes. `tui::cell_surface::draw_image_kitty`
 //! is the paint-path caller that wires both steps together.
 //!
 //! # Downscale, never upscale

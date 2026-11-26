@@ -13,7 +13,7 @@
 //! [`draw_image`] is `pub` (re-exported as `quadraui::gtk::draw_image`).
 //! To keep its signature stable, decoding and scaling are cached in the
 //! sibling crate-internal [`draw_image_cached`] that
-//! [`GtkBackend::draw_image`] (the `Backend` trait method) calls
+//! the backend's `PaintSurface::surface_draw_image` calls
 //! instead. Decoding *and* scaling both cost real time per call —
 //! `scale_simple` on top of `Pixbuf::from_file`/`from_read` — and the
 //! cached value is the already-scaled [`Pixbuf`] for a given
@@ -91,8 +91,8 @@ pub fn draw_image(cr: &Context, x: f64, y: f64, w: f64, h: f64, image: &Image) -
 /// Paint `image` into `bounds`, decoding through `cache` — see
 /// the module docs. `dpi_scale` is folded into the cache key so a live
 /// DPI change doesn't paint a stale bitmap rasterised for a
-/// different scale. Crate-internal: [`GtkBackend::draw_image`] is the
-/// only caller, so this can take whatever shape is convenient (a
+/// different scale. Crate-internal: the backend's
+/// [`crate::PaintSurface::surface_draw_image`] is the only caller, so this can take whatever shape is convenient (a
 /// [`QRect`] instead of four `f64`s, an [`ImageCache`] reference) without
 /// worrying about breaking an external caller the way changing
 /// [`draw_image`]'s signature would.

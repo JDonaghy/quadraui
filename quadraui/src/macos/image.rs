@@ -21,8 +21,8 @@
 //! signature without risking a break for external code already calling it
 //! directly. `draw_image` itself therefore stays exactly as it always has —
 //! uncached, one decode per call — and the caching lives in a sibling,
-//! crate-internal [`draw_image_cached`] that [`MacBackend::draw_image`]
-//! (the `Backend` trait method) calls instead. Both share the same
+//! crate-internal [`draw_image_cached`] that `MacBackend`'s
+//! `PaintSurface::surface_draw_image` calls instead. Both share the same
 //! post-decode clip/counter-flip/draw tail, [`paint_cg_image`].
 //!
 //! Unlike GTK's `gdk_pixbuf::Pixbuf::scale_simple` (which produces an
@@ -195,7 +195,7 @@ pub unsafe fn draw_image(ctx: CGContextRef, rect: Rect, image: &Image) -> ImageP
 /// the cache key alongside the (pinned-to-`0`) size for consistency with
 /// every other backend's [`ImageCache`] key, even though this backend's
 /// decode doesn't actually depend on either. Crate-internal:
-/// [`MacBackend::draw_image`] is the only caller, so this can take
+/// `MacBackend`'s `surface_draw_image` is the only caller, so this can take
 /// whatever shape is convenient without worrying about breaking an
 /// external caller the way changing [`draw_image`]'s signature would.
 ///
