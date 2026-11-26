@@ -117,7 +117,7 @@ pub struct FocusStop {
 }
 
 /// Which pointer gesture a [`RoutedEvent::Pointer`] carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum PointerKind {
     /// A button went down.
     Down(MouseButton),

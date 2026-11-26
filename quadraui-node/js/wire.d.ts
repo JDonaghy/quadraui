@@ -1451,6 +1451,12 @@ export interface EditorLine {
   colorcolumns?: number[];
 }
 
+export interface EditorPaintOptions {
+  suppress_v_scrollbar?: boolean;
+  v_scrollbar_w?: number | null;
+  right_reserve_w?: number;
+}
+
 export interface EditorDescriptor {
   id: WidgetId;
   rect: Rect;
@@ -1476,6 +1482,7 @@ export interface EditorDescriptor {
   tabstop: number;
   cursorline: boolean;
   lightbulb_glyph?: string;
+  paint_options?: EditorPaintOptions;
 }
 
 export interface _FrClickFindInput {
@@ -2284,6 +2291,39 @@ export type _TerminalEventDict = { KeyPressed: _KeyPressedStrPayload; } | { Sele
 /** Mouse release has no payload -- bare `"SelectEnd"`, unlike every other variant. */
 export type TerminalEvent = "SelectEnd" | _TerminalEventDict;
 
+export interface _EditorBufferPosPayload {
+  line: number;
+  col: number;
+}
+
+export interface _EditorGutterPayload {
+  line_idx: number;
+  gutter_col: number;
+}
+
+export type _EditorHitDict = { BufferPos: _EditorBufferPosPayload; } | { Gutter: _EditorGutterPayload; };
+
+export type EditorHit = ("VScrollbar" | "HScrollbar" | "Empty") | _EditorHitDict;
+
+export type _PointerKindDict = { Down: MouseButton; } | { Up: MouseButton; } | { DoubleClick: MouseButton; };
+
+export type PointerKind = ("Move" | "Enter" | "Leave") | _PointerKindDict;
+
+export interface _EditorPointerPayload {
+  hit: EditorHit;
+  col: number;
+  kind: PointerKind;
+  mods: Modifiers;
+}
+
+export interface _EditorWheelPayload {
+  dx: number;
+  dy: number;
+  mods: Modifiers;
+}
+
+export type EditorEvent = { Pointer: _EditorPointerPayload; } | { Wheel: _EditorWheelPayload; };
+
 export interface _DataPointClickedPayload {
   id: WidgetId;
   series_idx: number;
@@ -2707,7 +2747,7 @@ export interface RowsRequestedEvent {
 }
 
 /** Everything a user (or platform) can do that an app might care about -- see `quadraui/src/event.rs`'s `UiEvent`. */
-export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; hit?: HitDetail; } | { GlobalShortcut: GlobalShortcutId; hit?: HitDetail; } | { KeyPressed: _UiKeyPressedPayload; hit?: HitDetail; } | { CharTyped: string; hit?: HitDetail; } | { MouseDown: _MouseDownPayload; hit?: HitDetail; } | { MouseUp: _MouseUpPayload; hit?: HitDetail; } | { MouseMoved: _MouseMovedPayload; hit?: HitDetail; } | { MouseEntered: _WidgetPayload; hit?: HitDetail; } | { MouseLeft: _WidgetPayload; hit?: HitDetail; } | { DoubleClick: _DoubleClickPayload; hit?: HitDetail; } | { Scroll: _UiScrollPayload; hit?: HitDetail; } | { WindowResized: _WindowResizedPayload; hit?: HitDetail; } | { WindowFocused: boolean; hit?: HitDetail; } | { DpiChanged: number; hit?: HitDetail; } | { WindowStateChanged: _WindowStateChangedPayload; hit?: HitDetail; } | { FilesDropped: _FilesDroppedPayload; hit?: HitDetail; } | { ClipboardPaste: string; hit?: HitDetail; } | { OpenRequested: _OpenRequestedPayload; hit?: HitDetail; } | { TextCopied: string; hit?: HitDetail; } | { FocusChanged: WidgetId | null; hit?: HitDetail; } | { SystemThemeChanged: SystemTheme; hit?: HitDetail; } | { PowerStateChanged: _PowerStateChangedPayload; hit?: HitDetail; } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload; hit?: HitDetail; } | { ScrollbarMoved: _ScrollbarMovedPayload; hit?: HitDetail; } | { SwitchToggled: _SwitchToggledPayload; hit?: HitDetail; } | { RadioGroupSelectionChanged: _RadioGroupSelectionChangedPayload; hit?: HitDetail; } | { ButtonActivated: _WidgetPayload; hit?: HitDetail; } | { CommandCenterActivated: _CommandCenterActivatedPayload; hit?: HitDetail; } | { TextSelectionChanged: _TextSelectionChangedPayload; hit?: HitDetail; } | { SplitDividerDragged: _SplitDividerDraggedPayload; hit?: HitDetail; } | { MenuActivated: WidgetId; hit?: HitDetail; } | { ContextMenuItemActivated: WidgetId; hit?: HitDetail; } | { MessageDialogResolved: WidgetId; hit?: HitDetail; } | { ToastActionClicked: WidgetId; hit?: HitDetail; } | { CompletionItemActivated: [WidgetId, number]; hit?: HitDetail; } | { RichTextLinkClicked: [WidgetId, string]; hit?: HitDetail; } | { TrayClicked: _TrayClickedPayload; hit?: HitDetail; } | { NotificationActivated: _NotificationActivatedPayload; hit?: HitDetail; } | { Tree: [WidgetId, TreeEvent]; hit?: HitDetail; } | { List: [WidgetId, ListViewEvent]; hit?: HitDetail; } | { Form: [WidgetId, FormEvent]; hit?: HitDetail; } | { Palette: [WidgetId, PaletteEvent]; hit?: HitDetail; } | { TabBar: [WidgetId, TabBarEvent]; hit?: HitDetail; } | { StatusBar: [WidgetId, StatusBarEvent]; hit?: HitDetail; } | { ActivityBar: [WidgetId, ActivityBarEvent]; hit?: HitDetail; } | { Terminal: [WidgetId, TerminalEvent]; hit?: HitDetail; } | { TextDisplay: [WidgetId, TextDisplayEvent]; hit?: HitDetail; } | { Chart: [WidgetId, ChartEvent]; hit?: HitDetail; } | { DataTable: [WidgetId, DataTableEvent]; hit?: HitDetail; } | { TreeTable: [WidgetId, TreeTableEvent]; hit?: HitDetail; } | { CellGrid: [WidgetId, CellGridEvent]; hit?: HitDetail; } | { HelpOverlay: [WidgetId, unknown]; hit?: HitDetail; } | { PathPicker: [WidgetId, unknown]; hit?: HitDetail; } | { DualModePalette: [WidgetId, unknown]; hit?: HitDetail; } | { AppMenu: [WidgetId, unknown]; hit?: HitDetail; } | { AppShell: [WidgetId, unknown]; hit?: HitDetail; } | { BottomPanel: [WidgetId, unknown]; hit?: HitDetail; } | { Workspace: [WidgetId, unknown]; hit?: HitDetail; } | { Toolbar: [WidgetId, ToolbarEvent]; hit?: HitDetail; } | { Canvas: [WidgetId, CanvasEvent]; hit?: HitDetail; } | { BackendNative: BackendNativeEvent; hit?: HitDetail; } | { User: unknown; hit?: HitDetail; };
+export type _UiEventDict = { Accelerator: [AcceleratorId, Modifiers]; hit?: HitDetail; } | { GlobalShortcut: GlobalShortcutId; hit?: HitDetail; } | { KeyPressed: _UiKeyPressedPayload; hit?: HitDetail; } | { CharTyped: string; hit?: HitDetail; } | { MouseDown: _MouseDownPayload; hit?: HitDetail; } | { MouseUp: _MouseUpPayload; hit?: HitDetail; } | { MouseMoved: _MouseMovedPayload; hit?: HitDetail; } | { MouseEntered: _WidgetPayload; hit?: HitDetail; } | { MouseLeft: _WidgetPayload; hit?: HitDetail; } | { DoubleClick: _DoubleClickPayload; hit?: HitDetail; } | { Scroll: _UiScrollPayload; hit?: HitDetail; } | { WindowResized: _WindowResizedPayload; hit?: HitDetail; } | { WindowFocused: boolean; hit?: HitDetail; } | { DpiChanged: number; hit?: HitDetail; } | { WindowStateChanged: _WindowStateChangedPayload; hit?: HitDetail; } | { FilesDropped: _FilesDroppedPayload; hit?: HitDetail; } | { ClipboardPaste: string; hit?: HitDetail; } | { OpenRequested: _OpenRequestedPayload; hit?: HitDetail; } | { TextCopied: string; hit?: HitDetail; } | { FocusChanged: WidgetId | null; hit?: HitDetail; } | { SystemThemeChanged: SystemTheme; hit?: HitDetail; } | { PowerStateChanged: _PowerStateChangedPayload; hit?: HitDetail; } | { ScrollOffsetChanged: _ScrollOffsetChangedPayload; hit?: HitDetail; } | { ScrollbarMoved: _ScrollbarMovedPayload; hit?: HitDetail; } | { SwitchToggled: _SwitchToggledPayload; hit?: HitDetail; } | { RadioGroupSelectionChanged: _RadioGroupSelectionChangedPayload; hit?: HitDetail; } | { ButtonActivated: _WidgetPayload; hit?: HitDetail; } | { CommandCenterActivated: _CommandCenterActivatedPayload; hit?: HitDetail; } | { TextSelectionChanged: _TextSelectionChangedPayload; hit?: HitDetail; } | { SplitDividerDragged: _SplitDividerDraggedPayload; hit?: HitDetail; } | { MenuActivated: WidgetId; hit?: HitDetail; } | { ContextMenuItemActivated: WidgetId; hit?: HitDetail; } | { MessageDialogResolved: WidgetId; hit?: HitDetail; } | { ToastActionClicked: WidgetId; hit?: HitDetail; } | { CompletionItemActivated: [WidgetId, number]; hit?: HitDetail; } | { RichTextLinkClicked: [WidgetId, string]; hit?: HitDetail; } | { TrayClicked: _TrayClickedPayload; hit?: HitDetail; } | { NotificationActivated: _NotificationActivatedPayload; hit?: HitDetail; } | { Tree: [WidgetId, TreeEvent]; hit?: HitDetail; } | { List: [WidgetId, ListViewEvent]; hit?: HitDetail; } | { Form: [WidgetId, FormEvent]; hit?: HitDetail; } | { Palette: [WidgetId, PaletteEvent]; hit?: HitDetail; } | { TabBar: [WidgetId, TabBarEvent]; hit?: HitDetail; } | { StatusBar: [WidgetId, StatusBarEvent]; hit?: HitDetail; } | { ActivityBar: [WidgetId, ActivityBarEvent]; hit?: HitDetail; } | { Terminal: [WidgetId, TerminalEvent]; hit?: HitDetail; } | { Editor: [WidgetId, EditorEvent]; hit?: HitDetail; } | { TextDisplay: [WidgetId, TextDisplayEvent]; hit?: HitDetail; } | { Chart: [WidgetId, ChartEvent]; hit?: HitDetail; } | { DataTable: [WidgetId, DataTableEvent]; hit?: HitDetail; } | { TreeTable: [WidgetId, TreeTableEvent]; hit?: HitDetail; } | { CellGrid: [WidgetId, CellGridEvent]; hit?: HitDetail; } | { HelpOverlay: [WidgetId, unknown]; hit?: HitDetail; } | { PathPicker: [WidgetId, unknown]; hit?: HitDetail; } | { DualModePalette: [WidgetId, unknown]; hit?: HitDetail; } | { AppMenu: [WidgetId, unknown]; hit?: HitDetail; } | { AppShell: [WidgetId, unknown]; hit?: HitDetail; } | { BottomPanel: [WidgetId, unknown]; hit?: HitDetail; } | { Workspace: [WidgetId, unknown]; hit?: HitDetail; } | { Toolbar: [WidgetId, ToolbarEvent]; hit?: HitDetail; } | { Canvas: [WidgetId, CanvasEvent]; hit?: HitDetail; } | { BackendNative: BackendNativeEvent; hit?: HitDetail; } | { User: unknown; hit?: HitDetail; };
 
 /** `isinstance(event, str)` (Python) / `typeof event === "string"` (TS) separates the three no-payload variants from the rest before narrowing on a key. */
 export type UiEvent = ("WindowClose" | "DisplaysChanged" | "ContextMenuDismissed") | _UiEventDict;

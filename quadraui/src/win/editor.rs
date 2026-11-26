@@ -522,6 +522,7 @@ mod tests {
             tabstop: 4,
             cursorline: true,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         }
     }
 

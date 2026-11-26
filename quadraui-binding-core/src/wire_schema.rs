@@ -2268,6 +2268,14 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("colorcolumns", list(int_())),
         ],
     ));
+    let editor_paint_options = b.define(obj(
+        "EditorPaintOptions",
+        vec![
+            field_opt("suppress_v_scrollbar", bool_()),
+            field_opt("v_scrollbar_w", nullable(float_())),
+            field_opt("right_reserve_w", float_()),
+        ],
+    ));
     let editor_descriptor = b.define(obj(
         "EditorDescriptor",
         vec![
@@ -2295,6 +2303,7 @@ pub fn schema() -> Vec<DefJson> {
             field("tabstop", int_()),
             field("cursorline", bool_()),
             field_opt("lightbulb_glyph", str_()),
+            field_opt("paint_options", editor_paint_options),
         ],
     ));
     let find_replace_click_target_find_input =
@@ -3406,6 +3415,68 @@ pub fn schema() -> Vec<DefJson> {
         "Mouse release has no payload -- bare `\"SelectEnd\"`, unlike every other variant.",
     ));
 
+    let editor_buffer_pos_payload = b.define(obj(
+        "_EditorBufferPosPayload",
+        vec![field("line", int_()), field("col", int_())],
+    ));
+    let editor_gutter_payload = b.define(obj(
+        "_EditorGutterPayload",
+        vec![field("line_idx", int_()), field("gutter_col", int_())],
+    ));
+    let editor_hit_dict = b.define(flat(
+        "_EditorHitDict",
+        &[
+            ("BufferPos", editor_buffer_pos_payload),
+            ("Gutter", editor_gutter_payload),
+        ],
+        vec![],
+    ));
+    b.define(alias(
+        "EditorHit",
+        uniont(vec![
+            lit(&["VScrollbar", "HScrollbar", "Empty"]),
+            editor_hit_dict,
+        ]),
+    ));
+    let pointer_kind_dict = b.define(flat(
+        "_PointerKindDict",
+        &[
+            ("Down", re("MouseButton")),
+            ("Up", re("MouseButton")),
+            ("DoubleClick", re("MouseButton")),
+        ],
+        vec![],
+    ));
+    b.define(alias(
+        "PointerKind",
+        uniont(vec![lit(&["Move", "Enter", "Leave"]), pointer_kind_dict]),
+    ));
+    let editor_pointer_payload = b.define(obj(
+        "_EditorPointerPayload",
+        vec![
+            field("hit", re("EditorHit")),
+            field("col", int_()),
+            field("kind", re("PointerKind")),
+            field("mods", modifiers.clone()),
+        ],
+    ));
+    let editor_wheel_payload = b.define(obj(
+        "_EditorWheelPayload",
+        vec![
+            field("dx", float_()),
+            field("dy", float_()),
+            field("mods", modifiers.clone()),
+        ],
+    ));
+    b.define(flat(
+        "EditorEvent",
+        &[
+            ("Pointer", editor_pointer_payload),
+            ("Wheel", editor_wheel_payload),
+        ],
+        vec![],
+    ));
+
     let data_point_clicked_payload = b.define(obj(
         "_DataPointClickedPayload",
         vec![
@@ -3930,6 +4001,7 @@ pub fn schema() -> Vec<DefJson> {
             ("StatusBar", tup(vec![re("WidgetId"), re("StatusBarEvent")])),
             ("ActivityBar", tup(vec![re("WidgetId"), re("ActivityBarEvent")])),
             ("Terminal", tup(vec![re("WidgetId"), re("TerminalEvent")])),
+            ("Editor", tup(vec![re("WidgetId"), re("EditorEvent")])),
             ("TextDisplay", tup(vec![re("WidgetId"), re("TextDisplayEvent")])),
             ("Chart", tup(vec![re("WidgetId"), re("ChartEvent")])),
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
@@ -4006,7 +4078,7 @@ mod coverage {
         DataTableEvent, DateFormat, DateLocale, DatePicker, Decoration, DiagnosticMark,
         DiagnosticSeverity, DiffEditability, DiffHunk, DiffLine, DiffMode, DiffPane, DiffRow,
         DiffRowKind, DiffView, DrawOp, Editor, EditorCursor, EditorCursorPos as CursorPos,
-        EditorCursorShape as CursorShape, EditorLine, EditorSelection,
+        EditorCursorShape as CursorShape, EditorLine, EditorPaintOptions, EditorSelection,
         EditorSelectionKind as SelectionKind, EditorStyle, EditorStyledSpan, EmptyBody, FieldKind,
         FindReplaceClickTarget, FindReplacePanel, Form, FormEvent, FormField, FormSpacing,
         FrHitRegion, GitLineStatus, HeaderAction, Icon, IconGrid, IconGridItem, Image, ImageFit,
@@ -5731,6 +5803,14 @@ mod coverage {
     assert_fields!(assert_cursor_pos_fields, CursorPos { view_line, col });
     assert_fields!(assert_editor_cursor_fields, EditorCursor { pos, shape });
     assert_fields!(
+        assert_editor_paint_options_fields,
+        EditorPaintOptions {
+            suppress_v_scrollbar,
+            v_scrollbar_w,
+            right_reserve_w
+        }
+    );
+    assert_fields!(
         assert_editor_selection_fields,
         EditorSelection {
             kind,
@@ -5820,7 +5900,8 @@ mod coverage {
             active_indent_col,
             tabstop,
             cursorline,
-            lightbulb_glyph
+            lightbulb_glyph,
+            paint_options
         }
     );
     fn assert_find_replace_click_target(t: FindReplaceClickTarget) {
@@ -6553,6 +6634,7 @@ mod coverage {
                 "tabstop",
                 "cursorline",
                 "lightbulb_glyph",
+                "paint_options",
             ]
         );
 
@@ -6900,6 +6982,7 @@ mod coverage {
                 "StatusBar",
                 "ActivityBar",
                 "Terminal",
+                "Editor",
                 "TextDisplay",
                 "Chart",
                 "DataTable",

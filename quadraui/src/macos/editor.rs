@@ -650,6 +650,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         }
     }
 
@@ -926,6 +927,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
         let surface = BitmapSurface::new(10, 10);
         surface.fill(0.0, 0.0, 0.0, 0.0);
@@ -1288,6 +1290,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         }
     }
 

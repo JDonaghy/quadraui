@@ -1379,6 +1379,7 @@ mod tests {
             tabstop: 4,
             cursorline: true,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
 
         let cell_width = 9.0_f32;
@@ -1454,6 +1455,7 @@ mod tests {
             tabstop: 4,
             cursorline: true,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
 
         let cell_width = 9.0_f32;
@@ -1507,6 +1509,7 @@ mod tests {
             tabstop: 4,
             cursorline: true,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
 
         let cell_width = 9.0_f32;
@@ -1603,6 +1606,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '\0',
+            paint_options: Default::default(),
         }
     }
 
@@ -1821,6 +1825,7 @@ mod tests {
             &theme,
             EditorPaintOptions {
                 suppress_v_scrollbar: true,
+                ..Default::default()
             },
         );
         let px = scroll_test_pixel(&data, stride as usize, 198, 40);

@@ -6319,6 +6319,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
         // No gutter, no scroll: `EditorLayout::text_bounds.x` is 0 and
         // `col_at_x`'s scroll term drops out, so `editor_layout` needn't
@@ -8630,6 +8631,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
 
         let layout = Backend::editor_layout(&backend, rect, &editor);

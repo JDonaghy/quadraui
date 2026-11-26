@@ -2001,6 +2001,7 @@ mod tests {
                 tabstop: 4,
                 cursorline: false,
                 lightbulb_glyph: '\0',
+                paint_options: Default::default(),
             },
         };
         empty_layout.tree_frame();
@@ -2034,6 +2035,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '\0',
+            paint_options: Default::default(),
         };
         let palette = Palette {
             id: "pal".into(),
@@ -2172,6 +2174,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '\0',
+            paint_options: Default::default(),
         };
         let palette = Palette {
             id: "pal".into(),
@@ -2492,6 +2495,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '\0',
+            paint_options: Default::default(),
         };
         let float = Float::new(
             WidgetId::new("f"),
@@ -3168,6 +3172,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '\0',
+            paint_options: Default::default(),
         };
         let palette = Palette {
             id: "pal".into(),
@@ -3256,6 +3261,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '\0',
+            paint_options: Default::default(),
         };
 
         let mut layout = ScreenLayout::new();

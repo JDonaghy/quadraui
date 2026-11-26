@@ -6861,6 +6861,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
 
         let layout = backend.editor_layout(rect, &editor);
@@ -6941,6 +6942,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
 
         let baseline = backend.editor_layout(rect, &editor);
@@ -7040,6 +7042,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
         let mut inactive_editor = active_editor.clone();
         inactive_editor.id = WidgetId::new("inactive");
@@ -7714,6 +7717,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         }
     }
 

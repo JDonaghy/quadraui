@@ -671,8 +671,8 @@ pub use primitives::drop_zone::{
 };
 pub use primitives::editor::{
     CursorPos as EditorCursorPos, CursorShape as EditorCursorShape, DiagnosticMark,
-    DiagnosticSeverity, DiffLine, Editor, EditorCursor, EditorHit, EditorLayout, EditorLine,
-    EditorPaintOptions, EditorSelection, EditorStyledSpan, GitLineStatus,
+    DiagnosticSeverity, DiffLine, Editor, EditorCursor, EditorEvent, EditorHit, EditorLayout,
+    EditorLine, EditorPaintOptions, EditorSelection, EditorState, EditorStyledSpan, GitLineStatus,
     SelectionCols as EditorSelectionCols, SelectionKind as EditorSelectionKind, SpellMark,
     Style as EditorStyle,
 };
