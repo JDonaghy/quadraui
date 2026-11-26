@@ -1553,14 +1553,21 @@ mod gtk_pixel_tests {
         )
     }
 
-    /// Rows holding at least one pixel of exactly `color` within
-    /// `[x0, x1)`.
+    /// The height of the band from the first to the last row holding a
+    /// pixel of exactly `color` within `[x0, x1)`. A row whose glyph ink
+    /// (a crossbar, say) covers every background pixel in the range
+    /// still counts, so the result is the painted box, not the font's
+    /// stroke layout.
     fn rows_of_color(data: &[u8], stride: i32, (x0, x1): (i32, i32), color: Color) -> i32 {
-        (0..SCALE_TEST_PITCH as i32)
+        let rows: Vec<i32> = (0..SCALE_TEST_PITCH as i32)
             .filter(|&y| {
                 (x0..x1).any(|x| scroll_test_pixel(data, stride as usize, x, y) == rgb(color))
             })
-            .count() as i32
+            .collect();
+        match (rows.first(), rows.last()) {
+            (Some(top), Some(bottom)) => bottom - top + 1,
+            _ => 0,
+        }
     }
 
     /// A span with a font scale paints taller glyphs than an unscaled
