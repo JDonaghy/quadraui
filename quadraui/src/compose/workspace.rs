@@ -145,19 +145,25 @@
 //! [`TabItem::is_preview`], which every backend already renders italic
 //! (`quadraui/src/primitives/tab_bar.rs`).
 
+use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
+use crate::backend::DrawsPrimitives;
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;
-use crate::event::{Key, MouseButton, NamedKey, Rect};
-// This compose helper caches the `TabBar` primitive's own resolved
-// `TabBarLayout` for click dispatch, and routes every strip click
-// through that layout's `hit_test` rather than comparing x-ranges
-// itself.
+use crate::event::{Key, MouseButton, NamedKey, Point, Rect};
+use crate::interactive::{
+    EventCx, EventHost, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    WidgetAction,
+};
+use crate::paint_surface::PaintSurface;
+use crate::primitive::{LayoutCtx, PaintEnv, Primitive, Units};
 use crate::primitives::tab_bar::{
-    draw_tab_strip, strip_layout_from_tab_slots, TabBar, TabBarHit, TabBarLayout, TabItem,
+    tab_bar_sub_regions, TabBar, TabBarEvent, TabBarPrimitiveLayout, TabBarState, TabItem,
 };
 use crate::text_util::display_width;
 use crate::types::{Modifiers, WidgetId};
 use crate::Backend;
+#[cfg(feature = "tui")]
+use crate::CellSurface;
 
 /// Columns the controller's portable pre-paint estimate reserves for a
 /// closable tab's close affordance: the `×` / `●` glyph plus the trailing
@@ -227,7 +233,7 @@ impl WorkspaceDoc {
 /// `#[non_exhaustive]`: see [`WorkspaceDoc`]. Match with a trailing
 /// `_ => {}` arm.
 #[non_exhaustive]
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum WorkspaceEvent {
     /// A document was added to the strip and made active.
     Opened {
@@ -302,28 +308,455 @@ pub struct WorkspaceLayout {
     pub body_bounds: Rect,
 }
 
+// ── Workspace: the widget-contract descriptor ─────────────────────────
+
+/// An open-N-view-one document strip as a widget-contract descriptor: the
+/// documents, which one is active and which one is the preview. The app
+/// owns all of it (controlled mode) and applies the [`WorkspaceEvent`]s
+/// [`Interactive::handle`] reports; [`WorkspaceController`] is the
+/// ready-made owner that does exactly that.
+///
+/// The strip paints and routes through a [`TabBar`] child that shares this
+/// workspace's [`Self::id`], so hover, the painted-widget record and the
+/// tab-bar drivers (`tab_center`, `tab_close_center`) address the strip by
+/// the same id whether it was painted as a `Workspace` or a bare `TabBar`.
+///
+/// `#[non_exhaustive]`: build with [`Self::new`] plus the `with_*` setters.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Workspace {
+    /// The strip's id — also its [`TabBar`] child's id.
+    pub id: WidgetId,
+    /// Every open document, in strip order.
+    pub docs: Vec<WorkspaceDoc>,
+    /// Index into [`Self::docs`] of the active document.
+    pub active: Option<usize>,
+    /// Opaque id of the single preview document, if any — see the module
+    /// doc's *Preview tabs* section.
+    pub preview: Option<String>,
+}
+
+impl Workspace {
+    /// An empty workspace whose strip paints under `id`.
+    pub fn new(id: impl Into<WidgetId>) -> Self {
+        Self {
+            id: id.into(),
+            docs: Vec::new(),
+            active: None,
+            preview: None,
+        }
+    }
+
+    /// Set the open documents.
+    #[must_use]
+    pub fn with_docs(mut self, docs: Vec<WorkspaceDoc>) -> Self {
+        self.docs = docs;
+        self
+    }
+
+    /// Set the active document's index.
+    #[must_use]
+    pub fn with_active(mut self, active: Option<usize>) -> Self {
+        self.active = active;
+        self
+    }
+
+    /// Set the preview document's id.
+    #[must_use]
+    pub fn with_preview(mut self, preview: Option<String>) -> Self {
+        self.preview = preview;
+        self
+    }
+
+    /// Whether `id` is the preview document.
+    fn is_preview_str(&self, id: &str) -> bool {
+        self.preview.as_deref() == Some(id)
+    }
+
+    /// The [`TabBar`] child this workspace paints, scrolled to
+    /// `scroll_offset`.
+    pub fn tab_bar(&self, scroll_offset: usize) -> TabBar {
+        TabBar {
+            id: self.id,
+            tabs: self
+                .docs
+                .iter()
+                .enumerate()
+                .map(|(i, d)| TabItem {
+                    label: d.label.clone(),
+                    is_active: self.active == Some(i),
+                    is_dirty: d.dirty,
+                    is_preview: self.is_preview_str(&d.id),
+                    is_closable: d.closable,
+                })
+                .collect(),
+            scroll_offset,
+            right_segments: Vec::new(),
+            active_accent: None,
+            show_tab_close: true,
+            compact: false,
+            ..Default::default()
+        }
+    }
+
+    /// Largest offset that still shows at least one tab.
+    fn max_scroll_offset(&self) -> usize {
+        self.docs.len().saturating_sub(1)
+    }
+
+    /// Portable pre-paint scroll offset: measure each tab in char cells
+    /// (label display width plus the close affordance) and ask the
+    /// primitive where the active tab fits. Exact for a cell grid, an
+    /// estimate for pixel backends, which [`Primitive::layout`] then
+    /// corrects from the tab bar's own measurements.
+    fn estimate_scroll_offset(&self, strip_width: f32, char_width: f32) -> usize {
+        let Some(active) = self.active else {
+            return 0;
+        };
+        let cell = if char_width > 0.0 { char_width } else { 1.0 };
+        let available = (strip_width / cell).max(0.0) as usize;
+        TabBar::fit_active_scroll_offset(active, self.docs.len(), available, |i| {
+            let doc = &self.docs[i];
+            display_width(&doc.label) + if doc.closable { CLOSE_COLS_ESTIMATE } else { 0 }
+        })
+    }
+
+    /// The step a key press asks the strip to cycle by: `+1` for
+    /// `Ctrl+Tab` / `Ctrl+PageDown`, `-1` for `Ctrl+Shift+Tab` /
+    /// `Ctrl+PageUp` (crossterm spells the former `BackTab`, GTK a shifted
+    /// `Tab`). `None` for every other key.
+    pub fn cycle_delta(key: &Key, modifiers: Modifiers) -> Option<isize> {
+        if !modifiers.ctrl {
+            return None;
+        }
+        match key {
+            Key::Named(NamedKey::BackTab) => Some(-1),
+            Key::Named(NamedKey::Tab) if modifiers.shift => Some(-1),
+            Key::Named(NamedKey::Tab) => Some(1),
+            Key::Named(NamedKey::PageUp) => Some(-1),
+            Key::Named(NamedKey::PageDown) => Some(1),
+            _ => None,
+        }
+    }
+
+    /// The index `delta` positions from the active document, wrapping at
+    /// both ends; `None` for an empty workspace.
+    pub fn cycle_target(&self, delta: isize) -> Option<usize> {
+        let n = self.docs.len();
+        if n == 0 {
+            return None;
+        }
+        let active = self.active.unwrap_or(0);
+        // `FlatNav`'s `PageUp`/`PageDown` treat a zero magnitude as one
+        // step, so a zero delta is answered here.
+        if delta == 0 {
+            return Some(active);
+        }
+        let key = if delta > 0 {
+            NavKey::PageDown(delta as usize)
+        } else {
+            NavKey::PageUp((-delta) as usize)
+        };
+        Some(FlatNav::mv(n, Some(active), key, true, |_| true).unwrap_or(active))
+    }
+
+    /// The tab strip's height for `ctx`: [`crate::Style::tab_height`] (or
+    /// the chrome line height, when taller) on a pixel backend, one row on
+    /// a cell grid.
+    fn strip_height(ctx: &LayoutCtx) -> f32 {
+        let lh = ctx.chrome_line_height();
+        if lh > 1.0 {
+            lh.max(ctx.style().tab_height)
+        } else {
+            lh
+        }
+    }
+
+    /// The intent a tab-bar event on this strip stands for. Activating
+    /// the preview tab promotes it: the activation is emitted ahead of
+    /// the returned [`WorkspaceEvent::Promoted`].
+    fn map_tab_event(&self, event: TabBarEvent, cx: &mut EventCx) -> Handled<WorkspaceEvent> {
+        match event {
+            TabBarEvent::TabActivated { index } => {
+                let Some(doc) = self.docs.get(index) else {
+                    return Handled::Consumed;
+                };
+                let promoted = WorkspaceEvent::Promoted { id: doc.id.clone() };
+                let preview = self.is_preview_str(&doc.id);
+                if self.active == Some(index) {
+                    return if preview {
+                        Handled::Event(promoted)
+                    } else {
+                        Handled::Consumed
+                    };
+                }
+                let activated = WorkspaceEvent::Activated {
+                    id: doc.id.clone(),
+                    index,
+                };
+                if preview {
+                    cx.emit(activated.into_ui_event(cx.id));
+                    Handled::Event(promoted)
+                } else {
+                    Handled::Event(activated)
+                }
+            }
+            TabBarEvent::TabClosed { index } => self.close_intent(index),
+            _ => Handled::Consumed,
+        }
+    }
+
+    /// [`WorkspaceEvent::Closed`] for the tab at `index`, or
+    /// [`Handled::Consumed`] when that document is not closable from the
+    /// strip.
+    fn close_intent(&self, index: usize) -> Handled<WorkspaceEvent> {
+        match self.docs.get(index) {
+            Some(doc) if doc.closable => Handled::Event(WorkspaceEvent::Closed {
+                id: doc.id.clone(),
+                index,
+            }),
+            _ => Handled::Consumed,
+        }
+    }
+}
+
+/// [`Primitive::Layout`] for [`Workspace`]: the strip and body split, the
+/// scroll offset this frame resolved and the [`TabBar`] child laid out at
+/// that offset.
+///
+/// `#[non_exhaustive]`: produced by [`Primitive::layout`], never built by
+/// a consumer.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct WorkspacePrimitiveLayout {
+    /// The rect the workspace was laid out into.
+    pub area: Rect,
+    /// The tab strip, flush with the top of [`Self::area`].
+    pub strip_bounds: Rect,
+    /// Everything below the strip — the host paints the active document
+    /// here.
+    pub body_bounds: Rect,
+    /// The offset that keeps the active tab visible under this frame's
+    /// measurements.
+    pub scroll_offset: usize,
+    /// The child strip, scrolled to [`Self::scroll_offset`].
+    pub bar: TabBar,
+    /// The child strip's own layout.
+    pub tabs: TabBarPrimitiveLayout,
+}
+
+impl A11yPrimitive for Workspace {
+    fn a11y_info(&self) -> A11yInfo {
+        self.tab_bar(0).a11y_info()
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        self.tab_bar(0).a11y_children()
+    }
+}
+
+impl Primitive for Workspace {
+    type Layout = WorkspacePrimitiveLayout;
+    type Event = WorkspaceEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// Splits the strip off the top of `rect` and lays the [`TabBar`]
+    /// child out at the scroll offset that keeps the active tab visible.
+    /// The offset starts from a char-cell estimate; when the child's own
+    /// measurements resolve a different one, the child is laid out again
+    /// at that offset, so the active tab is on screen the frame it
+    /// becomes active.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout {
+        let strip_height = Self::strip_height(ctx).min(rect.height.max(0.0));
+        let strip_bounds = Rect::new(rect.x, rect.y, rect.width, strip_height);
+        let body_bounds = Rect::new(
+            rect.x,
+            rect.y + strip_height,
+            rect.width,
+            (rect.height - strip_height).max(0.0),
+        );
+        let mut scroll_offset = self.estimate_scroll_offset(rect.width, ctx.char_width);
+        let mut bar = self.tab_bar(scroll_offset);
+        let mut tabs = Primitive::layout(&bar, ctx, strip_bounds);
+        if tabs.corrected_scroll_offset != scroll_offset {
+            scroll_offset = tabs.corrected_scroll_offset.min(self.max_scroll_offset());
+            bar = self.tab_bar(scroll_offset);
+            tabs = Primitive::layout(&bar, ctx, strip_bounds);
+        }
+        WorkspacePrimitiveLayout {
+            area: rect,
+            strip_bounds,
+            body_bounds,
+            scroll_offset,
+            bar,
+            tabs,
+        }
+    }
+
+    /// The strip, through the [`TabBar`] child's own paint; the body is
+    /// the host's.
+    fn paint(&self, layout: &Self::Layout, surface: &mut dyn PaintSurface, env: &PaintEnv) {
+        Primitive::paint(&layout.bar, &layout.tabs, surface, env);
+    }
+
+    /// The strip, through the [`TabBar`] child's own cell paint.
+    #[cfg(feature = "tui")]
+    fn paint_cells(&self, layout: &Self::Layout, cells: &mut dyn CellSurface, env: &PaintEnv) {
+        Primitive::paint_cells(&layout.bar, &layout.tabs, cells, env);
+    }
+}
+
+/// [`Interactive::State`] for [`Workspace`]: the [`TabBar`] child's own
+/// state (its keyboard-focused tab). The strip's scroll offset is not
+/// stored: [`Primitive::layout`] derives it from the active document every
+/// frame.
+#[non_exhaustive]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceState {
+    /// The tab strip's interaction state.
+    pub tab_bar: TabBarState,
+}
+
+impl WidgetAction for WorkspaceEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::Workspace(id, self)
+    }
+}
+
+/// Whether workspace-local `local` lies on the strip.
+fn in_strip(layout: &WorkspacePrimitiveLayout, local: Point) -> bool {
+    local.x >= 0.0
+        && local.y >= 0.0
+        && local.x < layout.strip_bounds.width
+        && local.y < layout.strip_bounds.height
+}
+
+impl Interactive for Workspace {
+    type State = WorkspaceState;
+    type Action = WorkspaceEvent;
+
+    /// The [`TabBar`] child's own focus: one stop, or none for an empty
+    /// strip.
+    fn focus(&self) -> FocusSpec {
+        Interactive::focus(&self.tab_bar(0))
+    }
+
+    /// The strip's tabs, close buttons and chevrons. The strip shares the
+    /// workspace's origin, so the child's strip-local rects are already
+    /// workspace-local.
+    fn sub_regions(&self, layout: &Self::Layout) -> Vec<(Rect, SubTarget)> {
+        tab_bar_sub_regions(&layout.tabs.layout)
+    }
+
+    /// Routes strip gestures and tab keys through the [`TabBar`] child and
+    /// turns what it reports into [`WorkspaceEvent`]s: activating a tab
+    /// (promoting it when it is the preview), closing a closable one.
+    /// A middle click closes the tab under it anywhere on its span, and
+    /// `Ctrl+Tab`-style keys cycle the active document without promoting
+    /// it. A press on the body is the host's.
+    fn handle(
+        &self,
+        state: &mut WorkspaceState,
+        event: &RoutedEvent,
+        layout: &Self::Layout,
+        cx: &mut EventCx,
+    ) -> Handled<WorkspaceEvent> {
+        let strip_press = match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(button) | PointerKind::DoubleClick(button),
+                local,
+                ..
+            } => {
+                if !in_strip(layout, *local) {
+                    return Handled::Ignored;
+                }
+                if *button == MouseButton::Middle {
+                    let hit = layout.tabs.layout.visible_tabs.iter().find(|vt| {
+                        local.x >= vt.bounds.x
+                            && local.x < vt.bounds.x + vt.bounds.width
+                            && local.y >= vt.bounds.y
+                            && local.y < vt.bounds.y + vt.bounds.height
+                    });
+                    return match hit {
+                        Some(vt) => self.close_intent(vt.tab_idx),
+                        None => Handled::Consumed,
+                    };
+                }
+                true
+            }
+            RoutedEvent::Key(KeyEvent { key, modifiers, .. }) => {
+                if let Some(delta) = Self::cycle_delta(key, *modifiers) {
+                    return match self.cycle_target(delta) {
+                        Some(index) if self.active != Some(index) => {
+                            Handled::Event(WorkspaceEvent::Activated {
+                                id: self.docs[index].id.clone(),
+                                index,
+                            })
+                        }
+                        _ => Handled::Consumed,
+                    };
+                }
+                false
+            }
+            _ => false,
+        };
+        // The child shares this workspace's id, so it runs against the
+        // same `cx`.
+        match Interactive::handle(&layout.bar, &mut state.tab_bar, event, &layout.tabs, cx) {
+            Handled::Event(tab_event) => self.map_tab_event(tab_event, cx),
+            Handled::Consumed => Handled::Consumed,
+            Handled::Ignored if strip_press => Handled::Consumed,
+            Handled::Ignored => Handled::Ignored,
+        }
+    }
+}
+
+// ── WorkspaceController ──────────────────────────────────────────────
+
 /// An ordered set of opaque document ids with one active, rendered as a
 /// [`TabBar`]. See the module documentation for the close-neighbour rule,
 /// the keyboard table, and how this differs from
 /// [`TabGroupController`](crate::compose::tab_group::TabGroupController).
+///
+/// Owns a [`Workspace`] descriptor and its [`WorkspaceState`]: paints the
+/// descriptor through the widget contract, routes clicks through its
+/// [`Interactive::handle`] and applies the intents it reports.
 #[derive(Debug, Clone)]
 pub struct WorkspaceController {
-    bar_id: WidgetId,
-    docs: Vec<WorkspaceDoc>,
-    active: Option<usize>,
-    /// Opaque id of the current preview document, if any. See the module
-    /// doc's *Preview tabs* section. Tracked by id rather than index so
-    /// `close`/`reorder` don't have to keep it in sync by hand.
-    preview: Option<String>,
+    view: Workspace,
+    state: WorkspaceState,
     scroll_offset: usize,
-    last_strip: Option<Rect>,
-    /// The tab strip's own resolved geometry from the last
-    /// [`WorkspaceController::render`], in **strip-relative**
-    /// coordinates — the shape `TabBar`'s `Primitive::layout` produces,
-    /// so a strip click is classified by [`TabBarLayout::hit_test`] on
-    /// `(x - strip.x, y - strip.y)` rather than by comparing absolute
-    /// x-ranges here.
-    last_layout: Option<TabBarLayout>,
+    /// The workspace's resolved layout from the last
+    /// [`WorkspaceController::render`], which clicks are routed against.
+    last_layout: Option<WorkspacePrimitiveLayout>,
+}
+
+/// The [`EventHost`] [`WorkspaceController`] runs its workspace's
+/// [`Interactive::handle`] against: no focus or capture of its own, and an
+/// outbox for the events the workspace emits ahead of its result.
+struct ControllerHost {
+    units: Units,
+    emitted: Vec<crate::UiEvent>,
+}
+
+impl EventHost for ControllerHost {
+    fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+        false
+    }
+    fn request_focus(&mut self, _id: &WidgetId, _sub: Option<SubTarget>) {}
+    fn capture_pointer(&mut self, _id: &WidgetId) {}
+    fn release_pointer(&mut self) {}
+    fn set_cursor(&mut self, _cursor: crate::backend::PointerShape) {}
+    fn request_redraw(&mut self) {}
+    fn emit(&mut self, event: crate::UiEvent) {
+        self.emitted.push(event);
+    }
+    fn units(&self) -> Units {
+        self.units
+    }
 }
 
 impl WorkspaceController {
@@ -334,12 +767,9 @@ impl WorkspaceController {
     /// something stable and unique per strip.
     pub fn new(bar_id: impl Into<String>) -> Self {
         Self {
-            bar_id: WidgetId::new(bar_id),
-            docs: Vec::new(),
-            active: None,
-            preview: None,
+            view: Workspace::new(WidgetId::new(bar_id)),
+            state: WorkspaceState::default(),
             scroll_offset: 0,
-            last_strip: None,
             last_layout: None,
         }
     }
@@ -348,45 +778,50 @@ impl WorkspaceController {
 
     /// The [`WidgetId`] the tab strip paints under.
     pub fn bar_id(&self) -> &WidgetId {
-        &self.bar_id
+        &self.view.id
+    }
+
+    /// The [`Workspace`] descriptor this controller paints.
+    pub fn view(&self) -> &Workspace {
+        &self.view
     }
 
     /// Every open document, in strip order.
     pub fn docs(&self) -> &[WorkspaceDoc] {
-        &self.docs
+        &self.view.docs
     }
 
     /// How many documents are open.
     pub fn len(&self) -> usize {
-        self.docs.len()
+        self.view.docs.len()
     }
 
     /// Whether no documents are open.
     pub fn is_empty(&self) -> bool {
-        self.docs.is_empty()
+        self.view.docs.is_empty()
     }
 
     /// Index of the active document, or `None` when the workspace is
     /// empty.
     pub fn active_index(&self) -> Option<usize> {
-        self.active
+        self.view.active
     }
 
     /// Opaque id of the active document, or `None` when the workspace is
     /// empty.
     pub fn active_id(&self) -> Option<&str> {
-        self.active.map(|i| self.docs[i].id.as_str())
+        self.view.active.map(|i| self.view.docs[i].id.as_str())
     }
 
     /// The active document, or `None` when the workspace is empty.
     pub fn active_doc(&self) -> Option<&WorkspaceDoc> {
-        self.active.map(|i| &self.docs[i])
+        self.view.active.map(|i| &self.view.docs[i])
     }
 
     /// Strip index of `id`, or `None` when it isn't open.
     pub fn index_of(&self, id: impl Into<WidgetId>) -> Option<usize> {
         let id = id.into();
-        self.docs.iter().position(|d| d.id == id.as_str())
+        self.view.docs.iter().position(|d| d.id == id.as_str())
     }
 
     /// Whether `id` is open.
@@ -399,16 +834,7 @@ impl WorkspaceController {
     /// for a permanent (promoted or never-preview) document.
     pub fn is_preview(&self, id: impl Into<WidgetId>) -> bool {
         let id = id.into();
-        self.is_preview_str(id.as_str())
-    }
-
-    /// [`Self::is_preview`]'s comparison, taken directly on a borrowed
-    /// `&str` — used by [`Self::tab_bar`]'s per-document, per-frame check
-    /// so it stays a plain string compare instead of round-tripping each
-    /// document id through the global [`WidgetId`] interner once per
-    /// frame.
-    fn is_preview_str(&self, id: &str) -> bool {
-        self.preview.as_deref() == Some(id)
+        self.view.is_preview_str(id.as_str())
     }
 
     /// Scroll offset the last [`Self::render`] resolved — the index of
@@ -445,14 +871,14 @@ impl WorkspaceController {
         if let Some(existing) = self.index_of(&doc.id) {
             let mut events: Vec<WorkspaceEvent> =
                 self.set_active_index(existing).into_iter().collect();
-            let id = self.docs[existing].id.clone();
+            let id = self.view.docs[existing].id.clone();
             events.extend(self.promote(&id));
             return events;
         }
-        let index = self.docs.len();
+        let index = self.view.docs.len();
         let id = doc.id.clone();
-        self.docs.push(doc);
-        self.active = Some(index);
+        self.view.docs.push(doc);
+        self.view.active = Some(index);
         vec![WorkspaceEvent::Opened { id, index }]
     }
 
@@ -471,12 +897,12 @@ impl WorkspaceController {
         }
         // 2. A preview tab exists for a different document → replace its
         //    contents in that tab's slot.
-        if let Some(preview_id) = self.preview.clone() {
+        if let Some(preview_id) = self.view.preview.clone() {
             if let Some(index) = self.index_of(&preview_id) {
                 let new_id = doc.id.clone();
-                self.docs[index] = doc;
-                self.preview = Some(new_id.clone());
-                self.active = Some(index);
+                self.view.docs[index] = doc;
+                self.view.preview = Some(new_id.clone());
+                self.view.active = Some(index);
                 self.clamp_scroll_offset();
                 return vec![
                     WorkspaceEvent::Closed {
@@ -488,11 +914,11 @@ impl WorkspaceController {
             }
         }
         // 3. Otherwise append a new tab flagged preview.
-        let index = self.docs.len();
+        let index = self.view.docs.len();
         let id = doc.id.clone();
-        self.docs.push(doc);
-        self.active = Some(index);
-        self.preview = Some(id.clone());
+        self.view.docs.push(doc);
+        self.view.active = Some(index);
+        self.view.preview = Some(id.clone());
         vec![WorkspaceEvent::Opened { id, index }]
     }
 
@@ -510,7 +936,7 @@ impl WorkspaceController {
         if !self.is_preview(id) {
             return None;
         }
-        self.preview = None;
+        self.view.preview = None;
         Some(WorkspaceEvent::Promoted {
             id: id.as_str().to_string(),
         })
@@ -535,7 +961,7 @@ impl WorkspaceController {
     /// cycling doesn't promote, only an explicit jump to a tab does.
     pub fn activate_index(&mut self, index: usize) -> Vec<WorkspaceEvent> {
         let mut events: Vec<WorkspaceEvent> = self.set_active_index(index).into_iter().collect();
-        if let Some(doc) = self.docs.get(index) {
+        if let Some(doc) = self.view.docs.get(index) {
             let id = doc.id.clone();
             events.extend(self.promote(&id));
         }
@@ -548,12 +974,12 @@ impl WorkspaceController {
     /// never promotes). Returns `None` when `index` is out of range or
     /// already active.
     fn set_active_index(&mut self, index: usize) -> Option<WorkspaceEvent> {
-        if index >= self.docs.len() || self.active == Some(index) {
+        if index >= self.view.docs.len() || self.view.active == Some(index) {
             return None;
         }
-        self.active = Some(index);
+        self.view.active = Some(index);
         Some(WorkspaceEvent::Activated {
-            id: self.docs[index].id.clone(),
+            id: self.view.docs[index].id.clone(),
             index,
         })
     }
@@ -575,22 +1001,22 @@ impl WorkspaceController {
         let Some(index) = self.index_of(id) else {
             return Vec::new();
         };
-        let removed = self.docs.remove(index);
-        if self.preview.as_deref() == Some(removed.id.as_str()) {
-            self.preview = None;
+        let removed = self.view.docs.remove(index);
+        if self.view.preview.as_deref() == Some(removed.id.as_str()) {
+            self.view.preview = None;
         }
         let mut events = vec![WorkspaceEvent::Closed {
             id: removed.id,
             index,
         }];
 
-        let previous_active = self.active;
-        self.active = match previous_active {
-            _ if self.docs.is_empty() => None,
+        let previous_active = self.view.active;
+        self.view.active = match previous_active {
+            _ if self.view.docs.is_empty() => None,
             // The closed document *was* active: the tab that slid into
             // its index (its right-hand neighbour) takes over; when it
             // was last, clamp back onto the new last tab.
-            Some(active) if active == index => Some(index.min(self.docs.len() - 1)),
+            Some(active) if active == index => Some(index.min(self.view.docs.len() - 1)),
             // A tab left of the active one closed: the active document
             // is unchanged, its index shifted left by one.
             Some(active) if active > index => Some(active - 1),
@@ -601,9 +1027,9 @@ impl WorkspaceController {
         // when the active document's index merely shifted left.
         let closed_the_active_doc = previous_active == Some(index);
         if closed_the_active_doc {
-            if let Some(new_active) = self.active {
+            if let Some(new_active) = self.view.active {
                 events.push(WorkspaceEvent::Activated {
-                    id: self.docs[new_active].id.clone(),
+                    id: self.view.docs[new_active].id.clone(),
                     index: new_active,
                 });
             }
@@ -617,14 +1043,14 @@ impl WorkspaceController {
     /// by index. Returns `None` when either index is out of range or the
     /// move is a no-op.
     pub fn reorder(&mut self, from: usize, to: usize) -> Option<WorkspaceEvent> {
-        if from >= self.docs.len() || to >= self.docs.len() || from == to {
+        if from >= self.view.docs.len() || to >= self.view.docs.len() || from == to {
             return None;
         }
         let active_id = self.active_id().map(str::to_string);
-        let doc = self.docs.remove(from);
+        let doc = self.view.docs.remove(from);
         let id = doc.id.clone();
-        self.docs.insert(to, doc);
-        self.active = active_id.and_then(|id| self.index_of(&id));
+        self.view.docs.insert(to, doc);
+        self.view.active = active_id.and_then(|id| self.index_of(&id));
         self.clamp_scroll_offset();
         Some(WorkspaceEvent::Reordered { id, from, to })
     }
@@ -637,24 +1063,7 @@ impl WorkspaceController {
     /// Deliberately does not promote even when it lands on the preview
     /// tab — see [`Self::activate_index`]'s doc.
     pub fn cycle(&mut self, delta: isize) -> Option<WorkspaceEvent> {
-        let n = self.docs.len();
-        if n == 0 {
-            return None;
-        }
-        let active = self.active.unwrap_or(0);
-        // `delta == 0` is a no-op step; `FlatNav`'s `PageUp`/`PageDown`
-        // variants treat a zero magnitude as one step (see their doc), so
-        // it's special-cased here rather than handed to `FlatNav::mv`.
-        let next = if delta == 0 {
-            active
-        } else {
-            let key = if delta > 0 {
-                NavKey::PageDown(delta as usize)
-            } else {
-                NavKey::PageUp((-delta) as usize)
-            };
-            FlatNav::mv(n, Some(active), key, true, |_| true).unwrap_or(active)
-        };
+        let next = self.view.cycle_target(delta)?;
         self.set_active_index(next)
     }
 
@@ -662,7 +1071,7 @@ impl WorkspaceController {
     pub fn set_label(&mut self, id: impl Into<WidgetId>, label: impl Into<String>) -> bool {
         match self.index_of(id) {
             Some(i) => {
-                self.docs[i].label = label.into();
+                self.view.docs[i].label = label.into();
                 true
             }
             None => false,
@@ -687,7 +1096,7 @@ impl WorkspaceController {
         let Some(i) = self.index_of(id) else {
             return Vec::new();
         };
-        self.docs[i].dirty = dirty;
+        self.view.docs[i].dirty = dirty;
         if dirty {
             self.promote(id).into_iter().collect()
         } else {
@@ -700,109 +1109,48 @@ impl WorkspaceController {
     /// The [`TabBar`] this controller would paint right now. Exposed so a
     /// host can measure or mirror the strip without painting it.
     pub fn tab_bar(&self) -> TabBar {
-        TabBar {
-            id: self.bar_id,
-            tabs: self
-                .docs
-                .iter()
-                .enumerate()
-                .map(|(i, d)| TabItem {
-                    label: d.label.clone(),
-                    is_active: self.active == Some(i),
-                    is_dirty: d.dirty,
-                    is_preview: self.is_preview_str(&d.id),
-                    is_closable: d.closable,
-                })
-                .collect(),
-            scroll_offset: self.scroll_offset,
-            right_segments: Vec::new(),
-            active_accent: None,
-            show_tab_close: true,
-            compact: false,
-            ..Default::default()
-        }
+        self.view.tab_bar(self.scroll_offset)
     }
 
-    /// Paint the tab strip along the top of `bounds` and return the
-    /// resolved strip / body rects. The host paints the active document's
-    /// content into [`WorkspaceLayout::body_bounds`] itself.
+    /// Paint the workspace into `bounds` through the widget contract and
+    /// return the resolved strip / body rects. The host paints the active
+    /// document's content into [`WorkspaceLayout::body_bounds`] itself.
     ///
-    /// # Keeping the active tab visible
-    ///
-    /// Two things happen here, and both are needed:
-    ///
-    /// 1. **Before painting**, the offset is recomputed from a portable
-    ///    char-cell estimate via [`TabBar::fit_active_scroll_offset`].
-    ///    A cell-grid layout echoes the offset it was handed back
-    ///    verbatim, because its char-based fit is already exact, so
-    ///    without this step the strip would paint the *previous* frame's
-    ///    offset and leave a freshly-activated tab off-screen for a
-    ///    frame.
-    /// 2. **After painting**, a backend that measures in its own unit
-    ///    (GTK's Pango widths) may disagree with that estimate and
-    ///    resolve a different
-    ///    [`TabBarPrimitiveLayout::corrected_scroll_offset`](crate::primitives::tab_bar::TabBarPrimitiveLayout::corrected_scroll_offset).
-    ///    When it does, the strip is repainted inline with the corrected
-    ///    value — the two-pass-paint pattern `TabBar`'s module doc
-    ///    prescribes for event-driven backends, where a queued redraw is
-    ///    unreliable.
+    /// The strip's scroll offset is resolved by the workspace's own
+    /// layout (see [`Workspace`]'s [`Primitive::layout`]), so the active
+    /// tab is visible on the same frame it becomes active.
     pub fn render(&mut self, backend: &mut dyn Backend, bounds: Rect) -> WorkspaceLayout {
-        let lh = backend.chrome_line_height();
-        // On a pixel backend (GUI), the tab strip is sized off
-        // `Style::tab_height` rather than the raw chrome line height; TUI's
-        // cell grid (`lh <= 1.0`) keeps the one-row strip — see
-        // `TabGroupController::render`'s identical split.
-        let strip_height = if lh > 1.0 {
-            lh.max(backend.style().tab_height)
-        } else {
-            lh
-        }
-        .min(bounds.height.max(0.0));
-        let strip = Rect::new(bounds.x, bounds.y, bounds.width, strip_height);
-        let body = Rect::new(
-            bounds.x,
-            bounds.y + strip_height,
-            bounds.width,
-            (bounds.height - strip_height).max(0.0),
-        );
-
-        self.scroll_offset = self.estimate_scroll_offset(strip.width, backend.char_width());
-        // Paint through the widget contract: `TabBar` is a `Primitive`,
-        // so `draw_dyn` resolves its layout and paints it on whichever
-        // surface this backend exposes. A `None` means nothing measured a
-        // tab bar, so there is no geometry to classify clicks against.
-        let (mut layout, corrected) = draw_tab_strip(backend, strip, &self.tab_bar())
-            .unwrap_or_else(|| (strip_layout_from_tab_slots(strip, &[]), self.scroll_offset));
-        if corrected != self.scroll_offset {
-            self.scroll_offset = corrected.min(self.max_scroll_offset());
-            if let Some((repainted, _)) = draw_tab_strip(backend, strip, &self.tab_bar()) {
-                layout = repainted;
-            }
-        }
-
-        self.last_strip = Some(strip);
-        self.last_layout = Some(layout);
-        WorkspaceLayout {
-            strip_bounds: strip,
-            body_bounds: body,
-        }
+        let painted = DrawsPrimitives::draw_dyn(backend, bounds, &self.view, &())
+            .downcast_ref::<WorkspacePrimitiveLayout>()
+            .cloned()
+            .unwrap_or_else(|| {
+                let ctx = LayoutCtx::new(backend.chrome_line_height(), backend.char_width(), false);
+                Primitive::layout(&self.view, &ctx, bounds)
+            });
+        self.scroll_offset = painted.scroll_offset;
+        let layout = WorkspaceLayout {
+            strip_bounds: painted.strip_bounds,
+            body_bounds: painted.body_bounds,
+        };
+        self.last_layout = Some(painted);
+        layout
     }
 
     /// The strip rect the last [`Self::render`] painted, if any.
     pub fn strip_bounds(&self) -> Option<Rect> {
-        self.last_strip
+        self.last_layout.as_ref().map(|l| l.strip_bounds)
     }
 
     // ── Input ───────────────────────────────────────────────────────
 
-    /// Route a mouse click at `(x, y)` in surface coordinates.
+    /// Route a mouse click at `(x, y)` in surface coordinates through the
+    /// workspace's [`Interactive::handle`] and apply what it reports.
     ///
     /// - [`MouseButton::Middle`] anywhere on a tab (body *or* close
     ///   button) closes it — VS Code's middle-click-to-close, and the
     ///   module doc's "middle-click closes a tab" contract. Every other
-    ///   button falls through to the existing left-click behaviour: a
-    ///   click on a tab's close button closes it (close buttons win over
-    ///   tab bodies, matching
+    ///   button behaves as a left click: a click on a tab's close button
+    ///   closes it (close buttons win over tab bodies, matching
     ///   [`TabGroupController::handle_click_event`](crate::compose::tab_group::TabGroupController::handle_click_event));
     ///   a click on a tab body activates it, promoting it when it's the
     ///   preview (see [`Self::activate_index`]).
@@ -824,61 +1172,64 @@ impl WorkspaceController {
         y: f32,
         button: MouseButton,
     ) -> Handled<Vec<WorkspaceEvent>> {
-        let (Some(strip), Some(layout)) = (self.last_strip, self.last_layout.as_ref()) else {
+        let Some(layout) = self.last_layout.as_ref() else {
             return Handled::Ignored;
         };
+        let strip = layout.strip_bounds;
         if y < strip.y || y >= strip.y + strip.height || x < strip.x || x >= strip.x + strip.width {
             return Handled::Ignored;
         }
-        // `layout`'s regions are strip-relative — see `last_layout`.
-        let (local_x, local_y) = (x - strip.x, y - strip.y);
-
-        if button == MouseButton::Middle {
-            // Middle-click closes whatever tab is under the pointer,
-            // anywhere on its full span — unlike the close button, it
-            // doesn't require landing on the × glyph specifically, so it
-            // reads `visible_tabs` (whose `bounds` include the close
-            // region) rather than classifying through `hit_test`.
-            let Some(vt) = layout.visible_tabs.iter().find(|vt| {
-                local_x >= vt.bounds.x
-                    && local_x < vt.bounds.x + vt.bounds.width
-                    && local_y >= vt.bounds.y
-                    && local_y < vt.bounds.y + vt.bounds.height
-            }) else {
-                return Handled::Consumed;
-            };
-            let Some(doc) = self.docs.get(vt.tab_idx) else {
-                return Handled::Consumed;
-            };
-            if !doc.closable {
-                return Handled::Consumed;
-            }
-            let id = doc.id.clone();
-            return events_to_handled(self.close(&id));
+        // The middle button is the only one with a gesture of its own;
+        // every other button clicks the way the left one does.
+        let button = match button {
+            MouseButton::Middle => MouseButton::Middle,
+            _ => MouseButton::Left,
+        };
+        let routed = RoutedEvent::Pointer {
+            kind: PointerKind::Down(button),
+            sub: None,
+            local: Point::new(x - layout.area.x, y - layout.area.y),
+            mods: Modifiers::default(),
+        };
+        let mut host = ControllerHost {
+            units: if strip.height > 1.0 {
+                Units::Pixels
+            } else {
+                Units::Cells
+            },
+            emitted: Vec::new(),
+        };
+        let outcome = {
+            let mut cx = EventCx::new(self.view.id, &mut host);
+            Interactive::handle(&self.view, &mut self.state, &routed, layout, &mut cx)
+        };
+        let mut intents: Vec<WorkspaceEvent> = host
+            .emitted
+            .into_iter()
+            .filter_map(|event| match event {
+                crate::UiEvent::Workspace(_, intent) => Some(intent),
+                _ => None,
+            })
+            .collect();
+        intents.extend(outcome.into_event());
+        let mut events = Vec::new();
+        for intent in intents {
+            events.extend(self.apply(intent));
         }
+        events_to_handled(events)
+    }
 
-        // Classification order (close glyph before tab body) is the strip
-        // layout's own — see `TabBarLayout::hit_test`.
-        match layout.hit_test(local_x, local_y) {
-            TabBarHit::TabClose(i) => {
-                let Some(doc) = self.docs.get(i) else {
-                    return Handled::Consumed;
-                };
-                if !doc.closable {
-                    return Handled::Consumed;
-                }
-                let id = doc.id.clone();
-                events_to_handled(self.close(&id))
+    /// Apply one intent the workspace reported, returning the events the
+    /// change actually produced.
+    fn apply(&mut self, intent: WorkspaceEvent) -> Vec<WorkspaceEvent> {
+        match intent {
+            WorkspaceEvent::Activated { index, .. } => self.activate_index(index),
+            WorkspaceEvent::Closed { id, .. } => self.close(id.as_str()),
+            WorkspaceEvent::Promoted { id } => self.promote(id.as_str()).into_iter().collect(),
+            WorkspaceEvent::Reordered { from, to, .. } => {
+                self.reorder(from, to).into_iter().collect()
             }
-            TabBarHit::Tab(i) => events_to_handled(self.activate_index(i)),
-            // A workspace strip declares no right segments (see
-            // `Self::tab_bar`) and no scroll arrows (the primitive's own
-            // layout only emits them when a backend asks for arrow
-            // chrome), so every other classification is dead space.
-            TabBarHit::ScrollLeft
-            | TabBarHit::ScrollRight
-            | TabBarHit::RightSegment(_)
-            | TabBarHit::Empty => Handled::Consumed,
+            WorkspaceEvent::Opened { .. } => Vec::new(),
         }
     }
 
@@ -904,19 +1255,8 @@ impl WorkspaceController {
     /// `Ctrl+PageDown` step forward, `Ctrl+Shift+Tab` / `Ctrl+PageUp`
     /// step back, both wrapping.
     pub fn handle_key_event(&mut self, key: &Key, modifiers: Modifiers) -> Handled<WorkspaceEvent> {
-        if !modifiers.ctrl {
+        let Some(delta) = Workspace::cycle_delta(key, modifiers) else {
             return Handled::Ignored;
-        }
-        let delta = match key {
-            // Crossterm reports Ctrl+Shift+Tab as `BackTab`; GTK reports a
-            // shifted `Tab`. Accept both spellings so the binding works on
-            // every backend without the consumer normalising first.
-            Key::Named(NamedKey::BackTab) => -1,
-            Key::Named(NamedKey::Tab) if modifiers.shift => -1,
-            Key::Named(NamedKey::Tab) => 1,
-            Key::Named(NamedKey::PageUp) => -1,
-            Key::Named(NamedKey::PageDown) => 1,
-            _ => return Handled::Ignored,
         };
         match self.cycle(delta) {
             Some(ev) => Handled::Event(ev),
@@ -935,31 +1275,13 @@ impl WorkspaceController {
 
     // ── Internals ───────────────────────────────────────────────────
 
-    /// Largest offset that still shows at least one tab.
-    fn max_scroll_offset(&self) -> usize {
-        self.docs.len().saturating_sub(1)
-    }
-
     fn clamp_scroll_offset(&mut self) {
-        self.scroll_offset = self.scroll_offset.min(self.max_scroll_offset());
+        self.scroll_offset = self.scroll_offset.min(self.view.max_scroll_offset());
     }
 
-    /// Portable pre-paint scroll offset: measure each tab in char cells
-    /// (label display width plus the close affordance) and ask the
-    /// primitive where the active tab fits. Exact for the TUI rasteriser,
-    /// an estimate for pixel backends — which correct it themselves via
-    /// `TabBarPrimitiveLayout::corrected_scroll_offset`, see
-    /// [`Self::render`].
+    #[cfg(test)]
     fn estimate_scroll_offset(&self, strip_width: f32, char_width: f32) -> usize {
-        let Some(active) = self.active else {
-            return 0;
-        };
-        let cell = if char_width > 0.0 { char_width } else { 1.0 };
-        let available = (strip_width / cell).max(0.0) as usize;
-        TabBar::fit_active_scroll_offset(active, self.docs.len(), available, |i| {
-            let doc = &self.docs[i];
-            display_width(&doc.label) + if doc.closable { CLOSE_COLS_ESTIMATE } else { 0 }
-        })
+        self.view.estimate_scroll_offset(strip_width, char_width)
     }
 }
 
@@ -1785,9 +2107,21 @@ mod tests {
     /// (actually painting a `TabBar` into those bounds) is covered
     /// end-to-end by the driver tests in `tests/tui_example_driver.rs`.
     fn seed_click_geometry(ws: &mut WorkspaceController, bounds: Rect, tabs: &[(f64, f64)]) {
-        ws.last_strip = Some(bounds);
         let slots: Vec<(f32, f32)> = tabs.iter().map(|(s, e)| (*s as f32, *e as f32)).collect();
-        ws.last_layout = Some(strip_layout_from_tab_slots(bounds, &slots));
+        let bar = ws.view.tab_bar(0);
+        ws.last_layout = Some(WorkspacePrimitiveLayout {
+            area: bounds,
+            strip_bounds: bounds,
+            body_bounds: Rect::new(bounds.x, bounds.y + bounds.height, bounds.width, 0.0),
+            scroll_offset: 0,
+            bar,
+            tabs: TabBarPrimitiveLayout {
+                area: bounds,
+                nerd_fonts_enabled: false,
+                layout: crate::primitives::tab_bar::strip_layout_from_tab_slots(bounds, &slots),
+                corrected_scroll_offset: 0,
+            },
+        });
     }
 
     // ── Tab strip height ──────────────────────────────────────────────
@@ -1862,7 +2196,12 @@ mod tests {
             .render(&mut backend, Rect::new(3.0, 2.0, 60.0, 10.0))
             .strip_bounds;
 
-        let layout = ws.last_layout.as_ref().expect("render cached a layout");
+        let layout = &ws
+            .last_layout
+            .as_ref()
+            .expect("render cached a layout")
+            .tabs
+            .layout;
         let (cx, cy) = layout
             .tab_close_center(1)
             .expect("tab 1 painted a close glyph");
@@ -1887,7 +2226,12 @@ mod tests {
             .strip_bounds;
 
         let (cx, cy, body_x, left_edge) = {
-            let layout = ws.last_layout.as_ref().expect("render cached a layout");
+            let layout = &ws
+                .last_layout
+                .as_ref()
+                .expect("render cached a layout")
+                .tabs
+                .layout;
             let (cx, cy) = layout.tab_center(2).expect("tab 2 is visible");
             // Nudge off the close glyph so the body region wins.
             let bounds = layout.visible_tabs[2].bounds;
@@ -1926,7 +2270,12 @@ mod tests {
             .strip_bounds;
 
         let (cx, cy, body_x) = {
-            let layout = ws.last_layout.as_ref().expect("render cached a layout");
+            let layout = &ws
+                .last_layout
+                .as_ref()
+                .expect("render cached a layout")
+                .tabs
+                .layout;
             assert!(
                 layout.visible_tabs.iter().any(|vt| vt.tab_idx == 25),
                 "the active tab scrolled into view: {:?}",
