@@ -108,7 +108,7 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     BackendBaseline {
         dir: "gtk",
         file_count: 47,
-        non_test_lines: 18407,
+        non_test_lines: 18413,
     },
     BackendBaseline {
         dir: "macos",
