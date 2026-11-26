@@ -91,6 +91,17 @@ fn row(driver: &TuiDriver<ImageApp>, y: usize) -> String {
         .to_string()
 }
 
+/// Row `y`'s raw cell glyphs, including cells `screen()` blanks because
+/// real image pixels sit under them.
+#[cfg(feature = "tui-images")]
+fn raw_row(driver: &TuiDriver<ImageApp>, y: usize) -> String {
+    driver
+        .styled_row(y as u16)
+        .into_iter()
+        .map(|(ch, _)| ch)
+        .collect()
+}
+
 #[test]
 fn surface_widget_image_paints_centered_fallback_text_without_a_graphics_channel() {
     let driver = driver(logo("[LOGO]"), ColorDepth::Indexed256);
@@ -138,12 +149,20 @@ fn surface_widget_image_paints_a_halfblock_mosaic_on_a_truecolor_terminal() {
     let driver = driver(logo("[LOGO]"), ColorDepth::TrueColor);
     assert!(!driver.screen_contains("[LOGO]"), "{}", driver.screen());
     for y in AREA.y as usize..(AREA.y + AREA.height) as usize {
-        let line: String = row(&driver, y)
+        let line: String = raw_row(&driver, y)
             .chars()
             .skip(AREA.x as usize)
             .take(AREA.width as usize)
             .collect();
         assert_eq!(line, "▀".repeat(AREA.width as usize), "row {y}");
+        // The mosaic is opaque to selection and copy, so the screen text
+        // reads it as a blank gap.
+        let text: String = row(&driver, y)
+            .chars()
+            .skip(AREA.x as usize)
+            .take(AREA.width as usize)
+            .collect();
+        assert!(text.trim().is_empty(), "row {y}: {text:?}");
     }
 }
 
@@ -155,7 +174,7 @@ fn surface_widget_image_paints_kitty_placeholders_when_kitty_graphics_are_confir
     backend.set_kitty_graphics_supported(true);
     backend.set_kitty_graphics_cell_px(Some((8, 16)));
     driver.render();
-    let line = row(&driver, AREA.y as usize);
+    let line = raw_row(&driver, AREA.y as usize);
     let first = line.chars().nth(AREA.x as usize);
     assert_eq!(first, Some('\u{10EEEE}'), "{}", driver.screen());
     assert!(!driver.screen_contains("[LOGO]"), "{}", driver.screen());

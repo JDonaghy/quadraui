@@ -1884,7 +1884,7 @@ pub fn schema() -> Vec<DefJson> {
             field("color", color.clone()),
         ],
     ));
-    let minimap_scale = b.define(alias("MinimapScale", lit(&["One", "Two"])));
+    let minimap_scale_alias = b.define(alias("MinimapScale", lit(&["One", "Two"])));
     let minimap_vscode_parity_payload = b.define(obj(
         "_MinimapVsCodeParityPayload",
         vec![
@@ -1903,7 +1903,7 @@ pub fn schema() -> Vec<DefJson> {
         ],
         vec![],
     ));
-    let minimap_sizing = b.define(alias(
+    let minimap_sizing_alias = b.define(alias(
         "MinimapSizing",
         uniont(vec![lit(&["Fill"]), minimap_sizing_dict]),
     ));
@@ -1916,8 +1916,8 @@ pub fn schema() -> Vec<DefJson> {
             field("visible_row_start", int_()),
             field("visible_row_count", int_()),
             field("total_buffer_lines", int_()),
-            field_opt("scale", minimap_scale),
-            field_opt("sizing", nullable(minimap_sizing)),
+            field_opt("scale", minimap_scale_alias),
+            field_opt("sizing", nullable(minimap_sizing_alias)),
         ],
     ));
     let activity_item_descriptor = b.define(obj(

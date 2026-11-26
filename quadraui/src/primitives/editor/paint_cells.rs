@@ -693,16 +693,11 @@ mod tests {
     /// The caret a test paint reported: `Some` for a `Bar`/`Underline`
     /// caret the painter placed through [`crate::CellSurface::set_cursor`].
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-    struct EditorPaintResult {
+    struct CaretReport {
         cursor_position: Option<(u16, u16)>,
     }
 
-    fn paint_editor(
-        buf: &mut Buffer,
-        area: RtRect,
-        editor: &Editor,
-        theme: &Theme,
-    ) -> EditorPaintResult {
+    fn paint_editor(buf: &mut Buffer, area: RtRect, editor: &Editor, theme: &Theme) -> CaretReport {
         paint_editor_with_reserve(buf, area, editor, theme, 0)
     }
 
@@ -714,7 +709,7 @@ mod tests {
         editor: &Editor,
         theme: &Theme,
         right_reserve_w: u16,
-    ) -> EditorPaintResult {
+    ) -> CaretReport {
         let layout = editor.layout_with_options_and_reserve(
             crate::Rect::new(
                 area.x as f32,
@@ -730,7 +725,7 @@ mod tests {
         );
         let mut surface = BufferCellSurface::new(buf);
         paint(editor, &layout, right_reserve_w, &mut surface, theme);
-        EditorPaintResult {
+        CaretReport {
             cursor_position: surface.cursor().map(|(x, y, _)| (x, y)),
         }
     }

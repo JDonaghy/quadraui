@@ -396,7 +396,7 @@ mod tests {
 
     /// Shared body for `paint_and_click_round_trip_returns_seek_for_the_clicked_fraction`
     /// — see `docs/PRIMITIVE_RULES.md`'s "Coordinate frames for
-    /// `*_layout` methods": `minimap_layout` is documented
+    /// `*_layout` methods": the minimap's layout is
     /// **ABSOLUTE**, so `hit_test` must be called with coordinates
     /// shifted by the same `origin_x`/`origin_y` the minimap was
     /// painted at, not with area-local coordinates.

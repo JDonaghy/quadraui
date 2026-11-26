@@ -2124,7 +2124,7 @@ mod minimap_pixel_tests {
         // ── paint/click round trip ────────────────────────────────────────
 
         /// Shared body for `paint_and_click_round_trip_returns_seek_for_the_clicked_fraction`
-        /// — `minimap_layout` returns coordinates in absolute frame
+        /// — the minimap's layout returns coordinates in absolute frame
         /// (see `docs/PRIMITIVE_RULES.md`), so `hit_test` must be called with
         /// coordinates shifted by the same `x`/`y` origin the strip was painted at.
         fn paint_and_click_round_trip_at(x: f64, y: f64) {

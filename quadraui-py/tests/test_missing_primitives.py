@@ -69,9 +69,7 @@ def test_editor_leaf_renders_line_text():
 
 def test_clicking_an_editor_focuses_it_and_routes_the_hit():
     # `Editor` is a tab stop, so the click-to-focus step fires a
-    # `FocusChanged` ahead of the raw `MouseDown` -- there's no typed
-    # semantic event for an editor click yet, so it reaches the handler
-    # unchanged, with `widget` resolved to the editor's own id.
+    # `FocusChanged` ahead of the editor's own typed `Pointer` event.
     app = QuiApp(40, 20)
     app.set_render(lambda: {"editor": _editor_descriptor()})
     # `set_render` itself never repaints -- force the first render so the
@@ -82,8 +80,9 @@ def test_clicking_an_editor_focuses_it_and_routes_the_hit():
 
     assert len(received) == 2
     assert received[0]["FocusChanged"] == "editor:main"
-    assert received[1]["MouseDown"]["widget"] == "editor:main"
-    assert received[1]["hit"] == {"kind": "extra_body"}
+    widget_id, editor_event = received[1]["Editor"]
+    assert widget_id == "editor:main"
+    assert "Pointer" in editor_event
 
 
 def _terminal_cell(text):

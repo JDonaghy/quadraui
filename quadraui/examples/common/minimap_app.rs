@@ -102,7 +102,7 @@ impl MinimapApp {
         }
     }
 
-    fn minimap_scale(&self) -> MinimapScale {
+    fn scale(&self) -> MinimapScale {
         if self.scale_two {
             MinimapScale::Two
         } else {
@@ -113,7 +113,7 @@ impl MinimapApp {
     /// `None` keeps every backend's own default (`FixedPitch(1.0)` on
     /// every rasteriser today); `Some` is only ever `RepeatToFill`, which
     /// only TUI currently honours — see the module doc's `r` control.
-    fn minimap_sizing(&self) -> Option<MinimapSizing> {
+    fn sizing(&self) -> Option<MinimapSizing> {
         if self.stretch {
             Some(MinimapSizing::RepeatToFill(1.0))
         } else {
@@ -175,8 +175,8 @@ impl MinimapApp {
             visible_row_start,
             visible_row_count,
             total_buffer_lines: total_lines,
-            scale: self.minimap_scale(),
-            sizing: self.minimap_sizing(),
+            scale: self.scale(),
+            sizing: self.sizing(),
         };
 
         let minimap_rect = self.minimap_rect(backend);

@@ -2654,7 +2654,9 @@ def test_inline_tree_leaf_editor_focuses_it_and_routes_the_hit():
 
     assert len(received) == 2
     assert received[0]["FocusChanged"] == "editor:main"
-    assert received[1]["MouseDown"]["widget"] == "editor:main"
+    widget_id, editor_event = received[1]["Editor"]
+    assert widget_id == "editor:main"
+    assert "Pointer" in editor_event
 
 
 def test_inline_tree_leaf_terminal_focuses_it_and_starts_a_selection():
