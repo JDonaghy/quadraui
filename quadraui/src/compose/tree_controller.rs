@@ -23,9 +23,10 @@
 //! sign convention: positive `delta.y` = scroll content up (decrease
 //! offset). Backends normalise their native direction before emitting.
 
-use crate::behaviour::nav::{NavOutcome, NavRow, TreeNavCore};
+use crate::behaviour::nav::{NavKey, NavOutcome, NavRow, TreeNavCore};
+use crate::interactive::KeyEvent;
 use crate::primitives::scrollbar::PressZone;
-use crate::text_util::{next_char_boundary, prev_char_boundary, snap_to_char_boundary};
+use crate::primitives::tree::{tree_rename_insert, tree_rename_key, TreeRenameKey};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
     SelectionMode, TreePath, TreeRow, TreeRowEditState, TreeView, TreeViewHit, UiEvent, WidgetId,
@@ -130,15 +131,24 @@ pub enum TreeNavKey {
 /// same map [`TreeController::handle_key`] uses, instead of maintaining a
 /// second copy that can silently drift from this one.
 pub fn classify_tree_nav_key(key: &Key, vim_keys: bool) -> Option<TreeNavKey> {
+    let event = KeyEvent {
+        key: key.clone(),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    };
+    if let Some(nav) = NavKey::from_key(&event) {
+        return Some(match nav {
+            NavKey::Up => TreeNavKey::Up,
+            NavKey::Down => TreeNavKey::Down,
+            NavKey::Home => TreeNavKey::Home,
+            NavKey::End => TreeNavKey::End,
+            NavKey::PageUp(_) => TreeNavKey::PageUp,
+            NavKey::PageDown(_) => TreeNavKey::PageDown,
+        });
+    }
     match key {
-        Key::Named(NamedKey::Up) => Some(TreeNavKey::Up),
         Key::Char('k') if vim_keys => Some(TreeNavKey::Up),
-        Key::Named(NamedKey::Down) => Some(TreeNavKey::Down),
         Key::Char('j') if vim_keys => Some(TreeNavKey::Down),
-        Key::Named(NamedKey::Home) => Some(TreeNavKey::Home),
-        Key::Named(NamedKey::End) => Some(TreeNavKey::End),
-        Key::Named(NamedKey::PageUp) => Some(TreeNavKey::PageUp),
-        Key::Named(NamedKey::PageDown) => Some(TreeNavKey::PageDown),
         Key::Named(NamedKey::Enter) => Some(TreeNavKey::Enter),
         Key::Char(' ') => Some(TreeNavKey::ToggleExpand),
         _ => None,
@@ -147,10 +157,7 @@ pub fn classify_tree_nav_key(key: &Key, vim_keys: bool) -> Option<TreeNavKey> {
 
 struct EditingState {
     path: TreePath,
-    text: String,
-    cursor: usize,
-    selection_anchor: Option<usize>,
-    placeholder: Option<String>,
+    edit: TreeRowEditState,
 }
 
 pub struct TreeController {
@@ -306,10 +313,12 @@ impl TreeController {
     ) {
         self.editing = Some(EditingState {
             path: path.clone(),
-            text: initial_text,
-            cursor,
-            selection_anchor,
-            placeholder,
+            edit: TreeRowEditState {
+                text: initial_text,
+                cursor,
+                selection_anchor,
+                placeholder,
+            },
         });
         self.nav.set_selected_path(Some(path));
     }
@@ -328,19 +337,19 @@ impl TreeController {
     }
 
     pub fn editing_text(&self) -> Option<&str> {
-        self.editing.as_ref().map(|e| e.text.as_str())
+        self.editing.as_ref().map(|e| e.edit.text.as_str())
     }
 
     pub fn editing_cursor(&self) -> usize {
-        self.editing.as_ref().map(|e| e.cursor).unwrap_or(0)
+        self.editing.as_ref().map(|e| e.edit.cursor).unwrap_or(0)
     }
 
     pub fn editing_selection_anchor(&self) -> Option<usize> {
-        self.editing.as_ref().and_then(|e| e.selection_anchor)
+        self.editing.as_ref().and_then(|e| e.edit.selection_anchor)
     }
 
     pub fn editing_placeholder(&self) -> Option<&str> {
-        self.editing.as_ref().and_then(|e| e.placeholder.as_deref())
+        self.editing.as_ref().and_then(|e| e.edit.placeholder.as_deref())
     }
 
     pub fn edit_insert_char_via(&mut self, ch: char) -> TreeControllerEvent {
@@ -580,197 +589,46 @@ impl TreeController {
 
     // ── Inline editing key dispatch ──────────────────────────────────
 
+    /// One keystroke against the open rename session, resolved by the
+    /// same shared editor [`TreeView`]'s own `Interactive` impl uses.
     fn handle_edit_key(&mut self, key: &Key, modifiers: &Modifiers) -> TreeControllerEvent {
-        match key {
-            Key::Named(NamedKey::Enter) => {
-                let Some(e) = self.editing.take() else {
-                    return TreeControllerEvent::Ignored;
-                };
+        let Some(e) = self.editing.as_mut() else {
+            return TreeControllerEvent::Ignored;
+        };
+        match tree_rename_key(&e.edit, key, *modifiers) {
+            TreeRenameKey::Commit => {
+                let e = self.editing.take().expect("checked above");
                 TreeControllerEvent::EditConfirmed {
                     path: e.path,
-                    new_text: e.text,
+                    new_text: e.edit.text,
                 }
             }
-            Key::Named(NamedKey::Escape) => {
-                let Some(e) = self.editing.take() else {
-                    return TreeControllerEvent::Ignored;
-                };
+            TreeRenameKey::Cancel => {
+                let e = self.editing.take().expect("checked above");
                 TreeControllerEvent::EditCancelled { path: e.path }
             }
-            Key::Named(NamedKey::Backspace) => self.edit_backspace(),
-            Key::Named(NamedKey::Delete) => self.edit_delete(),
-            Key::Named(NamedKey::Left) => {
-                self.edit_move_cursor_left(modifiers.shift);
+            TreeRenameKey::Edited(next) => {
+                e.edit = next;
+                self.emit_edit_changed()
+            }
+            TreeRenameKey::Moved(next) => {
+                e.edit = next;
                 TreeControllerEvent::Consumed
             }
-            Key::Named(NamedKey::Right) => {
-                self.edit_move_cursor_right(modifiers.shift);
-                TreeControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::Home) => {
-                self.edit_move_home(modifiers.shift);
-                TreeControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::End) => {
-                self.edit_move_end(modifiers.shift);
-                TreeControllerEvent::Consumed
-            }
-            Key::Char('a') if modifiers.ctrl => {
-                self.edit_select_all();
-                TreeControllerEvent::Consumed
-            }
-            Key::Char(c) => self.edit_insert_char(*c),
-            _ => TreeControllerEvent::Consumed,
+            TreeRenameKey::Unhandled => TreeControllerEvent::Consumed,
         }
-    }
-
-    // ── Text buffer manipulation helpers ─────────────────────────────
-
-    fn edit_delete_selection(&mut self) -> bool {
-        let Some(e) = self.editing.as_mut() else {
-            return false;
-        };
-        if let Some(anchor) = e.selection_anchor {
-            if anchor != e.cursor {
-                let lo = anchor.min(e.cursor);
-                let hi = anchor.max(e.cursor);
-                let lo = snap_to_char_boundary(&e.text, lo);
-                let hi = snap_to_char_boundary(&e.text, hi);
-                e.text.replace_range(lo..hi, "");
-                e.cursor = lo;
-                e.selection_anchor = None;
-                return true;
-            }
-        }
-        false
     }
 
     fn edit_insert_char(&mut self, c: char) -> TreeControllerEvent {
-        self.edit_delete_selection();
-        let Some(e) = self.editing.as_mut() else {
-            return TreeControllerEvent::Ignored;
-        };
-        let cursor = snap_to_char_boundary(&e.text, e.cursor);
-        e.text.insert(cursor, c);
-        e.cursor = cursor + c.len_utf8();
-        e.selection_anchor = None;
-        self.emit_edit_changed()
+        self.edit_insert_str(c.encode_utf8(&mut [0; 4]))
     }
 
     fn edit_insert_str(&mut self, s: &str) -> TreeControllerEvent {
-        self.edit_delete_selection();
         let Some(e) = self.editing.as_mut() else {
             return TreeControllerEvent::Ignored;
         };
-        let cursor = snap_to_char_boundary(&e.text, e.cursor);
-        e.text.insert_str(cursor, s);
-        e.cursor = cursor + s.len();
-        e.selection_anchor = None;
+        e.edit = tree_rename_insert(&e.edit, s);
         self.emit_edit_changed()
-    }
-
-    fn edit_backspace(&mut self) -> TreeControllerEvent {
-        if self.edit_delete_selection() {
-            return self.emit_edit_changed();
-        }
-        let Some(e) = self.editing.as_mut() else {
-            return TreeControllerEvent::Ignored;
-        };
-        if e.cursor == 0 {
-            return TreeControllerEvent::Consumed;
-        }
-        let prev = prev_char_boundary(&e.text, e.cursor);
-        e.text.replace_range(prev..e.cursor, "");
-        e.cursor = prev;
-        e.selection_anchor = None;
-        self.emit_edit_changed()
-    }
-
-    fn edit_delete(&mut self) -> TreeControllerEvent {
-        if self.edit_delete_selection() {
-            return self.emit_edit_changed();
-        }
-        let Some(e) = self.editing.as_mut() else {
-            return TreeControllerEvent::Ignored;
-        };
-        if e.cursor >= e.text.len() {
-            return TreeControllerEvent::Consumed;
-        }
-        let next = next_char_boundary(&e.text, e.cursor);
-        e.text.replace_range(e.cursor..next, "");
-        self.emit_edit_changed()
-    }
-
-    fn edit_move_cursor_left(&mut self, extend_selection: bool) {
-        let Some(e) = self.editing.as_mut() else {
-            return;
-        };
-        if e.cursor == 0 {
-            if !extend_selection {
-                e.selection_anchor = None;
-            }
-            return;
-        }
-        if extend_selection && e.selection_anchor.is_none() {
-            e.selection_anchor = Some(e.cursor);
-        }
-        e.cursor = prev_char_boundary(&e.text, e.cursor);
-        if !extend_selection {
-            e.selection_anchor = None;
-        }
-    }
-
-    fn edit_move_cursor_right(&mut self, extend_selection: bool) {
-        let Some(e) = self.editing.as_mut() else {
-            return;
-        };
-        if e.cursor >= e.text.len() {
-            if !extend_selection {
-                e.selection_anchor = None;
-            }
-            return;
-        }
-        if extend_selection && e.selection_anchor.is_none() {
-            e.selection_anchor = Some(e.cursor);
-        }
-        e.cursor = next_char_boundary(&e.text, e.cursor);
-        if !extend_selection {
-            e.selection_anchor = None;
-        }
-    }
-
-    fn edit_move_home(&mut self, extend_selection: bool) {
-        let Some(e) = self.editing.as_mut() else {
-            return;
-        };
-        if extend_selection && e.selection_anchor.is_none() {
-            e.selection_anchor = Some(e.cursor);
-        }
-        e.cursor = 0;
-        if !extend_selection {
-            e.selection_anchor = None;
-        }
-    }
-
-    fn edit_move_end(&mut self, extend_selection: bool) {
-        let Some(e) = self.editing.as_mut() else {
-            return;
-        };
-        if extend_selection && e.selection_anchor.is_none() {
-            e.selection_anchor = Some(e.cursor);
-        }
-        e.cursor = e.text.len();
-        if !extend_selection {
-            e.selection_anchor = None;
-        }
-    }
-
-    fn edit_select_all(&mut self) {
-        let Some(e) = self.editing.as_mut() else {
-            return;
-        };
-        e.selection_anchor = Some(0);
-        e.cursor = e.text.len();
     }
 
     fn emit_edit_changed(&self) -> TreeControllerEvent {
@@ -779,7 +637,7 @@ impl TreeController {
         };
         TreeControllerEvent::EditChanged {
             path: e.path.clone(),
-            text: e.text.clone(),
+            text: e.edit.text.clone(),
         }
     }
 
@@ -967,12 +825,7 @@ impl TreeController {
         let mut rows = self.rows.clone();
         if let Some(ref editing) = self.editing {
             if let Some(row) = rows.iter_mut().find(|r| r.path == editing.path) {
-                row.edit = Some(TreeRowEditState {
-                    text: editing.text.clone(),
-                    cursor: editing.cursor,
-                    selection_anchor: editing.selection_anchor,
-                    placeholder: editing.placeholder.clone(),
-                });
+                row.edit = Some(editing.edit.clone());
             }
         }
         TreeView {

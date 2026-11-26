@@ -3156,6 +3156,14 @@ pub fn schema() -> Vec<DefJson> {
         "_TreeRowRenameCommittedPayload",
         vec![field("path", re("TreePath")), field("text", str_())],
     ));
+    let tree_scroll_changed_payload = b.define(obj(
+        "_TreeScrollChangedPayload",
+        vec![field("scroll_offset", int_())],
+    ));
+    let tree_context_menu_payload = b.define(obj(
+        "_TreeContextMenuRequestedPayload",
+        vec![field("path", re("TreePath")), field("position", re("Point"))],
+    ));
     b.define(flat(
         "TreeEvent",
         &[
@@ -3167,7 +3175,10 @@ pub fn schema() -> Vec<DefJson> {
             ("SelectionSet", tree_selection_set_payload),
             ("RowRenameChanged", tree_row_rename_changed_payload),
             ("RowRenameCommitted", tree_row_rename_committed_payload),
-            ("RowRenameCancelled", tree_path_payload),
+            ("RowRenameCancelled", tree_path_payload.clone()),
+            ("RowActivated", tree_path_payload),
+            ("ScrollChanged", tree_scroll_changed_payload),
+            ("ContextMenuRequested", tree_context_menu_payload),
         ],
         vec![],
     ));
@@ -4221,6 +4232,12 @@ mod coverage {
             } => {}
             TreeEvent::RowRenameCommitted { path: _, text: _ } => {}
             TreeEvent::RowRenameCancelled { path: _ } => {}
+            TreeEvent::RowActivated { path: _ } => {}
+            TreeEvent::ScrollChanged { scroll_offset: _ } => {}
+            TreeEvent::ContextMenuRequested {
+                path: _,
+                position: _,
+            } => {}
         }
     }
 
