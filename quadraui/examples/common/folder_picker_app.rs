@@ -173,7 +173,7 @@ impl AppLogic for FolderPickerApp {
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                Handled::Consumed => return Reaction::Redraw,
+                Handled::Event(_) | Handled::Consumed => return Reaction::Redraw,
                 Handled::Ignored => {}
             }
         } else {

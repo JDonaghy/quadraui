@@ -190,7 +190,7 @@ impl Demo for FilePickerDemo {
                     self.confirmed = Some("Dismissed".into());
                     Reaction::Redraw
                 }
-                Handled::Consumed => Reaction::Redraw,
+                Handled::Event(_) | Handled::Consumed => Reaction::Redraw,
                 Handled::Ignored => Reaction::Continue,
             },
             1 => match self.save_picker.handle_event(event, visible_rows) {
@@ -202,7 +202,7 @@ impl Demo for FilePickerDemo {
                     self.confirmed = Some("Dismissed".into());
                     Reaction::Redraw
                 }
-                Handled::Consumed => Reaction::Redraw,
+                Handled::Event(_) | Handled::Consumed => Reaction::Redraw,
                 Handled::Ignored => Reaction::Continue,
             },
             _ => match self.folder_picker.handle_event(event, visible_rows) {
@@ -214,7 +214,7 @@ impl Demo for FilePickerDemo {
                     self.confirmed = Some("Dismissed".into());
                     Reaction::Redraw
                 }
-                Handled::Consumed => Reaction::Redraw,
+                Handled::Event(_) | Handled::Consumed => Reaction::Redraw,
                 Handled::Ignored => Reaction::Continue,
             },
         }

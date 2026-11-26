@@ -208,7 +208,7 @@ impl Demo for PaletteDemo {
                 self.status = "Dismissed — reopen by switching variants".into();
                 Reaction::Redraw
             }
-            Handled::Consumed => Reaction::Redraw,
+            Handled::Event(_) | Handled::Consumed => Reaction::Redraw,
             // Escape falls through to `Reaction::Continue` — the
             // gallery shell quits on an unconsumed Escape, matching
             // every other gallery demo's convention of not re-handling

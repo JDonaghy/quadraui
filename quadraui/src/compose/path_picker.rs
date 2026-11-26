@@ -1,36 +1,43 @@
-//! `PathPickerCore` — the state machine shared by
-//! [`FolderPickerController`] and [`FilePickerController`].
+//! [`PathPickerState`] — the browsing model shared by
+//! [`FolderPicker`] and [`FilePicker`], and the input handling both
+//! pickers route through [`Palette`]'s own [`Interactive`].
 //!
 //! Both pickers browse a filesystem tree with the same query/list/
 //! selection/scroll mechanics and the same key map; they differ only in
 //! *how* they walk the filesystem (directories only vs. files + directories,
 //! extension filters, the `"."` row), in what `Enter` resolves to, and in
 //! whether the vim-style `-`/`j`/`k` shortcuts take priority over typing
-//! them (see [`classify_nav_key`]'s `vim_keys` parameter — off in
-//! `FilePickerController`'s Save mode, where the query *is* the
+//! them (off in [`FilePicker`]'s Save mode, where the query *is* the
 //! destination filename). This module owns the shared half so the two
-//! facades stay in lock-step instead of drifting apart one small fix at a
+//! pickers stay in lock-step instead of drifting apart one small fix at a
 //! time.
 //!
-//! [`FolderPickerController`]: crate::compose::FolderPickerController
-//! [`FilePickerController`]: crate::compose::FilePickerController
+//! [`FolderPicker`]: crate::compose::FolderPicker
+//! [`FilePicker`]: crate::compose::FilePicker
 
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
+
 use crate::behaviour::nav::{FlatNav, NavKey as FlatNavKey};
 use crate::behaviour::scroll::ensure_visible;
-use crate::{Key, Modifiers, NamedKey};
+use crate::compose::Handled;
+use crate::interactive::{EventCx, Interactive, RoutedEvent, WidgetAction};
+use crate::primitives::palette::{Palette, PaletteEvent, PalettePrimitiveLayout, PaletteState};
+use crate::types::WidgetId;
+use crate::{Key, NamedKey, UiEvent};
 
-/// Semantic payload of [`crate::compose::Handled::Event`] shared by
-/// [`FolderPickerController::handle_event`] and
-/// [`FilePickerController::handle_event`] — the two facades' per-controller
-/// event enums (`FolderPickerEvent`, `FilePickerEvent`) were identical
-/// modulo name, so they route through this one type instead.
+/// What a path picker reports: a confirmed path or a dismissal, plus the
+/// browsing changes the host applies onto the picker's
+/// [`PathPickerState`] (the pickers' `apply` does it).
 ///
-/// [`FolderPickerController::handle_event`]: crate::compose::FolderPickerController::handle_event
-/// [`FilePickerController::handle_event`]: crate::compose::FilePickerController::handle_event
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Shared by [`crate::compose::FolderPicker`] and
+/// [`crate::compose::FilePicker`], and by their controllers'
+/// `handle_event`, which apply the browsing changes themselves and so
+/// only ever report [`Self::Confirmed`] and [`Self::Cancelled`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub enum PathPickerAction {
     /// The user confirmed a path — an existing entry for the folder
     /// picker and `FilePickerMode::Open`, or `root.join(query)` for
@@ -41,79 +48,30 @@ pub enum PathPickerAction {
     },
     /// The user dismissed the picker (Escape).
     Cancelled,
+    /// The query text changed: the host sets
+    /// [`PathPickerState::query`] and refilters.
+    QueryChanged {
+        /// The new query.
+        query: String,
+    },
+    /// The highlight moved to row `idx` of [`PathPickerState::filtered`].
+    SelectionChanged {
+        /// The newly highlighted row.
+        idx: usize,
+    },
+    /// The picker asked to browse `root` instead — the parent directory,
+    /// or a directory row the user confirmed. The host re-walks the
+    /// filesystem there.
+    Navigated {
+        /// The new browsing root.
+        root: PathBuf,
+    },
 }
 
-/// The outcome of classifying a raw `Key` + `Modifiers` pair against the
-/// shared path-picker key map.
-///
-/// Both facades route every `KeyPressed` event through
-/// [`classify_nav_key`] and translate the result into their own
-/// `*PickerEvent`, so the key map itself — including the vim-style `j`/`k`/
-/// `-` shortcuts, when enabled (see `classify_nav_key`'s `vim_keys`
-/// parameter) — can never drift between the two pickers again.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum NavKey {
-    /// Dismiss the picker.
-    Escape,
-    /// Resolve the current selection (open/save/navigate-into).
-    Confirm,
-    /// Move the selection up one row (`Up` arrow or vim `k`).
-    Up,
-    /// Move the selection down one row (`Down` arrow or vim `j`).
-    Down,
-    /// Navigate to the parent directory (vim netrw `-`).
-    NavigateUp,
-    /// Remove the last query character.
-    Backspace,
-    /// Append a printable character to the query.
-    Char(char),
-}
-
-/// Classify a `KeyPressed` event against the shared path-picker key map.
-///
-/// `cmd` is treated the same as `ctrl`: every backend delivers a
-/// Cmd-modified letter (the macOS accelerator convention) as a plain
-/// `Key::Char` with the modifier set, not a dedicated key variant, so it
-/// must be excluded here or it would be typed into the query / trigger a
-/// vim-style shortcut instead of falling through `None` for an app-level
-/// accelerator.
-///
-/// `vim_keys` controls whether the vim shortcuts `-` (parent dir), `k`
-/// (up), and `j` (down) are matched *before* the generic
-/// `Key::Char(c) => Char(c)` arm:
-///
-/// - `true` (`FolderPickerController`, and `FilePickerController` in
-///   [`FilePickerMode::Open`](crate::compose::FilePickerMode::Open)): the
-///   query can never begin with — or contain — those three characters
-///   when typed through `handle()`; a consumer that needs typing-priority
-///   anyway can call the state-mutation methods (`push_char`, `move_up`,
-///   …) directly instead of routing through `handle()`.
-/// - `false` (`FilePickerController` in
-///   [`FilePickerMode::Save`](crate::compose::FilePickerMode::Save)): `-`/
-///   `j`/`k` fall through to `Char` like any other printable character,
-///   because the query *is* the destination filename there and real
-///   filenames routinely contain all three (`my-notes.txt`, `journal.md`,
-///   `Makefile-k8s`). The arrow keys and `Up`/`Down` still navigate
-///   either way — only the vim letter/dash aliases are gated.
-pub(crate) fn classify_nav_key(key: &Key, modifiers: &Modifiers, vim_keys: bool) -> Option<NavKey> {
-    let modified = modifiers.ctrl || modifiers.cmd;
-    match key {
-        Key::Named(NamedKey::Escape) => Some(NavKey::Escape),
-        Key::Named(NamedKey::Enter) => Some(NavKey::Confirm),
-
-        Key::Named(NamedKey::Up) => Some(NavKey::Up),
-        Key::Char('k') if vim_keys && !modified => Some(NavKey::Up),
-
-        Key::Named(NamedKey::Down) => Some(NavKey::Down),
-        Key::Char('j') if vim_keys && !modified => Some(NavKey::Down),
-
-        Key::Char('-') if vim_keys && !modified => Some(NavKey::NavigateUp),
-
-        Key::Named(NamedKey::Backspace) => Some(NavKey::Backspace),
-
-        Key::Char(c) if !modified => Some(NavKey::Char(*c)),
-
-        _ => None,
+impl WidgetAction for PathPickerAction {
+    /// Rides [`UiEvent::PathPicker`] under the picker's own id.
+    fn into_ui_event(self, id: WidgetId) -> UiEvent {
+        UiEvent::PathPicker(id, self)
     }
 }
 
@@ -134,9 +92,7 @@ pub(crate) fn fuzzy_score_path(path: &str, query: &str) -> Option<i32> {
 }
 
 /// Filter `all` by `query` using subsequence matching with a relevance
-/// score. Shared by [`FolderPickerController`](crate::compose::FolderPickerController)
-/// and [`FilePickerController`](crate::compose::FilePickerController) so
-/// both rank matches identically.
+/// score. Shared by both pickers so they rank matches identically.
 ///
 /// Returns up to 50 entries, sorted by descending score. If `query` is
 /// empty, the first 50 entries are returned unchanged.
@@ -199,35 +155,36 @@ pub(crate) fn dir_entry_is_dir(entry: &std::fs::DirEntry, path: &Path) -> bool {
     }
 }
 
-/// Shared query/list/selection/scroll state for a filesystem-browsing
-/// picker.
+/// The browsing model a filesystem picker paints: root, query, the
+/// walked entries, the filtered rows, the highlight and the scroll
+/// offset.
 ///
-/// Owns nothing filesystem-specific: callers (the two facades) are
-/// responsible for walking the filesystem and handing the resulting entry
-/// list to [`PathPickerCore::new`] / [`PathPickerCore::navigate_to`] /
-/// [`PathPickerCore::set_all_entries`]. Fields are `pub(crate)` rather than
-/// behind accessors because both facades (and their test modules) live in
-/// sibling files under `compose::` and need direct read/write access the
-/// same way the pre-extraction structs did.
-pub(crate) struct PathPickerCore {
+/// Every field is visible state, so it lives on the picker descriptor
+/// and the host owns it: a picker reports [`PathPickerAction`]s and the
+/// host applies them (the pickers' own `apply` does it). Owns nothing
+/// filesystem-specific — the pickers walk the filesystem and hand the
+/// resulting entry list to [`Self::new`] / [`Self::navigate_to`] /
+/// [`Self::set_all_entries`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PathPickerState {
     /// Current browsing root.
-    pub(crate) root: PathBuf,
+    pub root: PathBuf,
     /// Live query string.
-    pub(crate) query: String,
+    pub query: String,
     /// All candidate entries relative to `root` (unfiltered, stable).
-    pub(crate) all_entries: Vec<PathBuf>,
+    pub all_entries: Vec<PathBuf>,
     /// Currently filtered + ranked entries (subset of `all_entries`).
-    pub(crate) filtered: Vec<PathBuf>,
+    pub filtered: Vec<PathBuf>,
     /// Index into `filtered` of the highlighted row.
-    pub(crate) selected: usize,
+    pub selected: usize,
     /// First visible row index (scroll offset into `filtered`).
-    pub(crate) scroll_top: usize,
+    pub scroll_top: usize,
 }
 
-impl PathPickerCore {
-    /// Create a new core rooted at `root` with `all_entries` already
-    /// walked by the caller.
-    pub(crate) fn new(root: PathBuf, all_entries: Vec<PathBuf>) -> Self {
+impl PathPickerState {
+    /// A model rooted at `root` with `all_entries` already walked by the
+    /// caller.
+    pub fn new(root: PathBuf, all_entries: Vec<PathBuf>) -> Self {
         let filtered = all_entries.iter().take(50).cloned().collect();
         Self {
             root,
@@ -241,7 +198,7 @@ impl PathPickerCore {
 
     /// Navigate to `new_root`: clear the query, replace `all_entries` with
     /// the caller's fresh walk, and reset selection/scroll.
-    pub(crate) fn navigate_to(&mut self, new_root: PathBuf, all_entries: Vec<PathBuf>) {
+    pub fn navigate_to(&mut self, new_root: PathBuf, all_entries: Vec<PathBuf>) {
         self.root = new_root;
         self.query.clear();
         self.all_entries = all_entries;
@@ -253,58 +210,187 @@ impl PathPickerCore {
     /// Replace `all_entries` in place (same `root`, same `query`) and
     /// refilter — used when a builder override (ignore dirs, max depth)
     /// changes what a re-walk of the *current* root surfaces.
-    pub(crate) fn set_all_entries(&mut self, all_entries: Vec<PathBuf>) {
+    pub fn set_all_entries(&mut self, all_entries: Vec<PathBuf>) {
         self.all_entries = all_entries;
         self.refilter();
     }
 
+    /// Replace the query and refilter.
+    pub fn set_query(&mut self, query: String) {
+        self.query = query;
+        self.refilter();
+    }
+
     /// Append `c` to the query and refilter.
-    pub(crate) fn push_char(&mut self, c: char) {
+    pub fn push_char(&mut self, c: char) {
         self.query.push(c);
         self.refilter();
     }
 
     /// Remove the last character from the query and refilter.
-    pub(crate) fn pop_char(&mut self) {
+    pub fn pop_char(&mut self) {
         self.query.pop();
         self.refilter();
     }
 
     /// Re-compute `filtered` from `all_entries` and the current `query`.
-    pub(crate) fn refilter(&mut self) {
+    pub fn refilter(&mut self) {
         self.filtered = filter_entries(&self.all_entries, &self.query);
         self.selected = 0;
         self.scroll_top = 0;
     }
 
-    /// Move the selection one row up (clamped at 0).
-    pub(crate) fn move_up(&mut self) {
-        self.selected = FlatNav::mv(
+    /// The row one step up from the highlight (clamped at 0).
+    pub fn row_above(&self) -> usize {
+        FlatNav::mv(
             self.filtered.len(),
             Some(self.selected),
             FlatNavKey::Up,
             false,
             |_| true,
         )
-        .unwrap_or(self.selected);
+        .unwrap_or(self.selected)
     }
 
-    /// Move the selection one row down (clamped at last row).
-    pub(crate) fn move_down(&mut self) {
-        self.selected = FlatNav::mv(
+    /// The row one step down from the highlight (clamped at the last row).
+    pub fn row_below(&self) -> usize {
+        FlatNav::mv(
             self.filtered.len(),
             Some(self.selected),
             FlatNavKey::Down,
             false,
             |_| true,
         )
-        .unwrap_or(self.selected);
+        .unwrap_or(self.selected)
+    }
+
+    /// Move the selection one row up (clamped at 0).
+    pub fn move_up(&mut self) {
+        self.selected = self.row_above();
+    }
+
+    /// Move the selection one row down (clamped at last row).
+    pub fn move_down(&mut self) {
+        self.selected = self.row_below();
     }
 
     /// Clamp `scroll_top` so `selected` is always visible within
     /// `visible_rows` rows.
-    pub(crate) fn sync_scroll(&mut self, visible_rows: usize) {
+    pub fn sync_scroll(&mut self, visible_rows: usize) {
         self.scroll_top = ensure_visible(self.scroll_top, visible_rows, self.selected);
+    }
+
+    /// Highlight row `idx` (clamped into `filtered`).
+    pub fn select(&mut self, idx: usize) {
+        self.selected = idx.min(self.filtered.len().saturating_sub(1));
+    }
+
+    /// The highlighted row, relative to `root`.
+    pub fn highlighted(&self) -> Option<&PathBuf> {
+        self.filtered.get(self.selected)
+    }
+
+    /// The root's parent, unless the root is a filesystem root.
+    pub fn parent(&self) -> Option<PathBuf> {
+        self.root.parent().map(Path::to_path_buf)
+    }
+
+    /// `root` for a title of `width` units, cut from the left with a
+    /// leading `…` when it would not fit beside the palette's chrome.
+    pub(crate) fn root_display(&self, width: f32) -> String {
+        let r = self.root.to_string_lossy();
+        // Reserve ~30 cells for palette chrome (borders + count chip +
+        // padding).
+        let max = (width as usize).saturating_sub(30).max(10);
+        if r.len() <= max {
+            return r.into_owned();
+        }
+        // `r.len()` is bytes, so drop leading chars until the remaining
+        // suffix fits, splitting on a char boundary so a non-ASCII path
+        // never panics.
+        let s: &str = r.as_ref();
+        let target_drop = s.len().saturating_sub(max);
+        let split_at = s
+            .char_indices()
+            .map(|(idx, _)| idx)
+            .find(|idx| *idx >= target_drop)
+            .unwrap_or(s.len());
+        format!("…{}", &s[split_at..])
+    }
+}
+
+/// The query caret a picker paints: where the palette's own editing put
+/// it, else the end of the query.
+pub(crate) fn painted_caret(query: &str, state: Option<&PaletteState>) -> usize {
+    state
+        .and_then(|s| s.cursor)
+        .unwrap_or(query.len())
+        .min(query.len())
+}
+
+/// One routed event, resolved for a picker showing `paths` through
+/// `palette`.
+///
+/// Escape cancels and Enter resolves through `confirm`; with `vim_keys`,
+/// an unmodified `k`/`j`/`-` moves the highlight or browses up instead of
+/// typing. Everything else is the palette's own input: its query editing
+/// and list navigation, reported as the browsing change it names.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn handle_picker_event(
+    paths: &PathPickerState,
+    palette: &Palette,
+    state: &mut PaletteState,
+    event: &RoutedEvent,
+    layout: &PalettePrimitiveLayout,
+    cx: &mut EventCx,
+    vim_keys: bool,
+    confirm: impl Fn() -> Handled<PathPickerAction>,
+) -> Handled<PathPickerAction> {
+    if let RoutedEvent::Key(key) = event {
+        let modified = key.modifiers.ctrl || key.modifiers.cmd || key.modifiers.alt;
+        match key.key {
+            Key::Named(NamedKey::Escape) => return Handled::Event(PathPickerAction::Cancelled),
+            Key::Named(NamedKey::Enter) => return confirm(),
+            Key::Char('k') if vim_keys && !modified => return select(paths, paths.row_above()),
+            Key::Char('j') if vim_keys && !modified => return select(paths, paths.row_below()),
+            Key::Char('-') if vim_keys && !modified => {
+                return match paths.parent() {
+                    Some(root) => Handled::Event(PathPickerAction::Navigated { root }),
+                    None => Handled::Consumed,
+                };
+            }
+            _ if is_chorded_typing(key) => return Handled::Ignored,
+            _ => {}
+        }
+    }
+    match Interactive::handle(palette, state, event, layout, cx) {
+        Handled::Event(PaletteEvent::QueryChanged { value }) => {
+            Handled::Event(PathPickerAction::QueryChanged { query: value })
+        }
+        Handled::Event(PaletteEvent::SelectionChanged { idx }) => select(paths, idx),
+        Handled::Event(PaletteEvent::ItemConfirmed { .. }) => confirm(),
+        Handled::Event(PaletteEvent::Closed) => Handled::Event(PathPickerAction::Cancelled),
+        Handled::Event(_) | Handled::Consumed => Handled::Consumed,
+        Handled::Ignored => Handled::Ignored,
+    }
+}
+
+/// Whether `key` is a Ctrl/Cmd-chorded character. Every backend delivers
+/// a chorded letter as a plain `Key::Char` with the modifier set (the
+/// macOS accelerator convention for Cmd), so a picker's query leaves it
+/// to the app's accelerators rather than typing a literal or claiming it
+/// as a clipboard chord.
+pub(crate) fn is_chorded_typing(key: &crate::interactive::KeyEvent) -> bool {
+    (key.modifiers.ctrl || key.modifiers.cmd) && matches!(key.key, Key::Char(_))
+}
+
+/// Report a move of the highlight to `idx`, or nothing when it is
+/// already there.
+fn select(paths: &PathPickerState, idx: usize) -> Handled<PathPickerAction> {
+    if idx == paths.selected || paths.filtered.is_empty() {
+        Handled::Consumed
+    } else {
+        Handled::Event(PathPickerAction::SelectionChanged { idx })
     }
 }
 
@@ -313,7 +399,6 @@ impl PathPickerCore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Modifiers;
 
     // ── fuzzy_score_path ─────────────────────────────────────────────
 
@@ -416,85 +501,13 @@ mod tests {
         assert_eq!(result[0], PathBuf::from("src/main"));
     }
 
-    // ── classify_nav_key ──────────────────────────────────────────────
-
-    #[test]
-    fn classify_escape_and_enter() {
-        assert_eq!(
-            classify_nav_key(&Key::Named(NamedKey::Escape), &Modifiers::default(), true),
-            Some(NavKey::Escape)
-        );
-        assert_eq!(
-            classify_nav_key(&Key::Named(NamedKey::Enter), &Modifiers::default(), true),
-            Some(NavKey::Confirm)
-        );
-    }
-
-    #[test]
-    fn classify_vim_keys_map_to_navigation() {
-        assert_eq!(
-            classify_nav_key(&Key::Char('j'), &Modifiers::default(), true),
-            Some(NavKey::Down)
-        );
-        assert_eq!(
-            classify_nav_key(&Key::Char('k'), &Modifiers::default(), true),
-            Some(NavKey::Up)
-        );
-        assert_eq!(
-            classify_nav_key(&Key::Char('-'), &Modifiers::default(), true),
-            Some(NavKey::NavigateUp)
-        );
-    }
-
-    /// With `vim_keys: false` (`FilePickerController` in Save mode), `-`/
-    /// `j`/`k` must fall through to `Char` so the query — the destination
-    /// filename — can contain them.
-    #[test]
-    fn classify_vim_keys_disabled_falls_through_to_char() {
-        assert_eq!(
-            classify_nav_key(&Key::Char('j'), &Modifiers::default(), false),
-            Some(NavKey::Char('j'))
-        );
-        assert_eq!(
-            classify_nav_key(&Key::Char('k'), &Modifiers::default(), false),
-            Some(NavKey::Char('k'))
-        );
-        assert_eq!(
-            classify_nav_key(&Key::Char('-'), &Modifiers::default(), false),
-            Some(NavKey::Char('-'))
-        );
-        // Named arrow keys still navigate even with vim keys disabled —
-        // only the letter/dash aliases are gated.
-        assert_eq!(
-            classify_nav_key(&Key::Named(NamedKey::Down), &Modifiers::default(), false),
-            Some(NavKey::Down)
-        );
-    }
-
-    #[test]
-    fn classify_cmd_modified_char_is_none() {
-        let modifiers = Modifiers {
-            cmd: true,
-            ..Default::default()
-        };
-        assert_eq!(classify_nav_key(&Key::Char('j'), &modifiers, true), None);
-    }
-
-    #[test]
-    fn classify_plain_char_falls_through_to_char() {
-        assert_eq!(
-            classify_nav_key(&Key::Char('x'), &Modifiers::default(), true),
-            Some(NavKey::Char('x'))
-        );
-    }
-
     // ── Selection movement ───────────────────────────────────────────
 
-    fn core_with(entries: usize) -> PathPickerCore {
+    fn core_with(entries: usize) -> PathPickerState {
         let all = (0..entries)
             .map(|i| PathBuf::from(format!("f{i}.rs")))
             .collect();
-        PathPickerCore::new(PathBuf::from("/root"), all)
+        PathPickerState::new(PathBuf::from("/root"), all)
     }
 
     #[test]

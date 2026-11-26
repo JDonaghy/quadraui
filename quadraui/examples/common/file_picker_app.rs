@@ -150,7 +150,7 @@ impl AppLogic for FilePickerApp {
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                Handled::Consumed => return Reaction::Redraw,
+                Handled::Event(_) | Handled::Consumed => return Reaction::Redraw,
                 Handled::Ignored => {}
             }
         } else if let UiEvent::KeyPressed { ref key, .. } = event {

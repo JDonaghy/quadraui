@@ -1182,6 +1182,14 @@ pub enum UiEvent {
     /// A [`crate::compose::HelpOverlay`] cheatsheet asked to open or
     /// close; the host writes it onto the overlay's `open`.
     HelpOverlay(WidgetId, crate::compose::HelpOverlayAction),
+    /// A [`crate::compose::FilePicker`] or [`crate::compose::FolderPicker`]
+    /// confirmed a path, was dismissed, or asked the host to apply a
+    /// browsing change.
+    PathPicker(WidgetId, crate::compose::PathPickerAction),
+    /// A [`crate::compose::DualModePalette`] confirmed an item or text,
+    /// was dismissed, or asked the host to apply a query, mode or
+    /// highlight change.
+    DualModePalette(WidgetId, crate::compose::DualModePaletteAction),
     /// A [`crate::Toolbar`] button was clicked (mouse) or activated via
     /// Enter/Space while keyboard-focused — the id is the toolbar's own,
     /// matching every other chrome-bar variant above (`StatusBar`,

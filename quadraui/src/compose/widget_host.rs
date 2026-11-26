@@ -155,3 +155,22 @@ pub(crate) fn routed_event(
         _ => None,
     }
 }
+
+/// Run `widget`'s [`Interactive::handle`] for `event`, laid out on a cell
+/// grid at `rect` — for a controller with no backend in reach, whose
+/// keystrokes read nothing of the layout but its page size.
+pub(crate) fn drive_in_cells<W: Interactive>(
+    widget: &W,
+    state: &mut W::State,
+    event: &UiEvent,
+    rect: Rect,
+) -> Option<Driven<W::Action>> {
+    let ctx = crate::primitive::LayoutCtx::new(1.0, 1.0, false);
+    let layout = crate::primitive::Primitive::layout(widget, &ctx, rect);
+    let routed = routed_event(event, rect, &[])?;
+    let id = widget
+        .id()
+        .copied()
+        .unwrap_or_else(|| WidgetId::new("controller"));
+    Some(drive(widget, id, state, &routed, &layout, ctx.units()))
+}

@@ -114,21 +114,25 @@ pub use chat_controller::{ChatController, ChatControllerAction, ChatRole, ChatTu
 #[allow(deprecated)]
 pub use chat_controller::ChatControllerEvent;
 pub use context_menu_controller::{ContextMenuController, ContextMenuOutcome};
-pub use dual_mode_palette::{DualModePaletteAction, DualModePaletteController};
+pub use dual_mode_palette::{
+    DualModePalette, DualModePaletteAction, DualModePaletteController, DualModePaletteState,
+};
 // `DualModePaletteEvent` is `#[deprecated]` (use
 // `DualModePaletteController::handle_event`'s `Handled<DualModePaletteAction>`
 // instead). Allow it here since `pub use` of a deprecated item is itself a
 // use site.
 #[allow(deprecated)]
 pub use dual_mode_palette::DualModePaletteEvent;
-pub use file_picker::{FilePickerController, FilePickerMode};
+pub use file_picker::{FilePicker, FilePickerController, FilePickerMode, FilePickerState};
 // `FilePickerEvent` is `#[deprecated]` (use `FilePickerController::handle_event`'s
 // `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
 // deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use file_picker::FilePickerEvent;
 pub use focus_group::FocusGroup;
-pub use folder_picker::{FolderPickerController, PALETTE_CHROME_ROWS};
+pub use folder_picker::{
+    FolderPicker, FolderPickerController, FolderPickerState, PALETTE_CHROME_ROWS,
+};
 // `FolderPickerEvent` is `#[deprecated]` (use `FolderPickerController::handle_event`'s
 // `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
 // deprecated item is itself a use site.
@@ -169,7 +173,7 @@ pub use message_dialog::{MessageDialog, MessageDialogController, MessageDialogSt
 #[allow(deprecated)]
 pub use message_dialog::MessageDialogEvent;
 pub use notification::notify_or_toast;
-pub use path_picker::PathPickerAction;
+pub use path_picker::{PathPickerAction, PathPickerState};
 pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
 pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
