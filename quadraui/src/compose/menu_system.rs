@@ -1,12 +1,30 @@
-//! `MenuSystem` — a composed controller for MenuBar + ContextMenu
-//! dropdown interaction.
+//! [`AppMenu`] — an application menu bar with its dropdown and submenu
+//! cascade on the widget contract, plus [`MenuSystem`], its thin
+//! event-driven wrapper.
 //!
-//! Owns the full state machine (open/close, keyboard navigation,
-//! hover-to-switch, modal stack coordination) so consumers define
-//! their menu structure once and match on [`MenuEvent::Activated`].
+//! An `AppMenu` composes [`MenuBar`] and [`ContextMenu`]: the bar paints
+//! and resolves clicks and keys through `MenuBar`'s own [`Primitive`] and
+//! [`Interactive`], and each open level of the cascade is a
+//! [`ContextMenu`] the widget owns as a popup ([`Interactive::popups`]).
+//! The runtime paints the popups above the frame, hit-tests them first
+//! and routes their events back as [`RoutedEvent::PopupEvent`]; an
+//! outside press or Escape arrives as [`RoutedEvent::PopupDismissed`].
+//! Keys while a dropdown is open go to the deepest level's
+//! [`ContextMenu::handle_key`]; `AppMenu` only opens or closes the right
+//! level in response.
+//!
+//! Which menu is open, the highlight at each level and the open submenu
+//! path are visible state, so they live on the descriptor and the host
+//! owns them: the widget reports [`AppMenuEvent::Changed`] with the next
+//! [`AppMenuView`] and the host applies it ([`AppMenu::apply`]).
+//!
+//! Under a native menu style the bar is the platform's own:
+//! [`Primitive::native_presentation`] installs it through
+//! [`Backend::install_menu_bar`], [`AppMenu::native`] makes paint return
+//! early, and AppKit reports activations as [`UiEvent::MenuActivated`].
 //!
 //! ```ignore
-//! // In handle():
+//! // A wrapper-driven host, in handle():
 //! match self.menu_system.handle(&event, backend, bar_rect) {
 //!     MenuEvent::Activated(id) if id.as_str() == "save" => { /* save */ }
 //!     MenuEvent::Activated(id) if id.as_str() == "quit" => return Reaction::Exit,
@@ -15,64 +33,70 @@
 //! }
 //! ```
 
-use super::context_menu_controller::{
-    menu_item_heights, menu_line_height, menu_viewport, paint_placed_menu,
-};
+use serde::{Deserialize, Deserializer, Serialize};
+
+use super::context_menu_controller::paint_placed_menu;
+use crate::a11y::{A11yAction, A11yChild, A11yInfo, A11yPrimitive};
 use crate::backend::{Backend, ResolvedMenuStyle};
 use crate::behaviour::nav::{FlatNav, NavKey};
-use crate::event::{Rect, UiEvent};
-use crate::primitives::context_menu::{
-    ContextMenu, ContextMenuHit, ContextMenuItem, ContextMenuItemMeasure, ContextMenuLayout,
-    ContextMenuPlacement,
+use crate::compose::widget_host;
+use crate::compose::Handled;
+use crate::event::{Point, Rect, UiEvent};
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, Never, PointerKind, RoutedEvent, SubTarget,
+    WidgetAction,
 };
-use crate::primitives::menu_bar::{MenuBar, MenuBarHit, MenuBarItem, MenuBarLayout};
+use crate::popup::{DismissReason, Popup, PopupKey, PopupSide};
+use crate::primitive::{LayoutCtx, Primitive, Size, Units};
+use crate::primitives::context_menu::{
+    item_heights, ContextMenu, ContextMenuEvent, ContextMenuItem, ContextMenuLayout,
+    ContextMenuPlacement, ContextMenuPrimitiveLayout, ContextMenuState, CELL_BORDER_INSET,
+};
+use crate::primitives::menu_bar::{
+    MenuBar, MenuBarEvent, MenuBarHit, MenuBarItem, MenuBarPrimitiveLayout,
+};
 use crate::types::WidgetId;
-use crate::{FontRole, Key, Modifiers, MouseButton, NamedKey};
+use crate::{DrawsPrimitives, FontRole, Key, MouseButton, NamedKey};
 
-/// Derive a dropdown or submenu's width from its items' real label/detail
-/// text via [`Backend::measure_text`]. A flat width guess cannot fit
-/// both TUI's fixed grid and a proportional chrome font on GTK/macOS/Win
-/// (whose `char_width` isn't meaningful for chrome text — see
-/// `Backend::measure_text`'s own doc). Mirrors [`ContextMenu::
-/// measure_generic_width`]'s per-item accounting (a leading `✓ ` slot
-/// when [`ContextMenuItem::checked`] is `Some(_)`, or the same slot for
-/// [`ContextMenuItem::icon`] when `checked` is unset, plus a trailing gap
-/// plus either a `▶` submenu arrow or [`ContextMenuItem::detail`]'s text)
-/// but measures the real chrome-font advance instead of counting characters.
+/// A dropdown or submenu's width from its items' real label/detail text.
+/// A flat width guess cannot fit both TUI's fixed grid and a
+/// proportional chrome font on GTK/macOS/Win. Mirrors
+/// [`ContextMenu::measure_generic_width`]'s per-item accounting (a
+/// leading `✓ ` slot when [`ContextMenuItem::checked`] is `Some(_)`, or
+/// the same slot for [`ContextMenuItem::icon`] when `checked` is unset,
+/// plus a trailing gap plus either a `▶` submenu arrow or
+/// [`ContextMenuItem::detail`]'s text) but measures the real chrome-font
+/// advance instead of counting characters.
 /// [`ContextMenuItem::key_equivalent`]-rendered shortcuts aren't counted,
-/// same omission `measure_generic_width` documents for itself.
-fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> f32 {
-    let role = FontRole::Chrome;
-    let space_w = backend.measure_text(" ", role).0;
-    // On a GUI backend, `primitives::context_menu::native_surface_paint`
-    // paints the codicon check/chevron glyphs (`codicon::CHECK` /
-    // `codicon::CHEVRON_RIGHT`, hardcoded here rather than referencing
-    // the `codicon` module directly since that module isn't compiled
-    // in a TUI-only build this function also has to run under) instead
-    // of the plain `✓`/`▶` text `tui::context_menu` paints — and
-    // codicon glyphs are square-advance at the font em, wider than
-    // either plain-text glyph's own chrome-font advance. Reserve
-    // against whichever glyph the paint path for this backend will
-    // actually use, detected the same way every other codicon call
-    // site confirms registration: `has_font_family` answers `Some(_)`
-    // only on a GUI backend (TUI takes the trait's `None` default),
-    // and every GUI backend's own `*Backend::new` self-registers
-    // "codicon" unconditionally, so `Some(true)` here means the real
-    // paint path really will resolve the codicon glyph.
-    let codicon_available = backend.has_font_family("codicon") == Some(true);
-    let (check_glyph, arrow_glyph): (&str, &str) = if codicon_available {
-        ("\u{eab2}", "\u{eab6}")
-    } else {
-        ("✓", "▶")
+/// the same omission `measure_generic_width` documents for itself.
+fn dropdown_width(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -> f32 {
+    let cells = matches!(ctx.units(), Units::Cells);
+    let measure = |text: &str| -> f32 {
+        if cells {
+            crate::text_util::display_width(text) as f32
+        } else {
+            ctx.text_width(text, FontRole::Chrome)
+        }
     };
-    let checked_w = backend.measure_text(check_glyph, role).0 + space_w;
-    let arrow_w = space_w + backend.measure_text(arrow_glyph, role).0;
+    let space_w = measure(" ");
+    // A pixel surface paints the codicon check/chevron glyphs (the
+    // `codicon::CHECK` / `codicon::CHEVRON_RIGHT` code points, which are
+    // square-advance at the font em and wider than either plain-text
+    // glyph); a cell grid paints the plain `✓`/`▶`. Every pixel backend
+    // registers the codicon face itself.
+    let (check_glyph, arrow_glyph): (&str, &str) = if cells {
+        ("✓", "▶")
+    } else {
+        ("\u{eab2}", "\u{eab6}")
+    };
+    let checked_w = measure(check_glyph) + space_w;
+    let arrow_w = space_w + measure(arrow_glyph);
     let max_content_w = items
         .iter()
         .filter(|item| !item.is_separator())
         .map(|item| {
             let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
-            let mut w = backend.measure_text(&label, role).0;
+            let mut w = measure(&label);
             if item.checked.is_some() || item.icon.is_some() {
                 w += checked_w;
             }
@@ -80,7 +104,7 @@ fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> 
                 w += arrow_w;
             } else if let Some(det) = &item.detail {
                 let text: String = det.spans.iter().map(|s| s.text.as_str()).collect();
-                w += space_w + backend.measure_text(&text, role).0;
+                w += space_w + measure(&text);
             }
             w
         })
@@ -92,12 +116,23 @@ fn dropdown_width(backend: &dyn Backend, items: &[ContextMenuItem], lh: f32) -> 
 }
 
 /// One top-level menu and its dropdown items.
-#[derive(Debug, Clone)]
+///
+/// Serialises as a [`MenuBarItem`] does — its dropdown items under
+/// `submenu` — so an [`AppMenu`] decodes from a `menu_bar` leaf dict.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct MenuDef {
     pub id: WidgetId,
     pub label: String,
+    #[serde(default)]
     pub disabled: bool,
+    #[serde(rename = "submenu", default, deserialize_with = "items_or_none")]
     pub items: Vec<ContextMenuItem>,
+}
+
+/// `submenu: null` (a [`MenuBarItem`] with no dropdown) decodes as no
+/// items.
+fn items_or_none<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ContextMenuItem>, D::Error> {
+    Ok(Option::<Vec<ContextMenuItem>>::deserialize(d)?.unwrap_or_default())
 }
 
 /// What happened after [`MenuSystem::handle`] processed an event.
@@ -117,27 +152,955 @@ pub enum MenuEvent {
     Ignored,
 }
 
-pub struct MenuSystem {
-    menus: Vec<MenuDef>,
-    open_item: Option<usize>,
-    focused_item: Option<usize>,
-    /// Selected item index in the root dropdown.
-    dropdown_selected: usize,
-    dropdown_id: WidgetId,
-    /// Depth-first path of open submenus within the current dropdown.
-    /// `submenu_path[d]` = `item_idx` in the menu at depth `d` whose child
-    /// submenu is open.  Empty ⟹ no submenus open.
-    submenu_path: Vec<usize>,
-    /// Selected item index at each submenu depth.
-    /// `submenu_selected[d]` corresponds to the submenu opened by
-    /// `submenu_path[d]`.
-    submenu_selected: Vec<usize>,
+// ── Widget ────────────────────────────────────────────────────────────────
+
+/// Which menu is open and where in it the highlight sits — the visible
+/// state an [`AppMenu`] reports through [`AppMenuEvent::Changed`].
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppMenuView {
+    /// The menu whose dropdown is open.
+    #[serde(default)]
+    pub open_item: Option<usize>,
+    /// The bar item keyboard or pointer focus sits on.
+    #[serde(default)]
+    pub focused_item: Option<usize>,
+    /// Highlighted item in the open dropdown.
+    #[serde(default)]
+    pub dropdown_selected: usize,
+    /// Depth-first path of open submenus within the open dropdown:
+    /// `submenu_path[d]` is the item at depth `d` whose child is open.
+    #[serde(default)]
+    pub submenu_path: Vec<usize>,
+    /// Highlighted item at each open submenu depth, parallel to
+    /// `submenu_path`.
+    #[serde(default)]
+    pub submenu_selected: Vec<usize>,
 }
 
-/// An empty menu bar with nothing registered — equivalent to `MenuSystem::new(Vec::new())`.
-/// Lets a host struct derive `Default` for a field that only grows real
-/// menus once a `MenuBar` descriptor shows up (see `quadraui-py`'s
-/// `PyAppLogic::menu_system`).
+/// An application menu bar: the top-level menus, which one is open, and
+/// its dropdown and submenu cascade. Serialises with the same shape as a
+/// [`MenuBar`] (`id`, `items`, `open_item`, `focused_item`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AppMenu {
+    /// The menu's id, also the painted bar's.
+    pub id: WidgetId,
+    /// The top-level menus, in bar order.
+    #[serde(rename = "items")]
+    pub menus: Vec<MenuDef>,
+    /// Which menu is open and where its highlight sits.
+    #[serde(flatten)]
+    pub view: AppMenuView,
+    /// Whether the host's effective menu style is native
+    /// ([`Backend::effective_menu_style`]): the bar is then the
+    /// platform's own, nothing paints in the window and no dropdown
+    /// opens. A host sets it from the backend every frame.
+    #[serde(default)]
+    pub native: bool,
+}
+
+/// What an [`AppMenu`] reports.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum AppMenuEvent {
+    /// An action item was activated. The menu has already reported
+    /// itself closed.
+    Activated(WidgetId),
+    /// The open menu, a highlight or the submenu path changed: the host
+    /// applies the new view ([`AppMenu::apply`]).
+    Changed(AppMenuView),
+}
+
+impl WidgetAction for AppMenuEvent {
+    /// An activation rides [`UiEvent::MenuActivated`] under the item's
+    /// own id — the event a native menu reports too, so one handler
+    /// covers both. A view change rides [`UiEvent::AppMenu`] under the
+    /// menu's id.
+    fn into_ui_event(self, id: WidgetId) -> UiEvent {
+        match self {
+            AppMenuEvent::Activated(item) => UiEvent::MenuActivated(item),
+            changed => UiEvent::AppMenu(id, changed),
+        }
+    }
+}
+
+/// [`Interactive::State`] for [`AppMenu`]: the open dropdown's typeahead
+/// buffer — the deepest level's [`ContextMenuState`].
+#[non_exhaustive]
+#[derive(Debug, Default)]
+pub struct AppMenuState {
+    /// The deepest open level's typeahead state.
+    pub menu: ContextMenuState,
+}
+
+/// Resolved widths of one menu level and, per item, of the submenu it
+/// opens.
+#[derive(Debug, Clone, PartialEq)]
+struct LevelWidths {
+    width: f32,
+    children: Vec<Option<LevelWidths>>,
+}
+
+impl LevelWidths {
+    fn of(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -> Self {
+        Self {
+            width: dropdown_width(ctx, items, lh),
+            children: items
+                .iter()
+                .map(|item| item.submenu.as_ref().map(|sub| Self::of(ctx, sub, lh)))
+                .collect(),
+        }
+    }
+}
+
+/// The metrics an [`AppMenu`] sizes its dropdown levels with, resolved
+/// once per layout.
+#[derive(Debug, Clone, PartialEq)]
+struct LevelMetrics {
+    line_height: f32,
+    /// The border ring a cell grid paints outside each level's items.
+    inset: f32,
+    item_height: f32,
+    separator_height: f32,
+    /// Per top-level menu.
+    widths: Vec<LevelWidths>,
+}
+
+impl LevelMetrics {
+    /// The width of the level reached by `path` inside menu `open`.
+    fn width(&self, open: usize, path: &[usize]) -> f32 {
+        let mut level = self.widths.get(open);
+        for &i in path {
+            level = level
+                .and_then(|l| l.children.get(i))
+                .and_then(Option::as_ref);
+        }
+        level.map_or(self.line_height * 8.0, |l| l.width)
+    }
+
+    /// The box a level of `items` takes, border ring included.
+    fn size(&self, width: f32, items: &[ContextMenuItem]) -> Size {
+        let height: f32 = items
+            .iter()
+            .map(|i| {
+                if i.is_separator() {
+                    self.separator_height
+                } else {
+                    self.item_height
+                }
+            })
+            .sum();
+        Size::new(width + self.inset * 2.0, height + self.inset * 2.0)
+    }
+}
+
+/// [`AppMenu`]'s resolved layout: the bar's own layout plus the metrics
+/// its dropdown levels are sized with.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct AppMenuLayout {
+    /// The bar, as [`MenuBar`]'s own layout resolves it.
+    pub bar: MenuBarPrimitiveLayout,
+    metrics: LevelMetrics,
+}
+
+/// One open level of the cascade: the menu it shows and where it attaches.
+struct LevelSpec {
+    menu: ContextMenu,
+    anchor: Rect,
+    side: PopupSide,
+    size: Size,
+}
+
+impl AppMenu {
+    /// A closed menu bar over `menus`.
+    pub fn new(id: WidgetId, menus: Vec<MenuDef>) -> Self {
+        Self {
+            id,
+            menus,
+            view: AppMenuView::default(),
+            native: false,
+        }
+    }
+
+    /// Whether a dropdown is open.
+    pub fn is_open(&self) -> bool {
+        self.view.open_item.is_some()
+    }
+
+    /// Apply what this menu reported: a view change replaces
+    /// [`Self::view`]; an activation changes nothing here (the menu has
+    /// already reported itself closed).
+    pub fn apply(&mut self, event: &AppMenuEvent) {
+        if let AppMenuEvent::Changed(view) = event {
+            self.view = view.clone();
+        }
+    }
+
+    /// The bar this menu paints, with the open and focused items from
+    /// [`Self::view`]. Each item carries its menu's dropdown items as
+    /// `submenu`, which a native installer bakes into the platform menu
+    /// and the bar's accessibility tree walks.
+    pub fn build_menu_bar(&self) -> MenuBar {
+        MenuBar {
+            id: self.id,
+            items: self
+                .menus
+                .iter()
+                .map(|m| MenuBarItem {
+                    id: m.id,
+                    label: m.label.clone(),
+                    disabled: m.disabled,
+                    submenu: Some(m.items.clone()),
+                })
+                .collect(),
+            open_item: self.view.open_item,
+            focused_item: self.view.focused_item,
+        }
+    }
+
+    /// The id of the cascade level at `depth`.
+    fn level_id(&self, depth: usize) -> WidgetId {
+        if depth == 0 {
+            WidgetId::new(format!("{}:dropdown", self.id.as_str()))
+        } else {
+            WidgetId::new(format!("{}:submenu-{}", self.id.as_str(), depth - 1))
+        }
+    }
+
+    /// The root dropdown of menu `menu_idx`, highlighting
+    /// [`AppMenuView::dropdown_selected`].
+    fn build_dropdown(&self, menu_idx: usize) -> ContextMenu {
+        ContextMenu {
+            id: self.level_id(0),
+            items: self.menus[menu_idx].items.clone(),
+            selected_idx: self.view.dropdown_selected,
+            bg: None,
+            placement: ContextMenuPlacement::Below,
+            glyphs: Default::default(),
+        }
+    }
+
+    /// Drop `open_item`/`submenu_path` levels that no longer have a
+    /// corresponding entry in `menus`, so a host rebuilding `menus` from
+    /// per-frame data (and handing over a shorter list while a dropdown is
+    /// open) never leaves an index pointing past the end.
+    fn clamp_open_state(&mut self) {
+        let Some(open_idx) = self.view.open_item else {
+            return;
+        };
+        if open_idx >= self.menus.len() {
+            self.close();
+            return;
+        }
+        let mut items = &self.menus[open_idx].items;
+        let mut valid_depth = self.view.submenu_path.len();
+        for (depth, &path_idx) in self.view.submenu_path.iter().enumerate() {
+            match items.get(path_idx).and_then(|item| item.submenu.as_ref()) {
+                Some(sub) => items = sub,
+                None => {
+                    valid_depth = depth;
+                    break;
+                }
+            }
+        }
+        self.view.submenu_path.truncate(valid_depth);
+        self.view.submenu_selected.truncate(valid_depth);
+    }
+
+    /// Close every level and clear the bar's focus.
+    fn close(&mut self) {
+        self.view = AppMenuView::default();
+    }
+
+    /// Open menu `idx`'s dropdown, highlighting its first selectable item.
+    fn open_menu(&mut self, idx: usize) {
+        self.view = AppMenuView {
+            open_item: Some(idx),
+            focused_item: Some(idx),
+            ..AppMenuView::default()
+        };
+        self.view.dropdown_selected = self.build_dropdown(idx).first_selectable();
+    }
+
+    /// Open the submenu of `item_idx` at the current deepest level,
+    /// highlighting its first selectable item.
+    fn open_submenu(&mut self, item_idx: usize) {
+        let depth = self.view.submenu_path.len();
+        let Some(sub_items) = self
+            .items_at_depth(depth)
+            .and_then(|items| items.into_iter().nth(item_idx))
+            .and_then(|item| item.submenu)
+        else {
+            return;
+        };
+        let first_sel = sub_items
+            .iter()
+            .position(|i| !i.is_separator() && !i.disabled)
+            .unwrap_or(0);
+        self.view.submenu_path.push(item_idx);
+        self.view.submenu_selected.push(first_sel);
+    }
+
+    /// Close the deepest open submenu (pop one level).
+    fn close_deepest_submenu(&mut self) {
+        self.view.submenu_path.pop();
+        self.view.submenu_selected.pop();
+    }
+
+    /// Keep only the levels down to `depth` open.
+    fn truncate_to(&mut self, depth: usize) {
+        self.view.submenu_path.truncate(depth);
+        self.view.submenu_selected.truncate(depth);
+    }
+
+    /// The next enabled menu `delta` steps from `from` in bar order,
+    /// wrapping. `from` counts as navigable even when it is itself
+    /// disabled, so a move off a disabled menu steps to its neighbour
+    /// instead of seeding at either end of the bar.
+    fn next_enabled_menu(&self, from: usize, delta: isize) -> usize {
+        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
+        FlatNav::mv(self.menus.len(), Some(from), key, true, |i| {
+            i == from || !self.menus[i].disabled
+        })
+        .unwrap_or(from)
+    }
+
+    /// Switch the open dropdown to the menu `delta` steps along the bar.
+    fn switch_menu(&mut self, delta: isize) {
+        if let Some(cur) = self.view.open_item {
+            let next = self.next_enabled_menu(cur, delta);
+            self.open_menu(next);
+        }
+    }
+
+    /// The highlighted item at the deepest open level.
+    #[cfg(test)]
+    fn current_selected(&self) -> usize {
+        self.selected_at(self.view.submenu_path.len())
+    }
+
+    /// The highlighted item at `depth`.
+    fn selected_at(&self, depth: usize) -> usize {
+        if depth == 0 {
+            self.view.dropdown_selected
+        } else {
+            self.view
+                .submenu_selected
+                .get(depth - 1)
+                .copied()
+                .unwrap_or(0)
+        }
+    }
+
+    /// Highlight `idx` at `depth`.
+    fn select_at(&mut self, depth: usize, idx: usize) {
+        if depth == 0 {
+            self.view.dropdown_selected = idx;
+        } else if let Some(s) = self.view.submenu_selected.get_mut(depth - 1) {
+            *s = idx;
+        }
+    }
+
+    /// The items at `depth` (0 = the root dropdown), or `None` when no
+    /// menu is open or the path does not resolve.
+    fn items_at_depth(&self, depth: usize) -> Option<Vec<ContextMenuItem>> {
+        let open_idx = self.view.open_item?;
+        let mut items = self.menus.get(open_idx)?.items.clone();
+        for &path_idx in self.view.submenu_path.iter().take(depth) {
+            items = items.into_iter().nth(path_idx)?.submenu?;
+        }
+        Some(items)
+    }
+
+    /// Move the deepest level's highlight one selectable item, wrapping.
+    /// The current item counts as navigable even on a separator or a
+    /// disabled item, so the move steps to its neighbour in list order.
+    #[cfg(test)]
+    fn move_selection(&mut self, delta: i32) {
+        let depth = self.view.submenu_path.len();
+        let current = self.current_selected();
+        let Some(items) = self.items_at_depth(depth) else {
+            return;
+        };
+        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
+        let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
+            i == current || (!items[i].is_separator() && !items[i].disabled)
+        })
+        .unwrap_or(current);
+        self.select_at(depth, new_sel);
+    }
+
+    /// The [`ContextMenu`] the level at `depth` shows.
+    fn level_menu(&self, depth: usize) -> Option<ContextMenu> {
+        let items = self.items_at_depth(depth)?;
+        if depth > self.view.submenu_path.len() {
+            return None;
+        }
+        Some(ContextMenu {
+            id: self.level_id(depth),
+            items,
+            selected_idx: self.selected_at(depth),
+            bg: None,
+            placement: if depth == 0 {
+                ContextMenuPlacement::Below
+            } else {
+                ContextMenuPlacement::AnchorPoint
+            },
+            glyphs: Default::default(),
+        })
+    }
+
+    /// The root dropdown's spec, anchored under the open bar item.
+    fn root_spec(&self, layout: &AppMenuLayout) -> Option<LevelSpec> {
+        if self.native {
+            return None;
+        }
+        let open = self.view.open_item?;
+        let menu = self.level_menu(0)?;
+        if menu.items.is_empty() {
+            return None;
+        }
+        let raw = layout.bar.layout.visible_items.get(open)?.bounds;
+        let area = layout.bar.area;
+        let m = &layout.metrics;
+        let pad = (m.line_height * 0.15).max(1.0);
+        let anchor = Rect::new(
+            raw.x - area.x + pad - m.inset,
+            raw.y - area.y,
+            raw.width,
+            raw.height + pad - m.inset,
+        );
+        let size = m.size(m.width(open, &[]), &menu.items);
+        Some(LevelSpec {
+            menu,
+            anchor,
+            side: PopupSide::Below,
+            size,
+        })
+    }
+
+    /// The spec of the level below `depth`, anchored beside the parent
+    /// row in the parent level's own local space, or `None` when no
+    /// submenu is open there.
+    fn child_spec(
+        &self,
+        depth: usize,
+        parent: &ContextMenuPrimitiveLayout,
+        metrics: &LevelMetrics,
+    ) -> Option<LevelSpec> {
+        let open = self.view.open_item?;
+        let parent_row = *self.view.submenu_path.get(depth)?;
+        let menu = self.level_menu(depth + 1)?;
+        let row = parent
+            .layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == parent_row)?
+            .bounds;
+        let inset = metrics.inset;
+        let anchor = Rect::new(
+            row.x - parent.area.x,
+            row.y - parent.area.y - inset,
+            row.width + inset,
+            row.height,
+        );
+        let size = metrics.size(
+            metrics.width(open, &self.view.submenu_path[..=depth]),
+            &menu.items,
+        );
+        Some(LevelSpec {
+            menu,
+            anchor,
+            side: PopupSide::After,
+            size,
+        })
+    }
+
+    /// The popup a level spec becomes.
+    fn level_popup(&self, depth: usize, spec: LevelSpec, metrics: &LevelMetrics) -> Popup {
+        let content = AppMenuLevel {
+            menu: self.clone(),
+            depth,
+            level: spec.menu,
+            metrics: metrics.clone(),
+        };
+        Popup::new(PopupKey(depth as u64), spec.anchor, spec.size, content).side(spec.side)
+    }
+
+    /// Resolve one keystroke while a dropdown is open, against `next` —
+    /// a copy of this menu the keystroke's transitions are applied to.
+    fn key_while_open(
+        &self,
+        next: &mut AppMenu,
+        state: &mut AppMenuState,
+        key: &KeyEvent,
+    ) -> Handled<AppMenuEvent> {
+        if let Key::Char(ch) = key.key {
+            if key.modifiers.alt {
+                let bar = self.build_menu_bar();
+                return match bar.find_alt_target(ch) {
+                    Some(idx) if Some(idx) == self.view.open_item => {
+                        next.close();
+                        Handled::Consumed
+                    }
+                    Some(idx) => {
+                        next.open_menu(idx);
+                        Handled::Consumed
+                    }
+                    None => Handled::Ignored,
+                };
+            }
+        }
+        if matches!(key.key, Key::Named(NamedKey::Escape)) {
+            if next.view.submenu_path.is_empty() {
+                next.close();
+            } else {
+                next.close_deepest_submenu();
+            }
+            return Handled::Consumed;
+        }
+        let depth = self.view.submenu_path.len();
+        let Some(level) = self.level_menu(depth) else {
+            return Handled::Ignored;
+        };
+        let page = level.items.len().max(1);
+        match level.handle_key(key, page, &mut state.menu) {
+            Handled::Event(ContextMenuEvent::SelectionChanged { idx }) => {
+                next.select_at(depth, idx);
+                Handled::Consumed
+            }
+            Handled::Event(ContextMenuEvent::SubmenuOpened { idx }) => {
+                next.open_submenu(idx);
+                Handled::Consumed
+            }
+            Handled::Event(ContextMenuEvent::SubmenuClosed) => {
+                if depth > 0 {
+                    next.close_deepest_submenu();
+                } else {
+                    next.switch_menu(-1);
+                }
+                Handled::Consumed
+            }
+            Handled::Event(ContextMenuEvent::Activated { item }) => {
+                next.close();
+                Handled::Event(AppMenuEvent::Activated(item))
+            }
+            Handled::Event(ContextMenuEvent::Dismissed) => {
+                next.close();
+                Handled::Consumed
+            }
+            Handled::Consumed => {
+                // Enter on a row with nothing to fire closes the menu.
+                if matches!(key.key, Key::Named(NamedKey::Enter)) {
+                    next.close();
+                }
+                Handled::Consumed
+            }
+            Handled::Ignored => match key.key {
+                // Right on a leaf of the root dropdown walks the bar.
+                Key::Named(NamedKey::Right) if depth == 0 => {
+                    next.switch_menu(1);
+                    Handled::Consumed
+                }
+                _ => Handled::Ignored,
+            },
+        }
+    }
+
+    /// Resolve an event that landed on the level at `depth`.
+    fn level_event(
+        &self,
+        next: &mut AppMenu,
+        depth: usize,
+        event: &RoutedEvent,
+    ) -> Handled<AppMenuEvent> {
+        let RoutedEvent::Pointer { kind, sub, .. } = event else {
+            return Handled::Consumed;
+        };
+        let items = self.items_at_depth(depth).unwrap_or_default();
+        let item = sub.and_then(|s| items.get(s.0 as usize).map(|item| (s.0 as usize, item)));
+        match (kind, item) {
+            // Hover moves the highlight and opens a submenu parent's child
+            // at once; hovering a leaf closes anything opened deeper.
+            (PointerKind::Move, Some((idx, item))) if !item.is_separator() && !item.disabled => {
+                next.select_at(depth, idx);
+                if item.submenu.is_some() {
+                    if self.view.submenu_path.get(depth) != Some(&idx) {
+                        next.truncate_to(depth);
+                        next.open_submenu(idx);
+                    }
+                } else {
+                    next.truncate_to(depth);
+                }
+                if next.view == self.view {
+                    Handled::Ignored
+                } else {
+                    Handled::Consumed
+                }
+            }
+            (PointerKind::Down(MouseButton::Left), Some((idx, item))) => {
+                if item.submenu.is_some() {
+                    next.truncate_to(depth);
+                    next.open_submenu(idx);
+                    Handled::Consumed
+                } else if item.disabled || item.is_separator() {
+                    Handled::Consumed
+                } else if let Some(id) = item.id {
+                    next.close();
+                    Handled::Event(AppMenuEvent::Activated(id))
+                } else {
+                    Handled::Consumed
+                }
+            }
+            (PointerKind::Move, _) => Handled::Ignored,
+            _ => Handled::Consumed,
+        }
+    }
+
+    /// Resolve a pointer event on the bar itself.
+    fn bar_event(
+        &self,
+        next: &mut AppMenu,
+        event: &RoutedEvent,
+        layout: &AppMenuLayout,
+        cx: &mut EventCx,
+    ) -> Handled<AppMenuEvent> {
+        let RoutedEvent::Pointer { kind, local, .. } = event else {
+            return Handled::Ignored;
+        };
+        let hit = layout.bar.hit_test_local(local.x, local.y);
+        match kind {
+            // While closed, hover tracks the focused item and leaving the
+            // items clears it.
+            PointerKind::Move if !self.is_open() => {
+                let focus = match hit {
+                    MenuBarHit::Item(i) if !self.menus[i].disabled => Some(i),
+                    _ => None,
+                };
+                next.view.focused_item = focus;
+                if focus == self.view.focused_item {
+                    Handled::Ignored
+                } else {
+                    Handled::Consumed
+                }
+            }
+            // A press on the strip's background closes an open menu.
+            PointerKind::Down(MouseButton::Left) if hit == MenuBarHit::Bar && self.is_open() => {
+                next.close();
+                Handled::Consumed
+            }
+            _ => {
+                let bar = self.build_menu_bar();
+                match Interactive::handle(&bar, &mut (), event, &layout.bar, cx) {
+                    Handled::Event(MenuBarEvent::FocusMoved { idx }) => {
+                        next.view.focused_item = Some(idx);
+                        Handled::Consumed
+                    }
+                    Handled::Event(MenuBarEvent::MenuOpened { idx, .. }) => {
+                        next.open_menu(idx);
+                        Handled::Consumed
+                    }
+                    Handled::Event(MenuBarEvent::Closed) => {
+                        next.close();
+                        Handled::Consumed
+                    }
+                    Handled::Consumed => Handled::Consumed,
+                    Handled::Ignored => Handled::Ignored,
+                }
+            }
+        }
+    }
+}
+
+impl A11yPrimitive for AppMenu {
+    fn a11y_info(&self) -> A11yInfo {
+        self.build_menu_bar().a11y_info()
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        self.build_menu_bar().a11y_children()
+    }
+}
+
+impl Primitive for AppMenu {
+    type Layout = AppMenuLayout;
+    type Event = AppMenuEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// Under [`ResolvedMenuStyle::Native`] the bar is installed as the
+    /// platform's own menu bar and nothing paints in the window.
+    fn native_presentation(&self, backend: &mut dyn Backend, rect: Rect) -> bool {
+        Primitive::native_presentation(&self.build_menu_bar(), backend, rect)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        Primitive::capture(&self.build_menu_bar())
+    }
+
+    fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize {
+        Primitive::measure(&self.build_menu_bar(), ctx, avail)
+    }
+
+    /// The bar's own layout for `rect`, plus every dropdown level's width
+    /// measured through `ctx`, so the cascade sizes itself from the same
+    /// metrics the bar was laid out with.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> AppMenuLayout {
+        let line_height = if ctx.line_height > 0.0 {
+            ctx.line_height
+        } else {
+            1.0
+        };
+        let (item_height, separator_height) = item_heights(line_height);
+        let inset = match ctx.units() {
+            Units::Cells => CELL_BORDER_INSET,
+            _ => 0.0,
+        };
+        AppMenuLayout {
+            bar: Primitive::layout(&self.build_menu_bar(), ctx, rect),
+            metrics: LevelMetrics {
+                line_height,
+                inset,
+                item_height,
+                separator_height,
+                widths: self
+                    .menus
+                    .iter()
+                    .map(|m| LevelWidths::of(ctx, &m.items, line_height))
+                    .collect(),
+            },
+        }
+    }
+
+    /// The bar through [`MenuBar`]'s own painter; nothing under a native
+    /// menu style. The open levels are popups the runtime paints.
+    fn paint(
+        &self,
+        layout: &AppMenuLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        if self.native {
+            return;
+        }
+        Primitive::paint(&self.build_menu_bar(), &layout.bar, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &AppMenuLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        if self.native {
+            return;
+        }
+        Primitive::paint_cells(&self.build_menu_bar(), &layout.bar, cells, env);
+    }
+}
+
+impl Interactive for AppMenu {
+    type State = AppMenuState;
+    type Action = AppMenuEvent;
+
+    const OPENS_POPUPS: bool = true;
+
+    /// One stop for the whole bar; none for an empty or native one.
+    fn focus(&self) -> FocusSpec {
+        if self.menus.is_empty() || self.native {
+            FocusSpec::None
+        } else {
+            FocusSpec::Stop
+        }
+    }
+
+    fn sub_regions(&self, layout: &AppMenuLayout) -> Vec<(Rect, SubTarget)> {
+        Interactive::sub_regions(&self.build_menu_bar(), &layout.bar)
+    }
+
+    fn a11y_actions(&self, _state: &AppMenuState) -> Vec<A11yAction> {
+        Interactive::a11y_actions(&self.build_menu_bar(), &())
+    }
+
+    /// The bar's clicks, hover and keys go through [`MenuBar`]; an event
+    /// on an open level arrives as a popup event naming the row under the
+    /// pointer; keys while a dropdown is open go to the deepest level's
+    /// [`ContextMenu::handle_key`]. A dismissal closes the dismissed level
+    /// and everything below it.
+    fn handle(
+        &self,
+        state: &mut AppMenuState,
+        event: &RoutedEvent,
+        layout: &AppMenuLayout,
+        cx: &mut EventCx,
+    ) -> Handled<AppMenuEvent> {
+        if self.native {
+            return Handled::Ignored;
+        }
+        let mut next = self.clone();
+        let handled = match event {
+            RoutedEvent::PopupEvent { popup, event } => {
+                self.level_event(&mut next, popup.0 as usize, event)
+            }
+            RoutedEvent::PopupDismissed { popup, .. } => {
+                match popup.0 as usize {
+                    0 => next.close(),
+                    depth => next.truncate_to(depth - 1),
+                }
+                Handled::Consumed
+            }
+            RoutedEvent::Key(key) if self.is_open() => self.key_while_open(&mut next, state, key),
+            RoutedEvent::Key(_) | RoutedEvent::Action(_) => {
+                let bar = self.build_menu_bar();
+                match Interactive::handle(&bar, &mut (), event, &layout.bar, cx) {
+                    Handled::Event(MenuBarEvent::FocusMoved { idx }) => {
+                        next.view.focused_item = Some(idx);
+                        Handled::Consumed
+                    }
+                    Handled::Event(MenuBarEvent::MenuOpened { idx, .. }) => {
+                        next.open_menu(idx);
+                        Handled::Consumed
+                    }
+                    Handled::Event(MenuBarEvent::Closed) => {
+                        next.close();
+                        Handled::Consumed
+                    }
+                    Handled::Consumed => Handled::Consumed,
+                    Handled::Ignored => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Pointer { .. } => self.bar_event(&mut next, event, layout, cx),
+            _ => Handled::Ignored,
+        };
+        if next.view == self.view {
+            return handled;
+        }
+        let changed = AppMenuEvent::Changed(next.view);
+        match handled {
+            Handled::Event(activated) => {
+                cx.emit(changed.into_ui_event(self.id));
+                Handled::Event(activated)
+            }
+            _ => Handled::Event(changed),
+        }
+    }
+
+    /// The open dropdown, under its bar item; its open submenus are the
+    /// dropdown's own popups, beside their parent rows.
+    fn popups(&self, _state: &AppMenuState, layout: &AppMenuLayout) -> Vec<Popup> {
+        self.root_spec(layout)
+            .map(|spec| self.level_popup(0, spec, &layout.metrics))
+            .into_iter()
+            .collect()
+    }
+}
+
+/// One open level of an [`AppMenu`]'s cascade, as popup content: it paints
+/// its [`ContextMenu`] and names that menu's rows; every event over it
+/// reaches the owning `AppMenu`. A level whose submenu is open answers
+/// that submenu as its own popup.
+#[derive(Debug, Clone)]
+struct AppMenuLevel {
+    menu: AppMenu,
+    depth: usize,
+    level: ContextMenu,
+    metrics: LevelMetrics,
+}
+
+impl A11yPrimitive for AppMenuLevel {
+    fn a11y_info(&self) -> A11yInfo {
+        self.level.a11y_info()
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        self.level.a11y_children()
+    }
+}
+
+impl Primitive for AppMenuLevel {
+    type Layout = ContextMenuPrimitiveLayout;
+    type Event = ();
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.level.id)
+    }
+
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        Primitive::paint_bleed(&self.level, style)
+    }
+
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> ContextMenuPrimitiveLayout {
+        Primitive::layout(&self.level, ctx, rect)
+    }
+
+    fn paint(
+        &self,
+        layout: &ContextMenuPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        Primitive::paint(&self.level, layout, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &ContextMenuPrimitiveLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        Primitive::paint_cells(&self.level, layout, cells, env);
+    }
+}
+
+impl Interactive for AppMenuLevel {
+    type State = ();
+    type Action = Never;
+
+    const OPENS_POPUPS: bool = true;
+
+    fn handle(
+        &self,
+        _state: &mut (),
+        _event: &RoutedEvent,
+        _layout: &ContextMenuPrimitiveLayout,
+        _cx: &mut EventCx,
+    ) -> Handled<Never> {
+        Handled::Ignored
+    }
+
+    fn sub_regions(&self, layout: &ContextMenuPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        Interactive::sub_regions(&self.level, layout)
+    }
+
+    fn popups(&self, _state: &(), layout: &ContextMenuPrimitiveLayout) -> Vec<Popup> {
+        self.menu
+            .child_spec(self.depth, layout, &self.metrics)
+            .map(|spec| self.menu.level_popup(self.depth + 1, spec, &self.metrics))
+            .into_iter()
+            .collect()
+    }
+}
+
+// ── Controller ────────────────────────────────────────────────────────────
+
+/// Event-driven wrapper over an [`AppMenu`], for a host that calls it with
+/// raw [`UiEvent`]s and a bar rect rather than routing it through the
+/// runtime's engine. It applies every view change itself, paints the bar
+/// and the open cascade directly, and keeps the open dropdown on the
+/// backend's [`crate::ModalStack`] so other modal-aware code gives it
+/// hit-test precedence.
+pub struct MenuSystem {
+    menu: AppMenu,
+    state: AppMenuState,
+}
+
+/// An empty menu bar with nothing registered — equivalent to
+/// `MenuSystem::new(Vec::new())`. Lets a host struct derive `Default` for
+/// a field that only grows real menus once a `MenuBar` descriptor shows up.
 impl Default for MenuSystem {
     fn default() -> Self {
         Self::new(Vec::new())
@@ -147,79 +1110,125 @@ impl Default for MenuSystem {
 impl MenuSystem {
     pub fn new(menus: Vec<MenuDef>) -> Self {
         Self {
-            menus,
-            open_item: None,
-            focused_item: None,
-            dropdown_selected: 0,
-            dropdown_id: WidgetId::new("menu-system-dropdown"),
-            submenu_path: Vec::new(),
-            submenu_selected: Vec::new(),
+            menu: AppMenu::new(WidgetId::new("menu-system-bar"), menus),
+            state: AppMenuState::default(),
         }
+    }
+
+    /// The [`AppMenu`] this wrapper drives.
+    pub fn widget(&self) -> &AppMenu {
+        &self.menu
     }
 
     pub fn is_open(&self) -> bool {
-        self.open_item.is_some()
+        self.menu.is_open()
     }
 
-    /// Replace the menu definitions. If a dropdown (or nested submenu) is
-    /// currently open, any level whose index no longer resolves against
-    /// `menus` is dropped so every direct `self.menus[idx]` index elsewhere
-    /// in this type stays panic-free — e.g. a host rebuilding `menus` from
-    /// per-frame application data (`quadraui-py`'s `sync_menu_bar`) may
-    /// hand this a shorter list while the previous frame's dropdown is
-    /// still open.
+    /// Replace the menu definitions. Any open level whose index no longer
+    /// resolves against `menus` is dropped, so a host rebuilding `menus`
+    /// from per-frame application data may hand this a shorter list while
+    /// the previous frame's dropdown is still open.
     pub fn set_menus(&mut self, menus: Vec<MenuDef>) {
-        self.menus = menus;
-        self.clamp_open_state();
+        self.menu.menus = menus;
+        self.menu.clamp_open_state();
     }
 
-    /// Drop `open_item`/`submenu_path` levels that no longer have a
-    /// corresponding entry in `self.menus`, leaving the rest of the open
-    /// state (what's left of `submenu_path`, `dropdown_selected`,
-    /// `submenu_selected`) untouched — those are display-only selection
-    /// hints compared by equality, not used to index, so a stale value is
-    /// harmless. Does not touch the modal stack; callers that need the
-    /// `dropdown_id` entry popped too should call [`Self::close`].
-    fn clamp_open_state(&mut self) {
-        let Some(open_idx) = self.open_item else {
-            return;
-        };
-        if open_idx >= self.menus.len() {
-            self.open_item = None;
-            self.focused_item = None;
-            self.submenu_path.clear();
-            self.submenu_selected.clear();
-            return;
-        }
-        let mut items = &self.menus[open_idx].items;
-        let mut valid_depth = self.submenu_path.len();
-        for (depth, &path_idx) in self.submenu_path.iter().enumerate() {
-            match items.get(path_idx).and_then(|item| item.submenu.as_ref()) {
-                Some(sub) => items = sub,
-                None => {
-                    valid_depth = depth;
-                    break;
-                }
-            }
-        }
-        self.submenu_path.truncate(valid_depth);
-        self.submenu_selected.truncate(valid_depth);
-    }
-
+    /// Close every level, and take the dropdown off the modal stack.
     pub fn close(&mut self, backend: &mut dyn Backend) {
-        self.open_item = None;
-        self.focused_item = None;
-        self.submenu_path.clear();
-        self.submenu_selected.clear();
+        self.menu.close();
         backend
             .modal_stack_handle()
             .borrow_mut()
-            .pop(&self.dropdown_id);
+            .pop(&self.menu.level_id(0));
     }
 
     /// Return the current `MenuBar` descriptor without rendering.
     pub fn menu_bar(&self) -> MenuBar {
-        self.build_menu_bar()
+        self.menu.build_menu_bar()
+    }
+
+    /// The menu as `backend` presents it: [`AppMenu::native`] follows the
+    /// backend's effective menu style.
+    fn presented(&self, backend: &dyn Backend) -> AppMenu {
+        AppMenu {
+            native: backend.effective_menu_style() == ResolvedMenuStyle::Native,
+            ..self.menu.clone()
+        }
+    }
+
+    /// Every open level and where it sits for `bar_rect`, root first —
+    /// resolved through the same popup specs and placement the runtime
+    /// gives a `Surface::Widget` menu.
+    fn levels(
+        &self,
+        backend: &dyn Backend,
+        bar_rect: Rect,
+    ) -> Vec<(ContextMenu, ContextMenuPrimitiveLayout)> {
+        let menu = self.presented(backend);
+        let layout = backend.layout_primitive(bar_rect, &menu);
+        let viewport = crate::backend::viewport_rect(backend.viewport());
+        let mut out = Vec::new();
+        let mut owner = bar_rect;
+        let mut spec = menu.root_spec(&layout);
+        let mut depth = 0;
+        while let Some(s) = spec {
+            let level = s.menu.clone();
+            let rect = menu
+                .level_popup(depth, s, &layout.metrics)
+                .resolve(owner, viewport);
+            let level_layout = backend.layout_primitive(rect, &level);
+            spec = menu.child_spec(depth, &level_layout, &layout.metrics);
+            out.push((level, level_layout));
+            owner = rect;
+            depth += 1;
+        }
+        out
+    }
+
+    /// Every open level with its placed layout, root first.
+    fn dropdown_stack(
+        &self,
+        backend: &dyn Backend,
+        bar_rect: Rect,
+    ) -> Vec<(ContextMenu, ContextMenuLayout)> {
+        self.levels(backend, bar_rect)
+            .into_iter()
+            .map(|(menu, layout)| (menu, layout.layout))
+            .collect()
+    }
+
+    /// The root dropdown and its placed layout, if one is open.
+    #[cfg(test)]
+    fn dropdown_layout(
+        &self,
+        backend: &dyn Backend,
+        bar_rect: Rect,
+    ) -> Option<(ContextMenu, ContextMenuLayout)> {
+        self.dropdown_stack(backend, bar_rect).into_iter().next()
+    }
+
+    /// Open menu `idx` and register its dropdown on the modal stack.
+    #[cfg(test)]
+    fn open_menu(&mut self, idx: usize, backend: &mut dyn Backend, bar_rect: Rect) {
+        let was = self.menu.view.clone();
+        self.menu.open_menu(idx);
+        self.sync_modal(&was, backend, bar_rect);
+    }
+
+    /// Keep the open dropdown's modal-stack entry in step with a view
+    /// change from `was`.
+    fn sync_modal(&self, was: &AppMenuView, backend: &mut dyn Backend, bar_rect: Rect) {
+        if was.open_item == self.menu.view.open_item {
+            return;
+        }
+        let id = self.menu.level_id(0);
+        backend.modal_stack_handle().borrow_mut().pop(&id);
+        if let Some((_, layout)) = self.dropdown_stack(backend, bar_rect).into_iter().next() {
+            backend
+                .modal_stack_handle()
+                .borrow_mut()
+                .push(id, layout.bounds);
+        }
     }
 
     /// Draw the menu bar and any open dropdown (including nested submenus).
@@ -228,699 +1237,169 @@ impl MenuSystem {
     /// platform's own menu bar through [`Backend::install_menu_bar`]
     /// (which skips an unchanged bar, so this runs every frame) and
     /// nothing paints in the window; otherwise the strip paints through
-    /// the widget contract.
-    /// A dropdown row's hover already drives [`Self::dropdown_selected`] /
-    /// [`Self::submenu_selected`], so each level's own `selected_idx`
-    /// highlight is the hover cue.
+    /// the widget contract, then each open level through
+    /// [`ContextMenu`]'s.
     pub fn render(&self, backend: &mut dyn Backend, bar_rect: Rect) {
-        let _ = self.build_menu_bar().present(backend, bar_rect);
-
-        let stack = self.dropdown_stack(backend, bar_rect);
-        for (ctx_menu, layout) in &stack {
-            paint_placed_menu(backend, ctx_menu, layout);
+        let _ = self.menu.build_menu_bar().present(backend, bar_rect);
+        for (menu, layout) in self.dropdown_stack(backend, bar_rect) {
+            paint_placed_menu(backend, &menu, &layout);
         }
     }
 
-    /// The bar's layout for `bar_rect`, as [`Self::render`] paints it: the
-    /// widget contract's own layout for a painted strip, or a zero-height
-    /// layout with no items under [`ResolvedMenuStyle::Native`], where the
-    /// platform's menu bar lives outside the window and nothing in it can
-    /// be hit.
-    fn bar_layout(&self, backend: &dyn Backend, bar_rect: Rect) -> MenuBarLayout {
-        self.build_menu_bar().presented_layout(backend, bar_rect)
+    /// The routed event `event` becomes for the menu at `bar_rect`, or
+    /// `None` when it is not the menu's: a press or hover on an open level
+    /// becomes that level's popup event, a press outside everything while
+    /// open dismisses the cascade, and Escape dismisses the deepest open
+    /// level — the routing the runtime performs for a `Surface::Widget`
+    /// menu.
+    ///
+    /// A release outside everything also dismisses: some terminal and
+    /// multiplexer combinations drop `MouseDown(Left)` and deliver only
+    /// `MouseUp(Left)` for a click. A release anywhere else belongs to the
+    /// press that preceded it.
+    fn route(&self, event: &UiEvent, backend: &dyn Backend, bar_rect: Rect) -> Option<RoutedEvent> {
+        let open = self.menu.is_open();
+        let pointer = |kind: PointerKind, position: Point| -> Option<RoutedEvent> {
+            for (depth, (menu, layout)) in self.levels(backend, bar_rect).iter().enumerate().rev() {
+                let rect = layout.area;
+                if !rect.contains(position) {
+                    continue;
+                }
+                if matches!(kind, PointerKind::Up(_)) {
+                    return None;
+                }
+                let local = Point::new(position.x - rect.x, position.y - rect.y);
+                let sub = Interactive::sub_regions(menu, layout)
+                    .into_iter()
+                    .find(|(r, _)| r.contains(local))
+                    .map(|(_, sub)| sub);
+                return Some(RoutedEvent::PopupEvent {
+                    popup: PopupKey(depth as u64),
+                    event: Box::new(RoutedEvent::Pointer {
+                        kind,
+                        sub,
+                        local,
+                        mods: crate::Modifiers::default(),
+                    }),
+                });
+            }
+            let layout = backend.layout_primitive(bar_rect, &self.presented(backend));
+            let on_bar = !matches!(
+                layout.bar.layout.hit_test(position.x, position.y),
+                MenuBarHit::Outside
+            );
+            match kind {
+                PointerKind::Move => {}
+                PointerKind::Down(_) | PointerKind::Up(_) if !on_bar && open => {
+                    return Some(RoutedEvent::PopupDismissed {
+                        popup: PopupKey(0),
+                        reason: DismissReason::OutsideClick,
+                    });
+                }
+                PointerKind::Up(_) => return None,
+                _ if !on_bar => return None,
+                _ => {}
+            }
+            Some(RoutedEvent::Pointer {
+                kind,
+                sub: None,
+                local: Point::new(position.x - bar_rect.x, position.y - bar_rect.y),
+                mods: crate::Modifiers::default(),
+            })
+        };
+        match event {
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Escape),
+                ..
+            } if open => Some(RoutedEvent::PopupDismissed {
+                popup: PopupKey(self.menu.view.submenu_path.len() as u64),
+                reason: DismissReason::Escape,
+            }),
+            // While closed, only the Alt mnemonics reach the menu: every
+            // other key belongs to the app.
+            UiEvent::KeyPressed { key, modifiers, .. }
+                if open || (modifiers.alt && matches!(key, Key::Char(_))) =>
+            {
+                widget_host::routed_event(event, bar_rect, &[])
+            }
+            UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                ..
+            } => pointer(PointerKind::Down(MouseButton::Left), *position),
+            UiEvent::MouseUp {
+                button: MouseButton::Left,
+                position,
+                ..
+            } => pointer(PointerKind::Up(MouseButton::Left), *position),
+            UiEvent::MouseMoved { position, .. } => pointer(PointerKind::Move, *position),
+            _ => None,
+        }
     }
 
     /// Process an event. Call from `handle()` before other UI routing.
     ///
-    /// A thin dispatcher over the per-event-shape handlers below.
-    /// Each `handle_*` owns one gesture's full state-machine transition
-    /// so this stays a readable table of "what shape → which handler".
+    /// A native menu bar's activation arrives as
+    /// [`UiEvent::MenuActivated`] (AppKit reports a click there, not a hit
+    /// on `bar_rect`); it is translated to the same
+    /// [`MenuEvent::Activated`] the painted path produces, so one match
+    /// arm covers both.
     pub fn handle(
         &mut self,
         event: &UiEvent,
         backend: &mut dyn Backend,
         bar_rect: Rect,
     ) -> MenuEvent {
-        match event {
-            // ── Native menu-bar activation ────────────────────────────
-            // `Self::render` installs a real `NSMenu` instead of painting
-            // whenever `effective_menu_style()` resolves `Native` (macOS,
-            // by default) — see that method's doc.
-            // AppKit then reports a click as a top-level
-            // `UiEvent::MenuActivated`, not a hit on this struct's own
-            // `bar_rect`-relative dropdown state (there is none; the
-            // dropdown is AppKit's own). Translating it to the same
-            // `MenuEvent::Activated` the painted path produces means
-            // every consumer's existing `match self.menu_system.handle(...)
-            // { MenuEvent::Activated(id) => ... }` arm already covers
-            // the native path with no separate call site — the same
-            // "one call either way" shape
-            // [`crate::compose::ContextMenuController::handle`] uses for
-            // `ContextMenuItemActivated`.
-            UiEvent::MenuActivated(id) => MenuEvent::Activated(*id),
-
-            // ── Keyboard ──────────────────────────────────────────
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Escape),
-                ..
-            } if self.open_item.is_some() => self.handle_escape(backend),
-
-            UiEvent::KeyPressed {
-                key: Key::Char(c),
-                modifiers: Modifiers { alt: true, .. },
-                ..
-            } => self.handle_alt_char(*c, backend, bar_rect),
-
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Down),
-                ..
-            } if self.open_item.is_some() => {
-                self.move_selection(1);
-                MenuEvent::Consumed
-            }
-
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Up),
-                ..
-            } if self.open_item.is_some() => {
-                self.move_selection(-1);
-                MenuEvent::Consumed
-            }
-
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Right),
-                ..
-            } if self.open_item.is_some() => self.handle_right(backend, bar_rect),
-
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Left),
-                ..
-            } if self.open_item.is_some() => self.handle_left(backend, bar_rect),
-
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Enter),
-                ..
-            } if self.open_item.is_some() => self.handle_enter(backend),
-
-            // ── Mouse click ───────────────────────────────────────
-            UiEvent::MouseDown {
-                button: MouseButton::Left,
-                position,
-                ..
-            } => self.handle_mouse_down(*position, backend, bar_rect),
-
-            // ── Mouse hover ───────────────────────────────────────
-            UiEvent::MouseMoved { position, .. } => {
-                self.handle_mouse_moved(*position, backend, bar_rect)
-            }
-
-            // ── Mouse release ─────────────────────────────────────
-            // Some terminal/multiplexer combinations (Alacritty+tmux,
-            // certain gnome-terminal configs) drop `MouseDown(Left)` and
-            // only ever deliver `MouseUp(Left)` for a click. Without this
-            // arm, an outside click on those terminals never runs the
-            // "click outside all open menu levels → close" check the
-            // `MouseDown` handler's tail performs, so a dropdown never
-            // dismisses on outside click there.
-            //
-            // On terminals that deliver both `Down` and `Up` normally,
-            // `MouseDown` has already fully handled the click by the time
-            // `Up` arrives (opened/closed/switched the menu, or activated
-            // an item and closed). So this arm only needs to cover the
-            // "outside everything" case; it must NOT re-run bar-item
-            // toggling or item activation, or it would immediately
-            // re-close a menu that `Down` just opened, or double-fire
-            // `Activated`.
-            UiEvent::MouseUp {
-                button: MouseButton::Left,
-                position,
-                ..
-            } => self.handle_mouse_up(*position, backend, bar_rect),
-
-            _ => MenuEvent::Ignored,
+        if let UiEvent::MenuActivated(id) = event {
+            return MenuEvent::Activated(*id);
         }
-    }
-
-    /// Esc: close deepest open submenu; if none, close whole menu.
-    /// Caller guarantees `self.open_item.is_some()`.
-    fn handle_escape(&mut self, backend: &mut dyn Backend) -> MenuEvent {
-        if !self.submenu_path.is_empty() {
-            self.close_deepest_submenu();
-        } else {
-            self.close(backend);
-        }
-        MenuEvent::StateChanged
-    }
-
-    /// Alt+`c`: open/close/switch to the top-level menu whose label's
-    /// underlined access key matches `c`.
-    ///
-    /// Inert whenever [`Backend::effective_menu_style`] resolves
-    /// [`ResolvedMenuStyle::Native`]: the menu bar is then the
-    /// platform's own (AppKit's `NSMenu`, on macOS), living outside the
-    /// window with no mnemonic underlines painted and its own keyboard
-    /// activation handled by the OS. There is no in-window strip for a
-    /// dropdown to anchor under, so this reports `Ignored` and leaves
-    /// the Alt chord to the app.
-    fn handle_alt_char(&mut self, c: char, backend: &mut dyn Backend, bar_rect: Rect) -> MenuEvent {
-        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
+        self.menu.native = backend.effective_menu_style() == ResolvedMenuStyle::Native;
+        if self.menu.native {
             return MenuEvent::Ignored;
         }
-        let bar = self.build_menu_bar();
-        if let Some(idx) = bar.find_alt_target(c) {
-            if self.open_item == Some(idx) {
-                self.close(backend);
-            } else {
-                self.open_menu(idx, backend, bar_rect);
+        let Some(routed) = self.route(event, backend, bar_rect) else {
+            return MenuEvent::Ignored;
+        };
+        let layout = backend.layout_primitive(bar_rect, &self.menu);
+        let units = crate::backend::primitive_layout_ctx(backend).units();
+        let driven = widget_host::drive(
+            &self.menu,
+            self.menu.id,
+            &mut self.state,
+            &routed,
+            &layout,
+            units,
+        );
+        let was = self.menu.view.clone();
+        for emitted in driven.emitted {
+            if let UiEvent::AppMenu(_, change) = emitted {
+                self.menu.apply(&change);
             }
-            MenuEvent::StateChanged
-        } else {
-            MenuEvent::Ignored
         }
-    }
-
-    /// Right: open submenu if selected item has one; otherwise switch
-    /// top-level menu (only at root level with no open submenus).
-    /// Caller guarantees `self.open_item.is_some()`.
-    fn handle_right(&mut self, backend: &mut dyn Backend, bar_rect: Rect) -> MenuEvent {
-        let depth = self.submenu_path.len();
-        let sel = self.current_selected();
-        let has_sub = self
-            .items_at_depth(depth)
-            .and_then(|items| items.into_iter().nth(sel))
-            .map(|item| item.submenu.is_some())
-            .unwrap_or(false);
-
-        if has_sub {
-            self.open_submenu(sel);
-            MenuEvent::StateChanged
-        } else if depth == 0 {
-            // At root with no submenu open → switch top-level menu.
-            let Some(cur) = self.open_item else {
-                return MenuEvent::Ignored;
-            };
-            let next = self.next_enabled_menu(cur, 1);
-            self.close(backend);
-            self.open_menu(next, backend, bar_rect);
-            MenuEvent::StateChanged
-        } else {
-            // Inside a submenu, non-submenu item → no-op.
-            MenuEvent::Ignored
-        }
-    }
-
-    /// Left: close deepest submenu if one is open; otherwise switch
-    /// top-level menu (preserves pre-submenu behaviour).
-    /// Caller guarantees `self.open_item.is_some()`.
-    fn handle_left(&mut self, backend: &mut dyn Backend, bar_rect: Rect) -> MenuEvent {
-        if !self.submenu_path.is_empty() {
-            self.close_deepest_submenu();
-            MenuEvent::StateChanged
-        } else {
-            let Some(cur) = self.open_item else {
-                return MenuEvent::Ignored;
-            };
-            let prev = self.next_enabled_menu(cur, -1);
-            self.close(backend);
-            self.open_menu(prev, backend, bar_rect);
-            MenuEvent::StateChanged
-        }
-    }
-
-    /// Enter: open submenu if item is a submenu parent; otherwise activate.
-    /// Caller guarantees `self.open_item.is_some()`.
-    fn handle_enter(&mut self, backend: &mut dyn Backend) -> MenuEvent {
-        let depth = self.submenu_path.len();
-        let sel = self.current_selected();
-        let item_opt = self
-            .items_at_depth(depth)
-            .and_then(|items| items.into_iter().nth(sel));
-
-        match item_opt {
-            Some(item) if item.submenu.is_some() => {
-                self.open_submenu(sel);
-                MenuEvent::StateChanged
-            }
-            Some(item) => {
-                if let Some(id) = item.id {
-                    self.close(backend);
-                    MenuEvent::Activated(id)
+        let result = match driven.handled {
+            Handled::Event(AppMenuEvent::Activated(id)) => MenuEvent::Activated(id),
+            Handled::Event(change) => {
+                self.menu.apply(&change);
+                if was.open_item != self.menu.view.open_item
+                    || was.submenu_path != self.menu.view.submenu_path
+                {
+                    MenuEvent::StateChanged
                 } else {
-                    self.close(backend);
                     MenuEvent::Consumed
                 }
             }
-            None => {
-                self.close(backend);
-                MenuEvent::Consumed
-            }
-        }
-    }
-
-    fn handle_mouse_down(
-        &mut self,
-        position: crate::event::Point,
-        backend: &mut dyn Backend,
-        bar_rect: Rect,
-    ) -> MenuEvent {
-        let bar_layout = self.bar_layout(backend, bar_rect);
-
-        match bar_layout.hit_test(position.x, position.y) {
-            MenuBarHit::Item(i) => {
-                if self.open_item == Some(i) {
-                    self.close(backend);
-                } else {
-                    self.close(backend);
-                    self.open_menu(i, backend, bar_rect);
-                }
-                return MenuEvent::StateChanged;
-            }
-            MenuBarHit::Bar => {
-                if self.open_item.is_some() {
-                    self.close(backend);
-                    return MenuEvent::StateChanged;
-                }
-                return MenuEvent::Ignored;
-            }
-            MenuBarHit::Outside => {}
-        }
-
-        if self.open_item.is_some() {
-            // Walk the submenu stack deepest-first so that a click on
-            // an item in a child popup doesn't fall through to the parent.
-            let stack = self.dropdown_stack(backend, bar_rect);
-            for (depth_idx, (ref menu, ref layout)) in stack.iter().enumerate().rev() {
-                match layout.hit_test(position.x, position.y) {
-                    ContextMenuHit::Item(ref id) => {
-                        // Resolve item_idx from the id.
-                        let item_idx_opt = layout
-                            .visible_items
-                            .iter()
-                            .find(|v| v.clickable && menu.items[v.item_idx].id.as_ref() == Some(id))
-                            .map(|v| v.item_idx);
-
-                        if let Some(item_idx) = item_idx_opt {
-                            if menu.items[item_idx].submenu.is_some() {
-                                // Trim any deeper submenus that were open, then open
-                                // this submenu (always open — clicking a submenu parent
-                                // re-opens even if already visible).
-                                self.submenu_path.truncate(depth_idx);
-                                self.submenu_selected.truncate(depth_idx);
-                                self.open_submenu(item_idx);
-                                return MenuEvent::StateChanged;
-                            } else {
-                                let id = *id;
-                                self.close(backend);
-                                return MenuEvent::Activated(id);
-                            }
-                        }
-                        return MenuEvent::Consumed;
-                    }
-                    ContextMenuHit::Inert => return MenuEvent::Consumed,
-                    ContextMenuHit::Empty => {
-                        // Click outside this depth — try shallower.
-                        continue;
-                    }
-                }
-            }
-
-            // Click outside all open menu levels → close.
-            self.close(backend);
-            return MenuEvent::StateChanged;
-        }
-        MenuEvent::Ignored
-    }
-
-    fn handle_mouse_moved(
-        &mut self,
-        position: crate::event::Point,
-        backend: &mut dyn Backend,
-        bar_rect: Rect,
-    ) -> MenuEvent {
-        let bar_layout = self.bar_layout(backend, bar_rect);
-
-        if self.open_item.is_some() {
-            // Hovering a different top-level menu label → switch.
-            if let MenuBarHit::Item(i) = bar_layout.hit_test(position.x, position.y) {
-                if !self.menus[i].disabled && self.open_item != Some(i) {
-                    self.close(backend);
-                    self.open_menu(i, backend, bar_rect);
-                    return MenuEvent::StateChanged;
-                }
-            }
-
-            // Walk the stack shallowest-first to find the deepest level
-            // that the cursor is inside. When we find an item:
-            //   • Update the selection at that level.
-            //   • If it's a submenu parent, open its child (closing any
-            //     previously-open sibling submenu at the same depth).
-            //   • Close any submenus deeper than the matched level.
-            let stack = self.dropdown_stack(backend, bar_rect);
-            for (depth_idx, (ref menu, ref layout)) in stack.iter().enumerate() {
-                for vis in &layout.visible_items {
-                    if !vis.clickable {
-                        continue;
-                    }
-                    if position.x >= vis.bounds.x
-                        && position.x < vis.bounds.x + vis.bounds.width
-                        && position.y >= vis.bounds.y
-                        && position.y < vis.bounds.y + vis.bounds.height
-                    {
-                        let item_idx = vis.item_idx;
-                        let has_sub = menu.items[item_idx].submenu.is_some();
-
-                        // Update selection at this depth.
-                        let sel_changed = if depth_idx == 0 {
-                            let old = self.dropdown_selected;
-                            self.dropdown_selected = item_idx;
-                            old != item_idx
-                        } else {
-                            let sub_d = depth_idx - 1;
-                            let old = self.submenu_selected.get(sub_d).copied().unwrap_or(0);
-                            if let Some(s) = self.submenu_selected.get_mut(sub_d) {
-                                *s = item_idx;
-                            }
-                            old != item_idx
-                        };
-
-                        if has_sub {
-                            // Trim any deeper submenus and open this one.
-                            self.submenu_path.truncate(depth_idx);
-                            self.submenu_selected.truncate(depth_idx);
-                            self.open_submenu(item_idx);
-                            return MenuEvent::StateChanged;
-                        } else if self.submenu_path.len() > depth_idx {
-                            // Close deeper submenus when hovering a leaf.
-                            self.submenu_path.truncate(depth_idx);
-                            self.submenu_selected.truncate(depth_idx);
-                            return MenuEvent::StateChanged;
-                        } else if sel_changed {
-                            return MenuEvent::Consumed;
-                        } else {
-                            return MenuEvent::Ignored;
-                        }
-                    }
-                }
-            }
-            MenuEvent::Ignored
-        } else {
-            let new_focus = match bar_layout.hit_test(position.x, position.y) {
-                MenuBarHit::Item(i) if !self.menus[i].disabled => Some(i),
-                _ => None,
-            };
-            if new_focus != self.focused_item {
-                self.focused_item = new_focus;
-                MenuEvent::Consumed
-            } else {
-                MenuEvent::Ignored
-            }
-        }
-    }
-
-    fn handle_mouse_up(
-        &mut self,
-        position: crate::event::Point,
-        backend: &mut dyn Backend,
-        bar_rect: Rect,
-    ) -> MenuEvent {
-        if self.open_item.is_none() {
-            return MenuEvent::Ignored;
-        }
-
-        let bar_layout = self.bar_layout(backend, bar_rect);
-
-        // Clicks landing on the menu bar itself (open/close/switch)
-        // are `MouseDown`'s job — leave them alone here.
-        if !matches!(
-            bar_layout.hit_test(position.x, position.y),
-            MenuBarHit::Outside
-        ) {
-            return MenuEvent::Ignored;
-        }
-
-        // Walk the open dropdown stack deepest-first. If the
-        // position lands inside any open level (item or inert
-        // region), that click was already handled by `MouseDown` —
-        // do nothing here to avoid double-activating.
-        let stack = self.dropdown_stack(backend, bar_rect);
-        for (_, layout) in stack.iter().rev() {
-            if !matches!(
-                layout.hit_test(position.x, position.y),
-                ContextMenuHit::Empty
-            ) {
-                return MenuEvent::Ignored;
-            }
-        }
-
-        // Outside the bar and every open dropdown level → close.
-        self.close(backend);
-        MenuEvent::StateChanged
-    }
-
-    // ── Internal helpers ──────────────────────────────────────────────
-
-    fn build_menu_bar(&self) -> MenuBar {
-        MenuBar {
-            id: WidgetId::new("menu-system-bar"),
-            items: self
-                .menus
-                .iter()
-                .map(|m| MenuBarItem {
-                    id: m.id,
-                    label: m.label.clone(),
-                    disabled: m.disabled,
-                    // TUI/GTK's painted strip never reads this field — the
-                    // dropdown there is `Self::build_dropdown`'s own
-                    // out-of-band overlay, keyed by `open_item`/
-                    // `submenu_path`, not `MenuBarItem::submenu`. A native
-                    // backend's `Backend::install_menu_bar` has no such
-                    // overlay: it bakes `submenu` directly into the real
-                    // `NSMenu`/`HMENU` tree, and `A11yPrimitive for
-                    // MenuBar` walks it to build each item's accessible
-                    // children — so this must carry the real dropdown
-                    // content every call, not just whichever `MenuDef` was
-                    // last mutated in place.
-                    submenu: Some(m.items.clone()),
-                })
-                .collect(),
-            open_item: self.open_item,
-            focused_item: self.focused_item,
-        }
-    }
-
-    fn build_dropdown(&self, menu_idx: usize) -> ContextMenu {
-        ContextMenu {
-            id: self.dropdown_id,
-            items: self.menus[menu_idx].items.clone(),
-            selected_idx: self.dropdown_selected,
-            bg: None,
-            placement: ContextMenuPlacement::Below,
-            glyphs: Default::default(),
-        }
-    }
-
-    fn dropdown_layout(
-        &self,
-        backend: &dyn Backend,
-        bar_rect: Rect,
-    ) -> Option<(ContextMenu, ContextMenuLayout)> {
-        let open_idx = self.open_item?;
-        if self.menus[open_idx].items.is_empty() {
-            return None;
-        }
-        let lh = menu_line_height(backend);
-        let bar_layout = self.bar_layout(backend, bar_rect);
-        // A backend that resolves `ResolvedMenuStyle::Native` reports a
-        // zero-height layout with no visible items, because its menu bar
-        // is the platform's own and lives outside the window. There is
-        // then nothing to anchor a dropdown under, so no dropdown.
-        let raw_anchor = bar_layout.visible_items.get(open_idx)?.bounds;
-        let pad = (lh * 0.15).max(1.0);
-        let anchor = Rect::new(
-            raw_anchor.x + pad,
-            raw_anchor.y,
-            raw_anchor.width,
-            raw_anchor.height + pad,
-        );
-        let ctx_menu = self.build_dropdown(open_idx);
-        let viewport_rect = menu_viewport(backend, &ctx_menu);
-        let menu_width = dropdown_width(backend, &ctx_menu.items, lh);
-        let (item_h, sep_h) = menu_item_heights(lh);
-        let layout = ctx_menu.layout_at(anchor, viewport_rect, menu_width, |i| {
-            if ctx_menu.items[i].is_separator() {
-                ContextMenuItemMeasure::new(sep_h)
-            } else {
-                ContextMenuItemMeasure::new(item_h)
-            }
-        });
-        Some((ctx_menu, layout))
-    }
-
-    /// Build the full stack of (ContextMenu, ContextMenuLayout) for every
-    /// currently-open menu level: index 0 = root dropdown, index 1 = first
-    /// open submenu, etc.  Returns an empty vec when no menu is open.
-    fn dropdown_stack(
-        &self,
-        backend: &dyn Backend,
-        bar_rect: Rect,
-    ) -> Vec<(ContextMenu, ContextMenuLayout)> {
-        let mut stack: Vec<(ContextMenu, ContextMenuLayout)> = Vec::new();
-
-        let Some((root_menu, root_layout)) = self.dropdown_layout(backend, bar_rect) else {
-            return stack;
+            Handled::Consumed => MenuEvent::Consumed,
+            Handled::Ignored => MenuEvent::Ignored,
         };
-        stack.push((root_menu, root_layout));
-
-        let lh = menu_line_height(backend);
-        let (item_h, sep_h) = menu_item_heights(lh);
-        let vp = menu_viewport(backend, &stack[0].0);
-
-        for (depth, &path_idx) in self.submenu_path.iter().enumerate() {
-            // Extract parent data before we push so the borrow checker is happy.
-            let sub_items_opt: Option<Vec<ContextMenuItem>> = stack[depth]
-                .0
-                .items
-                .get(path_idx)
-                .and_then(|item| item.submenu.clone());
-            let Some(sub_items) = sub_items_opt else {
-                break;
-            };
-            // Each depth is measured from its own items, so a deeper
-            // submenu with longer labels than its parent is not clipped
-            // to the parent's width.
-            let menu_width = dropdown_width(backend, &sub_items, lh);
-
-            // Shared pull-right/flip-left/clamp anchor rule — see
-            // `ContextMenuLayout::submenu_anchor`.
-            let anchor = stack[depth].1.submenu_anchor(path_idx, menu_width, vp);
-            let (anchor_x, anchor_y) = (anchor.x, anchor.y);
-
-            let selected = self.submenu_selected.get(depth).copied().unwrap_or(0);
-
-            let sub_menu = ContextMenu {
-                id: WidgetId::new(format!("menu-system-submenu-{depth}")),
-                items: sub_items.clone(),
-                selected_idx: selected,
-                bg: None,
-                placement: ContextMenuPlacement::AnchorPoint,
-                // A child popup paints the parent's own marks, so one
-                // override set applies to the whole cascade.
-                glyphs: stack[depth].0.glyphs.clone(),
-            };
-
-            let sub_layout = sub_menu.layout(anchor_x, anchor_y, vp, menu_width, |i| {
-                if sub_items[i].is_separator() {
-                    ContextMenuItemMeasure::new(sep_h)
-                } else {
-                    ContextMenuItemMeasure::new(item_h)
-                }
-            });
-
-            stack.push((sub_menu, sub_layout));
-        }
-
-        stack
-    }
-
-    fn open_menu(&mut self, idx: usize, backend: &mut dyn Backend, bar_rect: Rect) {
-        self.open_item = Some(idx);
-        self.focused_item = Some(idx);
-        self.submenu_path.clear();
-        self.submenu_selected.clear();
-        self.dropdown_selected = self.build_dropdown(idx).first_selectable();
-        if let Some((_, layout)) = self.dropdown_layout(backend, bar_rect) {
-            backend
-                .modal_stack_handle()
-                .borrow_mut()
-                .push(self.dropdown_id, layout.bounds);
-        }
-    }
-
-    /// Open the submenu belonging to `item_idx` at the current deepest level.
-    /// Sets the initial selection to the first selectable item.
-    fn open_submenu(&mut self, item_idx: usize) {
-        let depth = self.submenu_path.len();
-        let sub_items = match self
-            .items_at_depth(depth)
-            .and_then(|items| items.into_iter().nth(item_idx))
-            .and_then(|item| item.submenu)
-        {
-            Some(items) => items,
-            None => return,
-        };
-        let first_sel = sub_items
-            .iter()
-            .position(|i| !i.is_separator() && !i.disabled)
-            .unwrap_or(0);
-        self.submenu_path.push(item_idx);
-        self.submenu_selected.push(first_sel);
-    }
-
-    /// Close the deepest open submenu (pop one level).
-    fn close_deepest_submenu(&mut self) {
-        self.submenu_path.pop();
-        self.submenu_selected.pop();
-    }
-
-    fn next_enabled_menu(&self, from: usize, delta: isize) -> usize {
-        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
-        // `from` counts as navigable even when it is itself disabled, so a
-        // move off a disabled menu steps to the next enabled one in bar
-        // order instead of seeding at either end of the bar.
-        FlatNav::mv(self.menus.len(), Some(from), key, true, |i| {
-            i == from || !self.menus[i].disabled
-        })
-        .unwrap_or(from)
-    }
-
-    /// Return the selected item index at the currently-deepest open level.
-    fn current_selected(&self) -> usize {
-        if self.submenu_path.is_empty() {
-            self.dropdown_selected
-        } else {
-            *self.submenu_selected.last().unwrap_or(&0)
-        }
-    }
-
-    /// Return the items at depth `depth` (0 = root dropdown items).
-    /// Returns `None` when `open_item` is unset or a submenu is missing.
-    fn items_at_depth(&self, depth: usize) -> Option<Vec<ContextMenuItem>> {
-        let open_idx = self.open_item?;
-        let mut items = self.menus[open_idx].items.clone();
-        for &path_idx in self.submenu_path.iter().take(depth) {
-            items = items.into_iter().nth(path_idx)?.submenu?;
-        }
-        Some(items)
-    }
-
-    fn move_selection(&mut self, delta: i32) {
-        let depth = self.submenu_path.len();
-        let current = self.current_selected();
-
-        let Some(items) = self.items_at_depth(depth) else {
-            return;
-        };
-
-        let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
-        // `current` counts as navigable even when it sits on a separator or
-        // a disabled item, so the move steps to the next selectable item in
-        // list order rather than seeding at either end.
-        let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
-            i == current || (!items[i].is_separator() && !items[i].disabled)
-        })
-        .unwrap_or(current);
-
-        if depth == 0 {
-            self.dropdown_selected = new_sel;
-        } else if let Some(s) = self.submenu_selected.last_mut() {
-            *s = new_sel;
-        }
+        self.sync_modal(&was, backend, bar_rect);
+        result
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Modifiers;
     use crate::primitives::context_menu::ContextMenuItem;
     use crate::types::StyledText;
 
@@ -1256,6 +1735,12 @@ mod tests {
         }
     }
 
+    /// A cell-grid ctx with no measurer, the metrics a TUI dropdown
+    /// sizes against.
+    fn cells_ctx() -> LayoutCtx<'static> {
+        LayoutCtx::new(1.0, 1.0, false)
+    }
+
     // Helper: construct a `KeyPressed` event with no modifiers.
     fn key_ev(key: Key) -> UiEvent {
         UiEvent::KeyPressed {
@@ -1286,12 +1771,11 @@ mod tests {
     /// given: a menu with a much longer label must come back wider.
     #[test]
     fn dropdown_width_tracks_the_longest_label() {
-        let backend = MockBackend::new();
         let short = [action("a", "Undo")];
         let long = [action("a", "Undo Last 20 Changes")];
 
-        let short_w = dropdown_width(&backend, &short, 1.0);
-        let long_w = dropdown_width(&backend, &long, 1.0);
+        let short_w = dropdown_width(&cells_ctx(), &short, 1.0);
+        let long_w = dropdown_width(&cells_ctx(), &long, 1.0);
         assert!(
             long_w > short_w,
             "a longer label must widen the dropdown: short={short_w}, long={long_w}"
@@ -1303,16 +1787,15 @@ mod tests {
     /// otherwise the glyph would overlap the label or get clipped.
     #[test]
     fn dropdown_width_reserves_space_for_checked_prefix_and_submenu_arrow() {
-        let backend = MockBackend::new();
         let plain = [action("a", "Word Wrap")];
         let mut checked = plain.clone();
         checked[0].checked = Some(true);
         let mut with_submenu = plain.clone();
         with_submenu[0].submenu = Some(vec![action("b", "On")]);
 
-        let plain_w = dropdown_width(&backend, &plain, 1.0);
-        let checked_w = dropdown_width(&backend, &checked, 1.0);
-        let submenu_w = dropdown_width(&backend, &with_submenu, 1.0);
+        let plain_w = dropdown_width(&cells_ctx(), &plain, 1.0);
+        let checked_w = dropdown_width(&cells_ctx(), &checked, 1.0);
+        let submenu_w = dropdown_width(&cells_ctx(), &with_submenu, 1.0);
 
         assert!(checked_w > plain_w, "checked={checked_w}, plain={plain_w}");
         assert!(submenu_w > plain_w, "submenu={submenu_w}, plain={plain_w}");
@@ -1326,16 +1809,15 @@ mod tests {
     /// would let that shifted label clip at the right edge.
     #[test]
     fn dropdown_width_reserves_space_for_icon_same_as_checked() {
-        let backend = MockBackend::new();
         let plain = [action("a", "Reveal in Explorer")];
         let mut with_icon = plain.clone();
         with_icon[0].icon = Some(crate::types::Icon::new("G", "F"));
         let mut checked = plain.clone();
         checked[0].checked = Some(true);
 
-        let plain_w = dropdown_width(&backend, &plain, 1.0);
-        let icon_w = dropdown_width(&backend, &with_icon, 1.0);
-        let checked_w = dropdown_width(&backend, &checked, 1.0);
+        let plain_w = dropdown_width(&cells_ctx(), &plain, 1.0);
+        let icon_w = dropdown_width(&cells_ctx(), &with_icon, 1.0);
+        let checked_w = dropdown_width(&cells_ctx(), &checked, 1.0);
 
         assert!(icon_w > plain_w, "icon={icon_w}, plain={plain_w}");
         assert_eq!(
@@ -1349,9 +1831,8 @@ mod tests {
     /// must size off that one item, not panic or report `0.0`.
     #[test]
     fn dropdown_width_ignores_separators() {
-        let backend = MockBackend::new();
         let items = [separator(), action("a", "Save All"), separator()];
-        let w = dropdown_width(&backend, &items, 1.0);
+        let w = dropdown_width(&cells_ctx(), &items, 1.0);
         assert!(w > 0.0);
     }
 
@@ -1429,7 +1910,7 @@ mod tests {
         let result = ms.handle(&alt_key_ev('f'), &mut backend, bar_rect());
 
         assert_eq!(result, MenuEvent::StateChanged);
-        assert_eq!(ms.open_item, Some(0));
+        assert_eq!(ms.menu.view.open_item, Some(0));
         assert!(
             ms.dropdown_layout(&backend, bar_rect()).is_some(),
             "an opened menu must have a dropdown to paint"
@@ -1455,7 +1936,7 @@ mod tests {
 
         assert_eq!(result, MenuEvent::Ignored);
         assert!(!ms.is_open());
-        assert_eq!(ms.open_item, None);
+        assert_eq!(ms.menu.view.open_item, None);
     }
 
     /// A host may switch menu style at runtime (`Backend::set_menu_style`)
@@ -1486,21 +1967,21 @@ mod tests {
     fn new_menu_system_starts_closed() {
         let ms = MenuSystem::new(sample_menus());
         assert!(!ms.is_open());
-        assert_eq!(ms.open_item, None);
-        assert_eq!(ms.focused_item, None);
+        assert_eq!(ms.menu.view.open_item, None);
+        assert_eq!(ms.menu.view.focused_item, None);
     }
 
     #[test]
     fn set_menus_replaces_definitions() {
         let mut ms = MenuSystem::new(sample_menus());
-        assert_eq!(ms.menus.len(), 3);
+        assert_eq!(ms.menu.menus.len(), 3);
         ms.set_menus(vec![MenuDef {
             id: WidgetId::new("only"),
             label: "Only".into(),
             disabled: false,
             items: vec![action("a", "A")],
         }]);
-        assert_eq!(ms.menus.len(), 1);
+        assert_eq!(ms.menu.menus.len(), 1);
     }
 
     /// A shorter `set_menus` call while a top-level dropdown is open must
@@ -1511,8 +1992,8 @@ mod tests {
     fn set_menus_closes_dropdown_left_pointing_past_the_new_list() {
         let mut ms = MenuSystem::new(sample_menus());
         let backend = MockBackend::new();
-        ms.open_item = Some(2); // "Help" — the last menu, dropped below
-        ms.focused_item = Some(2);
+        ms.menu.view.open_item = Some(2); // "Help" — the last menu, dropped below
+        ms.menu.view.focused_item = Some(2);
 
         ms.set_menus(vec![MenuDef {
             id: WidgetId::new("file"),
@@ -1521,8 +2002,8 @@ mod tests {
             items: vec![action("new", "New File")],
         }]);
 
-        assert_eq!(ms.open_item, None);
-        assert_eq!(ms.focused_item, None);
+        assert_eq!(ms.menu.view.open_item, None);
+        assert_eq!(ms.menu.view.focused_item, None);
         assert!(ms.dropdown_layout(&backend, bar_rect()).is_none());
     }
 
@@ -1544,8 +2025,8 @@ mod tests {
             }],
         }]);
         let backend = MockBackend::new();
-        ms.open_item = Some(0);
-        ms.submenu_path = vec![0]; // "Export"'s submenu is open
+        ms.menu.view.open_item = Some(0);
+        ms.menu.view.submenu_path = vec![0]; // "Export"'s submenu is open
 
         // New "File" menu's one item has no submenu at all, so depth-0 of
         // the old `submenu_path` no longer resolves.
@@ -1556,8 +2037,8 @@ mod tests {
             items: vec![action("new", "New File")],
         }]);
 
-        assert_eq!(ms.open_item, Some(0));
-        assert!(ms.submenu_path.is_empty());
+        assert_eq!(ms.menu.view.open_item, Some(0));
+        assert!(ms.menu.view.submenu_path.is_empty());
         assert!(ms.dropdown_layout(&backend, bar_rect()).is_some());
         assert!(ms.dropdown_stack(&backend, bar_rect()).len() <= 1);
     }
@@ -1566,9 +2047,9 @@ mod tests {
     fn next_enabled_menu_skips_disabled() {
         let ms = MenuSystem::new(sample_menus());
         // help (idx 2) is disabled, so from edit (1) forward wraps to file (0)
-        assert_eq!(ms.next_enabled_menu(1, 1), 0);
+        assert_eq!(ms.menu.next_enabled_menu(1, 1), 0);
         // from file (0) backward wraps past help to edit (1)
-        assert_eq!(ms.next_enabled_menu(0, -1), 1);
+        assert_eq!(ms.menu.next_enabled_menu(0, -1), 1);
     }
 
     #[test]
@@ -1583,8 +2064,8 @@ mod tests {
         // (Alt-activating a disabled menu label, say): the move steps to
         // its neighbour in bar order, not to an end of the bar.
         let ms = MenuSystem::new(vec![menu("a", false), menu("b", true), menu("c", false)]);
-        assert_eq!(ms.next_enabled_menu(1, 1), 2);
-        assert_eq!(ms.next_enabled_menu(1, -1), 0);
+        assert_eq!(ms.menu.next_enabled_menu(1, 1), 2);
+        assert_eq!(ms.menu.next_enabled_menu(1, -1), 0);
     }
 
     #[test]
@@ -1592,22 +2073,22 @@ mod tests {
         let mut ms = MenuSystem::new(sample_menus());
         // The file dropdown is `new, save, separator, quit`, and index 2 —
         // the separator — is the current selection.
-        ms.open_item = Some(0);
-        ms.dropdown_selected = 2;
-        ms.move_selection(1);
-        assert_eq!(ms.dropdown_selected, 3, "forward lands on quit");
+        ms.menu.view.open_item = Some(0);
+        ms.menu.view.dropdown_selected = 2;
+        ms.menu.move_selection(1);
+        assert_eq!(ms.menu.view.dropdown_selected, 3, "forward lands on quit");
 
-        ms.dropdown_selected = 2;
-        ms.move_selection(-1);
-        assert_eq!(ms.dropdown_selected, 1, "backward lands on save");
+        ms.menu.view.dropdown_selected = 2;
+        ms.menu.move_selection(-1);
+        assert_eq!(ms.menu.view.dropdown_selected, 1, "backward lands on save");
     }
 
     #[test]
     fn build_menu_bar_reflects_state() {
         let mut ms = MenuSystem::new(sample_menus());
-        ms.open_item = Some(1);
-        ms.focused_item = Some(1);
-        let bar = ms.build_menu_bar();
+        ms.menu.view.open_item = Some(1);
+        ms.menu.view.focused_item = Some(1);
+        let bar = ms.menu.build_menu_bar();
         assert_eq!(bar.items.len(), 3);
         assert_eq!(bar.open_item, Some(1));
         assert_eq!(bar.focused_item, Some(1));
@@ -1623,7 +2104,7 @@ mod tests {
     #[test]
     fn build_menu_bar_carries_each_menus_own_dropdown_items_as_submenu() {
         let ms = MenuSystem::new(sample_menus());
-        let bar = ms.build_menu_bar();
+        let bar = ms.menu.build_menu_bar();
         assert_eq!(
             bar.items[0].submenu.as_deref(),
             Some(sample_menus()[0].items.as_slice()),
@@ -1643,8 +2124,8 @@ mod tests {
     #[test]
     fn build_dropdown_uses_selected_idx() {
         let mut ms = MenuSystem::new(sample_menus());
-        ms.dropdown_selected = 2;
-        let dd = ms.build_dropdown(0);
+        ms.menu.view.dropdown_selected = 2;
+        let dd = ms.menu.build_dropdown(0);
         assert_eq!(dd.selected_idx, 2);
         assert_eq!(dd.items.len(), 4);
     }
@@ -1675,8 +2156,8 @@ mod tests {
     #[test]
     fn items_at_depth_zero_returns_root_items() {
         let mut ms = MenuSystem::new(menus_with_submenu());
-        ms.open_item = Some(0);
-        let items = ms.items_at_depth(0).unwrap();
+        ms.menu.view.open_item = Some(0);
+        let items = ms.menu.items_at_depth(0).unwrap();
         assert_eq!(items.len(), 3);
         assert_eq!(items[0].id, Some(WidgetId::new("sidebar")));
     }
@@ -1684,9 +2165,9 @@ mod tests {
     #[test]
     fn items_at_depth_one_returns_submenu_items() {
         let mut ms = MenuSystem::new(menus_with_submenu());
-        ms.open_item = Some(0);
-        ms.submenu_path = vec![1]; // item 1 ("Export") has a submenu
-        let items = ms.items_at_depth(1).unwrap();
+        ms.menu.view.open_item = Some(0);
+        ms.menu.view.submenu_path = vec![1]; // item 1 ("Export") has a submenu
+        let items = ms.menu.items_at_depth(1).unwrap();
         assert_eq!(items.len(), 2);
         assert_eq!(items[0].id, Some(WidgetId::new("export-png")));
     }
@@ -1694,40 +2175,40 @@ mod tests {
     #[test]
     fn open_submenu_pushes_path_and_first_selectable() {
         let mut ms = MenuSystem::new(menus_with_submenu());
-        ms.open_item = Some(0);
-        ms.dropdown_selected = 1; // "Export" is selected
-        ms.open_submenu(1);
-        assert_eq!(ms.submenu_path, vec![1]);
-        assert_eq!(ms.submenu_selected, vec![0]); // first selectable in PNG/SVG
+        ms.menu.view.open_item = Some(0);
+        ms.menu.view.dropdown_selected = 1; // "Export" is selected
+        ms.menu.open_submenu(1);
+        assert_eq!(ms.menu.view.submenu_path, vec![1]);
+        assert_eq!(ms.menu.view.submenu_selected, vec![0]); // first selectable in PNG/SVG
     }
 
     #[test]
     fn close_deepest_submenu_pops_one_level() {
         let mut ms = MenuSystem::new(menus_with_submenu());
-        ms.open_item = Some(0);
-        ms.submenu_path = vec![1];
-        ms.submenu_selected = vec![0];
-        ms.close_deepest_submenu();
-        assert!(ms.submenu_path.is_empty());
-        assert!(ms.submenu_selected.is_empty());
+        ms.menu.view.open_item = Some(0);
+        ms.menu.view.submenu_path = vec![1];
+        ms.menu.view.submenu_selected = vec![0];
+        ms.menu.close_deepest_submenu();
+        assert!(ms.menu.view.submenu_path.is_empty());
+        assert!(ms.menu.view.submenu_selected.is_empty());
     }
 
     #[test]
     fn current_selected_returns_root_when_no_submenus() {
         let mut ms = MenuSystem::new(menus_with_submenu());
-        ms.open_item = Some(0);
-        ms.dropdown_selected = 2;
-        assert_eq!(ms.current_selected(), 2);
+        ms.menu.view.open_item = Some(0);
+        ms.menu.view.dropdown_selected = 2;
+        assert_eq!(ms.menu.current_selected(), 2);
     }
 
     #[test]
     fn current_selected_returns_deepest_submenu_selection() {
         let mut ms = MenuSystem::new(menus_with_submenu());
-        ms.open_item = Some(0);
-        ms.dropdown_selected = 1;
-        ms.submenu_path = vec![1];
-        ms.submenu_selected = vec![1];
-        assert_eq!(ms.current_selected(), 1);
+        ms.menu.view.open_item = Some(0);
+        ms.menu.view.dropdown_selected = 1;
+        ms.menu.view.submenu_path = vec![1];
+        ms.menu.view.submenu_selected = vec![1];
+        assert_eq!(ms.menu.current_selected(), 1);
     }
 
     // ── Keyboard-nav interaction tests (flow through handle()) ────────────────
@@ -1738,8 +2219,8 @@ mod tests {
     // navigation state, not on rendering.
     fn open_ms() -> MenuSystem {
         let mut ms = MenuSystem::new(menus_with_submenu());
-        ms.open_item = Some(0);
-        ms.dropdown_selected = 1; // pre-select "Export" (item 1, has submenu)
+        ms.menu.view.open_item = Some(0);
+        ms.menu.view.dropdown_selected = 1; // pre-select "Export" (item 1, has submenu)
         ms
     }
 
@@ -1757,9 +2238,13 @@ mod tests {
             MenuEvent::StateChanged,
             "Right must return StateChanged"
         );
-        assert_eq!(ms.submenu_path, vec![1], "submenu_path must grow to [1]");
+        assert_eq!(
+            ms.menu.view.submenu_path,
+            vec![1],
+            "submenu_path must grow to [1]"
+        );
         assert!(
-            ms.open_item.is_some(),
+            ms.menu.view.open_item.is_some(),
             "menu must still be open after Right"
         );
     }
@@ -1768,8 +2253,8 @@ mod tests {
     #[test]
     fn handle_left_with_submenu_open_closes_deepest() {
         let mut ms = open_ms();
-        ms.submenu_path = vec![1];
-        ms.submenu_selected = vec![0];
+        ms.menu.view.submenu_path = vec![1];
+        ms.menu.view.submenu_selected = vec![0];
         let mut backend = MockBackend::new();
         let ev = key_ev(Key::Named(NamedKey::Left));
 
@@ -1781,10 +2266,13 @@ mod tests {
             "Left must return StateChanged"
         );
         assert!(
-            ms.submenu_path.is_empty(),
+            ms.menu.view.submenu_path.is_empty(),
             "submenu_path must shrink back to []"
         );
-        assert!(ms.open_item.is_some(), "top-level menu must remain open");
+        assert!(
+            ms.menu.view.open_item.is_some(),
+            "top-level menu must remain open"
+        );
     }
 
     /// `Esc` with a submenu open must close only the deepest level — NOT the
@@ -1792,16 +2280,22 @@ mod tests {
     #[test]
     fn handle_esc_with_submenu_closes_deepest_not_whole_menu() {
         let mut ms = open_ms();
-        ms.submenu_path = vec![1];
-        ms.submenu_selected = vec![0];
+        ms.menu.view.submenu_path = vec![1];
+        ms.menu.view.submenu_selected = vec![0];
         let mut backend = MockBackend::new();
         let ev = key_ev(Key::Named(NamedKey::Escape));
 
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
         assert_eq!(result, MenuEvent::StateChanged);
-        assert!(ms.submenu_path.is_empty(), "deepest submenu must be closed");
-        assert!(ms.open_item.is_some(), "top-level menu must still be open");
+        assert!(
+            ms.menu.view.submenu_path.is_empty(),
+            "deepest submenu must be closed"
+        );
+        assert!(
+            ms.menu.view.open_item.is_some(),
+            "top-level menu must still be open"
+        );
     }
 
     /// `Esc` with no submenus open must close the whole menu.
@@ -1815,8 +2309,11 @@ mod tests {
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
         assert_eq!(result, MenuEvent::StateChanged);
-        assert!(ms.open_item.is_none(), "whole menu must be closed");
-        assert!(ms.submenu_path.is_empty());
+        assert!(
+            ms.menu.view.open_item.is_none(),
+            "whole menu must be closed"
+        );
+        assert!(ms.menu.view.submenu_path.is_empty());
     }
 
     /// `Enter` on a submenu-parent must open the child — NOT activate the item.
@@ -1833,8 +2330,12 @@ mod tests {
             MenuEvent::StateChanged,
             "Enter on parent must return StateChanged"
         );
-        assert_eq!(ms.submenu_path, vec![1], "submenu must open for item 1");
-        assert!(ms.open_item.is_some(), "menu must remain open");
+        assert_eq!(
+            ms.menu.view.submenu_path,
+            vec![1],
+            "submenu must open for item 1"
+        );
+        assert!(ms.menu.view.open_item.is_some(), "menu must remain open");
     }
 
     /// `Enter` on a leaf item inside an open submenu must activate it and close
@@ -1843,8 +2344,8 @@ mod tests {
     fn handle_enter_on_leaf_in_submenu_activates_and_closes() {
         let mut ms = open_ms();
         // Open the submenu for "Export" (item 1) and select "PNG" (item 0 inside).
-        ms.submenu_path = vec![1];
-        ms.submenu_selected = vec![0]; // "PNG" (id = "export-png")
+        ms.menu.view.submenu_path = vec![1];
+        ms.menu.view.submenu_selected = vec![0]; // "PNG" (id = "export-png")
         let mut backend = MockBackend::new();
         let ev = key_ev(Key::Named(NamedKey::Enter));
 
@@ -1855,9 +2356,12 @@ mod tests {
             MenuEvent::Activated(WidgetId::new("export-png")),
             "Enter on leaf must return Activated with the item id"
         );
-        assert!(ms.open_item.is_none(), "menu must close after activation");
         assert!(
-            ms.submenu_path.is_empty(),
+            ms.menu.view.open_item.is_none(),
+            "menu must close after activation"
+        );
+        assert!(
+            ms.menu.view.submenu_path.is_empty(),
             "submenu_path must be cleared on close"
         );
     }
@@ -1880,7 +2384,7 @@ mod tests {
         let mut ms = MenuSystem::new(sample_menus());
         let mut backend = MockBackend::new();
         ms.open_menu(0, &mut backend, bar_rect());
-        assert!(ms.open_item.is_some());
+        assert!(ms.menu.view.open_item.is_some());
 
         // Far outside the bar (height 1) and outside the viewport-clamped
         // dropdown.
@@ -1888,7 +2392,10 @@ mod tests {
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
         assert_eq!(result, MenuEvent::StateChanged);
-        assert!(ms.open_item.is_none(), "menu must close on outside MouseUp");
+        assert!(
+            ms.menu.view.open_item.is_none(),
+            "menu must close on outside MouseUp"
+        );
     }
 
     /// `MouseUp(Left)` with no menu open must be a no-op `Ignored` — nothing
@@ -1902,7 +2409,7 @@ mod tests {
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
         assert_eq!(result, MenuEvent::Ignored);
-        assert!(ms.open_item.is_none());
+        assert!(ms.menu.view.open_item.is_none());
     }
 
     /// `MouseUp(Left)` on the menu-bar item that `MouseDown` just opened
@@ -1922,7 +2429,7 @@ mod tests {
 
         assert_eq!(result, MenuEvent::Ignored);
         assert!(
-            ms.open_item.is_some(),
+            ms.menu.view.open_item.is_some(),
             "menu must remain open after Up on the bar item that opened it"
         );
     }
@@ -1948,7 +2455,7 @@ mod tests {
 
         assert_eq!(result, MenuEvent::Ignored);
         assert!(
-            ms.open_item.is_some(),
+            ms.menu.view.open_item.is_some(),
             "menu must remain open — MouseUp must not activate or close"
         );
     }

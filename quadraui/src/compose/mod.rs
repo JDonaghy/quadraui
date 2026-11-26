@@ -165,7 +165,9 @@ pub use help_layer::{
 pub use help_layer::HelpOverlayEvent;
 pub use hover_tooltip_tracker::HoverTooltipTracker;
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
-pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
+pub use menu_system::{
+    AppMenu, AppMenuEvent, AppMenuLayout, AppMenuState, AppMenuView, MenuDef, MenuEvent, MenuSystem,
+};
 pub use message_dialog::{MessageDialog, MessageDialogController, MessageDialogState};
 // `MessageDialogEvent` is `#[deprecated]` (use `MessageDialogController::handle_event`'s
 // `Handled<MessageDialogChoice>` instead). Allow it here since `pub use` of a

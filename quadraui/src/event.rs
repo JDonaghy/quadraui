@@ -1190,6 +1190,9 @@ pub enum UiEvent {
     /// was dismissed, or asked the host to apply a query, mode or
     /// highlight change.
     DualModePalette(WidgetId, crate::compose::DualModePaletteAction),
+    /// A [`crate::compose::AppMenu`] opened, closed or moved within its
+    /// cascade; the host applies the new view onto the menu.
+    AppMenu(WidgetId, crate::compose::AppMenuEvent),
     /// A [`crate::Toolbar`] button was clicked (mouse) or activated via
     /// Enter/Space while keyboard-focused — the id is the toolbar's own,
     /// matching every other chrome-bar variant above (`StatusBar`,
