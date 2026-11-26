@@ -59,10 +59,13 @@ impl<'a> CgSurface<'a> {
     }
 }
 
+/// A rendered sheet with the `(family, chars, cell size)` it was rendered for.
+type CachedSheet = (String, String, (u32, u32), AlphaSheet);
+
 thread_local! {
-    /// The last sheet [`glyph_alpha_sheet`] rendered, keyed on its family,
-    /// characters and cell size, so a repeated request shapes nothing.
-    static GLYPH_SHEET: std::cell::RefCell<Option<(String, String, (u32, u32), AlphaSheet)>> =
+    /// The last sheet [`glyph_alpha_sheet`] rendered, so a repeated request
+    /// shapes nothing.
+    static GLYPH_SHEET: std::cell::RefCell<Option<CachedSheet>> =
         const { std::cell::RefCell::new(None) };
 }
 

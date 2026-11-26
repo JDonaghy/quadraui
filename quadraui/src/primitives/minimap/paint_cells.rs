@@ -805,11 +805,10 @@ mod tests {
     /// Core deliverable, acceptance criterion 1: on a real (>= 500 line)
     /// source file, at a VS-Code-proportioned 12-cell x 33-row TUI strip, at
     /// most 20% of painted rows may run all the way to the strip's right edge.
-    /// This is the exact reproduction the original measurement produced (100%)
-    /// under the old boolean-OR dot rule; this test drives the same widened-scale
-    /// + dithered-dots combination: `cols_per_cell: 10` (5 source columns per dot)
-    /// is exactly the scale a host widens to via `draw_minimap_with_scale` once
-    /// it also wants dithered dots to stop saturating at that scale.
+    /// A boolean-OR dot rule saturates every row here; this test drives the
+    /// widened scale with dithered dots: `cols_per_cell: 10` (5 source
+    /// columns per dot), the scale a host widens to via
+    /// `draw_minimap_with_scale`.
     #[test]
     fn real_source_file_minimap_right_edge_tracks_line_length_not_saturated() {
         let source = include_str!(concat!(
@@ -889,7 +888,7 @@ mod tests {
                 } else {
                     "                    let very_long_line_of_code_here = 12345;".to_string()
                 };
-                std::iter::repeat(line).take(LINES_PER_ROW)
+                std::iter::repeat_n(line, LINES_PER_ROW)
             })
             .collect();
         let mixed_refs: Vec<&str> = mixed_lines.iter().map(String::as_str).collect();
