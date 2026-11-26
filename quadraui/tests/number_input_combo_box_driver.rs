@@ -9,7 +9,7 @@
 //! for this seam issue), so this test's `render` paints a status line per
 //! control via `TextDisplay`, the one primitive with an
 //! already-implemented `Backend::draw_text_display`. Each primitive's own
-//! `handle_key`/`click`/`handle_wheel` is a pure `&self` method that
+//! `handle_key`/`pick`/`handle_wheel` is a pure `&self` method that
 //! returns an event without mutating the struct — `handle` below applies
 //! the returned event back onto the owned field itself, matching the
 //! "host applies the event" split each primitive's module doc states.
@@ -17,9 +17,9 @@
 use quadraui::tui::testing::TuiDriver;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, ComboBox, ComboBoxEvent, ComboBoxHit, CompletionItemMeasure, Decoration,
-    Key, NamedKey, NumberInput, NumberInputEvent, Point, Reaction, Rect, ScrollDelta, StyledSpan,
-    TextDisplay, TextDisplayLine, UiEvent, WidgetId,
+    AppLogic, Backend, ComboBox, ComboBoxEvent, Decoration, Key, NamedKey, NumberInput,
+    NumberInputEvent, Point, Reaction, Rect, ScrollDelta, StyledSpan, TextDisplay, TextDisplayLine,
+    UiEvent, WidgetId,
 };
 
 /// Which of the two controls currently holds keyboard focus.
@@ -41,15 +41,18 @@ const COMBO_FIELD_BOUNDS: Rect = Rect {
     width: 20.0,
     height: 1.0,
 };
-const COMBO_VIEWPORT: Rect = Rect {
-    x: 0.0,
-    y: 0.0,
-    width: 40.0,
-    height: 20.0,
-};
 
-fn combo_item_measure(_index: usize) -> CompletionItemMeasure {
-    CompletionItemMeasure::new(1.0)
+/// The filtered dropdown row under `position`, for a combo box whose
+/// one-row-per-option list hangs directly below `COMBO_FIELD_BOUNDS` —
+/// the geometry this app gives the list, since it routes clicks itself.
+fn combo_row_at(combo: &ComboBox, position: Point) -> Option<usize> {
+    let top = COMBO_FIELD_BOUNDS.y + COMBO_FIELD_BOUNDS.height;
+    let inside_x = position.x >= COMBO_FIELD_BOUNDS.x
+        && position.x < COMBO_FIELD_BOUNDS.x + COMBO_FIELD_BOUNDS.width;
+    if !combo.open || !inside_x || position.y < top {
+        return None;
+    }
+    Some((position.y - top) as usize)
 }
 
 /// Minimal `AppLogic` wiring a `NumberInput` and an editable `ComboBox`
@@ -197,25 +200,14 @@ impl AppLogic for NumberComboApp {
             }
             UiEvent::MouseDown { position, .. } => {
                 let number_layout = self.number.layout(NUMBER_BOUNDS);
-                let combo_layout = self.combo.layout(
-                    COMBO_FIELD_BOUNDS,
-                    COMBO_VIEWPORT,
-                    20.0,
-                    10.0,
-                    combo_item_measure,
-                );
-
                 if number_layout.bounds.contains(position) {
                     let hit = number_layout.hit_test(position);
                     if let Some(e) = self.number.click(hit) {
                         self.apply_number_event(e);
                     }
-                } else {
-                    let hit = combo_layout.hit_test(position);
-                    if hit != ComboBoxHit::Outside {
-                        if let Some(e) = self.combo.click(hit) {
-                            self.apply_combo_event(e);
-                        }
+                } else if let Some(row) = combo_row_at(&self.combo, position) {
+                    if let Some(e) = self.combo.pick(row) {
+                        self.apply_combo_event(e);
                     }
                 }
                 Reaction::Redraw

@@ -633,7 +633,7 @@ pub use primitives::cell_grid::{
 pub use primitives::chart::{
     Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
 };
-pub use primitives::combo_box::{ComboBox, ComboBoxEvent, ComboBoxHit, ComboBoxLayout};
+pub use primitives::combo_box::{ComboBox, ComboBoxEvent};
 pub use primitives::command_center::{
     CommandCenter, CommandCenterAction, CommandCenterHit, CommandCenterLayout,
     CommandCenterMeasure, CommandCenterTarget,

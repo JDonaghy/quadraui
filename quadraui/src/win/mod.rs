@@ -37,9 +37,9 @@ mod board;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod chart;
-/// Windows rasteriser for [`crate::ComboBox`]. All painting delegates to
-/// [`crate::primitives::combo_box::native_surface_paint::paint`] via
-/// [`crate::Backend::draw_combo_box`], so this module carries no
+/// Windows tests for [`crate::ComboBox`]. All painting delegates to
+/// [`crate::primitives::combo_box::native_surface_paint`] via
+/// [`crate::DrawsPrimitives::draw_dyn`], so this module carries no
 /// production code of its own — see its module docs.
 mod combo_box;
 /// Direct2D / DirectWrite rasteriser for
