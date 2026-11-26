@@ -8,9 +8,10 @@
 //! hide) a leading [`Icon`] via the `i` key, so every variant is visible
 //! both with and without an icon; `n` toggles whether that icon paints
 //! its Nerd Font glyph or its plain-text fallback. Whichever button the
-//! pointer is currently over also tints on hover/press via
-//! [`InteractionState`] and [`Button::hovered`]/[`Button::pressed`] —
-//! independent of keyboard focus.
+//! pointer is currently over also tints on hover/press — every control
+//! paints through `draw_dyn`, so the runtime's ambient pointer state
+//! reaches its painter with no hover bookkeeping here, independent of
+//! keyboard focus.
 //!
 //! Controls:
 //! - Tab         move focus to the next control
@@ -18,13 +19,13 @@
 //! - Up/Down     move the radio group cursor (while it has focus)
 //! - i           toggle every button's icon on/off
 //! - n           toggle Nerd Font glyphs vs. plain-text fallbacks
-//! - Hover       tints whichever button the pointer is over
+//! - Hover       tints whichever control the pointer is over
 //! - q / Esc     quit
 
 use quadraui::{
-    AppLogic, Backend, Button, ButtonHit, ButtonVariant, Color, DrawsPrimitives, Icon,
-    InteractionState, Key, Modifiers, NamedKey, RadioGroup, RadioGroupHit, RadioOption, Reaction,
-    Rect, StatusBar, StatusBarSegment, Switch, SwitchHit, UiEvent, WidgetId,
+    AppLogic, Backend, Button, ButtonHit, ButtonVariant, Color, DrawsPrimitives, Icon, Key,
+    Modifiers, NamedKey, RadioGroup, RadioGroupHit, RadioOption, Reaction, Rect, StatusBar,
+    StatusBarSegment, Switch, SwitchHit, UiEvent, WidgetId,
 };
 
 /// One row per [`ButtonVariant`] — `Primary`, `Secondary`, `Danger`,
@@ -52,12 +53,6 @@ pub struct ControlsApp {
     /// button currently carries an icon.
     nerd_fonts: bool,
     last_message: String,
-    /// Hover/pressed state for whichever button the pointer is
-    /// currently over, keyed by its `WidgetId` — fed from
-    /// `MouseMoved`/`MouseDown`/`MouseUp` in `handle` below, and read
-    /// back into [`Button::hovered`]/[`Button::pressed`] in
-    /// [`Self::button`].
-    interaction: InteractionState,
 }
 
 /// Static per-row metadata: variant, label, and the icon's Nerd Font
@@ -83,7 +78,6 @@ impl ControlsApp {
             icons_enabled: true,
             nerd_fonts: false,
             last_message: "Tab=focus Space=activate i=icons n=nerd-fonts".into(),
-            interaction: InteractionState::new(),
         }
     }
 
@@ -99,8 +93,6 @@ impl ControlsApp {
         );
         button.variant = variant;
         button.focused = self.focus == Focus::Button(idx);
-        button.hovered = self.interaction.is_hovered(&button.id);
-        button.pressed = self.interaction.is_pressed(&button.id);
         if self.icons_enabled && !matches!(variant, ButtonVariant::Icon) {
             button.icon = Some(Icon::new(glyph, fallback));
         }
@@ -228,10 +220,10 @@ impl AppLogic for ControlsApp {
 
         for idx in 0..BUTTON_COUNT {
             let rect = self.button_rect(backend, idx);
-            let _ = backend.draw_primitive(rect, &self.button(idx));
+            let _ = backend.draw_dyn(rect, &self.button(idx), &());
         }
-        let _ = backend.draw_primitive(self.radio_rect(backend), &self.radio_group());
-        let _ = backend.draw_primitive(self.switch_rect(backend), &self.switch());
+        let _ = backend.draw_dyn(self.radio_rect(backend), &self.radio_group(), &());
+        let _ = backend.draw_dyn(self.switch_rect(backend), &self.switch(), &());
         let _ = backend.draw_dyn(self.status_rect(backend), &self.status_bar(), &());
     }
 
@@ -304,26 +296,12 @@ impl AppLogic for ControlsApp {
                 }
                 Reaction::Continue
             }
-            UiEvent::MouseMoved { position, .. } => {
-                let hovered = (0..BUTTON_COUNT).find_map(|idx| {
-                    let rect = self.button_rect(backend, idx);
-                    let layout = backend.layout_primitive(rect, &self.button(idx));
-                    matches!(layout.hit_test(position), ButtonHit::Body)
-                        .then(|| self.button(idx).id)
-                });
-                if self.interaction.set_hovered(hovered) {
-                    Reaction::Redraw
-                } else {
-                    Reaction::Continue
-                }
-            }
             UiEvent::MouseDown { position, .. } => {
                 for idx in 0..BUTTON_COUNT {
                     let rect = self.button_rect(backend, idx);
                     let layout = backend.layout_primitive(rect, &self.button(idx));
                     if matches!(layout.hit_test(position), ButtonHit::Body) {
                         self.focus = Focus::Button(idx);
-                        self.interaction.set_pressed(Some(self.button(idx).id));
                         self.activate_focused();
                         return Reaction::Redraw;
                     }
@@ -347,13 +325,6 @@ impl AppLogic for ControlsApp {
                 }
 
                 Reaction::Continue
-            }
-            UiEvent::MouseUp { .. } => {
-                if self.interaction.set_pressed(None) {
-                    Reaction::Redraw
-                } else {
-                    Reaction::Continue
-                }
             }
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,

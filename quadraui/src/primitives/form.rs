@@ -2511,7 +2511,7 @@ mod native_surface_paint {
                                 g.focused = is_focused;
                                 let full_rect = Rect::new(r.x, r.y, r.width, r.height * n);
                                 radio_group::native_surface_paint::paint(
-                                    &g, surface, theme, full_rect, r.height,
+                                    &g, surface, theme, full_rect, r.height, None, None,
                                 );
                             }
                         }

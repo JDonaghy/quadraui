@@ -105,7 +105,6 @@ fn activity_bar_items_are_tabs_in_a_toolbar() {
         selection_bg: None,
         is_keyboard_focused: false,
         style: Default::default(),
-        hovered: None,
     };
     let snapshot = A11yScenario::new()
         .with_surface(Surface::Widget {

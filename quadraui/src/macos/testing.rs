@@ -914,7 +914,6 @@ mod tests {
                     selection_bg: None,
                     is_keyboard_focused: self.focused,
                     style: Default::default(),
-                    hovered: None,
                 },
                 &(),
             );

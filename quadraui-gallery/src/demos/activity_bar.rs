@@ -65,7 +65,6 @@ impl ActivityBarDemo {
             } else {
                 ActivityBarStyle::default()
             },
-            hovered: None,
         }
     }
 
