@@ -8,8 +8,8 @@
 //! Driven on the TUI backend and on the macOS pixel backend.
 
 use quadraui::{
-    AppLogic, Backend, DualModePalette, DualModePaletteAction, FrameTree, PaletteItem, PaletteMode,
-    Reaction, Rect, ScreenLayout, StyledText, Surface, UiEvent, WidgetId,
+    AppLogic, Backend, DualModePalette, DualModePaletteAction, FrameTree, PaletteItem, Reaction,
+    Rect, ScreenLayout, StyledText, Surface, UiEvent, WidgetId,
 };
 
 const BRANCHES: &[&str] = &["main", "develop", "feature/menus", "feature/pickers"];
@@ -105,7 +105,7 @@ impl AppLogic for BranchApp {
 mod tui {
     use super::*;
     use quadraui::tui::testing::TuiDriver;
-    use quadraui::NamedKey;
+    use quadraui::{NamedKey, PaletteMode};
 
     const COLS: u16 = 60;
     const ROWS: u16 = 14;

@@ -1963,6 +1963,27 @@ mod tests {
         );
     }
 
+    /// A `menu_bar` leaf dict — a serialised [`MenuBar`] — decodes as an
+    /// [`AppMenu`]: each item's `submenu` becomes the menu's items, a
+    /// `null` submenu decodes as none, and the open/focused items carry
+    /// over.
+    #[test]
+    fn a_serialised_menu_bar_decodes_as_an_app_menu() {
+        let mut bar = MenuSystem::new(sample_menus()).menu_bar();
+        bar.items[2].submenu = None;
+        bar.open_item = Some(1);
+        bar.focused_item = Some(1);
+        let json = serde_json::to_value(&bar).expect("serialise");
+        let menu: AppMenu = serde_json::from_value(json).expect("decode");
+        assert_eq!(menu.id, bar.id);
+        assert_eq!(menu.menus[0].items, sample_menus()[0].items);
+        assert!(menu.menus[2].items.is_empty());
+        assert!(menu.menus[2].disabled);
+        assert_eq!(menu.view.open_item, Some(1));
+        assert_eq!(menu.view.focused_item, Some(1));
+        assert!(menu.view.submenu_path.is_empty());
+    }
+
     #[test]
     fn new_menu_system_starts_closed() {
         let ms = MenuSystem::new(sample_menus());

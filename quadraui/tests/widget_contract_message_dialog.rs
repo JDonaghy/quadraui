@@ -23,6 +23,7 @@ fn cancel_id() -> WidgetId {
     WidgetId::new("alert:cancel")
 }
 
+#[cfg(feature = "tui")]
 fn ok_id() -> WidgetId {
     WidgetId::new("alert:ok")
 }
@@ -55,6 +56,7 @@ impl AlertApp {
         )
     }
 
+    #[cfg(feature = "tui")]
     fn ok_only(area: Rect) -> Self {
         Self::with_buttons(area, vec![button(ok_id(), "OK", true, false)])
     }

@@ -123,6 +123,7 @@ impl DialogApp {
         }
     }
 
+    #[cfg(feature = "tui")]
     fn focused(&self) -> Option<WidgetId> {
         self.dialog.form.as_ref().and_then(|f| f.focused_field)
     }
