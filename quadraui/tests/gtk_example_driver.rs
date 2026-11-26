@@ -1097,7 +1097,11 @@ fn sidebar_panel_body_gtk_header_only_mode_paints_header_without_search_placehol
 
 // ─── ContextMenuStyleDemo: MenuStyle + ContextMenuController ───────────────
 
-const CTX_MENU_W: i32 = 400;
+/// Wide enough that the demo's status line fits unsqueezed under a wide
+/// sans font: with DejaVu Sans the "Last action" and "style=… effective=…"
+/// segments plus padding, edge insets and the group gap need about 419px,
+/// and a narrower bar ellipsizes the left segment the assertions read.
+const CTX_MENU_W: i32 = 480;
 const CTX_MENU_H: i32 = 300;
 
 /// Opening a context menu through `ContextMenuController::open` with the
