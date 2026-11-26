@@ -292,8 +292,13 @@ mod gtk {
         let (x, y) = first_row(&driver);
         assert!(GEOMETRY.under.contains(quadraui::Point::new(x, y)));
         let popup = quadraui::popup::painted_popups()[0];
-        // Sample just inside the list's left edge, clear of the label.
-        let px = driver.pixel((popup.rect.x + 3.0) as i32, y as i32);
+        // Sample near the list's right edge: labels start at the left, and
+        // how far a glyph's antialiasing reaches depends on the system font.
+        let sample_x = (popup.rect.x + popup.rect.width - 6.0) as i32;
+        assert!(GEOMETRY
+            .under
+            .contains(quadraui::Point::new(sample_x as f32, y)));
+        let px = driver.pixel(sample_x, y as i32);
         assert_eq!(
             px,
             rgb(Theme::default().completion_bg),
@@ -302,7 +307,7 @@ mod gtk {
         assert!(driver.screen_contains("Banana"));
 
         driver.press_named(NamedKey::Escape);
-        let closed = driver.pixel((popup.rect.x + 3.0) as i32, y as i32);
+        let closed = driver.pixel(sample_x, y as i32);
         assert_ne!(
             closed,
             rgb(Theme::default().completion_bg),
