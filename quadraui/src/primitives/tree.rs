@@ -3740,3 +3740,312 @@ mod primitive_parity_tests {
         assert_eq!(local, absolute);
     }
 }
+
+#[cfg(all(
+    test,
+    any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )
+))]
+mod interactive_tests {
+    use super::*;
+    use crate::a11y::A11yAction;
+    use crate::event::{Key, NamedKey, Point};
+    use crate::interactive::{EventCx, EventHost, Interactive, RoutedEvent, SubTarget};
+    use crate::primitive::{LayoutCtx, Primitive, Units};
+    use crate::PointerShape;
+
+    #[derive(Default)]
+    struct MockHost {
+        emitted: Vec<crate::UiEvent>,
+        captured: bool,
+    }
+
+    impl EventHost for MockHost {
+        fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
+            true
+        }
+        fn request_focus(&mut self, _id: &WidgetId, _sub: Option<SubTarget>) {}
+        fn capture_pointer(&mut self, _id: &WidgetId) {
+            self.captured = true;
+        }
+        fn release_pointer(&mut self) {
+            self.captured = false;
+        }
+        fn set_cursor(&mut self, _cursor: PointerShape) {}
+        fn request_redraw(&mut self) {}
+        fn emit(&mut self, event: crate::UiEvent) {
+            self.emitted.push(event);
+        }
+        fn units(&self) -> Units {
+            Units::Cells
+        }
+    }
+
+    fn row(path: &[u16], label: &str, is_expanded: Option<bool>) -> TreeRow {
+        TreeRow {
+            path: path.to_vec(),
+            indent: (path.len() - 1) as u16,
+            icon: None,
+            text: StyledText::plain(label),
+            badge: None,
+            is_expanded,
+            decoration: Decoration::Normal,
+            edit: None,
+        }
+    }
+
+    fn tree(n: usize) -> TreeView {
+        let mut rows = vec![row(&[0], "dir", Some(false))];
+        rows.extend((1..n).map(|i| row(&[i as u16], &format!("item{i}"), None)));
+        TreeView {
+            id: WidgetId::new("tree:unit"),
+            rows,
+            selection_mode: SelectionMode::Single,
+            selected_path: None,
+            scroll_offset: 0,
+            style: TreeStyle::default(),
+            has_focus: true,
+        }
+    }
+
+    fn layout_for(tree: &TreeView, height: f32) -> TreeViewPrimitiveLayout {
+        Primitive::layout(
+            tree,
+            &LayoutCtx::new(1.0, 1.0, false),
+            Rect::new(0.0, 0.0, 20.0, height),
+        )
+    }
+
+    fn run(
+        tree: &TreeView,
+        state: &mut TreeViewState,
+        event: RoutedEvent,
+        height: f32,
+    ) -> (Handled<TreeEvent>, MockHost) {
+        let layout = layout_for(tree, height);
+        let mut host = MockHost::default();
+        let handled = {
+            let mut cx = EventCx::new(tree.id, &mut host);
+            Interactive::handle(tree, state, &event, &layout, &mut cx)
+        };
+        (handled, host)
+    }
+
+    fn key(named: NamedKey) -> RoutedEvent {
+        RoutedEvent::Key(crate::interactive::KeyEvent {
+            key: Key::Named(named),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        })
+    }
+
+    #[test]
+    fn sub_parts_round_trip_through_their_sub_targets() {
+        for part in [
+            TreeViewSubPart::Row(0),
+            TreeViewSubPart::Row(41),
+            TreeViewSubPart::Chevron(7),
+            TreeViewSubPart::Scrollbar,
+        ] {
+            assert_eq!(
+                TreeViewSubPart::from_sub_target(part.sub_target()),
+                Some(part)
+            );
+        }
+        assert_eq!(TreeViewSubPart::from_sub_target(SubTarget(0)), None);
+    }
+
+    #[test]
+    fn sub_regions_name_every_visible_row_and_the_scrollbar() {
+        let t = tree(30);
+        let layout = layout_for(&t, 10.0);
+        let parts: Vec<_> = Interactive::sub_regions(&t, &layout)
+            .into_iter()
+            .filter_map(|(_, sub)| TreeViewSubPart::from_sub_target(sub))
+            .collect();
+        assert!(parts.contains(&TreeViewSubPart::Row(1)));
+        assert!(parts.contains(&TreeViewSubPart::Scrollbar));
+    }
+
+    #[test]
+    fn empty_tree_has_no_focus_stop() {
+        let mut t = tree(1);
+        t.rows.clear();
+        assert_eq!(t.focus(), crate::interactive::FocusSpec::None);
+        assert_eq!(tree(3).focus(), crate::interactive::FocusSpec::Stop);
+    }
+
+    #[test]
+    fn descriptor_selection_wins_over_stale_state() {
+        let mut t = tree(5);
+        let mut state = TreeViewState::default();
+        state.nav.set_selected_path(Some(vec![1]));
+        t.selected_path = Some(vec![3]);
+        let (handled, _) = run(&t, &mut state, key(NamedKey::Down), 10.0);
+        assert_eq!(
+            handled,
+            Handled::Event(TreeEvent::SelectionChanged { path: vec![4] })
+        );
+    }
+
+    #[test]
+    fn page_down_moves_by_one_viewport_less_one_row() {
+        let mut t = tree(30);
+        t.selected_path = Some(vec![0]);
+        let mut state = TreeViewState::default();
+        let (handled, host) = run(&t, &mut state, key(NamedKey::PageDown), 10.0);
+        assert_eq!(
+            handled,
+            Handled::Event(TreeEvent::SelectionChanged { path: vec![9] })
+        );
+        assert!(host.emitted.is_empty(), "row 9 is still in view");
+    }
+
+    #[test]
+    fn a_fractional_wheel_accumulates_before_reporting_a_whole_row() {
+        let t = tree(30);
+        let mut state = TreeViewState::default();
+        let wheel = |dy| RoutedEvent::Wheel {
+            dx: 0.0,
+            dy,
+            local: Point::new(1.0, 1.0),
+            mods: Modifiers::default(),
+        };
+        let (first, _) = run(&t, &mut state, wheel(-0.5), 10.0);
+        assert_eq!(first, Handled::Consumed);
+        let (second, _) = run(&t, &mut state, wheel(-0.5), 10.0);
+        assert_eq!(
+            second,
+            Handled::Event(TreeEvent::ScrollChanged { scroll_offset: 1 })
+        );
+    }
+
+    #[test]
+    fn scrollbar_track_press_pages_and_thumb_press_captures() {
+        let t = tree(30);
+        let layout = layout_for(&t, 10.0);
+        let sb = layout.vscrollbar.clone().expect("30 rows overflow 10");
+        let mut state = TreeViewState::default();
+        let below_thumb = Point::new(sb.track.x, sb.track.y + sb.track.height - 1.0);
+        let press = |local| RoutedEvent::Pointer {
+            kind: crate::interactive::PointerKind::Down(crate::event::MouseButton::Left),
+            sub: None,
+            local,
+            mods: Modifiers::default(),
+        };
+        let (handled, _) = run(&t, &mut state, press(below_thumb), 10.0);
+        assert_eq!(
+            handled,
+            Handled::Event(TreeEvent::ScrollChanged { scroll_offset: 10 })
+        );
+
+        let mut state = TreeViewState::default();
+        let (handled, host) = run(&t, &mut state, press(Point::new(sb.track.x, 0.0)), 10.0);
+        assert_eq!(handled, Handled::Consumed);
+        assert!(host.captured, "a thumb press captures the pointer");
+        assert!(state.nav.is_dragging());
+    }
+
+    #[test]
+    fn a11y_expand_and_collapse_only_toggle_toward_their_direction() {
+        let mut t = tree(3);
+        t.selected_path = Some(vec![0]);
+        let mut state = TreeViewState::default();
+        let (collapse, _) = run(
+            &t,
+            &mut state,
+            RoutedEvent::Action(A11yAction::Collapse),
+            10.0,
+        );
+        assert_eq!(collapse, Handled::Consumed, "already collapsed");
+        let (expand, _) = run(
+            &t,
+            &mut state,
+            RoutedEvent::Action(A11yAction::Expand),
+            10.0,
+        );
+        assert_eq!(
+            expand,
+            Handled::Event(TreeEvent::RowToggleExpand { path: vec![0] })
+        );
+    }
+
+    #[test]
+    fn a11y_click_opens_the_selected_row_like_the_a11y_router() {
+        let mut t = tree(3);
+        t.selected_path = Some(vec![2]);
+        let mut state = TreeViewState::default();
+        let (handled, _) = run(&t, &mut state, RoutedEvent::Action(A11yAction::Click), 10.0);
+        assert_eq!(
+            handled,
+            Handled::Event(TreeEvent::RowDoubleClicked { path: vec![2] })
+        );
+    }
+
+    #[test]
+    fn unclaimed_keys_are_reported_and_bubble() {
+        let mut t = tree(3);
+        t.selected_path = Some(vec![1]);
+        let mut state = TreeViewState::default();
+        let (handled, host) = run(&t, &mut state, key(NamedKey::Tab), 10.0);
+        assert_eq!(handled, Handled::Ignored);
+        assert!(matches!(
+            host.emitted.as_slice(),
+            [crate::UiEvent::Tree(_, TreeEvent::KeyPressed { .. })]
+        ));
+    }
+
+    fn edit(text: &str, cursor: usize, anchor: Option<usize>) -> TreeRowEditState {
+        TreeRowEditState {
+            text: text.into(),
+            cursor,
+            selection_anchor: anchor,
+            placeholder: None,
+        }
+    }
+
+    #[test]
+    fn rename_select_all_then_type_replaces_the_text() {
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        let TreeRenameKey::Moved(all) =
+            tree_rename_key(&edit("main.rs", 2, None), &Key::Char('a'), ctrl)
+        else {
+            panic!("Ctrl-A selects all");
+        };
+        assert_eq!((all.cursor, all.selection_anchor), (7, Some(0)));
+        let typed = tree_rename_insert(&all, "lib");
+        assert_eq!(typed.text, "lib");
+        assert_eq!(typed.cursor, 3);
+    }
+
+    #[test]
+    fn rename_ignores_vertical_motion_and_word_deletes() {
+        assert_eq!(
+            tree_rename_key(
+                &edit("abc", 1, None),
+                &Key::Named(NamedKey::Up),
+                Modifiers::default()
+            ),
+            TreeRenameKey::Unhandled
+        );
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        };
+        let TreeRenameKey::Edited(next) = tree_rename_key(
+            &edit("foo bar", 7, None),
+            &Key::Named(NamedKey::Backspace),
+            ctrl,
+        ) else {
+            panic!("Ctrl-Backspace deletes a word");
+        };
+        assert_eq!(next.text, "foo ");
+    }
+}
