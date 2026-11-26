@@ -1972,8 +1972,9 @@ mod editor_pixel_tests {
 
     /// [`paint_editor`], plus [`EditorPaintOptions`] and a host-settable
     /// vertical scrollbar width in DIPs (`None` = one `cell_width`). Both
-    /// feed [`Editor::layout_with_options_and_v_scrollbar_w`]; see the module
-    /// doc's "Scrollbar" section for who paints the vertical column.
+    /// feed [`Editor::layout_with_options_and_v_scrollbar_w`], and the
+    /// shared painter paints the vertical scrollbar column the layout
+    /// reserves, as the production widget-contract path does.
     #[allow(clippy::too_many_arguments)]
     pub fn paint_editor_with_options_and_v_scrollbar_w(
         target: &ID2D1RenderTarget,
@@ -1996,11 +1997,7 @@ mod editor_pixel_tests {
             target,
             dwrite: Some(dwrite),
         };
-        let paint_options = EditorPaintOptions {
-            suppress_v_scrollbar: true,
-            ..options
-        };
-        paint_pixels::paint_with_options(editor, &geom, &mut surface, theme, paint_options);
+        paint_pixels::paint_with_options(editor, &geom, &mut surface, theme, options);
     }
 
     mod tests {
@@ -2225,6 +2222,46 @@ mod editor_pixel_tests {
             // `end_col`'s column — a `Line` selection should still cover it.
             let sample_x = 180u32.max(text_x + 5);
             let px = surface.pixel_at(sample_x, 4);
+            let expected = theme
+                .background
+                .blend(theme.selection, theme.selection_alpha as f64);
+            assert!(near(px, expected), "{px:?} vs {expected:?}");
+        }
+
+        /// A `Line` selection on a horizontally scrolled editor starts
+        /// left of the text area, but the gutter keeps its background:
+        /// the selection overlay is clipped to the text columns.
+        #[test]
+        fn line_selection_leaves_gutter_untouched_when_scrolled_left() {
+            let surface = HeadlessSurface::new(200, 100).expect("create surface");
+            let (dwrite, _, _) = DWrite::new("Consolas", 10.0, None).expect("create DWrite");
+            let text = format!("ab{}", " ".repeat(23));
+            let mut e = editor(vec![plain_line(0, &text)]);
+            e.scroll_left = 4;
+            e.selection = Some(EditorSelection {
+                kind: SelectionKind::Line,
+                start_line: 0,
+                start_col: 0,
+                end_line: 0,
+                end_col: 0,
+            });
+
+            surface
+                .paint(|target| {
+                    paint_editor(target, &dwrite, &e, CELL_W, LINE_H, &Theme::default());
+                })
+                .expect("paint editor");
+
+            let theme = Theme::default();
+            // Top-left of the gutter: left of the right-aligned line number.
+            let px = surface.pixel_at(1, 4);
+            assert!(
+                near(px, theme.background),
+                "gutter pixel {px:?} should stay {:?}",
+                theme.background
+            );
+            let text_x = (e.gutter_char_width as f32 * CELL_W) as u32;
+            let px = surface.pixel_at(180u32.max(text_x + 5), 4);
             let expected = theme
                 .background
                 .blend(theme.selection, theme.selection_alpha as f64);

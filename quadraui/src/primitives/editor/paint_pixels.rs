@@ -87,6 +87,17 @@ struct Ctx<'a> {
 }
 
 impl Ctx<'_> {
+    /// The text area's columns over the editor's full height: excludes
+    /// the gutter and the reserved vertical scrollbar column.
+    fn text_clip(&self) -> Rect {
+        Rect::new(
+            self.rect.x + self.gutter_w,
+            self.rect.y,
+            self.geom.text_bounds.width,
+            self.rect.height,
+        )
+    }
+
     fn row_y(&self, view_idx: usize) -> f32 {
         self.rect.y + view_idx as f32 * self.lh
     }
@@ -170,7 +181,11 @@ fn paint_body(
 
     surface.surface_fill_rect(rect, ctx.window_bg());
     paint_line_backgrounds(&ctx, surface);
+    // Selections share the text clip, so a selection that starts left of
+    // the horizontal scroll never tints the gutter.
+    surface.surface_push_clip(ctx.text_clip());
     paint_selection_overlays(&ctx, surface);
+    surface.surface_pop_clip();
     if editor.gutter_char_width > 0 {
         for (view_idx, line) in editor.lines.iter().enumerate() {
             paint_gutter_row(&ctx, surface, line, ctx.row_y(view_idx));
@@ -179,12 +194,7 @@ fn paint_body(
 
     // The text clip excludes the gutter and the reserved vertical
     // scrollbar column, so no glyph reaches pixels the scrollbar paints.
-    surface.surface_push_clip(Rect::new(
-        rect.x + gutter_w,
-        rect.y,
-        geom.text_bounds.width,
-        rect.height,
-    ));
+    surface.surface_push_clip(ctx.text_clip());
     for (view_idx, line) in editor.lines.iter().enumerate() {
         let y = ctx.row_y(view_idx);
         paint_line_text(&ctx, surface, line, y);
@@ -1076,6 +1086,41 @@ mod gtk_pixel_tests {
             raw_text: raw_text.into(),
             ..blank_line(line_idx)
         }
+    }
+
+    /// A `Line` selection on a horizontally scrolled editor starts left
+    /// of the text area; the selection overlay is clipped to the text
+    /// columns, so the gutter keeps the window background.
+    #[test]
+    fn draw_editor_line_selection_leaves_gutter_untouched_when_scrolled_left() {
+        let theme = Theme::default();
+        let mut editor = scroll_test_editor(2, 40, 2);
+        editor.lines = vec![text_line(0, "0123456789"), text_line(1, "abcdefghij")];
+        editor.gutter_char_width = 3;
+        editor.scroll_left = 4;
+        editor.selection = Some(EditorSelection {
+            kind: SelectionKind::Line,
+            start_line: 0,
+            start_col: 0,
+            end_line: 0,
+            end_col: 0,
+        });
+
+        let (data, stride) = scroll_test_paint(&editor, &theme);
+        let stride = stride as usize;
+        let row0_y = SCROLL_TEST_LINE_H as i32 / 2;
+        let gutter_x = (3.0 * SCROLL_TEST_CHAR_W) as i32 - 2;
+        assert_eq!(
+            scroll_test_pixel(&data, stride, gutter_x, row0_y),
+            rgb(theme.background),
+            "a Line selection must not tint the gutter when scroll_left > 0"
+        );
+        let text_x = (3.0 * SCROLL_TEST_CHAR_W) as i32 + 1;
+        assert_ne!(
+            scroll_test_pixel(&data, stride, text_x, row0_y),
+            rgb(theme.background),
+            "the Line selection still tints the text area"
+        );
     }
 
     /// One `Char` selection spanning buffer lines `[0, 2]` painted

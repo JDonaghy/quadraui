@@ -13,6 +13,7 @@
 use super::{Editor, EditorHit, EditorLayout};
 use crate::event::{Point, Rect};
 use crate::interactive::PointerKind;
+use crate::primitives::scrollbar::ScrollAxis;
 use crate::types::{Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -32,6 +33,18 @@ pub enum EditorEvent {
         kind: PointerKind,
         mods: Modifiers,
     },
+    /// A press on a scrollbar track, or a move or left release while that
+    /// press holds the pointer. `fraction` is the pointer's position along
+    /// the track, `0.0` at its top (left) end and `1.0` at its bottom
+    /// (right) end, clamped to that range. A drag that starts on a
+    /// scrollbar keeps reporting this variant wherever the pointer goes,
+    /// so the app scrolls rather than extending a selection.
+    Scrollbar {
+        axis: ScrollAxis,
+        fraction: f32,
+        kind: PointerKind,
+        mods: Modifiers,
+    },
     /// A scroll-wheel gesture over the editor, in the platform's wheel
     /// units; positive `dy` scrolls toward the top of the buffer.
     Wheel { dx: f32, dy: f32, mods: Modifiers },
@@ -44,12 +57,15 @@ impl crate::interactive::WidgetAction for EditorEvent {
 }
 
 /// An [`Editor`]'s per-widget gesture state: the buffer position a
-/// left-button drag started at, while it is in progress.
+/// left-button text drag started at, or the scrollbar a left-button
+/// scrollbar drag started on, while it is in progress.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EditorState {
-    /// `(line, col)` the drag started at, or `None` with no drag.
+    /// `(line, col)` a text drag started at, or `None` with no text drag.
     pub drag_anchor: Option<(usize, usize)>,
+    /// The scrollbar a drag started on, or `None` with no scrollbar drag.
+    pub scrollbar_drag: Option<ScrollAxis>,
 }
 
 impl Editor {
@@ -92,6 +108,26 @@ impl EditorLayout {
             }
         };
         Point::new(inset(t.x, t.width, p.x), inset(t.y, t.height, p.y))
+    }
+
+    /// `p`'s position along `axis`'s scrollbar track as a fraction in
+    /// `[0.0, 1.0]`, or `None` when the layout reserves no such track.
+    fn scrollbar_fraction(&self, axis: ScrollAxis, p: Point) -> Option<f32> {
+        let (track, at) = match axis {
+            ScrollAxis::Vertical => {
+                let t = self.v_scrollbar_bounds?;
+                ((t.y, t.height), p.y)
+            }
+            ScrollAxis::Horizontal => {
+                let t = self.h_scrollbar_bounds?;
+                ((t.x, t.width), p.x)
+            }
+        };
+        let (start, len) = track;
+        if len <= 0.0 {
+            return Some(0.0);
+        }
+        Some(((at - start) / len).clamp(0.0, 1.0))
     }
 
     /// The hit and monospace column at absolute `p`.
@@ -184,13 +220,17 @@ impl crate::interactive::Interactive for Editor {
         crate::interactive::FocusSpec::Stop
     }
 
-    /// - **Press** (any button) takes focus and reports
+    /// - **Press** (any button) takes focus. On a scrollbar track it
+    ///   reports [`EditorEvent::Scrollbar`], elsewhere
     ///   [`EditorEvent::Pointer`]. A left press inside the editor also
-    ///   captures the pointer and starts a drag.
-    /// - **Move** during a drag reports the pointer clamped onto the text
-    ///   area; a move with no drag is ignored.
+    ///   captures the pointer and starts a drag: a scrollbar drag on a
+    ///   track, a text drag anywhere else.
+    /// - **Move** during a text drag reports the pointer clamped onto the
+    ///   text area; during a scrollbar drag it reports
+    ///   [`EditorEvent::Scrollbar`] for the pressed track. A move with no
+    ///   drag is ignored.
     /// - **Left release** ends the drag, releases the capture and reports
-    ///   the release.
+    ///   the release in the drag's own variant.
     /// - **Double-click** reports [`EditorEvent::Pointer`] with
     ///   [`PointerKind::DoubleClick`].
     /// - **Wheel** reports [`EditorEvent::Wheel`].
@@ -220,7 +260,26 @@ impl crate::interactive::Interactive for Editor {
                 ..
             } => {
                 cx.request_focus(None);
-                let (hit, col) = layout.resolve(self, absolute(local));
+                let p = absolute(local);
+                let (hit, col) = layout.resolve(self, p);
+                let axis = match hit {
+                    EditorHit::VScrollbar => Some(ScrollAxis::Vertical),
+                    EditorHit::HScrollbar => Some(ScrollAxis::Horizontal),
+                    _ => None,
+                };
+                if let Some(axis) = axis {
+                    if *button == crate::MouseButton::Left {
+                        cx.capture_pointer();
+                        state.drag_anchor = None;
+                        state.scrollbar_drag = Some(axis);
+                    }
+                    return Handled::Event(EditorEvent::Scrollbar {
+                        axis,
+                        fraction: layout.scrollbar_fraction(axis, p).unwrap_or(0.0),
+                        kind: *kind,
+                        mods: *mods,
+                    });
+                }
                 if *button == crate::MouseButton::Left && hit != EditorHit::Empty {
                     cx.capture_pointer();
                     let line = match hit {
@@ -228,6 +287,7 @@ impl crate::interactive::Interactive for Editor {
                         EditorHit::Gutter { line_idx, .. } => line_idx,
                         _ => layout.scroll_top,
                     };
+                    state.scrollbar_drag = None;
                     state.drag_anchor = Some((line, col));
                 }
                 Handled::Event(EditorEvent::Pointer {
@@ -257,6 +317,17 @@ impl crate::interactive::Interactive for Editor {
                 mods,
                 ..
             } => {
+                if let Some(axis) = state.scrollbar_drag {
+                    let Some(fraction) = layout.scrollbar_fraction(axis, absolute(local)) else {
+                        return Handled::Ignored;
+                    };
+                    return Handled::Event(EditorEvent::Scrollbar {
+                        axis,
+                        fraction,
+                        kind: PointerKind::Move,
+                        mods: *mods,
+                    });
+                }
                 if state.drag_anchor.is_none() {
                     return Handled::Ignored;
                 }
@@ -274,6 +345,18 @@ impl crate::interactive::Interactive for Editor {
                 mods,
                 ..
             } => {
+                if let Some(axis) = state.scrollbar_drag.take() {
+                    cx.release_pointer();
+                    let Some(fraction) = layout.scrollbar_fraction(axis, absolute(local)) else {
+                        return Handled::Consumed;
+                    };
+                    return Handled::Event(EditorEvent::Scrollbar {
+                        axis,
+                        fraction,
+                        kind: *kind,
+                        mods: *mods,
+                    });
+                }
                 if state.drag_anchor.take().is_none() {
                     return Handled::Ignored;
                 }
@@ -306,7 +389,8 @@ impl crate::interactive::Interactive for Editor {
                 mods: Modifiers::default(),
             }),
             RoutedEvent::FocusOut => {
-                if state.drag_anchor.take().is_some() {
+                let had_text_drag = state.drag_anchor.take().is_some();
+                if state.scrollbar_drag.take().is_some() || had_text_drag {
                     cx.release_pointer();
                 }
                 Handled::Ignored

@@ -3485,6 +3485,15 @@ pub fn schema() -> Vec<DefJson> {
             field("mods", modifiers.clone()),
         ],
     ));
+    let editor_scrollbar_payload = b.define(obj(
+        "_EditorScrollbarPayload",
+        vec![
+            field("axis", re("ScrollAxis")),
+            field("fraction", float_()),
+            field("kind", re("PointerKind")),
+            field("mods", modifiers.clone()),
+        ],
+    ));
     let editor_wheel_payload = b.define(obj(
         "_EditorWheelPayload",
         vec![
@@ -3497,6 +3506,7 @@ pub fn schema() -> Vec<DefJson> {
         "EditorEvent",
         &[
             ("Pointer", editor_pointer_payload),
+            ("Scrollbar", editor_scrollbar_payload),
             ("Wheel", editor_wheel_payload),
         ],
         vec![],

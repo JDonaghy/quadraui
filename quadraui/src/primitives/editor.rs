@@ -264,8 +264,9 @@ pub struct Style {
     pub bold: bool,
     #[serde(default)]
     pub italic: bool,
-    /// Font scale factor (1.0 = normal). Used by GTK for markdown
-    /// headings; TUI ignores. Cast to `f64` at the Pango call site.
+    /// Font scale factor (1.0 = normal). Carried on the wire, but no
+    /// painter honours it: every backend paints the span at the editor's
+    /// own font size.
     pub font_scale: f32,
 }
 

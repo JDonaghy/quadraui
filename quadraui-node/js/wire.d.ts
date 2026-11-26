@@ -2331,13 +2331,20 @@ export interface _EditorPointerPayload {
   mods: Modifiers;
 }
 
+export interface _EditorScrollbarPayload {
+  axis: ScrollAxis;
+  fraction: number;
+  kind: PointerKind;
+  mods: Modifiers;
+}
+
 export interface _EditorWheelPayload {
   dx: number;
   dy: number;
   mods: Modifiers;
 }
 
-export type EditorEvent = { Pointer: _EditorPointerPayload; } | { Wheel: _EditorWheelPayload; };
+export type EditorEvent = { Pointer: _EditorPointerPayload; } | { Scrollbar: _EditorScrollbarPayload; } | { Wheel: _EditorWheelPayload; };
 
 export interface _MinimapSeekPayload {
   fraction: number;

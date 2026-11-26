@@ -12,7 +12,7 @@ use quadraui::tui::testing::TuiDriver;
 use quadraui::{
     AppLogic, Backend, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorEvent,
     EditorHit, EditorLine, FrameTree, Key, MouseButton, Point, Reaction, Rect, ScreenLayout,
-    ScrollDelta, Surface, UiEvent, WidgetId,
+    ScrollAxis, ScrollDelta, Surface, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 30;
@@ -267,6 +267,57 @@ fn a_drag_reports_moves_clamped_onto_the_text_area() {
             ),
         ]
     );
+}
+
+/// A drag that starts on the vertical scrollbar reports the pointer's
+/// fraction along the track for every move and the release, wherever the
+/// pointer goes, and never resolves to a text position.
+#[test]
+fn a_drag_from_the_vertical_scrollbar_reports_track_fractions() {
+    let mut driver = driver(EditorCursorShape::Bar);
+    let bar_x = AREA.x + AREA.width - 1.0;
+    driver.mouse_down(bar_x, AREA.y);
+    driver.mouse_move(bar_x, AREA.y + 3.0);
+    // Off the track to the left and past the bottom: still a scrollbar
+    // drag, clamped to the track's end.
+    driver.mouse_move(TEXT_X, AREA.y + 20.0);
+    driver.mouse_up(bar_x, AREA.y + 3.0);
+
+    let scrollbar: Vec<_> = driver
+        .app()
+        .events
+        .iter()
+        .map(|e| match e {
+            EditorEvent::Scrollbar {
+                axis,
+                fraction,
+                kind,
+                ..
+            } => (*axis, *fraction, *kind),
+            other => panic!("expected only scrollbar events, got {other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        scrollbar,
+        vec![
+            (
+                ScrollAxis::Vertical,
+                0.0,
+                PointerKind::Down(MouseButton::Left)
+            ),
+            (ScrollAxis::Vertical, 0.5, PointerKind::Move),
+            (ScrollAxis::Vertical, 1.0, PointerKind::Move),
+            (
+                ScrollAxis::Vertical,
+                0.5,
+                PointerKind::Up(MouseButton::Left)
+            ),
+        ]
+    );
+
+    // The release ended the drag: a later move reports nothing.
+    driver.mouse_move(bar_x, AREA.y + 1.0);
+    assert_eq!(driver.app().events.len(), 4, "{:?}", driver.app().events);
 }
 
 #[test]

@@ -724,6 +724,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_PointerKindDict`](#wire-_pointerkinddict)
 - [`PointerKind`](#wire-pointerkind)
 - [`_EditorPointerPayload`](#wire-_editorpointerpayload)
+- [`_EditorScrollbarPayload`](#wire-_editorscrollbarpayload)
 - [`_EditorWheelPayload`](#wire-_editorwheelpayload)
 - [`EditorEvent`](#wire-editorevent)
 - [`_MinimapSeekPayload`](#wire-_minimapseekpayload)
@@ -4402,6 +4403,16 @@ Alias for `("Move" | "Enter" | "Leave") | _PointerKindDict`.
 | `kind` | `PointerKind` | yes |  |
 | `mods` | `Modifiers` | yes |  |
 
+<a id="wire-_editorscrollbarpayload"></a>
+#### `_EditorScrollbarPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `axis` | `ScrollAxis` | yes |  |
+| `fraction` | `number` | yes |  |
+| `kind` | `PointerKind` | yes |  |
+| `mods` | `Modifiers` | yes |  |
+
 <a id="wire-_editorwheelpayload"></a>
 #### `_EditorWheelPayload`
 
@@ -4419,6 +4430,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | Tag | Payload type | Description |
 | --- | --- | --- |
 | `Pointer` | `_EditorPointerPayload` |  |
+| `Scrollbar` | `_EditorScrollbarPayload` |  |
 | `Wheel` | `_EditorWheelPayload` |  |
 
 <a id="wire-_minimapseekpayload"></a>

@@ -2212,6 +2212,12 @@ class _EditorPointerPayload(TypedDict):
     kind: PointerKind
     mods: Modifiers
 
+class _EditorScrollbarPayload(TypedDict):
+    axis: ScrollAxis
+    fraction: float
+    kind: PointerKind
+    mods: Modifiers
+
 class _EditorWheelPayload(TypedDict):
     dx: float
     dy: float
@@ -2219,6 +2225,7 @@ class _EditorWheelPayload(TypedDict):
 
 class EditorEvent(TypedDict):
     Pointer: NotRequired[_EditorPointerPayload]
+    Scrollbar: NotRequired[_EditorScrollbarPayload]
     Wheel: NotRequired[_EditorWheelPayload]
 
 class _MinimapSeekPayload(TypedDict):
