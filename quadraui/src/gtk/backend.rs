@@ -2530,14 +2530,20 @@ impl Backend for GtkBackend {
     /// since an app computing a `Dialog`/`ContextMenu` measure has no
     /// live frame to borrow from.
     ///
-    /// Falls back to a `char_width`-scaled estimate (mirroring
-    /// `PangoTextMeasure`'s own pre-realization fallback) when no
-    /// `pango_ctx` has been set yet — e.g. a `GtkBackend` queried before
-    /// its widget realizes.
+    /// With no `pango_ctx` set, a call inside a frame measures against
+    /// the live frame layout's context instead, so a frame painted on a
+    /// bare Cairo surface still measures each role in its real font.
+    /// Outside both, falls back to a `char_width`-scaled estimate
+    /// (mirroring `PangoTextMeasure`'s own pre-realization fallback) —
+    /// e.g. a `GtkBackend` queried before its widget realizes.
     fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
         #[cfg(test)]
         let _test_render_guard = super::test_render_guard();
-        let Some(ctx) = self.pango_ctx.as_ref() else {
+        let ctx = self.pango_ctx.clone().or_else(|| {
+            self.current_frame_refs()
+                .map(|(_, layout)| layout.context())
+        });
+        let Some(ctx) = ctx.as_ref() else {
             let char_w = match role {
                 crate::FontRole::Editor => self.current_char_width as f32,
                 _ => self.current_chrome_char_width as f32,

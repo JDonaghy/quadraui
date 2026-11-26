@@ -30,10 +30,9 @@ use quadraui::{
     EditOp, EventCx, EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent,
     InteractionState, Key, KeyEvent, MenuBar, MessageDialogButton, Modifiers, MouseButton,
     NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup, RichTextPopupHit,
-    RichTextPopupLayout, RichTextPopupMeasure, RoutedEvent, ScrollAxis, ScrollViewEvent,
-    TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner, ToastHit, ToastOverlay,
-    ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent, TreeTableNodeData,
-    UiEvent, WidgetId,
+    RichTextPopupLayout, RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent,
+    TextInput, Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip,
+    TooltipLayout, TooltipMeasure, TreeEvent, TreeTableNodeData, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -2247,8 +2246,7 @@ impl InteractionEngine {
         anchor: Point,
     ) -> RichTextPopupLayout {
         let m = backend.measure();
-        let measure = RichTextPopupMeasure::new(m.char_width * 30.0, m.line_height)
-            .with_scale_rows(backend.scales_text_rows());
+        let measure = popup.measure_for(backend, m.char_width * 30.0);
         popup.layout(
             anchor.x,
             anchor.y,
