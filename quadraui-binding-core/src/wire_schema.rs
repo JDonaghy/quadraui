@@ -3162,7 +3162,10 @@ pub fn schema() -> Vec<DefJson> {
     ));
     let tree_context_menu_payload = b.define(obj(
         "_TreeContextMenuRequestedPayload",
-        vec![field("path", re("TreePath")), field("position", re("Point"))],
+        vec![
+            field("path", re("TreePath")),
+            field("position", re("Point")),
+        ],
     ));
     b.define(flat(
         "TreeEvent",

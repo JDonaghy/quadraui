@@ -28,9 +28,6 @@
 //! adjusting `scroll_offset` based on the selected row's flat index and
 //! the viewport row count.
 
-use crate::event::Rect;
-use crate::primitives::row_stack::{self, RowPaintState};
-use crate::primitives::scrollbar::Scrollbar;
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
@@ -38,6 +35,9 @@ use crate::primitives::scrollbar::Scrollbar;
     all(feature = "macos", target_os = "macos")
 ))]
 use crate::behaviour::nav::NavOutcome;
+use crate::event::Rect;
+use crate::primitives::row_stack::{self, RowPaintState};
+use crate::primitives::scrollbar::Scrollbar;
 use crate::types::{
     Badge, Decoration, Icon, Modifiers, SelectionMode, StyledText, TreePath, TreeStyle, WidgetId,
 };
@@ -2466,8 +2466,7 @@ pub struct TreeViewState {
 impl TreeViewState {
     /// Re-seed the navigation core from `tree`'s own controlled fields.
     fn sync(&mut self, tree: &TreeView) {
-        if tree.selected_path.is_some() && self.nav.selected_path() != tree.selected_path.as_ref()
-        {
+        if tree.selected_path.is_some() && self.nav.selected_path() != tree.selected_path.as_ref() {
             self.nav.set_selected_path(tree.selected_path.clone());
         }
         if self.nav.scroll_offset() != tree.scroll_offset {
@@ -2645,11 +2644,16 @@ impl TreeView {
             },
             Key::Char(c) if no_accel && !c.is_control() => {
                 let from = state.nav.selected_row_index(&self.rows).unwrap_or(0);
+                let labels: Vec<String> = self
+                    .rows
+                    .iter()
+                    .map(|r| r.text.spans.iter().map(|s| s.text.as_str()).collect())
+                    .collect();
                 let hit = state.typeahead.push(
                     *c,
                     typeahead_now_ms(),
-                    |i| self.rows[i].text.spans.first().map_or("", |s| s.text.as_str()),
-                    self.rows.len(),
+                    |i| labels[i].as_str(),
+                    labels.len(),
                     from,
                 );
                 match hit {
@@ -2898,7 +2902,23 @@ impl crate::interactive::Interactive for TreeView {
             RoutedEvent::Key(key_event @ KeyEvent { key, modifiers, .. }) => {
                 match self.editing_row() {
                     Some((idx, edit)) => self.handle_rename_key(idx, edit, key, *modifiers),
-                    None => self.handle_nav_key(state, key_event, layout, cx),
+                    None => {
+                        let before = state.nav.scroll_offset();
+                        let handled = self.handle_nav_key(state, key_event, layout, cx);
+                        // A move that scrolled the selection into view
+                        // reports the new offset alongside the selection,
+                        // so the app's controlled `scroll_offset` follows.
+                        let after = state.nav.scroll_offset();
+                        if after != before {
+                            cx.emit(crate::UiEvent::Tree(
+                                self.id,
+                                TreeEvent::ScrollChanged {
+                                    scroll_offset: after,
+                                },
+                            ));
+                        }
+                        handled
+                    }
                 }
             }
             RoutedEvent::Text(text) => match self.editing_row() {
@@ -3026,7 +3046,10 @@ pub fn tree_rename_insert(edit: &TreeRowEditState, text: &str) -> TreeRowEditSta
     }
 }
 
-fn apply_rename_op(edit: &TreeRowEditState, op: crate::behaviour::text_edit::EditOp) -> TreeRenameKey {
+fn apply_rename_op(
+    edit: &TreeRowEditState,
+    op: crate::behaviour::text_edit::EditOp,
+) -> TreeRenameKey {
     let (text, cursor, selection_anchor) = crate::behaviour::text_edit::apply_flat_edit_op(
         &edit.text,
         edit.cursor,

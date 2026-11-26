@@ -349,7 +349,9 @@ impl TreeController {
     }
 
     pub fn editing_placeholder(&self) -> Option<&str> {
-        self.editing.as_ref().and_then(|e| e.edit.placeholder.as_deref())
+        self.editing
+            .as_ref()
+            .and_then(|e| e.edit.placeholder.as_deref())
     }
 
     pub fn edit_insert_char_via(&mut self, ch: char) -> TreeControllerEvent {
