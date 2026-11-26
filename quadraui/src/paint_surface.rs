@@ -135,7 +135,7 @@ impl TextRunStyle {
     }
 
     /// Whether this run paints at a size other than the role font's.
-    pub(crate) fn is_scaled(&self) -> bool {
+    pub fn is_scaled(&self) -> bool {
         (self.scale - 1.0).abs() > f32::EPSILON
     }
 
