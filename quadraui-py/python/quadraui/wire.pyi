@@ -77,6 +77,7 @@ class TreeStyle(TypedDict):
     row_height: NotRequired[Optional[int]]
     bordered: NotRequired[bool]
     vim_keys: NotRequired[bool]
+    show_scrollbar: NotRequired[bool]
 
 class Modifiers(TypedDict):
     shift: NotRequired[bool]
@@ -1448,7 +1449,7 @@ class FindReplacePanelDescriptor(TypedDict):
 class _ControlWidthFixed(TypedDict):
     Fixed: float
 
-ControlWidth = Union[Literal['Fill', 'Content'], _ControlWidthFixed]
+ControlWidth = Union[Literal['Fill', 'Content', 'ContentEnd'], _ControlWidthFixed]
 
 LabelPosition = Literal['Left', 'Top', 'Inline', 'Hidden']
 

@@ -76,6 +76,7 @@ export interface TreeStyle {
   row_height?: number | null;
   bordered?: boolean;
   vim_keys?: boolean;
+  show_scrollbar?: boolean;
 }
 
 export interface Modifiers {
@@ -1540,7 +1541,7 @@ export interface _ControlWidthFixed {
   Fixed: number;
 }
 
-export type ControlWidth = ("Fill" | "Content") | _ControlWidthFixed;
+export type ControlWidth = ("Fill" | "Content" | "ContentEnd") | _ControlWidthFixed;
 
 export type LabelPosition = "Left" | "Top" | "Inline" | "Hidden";
 

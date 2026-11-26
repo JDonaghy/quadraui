@@ -775,7 +775,7 @@ pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
 pub use primitives::tab_bar::{
     tab_icon_at, tab_icon_cols, SegmentMeasure, TabBar, TabBarEvent, TabBarGlyphs, TabBarHit,
     TabBarHits, TabBarLayout, TabBarSegment, TabChrome, TabFrame, TabIcon, TabItem, TabMeasure,
-    VisibleSegment, VisibleTab,
+    TabSeparator, VisibleSegment, VisibleTab,
 };
 // `TabBar`'s `Primitive::Layout` — unconditional, like `impl Primitive
 // for TabBar` itself: the three pixel backends paint it via

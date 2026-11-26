@@ -940,6 +940,7 @@ Alias for `"None" | "Single" | "Multi"`.
 | `row_height` | `number \| null` | no |  |
 | `bordered` | `boolean` | no |  |
 | `vim_keys` | `boolean` | no |  |
+| `show_scrollbar` | `boolean` | no |  |
 
 <a id="wire-modifiers"></a>
 #### `Modifiers`
@@ -3068,7 +3069,7 @@ Alias for `("Chevron" | "ToggleCase" | "ToggleWholeWord" | "ToggleRegex" | "Prev
 <a id="wire-controlwidth"></a>
 #### `ControlWidth`
 
-Alias for `("Fill" | "Content") | _ControlWidthFixed`.
+Alias for `("Fill" | "Content" | "ContentEnd") | _ControlWidthFixed`.
 
 <a id="wire-labelposition"></a>
 #### `LabelPosition`

@@ -453,6 +453,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("row_height", nullable(int_())),
             field_opt("bordered", bool_()),
             field_opt("vim_keys", bool_()),
+            field_opt("show_scrollbar", bool_()),
         ],
     ));
     let modifiers = b.define(obj(
@@ -2393,7 +2394,7 @@ pub fn schema() -> Vec<DefJson> {
     let control_width_fixed = b.define(obj("_ControlWidthFixed", vec![field("Fixed", float_())]));
     let control_width = b.define(union_of(
         "ControlWidth",
-        vec![lit(&["Fill", "Content"]), control_width_fixed],
+        vec![lit(&["Fill", "Content", "ContentEnd"]), control_width_fixed],
     ));
     let label_position = b.define(alias(
         "LabelPosition",
@@ -5127,7 +5128,8 @@ mod coverage {
             chevron_collapsed,
             row_height,
             bordered,
-            vim_keys
+            vim_keys,
+            show_scrollbar
         }
     );
     assert_fields!(
@@ -5996,6 +5998,7 @@ mod coverage {
             ControlWidth::Fill => {}
             ControlWidth::Fixed(_) => {}
             ControlWidth::Content => {}
+            ControlWidth::ContentEnd => {}
         }
     }
     fn assert_label_position(p: LabelPosition) {

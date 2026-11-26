@@ -947,6 +947,25 @@ pub enum TabFrame {
     Brackets,
 }
 
+/// What a cell-grid tab bar paints after a tab that has no close glyph
+/// (`show_tab_close: false`, or a non-closable tab) and no bracket frame.
+///
+/// Pixel backends separate tabs with padding and ignore this setting.
+/// `#[non_exhaustive]`: a future separator style is additive.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TabSeparator {
+    /// Reserve one column after the tab and paint
+    /// [`TAB_SEPARATOR_CHAR`] in it, so adjacent labels read as distinct
+    /// items even when they carry no padding of their own.
+    #[default]
+    Rule,
+    /// Reserve and paint nothing: the next tab starts right after the
+    /// label. For labels that already carry their own padding (`" Board "`),
+    /// which then render space-separated with no rule.
+    None,
+}
+
 /// Per-bar chrome request: which active-tab frame a backend should
 /// paint. Carried by [`TabBar::chrome`], so it reaches both
 /// [`crate::primitive::Primitive::layout`] (which reserves the frame's
@@ -980,6 +999,10 @@ pub struct TabChrome {
     /// [`Toolbar::focused_index`]: crate::primitives::toolbar::Toolbar::focused_index
     #[serde(default)]
     pub focused_index: Option<usize>,
+    /// What the cell-grid painter puts after a tab with no close glyph.
+    /// Defaults to [`TabSeparator::Rule`].
+    #[serde(default)]
+    pub separator: TabSeparator,
 }
 
 impl TabChrome {
@@ -988,7 +1011,15 @@ impl TabChrome {
         Self {
             active_frame,
             focused_index: None,
+            separator: TabSeparator::Rule,
         }
+    }
+
+    /// Set what the cell-grid painter puts after a tab with no close
+    /// glyph.
+    pub fn with_separator(mut self, separator: TabSeparator) -> Self {
+        self.separator = separator;
+        self
     }
 
     /// Set the active-tab frame.
@@ -1192,6 +1223,32 @@ impl TabBar {
         F1: Fn(usize) -> TabMeasure,
         F2: Fn(usize) -> SegmentMeasure,
     {
+        self.layout_at(
+            self.scroll_offset,
+            bar_width,
+            bar_height,
+            scroll_arrow_width,
+            measure_tab,
+            measure_segment,
+        )
+    }
+
+    /// [`Self::layout`] with `scroll_offset` standing in for
+    /// [`Self::scroll_offset`], so a caller that resolves its own offset
+    /// lays the bar out from it without cloning the descriptor.
+    fn layout_at<F1, F2>(
+        &self,
+        scroll_offset: usize,
+        bar_width: f32,
+        bar_height: f32,
+        scroll_arrow_width: f32,
+        measure_tab: F1,
+        measure_segment: F2,
+    ) -> TabBarLayout
+    where
+        F1: Fn(usize) -> TabMeasure,
+        F2: Fn(usize) -> SegmentMeasure,
+    {
         let mut visible_tabs: Vec<VisibleTab> = Vec::new();
         let mut visible_segments: Vec<VisibleSegment> = Vec::new();
         let mut hit_regions: Vec<(Rect, TabBarHit)> = Vec::new();
@@ -1237,7 +1294,7 @@ impl TabBar {
                 // active tab actually appears, instead of clipping
                 // from index 0 and dropping it. Clamp to a valid
                 // index so callers can't push out-of-range values.
-                let offset = self.scroll_offset.min(self.tabs.len().saturating_sub(1));
+                let offset = scroll_offset.min(self.tabs.len().saturating_sub(1));
                 (offset, 0.0, tab_area_no_scroll, false, false)
             } else {
                 // Need scroll arrows. Reserve space for two; even if only one
@@ -2614,7 +2671,7 @@ pub mod cell_paint {
     use super::TabBarHits;
     use super::{
         fit_tab_label, tab_icon_at, tab_icon_cols, TabBar, TabBarGlyphs, TabBarLayout, TabChrome,
-        TabFrame, TabIcon, TAB_CLOSE_CHAR, TAB_SEPARATOR_CHAR,
+        TabFrame, TabIcon, TabSeparator, TAB_CLOSE_CHAR, TAB_SEPARATOR_CHAR,
     };
     use crate::text_util::char_cell_width;
     use crate::theme::Theme;
@@ -2737,8 +2794,7 @@ pub mod cell_paint {
         // no-paint [`crate::DrawsPrimitives::layout_primitive`] twin
         // (`crate::tui::backend`) already uses — this function only
         // overrides `available_cols` with the tab-content width below and
-        // keeps `correct_scroll_offset` as the caller's input (a cell-grid
-        // char-based fit needs no correction).
+        // sets `correct_scroll_offset` to the offset `layout` resolved.
         let mut hits = crate::backend::tab_bar_hits_from_layout(layout, bar);
         crate::backend::shift_tab_bar_hits(&mut hits, area.x as f64);
 
@@ -2994,7 +3050,7 @@ pub mod cell_paint {
                     set_cell(buf, x, area.y, ']', fg, bg);
                 }
             } else if x < tab_end {
-                if vt.close_bounds.is_none() {
+                if vt.close_bounds.is_none() && chrome.separator == TabSeparator::Rule {
                     // No close button reserved for this tab — the measurer
                     // reserved this cell as a separator column instead, so
                     // paint a visible rule rather than blank space;
@@ -3014,8 +3070,8 @@ pub mod cell_paint {
         }
 
         hits.available_cols = tab_content_width;
-        // A cell-grid char-based fit is exact; no correction needed.
-        hits.correct_scroll_offset = bar.scroll_offset;
+        // The layout already resolved the offset that shows the active tab.
+        hits.correct_scroll_offset = layout.resolved_scroll_offset;
         hits
     }
 }
@@ -3072,9 +3128,17 @@ pub mod cell_paint {
 /// - [`TAB_CLOSE_COLS`] for a closable tab on a bar with
 ///   [`TabBar::show_tab_close`];
 /// - [`TAB_SEPARATOR_COLS`] for a tab with neither a close glyph nor
-///   bracket framing, so adjacent labels still paint with a visible
-///   boundary (`cell_paint::paint` fills that column with
-///   [`crate::tui::TAB_SEPARATOR_CHAR`]).
+///   bracket framing when `chrome.separator` is [`TabSeparator::Rule`], so
+///   adjacent labels still paint with a visible boundary
+///   (`cell_paint::paint` fills that column with
+///   [`crate::tui::TAB_SEPARATOR_CHAR`]); nothing under
+///   [`TabSeparator::None`].
+///
+/// The strip starts at [`TabBar::scroll_offset`] while that offset shows
+/// the active tab. When it does not, the strip starts at
+/// [`TabBar::fit_active_scroll_offset`]'s answer instead, so the active tab
+/// is always painted and [`TabBarLayout::resolved_scroll_offset`] carries
+/// the offset to store for the next frame.
 ///
 /// The returned [`TabBarLayout`] is bar-relative, with no scroll arrows
 /// (TUI paints none).
@@ -3090,6 +3154,10 @@ pub(crate) fn cell_tab_bar_layout(
         TAB_CLOSE_COLS as usize
     } else {
         0
+    };
+    let separator_cols = match chrome.separator {
+        TabSeparator::Rule => TAB_SEPARATOR_COLS as usize,
+        TabSeparator::None => 0,
     };
     let brackets = matches!(chrome.active_frame, TabFrame::Brackets);
     let reservation = |i: usize| -> (bool, bool) {
@@ -3110,21 +3178,32 @@ pub(crate) fn cell_tab_bar_layout(
                 // `[` + `]` around a label with no close glyph.
                 (true, false) => base + 2,
                 (false, true) => base + close_cols,
-                (false, false) => base + TAB_SEPARATOR_COLS as usize,
+                (false, false) => base + separator_cols,
             }
         })
         .collect();
-    bar.layout(
-        width,
-        height,
-        0.0,
-        |i| match reservation(i) {
-            (true, true) => TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0),
-            (_, true) => TabMeasure::new(tab_widths[i] as f32, close_cols as f32),
-            _ => TabMeasure::new(tab_widths[i] as f32, 0.0),
-        },
-        |i| SegmentMeasure::new(bar.right_segments[i].width_cells as f32),
-    )
+    let measure_tab = |i: usize| match reservation(i) {
+        (true, true) => TabMeasure::new(tab_widths[i] as f32, 1.0).with_trailing(1.0),
+        (_, true) => TabMeasure::new(tab_widths[i] as f32, close_cols as f32),
+        _ => TabMeasure::new(tab_widths[i] as f32, 0.0),
+    };
+    let measure_segment = |i: usize| SegmentMeasure::new(bar.right_segments[i].width_cells as f32);
+    let layout = bar.layout(width, height, 0.0, measure_tab, measure_segment);
+    let Some(active) = bar.tabs.iter().position(|t| t.is_active) else {
+        return layout;
+    };
+    if layout.visible_tabs.iter().any(|vt| vt.tab_idx == active) {
+        return layout;
+    }
+    let segments_width: f32 = layout
+        .visible_segments
+        .iter()
+        .map(|vs| vs.bounds.width)
+        .sum();
+    let tab_area = (width - segments_width).max(0.0) as usize;
+    let fitted =
+        TabBar::fit_active_scroll_offset(active, bar.tabs.len(), tab_area, |i| tab_widths[i]);
+    bar.layout_at(fitted, width, height, 0.0, measure_tab, measure_segment)
 }
 
 /// Translate every `Rect` inside a bar-relative [`TabBarLayout`] by
@@ -3194,10 +3273,10 @@ pub struct TabBarPrimitiveLayout {
     /// *next* frame's strip to keep the active tab in view writes this
     /// field back to its stored scroll state instead, the "two-pass
     /// paint" pattern [`TabBar::layout`]'s own doc describes. On the TUI
-    /// branch this equals `layout.resolved_scroll_offset` — a cell-grid
-    /// char-based fit needs no further correction, the same contract
-    /// `crate::primitives::tab_bar::cell_paint::paint`'s own `TabBarHits
-    /// ::correct_scroll_offset` field documents.
+    /// branch this equals `layout.resolved_scroll_offset`: the cell layout
+    /// already starts the strip at an offset that shows the active tab
+    /// (see `cell_tab_bar_layout`), so the painted frame needs no second
+    /// pass.
     pub corrected_scroll_offset: usize,
 }
 

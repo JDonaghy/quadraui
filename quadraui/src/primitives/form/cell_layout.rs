@@ -114,6 +114,29 @@ pub(crate) fn natural_content_width(field: &FormField) -> usize {
     }
 }
 
+/// Cells a [`ControlWidth::ContentEnd`] control leaves between the end of
+/// its [`natural_content_width`] and the row's right edge, or `None` for a
+/// kind whose painter places itself (`Button`) or whose items the form
+/// layout places. The values keep two blank cells after the painted
+/// control, with a text box's closing `]` in the first of them; a
+/// dropdown's natural width already ends in its own two blank cells.
+///
+/// [`ControlWidth::ContentEnd`]: crate::primitives::form::ControlWidth::ContentEnd
+pub(crate) fn content_end_margin_cells(field: &FormField) -> Option<usize> {
+    match &field.kind {
+        FieldKind::Dropdown { .. } => Some(0),
+        FieldKind::TextInput { .. }
+        | FieldKind::PasswordInput { .. }
+        | FieldKind::TextArea { .. } => Some(1),
+        FieldKind::Toggle { .. }
+        | FieldKind::ReadOnly { .. }
+        | FieldKind::ColorPicker { .. }
+        | FieldKind::ComboBox(_)
+        | FieldKind::DatePicker(_) => Some(2),
+        _ => None,
+    }
+}
+
 /// Resolve `field`'s control-column width in cells: the form's
 /// [`Form::resolved_control_width`] mode applied against `available`
 /// (remaining cells after the label column, for `Fill`) and `field`'s

@@ -381,8 +381,10 @@ impl StatusBar {
     /// - `bar_width`, `bar_height` — bar dimensions in the measurer's unit.
     /// - `min_gap` — minimum gap between the left group and the right
     ///   group. Right segments are dropped from the front (least important)
-    ///   until they fit, preserving the gap. Typical values: `2` cells
-    ///   (TUI), `16` pixels (native).
+    ///   until they fit, preserving the gap. The gap never truncates left
+    ///   text: when the left group fits beside the remaining right group
+    ///   but not with the full gap, the gap shrinks instead. Typical
+    ///   values: `2` cells (TUI), `16` pixels (native).
     /// - `measure(seg)` — returns a `StatusSegmentMeasure` for the segment.
     ///   Receives the full `StatusBarSegment` so measurers can vary by
     ///   `bold` or other style flags.
@@ -533,7 +535,15 @@ impl StatusBar {
         } else {
             0.0
         };
-        let left_budget = (bar_width - 2.0 * edge_inset - right_reserved).max(0.0);
+        // The gap gives way before left text does: a left group that fits
+        // beside the resolved right group without the gap keeps its full
+        // width and the gap shrinks to whatever space is left.
+        let gapless_budget = (bar_width - 2.0 * edge_inset - total_visible).max(0.0);
+        let left_budget = if total_left <= gapless_budget + f32::EPSILON {
+            total_left
+        } else {
+            (bar_width - 2.0 * edge_inset - right_reserved).max(0.0)
+        };
 
         // ── Left segments, left-to-right from the inset edge ───────────
         let mut cursor = edge_inset;
