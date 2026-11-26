@@ -76,6 +76,7 @@ class TreeStyle(TypedDict):
     chevron_collapsed: str
     row_height: NotRequired[Optional[int]]
     bordered: NotRequired[bool]
+    vim_keys: NotRequired[bool]
 
 class Modifiers(TypedDict):
     shift: NotRequired[bool]

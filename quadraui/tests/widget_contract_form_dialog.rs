@@ -194,6 +194,12 @@ mod tui {
     }
 
     #[test]
+    fn a_form_that_fits_paints_no_scrollbar() {
+        let driver = driver();
+        assert!(!driver.screen().contains('░'), "{}", driver.screen());
+    }
+
+    #[test]
     fn paints_the_dialog_chrome_the_form_fields_and_the_buttons() {
         let driver = driver();
         for text in [TITLE, "Name", "Due", "Milestone name", "Cancel", "Create"] {

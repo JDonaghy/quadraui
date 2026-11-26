@@ -739,11 +739,11 @@ impl AppMenu {
                 }
             }
             (PointerKind::Down(MouseButton::Left), Some((idx, item))) => {
-                if item.submenu.is_some() {
+                if item.disabled || item.is_separator() {
+                    Handled::Consumed
+                } else if item.submenu.is_some() {
                     next.truncate_to(depth);
                     next.open_submenu(idx);
-                    Handled::Consumed
-                } else if item.disabled || item.is_separator() {
                     Handled::Consumed
                 } else if let Some(id) = item.id {
                     next.close();

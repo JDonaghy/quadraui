@@ -452,6 +452,7 @@ pub fn schema() -> Vec<DefJson> {
             field("chevron_collapsed", str_()),
             field_opt("row_height", nullable(int_())),
             field_opt("bordered", bool_()),
+            field_opt("vim_keys", bool_()),
         ],
     ));
     let modifiers = b.define(obj(
@@ -5008,7 +5009,8 @@ mod coverage {
             chevron_expanded,
             chevron_collapsed,
             row_height,
-            bordered
+            bordered,
+            vim_keys
         }
     );
     assert_fields!(

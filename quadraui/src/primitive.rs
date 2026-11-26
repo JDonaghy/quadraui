@@ -304,14 +304,6 @@ impl<'a> LayoutCtx<'a> {
         self.editor_line_height.unwrap_or(self.line_height)
     }
 
-    /// This ctx with `line_height` as the chrome (UI) font's own text
-    /// line height — the pitch of one line of text painted in that font,
-    /// without the [`crate::Style::row_height`] floor [`Self::line_height`]
-    /// carries for chrome rows. [`crate::Backend::chrome_line_height`]
-    /// reports the editor font's height on a backend with no separate
-    /// chrome metric, so a ctx [`crate::DrawsPrimitives`] builds measures
-    /// this through [`crate::Backend::measure_text`] in
-    /// [`crate::FontRole::Chrome`] instead.
     /// Attach the backend's own chrome line height
     /// ([`crate::Backend::chrome_line_height`]) before
     /// [`Self::resolve_row_height`]'s row-height floor is applied to
@@ -333,6 +325,14 @@ impl<'a> LayoutCtx<'a> {
         self.chrome_line_height.unwrap_or(self.line_height)
     }
 
+    /// This ctx with `line_height` as the chrome (UI) font's own text
+    /// line height — the pitch of one line of text painted in that font,
+    /// without the [`crate::Style::row_height`] floor [`Self::line_height`]
+    /// carries for chrome rows. [`crate::Backend::chrome_line_height`]
+    /// reports the editor font's height on a backend with no separate
+    /// chrome metric, so a ctx [`crate::DrawsPrimitives`] builds measures
+    /// this through [`crate::Backend::measure_text`] in
+    /// [`crate::FontRole::Chrome`] instead.
     pub fn with_chrome_text_line_height(self, line_height: f32) -> Self {
         Self {
             chrome_text_line_height: Some(line_height),

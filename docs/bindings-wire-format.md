@@ -922,6 +922,7 @@ Alias for `"None" | "Single" | "Multi"`.
 | `chevron_collapsed` | `string` | yes |  |
 | `row_height` | `number \| null` | no |  |
 | `bordered` | `boolean` | no |  |
+| `vim_keys` | `boolean` | no |  |
 
 <a id="wire-modifiers"></a>
 #### `Modifiers`

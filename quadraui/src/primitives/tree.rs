@@ -2599,9 +2599,10 @@ impl TreeView {
         let vr = layout.viewport_rows.max(1);
         let page = (vr - 1).max(1) as isize;
         let no_accel = !(event.modifiers.ctrl || event.modifiers.alt || event.modifiers.cmd);
+        let vim = no_accel && self.style.vim_keys;
         let nav_key = NavKey::from_key(event).or(match event.key {
-            Key::Char('j') if no_accel => Some(NavKey::Down),
-            Key::Char('k') if no_accel => Some(NavKey::Up),
+            Key::Char('j') if vim => Some(NavKey::Down),
+            Key::Char('k') if vim => Some(NavKey::Up),
             _ => None,
         });
         if let Some(nav_key) = nav_key {

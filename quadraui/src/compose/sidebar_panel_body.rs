@@ -484,10 +484,11 @@ impl Primitive for SidebarPanelBody {
     type Layout = SidebarPanelBodyPrimitiveLayout;
     type Event = crate::interactive::Never;
 
-    /// Slice the chrome rows off the top at the ctx's chrome row height,
-    /// then resolve each chrome status bar's own layout for its row.
+    /// Slice the chrome rows off the top at the backend's chrome line
+    /// height, then resolve each chrome status bar's own layout for its
+    /// row.
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout {
-        let unit_h = ctx.line_height;
+        let unit_h = ctx.chrome_line_height();
         let mut panel = SidebarPanelBody::layout(self, rect, unit_h);
         let mut bars = Vec::new();
         if let Some(chrome_rect) = panel.chrome_rect {

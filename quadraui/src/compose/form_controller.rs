@@ -841,7 +841,7 @@ fn viewport_rows_lh(lh: f32, rect: Rect) -> usize {
     (rect.height / rh).floor() as usize
 }
 
-fn split_rect_lh(field_count: usize, lh: f32, rect: Rect) -> (Rect, Option<Rect>) {
+pub(crate) fn split_rect_lh(field_count: usize, lh: f32, rect: Rect) -> (Rect, Option<Rect>) {
     let tw = track_width(lh);
     if rect.width <= tw {
         return (rect, None);
@@ -855,7 +855,7 @@ fn split_rect_lh(field_count: usize, lh: f32, rect: Rect) -> (Rect, Option<Rect>
     (form_rect, Some(sb_rect))
 }
 
-fn build_scrollbar_lh(
+pub(crate) fn build_scrollbar_lh(
     id: &str,
     field_count: usize,
     scroll_offset: usize,

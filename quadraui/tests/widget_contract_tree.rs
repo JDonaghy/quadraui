@@ -44,6 +44,7 @@ struct TreeApp {
     rect: Rect,
     nodes: Vec<Node>,
     expanded: Vec<TreePath>,
+    vim_keys: bool,
     selected: Option<TreePath>,
     scroll_offset: usize,
     editing: Option<(TreePath, TreeRowEditState)>,
@@ -64,12 +65,20 @@ impl TreeApp {
                 leaf("delta"),
             ],
             expanded: Vec::new(),
+            vim_keys: false,
             selected: None,
             scroll_offset: 0,
             editing: None,
             events: Vec::new(),
             renamed: Vec::new(),
         }
+    }
+
+    /// Only the top-level leaves `labels`.
+    fn with_leaves(rect: Rect, labels: &[&'static str]) -> Self {
+        let mut app = Self::new(rect);
+        app.nodes = labels.iter().map(|l| leaf(l)).collect();
+        app
     }
 
     /// Many top-level leaves, so the rows overflow a short viewport.
@@ -79,9 +88,7 @@ impl TreeApp {
             "row09", "row10", "row11", "row12", "row13", "row14", "row15", "row16", "row17",
             "row18", "row19",
         ];
-        let mut app = Self::new(rect);
-        app.nodes = LABELS.iter().map(|l| leaf(l)).collect();
-        app
+        Self::with_leaves(rect, &LABELS)
     }
 
     fn flatten(&self) -> Vec<TreeRow> {
@@ -136,7 +143,10 @@ impl TreeApp {
             selection_mode: SelectionMode::Single,
             selected_path: self.selected.clone(),
             scroll_offset: self.scroll_offset,
-            style: TreeStyle::default(),
+            style: TreeStyle {
+                vim_keys: self.vim_keys,
+                ..TreeStyle::default()
+            },
             has_focus: true,
         }
     }
@@ -259,6 +269,7 @@ mod tui {
     #[test]
     fn arrow_and_vim_keys_move_the_selection() {
         let mut driver = driver();
+        driver.app_mut().vim_keys = true;
         click_label(&mut driver, "alpha");
         driver.press_named(NamedKey::Down);
         assert_eq!(driver.app().selected_label().as_deref(), Some("beta"));
@@ -356,6 +367,28 @@ mod tui {
             Some("delta"),
             "\"de\" still matches delta"
         );
+    }
+
+    const JK_LABELS: [&str; 4] = ["back", "bake", "jar", "kube"];
+
+    #[test]
+    fn typeahead_reaches_labels_with_j_and_k_when_vim_keys_are_off() {
+        let mut driver = TuiDriver::new(TreeApp::with_leaves(RECT, &JK_LABELS), 40, 10);
+        click_label(&mut driver, "back");
+        driver.type_char('k');
+        assert_eq!(driver.app().selected_label().as_deref(), Some("kube"));
+        driver.type_char('u');
+        assert_eq!(driver.app().selected_label().as_deref(), Some("kube"));
+    }
+
+    #[test]
+    fn typeahead_accumulates_a_k_inside_a_prefix() {
+        let mut driver = TuiDriver::new(TreeApp::with_leaves(RECT, &JK_LABELS), 40, 10);
+        click_label(&mut driver, "jar");
+        for c in "bak".chars() {
+            driver.type_char(c);
+        }
+        assert_eq!(driver.app().selected_label().as_deref(), Some("bake"));
     }
 
     #[test]

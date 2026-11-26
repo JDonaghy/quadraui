@@ -193,6 +193,18 @@ mod tui {
     }
 
     #[test]
+    fn clicking_a_disabled_submenu_parent_leaves_its_submenu_closed() {
+        let mut driver = driver();
+        driver.app_mut().menu.menus[0].items[2].disabled = true;
+        open_file(&mut driver);
+        let (x, y) = driver.find("Export").expect("Export row");
+        driver.click(x, y);
+        assert!(driver.app().menu.view.submenu_path.is_empty());
+        assert_eq!(driver.app().menu.view.open_item, Some(0));
+        assert!(!driver.screen_contains("PNG"), "{}", driver.screen());
+    }
+
+    #[test]
     fn escape_closes_the_deepest_level_first() {
         let mut driver = driver();
         open_file(&mut driver);

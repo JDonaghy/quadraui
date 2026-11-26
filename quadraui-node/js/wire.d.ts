@@ -75,6 +75,7 @@ export interface TreeStyle {
   chevron_collapsed: string;
   row_height?: number | null;
   bordered?: boolean;
+  vim_keys?: boolean;
 }
 
 export interface Modifiers {
