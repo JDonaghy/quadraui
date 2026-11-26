@@ -93,6 +93,7 @@ mod tests {
             placement: TooltipPlacement::Bottom,
             fg: None,
             bg: None,
+            chrome: Default::default(),
         }
     }
 

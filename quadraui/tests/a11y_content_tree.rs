@@ -201,9 +201,9 @@ fn text_input_typed_text_is_the_value_and_placeholder_is_not_the_label() {
         .with_placeholder("Search");
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::TextInput {
+    scenario.push(Surface::Widget {
         rect: rect(1.0),
-        ti,
+        widget: Box::new(ti),
     });
 
     scenario.snapshot().assert_matches(
@@ -220,9 +220,9 @@ fn text_input_empty_falls_back_to_the_placeholder_as_its_value() {
         .with_placeholder("Search");
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::TextInput {
+    scenario.push(Surface::Widget {
         rect: rect(1.0),
-        ti,
+        widget: Box::new(ti),
     });
 
     scenario.snapshot().assert_matches(
@@ -239,9 +239,9 @@ fn text_input_empty_with_no_placeholder_has_no_value() {
     let ti = TextInput::new(WidgetId::from("search")).with_lines(vec![String::new()]);
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::TextInput {
+    scenario.push(Surface::Widget {
         rect: rect(1.0),
-        ti,
+        widget: Box::new(ti),
     });
 
     scenario.snapshot().assert_matches(
@@ -269,9 +269,9 @@ fn text_display_exposes_title_label_and_lines_as_children() {
     });
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::TextDisplay {
+    scenario.push(Surface::Widget {
         rect: rect(5.0),
-        td,
+        widget: Box::new(td),
     });
 
     scenario.snapshot().assert_matches(
@@ -298,14 +298,16 @@ fn snapshot_escapes_quotes_backslashes_and_newlines_in_labels_and_values() {
     });
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::TextDisplay {
+    scenario.push(Surface::Widget {
         rect: rect(5.0),
-        td,
+        widget: Box::new(td),
     });
-    scenario.push(Surface::TextInput {
+    scenario.push(Surface::Widget {
         rect: rect(1.0),
-        ti: TextInput::new(WidgetId::from("search"))
-            .with_lines(vec!["say \"hi\"".to_string(), "line\\two".to_string()]),
+        widget: Box::new(
+            TextInput::new(WidgetId::from("search"))
+                .with_lines(vec!["say \"hi\"".to_string(), "line\\two".to_string()]),
+        ),
     });
 
     scenario.snapshot().assert_matches(
@@ -330,9 +332,9 @@ fn text_display_line_includes_timestamp_prefix() {
     });
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::TextDisplay {
+    scenario.push(Surface::Widget {
         rect: rect(5.0),
-        td,
+        widget: Box::new(td),
     });
 
     scenario.snapshot().assert_matches(
@@ -360,9 +362,9 @@ fn text_display_with_no_title_has_no_label() {
     });
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::TextDisplay {
+    scenario.push(Surface::Widget {
         rect: rect(5.0),
-        td,
+        widget: Box::new(td),
     });
 
     scenario.snapshot().assert_matches(
@@ -397,9 +399,9 @@ fn text_display_blank_line_counts_toward_position_but_emits_no_child() {
     });
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::TextDisplay {
+    scenario.push(Surface::Widget {
         rect: rect(5.0),
-        td,
+        widget: Box::new(td),
     });
 
     scenario.snapshot().assert_matches(
@@ -1060,9 +1062,9 @@ fn markdown_a11y_children_wires_into_a_text_display_tree() {
     let widget = td.id;
 
     let mut scenario = A11yScenario::new().with_children(widget, children);
-    scenario.push(Surface::TextDisplay {
+    scenario.push(Surface::Widget {
         rect: rect(5.0),
-        td,
+        widget: Box::new(td),
     });
 
     scenario.snapshot().assert_matches(

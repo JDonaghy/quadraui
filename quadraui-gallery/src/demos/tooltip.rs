@@ -6,6 +6,7 @@
 //! a bespoke popup needs in order to keep its border and title rather
 //! than losing them. `t` toggles the title on the `Full` variant.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, Color, InteractionState, Key, Reaction, Rect, StatusBar,
     StatusBarSegment, Style, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
@@ -61,9 +62,15 @@ impl TooltipDemo {
         }
     }
 
-    fn tooltip() -> Tooltip {
+    /// The descriptor for `variant`, carrying the border/title chrome
+    /// the painter reads — one `Tooltip` is the whole paint input.
+    fn tooltip(&self, variant: usize) -> Tooltip {
         let mut tip = Tooltip::new(WidgetId::new("gallery:tooltip:tip"), TOOLTIP_TEXT);
         tip.placement = TooltipPlacement::Bottom;
+        tip.chrome = TooltipChrome::new(Self::border(variant));
+        if self.show_title && variant == 1 {
+            tip.chrome.title = Some(TOOLTIP_TITLE.to_string());
+        }
         tip
     }
 
@@ -164,17 +171,13 @@ impl Demo for TooltipDemo {
             area.width,
             (area.height - 2.0 * lh).max(0.0),
         );
-        let tooltip = Self::tooltip();
+        let tooltip = self.tooltip(variant);
         let measure = TooltipMeasure::new(
             cw * (TOOLTIP_TEXT.chars().count() as f32 + 4.0),
             lh * Self::rows(variant),
         );
         let layout = tooltip.layout(anchor, clamp, measure, lh);
-        let mut chrome = TooltipChrome::new(Self::border(variant));
-        if self.show_title && variant == 1 {
-            chrome.title = Some(TOOLTIP_TITLE.to_string());
-        }
-        backend.draw_tooltip_with_chrome(&tooltip, &layout, &chrome);
+        backend.draw_dyn(layout.bounds, &tooltip, &());
     }
 
     fn handle(

@@ -1339,6 +1339,7 @@ pub(crate) mod native_surface_paint {
             let focus = stack.focus.as_ref().filter(|f| f.toast_id == toast.id);
             let dx = x_offset_for(&vt.id);
             if dx == 0.0 {
+                surface.surface_note_overlay(vt.bounds);
                 paint_toast(surface, theme, style, vt, toast, line_height, focus);
             } else {
                 let shifted = VisibleToast {
@@ -1352,6 +1353,7 @@ pub(crate) mod native_surface_paint {
                         .map(|r| shift_rect(*r, dx, 0.0))
                         .collect(),
                 };
+                surface.surface_note_overlay(shifted.bounds);
                 paint_toast(surface, theme, style, &shifted, toast, line_height, focus);
             }
         }
@@ -2482,13 +2484,14 @@ impl crate::primitive::Primitive for ToastOverlay {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = ratatui::layout::Rect::new(
-            layout.area.x.round() as u16,
-            layout.area.y.round() as u16,
-            layout.area.width.round() as u16,
-            layout.area.height.round() as u16,
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
         );
-        crate::tui::draw_toast_stack(buf, area, self, theme);
+        cell_paint::paint(self, &layout.layout, &mut surface, theme, layout.area);
     }
 }
 
@@ -2927,13 +2930,14 @@ mod tests {
 /// ratatui `Buffer` in the `CellSurface` [`cell_paint::paint`] takes.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
+    use super::cell_test_paint::draw_toast_stack;
     use super::{
         Toast, ToastButton, ToastCorner, ToastFocus, ToastFocusTarget, ToastHit, ToastOverlay,
         ToastSeverity, CELL_BORDER_COLS, CELL_DISMISS_WIDTH, CELL_TOAST_MAX_WIDTH,
         CELL_TOAST_MIN_WIDTH,
     };
     use crate::theme::Theme;
-    use crate::tui::{draw_toast_stack, ratatui_color};
+    use crate::tui::ratatui_color;
     use crate::types::WidgetId;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
@@ -3618,5 +3622,46 @@ mod interactive_tests {
             }),
         );
         assert_eq!(outcome, Handled::Ignored);
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
+    }
+
+    pub fn draw_toast_stack(
+        buf: &mut Buffer,
+        area: ratatui::layout::Rect,
+        stack: &ToastOverlay,
+        theme: &Theme,
+    ) -> ToastStackLayout {
+        let clip = Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        );
+        let layout = cell_toast_stack_layout(stack, clip);
+        let mut sink = None;
+        cell_paint::paint(stack, &layout, &mut surface(buf, &mut sink), theme, clip);
+        layout
     }
 }

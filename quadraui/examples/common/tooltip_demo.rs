@@ -14,6 +14,7 @@
 //! - t       toggle a title (only visible when border is Full)
 //! - q / Esc quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
     StatusBarSegment, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure, TooltipPlacement,
@@ -40,6 +41,10 @@ impl TooltipDemo {
     fn tooltip(&self) -> Tooltip {
         let mut tip = Tooltip::new(WidgetId::new("tooltip-demo:tip"), TOOLTIP_TEXT);
         tip.placement = TooltipPlacement::Bottom;
+        tip.chrome = TooltipChrome::new(self.border);
+        if self.show_title && matches!(self.border, TooltipBorder::Full) {
+            tip.chrome.title = Some(TOOLTIP_TITLE.to_string());
+        }
         tip
     }
 
@@ -145,11 +150,7 @@ impl AppLogic for TooltipDemo {
             lh * self.rows(),
         );
         let layout = tooltip.layout(anchor, clamp, measure, lh);
-        let mut chrome = TooltipChrome::new(self.border);
-        if self.show_title && matches!(self.border, TooltipBorder::Full) {
-            chrome.title = Some(TOOLTIP_TITLE.to_string());
-        }
-        backend.draw_tooltip_with_chrome(&tooltip, &layout, &chrome);
+        backend.draw_dyn(layout.bounds, &tooltip, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

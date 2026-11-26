@@ -225,7 +225,12 @@ pub struct RichTextLink {
 pub struct RichTextPopupMeasure {
     /// Width of the popup CONTENT (without borders).
     pub content_width: f32,
-    /// Height of one *unscaled* row in the backend's unit (cells / pixels).
+    /// Height of one *unscaled* row in the backend's unit (cells / pixels):
+    /// one line of text in the popup's [`RichTextPopup::font_role`] font.
+    /// [`RichTextPopup::measure_for`] resolves it the way the widget
+    /// contract does, so a box sized with that measure and painted
+    /// through [`crate::DrawsPrimitives`] shows every row it was sized
+    /// for.
     pub row_height: f32,
     /// Whether the backend renders per-line font scale (see
     /// [`RichTextPopup::line_scales`] and
@@ -440,6 +445,62 @@ impl RichTextPopup {
         self.resolve_at(bounds, max_rows, measure, link_widths)
     }
 
+    /// The [`RichTextPopupMeasure`] a host passes [`Self::layout`] to
+    /// size a box it then paints through
+    /// [`crate::DrawsPrimitives::draw_primitive`] or
+    /// [`crate::DrawsPrimitives::draw_dyn`]: `content_width` wide, with
+    /// rows at `backend`'s text line height for this popup's
+    /// [`Self::font_role`] and scaled per `backend`'s
+    /// [`crate::Backend::scales_text_rows`] — the same row measure
+    /// [`Primitive::layout`] resolves that box with, so every row the box
+    /// was sized for is painted.
+    ///
+    /// The row pitch per role: one cell on a cell grid; the editor
+    /// font's [`crate::Backend::line_height`] for [`FontRole::Editor`];
+    /// one line of the chrome font, as [`crate::Backend::measure_text`]
+    /// reports it, for [`FontRole::Chrome`] and [`FontRole::Icon`].
+    pub fn measure_for<B: crate::Backend + ?Sized>(
+        &self,
+        backend: &B,
+        content_width: f32,
+    ) -> RichTextPopupMeasure {
+        self.contract_measure(
+            &crate::backend::primitive_layout_ctx(backend),
+            content_width,
+        )
+    }
+
+    /// The row measure the widget contract resolves rows with: one line
+    /// of text in this popup's own font role
+    /// ([`LayoutCtx::text_line_height`], not the chrome row floor in
+    /// [`LayoutCtx::line_height`]) and the backend's per-row scaling
+    /// capability.
+    fn contract_measure(&self, ctx: &LayoutCtx, content_width: f32) -> RichTextPopupMeasure {
+        let line_height = ctx.text_line_height(self.font_role());
+        let row_height = if line_height > 0.0 { line_height } else { 1.0 };
+        RichTextPopupMeasure::new(content_width, row_height).with_scale_rows(ctx.scales_text_rows())
+    }
+
+    /// The largest row window, capped by [`Self::max_visible_rows`] and
+    /// never below one row, whose (possibly scaled) rows fit in `inner_h`.
+    /// Each candidate is measured at the scroll offset that window
+    /// itself resolves to, so the count agrees with
+    /// [`Self::content_height`] for the rows actually shown.
+    fn rows_that_fit(&self, measure: RichTextPopupMeasure, inner_h: f32) -> usize {
+        // Absorbs the rounding of a box height that was itself summed
+        // from these row heights.
+        let slack = measure.row_height * 1e-3;
+        let mut max_rows = self.max_visible_rows.max(1);
+        while max_rows > 1 {
+            let (offset, count) = self.scroll_window(max_rows);
+            if self.content_height(measure, offset, count) <= inner_h + slack {
+                break;
+            }
+            max_rows -= 1;
+        }
+        max_rows
+    }
+
     /// The visible window for a `max_rows`-row viewport: the scroll
     /// offset clamped so a stale [`Self::scroll_top`] still lands on the
     /// last full screen, and how many lines that window shows.
@@ -640,8 +701,8 @@ pub struct RichTextPopupPrimitiveLayout {
     /// was called with — the popup's whole box, already placed by the
     /// host.
     pub area: Rect,
-    /// Row pitch the rows were resolved at, from
-    /// [`crate::LayoutCtx::line_height`].
+    /// Unscaled row pitch the rows were resolved at, from
+    /// [`crate::LayoutCtx::text_line_height`] for the popup's font role.
     pub row_height: f32,
     /// Advance of one character in the font the rows are measured in,
     /// from [`crate::LayoutCtx::char_width`] —
@@ -720,7 +781,7 @@ impl Primitive for RichTextPopup {
             .fold(0.0_f32, f32::max);
 
         let max_rows = self.max_visible_rows.max(1);
-        let measure = RichTextPopupMeasure::new(content_w, ctx.line_height).with_scale_rows(!cells);
+        let measure = self.contract_measure(ctx, content_w);
         let (offset, count) = self.scroll_window(max_rows);
         let content_h = self.content_height(measure, offset, count);
 
@@ -733,25 +794,24 @@ impl Primitive for RichTextPopup {
     /// so the content area, rows, scrollbar and link zones are resolved
     /// inside it rather than re-placed.
     ///
-    /// The row count comes from the box itself (how many
-    /// `ctx.line_height` rows fit inside the frame and padding), capped
-    /// by [`RichTextPopup::max_visible_rows`], so a box shorter than the
-    /// popup asked for shows what it can hold instead of overflowing.
+    /// Rows are measured in the popup's own font role: one
+    /// [`LayoutCtx::text_line_height`] for [`RichTextPopup::font_role`]
+    /// per unscaled row, each scaled by [`RichTextPopup::line_scales`]
+    /// when [`LayoutCtx::scales_text_rows`] says the backend scales text.
+    /// The row count is the largest window, capped by
+    /// [`RichTextPopup::max_visible_rows`], whose rows fit inside the
+    /// frame and padding — so a box [`RichTextPopup::layout`] sized with
+    /// [`RichTextPopup::measure_for`] shows every row it was sized for,
+    /// and a shorter box shows what it can hold instead of overflowing.
     /// Link hit zones are measured with `ctx`'s own text measurer, so
     /// they line up with the glyphs the backend paints.
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> RichTextPopupPrimitiveLayout {
         let cells = matches!(ctx.units(), Units::Cells);
-        let row_height = if ctx.line_height > 0.0 {
-            ctx.line_height
-        } else {
-            1.0
-        };
         let chrome = 2.0 * (BORDER + self.padding.max(0.0));
+        let measure = self.contract_measure(ctx, (rect.width - chrome).max(0.0));
+        let row_height = measure.row_height;
         let inner_h = (rect.height - chrome).max(0.0);
-        let rows_that_fit = (inner_h / row_height).floor().max(1.0) as usize;
-        let max_rows = self.max_visible_rows.max(1).min(rows_that_fit);
-        let measure = RichTextPopupMeasure::new((rect.width - chrome).max(0.0), row_height)
-            .with_scale_rows(!cells);
+        let max_rows = self.rows_that_fit(measure, inner_h);
 
         let role = self.font_role();
         let link_widths = |line: usize, start: usize, end: usize| -> f32 {
@@ -822,7 +882,14 @@ impl Primitive for RichTextPopup {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_rich_text_popup(buf, self, &layout.layout, theme);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, &layout.layout, &mut surface, theme);
     }
 }
 
@@ -1778,9 +1845,10 @@ mod tests {
 
     #[cfg(feature = "tui")]
     mod cells {
+        use super::super::cell_test_paint::draw_rich_text_popup;
         use super::*;
         use crate::theme::Theme;
-        use crate::tui::{draw_rich_text_popup, ratatui_color};
+        use crate::tui::ratatui_color;
         use crate::types::{Color, StyledSpan};
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect as RRect;
@@ -2059,6 +2127,86 @@ mod tests {
             assert_eq!(layout.layout.visible_lines.len(), 3);
         }
 
+        /// A pixel ctx whose chrome row floor, chrome text line and editor
+        /// line all differ, on a backend that scales text rows.
+        fn three_metric_ctx() -> LayoutCtx<'static> {
+            LayoutCtx::new(22.0, 8.0, false)
+                .with_editor_line_height(17.07)
+                .with_chrome_text_line_height(31.5)
+                .with_scaled_text_rows(true)
+        }
+
+        /// A pixel host that sizes the box through [`RichTextPopup::layout`]
+        /// at the text line height of the popup's own font role, with
+        /// scaled heading rows, gets back every row it sized for — in
+        /// either role, with neither the chrome row floor nor the other
+        /// role's line height leaking into the contract's rows.
+        #[test]
+        fn a_host_sized_box_with_scaled_rows_shows_every_sized_row() {
+            let ctx = three_metric_ctx();
+            for (role, text_lh) in [(FontRole::Chrome, 31.5), (FontRole::Editor, 17.07)] {
+                let mut p = popup(12, 10, 0);
+                p.padding = 1.0;
+                p.line_scales = vec![1.6, 1.3, 1.1];
+                p.font_role = role;
+                let measure = RichTextPopupMeasure::new(300.0, text_lh).with_scale_rows(true);
+                let placed = p.layout(
+                    10.0,
+                    20.0,
+                    Rect::new(0.0, 0.0, 1000.0, 900.0),
+                    measure,
+                    |_, _, _| 0.0,
+                );
+                let layout = Primitive::layout(&p, &ctx, placed.bounds);
+                assert_eq!(layout.row_height, text_lh, "{role:?}");
+                assert_eq!(layout.visible_rows, 10, "{role:?}");
+                assert_eq!(
+                    layout.layout.visible_lines, placed.visible_lines,
+                    "{role:?}"
+                );
+                assert_eq!(
+                    layout.layout.content_bounds, placed.content_bounds,
+                    "{role:?}"
+                );
+            }
+        }
+
+        /// A chrome-role popup's rows are as tall as a line of the chrome
+        /// font: a box sized for ten editor-height rows holds only the
+        /// chrome rows that fit, each a full chrome line tall, rather than
+        /// squeezing chrome text into editor-height rows.
+        #[test]
+        fn a_chrome_role_popup_rows_follow_the_chrome_text_line() {
+            let ctx = three_metric_ctx();
+            let mut p = popup(12, 10, 0);
+            p.font_role = FontRole::Chrome;
+            let editor_sized = Rect::new(0.0, 0.0, 200.0, 2.0 * BORDER + 10.0 * 17.07);
+            let layout = Primitive::layout(&p, &ctx, editor_sized);
+            assert_eq!(layout.visible_rows, 5);
+            assert!(layout
+                .layout
+                .visible_lines
+                .iter()
+                .all(|row| row.bounds.height == 31.5));
+            assert_eq!(
+                Primitive::measure(&p, &ctx, Size::new(1000.0, 1000.0)).height,
+                Some(2.0 * BORDER + 10.0 * 31.5)
+            );
+        }
+
+        /// Scaled rows count against the box: a box holding ten unscaled
+        /// rows holds fewer once the first rows are reserved taller.
+        #[test]
+        fn scaled_rows_reduce_the_row_count_a_box_can_hold() {
+            let mut p = popup(12, 10, 0);
+            p.line_scales = vec![2.0, 2.0];
+            let ctx = LayoutCtx::new(10.0, 8.0, false).with_scaled_text_rows(true);
+            let layout = Primitive::layout(&p, &ctx, Rect::new(0.0, 0.0, 200.0, 102.0));
+            assert_eq!(layout.visible_rows, 8);
+            let last = layout.layout.visible_lines.last().unwrap();
+            assert!(last.bounds.y + last.bounds.height <= 101.0);
+        }
+
         #[test]
         fn measure_reports_the_widest_line_plus_chrome() {
             let p = popup(3, 8, 0);
@@ -2282,5 +2430,38 @@ mod tests {
                 }
             );
         }
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
+    }
+
+    pub fn draw_rich_text_popup(
+        buf: &mut Buffer,
+        popup: &RichTextPopup,
+        layout: &RichTextPopupLayout,
+        theme: &Theme,
+    ) {
+        let mut sink = None;
+        cell_paint::paint(popup, layout, &mut surface(buf, &mut sink), theme);
     }
 }

@@ -28,10 +28,10 @@
 //! - Esc                      close the modal, or quit when none is open
 //! - q                        quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, Dialog, DialogButton, DialogHit, DialogLayout, DialogMeasure,
-    FontRole, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledText, ToolbarItemMeasure, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Dialog, DialogButton, DialogHit, DialogLayout, InteractionState, Key,
+    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 /// Id the dialog is registered under in the [`crate::ModalStack`]. The
@@ -91,47 +91,21 @@ impl ModalOcclusionDemo {
         }
     }
 
-    /// Dialog layout for the current viewport. Called from both `render`
-    /// and `handle` so paint and hit-test can never disagree — the
-    /// `docs/LESSONS.md` "one layout fn, two callers" rule.
+    /// Dialog layout for the current viewport, resolved through the
+    /// widget contract — the same layout `render`'s `draw_dyn` paints —
+    /// so paint, hit-test and the registered modal bounds can never
+    /// disagree (the `docs/LESSONS.md` "one layout fn, two callers"
+    /// rule).
     fn dialog_layout(&self, backend: &dyn Backend) -> DialogLayout {
-        // Measure text for each label to size buttons to their content.
-        let m = backend.measure();
-        let lh = m.line_height;
-        let char_w = m.char_width;
+        backend
+            .layout_primitive(self.viewport_rect(backend), &self.dialog())
+            .layout
+    }
+
+    /// The full viewport, which the dialog centres itself in.
+    fn viewport_rect(&self, backend: &dyn Backend) -> Rect {
         let viewport = backend.viewport();
-        let dialog = self.dialog();
-        // Real per-label measurement via `Backend::
-        // measure_text` instead of a flat `char_w * 10.0` guess wide
-        // enough for both "OK" and "Cancel" on TUI's fixed grid but
-        // meaningless once the chrome font is proportional -- see
-        // `dialog_table_demo`'s `measure` for the same fix with more
-        // detail in its doc.
-        let button_width = dialog
-            .buttons
-            .iter()
-            .map(|b| backend.measure_text(&b.label, FontRole::Chrome).0)
-            .fold(0.0_f32, f32::max)
-            + char_w * 2.0;
-        let measure = DialogMeasure {
-            width: (viewport.width * 0.5).clamp(char_w * 24.0, char_w * 48.0),
-            title_height: lh,
-            body_height: lh * dialog.body.len() as f32,
-            table_height: 0.0,
-            input_height: 0.0,
-            button_row_height: lh,
-            button_width,
-            button_gap: char_w * 2.0,
-            padding: lh,
-        };
-        // NOTE: `Dialog::layout` centres the box, so an odd total height in
-        // a viewport with an even row count lands the box on a half-line.
-        // TUI rounds paint to whole cells but hit-tests the unrounded rect,
-        // so a half-line offset makes the painted button row and its hit
-        // region disagree by one cell. Two body lines keep the total even
-        // (padding 2 + title 1 + body 2 + buttons 1 = 6) and the two agree.
-        let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        dialog.layout(viewport_rect, measure, |_| ToolbarItemMeasure::new(0.0))
+        Rect::new(0.0, 0.0, viewport.width, viewport.height)
     }
 
     /// Row index whose band contains `y`, if any. Rows start at the top
@@ -236,8 +210,8 @@ impl AppLogic for ModalOcclusionDemo {
         // Modal paints last (highest z) — the ModalStack has no opinion
         // on draw order, only on hit-test precedence.
         if self.dialog_open {
-            let layout = self.dialog_layout(backend);
-            backend.draw_dialog(&self.dialog(), &layout);
+            let viewport_rect = self.viewport_rect(backend);
+            backend.draw_dyn(viewport_rect, &self.dialog(), &());
         }
     }
 

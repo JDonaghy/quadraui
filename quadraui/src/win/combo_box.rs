@@ -11,6 +11,7 @@
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
+    use crate::backend::DrawsPrimitives;
     use crate::runner::{AppLogic, Reaction};
     use crate::win::testing::WinDriver;
     use crate::{
@@ -40,7 +41,7 @@ mod tests {
     }
 
     /// Minimal `AppLogic` wrapping a single focused `ComboBox`, painted
-    /// through the real `Backend::draw_combo_box` — used only by this
+    /// through the real `DrawsPrimitives::draw_dyn` — used only by this
     /// driver test, mirroring `gtk::combo_box`'s `ComboBoxApp` but routed
     /// through `WinDriver`.
     struct ComboBoxApp {
@@ -97,8 +98,15 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let layout = sample_layout(&self.combo);
-            backend.draw_combo_box(&self.combo, &layout);
+            // The field sits on the first row of the rect, with the
+            // dropdown's room below it — see `ComboBoxPrimitiveLayout`.
+            let area = Rect::new(
+                FIELD_BOUNDS.x,
+                FIELD_BOUNDS.y,
+                FIELD_BOUNDS.width,
+                VIEWPORT.height - FIELD_BOUNDS.y,
+            );
+            backend.draw_dyn(area, &self.combo, &());
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

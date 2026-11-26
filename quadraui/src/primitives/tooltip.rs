@@ -133,6 +133,12 @@ pub struct Tooltip {
     /// Override foreground colour.
     #[serde(default)]
     pub fg: Option<Color>,
+    /// Border and optional title — see [`TooltipChrome`]. `#[serde(default)]`
+    /// with [`TooltipChrome`]'s own `Default` (a [`TooltipBorder::Full`]
+    /// box, no title), so a frame deserialized without the key keeps the
+    /// plain box every consumer had before the knob existed.
+    #[serde(default)]
+    pub chrome: TooltipChrome,
 }
 
 /// Border chrome vocabulary for [`Tooltip`].
@@ -320,7 +326,8 @@ impl Tooltip {
     /// Construct a `Tooltip` with just the two fields every consumer must
     /// supply — `id` and `text` — and every other field at its
     /// behaviour-preserving default (`styled_lines: None`, `placement:
-    /// Bottom`, `bg: None`, `fg: None`).
+    /// Bottom`, `bg: None`, `fg: None`, `chrome:
+    /// TooltipChrome::default()`).
     pub fn new(id: WidgetId, text: impl Into<String>) -> Self {
         Self {
             id,
@@ -329,7 +336,16 @@ impl Tooltip {
             placement: TooltipPlacement::default(),
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         }
+    }
+
+    /// This tooltip with `chrome` as its border/title — the builder half
+    /// of the `chrome` field, for a consumer that wants a titled or
+    /// border-less box.
+    pub fn with_chrome(mut self, chrome: TooltipChrome) -> Self {
+        self.chrome = chrome;
+        self
     }
 
     /// Compute tooltip placement.
@@ -509,6 +525,16 @@ impl crate::primitive::Primitive for Tooltip {
         }
     }
 
+    /// The tooltip box is a surface every backend reports: on a cell
+    /// grid the whole-cell rect [`painted_bounds`] paints into, on a
+    /// pixel surface the box itself.
+    fn paint_zone(&self, layout: &TooltipLayout, units: crate::primitive::Units) -> Option<Rect> {
+        Some(match units {
+            crate::primitive::Units::Cells => painted_bounds(layout),
+            crate::primitive::Units::Pixels => layout.bounds,
+        })
+    }
+
     /// The shared pixel painter, with the surface's own line height and
     /// character advance as the row pitch and horizontal padding — the
     /// same metrics every pixel backend's `draw_tooltip` passes it.
@@ -530,7 +556,7 @@ impl crate::primitive::Primitive for Tooltip {
             native_surface_paint::paint(
                 self,
                 layout,
-                &TooltipChrome::default(),
+                &self.chrome,
                 line_height,
                 padding_x,
                 surface,
@@ -558,11 +584,31 @@ impl crate::primitive::Primitive for Tooltip {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_tooltip(buf, self, layout, theme);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, layout, &self.chrome, &mut surface, theme);
     }
 }
 
 crate::non_interactive!(Tooltip);
+
+/// The whole-cell bounds the cell-grid painter actually paints into —
+/// `layout.bounds` rounded to integer terminal columns/rows. This, not the
+/// raw float bounds, is the tooltip's zone on a cell grid, so a
+/// structural-parity observer sees exactly the painted cells.
+pub(crate) fn painted_bounds(layout: &TooltipLayout) -> Rect {
+    Rect::new(
+        layout.bounds.x.round(),
+        layout.bounds.y.round(),
+        layout.bounds.width.round(),
+        layout.bounds.height.round(),
+    )
+}
 
 /// The cell-grid painter for [`Tooltip`], written against
 /// [`crate::CellSurface`].
@@ -590,24 +636,11 @@ crate::non_interactive!(Tooltip);
 /// (`height >= 3`) must measure `N + 2`.
 #[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
-    use super::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
+    use super::{painted_bounds, Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
     use crate::cell_surface::{CellStyle, CellSurface};
     use crate::event::Rect;
     use crate::theme::Theme;
     use crate::types::Color;
-
-    /// The whole-cell bounds [`paint`] actually paints into —
-    /// `layout.bounds` rounded to integer terminal columns/rows. A
-    /// backend registers *this* as the tooltip's zone, so a
-    /// structural-parity observer sees exactly the painted cells.
-    pub(crate) fn painted_bounds(layout: &TooltipLayout) -> Rect {
-        Rect::new(
-            layout.bounds.x.round(),
-            layout.bounds.y.round(),
-            layout.bounds.width.round(),
-            layout.bounds.height.round(),
-        )
-    }
 
     fn style(fg: Color, bg: Color) -> CellStyle {
         CellStyle {
@@ -823,6 +856,7 @@ pub(crate) mod native_surface_paint {
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
             return;
         }
+        surface.surface_note_overlay(bounds);
 
         let bg = tooltip.bg.unwrap_or(theme.hover_bg);
         let fg = tooltip.fg.unwrap_or(theme.hover_fg);
@@ -988,6 +1022,40 @@ mod tests {
 
     // ── Tooltip primitive tests (D6 shape) ────────────────────────────
 
+    /// The zone the widget contract registers for a tooltip is the
+    /// whole-cell painted rect on a cell grid and the box itself on a
+    /// pixel surface, through both the typed and the erased entry points.
+    #[test]
+    fn paint_zone_is_cell_rounded_on_cells_and_raw_on_pixels() {
+        use crate::primitive::{DynWidget, Primitive, Units};
+        let tooltip = Tooltip {
+            chrome: TooltipChrome::default(),
+            id: WidgetId::new("hover"),
+            text: "hi".into(),
+            styled_lines: None,
+            placement: TooltipPlacement::Bottom,
+            fg: None,
+            bg: None,
+        };
+        let layout = TooltipLayout {
+            bounds: Rect::new(0.4, 1.6, 9.6, 2.5),
+            resolved_placement: ResolvedPlacement::Bottom,
+        };
+        assert_eq!(
+            Primitive::paint_zone(&tooltip, &layout, Units::Cells),
+            Some(Rect::new(0.0, 2.0, 10.0, 3.0))
+        );
+        assert_eq!(
+            Primitive::paint_zone(&tooltip, &layout, Units::Pixels),
+            Some(layout.bounds)
+        );
+        let erased: &dyn DynWidget = &tooltip;
+        assert_eq!(
+            erased.paint_zone(&layout, Units::Pixels),
+            Some(layout.bounds)
+        );
+    }
+
     /// The border/title vocabulary is a separate [`TooltipChrome`]
     /// value passed alongside the tooltip and its layout — *not* a field
     /// on `Tooltip` or on `TooltipLayout`, both of which consumers
@@ -1033,6 +1101,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let anchor = Rect::new(100.0, 50.0, 40.0, 20.0);
         let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -1054,6 +1123,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 800.0, 100.0);
         let anchor = Rect::new(100.0, 80.0, 40.0, 16.0);
@@ -1076,6 +1146,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let viewport = Rect::new(0.0, 0.0, 100.0, 30.0);
         let anchor = Rect::new(10.0, 10.0, 20.0, 10.0);
@@ -1098,6 +1169,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let anchor = Rect::new(50.0, 50.0, 10.0, 10.0);
         let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
@@ -1119,6 +1191,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let anchor = Rect::new(50.0, 50.0, 10.0, 10.0);
         let viewport = Rect::new(0.0, 0.0, 100.0, 100.0);
@@ -1136,6 +1209,7 @@ mod tests {
             styled_lines: None,
             bg: None,
             fg: None,
+            chrome: TooltipChrome::default(),
         };
         let anchor = Rect::new(100.0, 100.0, 20.0, 20.0);
         let viewport = Rect::new(0.0, 0.0, 400.0, 400.0);
@@ -1565,12 +1639,11 @@ mod tests {
 
     #[cfg(feature = "tui")]
     mod cells {
+        use super::super::cell_test_paint::{draw_tooltip, draw_tooltip_with_chrome};
         use super::*;
         use crate::event::Rect as QRect;
         use crate::theme::Theme;
-        use crate::tui::{draw_tooltip, draw_tooltip_with_chrome};
         use crate::types::StyledSpan;
-        use cell_paint::painted_bounds;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
 
@@ -1600,6 +1673,7 @@ mod tests {
         fn paints_side_borders_and_plain_text() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("hover"),
                 text: "hello".into(),
                 styled_lines: None,
@@ -1626,6 +1700,7 @@ mod tests {
         fn paints_a_full_box_when_height_allows_it() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("hover"),
                 text: "hello".into(),
                 styled_lines: None,
@@ -1655,6 +1730,7 @@ mod tests {
         fn styled_lines_paint_each_row() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("sig"),
                 text: String::new(),
                 styled_lines: Some(vec![
@@ -1682,6 +1758,7 @@ mod tests {
         fn per_tooltip_bg_overrides_theme() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("hover"),
                 text: "x".into(),
                 styled_lines: None,
@@ -1700,6 +1777,7 @@ mod tests {
         fn zero_size_is_a_no_op() {
             let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
             let tt = Tooltip {
+                chrome: TooltipChrome::default(),
                 id: WidgetId::new("hover"),
                 text: "x".into(),
                 styled_lines: None,
@@ -1907,5 +1985,48 @@ mod tests {
             assert_eq!(row(3), "│ three│");
             assert_eq!(row(4), "└──────┘");
         }
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
+    }
+
+    pub fn draw_tooltip(
+        buf: &mut Buffer,
+        tooltip: &Tooltip,
+        layout: &TooltipLayout,
+        theme: &Theme,
+    ) {
+        draw_tooltip_with_chrome(buf, tooltip, layout, &TooltipChrome::default(), theme);
+    }
+
+    pub fn draw_tooltip_with_chrome(
+        buf: &mut Buffer,
+        tooltip: &Tooltip,
+        layout: &TooltipLayout,
+        chrome: &TooltipChrome,
+        theme: &Theme,
+    ) {
+        let mut sink = None;
+        cell_paint::paint(tooltip, layout, chrome, &mut surface(buf, &mut sink), theme);
     }
 }

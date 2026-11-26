@@ -16,6 +16,7 @@ use quadraui::gtk::testing::{driver_with_shell as gtk_driver_with_shell, GtkDriv
 use quadraui::testing::{ConformanceDriver, FrameInventory, LogicalViewport};
 use quadraui::tui::ratatui_color;
 use quadraui::tui::testing::{driver_with_shell as tui_driver_with_shell, TuiDriver};
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableLayout,
     NamedKey, Reaction, Rect, StyledText, Theme, Tooltip, TooltipBorder, TooltipChrome,
@@ -1063,13 +1064,13 @@ fn frame_inventory_relations_agree_tui_and_gtk() {
 // (room enough to close on every backend) specifically so this divergence never
 // fires here.
 //
-// Scope note — the tooltip-border harness below is still *two*-backend only, not
-// three. `ConformanceDriver` now has a `MacDriver` impl, but `TooltipBorderFixture`
-// below asserts on a registered zone (`border_tooltip_zone`), and
-// `macos::backend::MacBackend::draw_tooltip_with_chrome` doesn't call
-// `Backend::register_zone` the way `TuiBackend` and `GtkBackend` do — so macOS
-// still can't participate in this specific harness. macOS's side is covered instead
-// by direct pixel-probe unit tests in `src/macos/tooltip.rs`.
+// Scope note — the tooltip-border harness below is *two*-backend only, not three.
+// `ConformanceDriver` has a `MacDriver` impl, but a macOS arm only exists in a
+// build that is both `--features macos` and `target_os = "macos"`, so folding one
+// in here would make this harness host-dependent the way
+// `pipeline_parity_macos_agrees_with_tui_and_gtk_on_logical_state` above is
+// deliberately kept separate to avoid. macOS's own tooltip chrome is covered by
+// the direct pixel-probe unit tests in `src/macos/tooltip.rs`.
 
 const BORDER_TOOLTIP_ID: &str = "cbp:541:tooltip";
 const BORDER_TOOLTIP_TEXT: &str = "BorderProbe";
@@ -1098,11 +1099,8 @@ impl AppLogic for TooltipBorderFixture {
         let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
         let anchor = Rect::new(0.0, 0.0, vp.width, lh);
 
-        // `border`/`title` travel in a `TooltipChrome` sidecar
-        // passed alongside the tooltip and its layout — not as fields on
-        // either. See `primitives::tooltip`'s module doc for why: it keeps
-        // every exhaustive `Tooltip { .. }` *and* `TooltipLayout { .. }`
-        // literal (in-tree and downstream) compiling untouched.
+        // `border`/`title` travel on the descriptor, in its
+        // `TooltipChrome` field — one value is the whole paint input.
         let mut tooltip = Tooltip::new(
             WidgetId::new(BORDER_TOOLTIP_ID),
             BORDER_TOOLTIP_TEXT.to_string(),
@@ -1115,10 +1113,17 @@ impl AppLogic for TooltipBorderFixture {
             cw * (BORDER_TOOLTIP_TEXT.chars().count() as f32 + 4.0),
             lh * self.rows,
         );
+        tooltip.chrome = TooltipChrome::new(self.border);
+        tooltip.chrome.title = self.title.clone();
         let layout = tooltip.layout(anchor, viewport, measure, lh);
-        let mut chrome = TooltipChrome::new(self.border);
-        chrome.title = self.title.clone();
-        backend.draw_tooltip_with_chrome(&tooltip, &layout, &chrome);
+        backend.draw_dyn(layout.bounds, &tooltip, &());
+        // The host registers the zone it painted into, the same way
+        // `TabGroupController::render` does for its drop overlay: the
+        // widget-contract paint path records a `PaintedWidget`, not a
+        // frame zone, so a structural-parity observer
+        // (`ConformanceDriver::inventory().zones()`) only sees the
+        // tooltip's own box because this call puts it there.
+        backend.register_zone(tooltip.id, layout.bounds);
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

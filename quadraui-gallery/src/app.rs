@@ -966,7 +966,7 @@ fn draw_event_log(backend: &mut dyn Backend, rect: Rect, log: &[String]) {
             timestamp: None,
         })
         .collect();
-    backend.draw_text_display(rect, &td);
+    backend.draw_dyn(rect, &td, &());
 }
 
 /// Which variant column (if any) contains `x`, for an equal-width picker

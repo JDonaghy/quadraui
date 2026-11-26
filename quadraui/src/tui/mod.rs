@@ -42,21 +42,15 @@ pub mod caps;
 mod chart;
 #[doc(hidden)]
 pub mod color;
-mod combo_box;
 // `pub(crate)` rather than private: `CommandLine`'s own
 // `Primitive::paint_cells` reaches this module's `Buffer` →
 // `CellSurface` adapter, which cannot be built outside `crate::tui`.
-pub(crate) mod command_line;
-mod completions;
 mod context_menu;
 mod data_table;
-mod date_picker;
-mod dialog;
 mod diff_view;
 mod editor;
 pub mod events;
 mod find_replace;
-mod float;
 mod focus_ring;
 mod form;
 mod image;
@@ -79,11 +73,9 @@ mod menu_bar;
 mod message_list;
 mod minimap;
 mod multi_section_view;
-mod number_input;
 mod palette;
 mod pipeline_view;
 mod progress;
-mod rich_text_popup;
 mod run;
 mod scrollbar;
 pub mod services;
@@ -100,12 +92,7 @@ pub mod text;
 // `vt100` itself, which only `terminal` pulls in (`terminal = ["dep:vt100",
 // ...]` in Cargo.toml), so this is gated on both features, same as
 // `tests/tui_pty_smoke.rs`.
-mod text_display;
-pub(crate) mod text_field;
-mod text_input;
-mod toast;
 mod toolbar;
-mod tooltip;
 mod tree;
 #[cfg(feature = "terminal")]
 pub mod vt_testing;
@@ -131,9 +118,7 @@ pub use cell_grid::{draw_cell_grid, tui_cell_grid_layout};
 #[doc(hidden)]
 pub use chart::{draw_chart, tui_chart_layout};
 #[doc(hidden)]
-pub use combo_box::draw_combo_box;
 #[doc(hidden)]
-pub use completions::draw_completions;
 #[doc(hidden)]
 pub use context_menu::{
     draw_context_menu, draw_context_menu_with_glyphs, draw_context_menu_with_submenus,
@@ -145,9 +130,7 @@ pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_t
 #[doc(hidden)]
 pub use data_table::{draw_tree_table, tree_table_layout};
 #[doc(hidden)]
-pub use date_picker::draw_date_picker;
 #[doc(hidden)]
-pub use dialog::{draw_dialog, draw_dialog_with_nerd_fonts, tui_dialog_layout};
 #[doc(hidden)]
 pub use diff_view::draw_diff_view;
 #[doc(hidden)]
@@ -157,7 +140,6 @@ pub use editor::{draw_editor_with_reserve, EditorPaintResult};
 #[doc(hidden)]
 pub use find_replace::draw_find_replace;
 #[doc(hidden)]
-pub use float::draw_float;
 #[doc(hidden)]
 pub use focus_ring::draw_focus_ring;
 pub use form::draw_form;
@@ -183,7 +165,6 @@ pub use minimap::{
 };
 pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
 #[doc(hidden)]
-pub use number_input::draw_number_input;
 pub(crate) use palette::draw_palette_with_style;
 #[doc(hidden)]
 pub use palette::{draw_palette, tui_palette_layout};
@@ -193,7 +174,6 @@ pub(crate) use progress::draw_progress_layout;
 #[doc(hidden)]
 pub use progress::{draw_progress, tui_progress_layout};
 #[doc(hidden)]
-pub use rich_text_popup::draw_rich_text_popup;
 pub use run::{run, run_with, RunConfig, StepOutcome, TuiRunner};
 #[doc(hidden)]
 pub use scrollbar::draw_scrollbar;
@@ -222,13 +202,9 @@ pub use crate::primitives::tab_bar::{
 pub use text::truncate_to_width_ellipsis;
 pub use text::{char_cell_width, display_width, truncate_to_width};
 #[doc(hidden)]
-pub use text_display::{draw_text_display, tui_text_display_layout};
 #[doc(hidden)]
-pub use text_field::{draw_text_field, tui_text_field_layout};
 #[doc(hidden)]
-pub use text_input::{draw_text_input, tui_text_input_layout};
 #[doc(hidden)]
-pub use toast::{draw_toast_stack, tui_toast_stack_layout};
 pub use toolbar::tui_toolbar_layout;
 #[doc(hidden)]
 pub use toolbar::{
@@ -236,9 +212,6 @@ pub use toolbar::{
     tui_toolbar_layout_with_options, tui_toolbar_layout_with_overflow,
 };
 #[doc(hidden)]
-pub use tooltip::{
-    draw_tooltip, draw_tooltip_with_chrome, painted_bounds as tooltip_painted_bounds,
-};
 pub use tree::{draw_tree, tui_tree_layout};
 #[doc(hidden)]
 pub use tree::{draw_tree_with_scroll_px, tui_tree_layout_with_scroll_px};

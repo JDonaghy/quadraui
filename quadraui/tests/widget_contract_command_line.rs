@@ -45,6 +45,7 @@ impl BarApp {
                 text: text.into(),
                 cursor_offset: Some(text.len()),
                 right_align: false,
+                selection: None,
             },
             changes: Vec::new(),
             submits: Vec::new(),

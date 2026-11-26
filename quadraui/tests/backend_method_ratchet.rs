@@ -66,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 171;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 150;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -139,20 +139,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("TreeTable", "draw_tree_table"),
     ("TreeTable", "tree_table_layout"),
     ("TreeTable", "tree_layout"),
-    // Group-B ports keep these until the group's cleanup deletes them
-    // together with their wrapper files and `Surface` variants.
-    ("Tooltip", "draw_tooltip"),
-    ("Tooltip", "draw_tooltip_with_chrome"),
-    ("Float", "draw_float"),
-    ("Completions", "draw_completions"),
-    ("RichTextPopup", "draw_rich_text_popup"),
-    ("RichTextPopup", "draw_rich_text_popup_with_font_role"),
-    ("Dialog", "draw_dialog"),
-    ("ToastOverlay", "draw_toast_overlay"),
-    ("ToastOverlay", "toast_stack_layout"),
-    ("NumberInput", "draw_number_input"),
-    ("ComboBox", "draw_combo_box"),
-    ("DatePicker", "draw_date_picker"),
     // Group-A ports, on the same terms as Group B: each now paints
     // through `Primitive`/`Interactive`, and keeps its bespoke pair
     // until the group's cleanup deletes the methods, the per-backend
@@ -189,17 +175,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Toolbar", "toolbar_layout_with_overflow"),
     ("Form", "draw_form"),
     ("Form", "form_layout"),
-    // Group-B ports keep these until the group's cleanup deletes them
-    // together with their wrapper files and `Surface` variants.
-    ("TextInput", "draw_text_input"),
-    ("TextInput", "text_input_layout"),
-    ("TextField", "draw_text_field"),
-    ("TextField", "text_field_layout"),
-    ("CommandLine", "draw_command_line"),
-    ("CommandLine", "draw_command_line_selection"),
-    ("CommandLine", "command_line_layout"),
-    ("TextDisplay", "draw_text_display"),
-    ("TextDisplay", "text_display_layout"),
     ("MenuBar", "draw_menu_bar"),
     ("MenuBar", "draw_menu_bar_with_state"),
     ("MenuBar", "menu_bar_layout"),

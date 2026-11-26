@@ -174,14 +174,15 @@ fn command_center_and_command_line_expose_their_controls() {
                 search_label: "Search files".to_string(),
             }),
         })
-        .with_surface(Surface::CommandLine {
+        .with_surface(Surface::Widget {
             rect: rect(23.0, 1.0),
-            cmd: CommandLine {
+            widget: Box::new(CommandLine {
                 id: WidgetId::new("cmdline"),
                 text: ":w".to_string(),
                 cursor_offset: Some(2),
                 right_align: false,
-            },
+                selection: None,
+            }),
         })
         .snapshot();
 
@@ -479,7 +480,10 @@ fn an_open_dialog_is_modal_and_hides_the_rest_of_the_tree() {
             hovered: None,
             pressed: None,
         })
-        .with_surface(Surface::Dialog { dialog, layout })
+        .with_surface(Surface::Widget {
+            rect: layout.bounds,
+            widget: Box::new(dialog),
+        })
         .with_modal(WidgetId::new("dialog:confirm"))
         .snapshot();
 
@@ -513,9 +517,9 @@ fn toasts_are_polite_live_regions() {
         focus: None,
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::Toast {
+        .with_surface(Surface::Widget {
             rect: rect(18.0, 5.0),
-            stack,
+            widget: Box::new(stack),
         })
         .snapshot();
 
@@ -629,24 +633,28 @@ fn overlays_and_containers_report_their_own_structure() {
                 SplitTree::Leaf(WidgetId::new("terminal")),
             ),
         })
-        .with_surface(Surface::Tooltip {
-            layout: tooltip.layout(
-                rect(0.0, 1.0),
-                VIEWPORT,
-                TooltipMeasure::new(26.0, 3.0),
-                1.0,
-            ),
-            tooltip,
+        .with_surface(Surface::Widget {
+            rect: tooltip
+                .layout(
+                    rect(0.0, 1.0),
+                    VIEWPORT,
+                    TooltipMeasure::new(26.0, 3.0),
+                    1.0,
+                )
+                .bounds,
+            widget: Box::new(tooltip),
         })
-        .with_surface(Surface::RichTextPopup {
-            layout: popup.layout(
-                0.0,
-                10.0,
-                VIEWPORT,
-                RichTextPopupMeasure::new(20.0, 1.0),
-                |_, _, _| 8.0,
-            ),
-            popup,
+        .with_surface(Surface::Widget {
+            rect: popup
+                .layout(
+                    0.0,
+                    10.0,
+                    VIEWPORT,
+                    RichTextPopupMeasure::new(20.0, 1.0),
+                    |_, _, _| 8.0,
+                )
+                .bounds,
+            widget: Box::new(popup),
         })
         .snapshot();
 

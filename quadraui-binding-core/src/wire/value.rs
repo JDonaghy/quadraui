@@ -13,6 +13,7 @@ use serde::de::{DeserializeSeed, MapAccess, SeqAccess, Visitor};
 use serde::Deserializer;
 use serde_json::Value;
 
+use quadraui::DrawsPrimitives;
 use quadraui::{A11yInfo, A11yLive, Backend, BackendWidget, Rect, WidgetId};
 
 use crate::host::text_display_from_lines;
@@ -35,7 +36,7 @@ impl BackendWidget for StaticTabContent {
             WidgetId::new(format!("shell:bottom_panel:{}", self.0)),
             vec![self.0.clone()],
         );
-        backend.draw_text_display(rect, &td);
+        backend.draw_dyn(rect, &td, &());
     }
 }
 

@@ -1534,6 +1534,14 @@ impl crate::primitive::Primitive for TextDisplay {
         crate::frame::OwnedContent::TextDisplay(self.clone())
     }
 
+    /// A text display shows the user's own content (a log, a console
+    /// buffer), so it is one of [`crate::EditorClassPrimitive::ALL`] and
+    /// measures/paints in the editor font rather than the trait's
+    /// chrome-by-default.
+    fn font_role(&self) -> crate::FontRole {
+        crate::FontRole::Editor
+    }
+
     /// One row per buffer line (unwrapped) plus a title row when one is
     /// set — what a container sizing this display to its content would
     /// give it.
@@ -1549,12 +1557,18 @@ impl crate::primitive::Primitive for TextDisplay {
 
     /// `rect` is the display's own area, title row included. On a cell
     /// grid the layout comes from [`cell_layout`]; on a pixel surface
-    /// from [`pixel_layout`] with the backend's own line height and
-    /// character advance.
+    /// from [`pixel_layout`] with the backend's own character advance and
+    /// — because this is an editor-class primitive — the *editor* row
+    /// pitch ([`crate::primitive::LayoutCtx::editor_line_height`]), the
+    /// same one the editor-font surface this paints through reports. Row
+    /// hit-testing and the painted rows therefore stay on one grid even
+    /// when the chrome and editor fonts have different heights.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextDisplayPrimitiveLayout {
         match ctx.units() {
-            crate::primitive::Units::Cells => cell_layout(self, rect),
-            _ => pixel_layout(self, rect, ctx.line_height, ctx.char_width),
+            crate::primitive::Units::Cells => {
+                cell_layout(self, crate::primitive::cell_grid_rect(rect))
+            }
+            _ => pixel_layout(self, rect, ctx.editor_line_height(), ctx.char_width),
         }
     }
 
@@ -1600,18 +1614,14 @@ impl crate::primitive::Primitive for TextDisplay {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = layout.area;
-        crate::tui::draw_text_display(
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
             buf,
-            ratatui::layout::Rect::new(
-                area.x as u16,
-                area.y as u16,
-                area.width as u16,
-                area.height as u16,
-            ),
-            self,
-            theme,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
         );
+        cell_paint::paint(self, layout, &mut surface, theme);
     }
 }
 
@@ -1955,6 +1965,22 @@ mod interactive_tests {
         Interactive::handle(td, state, event, layout, &mut cx)
     }
 
+    /// A fractional pane rect (a ratio-split pane) paints only its whole
+    /// cells, so the cell-grid layout must not claim the column past them —
+    /// that column belongs to whatever sits beside the pane.
+    #[test]
+    fn a_fractional_cell_rect_hit_tests_only_its_painted_cells() {
+        let td = display(3, false);
+        let layout = Primitive::layout(
+            &td,
+            &LayoutCtx::new(1.0, 1.0, false),
+            Rect::new(0.0, 0.0, 23.4, 5.0),
+        );
+        assert_eq!(layout.area, Rect::new(0.0, 0.0, 23.0, 5.0));
+        assert_eq!(layout.hit_test(22.0, 0.0), TextDisplayHit::Line(0));
+        assert_eq!(layout.hit_test(23.0, 0.0), TextDisplayHit::Empty);
+    }
+
     #[test]
     fn an_empty_display_is_not_a_focus_stop() {
         assert_eq!(Interactive::focus(&display(0, false)), FocusSpec::None);
@@ -2205,9 +2231,9 @@ mod cell_paint_tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
+    use super::cell_test_paint::{draw_text_display, tui_text_display_layout};
     use super::{TextDisplay, TextDisplayHit, TextDisplayLine, TextDisplayLineMeasure};
     use crate::theme::Theme;
-    use crate::tui::{draw_text_display, tui_text_display_layout};
     use crate::types::{Color, Decoration, StyledSpan, WidgetId};
 
     fn line(text: &str) -> TextDisplayLine {
@@ -3002,4 +3028,54 @@ mod tests {
     // wrap-helper unit tests live in `wrap::tests`, next to the helpers
     // themselves — both are gated on the rasteriser features (see the
     // `wrap` module doc), so they can't sit in this ungated `mod tests`.
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
+    }
+
+    pub fn tui_text_display_layout(
+        display: &TextDisplay,
+        area: ratatui::layout::Rect,
+    ) -> TextDisplayLayout {
+        cell_layout(display, q_rect(area)).layout
+    }
+
+    pub fn draw_text_display(
+        buf: &mut Buffer,
+        area: ratatui::layout::Rect,
+        display: &TextDisplay,
+        theme: &Theme,
+    ) {
+        let resolved = cell_layout(display, q_rect(area));
+        let mut sink = None;
+        cell_paint::paint(display, &resolved, &mut surface(buf, &mut sink), theme);
+    }
+
+    fn q_rect(area: ratatui::layout::Rect) -> Rect {
+        Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        )
+    }
 }

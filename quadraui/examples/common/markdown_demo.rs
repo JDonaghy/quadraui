@@ -11,17 +11,17 @@
 //! `foo_bar` and `a * b` must render upright, while `*italic*`, `_also_`,
 //! `**bold**`, and `` `code` `` get their styling.
 //!
-//! `f` toggles the popup's [`FontRole`] between `Chrome` (the UI font —
-//! today's unchanged default, painted through plain
-//! [`Backend::draw_rich_text_popup`]) and `Editor` (the editor's own
-//! monospace font, painted through
-//! [`Backend::draw_rich_text_popup_with_font_role`]) — visual
-//! confirmation of GTK's editor-role paint arm; TUI has one font per
-//! cell and ignores the role.
+//! `f` toggles the popup's [`FontRole`] between `Chrome` (the UI font,
+//! the default) and `Editor` (the editor's own monospace font). The
+//! descriptor carries the role, so one [`DrawsPrimitives::draw_dyn`]
+//! call paints either, and [`RichTextPopup::measure_for`] sizes the box
+//! at that role's line height so every row it was sized for is painted.
+//! TUI has one font per cell and ignores the role.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     render_markdown_to_styled, AppLogic, Backend, FontRole, Key, NamedKey, PopupPlacement,
-    Reaction, Rect, RichTextPopup, RichTextPopupMeasure, Theme, UiEvent, WidgetId,
+    Reaction, Rect, RichTextPopup, Theme, UiEvent, WidgetId,
 };
 
 /// The markdown source rendered by the demo.
@@ -71,7 +71,6 @@ impl AppLogic for MarkdownDemo {
 
         let viewport = backend.viewport();
         let col_w = backend.char_width();
-        let row_h = backend.line_height();
 
         // Content width = widest line, in backend units.
         let widest = rendered
@@ -97,33 +96,26 @@ impl AppLogic for MarkdownDemo {
             padding: 1.0,
             fg: None,
             bg: None,
-            font_role: Default::default(),
+            // `f` toggles this; the descriptor carries the role, so one
+            // call exercises both the chrome-font and editor-font
+            // measure/paint paths.
+            font_role: self.font_role,
         };
 
+        // Rows at the line height of the popup's own font role, taller
+        // for headings on backends that scale text (GTK); TUI keeps
+        // 1 cell/row. The same measure the widget contract resolves the
+        // painted rows with, so the box shows every row it is sized for.
+        let measure = popup.measure_for(backend, content_w);
         // Anchor near the top-left so "Below" placement keeps it on-screen.
         // The viewport origin is (0, 0) in every backend.
         let anchor_x = viewport.width * 0.05;
-        let anchor_y = row_h;
-        // Opt into proportional row heights on backends that scale text
-        // (GTK) so headings don't overlap; TUI reports false and keeps
-        // 1 cell/row. Consumer stays backend-neutral — it just asks the
-        // backend about its capability.
-        let measure =
-            RichTextPopupMeasure::new(content_w, row_h).with_scale_rows(backend.scales_text_rows());
+        let anchor_y = measure.row_height;
         let vp = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let layout = popup.layout(anchor_x, anchor_y, vp, measure, |_, start, end| {
             (end - start) as f32 * col_w
         });
-        // `f` toggles `self.font_role` — `Chrome` goes through plain
-        // `draw_rich_text_popup` (today's call, unchanged); `Editor`
-        // goes through `draw_rich_text_popup_with_font_role` so this
-        // demo visually exercises both paint paths.
-        match self.font_role {
-            FontRole::Editor => {
-                backend.draw_rich_text_popup_with_font_role(&popup, &layout, FontRole::Editor)
-            }
-            FontRole::Chrome | FontRole::Icon => backend.draw_rich_text_popup(&popup, &layout),
-        }
+        backend.draw_dyn(layout.bounds, &popup, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

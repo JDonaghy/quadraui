@@ -91,6 +91,7 @@ mod tests {
             text: text.into(),
             cursor_offset: cursor,
             right_align,
+            selection: None,
         }
     }
 

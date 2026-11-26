@@ -56,7 +56,7 @@ use super::{
 };
 use crate::text_util::{char_cell_width, display_width};
 use crate::theme::Theme;
-use crate::tui::{draw_text_field, ratatui_color as qc, set_cell, set_cell_wide};
+use crate::tui::{ratatui_color as qc, set_cell, set_cell_wide};
 use crate::types::WidgetId;
 
 /// Minimum cell width for a [`ToolbarButton::Field`] to paint its full
@@ -369,7 +369,7 @@ fn draw_toolbar_item(
                 // default `tui::toolbar`'s own `Action` icons already
                 // assume (they arrive pre-resolved by the host, which
                 // picks the fallback half on this backend).
-                draw_text_field(buf, field_rect, field, theme, false);
+                draw_embedded_text_field(buf, field_rect, field, theme);
             }
         }
         ToolbarButton::MenuButton {
@@ -702,7 +702,7 @@ pub fn draw_toolbar_oriented(
             // does, just inside this one `area.width`-wide row.
             ToolbarButton::Field { field, .. } => {
                 let field_rect = Rect::new(area.x, row, area.width, 1);
-                draw_text_field(buf, field_rect, field, theme, false);
+                draw_embedded_text_field(buf, field_rect, field, theme);
             }
             ToolbarButton::MenuButton { icon, label, .. } => {
                 let mut cells: Vec<char> = Vec::new();
@@ -2038,4 +2038,34 @@ mod tests {
         );
         assert_eq!(layout.overflowed_items().len(), 2);
     }
+}
+
+/// Paint a [`ToolbarButton::Field`]'s embedded [`crate::TextField`] into
+/// `rect` through the widget's own cell painter, adapting the ratatui
+/// [`ratatui::buffer::Buffer`] into the [`crate::CellSurface`] that
+/// painter takes.
+///
+/// Nerd-Font glyph resolution is off: a toolbar field's own icon column
+/// is painted by this module, not by the field.
+fn draw_embedded_text_field(
+    buf: &mut ratatui::buffer::Buffer,
+    rect: Rect,
+    field: &crate::TextField,
+    theme: &Theme,
+) {
+    let area = crate::event::Rect::new(
+        rect.x as f32,
+        rect.y as f32,
+        rect.width as f32,
+        rect.height as f32,
+    );
+    let layout = crate::primitives::text_field::cell_layout(field, area);
+    // The painter never moves the cursor, so the sink is never read.
+    let mut cursor_sink = None;
+    let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+        buf,
+        crate::backend::ColorDepth::TrueColor,
+        &mut cursor_sink,
+    );
+    crate::primitives::text_field::cell_paint::paint(field, &layout, &mut surface, theme, false);
 }

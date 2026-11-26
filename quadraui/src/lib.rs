@@ -652,8 +652,8 @@ pub use primitives::date_picker::{
     DatePickerLayout, DayCell, TimeOfDay, Weekday,
 };
 pub use primitives::dialog::{
-    native_dialog_options, Dialog, DialogButton, DialogHit, DialogInput, DialogLayout,
-    DialogMeasure, DialogSeverity, DialogTable, DialogTextInput, VisibleDialogButton,
+    native_dialog_options, Dialog, DialogButton, DialogContentSlot, DialogHit, DialogInput,
+    DialogLayout, DialogMeasure, DialogSeverity, DialogTable, DialogTextInput, VisibleDialogButton,
 };
 pub use primitives::diff_view::{
     DiffDisplayLine, DiffEditability, DiffHeaderGeometry, DiffHunk, DiffLineContent, DiffMode,

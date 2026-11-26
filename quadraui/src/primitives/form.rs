@@ -1083,6 +1083,66 @@ impl Form {
         field.label_position.unwrap_or(self.label_position)
     }
 
+    /// Whether `field`'s label occupies a row of its own above the
+    /// control, rather than a left-hand column — a [`LabelPosition::Top`]
+    /// field with a non-empty label. A [`FieldKind::Label`] is its own
+    /// text, so it never gets a second row.
+    pub fn label_takes_its_own_row(&self, field: &FormField) -> bool {
+        !matches!(field.kind, FieldKind::Label)
+            && self.resolved_label_position(field) == LabelPosition::Top
+            && field.label.visible_width() > 0
+    }
+
+    /// Whether `field` is this form's current keyboard focus — which
+    /// decides, among other things, whether a [`FieldKind::Dropdown`]'s
+    /// option list is open and therefore occupies rows of its own.
+    pub fn field_has_focus(&self, field: &FormField) -> bool {
+        self.has_focus
+            && self
+                .focused_field
+                .as_ref()
+                .is_some_and(|id| id == &field.id)
+    }
+
+    /// How many rows `field` occupies — one for its control, plus its
+    /// own label row ([`Self::label_takes_its_own_row`]), plus whatever
+    /// its kind expands to: a [`FieldKind::TextArea`]'s `visible_rows`, a
+    /// focused [`FieldKind::Dropdown`]'s open option list, a
+    /// [`FieldKind::RadioGroup`]'s one-row-per-option stack.
+    ///
+    /// Rows, not units: multiply by the laying-out surface's row pitch.
+    /// Every host that needs a form's height before it has a backend
+    /// layout in hand — a dialog reserving its input slot, a sizer
+    /// measuring a form leaf — reads it from here, so none of them can
+    /// disagree with what the rasteriser then lays out.
+    pub fn field_rows(&self, field: &FormField) -> f32 {
+        let label_row = if self.label_takes_its_own_row(field) {
+            1.0
+        } else {
+            0.0
+        };
+        let control_rows = match &field.kind {
+            FieldKind::TextArea { visible_rows, .. } => *visible_rows as f32,
+            // A stepper paints its own up/down arrows above and below the
+            // value row.
+            FieldKind::NumberInput(_) => 3.0,
+            FieldKind::Dropdown { options, .. }
+                if self.field_has_focus(field) && !options.is_empty() =>
+            {
+                options.len() as f32 + 1.0
+            }
+            FieldKind::RadioGroup(group) => group.options.len().max(1) as f32,
+            _ => 1.0,
+        };
+        label_row + control_rows
+    }
+
+    /// Total rows every field in this form occupies — the sum of
+    /// [`Self::field_rows`]. Zero for an empty form.
+    pub fn total_field_rows(&self) -> f32 {
+        self.fields.iter().map(|f| self.field_rows(f)).sum()
+    }
+
     /// The effective label alignment for `field`: its own
     /// [`FormField::label_align`] override if set, else this form's
     /// [`Form::label_align`] default.

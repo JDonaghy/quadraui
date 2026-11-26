@@ -11,6 +11,7 @@
 //! Controls:
 //! - `q` / `Esc` — quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Rect, StyledSpan, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
@@ -79,7 +80,7 @@ impl AppLogic for TextDisplayWrapDemo {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let rect = Rect::new(0.0, 0.0, vp.width, vp.height);
-        backend.draw_text_display(rect, &self.display);
+        backend.draw_dyn(rect, &self.display, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> quadraui::Reaction {

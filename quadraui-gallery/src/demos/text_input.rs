@@ -7,6 +7,7 @@
 //! through `TextEditor::apply(EditOp)`, never hand-rolled
 //! insert/backspace/cursor logic.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, Color, EditOp, InteractionState, MouseButton, Reaction, Rect, StatusBar,
     StatusBarSegment, Style, TextEditor, TextInput, TextInputHit, UiEvent, WidgetId,
@@ -122,7 +123,7 @@ impl Demo for TextInputDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let input_rect = Self::input_rect(area, backend);
-        backend.draw_text_input(input_rect, self.editor(variant));
+        backend.draw_dyn(input_rect, &self.editor(variant).input, &());
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_status_bar_interactive(
@@ -147,7 +148,7 @@ impl Demo for TextInputDemo {
                 ..
             } => {
                 let rect = Self::input_rect(area, backend);
-                let layout = backend.text_input_layout(rect, &self.inputs[idx]);
+                let layout = backend.layout_primitive(rect, &self.inputs[idx].input);
                 let op = match layout.hit_test(position.x, position.y) {
                     TextInputHit::Line { line_idx } => EditOp::SetCursor {
                         line: line_idx,

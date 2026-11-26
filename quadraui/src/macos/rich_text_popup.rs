@@ -51,6 +51,7 @@ mod tests {
     use super::super::text::make_font;
     use super::super::MacBackend;
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::rich_text_popup::PopupPlacement;
     use crate::types::{StyledText, WidgetId};
@@ -106,25 +107,28 @@ mod tests {
         popup.layout(100.0, 150.0, viewport, measure, |_, _, _| 0.0)
     }
 
-    fn paint(popup: &RichTextPopup, layout: &RichTextPopupLayout) -> BitmapSurface {
+    /// Paint `popup` into the already-placed box `bounds` through the
+    /// widget-contract path, handing back the pixels alongside the layout
+    /// the backend itself resolved inside that box.
+    fn paint(popup: &RichTextPopup, bounds: QRect) -> (BitmapSurface, RichTextPopupLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_rich_text_popup(popup, layout);
+        let painted = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(bounds, popup).layout
         });
         backend.end_frame();
-        surface
+        (surface, painted)
     }
 
     #[test]
     fn popup_paints_hover_bg() {
         let popup = sample_popup();
         let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = layout_for(&popup, viewport, 16.0, 8.4);
-        let surface = paint(&popup, &layout);
+        let placed = layout_for(&popup, viewport, 16.0, 8.4);
+        let (surface, layout) = paint(&popup, placed.bounds);
         let theme = Theme::default();
         // Probe inside the content area, away from any line glyphs
         // (right edge of the popup).
@@ -149,10 +153,10 @@ mod tests {
         unfocused.has_focus = false;
         let mut focused = sample_popup();
         focused.has_focus = true;
-        let layout_u = layout_for(&unfocused, viewport, 16.0, 8.4);
-        let layout_f = layout_for(&focused, viewport, 16.0, 8.4);
-        let surface_u = paint(&unfocused, &layout_u);
-        let surface_f = paint(&focused, &layout_f);
+        let placed_u = layout_for(&unfocused, viewport, 16.0, 8.4);
+        let placed_f = layout_for(&focused, viewport, 16.0, 8.4);
+        let (surface_u, layout_u) = paint(&unfocused, placed_u.bounds);
+        let (surface_f, _layout_f) = paint(&focused, placed_f.bounds);
         let bx = layout_u.bounds.x as u32;
         let by = layout_u.bounds.y as u32;
         let bw = layout_u.bounds.width as u32;
@@ -183,8 +187,8 @@ mod tests {
             end_col: 5,
         });
         let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = layout_for(&popup, viewport, 16.0, 8.4);
-        let surface = paint(&popup, &layout);
+        let placed = layout_for(&popup, viewport, 16.0, 8.4);
+        let (surface, layout) = paint(&popup, placed.bounds);
         let theme = Theme::default();
         let row = layout.visible_lines[0].bounds;
         let sel_fg = popup.fg.unwrap_or(theme.foreground);
@@ -198,12 +202,11 @@ mod tests {
         );
     }
 
-    /// [`crate::Backend::draw_rich_text_popup_with_font_role`] must
-    /// select a genuinely different live `CTFont`, not a documented
-    /// no-op: with the chrome font set far larger than the editor font,
-    /// requesting the default (plain `draw_rich_text_popup`, i.e.
-    /// `FontRole::Chrome`) paints a visibly wider glyph than requesting
-    /// `FontRole::Editor`, and both must paint real ink.
+    /// [`RichTextPopup::font_role`] must select a genuinely different
+    /// live `CTFont`, not a documented no-op: with the chrome font set
+    /// far larger than the editor font, a descriptor left at the default
+    /// `FontRole::Chrome` paints a visibly wider glyph than one asking
+    /// for `FontRole::Editor`, and both must paint real ink.
     #[test]
     fn font_role_editor_paints_with_the_editor_fonts_metrics() {
         fn ink_right_edge(surface: &BitmapSurface, bounds: crate::event::Rect) -> i32 {
@@ -228,12 +231,13 @@ mod tests {
             p
         }
 
-        fn paint_with_role(role: Option<crate::FontRole>) -> (BitmapSurface, RichTextPopupLayout) {
-            let popup = single_char_popup();
+        fn paint_with_role(role: crate::FontRole) -> (BitmapSurface, RichTextPopupLayout) {
+            let mut popup = single_char_popup();
+            popup.font_role = role;
             let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
             let measure =
                 crate::primitives::rich_text_popup::RichTextPopupMeasure::new(200.0, 80.0);
-            let layout = popup.layout(10.0, 10.0, viewport, measure, |_, _, _| 0.0);
+            let placed = popup.layout(10.0, 10.0, viewport, measure, |_, _, _| 0.0);
             let surface = BitmapSurface::new(W, H);
             surface.fill(0.0, 0.0, 0.0, 0.0);
             let mut backend = MacBackend::new();
@@ -243,18 +247,16 @@ mod tests {
             backend.set_ui_font("Menlo 60");
             backend.set_current_font(font());
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            backend.enter_frame_scope(surface.context_ptr(), |b| match role {
-                Some(role) => b.draw_rich_text_popup_with_font_role(&popup, &layout, role),
-                None => b.draw_rich_text_popup(&popup, &layout),
+            let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+                b.draw_primitive(placed.bounds, &popup).layout
             });
             backend.end_frame();
             (surface, layout)
         }
 
-        // `None` = plain `draw_rich_text_popup` (today's call site, no
-        // role argument at all) — must still paint the chrome font.
-        let (chrome_surface, chrome_layout) = paint_with_role(None);
-        let (editor_surface, editor_layout) = paint_with_role(Some(crate::FontRole::Editor));
+        // The descriptor's default role — must paint the chrome font.
+        let (chrome_surface, chrome_layout) = paint_with_role(crate::FontRole::Chrome);
+        let (editor_surface, editor_layout) = paint_with_role(crate::FontRole::Editor);
 
         let chrome_right = ink_right_edge(&chrome_surface, chrome_layout.content_bounds);
         let editor_right = ink_right_edge(&editor_surface, editor_layout.content_bounds);
@@ -265,7 +267,7 @@ mod tests {
         );
         assert!(
             chrome_right > editor_right * 2,
-            "plain draw_rich_text_popup (no role argument) painting the 60pt chrome font \
+            "a FontRole::Chrome descriptor painting the 60pt chrome font \
              should paint a far wider glyph than FontRole::Editor's 14pt glyph: \
              chrome_right={chrome_right}, editor_right={editor_right}"
         );

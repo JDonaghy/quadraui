@@ -580,30 +580,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "diff_view_layout",
         "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
     ),
-    // `text_field_layout` is `TextField::layout` applied to
-    // `char_width()`/`line_height()` — a pure fn of those two accessors
-    // plus `TextField`'s own state, same shape as `editor_layout`
-    // above. Every backend overrides `draw_text_field`
-    // itself (TUI's one-row `[ icon value × ]` painter; GTK/macOS/Win's
-    // shared stroked-box painter, `primitives::text_field::
-    // paint_text_field_gui`). GTK and Win paint with the same
-    // `current_char_width()`/`current_line_height()` this default already
-    // resolves, so neither needs its own `text_field_layout` override;
-    // `MacBackend` does override it (see that method's doc) because its
-    // `draw_text_field` paints with the separate `chrome_*` metrics
-    // instead.
-    (
-        "gtk",
-        "text_field_layout",
-        "pure fn of char_width()/line_height() + TextField's own state — paints with the same \
-         metrics, so the default already agrees with draw_text_field's own layout",
-    ),
-    (
-        "win",
-        "text_field_layout",
-        "pure fn of char_width()/line_height() + TextField's own state — paints with the same \
-         metrics, so the default already agrees with draw_text_field's own layout",
-    ),
     // `canvas_layout` is `CanvasLayout { bounds: rect }` — a pure function of `rect`
     // alone, with no backend-specific metric. All four backends take the default.
     (

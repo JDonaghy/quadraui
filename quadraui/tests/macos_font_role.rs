@@ -64,6 +64,7 @@
 #![cfg(all(feature = "macos", target_os = "macos"))]
 
 use quadraui::macos::testing::MacDriver;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, Decoration,
     DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, FieldKind, Form,
@@ -242,7 +243,7 @@ fn draw_text_display_paints_in_editor_font() {
             title: None,
             show_scrollbar: false,
         };
-        b.draw_text_display(area, &td);
+        b.draw_dyn(area, &td, &());
     });
 }
 
@@ -388,7 +389,7 @@ fn draw_toast_overlay_paints_in_chrome_font() {
             }],
             focus: None,
         };
-        let _ = b.draw_toast_overlay(area, &stack);
+        b.draw_dyn(area, &stack, &());
     });
 }
 
@@ -402,7 +403,7 @@ fn draw_tooltip_paints_in_chrome_font() {
         tooltip.placement = TooltipPlacement::Bottom;
         let measure = TooltipMeasure::new(cw * 9.0, lh * 3.0);
         let layout = tooltip.layout(anchor, area, measure, lh);
-        b.draw_tooltip(&tooltip, &layout);
+        b.draw_dyn(layout.bounds, &tooltip, &());
     });
 }
 

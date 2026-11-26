@@ -666,12 +666,11 @@ impl Drop for TreePaintsOwnScrollbar {
 /// rather than panicking, so a controller under test can call them
 /// without the test needing to know it did. A handful of primitives this
 /// crate's own controllers never exercise through a bare `Backend` still
-/// `unimplemented!()` — most notably `modal_stack_handle`,
-/// `drag_state_handle`, and `services()`, which real backends back with
-/// actual shared state / platform services that a headless mock cannot
-/// honestly fabricate. If your test needs one of those, `RecordingBackend`
-/// is the wrong tool — drive a real backend (`quadraui::tui::testing::
-/// TuiDriver`) instead.
+/// `unimplemented!()` — most notably `drag_state_handle` and
+/// `services()`, which real backends back with platform services a
+/// headless mock cannot honestly fabricate. If your test needs one of
+/// those, `RecordingBackend` is the wrong tool — drive a real backend
+/// (`quadraui::tui::testing::TuiDriver`) instead.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RecordingBackend {
     /// Method name of every `draw_*` call made against this backend, in
@@ -696,10 +695,9 @@ pub struct RecordingBackend {
     /// field directly, the same two ways a real backend's own
     /// `current_style` field is written.
     pub current_style: crate::Style,
-    /// Backs [`Backend::focus_tree`] — unlike `modal_stack_handle`/
-    /// `drag_state_handle`, this one *is* real state a headless mock can
-    /// honestly fabricate, so it's included rather than
-    /// `unimplemented!()`.
+    /// Backs [`Backend::focus_tree`] — unlike `drag_state_handle`, this
+    /// one *is* real state a headless mock can honestly fabricate, so
+    /// it's included rather than `unimplemented!()`.
     pub focus_tree: crate::focus::FocusTree,
     /// Backs [`Backend::invalidate_rect`]/[`Backend::invalidation_log`] —
     /// pure bookkeeping, same shape every real backend's `BackendCore`
@@ -741,6 +739,13 @@ pub struct RecordingBackend {
     /// without a real rasteriser, mirroring what [`Self::calls`] does for
     /// the method name alone.
     pub multi_section_view_calls: Vec<crate::MultiSectionView>,
+    /// Backs [`Backend::modal_stack_handle`] — like
+    /// [`Self::focus_tree`], a real `ModalStack` is bookkeeping a
+    /// headless recorder can honestly own, so a controller that pushes a
+    /// modal (or a widget-contract paint that marks one painted) works
+    /// against this backend without a live event loop. Empty on a fresh
+    /// recorder.
+    pub modal_stack: std::rc::Rc<std::cell::RefCell<crate::ModalStack>>,
 }
 
 impl Default for RecordingBackend {
@@ -763,6 +768,7 @@ impl Default for RecordingBackend {
             notification_send_result: Ok(()),
             font_families: std::collections::HashSet::new(),
             multi_section_view_calls: Vec::new(),
+            modal_stack: std::rc::Rc::new(std::cell::RefCell::new(crate::ModalStack::default())),
         }
     }
 }
@@ -1047,10 +1053,7 @@ impl crate::Backend for RecordingBackend {
         &self.invalidation_log
     }
     fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
-        unimplemented!(
-            "RecordingBackend has no shared ModalStack — drive a real backend \
-             (quadraui::tui::testing::TuiDriver) if your test needs one"
-        )
+        std::rc::Rc::clone(&self.modal_stack)
     }
     fn focus_tree(&self) -> &crate::focus::FocusTree {
         &self.focus_tree
@@ -1232,27 +1235,6 @@ impl crate::Backend for RecordingBackend {
     fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {
         self.record("draw_solid_fill");
     }
-    fn draw_text_display(&mut self, _r: Rect, _t: &crate::TextDisplay) {
-        self.record("draw_text_display");
-    }
-    fn draw_command_line(&mut self, _r: Rect, _c: &crate::CommandLine) {
-        self.record("draw_command_line");
-    }
-    fn draw_command_line_selection(
-        &mut self,
-        _r: Rect,
-        _c: &crate::CommandLine,
-        _s: Option<(usize, usize)>,
-    ) {
-        self.record("draw_command_line_selection");
-    }
-    fn command_line_layout(
-        &self,
-        _r: Rect,
-        _c: &crate::CommandLine,
-    ) -> crate::primitives::command_line::CommandLineLayout {
-        Default::default()
-    }
     fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
         crate::StatusBarLayout {
             bar_width: 0.0,
@@ -1269,39 +1251,6 @@ impl crate::Backend for RecordingBackend {
     ) -> Vec<crate::ActivityBarRowHit> {
         Vec::new()
     }
-    fn text_display_layout(&self, _r: Rect, _t: &crate::TextDisplay) -> crate::TextDisplayLayout {
-        unimplemented!("RecordingBackend has no TextDisplay layout algorithm")
-    }
-    /// Union note: `chat_controller::MockBackend` was the only one with a
-    /// real body (the other two `unimplemented!()`d, safe only because
-    /// neither `TreeController` nor `AppShell` ever calls
-    /// `draw_text_input`) — `ChatController`'s click-routing tests need a
-    /// real layout, so its behaviour wins.
-    fn draw_text_input(&mut self, r: Rect, ti: &crate::TextInput) -> crate::TextInputLayout {
-        self.record("draw_text_input");
-        ti.layout(r, crate::TextInputMeasure::from_metrics(&self.measure()))
-    }
-    /// Union note: see `draw_text_input` above.
-    fn text_input_layout(&self, r: Rect, ti: &crate::TextInput) -> crate::TextInputLayout {
-        ti.layout(r, crate::TextInputMeasure::from_metrics(&self.measure()))
-    }
-    /// Real layout, no paint — same shape as `draw_text_input` above.
-    fn draw_text_field(&mut self, r: Rect, tf: &crate::TextField) -> crate::TextFieldLayout {
-        self.record("draw_text_field");
-        tf.layout(r, crate::TextFieldMeasure::from_metrics(&self.measure()))
-    }
-    fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {
-        self.record("draw_number_input");
-    }
-    fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {
-        self.record("draw_combo_box");
-    }
-    fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {
-        self.record("draw_date_picker");
-    }
-    fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {
-        self.record("draw_tooltip");
-    }
     /// Union note: `app_shell::MockBackend` was the only one with a real
     /// body (`Vec::new()`); the other two `unimplemented!()`d.
     fn draw_context_menu(
@@ -1311,14 +1260,6 @@ impl crate::Backend for RecordingBackend {
     ) -> Vec<(Rect, WidgetId)> {
         self.record("draw_context_menu");
         Vec::new()
-    }
-    /// Union note: see `draw_context_menu` above.
-    fn draw_dialog(&mut self, _d: &crate::Dialog, _l: &crate::DialogLayout) -> Vec<Rect> {
-        self.record("draw_dialog");
-        Vec::new()
-    }
-    fn draw_float(&mut self, _f: &crate::Float, _l: &crate::FloatLayout) {
-        self.record("draw_float");
     }
     fn draw_multi_section_view(&mut self, _r: Rect, v: &crate::MultiSectionView) {
         self.record("draw_multi_section_view");
@@ -1397,26 +1338,12 @@ impl crate::Backend for RecordingBackend {
     fn draw_message_list(&mut self, _r: Rect, _l: &crate::primitives::message_list::MessageList) {
         self.record("draw_message_list");
     }
-    fn draw_rich_text_popup(
-        &mut self,
-        _p: &crate::RichTextPopup,
-        _l: &crate::primitives::rich_text_popup::RichTextPopupLayout,
-    ) {
-        self.record("draw_rich_text_popup");
-    }
     fn draw_find_replace(
         &mut self,
         _r: Rect,
         _p: &crate::primitives::find_replace::FindReplacePanel,
     ) {
         self.record("draw_find_replace");
-    }
-    fn draw_completions(
-        &mut self,
-        _c: &crate::Completions,
-        _l: &crate::primitives::completions::CompletionsLayout,
-    ) {
-        self.record("draw_completions");
     }
     fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
         self.record("draw_scrollbar");
@@ -1445,17 +1372,6 @@ impl crate::Backend for RecordingBackend {
     fn draw_canvas(&mut self, _r: Rect, _c: &crate::Canvas) -> crate::CanvasLayout {
         self.record("draw_canvas");
         unimplemented!("RecordingBackend has no Canvas paint algorithm")
-    }
-    fn draw_toast_overlay(
-        &mut self,
-        _r: Rect,
-        _s: &crate::ToastOverlay,
-    ) -> crate::ToastStackLayout {
-        self.record("draw_toast_stack");
-        unimplemented!("RecordingBackend has no ToastOverlay layout algorithm")
-    }
-    fn toast_stack_layout(&self, _r: Rect, _s: &crate::ToastOverlay) -> crate::ToastStackLayout {
-        unimplemented!("RecordingBackend has no ToastOverlay layout algorithm")
     }
     fn draw_pipeline_view(
         &mut self,

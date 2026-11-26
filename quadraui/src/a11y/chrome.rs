@@ -465,7 +465,10 @@ impl A11yPrimitive for Dialog {
                     A11yChild::new("input", form.a11y_info()).with_children(form.a11y_children()),
                 );
             }
-            None => {}
+            // A host-painted content slot has no descriptor the dialog
+            // can describe — whatever the host paints into it exposes
+            // its own a11y tree.
+            Some(DialogInput::ContentSlot(_)) | None => {}
         }
         let total = self.buttons.len();
         for (idx, button) in self.buttons.iter().enumerate() {

@@ -142,6 +142,7 @@ use quadraui::tui::{RunConfig, StepOutcome, TuiBackend, TuiRunner};
 use quadraui::wheel_row_delta;
 #[cfg(test)]
 use quadraui::AcceleratorScope;
+use quadraui::DrawsPrimitives;
 #[cfg(test)]
 use quadraui::Key;
 #[cfg(test)]
@@ -1739,7 +1740,7 @@ impl ShellApp for PyShellApp {
             Ok(result) => {
                 if let Ok(lines) = result.extract::<Vec<String>>(py) {
                     let td = text_display_from_lines(WidgetId::new("shell:content"), lines);
-                    backend.draw_text_display(bounds, &td);
+                    backend.draw_dyn(bounds, &td, &());
                 }
             }
             Err(err) => self.state.borrow_mut().record_error(err),
