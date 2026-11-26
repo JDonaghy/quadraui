@@ -404,9 +404,9 @@ impl crate::primitive::Primitive for DropOverlay {
         &self,
         layout: &DropOverlayLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -427,17 +427,11 @@ impl crate::primitive::Primitive for DropOverlay {
     fn paint_cells(
         &self,
         layout: &DropOverlayLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(layout, &mut surface, theme);
+        let theme = env.theme();
+        cell_paint::paint(layout, cells, theme);
     }
 }
 
@@ -482,6 +476,7 @@ pub(crate) mod cell_paint {
             let x1 = (h.x + h.width).round() as u16;
             let y1 = (h.y + h.height).round() as u16;
             let tint_bg = crate::tui::ratatui_color(highlight_tint(theme));
+            // CSR: ratatui_buffer escape hatch
             if let Some(buf) = surface.ratatui_buffer() {
                 let area = buf.area;
                 for y in y0..y1 {
@@ -519,7 +514,7 @@ pub(crate) mod cell_paint {
 
         fn paint_into(overlay: &DropOverlay, buf: &mut Buffer, theme: &Theme) {
             let mut cursor_sink = None;
-            let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            let mut surface = crate::tui::cell_surface::TuiCellSurface::over(
                 buf,
                 crate::backend::ColorDepth::TrueColor,
                 &mut cursor_sink,

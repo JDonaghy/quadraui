@@ -67,7 +67,6 @@
 
 use crate::compose::Handled;
 use crate::event::Rect;
-use crate::style::Style;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
@@ -1737,9 +1736,10 @@ impl crate::primitive::Primitive for StatusBar {
         &self,
         layout: &StatusBarPrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -1775,23 +1775,17 @@ impl crate::primitive::Primitive for StatusBar {
     fn paint_cells(
         &self,
         layout: &StatusBarPrimitiveLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         let area = Rect::new(
             layout.area.x.max(0.0).round(),
             layout.area.y.max(0.0).round(),
             layout.area.width.max(0.0).round(),
             layout.area.height.max(0.0).round(),
         );
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, &layout.layout, area, &mut surface, theme, None, None);
+        cell_paint::paint(self, &layout.layout, area, cells, theme, None, None);
     }
 }
 
@@ -2526,7 +2520,7 @@ mod cell_paint_tests {
         pressed_id: Option<&WidgetId>,
     ) -> StatusBarLayout {
         let mut cursor_sink = None;
-        let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+        let mut surface = TuiCellSurface::over(buf, ColorDepth::TrueColor, &mut cursor_sink);
         super::cell_paint::paint(
             bar,
             layout,

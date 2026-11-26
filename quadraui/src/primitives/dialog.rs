@@ -1904,6 +1904,7 @@ pub(crate) mod cell_paint {
                     // already resolved the positions; the rasteriser
                     // repaints from `input_bounds`, with no hover/pressed
                     // state on the dialog paint path.
+                    // CSR: ratatui_buffer escape hatch
                     if let Some(buf) = surface.ratatui_buffer() {
                         let area = ratatui::layout::Rect::new(ix, iy, iw, 1);
                         crate::primitives::toolbar::cell_paint::draw_toolbar(
@@ -2156,9 +2157,10 @@ impl crate::primitive::Primitive for Dialog {
         &self,
         layout: &DialogPrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -2188,17 +2190,11 @@ impl crate::primitive::Primitive for Dialog {
     fn paint_cells(
         &self,
         layout: &DialogPrimitiveLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, &layout.layout, &mut surface, theme, layout.nerd_fonts);
+        let theme = env.theme();
+        cell_paint::paint(self, &layout.layout, cells, theme, layout.nerd_fonts);
     }
 }
 
@@ -4354,7 +4350,7 @@ mod cell_test_paint {
         buf: &'a mut Buffer,
         sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
     ) -> impl crate::CellSurface + 'a {
-        crate::tui::cell_surface::TuiCellSurface::new(
+        crate::tui::cell_surface::TuiCellSurface::over(
             buf,
             crate::backend::ColorDepth::TrueColor,
             sink,

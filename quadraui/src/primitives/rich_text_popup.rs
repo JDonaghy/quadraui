@@ -846,9 +846,10 @@ impl Primitive for RichTextPopup {
         &self,
         layout: &RichTextPopupPrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         let _ = style;
         #[cfg(any(
             feature = "gtk",
@@ -879,17 +880,11 @@ impl Primitive for RichTextPopup {
     fn paint_cells(
         &self,
         layout: &RichTextPopupPrimitiveLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, &layout.layout, &mut surface, theme);
+        let theme = env.theme();
+        cell_paint::paint(self, &layout.layout, cells, theme);
     }
 }
 
@@ -2448,7 +2443,7 @@ mod cell_test_paint {
         buf: &'a mut Buffer,
         sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
     ) -> impl crate::CellSurface + 'a {
-        crate::tui::cell_surface::TuiCellSurface::new(
+        crate::tui::cell_surface::TuiCellSurface::over(
             buf,
             crate::backend::ColorDepth::TrueColor,
             sink,

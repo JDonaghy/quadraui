@@ -26,11 +26,9 @@ mod board;
 mod braille;
 mod canvas;
 mod cell_grid;
-// `pub(crate)` rather than private: `Switch`'s own `Primitive::paint_cells`
-// reaches `TuiCellSurface` directly to adapt its raw `Buffer` into the
-// `CellSurface` its own cell painter takes, the same "`Buffer` -> `CellSurface`
-// adapter is private to `crate::tui`" shape `command_line` below documents for
-// itself.
+// `pub(crate)` rather than private: widget code outside `crate::tui` builds
+// a `TuiCellSurface` over a bare `Buffer` for its own painters and tests.
+// The public adapter is `BufferCellSurface`, re-exported below.
 pub(crate) mod cell_surface;
 // No reacher in `~/src/vimcode/src`, `~/src/coord-tui/src`, or any in-tree
 // consumer reaches either module-qualified (`crate::tui::caps::…`) —
@@ -106,6 +104,7 @@ pub use board::{draw_board, tui_board_layout};
 pub use canvas::{draw_canvas, tui_canvas_layout, tui_canvas_region_hit_test};
 #[doc(hidden)]
 pub use cell_grid::{draw_cell_grid, tui_cell_grid_layout};
+pub use cell_surface::BufferCellSurface;
 #[doc(hidden)]
 pub use chart::{draw_chart, tui_chart_layout};
 pub use data_table::draw_data_table;

@@ -431,7 +431,7 @@ pub struct TuiBackend {
     /// call on the surface [`Self::cell_surface`] hands out this frame.
     ///
     /// [`Self::cell_surface`] passes `&mut self.last_cell_surface_cursor`
-    /// into [`super::cell_surface::TuiCellSurface::new`] as its write-back
+    /// into [`super::cell_surface::TuiCellSurface::over`] as its write-back
     /// sink, the same "buffer-only paint → frame-level side effect" handoff
     /// `last_cursor_position` uses for `draw_editor`'s caret — see that
     /// field's own doc. [`Self::take_last_cell_surface_cursor`] consumes it
@@ -2790,12 +2790,12 @@ impl Backend for TuiBackend {
         // expression would conflict even though the fields are disjoint,
         // since `current_frame_mut`'s return value keeps the first one
         // alive for the compiler's purposes. See
-        // `TuiCellSurface::new`'s doc for why the parameter itself is a
+        // `TuiCellSurface::over`'s doc for why the parameter itself is a
         // raw pointer.
         let cursor_sink: *mut Option<(u16, u16, crate::CursorShape)> =
             &mut self.last_cell_surface_cursor;
         let buf = self.current_frame_mut()?.buffer_mut();
-        let surface = super::cell_surface::TuiCellSurface::new(buf, depth, cursor_sink);
+        let surface = super::cell_surface::TuiCellSurface::over(buf, depth, cursor_sink);
         Some(self.cell_surface_scratch.insert(surface))
     }
 

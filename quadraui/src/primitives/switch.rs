@@ -256,9 +256,9 @@ impl crate::primitive::Primitive for Switch {
         &self,
         layout: &SwitchLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -284,17 +284,11 @@ impl crate::primitive::Primitive for Switch {
     fn paint_cells(
         &self,
         layout: &SwitchLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, layout, &mut surface, theme);
+        let theme = env.theme();
+        cell_paint::paint(self, layout, cells, theme);
     }
 }
 
@@ -886,7 +880,12 @@ mod contract_tests {
         #[cfg(feature = "tui")]
         {
             let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 4, 1));
-            Primitive::paint_cells(&s, &layout, &mut buf, &crate::theme::Theme::default());
+            Primitive::paint_cells(
+                &s,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&crate::theme::Theme::default(), &crate::Style::default()),
+            );
             assert_eq!(buf[(1u16, 0u16)].symbol(), " ");
             assert_eq!(buf[(2u16, 0u16)].symbol(), "●");
         }

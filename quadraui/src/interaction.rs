@@ -1,5 +1,5 @@
 //! `InteractionState` — a single hover/pressed store keyed by
-//! [`WidgetId`].
+//! [`WidgetId`] and the widget's own sub-part.
 //!
 //! ## Why this exists
 //!
@@ -21,9 +21,12 @@
 //!
 //! ## The `Backend` trait
 //!
-//! No `Backend` paint method takes an `InteractionState`: a widget painted
+//! No `Backend` paint method takes an `InteractionState`. A widget painted
 //! through the widget contract ([`crate::DrawsPrimitives::draw_dyn`])
-//! carries any hover state it renders on its own descriptor.
+//! reads hover and press from the [`crate::PaintEnv`] it is handed, which
+//! carries either the caller's own `InteractionState` (passed as the
+//! [`crate::PaintState`] argument) or, when the caller passes `&()`, the
+//! ambient pointer state this module tracks.
 //!
 //! ## Methods that remain positional
 //!
@@ -55,9 +58,15 @@
 //!
 //! ## Ownership
 //!
-//! Every consumer owns and feeds its own `InteractionState` instance
-//! by hand inside its own `AppLogic::handle`. The runner does not hold
-//! a centralized instance.
+//! Two owners coexist. The runner feeds every event through
+//! [`track_pointer`] (from [`crate::runtime::preprocess_event`]), which
+//! keeps one ambient, per-thread `InteractionState` resolved against the
+//! widgets [`crate::DrawsPrimitives::draw_dyn`] painted in the frame on
+//! screen; [`ambient_interaction`] reads it and
+//! [`reset_ambient_interaction`] clears it. A consumer that wants
+//! different hover (a test pinning a state, a host suppressing hover)
+//! owns its own instance and passes it to `draw_dyn` explicitly, which
+//! takes precedence over the ambient one for that call.
 //!
 //! ## Usage
 //!
@@ -89,74 +98,107 @@
 //! `examples/common/toolbar_app.rs` demonstrates the whole loop
 //! end-to-end against a real backend.
 
+use std::cell::Cell;
+
 use crate::event::{MouseButton, UiEvent};
+use crate::focus::FocusAddress;
 use crate::types::WidgetId;
 
 /// Tracks which widget is hovered and which is pressed, keyed by
-/// [`WidgetId`] rather than by index or raw coordinates.
+/// [`FocusAddress`] — a [`WidgetId`] plus, when the widget names one, the
+/// sub-part ([`crate::interactive::SubTarget`]) under the pointer —
+/// rather than by index or raw coordinates.
 ///
 /// Cheap to keep one per frame (or one per app, reused every frame) —
-/// two `Option<WidgetId>` slots plus whatever hit-test the caller
-/// supplies to [`Self::handle_mouse`].
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// two `Option<FocusAddress>` slots plus whatever hit-test the caller
+/// supplies to [`Self::handle_mouse`] / [`Self::handle_mouse_at`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct InteractionState {
-    hovered: Option<WidgetId>,
-    pressed: Option<WidgetId>,
+    hovered: Option<FocusAddress>,
+    pressed: Option<FocusAddress>,
 }
 
 impl InteractionState {
     /// Construct an empty state — nothing hovered, nothing pressed.
-    pub fn new() -> Self {
-        Self::default()
+    pub const fn new() -> Self {
+        Self {
+            hovered: None,
+            pressed: None,
+        }
     }
 
-    /// Build a state directly from an owned hovered / pressed pair.
-    ///
-    /// This is the adapter the deprecated positional `Backend::draw_*`
-    /// shims use to forward `(hovered_id, pressed_id)` into their
-    /// `*_interactive` twins, and it is equally useful for
-    /// a host mid-migration that still keeps the two ids in separate
-    /// fields.
+    /// Build a state directly from a hovered / pressed widget pair, with
+    /// no sub-part on either side.
     pub fn from_parts(hovered: Option<WidgetId>, pressed: Option<WidgetId>) -> Self {
+        Self {
+            hovered: hovered.map(|id| (id, None)),
+            pressed: pressed.map(|id| (id, None)),
+        }
+    }
+
+    /// Build a state directly from a hovered / pressed address pair.
+    pub fn from_targets(hovered: Option<FocusAddress>, pressed: Option<FocusAddress>) -> Self {
         Self { hovered, pressed }
     }
 
     /// The currently hovered widget, if any.
     pub fn hovered(&self) -> Option<&WidgetId> {
-        self.hovered.as_ref()
+        self.hovered.as_ref().map(|(id, _)| id)
     }
 
     /// The currently pressed widget, if any.
     pub fn pressed(&self) -> Option<&WidgetId> {
-        self.pressed.as_ref()
+        self.pressed.as_ref().map(|(id, _)| id)
     }
 
-    /// Whether `id` is the currently hovered widget.
+    /// The currently hovered address — widget plus sub-part — if any.
+    pub fn hovered_target(&self) -> Option<FocusAddress> {
+        self.hovered
+    }
+
+    /// The currently pressed address — widget plus sub-part — if any.
+    pub fn pressed_target(&self) -> Option<FocusAddress> {
+        self.pressed
+    }
+
+    /// Whether `id` is the currently hovered widget, on any sub-part.
     pub fn is_hovered(&self, id: &WidgetId) -> bool {
-        self.hovered.as_ref() == Some(id)
+        self.hovered() == Some(id)
     }
 
-    /// Whether `id` is the currently pressed widget.
+    /// Whether `id` is the currently pressed widget, on any sub-part.
     pub fn is_pressed(&self, id: &WidgetId) -> bool {
-        self.pressed.as_ref() == Some(id)
+        self.pressed() == Some(id)
     }
 
-    /// Set the hovered widget directly. Returns `true` if it changed
-    /// (caller should redraw).
+    /// Set the hovered widget directly, with no sub-part. Returns `true`
+    /// if it changed (caller should redraw).
     pub fn set_hovered(&mut self, id: Option<WidgetId>) -> bool {
-        if self.hovered != id {
-            self.hovered = id;
+        self.set_hovered_target(id.map(|id| (id, None)))
+    }
+
+    /// Set the hovered address directly. Returns `true` if it changed
+    /// (caller should redraw).
+    pub fn set_hovered_target(&mut self, target: Option<FocusAddress>) -> bool {
+        if self.hovered != target {
+            self.hovered = target;
             true
         } else {
             false
         }
     }
 
-    /// Set the pressed widget directly. Returns `true` if it changed
-    /// (caller should redraw).
+    /// Set the pressed widget directly, with no sub-part. Returns `true`
+    /// if it changed (caller should redraw).
     pub fn set_pressed(&mut self, id: Option<WidgetId>) -> bool {
-        if self.pressed != id {
-            self.pressed = id;
+        self.set_pressed_target(id.map(|id| (id, None)))
+    }
+
+    /// Set the pressed address directly. Returns `true` if it changed
+    /// (caller should redraw).
+    pub fn set_pressed_target(&mut self, target: Option<FocusAddress>) -> bool {
+        if self.pressed != target {
+            self.pressed = target;
             true
         } else {
             false
@@ -181,7 +223,7 @@ impl InteractionState {
     /// | event | effect | uses `hit_test`? |
     /// |---|---|---|
     /// | [`UiEvent::MouseMoved`] | `hovered = hit_test(pos)` | **always** — `MouseMoved` never carries a resolved `widget` |
-    /// | [`UiEvent::MouseDown`] (left only) | `pressed = event.widget, else hit_test(pos)` | only when `widget` is `None` |
+    /// | [`UiEvent::MouseDown`] (left only) | `pressed = event.widget, else hit_test(pos)` | only decides the result when `widget` is `None` |
     /// | [`UiEvent::MouseUp`] (left only) | `pressed = None` | **never** — release always clears, wherever it lands |
     ///
     /// `hit_test` resolves a screen position to the widget under it;
@@ -196,7 +238,8 @@ impl InteractionState {
     /// does).
     ///
     /// Returns `true` if hovered or pressed state changed (caller
-    /// should redraw).
+    /// should redraw). Every address this sets carries no sub-part; see
+    /// [`Self::handle_mouse_at`] for the sub-part-aware form.
     ///
     /// # Two deliberate behaviours worth knowing
     ///
@@ -218,9 +261,25 @@ impl InteractionState {
         event: &UiEvent,
         hit_test: impl FnOnce(f32, f32) -> Option<WidgetId>,
     ) -> bool {
+        self.handle_mouse_at(event, |x, y| hit_test(x, y).map(|id| (id, None)))
+    }
+
+    /// [`Self::handle_mouse`], with a hit test that resolves a position
+    /// to a full [`FocusAddress`] so hover and press track the sub-part
+    /// under the pointer, not only the widget.
+    ///
+    /// A left `MouseDown` whose event carries a resolved `widget` presses
+    /// that widget: on the sub-part `hit_test` found when it agrees on the
+    /// widget, on no sub-part otherwise. With no resolved `widget`, the
+    /// hit-test result is pressed as-is.
+    pub fn handle_mouse_at(
+        &mut self,
+        event: &UiEvent,
+        hit_test: impl FnOnce(f32, f32) -> Option<FocusAddress>,
+    ) -> bool {
         match event {
             UiEvent::MouseMoved { position, .. } => {
-                self.set_hovered(hit_test(position.x, position.y))
+                self.set_hovered_target(hit_test(position.x, position.y))
             }
             UiEvent::MouseDown {
                 widget,
@@ -228,8 +287,13 @@ impl InteractionState {
                 button: MouseButton::Left,
                 ..
             } => {
-                let id = (*widget).or_else(|| hit_test(position.x, position.y));
-                self.set_pressed(id)
+                let hit = hit_test(position.x, position.y);
+                let target = match (*widget, hit) {
+                    (Some(w), Some(h)) if h.0 == w => Some(h),
+                    (Some(w), _) => Some((w, None)),
+                    (None, hit) => hit,
+                };
+                self.set_pressed_target(target)
             }
             UiEvent::MouseUp {
                 button: MouseButton::Left,
@@ -238,6 +302,76 @@ impl InteractionState {
             _ => false,
         }
     }
+
+    /// Update hovered/pressed state from `event`, hit-testing against the
+    /// widgets [`crate::DrawsPrimitives::draw_dyn`] painted in the frame
+    /// currently on screen ([`crate::primitive::painted_hit`]).
+    ///
+    /// Follows [`Self::handle_mouse_at`], plus two pointer rules: a left
+    /// `MouseDown` also moves hover to the address under the press (the
+    /// pointer is there, whether or not a `MouseMoved` preceded it), and
+    /// [`UiEvent::WindowFocused`]`(false)` clears both slots, since this
+    /// window cannot see where the pointer is. Applying the same event
+    /// twice changes nothing the second time.
+    pub fn track_painted(&mut self, event: &UiEvent) -> bool {
+        match event {
+            UiEvent::WindowFocused(false) => self.clear(),
+            UiEvent::MouseDown {
+                position,
+                button: MouseButton::Left,
+                ..
+            } => {
+                let hit = crate::primitive::painted_hit(position.x, position.y);
+                let hovered = self.set_hovered_target(hit);
+                let pressed = self.handle_mouse_at(event, |_, _| hit);
+                hovered || pressed
+            }
+            UiEvent::MouseMoved { .. }
+            | UiEvent::MouseUp {
+                button: MouseButton::Left,
+                ..
+            } => self.handle_mouse_at(event, crate::primitive::painted_hit),
+            _ => false,
+        }
+    }
+}
+
+thread_local! {
+    /// The pointer's hover/press state for the frame on screen, resolved
+    /// against [`crate::primitive::PaintedWidgets`].
+    ///
+    /// A `thread_local!` for the same reasons that store is one: it is
+    /// read from inside [`crate::DrawsPrimitives::draw_dyn`], which can
+    /// only reach backend state through `Backend` methods (whose count is
+    /// ratcheted downwards), and every backend handles input and paints
+    /// on the one thread that owns its event loop.
+    static AMBIENT: Cell<InteractionState> = const { Cell::new(InteractionState::new()) };
+}
+
+/// Feed `event` into this thread's ambient pointer state
+/// ([`InteractionState::track_painted`]). Returns `true` if hover or
+/// press changed, so the caller should redraw.
+pub fn track_pointer(event: &UiEvent) -> bool {
+    AMBIENT.with(|ambient| {
+        let mut state = ambient.get();
+        let changed = state.track_painted(event);
+        ambient.set(state);
+        changed
+    })
+}
+
+/// A snapshot of this thread's ambient pointer state — what
+/// [`crate::DrawsPrimitives::draw_dyn`] paints with when its caller
+/// passes `&()`.
+pub fn ambient_interaction() -> InteractionState {
+    AMBIENT.with(Cell::get)
+}
+
+/// Clear this thread's ambient pointer state — for a test that must not
+/// see hover left over from an earlier click, or a host tearing down the
+/// widget tree the state refers to.
+pub fn reset_ambient_interaction() {
+    AMBIENT.with(|ambient| ambient.set(InteractionState::new()));
 }
 
 #[cfg(test)]
@@ -434,5 +568,114 @@ mod tests {
         );
         assert!(!changed);
         assert_eq!(state.hovered(), None);
+    }
+
+    use crate::interactive::SubTarget;
+    use crate::primitive::{clear_painted_widgets, record_painted_widget, PaintedWidget};
+
+    /// Paint one widget into this thread's record: `id` over x in
+    /// `[0, 20)`, with sub-part 0 over `[0, 10)` and sub-part 1 over
+    /// `[10, 20)`.
+    fn paint_two_part_widget(id: WidgetId) {
+        clear_painted_widgets();
+        record_painted_widget(PaintedWidget {
+            id,
+            rect: crate::event::Rect::new(0.0, 0.0, 20.0, 1.0),
+            layout: Box::new(()),
+            sub_regions: vec![
+                (crate::event::Rect::new(0.0, 0.0, 10.0, 1.0), SubTarget(0)),
+                (crate::event::Rect::new(10.0, 0.0, 10.0, 1.0), SubTarget(1)),
+            ],
+        });
+    }
+
+    #[test]
+    fn track_painted_follows_the_sub_part_under_the_pointer() {
+        let id = WidgetId::new("two-part");
+        paint_two_part_widget(id);
+        let mut state = InteractionState::new();
+        assert!(state.track_painted(&mouse_moved(2.0, 0.0)));
+        assert_eq!(state.hovered_target(), Some((id, Some(SubTarget(0)))));
+        assert!(state.track_painted(&mouse_moved(12.0, 0.0)));
+        assert_eq!(state.hovered_target(), Some((id, Some(SubTarget(1)))));
+        assert!(
+            !state.track_painted(&mouse_moved(13.0, 0.0)),
+            "a move within the same sub-part is not a change"
+        );
+        assert!(state.track_painted(&mouse_moved(50.0, 0.0)));
+        assert_eq!(state.hovered_target(), None);
+        clear_painted_widgets();
+    }
+
+    #[test]
+    fn track_painted_press_holds_its_address_while_the_pointer_drags_off() {
+        let id = WidgetId::new("two-part");
+        paint_two_part_widget(id);
+        let mut state = InteractionState::new();
+        assert!(state.track_painted(&mouse_down(None, 3.0, 0.0)));
+        assert_eq!(state.pressed_target(), Some((id, Some(SubTarget(0)))));
+        assert_eq!(
+            state.hovered_target(),
+            Some((id, Some(SubTarget(0)))),
+            "a press moves hover to the pressed address"
+        );
+        assert!(
+            !state.track_painted(&mouse_down(None, 3.0, 0.0)),
+            "the same event twice changes nothing"
+        );
+        assert!(state.track_painted(&mouse_moved(15.0, 0.0)));
+        assert_eq!(state.pressed_target(), Some((id, Some(SubTarget(0)))));
+        assert_eq!(state.hovered_target(), Some((id, Some(SubTarget(1)))));
+        assert!(state.track_painted(&mouse_up(15.0, 0.0)));
+        assert_eq!(state.pressed_target(), None);
+        clear_painted_widgets();
+    }
+
+    #[test]
+    fn track_painted_press_falls_back_to_the_events_own_widget() {
+        let id = WidgetId::new("two-part");
+        paint_two_part_widget(id);
+        let other = WidgetId::new("resolved-elsewhere");
+        let mut state = InteractionState::new();
+        state.track_painted(&mouse_down(Some(other), 3.0, 0.0));
+        assert_eq!(state.pressed_target(), Some((other, None)));
+        state.track_painted(&mouse_down(Some(id), 12.0, 0.0));
+        assert_eq!(state.pressed_target(), Some((id, Some(SubTarget(1)))));
+        clear_painted_widgets();
+    }
+
+    #[test]
+    fn track_painted_window_blur_clears_both_slots() {
+        let id = WidgetId::new("two-part");
+        paint_two_part_widget(id);
+        let mut state = InteractionState::new();
+        state.track_painted(&mouse_down(None, 3.0, 0.0));
+        assert!(state.track_painted(&UiEvent::WindowFocused(false)));
+        assert_eq!(state, InteractionState::new());
+        assert!(!state.track_painted(&UiEvent::WindowFocused(false)));
+        clear_painted_widgets();
+    }
+
+    #[test]
+    fn handle_mouse_keeps_widget_level_addresses() {
+        let mut state = InteractionState::new();
+        state.handle_mouse(&mouse_moved(1.0, 0.0), |_, _| Some(WidgetId::new("w")));
+        assert_eq!(state.hovered_target(), Some((WidgetId::new("w"), None)));
+    }
+
+    #[test]
+    fn ambient_state_tracks_pointer_events_until_reset() {
+        let id = WidgetId::new("two-part");
+        paint_two_part_widget(id);
+        reset_ambient_interaction();
+        assert!(track_pointer(&mouse_moved(12.0, 0.0)));
+        assert!(!track_pointer(&mouse_moved(12.0, 0.0)));
+        assert_eq!(
+            ambient_interaction().hovered_target(),
+            Some((id, Some(SubTarget(1))))
+        );
+        reset_ambient_interaction();
+        assert_eq!(ambient_interaction(), InteractionState::new());
+        clear_painted_widgets();
     }
 }

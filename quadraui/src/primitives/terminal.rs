@@ -692,9 +692,9 @@ impl crate::primitive::Primitive for Terminal {
         &self,
         layout: &TerminalLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -715,17 +715,11 @@ impl crate::primitive::Primitive for Terminal {
     fn paint_cells(
         &self,
         layout: &TerminalLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, layout, &mut surface, theme);
+        let theme = env.theme();
+        cell_paint::paint(self, layout, cells, theme);
     }
 }
 
@@ -902,9 +896,9 @@ impl crate::primitive::Primitive for TerminalDivider {
         &self,
         layout: &TerminalDividerLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -929,16 +923,11 @@ impl crate::primitive::Primitive for TerminalDivider {
     fn paint_cells(
         &self,
         layout: &TerminalDividerLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint_divider(layout, &mut surface, theme);
+        let theme = env.theme();
+        cell_paint::paint_divider(layout, cells, theme);
     }
 }
 
@@ -2616,7 +2605,12 @@ mod cell_paint_tests {
         let rect = Rect::new(0.0, 0.0, width as f32, height as f32);
         let layout = Primitive::layout(term, &LayoutCtx::new(1.0, 1.0, false), rect);
         let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
-        Primitive::paint_cells(term, &layout, &mut buf, &Theme::default());
+        Primitive::paint_cells(
+            term,
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            &crate::PaintEnv::new(&Theme::default(), &crate::Style::default()),
+        );
         buf
     }
 
@@ -2820,7 +2814,12 @@ mod cell_paint_tests {
         let rect = Rect::new(2.0, 1.0, 1.0, 3.0);
         let layout = Primitive::layout(&d, &LayoutCtx::new(1.0, 1.0, false), rect);
         let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, 5, 5));
-        Primitive::paint_cells(&d, &layout, &mut buf, &theme);
+        Primitive::paint_cells(
+            &d,
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            &crate::PaintEnv::new(&theme, &crate::Style::default()),
+        );
         for y in 1..4 {
             assert_eq!(buf[(2, y)].symbol(), "│");
             assert_eq!(buf[(2, y)].fg, color(theme.separator));

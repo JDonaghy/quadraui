@@ -1119,9 +1119,9 @@ impl crate::primitive::Primitive for TreeTable {
         &self,
         layout: &Self::Layout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -1157,7 +1157,7 @@ impl crate::primitive::Primitive for TreeTable {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme, _style);
+            let _ = (layout, surface, theme);
         }
     }
 
@@ -1170,9 +1170,14 @@ impl crate::primitive::Primitive for TreeTable {
     fn paint_cells(
         &self,
         layout: &Self::Layout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        // CSR: ratatui_buffer escape hatch
+        let buf = cells
+            .ratatui_buffer()
+            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         use crate::primitive::PaintState;
         use crate::primitives::data_table::DataTablePaintState;
 
@@ -1608,8 +1613,7 @@ mod primitive_parity_tests {
             &tt,
             &via_primitive_layout,
             &mut via_primitive_surface,
-            &theme,
-            &style,
+            &crate::PaintEnv::new(&theme, &style),
         );
 
         let state = DataTablePaintState::default();

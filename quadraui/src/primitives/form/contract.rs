@@ -523,9 +523,9 @@ impl Primitive for Form {
         &self,
         layout: &Self::Layout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -546,7 +546,7 @@ impl Primitive for Form {
                     continue;
                 };
                 surface.surface_push_clip(toolbar_layout.area);
-                Primitive::paint(toolbar, toolbar_layout, surface, theme, style);
+                Primitive::paint(toolbar, toolbar_layout, surface, env);
                 surface.surface_pop_clip();
             }
         }
@@ -556,7 +556,7 @@ impl Primitive for Form {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme, style);
+            let _ = (layout, surface, theme);
         }
     }
 
@@ -566,9 +566,14 @@ impl Primitive for Form {
     fn paint_cells(
         &self,
         layout: &Self::Layout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        // CSR: ratatui_buffer escape hatch
+        let buf = cells
+            .ratatui_buffer()
+            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         super::cell_paint::draw_form(buf, area, self, theme);
     }

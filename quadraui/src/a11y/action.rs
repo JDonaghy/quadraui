@@ -1028,8 +1028,7 @@ mod tests {
             &self,
             _layout: &Rect,
             _surface: &mut dyn crate::paint_surface::PaintSurface,
-            _theme: &crate::theme::Theme,
-            _style: &crate::style::Style,
+            _env: &crate::PaintEnv,
         ) {
         }
     }

@@ -81,6 +81,7 @@ const BACKENDS: &[BackendModule] = &[
         ],
         stable_flat_names: &[
             "TuiBackend",
+            "BufferCellSurface",
             "char_cell_width",
             "display_width",
             "draw_form",

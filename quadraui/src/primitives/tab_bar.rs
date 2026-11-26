@@ -3308,9 +3308,10 @@ impl crate::primitive::Primitive for TabBar {
         &self,
         layout: &Self::Layout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -3366,9 +3367,14 @@ impl crate::primitive::Primitive for TabBar {
     fn paint_cells(
         &self,
         layout: &Self::Layout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        // CSR: ratatui_buffer escape hatch
+        let buf = cells
+            .ratatui_buffer()
+            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         let _ = cell_paint::paint(
             buf,
@@ -4033,7 +4039,12 @@ mod interactive_tests {
         let b = bar(&["main.rs", "lib.rs"], 0);
         let layout = layout_for(&b);
         let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 1));
-        Primitive::paint_cells(&b, &layout, &mut buf, &crate::theme::Theme::default());
+        Primitive::paint_cells(
+            &b,
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            &crate::PaintEnv::new(&crate::theme::Theme::default(), &crate::Style::default()),
+        );
         let painted: String = (0..10).map(|x| buf[(x, 0)].symbol()).collect();
         assert!(
             painted.starts_with("main.rs"),
@@ -5185,8 +5196,7 @@ mod primitive_parity_tests {
             &bar,
             &via_primitive_layout,
             &mut via_primitive_surface,
-            &theme,
-            &style,
+            &crate::PaintEnv::new(&theme, &style),
         );
 
         let measure = crate::primitives::layout_metrics::CharWidthMeasure(ctx.char_width);

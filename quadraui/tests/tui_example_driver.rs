@@ -10651,7 +10651,7 @@ mod three_widget_focus_demo {
     use quadraui::{
         A11yInfo, A11yPrimitive, AppLogic, Backend, Color, EventCx, FocusSpec, FocusStop, Handled,
         Interactive, Key, LayoutCtx, Never, PaintSurface, Primitive, Reaction, Rect, ScreenLayout,
-        Style, Surface, Theme, UiEvent, WidgetId,
+        Surface, UiEvent, WidgetId,
     };
     use std::cell::RefCell;
 
@@ -10710,13 +10710,7 @@ mod three_widget_focus_demo {
             rect
         }
 
-        fn paint(
-            &self,
-            layout: &Rect,
-            surface: &mut dyn PaintSurface,
-            _theme: &Theme,
-            _style: &Style,
-        ) {
+        fn paint(&self, layout: &Rect, surface: &mut dyn PaintSurface, _env: &quadraui::PaintEnv) {
             surface.surface_draw_text_run(*layout, self.label, Color::rgb(255, 255, 255));
         }
     }
@@ -10770,13 +10764,7 @@ mod three_widget_focus_demo {
             rect
         }
 
-        fn paint(
-            &self,
-            layout: &Rect,
-            surface: &mut dyn PaintSurface,
-            _theme: &Theme,
-            _style: &Style,
-        ) {
+        fn paint(&self, layout: &Rect, surface: &mut dyn PaintSurface, _env: &quadraui::PaintEnv) {
             surface.surface_draw_text_run(*layout, self.label, Color::rgb(255, 255, 255));
         }
     }

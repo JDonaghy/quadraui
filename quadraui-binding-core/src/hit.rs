@@ -1571,7 +1571,11 @@ mod tests {
         let layout = Primitive::layout(&primitive, &ctx, area);
         let cell_area = ratatui::layout::Rect::new(0, 0, 10, 4);
         let mut buf = ratatui::buffer::Buffer::empty(cell_area);
-        primitive.paint_cells(&layout, &mut buf, &quadraui::Theme::default());
+        primitive.paint_cells(
+            &layout,
+            &mut quadraui::tui::BufferCellSurface::new(&mut buf),
+            &quadraui::PaintEnv::new(&quadraui::Theme::default(), &quadraui::Style::default()),
+        );
 
         let hits = vec![PaintedHit::Extra {
             id: WidgetId::new("widget"),

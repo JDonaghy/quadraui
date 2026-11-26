@@ -35,9 +35,7 @@
 use std::cell::RefCell;
 
 use quadraui::primitive::{LayoutCtx, Primitive};
-use quadraui::{
-    A11yInfo, A11yPrimitive, Backend, DrawsPrimitives, FontRole, PaintSurface, Rect, Style, Theme,
-};
+use quadraui::{A11yInfo, A11yPrimitive, Backend, DrawsPrimitives, FontRole, PaintSurface, Rect};
 
 /// [`Swatch`]'s fully-resolved layout: the absolute area it was laid out
 /// into, plus the metrics `draw_primitive` measured off the backend for it.
@@ -97,8 +95,7 @@ impl Primitive for Swatch {
         &self,
         layout: &SwatchLayout,
         _surface: &mut dyn PaintSurface,
-        _theme: &Theme,
-        _style: &Style,
+        _env: &quadraui::PaintEnv,
     ) {
         self.painted.borrow_mut().push(layout.area);
     }
@@ -207,23 +204,20 @@ impl Primitive for CellSwatch {
         rect
     }
 
-    fn paint(
-        &self,
-        _layout: &Rect,
-        _surface: &mut dyn PaintSurface,
-        _theme: &Theme,
-        _style: &Style,
-    ) {
-    }
+    fn paint(&self, _layout: &Rect, _surface: &mut dyn PaintSurface, _env: &quadraui::PaintEnv) {}
 
-    fn paint_cells(&self, layout: &Rect, buf: &mut ratatui::buffer::Buffer, _theme: &Theme) {
-        let area = ratatui::layout::Rect::new(
+    fn paint_cells(
+        &self,
+        layout: &Rect,
+        cells: &mut dyn quadraui::CellSurface,
+        _env: &quadraui::PaintEnv,
+    ) {
+        cells.put_char(
             layout.x as u16,
             layout.y as u16,
-            layout.width as u16,
-            layout.height as u16,
+            'X',
+            quadraui::CellSurfaceStyle::default(),
         );
-        buf.set_string(area.x, area.y, "X", ratatui::style::Style::default());
     }
 }
 
@@ -313,5 +307,107 @@ fn win_draw_primitive_paints_the_resolved_layout() {
         vec![area],
         "WinBackend implements PaintSurface, so draw_primitive must call Primitive::paint \
          exactly once with the layout it just resolved"
+    );
+}
+
+/// A widget outside the crate reads hover and press from the
+/// [`quadraui::PaintEnv`] it is painted with, through public API only.
+struct HoverSwatch {
+    id: quadraui::WidgetId,
+    painted: RefCell<Vec<quadraui::Color>>,
+}
+
+impl A11yPrimitive for HoverSwatch {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::default()
+    }
+}
+
+impl Primitive for HoverSwatch {
+    type Layout = Rect;
+    type Event = ();
+
+    fn id(&self) -> Option<&quadraui::WidgetId> {
+        Some(&self.id)
+    }
+
+    fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+        rect
+    }
+
+    fn paint(&self, layout: &Rect, surface: &mut dyn PaintSurface, env: &quadraui::PaintEnv) {
+        let theme = env.theme();
+        let color = if env.is_pressed(&self.id) {
+            theme.accent_bg
+        } else if env.is_hovered(&self.id) {
+            theme.hover_bg
+        } else {
+            theme.background
+        };
+        surface.surface_fill_rect(*layout, color);
+        self.painted.borrow_mut().push(color);
+    }
+}
+
+#[test]
+fn an_external_primitive_reads_hover_and_press_from_its_paint_env() {
+    use quadraui::{InteractionState, PaintEnv, Style, Theme};
+
+    struct Sink;
+    impl PaintSurface for Sink {
+        fn surface_begin_frame(&mut self, _v: quadraui::Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> quadraui::Viewport {
+            quadraui::Viewport::new(0.0, 0.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            16.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            8.0
+        }
+        fn surface_measure_text(&self, _t: &str) -> (f32, f32) {
+            (0.0, 0.0)
+        }
+        fn surface_fill_rect(&mut self, _r: Rect, _c: quadraui::Color) {}
+        fn surface_fill_rounded_rect(&mut self, _r: Rect, _radius: f32, _c: quadraui::Color) {}
+        fn surface_stroke_rect(&mut self, _r: Rect, _c: quadraui::Color, _w: f32) {}
+        fn surface_draw_text_run(&mut self, _r: Rect, _t: &str, _c: quadraui::Color) {}
+        fn surface_draw_line(
+            &mut self,
+            _from: quadraui::Point,
+            _to: quadraui::Point,
+            _c: quadraui::Color,
+            _w: f32,
+        ) {
+        }
+        fn surface_push_clip(&mut self, _r: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(
+            &mut self,
+            _r: Rect,
+            _i: &quadraui::Image,
+        ) -> quadraui::backend::ImagePaintResult {
+            quadraui::backend::ImagePaintResult::Unsupported
+        }
+    }
+
+    let id = quadraui::WidgetId::new("hover-swatch");
+    let swatch = HoverSwatch {
+        id,
+        painted: RefCell::new(Vec::new()),
+    };
+    let (theme, style) = (Theme::default(), Style::default());
+    let rect = Rect::new(0.0, 0.0, 4.0, 4.0);
+    let rest = InteractionState::new();
+    let hover = InteractionState::from_parts(Some(id), None);
+    let press = InteractionState::from_parts(Some(id), Some(id));
+    for state in [&rest, &hover, &press] {
+        let env = PaintEnv::new(&theme, &style).with_interaction(state);
+        swatch.paint(&rect, &mut Sink, &env);
+    }
+    assert_eq!(
+        *swatch.painted.borrow(),
+        vec![theme.background, theme.hover_bg, theme.accent_bg]
     );
 }

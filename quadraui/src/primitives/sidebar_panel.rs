@@ -257,9 +257,10 @@ impl Primitive for SidebarPanel {
         &self,
         layout: &Self::Layout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -294,12 +295,12 @@ impl Primitive for SidebarPanel {
     fn paint_cells(
         &self,
         layout: &Self::Layout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
         if let (Some(bar), Some(toolbar)) = (&self.toolbar, &layout.toolbar) {
             if toolbar.area.width > 0.0 && toolbar.area.height > 0.0 {
-                Primitive::paint_cells(bar, toolbar, buf, theme);
+                Primitive::paint_cells(bar, toolbar, cells, env);
             }
         }
     }
@@ -1434,7 +1435,11 @@ mod cell_paint_tests {
 
     fn paint(panel: &SidebarPanel, area: Rect, buf: &mut Buffer) -> SidebarPanelLayout {
         let layout = panel.layout(&LayoutCtx::new(1.0, 1.0, false), area);
-        panel.paint_cells(&layout, buf, &Theme::default());
+        panel.paint_cells(
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(buf),
+            &crate::PaintEnv::new(&Theme::default(), &crate::Style::default()),
+        );
         layout
     }
 

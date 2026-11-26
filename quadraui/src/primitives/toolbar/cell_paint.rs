@@ -2062,7 +2062,7 @@ fn draw_embedded_text_field(
     let layout = crate::primitives::text_field::cell_layout(field, area);
     // The painter never moves the cursor, so the sink is never read.
     let mut cursor_sink = None;
-    let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+    let mut surface = crate::tui::cell_surface::TuiCellSurface::over(
         buf,
         crate::backend::ColorDepth::TrueColor,
         &mut cursor_sink,

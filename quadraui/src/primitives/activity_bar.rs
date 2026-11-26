@@ -1117,9 +1117,10 @@ impl crate::primitive::Primitive for ActivityBar {
         &self,
         layout: &ActivityBarPrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -1153,9 +1154,14 @@ impl crate::primitive::Primitive for ActivityBar {
     fn paint_cells(
         &self,
         layout: &ActivityBarPrimitiveLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        // CSR: ratatui_buffer escape hatch
+        let buf = cells
+            .ratatui_buffer()
+            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = ratatui::layout::Rect::new(
             layout.area.x.max(0.0).round() as u16,
             layout.area.y.max(0.0).round() as u16,

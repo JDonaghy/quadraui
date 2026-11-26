@@ -2509,9 +2509,10 @@ impl crate::primitive::Primitive for Palette {
         &self,
         layout: &PalettePrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -2551,16 +2552,10 @@ impl crate::primitive::Primitive for Palette {
     fn paint_cells(
         &self,
         layout: &PalettePrimitiveLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
+        let theme = env.theme();
         // Snapped to whole cells the way every TUI rect is, so a
         // fractional popup rect paints where its hit test resolves.
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
@@ -2572,7 +2567,7 @@ impl crate::primitive::Primitive for Palette {
                 area.width as f32,
                 area.height as f32,
             ),
-            &mut surface,
+            cells,
             theme,
             layout.backdrop_opacity,
             layout.nerd_fonts_enabled,
@@ -3844,7 +3839,7 @@ mod tests {
             backdrop_opacity: f32,
         ) {
             let mut cursor_sink = None;
-            let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            let mut surface = crate::tui::cell_surface::TuiCellSurface::over(
                 buf,
                 crate::backend::ColorDepth::TrueColor,
                 &mut cursor_sink,

@@ -1108,9 +1108,10 @@ impl Primitive for ContextMenu {
         &self,
         layout: &ContextMenuPrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -1144,20 +1145,14 @@ impl Primitive for ContextMenu {
     fn paint_cells(
         &self,
         layout: &ContextMenuPrimitiveLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
+        let theme = env.theme();
         cell_paint::paint(
             self,
             &layout.layout,
-            &mut surface,
+            cells,
             theme,
             Some(&self.glyphs),
             layout.nerd_fonts_enabled,
@@ -1966,7 +1961,7 @@ mod cell_paint_tests {
         nerd_fonts_enabled: bool,
     ) {
         let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::over(
             buf,
             crate::backend::ColorDepth::TrueColor,
             &mut cursor_sink,
@@ -3841,8 +3836,7 @@ mod tests {
                     &m,
                     &layout,
                     &mut surface,
-                    &Theme::default(),
-                    &Style::default(),
+                    &crate::PaintEnv::new(&Theme::default(), &Style::default()),
                 );
                 surface.runs
             };
@@ -4921,7 +4915,12 @@ mod widget_contract_tests {
 
         let layout = resolved(&menu);
         let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 30, 10));
-        Primitive::paint_cells(&menu, &layout, &mut buf, &crate::theme::Theme::default());
+        Primitive::paint_cells(
+            &menu,
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            &crate::PaintEnv::new(&crate::theme::Theme::default(), &crate::Style::default()),
+        );
 
         let inner_x = layout.layout.bounds.x.round() as u16;
         let right = inner_x + layout.layout.bounds.width.round() as u16;
@@ -4956,7 +4955,12 @@ mod widget_contract_tests {
             let ctx = LayoutCtx::new(1.0, 1.0, nerd);
             let layout = Primitive::layout(&menu, &ctx, AREA);
             let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 30, 10));
-            Primitive::paint_cells(&menu, &layout, &mut buf, &theme);
+            Primitive::paint_cells(
+                &menu,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&theme, &crate::Style::default()),
+            );
             let x = layout.layout.bounds.x.round() as u16;
             let y = layout.layout.visible_items[0].bounds.y.round() as u16;
             buf[(x, y)].symbol().to_string()

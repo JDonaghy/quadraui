@@ -338,9 +338,9 @@ impl crate::primitive::Primitive for Float {
         &self,
         layout: &FloatLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -366,17 +366,11 @@ impl crate::primitive::Primitive for Float {
     fn paint_cells(
         &self,
         layout: &FloatLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, layout, &mut surface, theme);
+        let theme = env.theme();
+        cell_paint::paint(self, layout, cells, theme);
     }
 }
 
@@ -945,7 +939,12 @@ mod tests {
             assert_eq!(via_layout, layout);
 
             let mut via_primitive = Buffer::empty(RRect::new(0, 0, 40, 20));
-            Primitive::paint_cells(&float, &via_layout, &mut via_primitive, &theme());
+            Primitive::paint_cells(
+                &float,
+                &via_layout,
+                &mut crate::tui::BufferCellSurface::new(&mut via_primitive),
+                &crate::PaintEnv::new(&theme(), &crate::Style::default()),
+            );
             let mut direct = Buffer::empty(RRect::new(0, 0, 40, 20));
             draw_float(&mut direct, &float, &layout, &theme());
             assert_eq!(via_primitive, direct);
@@ -968,7 +967,7 @@ mod cell_test_paint {
         buf: &'a mut Buffer,
         sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
     ) -> impl crate::CellSurface + 'a {
-        crate::tui::cell_surface::TuiCellSurface::new(
+        crate::tui::cell_surface::TuiCellSurface::over(
             buf,
             crate::backend::ColorDepth::TrueColor,
             sink,
