@@ -542,10 +542,22 @@ pub unsafe fn draw_text(
     draw_text_impl(ctx, font, text, x, y, 1.0, color)
 }
 
+/// `font` at `run`'s scale, or `font` itself for an unscaled run or a
+/// byte range no run covers.
+fn run_font(font: &CTFont, run: Option<&crate::TextRunStyle>) -> CTFont {
+    match run {
+        Some(run) if run.is_scaled() => {
+            font.clone_with_font_size(font.pt_size() * f64::from(run.scale))
+        }
+        _ => font.clone(),
+    }
+}
+
 /// Paint `text` as one line with its top-left at `(x, y)`: each run is
-/// drawn at the advance of the prefix before it, in its own colour.
-/// Bytes no run covers are left unpainted. Core Text draws every run in
-/// `font` as-is, so `bold`/`italic` are not applied.
+/// drawn in `font` at its scale, at the advance of the runs before it, in
+/// its own colour, on the baseline of the line's tallest run. Bytes no
+/// run covers are left unpainted. Core Text draws every run in `font`'s
+/// face as-is, so `bold`/`italic` are not applied.
 ///
 /// # Safety
 ///
@@ -558,32 +570,38 @@ pub(crate) unsafe fn draw_text_line(
     text: &str,
     runs: &[crate::TextRunStyle],
 ) {
+    let ascent = runs
+        .iter()
+        .map(|run| run_font(font, Some(run)).ascent())
+        .fold(font.ascent(), f64::max);
     for run in runs {
         let Some(range) = run.byte_range_in(text) else {
             continue;
         };
-        let (prefix_w, _) = measure_text(font, &text[..range.start]);
+        let run_font = run_font(font, Some(run));
+        let prefix_w = text_x_at_index(font, text, runs, range.start);
         draw_text(
             ctx,
-            font,
+            &run_font,
             &text[range],
-            x + prefix_w,
-            y,
+            x + f64::from(prefix_w),
+            y + ascent - run_font.ascent(),
             super::cg::color_to_cg(run.fg),
         );
     }
 }
 
-/// Advance of `text[..byte_idx]` in `font`, in points.
-pub(crate) fn text_x_at_index(font: &CTFont, text: &str, byte_idx: usize) -> f32 {
-    let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
-    measure_text(font, &text[..end]).0 as f32
-}
-
-/// The cluster boundary of `text` in `font` nearest to `x` points from
-/// the line start.
-pub(crate) fn text_index_at_x(font: &CTFont, text: &str, x: f32) -> usize {
-    crate::paint_surface::nearest_text_boundary(text, x, &mut |i| text_x_at_index(font, text, i))
+/// Advance of `text[..byte_idx]` in `font` with each run at its scale, in
+/// points.
+pub(crate) fn text_x_at_index(
+    font: &CTFont,
+    text: &str,
+    runs: &[crate::TextRunStyle],
+    byte_idx: usize,
+) -> f32 {
+    crate::paint_surface::styled_prefix_x(text, runs, byte_idx, &mut |seg, run| {
+        measure_text(&run_font(font, run), seg).0 as f32
+    })
 }
 
 /// Like [`draw_text`], but additionally scales the glyph run horizontally

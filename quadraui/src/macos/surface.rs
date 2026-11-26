@@ -294,14 +294,11 @@ impl PaintSurface for CgSurface<'_> {
     fn surface_text_x_at_index(
         &mut self,
         text: &str,
+        runs: &[crate::TextRunStyle],
         _role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
-        super::text::text_x_at_index(self.font_or_panic(), text, byte_idx)
-    }
-
-    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
-        super::text::text_index_at_x(self.font_or_panic(), text, x)
+        super::text::text_x_at_index(self.font_or_panic(), text, runs, byte_idx)
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
@@ -707,27 +704,101 @@ mod tests {
         let role = crate::FontRole::Editor;
         for idx in [0usize, 1, 4, 7, 8, 9] {
             let expect = crate::macos::text::measure_text(&f, &LINE[..idx]).0 as f32;
-            let x = raw.surface_text_x_at_index(LINE, role, idx);
+            let x = raw.surface_text_x_at_index(LINE, &[], role, idx);
             assert_eq!(x, expect, "x at byte {idx}");
             assert_eq!(
-                raw.surface_text_index_at_x(LINE, role, x),
+                raw.surface_text_index_at_x(LINE, &[], role, x),
                 idx,
                 "index at x {x}"
             );
         }
-        let narrow = raw.surface_text_x_at_index(LINE, role, 1);
-        let wide = raw.surface_text_x_at_index(LINE, role, 4) - narrow;
+        let narrow = raw.surface_text_x_at_index(LINE, &[], role, 1);
+        let wide = raw.surface_text_x_at_index(LINE, &[], role, 4) - narrow;
         assert!(wide > narrow * 1.5, "wide {wide} narrow {narrow}");
         // Between `e` and its combining mark is not a boundary.
-        let e_x = raw.surface_text_x_at_index(LINE, role, 4);
-        let next = raw.surface_text_x_at_index(LINE, role, 7);
+        let e_x = raw.surface_text_x_at_index(LINE, &[], role, 4);
+        let next = raw.surface_text_x_at_index(LINE, &[], role, 7);
         assert_eq!(
-            raw.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.4),
+            raw.surface_text_index_at_x(LINE, &[], role, e_x + (next - e_x) * 0.4),
             4
         );
         assert_eq!(
-            raw.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.6),
+            raw.surface_text_index_at_x(LINE, &[], role, e_x + (next - e_x) * 0.6),
             7
+        );
+    }
+
+    /// Caret x after a run at 2x is the run's scaled advance, and the
+    /// glyph after it advances at the unscaled width.
+    #[test]
+    fn text_x_after_a_scaled_run_is_the_scaled_advance() {
+        use crate::paint_surface::PaintSurface;
+        let f = font();
+        let mut raw = super::CgSurface {
+            ctx: std::ptr::null_mut(),
+            font: Some(&f),
+        };
+        let role = crate::FontRole::Editor;
+        let fg = Color::rgb(230, 230, 230);
+        let text = "HHHHabc";
+        let runs = [
+            crate::TextRunStyle::new(0..4, fg).with_scale(2.0),
+            crate::TextRunStyle::new(4..7, fg),
+        ];
+        let plain = raw.surface_text_x_at_index(text, &[], role, 4);
+        let scaled = raw.surface_text_x_at_index(text, &runs, role, 4);
+        assert!(
+            (scaled - 2.0 * plain).abs() <= 0.5,
+            "scaled advance {scaled} should be twice {plain}"
+        );
+        let next = raw.surface_text_x_at_index(text, &runs, role, 5) - scaled;
+        let plain_next = raw.surface_text_x_at_index(text, &[], role, 5) - plain;
+        assert!((next - plain_next).abs() <= 0.5, "{next} vs {plain_next}");
+        assert_eq!(raw.surface_text_index_at_x(text, &runs, role, scaled), 4);
+        assert_eq!(raw.surface_text_index_at_x(text, &runs, role, plain), 2);
+    }
+
+    /// A run at 2x paints glyphs about twice as tall as an unscaled run
+    /// on the same line, and both sit on one baseline.
+    #[test]
+    fn draw_text_line_scaled_run_is_taller_on_a_shared_baseline() {
+        use crate::paint_surface::PaintSurface;
+        let f = font();
+        let fg = Color::rgb(250, 250, 250);
+        let text = "HH HH";
+        let runs = [
+            crate::TextRunStyle::new(0..2, fg).with_scale(2.0),
+            crate::TextRunStyle::new(2..5, fg),
+        ];
+        let bitmap = BitmapSurface::new(W, 60);
+        bitmap.fill(0.0, 0.0, 0.0, 0.0);
+        let mut raw = super::CgSurface {
+            ctx: bitmap.context_ptr(),
+            font: Some(&f),
+        };
+        raw.surface_draw_text_line(
+            crate::Point::new(0.0, 0.0),
+            text,
+            &runs,
+            crate::FontRole::Editor,
+        );
+        let split = raw.surface_text_x_at_index(text, &runs, crate::FontRole::Editor, 2) as u32;
+        let ink_rows = |x0: u32, x1: u32| {
+            let rows: Vec<u32> = (0..60)
+                .filter(|&y| (x0..x1).any(|x| bitmap.pixel(x, y).3 > 128))
+                .collect();
+            (*rows.first().expect("ink"), *rows.last().expect("ink"))
+        };
+        let (s_top, s_bottom) = ink_rows(1, split.saturating_sub(1));
+        let (p_top, p_bottom) = ink_rows(split + 1, W);
+        let (s_h, p_h) = (s_bottom - s_top + 1, p_bottom - p_top + 1);
+        assert!(
+            s_h as f32 >= p_h as f32 * 1.7,
+            "scaled glyph {s_h}px vs plain {p_h}px"
+        );
+        assert!(
+            s_bottom.abs_diff(p_bottom) <= 1,
+            "baselines differ: scaled bottom {s_bottom}, plain bottom {p_bottom}"
         );
     }
 
