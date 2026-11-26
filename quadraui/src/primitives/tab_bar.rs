@@ -739,6 +739,12 @@ impl TabBarSubPart {
 /// so the tab keeps its hover tint while the glyph gets its own. A press
 /// tints a tab only when it landed on the tab body; pressing the close
 /// glyph leaves the tab at its hover tint.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 struct TabPointer {
     hovered_tab: Option<usize>,
@@ -746,6 +752,12 @@ struct TabPointer {
     hovered_close_tab: Option<usize>,
 }
 
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 impl TabPointer {
     fn from_env(bar: &TabBar, env: &crate::PaintEnv) -> Self {
         let hovered = env
@@ -5450,7 +5462,10 @@ mod primitive_parity_tests {
         let tab_bg = theme.list_hover_bg(theme.tab_bar_bg);
         assert!(fills_with(&calls, tab_bg), "calls were {calls:?}");
         assert!(
-            fills_with(&calls, tab_close_hover_bg(tab_bg, theme.foreground)),
+            fills_with(
+                &calls,
+                crate::primitives::layout_metrics::tab_close_hover_bg(tab_bg, theme.foreground)
+            ),
             "the close glyph must paint its hover backdrop; calls were {calls:?}"
         );
     }
