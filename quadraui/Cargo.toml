@@ -870,7 +870,7 @@ windows = { version = "0.62", optional = true, features = [
     "Win32_Graphics_Dxgi_Common",
     "Win32_Graphics_Gdi",
     # WIC (#739): `IWICImagingFactory`/`IWICBitmapDecoder`/
-    # `IWICFormatConverter` in `src/win/image.rs`'s `draw_image` — decodes
+    # `IWICFormatConverter` in `src/win/surface.rs`'s image decode — decodes
     # PNG/JPEG/... bytes to a pixel buffer Direct2D can consume via
     # `ID2D1RenderTarget::CreateBitmapFromWicBitmap` (that method, and
     # `ID2D1DeviceContext::CreateBitmapFromWicBitmap`, are both cfg-gated

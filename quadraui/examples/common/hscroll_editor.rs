@@ -157,7 +157,7 @@ impl AppLogic for HScrollEditor {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let editor = self.build_editor(backend);
-        backend.draw_editor(editor.rect, &editor);
+        backend.draw_primitive(editor.rect, &editor);
 
         let vp = backend.viewport();
         let lh = backend.line_height();

@@ -61,20 +61,14 @@ pub mod date_picker;
 pub mod dialog;
 #[doc(hidden)]
 pub mod diff_view;
-#[doc(hidden)]
-pub mod editor;
 pub mod events;
 #[doc(hidden)]
 pub mod headless;
-#[doc(hidden)]
-pub mod image;
 #[doc(hidden)]
 pub mod list;
 pub(crate) mod menu_bar_install;
 #[doc(hidden)]
 pub mod message_list;
-#[doc(hidden)]
-pub mod minimap;
 #[doc(hidden)]
 pub mod multi_section_view;
 #[doc(hidden)]
@@ -144,13 +138,9 @@ pub use data_table::{draw_data_table, mac_data_table_layout};
 #[doc(hidden)]
 pub use dialog::draw_dialog;
 #[doc(hidden)]
-pub use editor::draw_editor;
-#[doc(hidden)]
 pub use list::{draw_list, mac_list_layout};
 #[doc(hidden)]
 pub use message_list::draw_message_list;
-#[doc(hidden)]
-pub use minimap::mac_minimap_layout;
 #[doc(hidden)]
 pub use multi_section_view::{draw_multi_section_view, mac_msv_layout, mac_msv_metrics};
 #[doc(hidden)]

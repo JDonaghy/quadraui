@@ -7,7 +7,7 @@
 //! the same way it is for [`crate::primitives::image::Image`] — or
 //! WebP) into tightly-packed RGBA8 pixels, already shrunk to fit a
 //! caller-given target pixel size; [`crate::tui::kitty_graphics`] turns
-//! that pixel buffer into protocol bytes. `tui::image::draw_image_kitty`
+//! that pixel buffer into protocol bytes. `tui::cell_surface::draw_image_kitty`
 //! is the paint-path caller that wires both steps together.
 //!
 //! # Downscale, never upscale
@@ -23,7 +23,7 @@
 //!
 //! [`decode_and_downscale_cached`] routes through
 //! [`crate::image_cache::ImageCache`] — the same shared LRU every pixel
-//! backend's `Backend::draw_image` uses, keyed the same way (source +
+//! backend's `PaintSurface::surface_draw_image` uses, keyed the same way (source +
 //! target size + scale) — so repainting the same image at the same size
 //! across frames decodes once. A failed decode is never cached (see
 //! `ImageCache::get_or_decode`'s own doc), so a transient failure (a

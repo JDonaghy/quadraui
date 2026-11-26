@@ -7,7 +7,7 @@
 //! primitive defines and calls `backend.set_caret_shape` exactly once per
 //! mode *change* — never every frame — matching
 //! [`quadraui::Backend::set_caret_shape`]'s doc on why debouncing is the
-//! caller's job, not `draw_editor`'s.
+//! caller's job, not the editor paint's.
 //!
 //! There is no paintable, headless-observable effect for the *hardware*
 //! caret itself (DECSCUSR is a raw terminal write with nothing in a
@@ -160,7 +160,7 @@ impl AppLogic for CaretShapeDemo {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let editor = self.build_editor(backend);
-        backend.draw_editor(editor.rect, &editor);
+        backend.draw_primitive(editor.rect, &editor);
 
         let vp = backend.viewport();
         let lh = backend.line_height();

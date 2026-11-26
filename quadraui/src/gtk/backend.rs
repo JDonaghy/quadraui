@@ -240,26 +240,12 @@ pub struct GtkBackend {
     /// [`crate::Style`]'s module doc for why this is a separate field
     /// rather than folded into `Theme`.
     current_style: crate::Style,
-    /// Decoded/scaled-`Pixbuf` cache for [`Backend::draw_image`]
+    /// Decoded/scaled-`Pixbuf` cache for [`PaintSurface::surface_draw_image`]
     /// — see [`crate::image_cache`]'s module doc. Keyed on
     /// `(image.source, target size, dpi_scale)`; survives across frames
     /// (unlike `zones`), since the whole point is skipping a re-decode on
     /// a later paint of the same source.
     image_cache: crate::image_cache::ImageCache<gtk4::gdk_pixbuf::Pixbuf>,
-    /// Cached glyph atlas for [`Backend::draw_minimap`]'s real-character
-    /// rendering — see [`crate::primitives::minimap::MinimapAtlasCache`]'s
-    /// module doc. Keyed on `(editor font family, dpi_scale)`; survives
-    /// across frames, same lifecycle as `image_cache` above and for the
-    /// same reason: the whole point is never re-shaping-and-downsampling
-    /// the atlas on a later paint at the same family/scale.
-    minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache,
-    /// [`crate::backend::Backend::minimap_scale`]'s backing field
-    /// — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
-    /// to resolve the row pitch (and, for the atlas, per-column width) a
-    /// paint or layout call uses. Defaults to [`crate::primitives::minimap::MinimapScale::One`],
-    /// the fixed pitch, so a host that never calls
-    /// [`Backend::set_minimap_scale`] sees no behaviour change.
-    minimap_scale: crate::primitives::minimap::MinimapScale,
     /// Per-frame Pango line height in DIPs. Set by the App in its
     /// draw closure (from font metrics) before any trait `draw_*`
     /// invocation. Every primitive that uses text metrics passes
@@ -269,10 +255,6 @@ pub struct GtkBackend {
     /// App alongside `current_line_height`. Required by primitives
     /// that map cells to pixels (e.g. the terminal's cell grid).
     current_char_width: f64,
-    /// Editor vertical scrollbar column width set through
-    /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
-    /// `current_char_width` wide.
-    editor_v_scrollbar_w: Option<f32>,
     /// Timestamp of the most recent scroll-wheel delta, fed in by
     /// `super::run`'s scroll controller via
     /// [`Self::note_scroll_activity`]. [`Self::new`] seeds this with its
@@ -421,16 +403,6 @@ pub struct GtkBackend {
     /// `gtk4::WindowHandle` behaviour. See [`WindowDragArm`]'s doc
     /// for the generalised rationale.
     armed_window_drag: WindowDragArm<(gdk::Device, i32, f64, f64, u32)>,
-    /// Clone of the Pango layout `draw_editor` actually painted with,
-    /// stashed at the end of the frame's `draw_editor` call.
-    /// `editor_col_at_x` is invoked from click-time hit-testing,
-    /// which runs *outside* any frame scope — `current_frame_refs()` is
-    /// `None` there, so falling back to `pango_ctx` would resolve
-    /// against the wrong (UI, not editor) font and silently mis-place
-    /// every click. Caching the exact layout GObject the most recent
-    /// paint used (refcounted clone — cheap, always reflects the
-    /// current editor font) closes that gap.
-    last_editor_pango_layout: Option<pango::Layout>,
     /// Folds a `MouseDown` into `DoubleClick` when it lands within
     /// [`GTK_DOUBLE_CLICK_RADIUS`]/400ms of the previous click at the
     /// same button — the shared mechanism every backend's
@@ -576,11 +548,8 @@ impl GtkBackend {
             current_theme: crate::Theme::default(),
             current_style: crate::Style::default(),
             image_cache: crate::image_cache::ImageCache::default(),
-            minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache::default(),
-            minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             current_line_height: 16.0,
             current_char_width: 8.0,
-            editor_v_scrollbar_w: None,
             // See the field's own doc: seeding "now" rather than `None`
             // means a scrollbar painted right after construction starts
             // visible, fading out only after a real idle period.
@@ -606,7 +575,6 @@ impl GtkBackend {
             window: None,
             pending_window_press: None,
             armed_window_drag: WindowDragArm::new(),
-            last_editor_pango_layout: None,
             double_click: DoubleClickDetector::with_radius(GTK_DOUBLE_CLICK_RADIUS),
             double_click_folding: true,
             focus_tree: crate::focus::FocusTree::new(),
@@ -868,7 +836,7 @@ impl GtkBackend {
     /// `pango::Layout`.
     ///
     /// Public since consumers may paint editor content themselves (bespoke
-    /// Cairo, not [`Backend::draw_editor`]) and need this to build their own
+    /// Cairo, not the `Editor` widget) and need this to build their own
     /// paint-time layout from the exact same family/size [`Self::editor_pango_layout`]
     /// resolves for click-time measurement.
     pub fn editor_font_pango_string(&self) -> String {
@@ -881,26 +849,13 @@ impl GtkBackend {
     /// [`Self::editor_font_pango_string`] — from the stable widget Pango
     /// context ([`Self::set_pango_context`]).
     ///
-    /// This is the entry point a GTK consumer needs to map a click
-    /// x-coordinate to an editor column (via [`crate::gtk::editor_col_at_x`])
-    /// without constructing a second, private `GtkBackend` purely to
-    /// mimic the real one's font — pass the *same* `GtkBackend` the
-    /// consumer already owns (or set the editor font on a bare one built
-    /// just for this) and this always reflects the current
-    /// [`Backend::set_editor_font`] call, at any size. It does not
-    /// require an in-progress frame (unlike [`Self::create_stable_pango_layout`]
-    /// composed with the raw `pango_ctx`, which carries whatever font the
-    /// context was initialized with — historically the UI chrome font,
-    /// not the editor font) and does not require having painted an
-    /// editor this frame (unlike the `Backend::editor_col_at_x` trait
-    /// method's `last_editor_pango_layout` cache, which is `None` until
-    /// the first `draw_editor` call).
-    ///
-    /// Single-line, no-wrap (`set_width(-1)`), matching the recipe
-    /// `gtk/run.rs::render_frame` uses to build the frame's shared editor
-    /// layout — [`crate::gtk::editor_col_at_x`] resolves one line at a
-    /// time and expects that shape. Returns `None` if no Pango context
-    /// has been stored (mirrors [`Self::create_stable_pango_layout`]).
+    /// A consumer that measures editor text outside a frame (mapping a
+    /// click x-coordinate to a column, say) reads the current
+    /// [`Backend::set_editor_font`] here, at any size, without an
+    /// in-progress frame. Single-line, no-wrap (`set_width(-1)`), matching
+    /// the recipe `gtk/run.rs::render_frame` uses to build the frame's
+    /// shared editor layout. Returns `None` if no Pango context has been
+    /// stored (mirrors [`Self::create_stable_pango_layout`]).
     pub fn editor_pango_layout(&self) -> Option<pango::Layout> {
         #[cfg(test)]
         let _test_render_guard = super::test_render_guard();
@@ -1912,6 +1867,23 @@ fn role_font_description(b: &GtkBackend, role: FontRole) -> pango::FontDescripti
         FontRole::Icon => crate::gtk::tab_icon_font(&chrome),
         FontRole::Editor => pango::FontDescription::from_string(&b.editor_font_pango_string()),
     }
+}
+
+/// Run `f` on the frame's Cairo context and Pango layout with the layout
+/// set to `role`'s font, restoring the layout's own font afterwards.
+fn with_role_layout<R>(
+    b: &GtkBackend,
+    role: FontRole,
+    f: impl FnOnce(&Context, &pango::Layout) -> R,
+) -> R {
+    let (cr, layout) = b
+        .current_frame_refs()
+        .expect("GtkBackend text-line verb called outside enter_frame_scope");
+    let saved = layout.font_description();
+    layout.set_font_description(Some(&role_font_description(b, role)));
+    let out = f(cr, layout);
+    layout.set_font_description(saved.as_ref());
+    out
 }
 
 impl Backend for GtkBackend {
@@ -3055,76 +3027,6 @@ impl Backend for GtkBackend {
         true
     }
 
-    fn draw_editor(
-        &mut self,
-        rect: QRect,
-        editor: &crate::primitives::editor::Editor,
-    ) -> crate::backend::EditorPaintResult {
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
-        let theme = self.current_theme;
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_editor called outside enter_frame_scope");
-        // GTK draw_editor needs FontMetrics; resolve from the layout's
-        // font description. The TUI return type carries a TUI-specific
-        // cursor cell — GTK paints its own caret, so we return the
-        // default. Future GTK refinement can populate fields if hosts
-        // need GTK-side cursor pixel coordinates.
-        let pango_ctx = pango_layout.context();
-        let font_desc = pango_layout
-            .font_description()
-            .or_else(|| pango_ctx.font_description());
-        let metrics = pango_ctx.metrics(font_desc.as_ref(), None);
-        super::editor::draw_editor_with_options_and_v_scrollbar_w(
-            cr,
-            pango_layout,
-            &metrics,
-            editor,
-            &theme,
-            char_width,
-            line_height,
-            crate::primitives::editor::EditorPaintOptions::default(),
-            self.editor_v_scrollbar_w,
-        );
-        // Stash the exact layout just painted with — see the field doc
-        // on `last_editor_pango_layout` for why this is necessary
-        // rather than relying on `current_frame_refs()` alone.
-        self.last_editor_pango_layout = Some(pango_layout.clone());
-        let _ = rect;
-        crate::backend::EditorPaintResult::default()
-    }
-
-    fn set_editor_v_scrollbar_width(&mut self, px: Option<f32>) {
-        self.editor_v_scrollbar_w = px;
-    }
-
-    fn editor_v_scrollbar_width(&self) -> Option<f32> {
-        self.editor_v_scrollbar_w
-    }
-
-    fn editor_col_at_x(
-        &self,
-        layout: &crate::primitives::editor::EditorLayout,
-        editor: &crate::primitives::editor::Editor,
-        view_row: usize,
-        x: f32,
-    ) -> usize {
-        let Some(line) = editor.lines.get(view_row) else {
-            return layout.col_at_x(editor, view_row, x);
-        };
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout
-            .or_else(|| self.last_editor_pango_layout.clone())
-            // Applies the live editor font, so clicks resolve against the correct
-            // glyph widths even when no editor frame has been painted yet.
-            .or_else(|| self.editor_pango_layout());
-        let Some(pango_layout) = pango_layout else {
-            return layout.col_at_x(editor, view_row, x);
-        };
-        crate::gtk::editor_col_at_x(&pango_layout, line, layout, x)
-    }
-
     fn draw_message_list(
         &mut self,
         rect: QRect,
@@ -3440,93 +3342,6 @@ impl Backend for GtkBackend {
             rect.height as f64,
         )
     }
-
-    fn draw_minimap(
-        &mut self,
-        rect: QRect,
-        minimap: &crate::primitives::minimap::Minimap,
-    ) -> crate::backend::MinimapPaintResult {
-        let theme = self.current_theme;
-        let dpi_scale = self.dpi_scale as f64;
-        // Uses `super::minimap::draw_minimap_cached` for the glyph atlas cache.
-        // Reads raw pointers directly so `cr`/`pango_layout` don't collide with
-        // the `&mut self.minimap_atlas_cache` borrow this method also needs.
-        let cr_ptr = self.current_cr_ptr.get();
-        let layout_ptr = self.current_layout_ptr.get();
-        assert!(
-            !cr_ptr.is_null() && !layout_ptr.is_null(),
-            "GtkBackend::draw_minimap called outside enter_frame_scope"
-        );
-        // SAFETY: `enter_frame_scope` set both pointers from real, live
-        // `&Context`/`&pango::Layout` borrows and won't return until the
-        // scope ends -- the same invariant `current_frame_refs` relies
-        // on.
-        let cr = unsafe { &*(cr_ptr as *const Context) };
-        let pango_layout = unsafe { &*(layout_ptr as *const pango::Layout) };
-        let layout = crate::gtk::minimap::draw_minimap_cached(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            minimap,
-            &theme,
-            &mut self.minimap_atlas_cache,
-            dpi_scale,
-            self.minimap_scale,
-        );
-        self.register_zone(minimap.id, rect);
-        crate::backend::MinimapPaintResult {
-            layout,
-            painted: true,
-        }
-    }
-
-    fn draw_image(
-        &mut self,
-        rect: QRect,
-        image: &crate::primitives::image::Image,
-    ) -> crate::backend::ImagePaintResult {
-        let cr_ptr = self.current_cr_ptr.get();
-        assert!(
-            !cr_ptr.is_null(),
-            "GtkBackend::draw_image called outside enter_frame_scope"
-        );
-        // SAFETY: `enter_frame_scope` set `current_cr_ptr` from a real, live `&Context`
-        // and won't return until the scope ends. Read the raw pointer directly to avoid
-        // colliding with the `&mut self.image_cache` borrow this method also needs.
-        let cr = unsafe { &*(cr_ptr as *const Context) };
-        let dpi_scale = self.dpi_scale;
-        // Uses `super::image::draw_image_cached` for the decode cache.
-        let result =
-            super::image::draw_image_cached(cr, rect, image, &mut self.image_cache, dpi_scale);
-        self.register_zone(image.id, rect);
-        result
-    }
-
-    fn minimap_layout(
-        &self,
-        rect: QRect,
-        minimap: &crate::primitives::minimap::Minimap,
-    ) -> crate::primitives::minimap::MinimapLayout {
-        crate::gtk::minimap::gtk_minimap_layout_scaled(
-            minimap,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.minimap_scale,
-        )
-    }
-
-    fn minimap_scale(&self) -> crate::primitives::minimap::MinimapScale {
-        self.minimap_scale
-    }
-
-    fn set_minimap_scale(&mut self, scale: crate::primitives::minimap::MinimapScale) {
-        self.minimap_scale = scale;
-    }
 }
 
 /// Thin forward to [`super::tray::GtkTrayState`]'s inherent methods —
@@ -3708,9 +3523,8 @@ impl crate::backend::WindowControl for GtkBackend {
 /// chrome font — see `crate::font_role`'s module doc). The terminal, the
 /// plain text display and the diff view are the three
 /// `crate::font_role::EditorClassPrimitive`s that paint through this
-/// trait on this backend (`draw_editor`, `draw_minimap` and
-/// `draw_command_line` paint through the raw `(cr, layout)` pair
-/// directly instead — see those methods — so they never pick up
+/// trait on this backend (`draw_command_line` paints through the raw
+/// `(cr, layout)` pair directly instead — see that method — so it never picks up
 /// `GtkBackend`'s own `PaintSurface` impl in the first place and need no
 /// adapter here), so each wraps `self` in this type before calling into
 /// its shared `primitives::*::paint`/`native_surface_paint::paint`
@@ -3882,6 +3696,35 @@ impl PaintSurface for EditorSurface<'_> {
         layout.set_font_description(saved.as_ref());
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        _role: crate::FontRole,
+    ) {
+        with_role_layout(self.backend, FontRole::Editor, |cr, layout| {
+            super::surface::draw_text_line(cr, layout, origin, text, runs)
+        });
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        _role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        with_role_layout(self.backend, FontRole::Editor, |_, layout| {
+            super::surface::text_x_at_index(layout, text, byte_idx)
+        })
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
+        with_role_layout(self.backend, FontRole::Editor, |_, layout| {
+            super::surface::text_index_at_x(layout, text, x)
+        })
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         self.backend
             .surface_draw_line(from, to, color, stroke_width)
@@ -3893,6 +3736,28 @@ impl PaintSurface for EditorSurface<'_> {
 
     fn surface_pop_clip(&mut self) {
         self.backend.surface_pop_clip()
+    }
+
+    fn surface_blit_alpha(
+        &mut self,
+        dest: QRect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        self.backend
+            .surface_blit_alpha(dest, alpha, width, height, color)
+    }
+
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        _role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<crate::AlphaSheet> {
+        self.backend
+            .surface_glyph_alpha_sheet(chars, FontRole::Editor, cell)
     }
 
     fn surface_draw_image(
@@ -4265,6 +4130,35 @@ impl PaintSurface for GtkBackend {
         layout.set_font_description(saved.as_ref());
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        role: crate::FontRole,
+    ) {
+        with_role_layout(self, role, |cr, layout| {
+            super::surface::draw_text_line(cr, layout, origin, text, runs)
+        });
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        with_role_layout(self, role, |_, layout| {
+            super::surface::text_x_at_index(layout, text, byte_idx)
+        })
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+        with_role_layout(self, role, |_, layout| {
+            super::surface::text_index_at_x(layout, text, x)
+        })
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         let (cr, _layout) = self
             .current_frame_refs()
@@ -4297,12 +4191,46 @@ impl PaintSurface for GtkBackend {
         cr.restore().ok();
     }
 
+    fn surface_blit_alpha(
+        &mut self,
+        dest: QRect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        let (cr, _) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_blit_alpha called outside enter_frame_scope");
+        super::surface::blit_alpha(cr, dest, alpha, width, height, color);
+    }
+
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<crate::AlphaSheet> {
+        let family = role_font_description(self, role).family()?;
+        super::surface::glyph_alpha_sheet(&family, chars, cell)
+    }
+
     fn surface_draw_image(
         &mut self,
         rect: QRect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        Backend::draw_image(self, rect, image)
+        let cr_ptr = self.current_cr_ptr.get();
+        assert!(
+            !cr_ptr.is_null(),
+            "GtkBackend::surface_draw_image called outside enter_frame_scope"
+        );
+        // SAFETY: `enter_frame_scope` set `current_cr_ptr` from a real, live `&Context`
+        // and won't return until the scope ends. Read the raw pointer directly to avoid
+        // colliding with the `&mut self.image_cache` borrow this method also needs.
+        let cr = unsafe { &*(cr_ptr as *const Context) };
+        let dpi_scale = self.dpi_scale;
+        super::surface::image::draw_image_cached(cr, rect, image, &mut self.image_cache, dpi_scale)
     }
 }
 
@@ -4342,16 +4270,14 @@ mod tests {
 
     // ── issue #1143: MinimapScale ────────────────────────────────────────
 
-    /// `set_minimap_scale`/`minimap_scale` must actually change the row
-    /// pitch `Backend::minimap_layout` resolves — no live cairo frame
-    /// needed, since `minimap_layout` is pure geometry (mirrors
-    /// `WinBackend`'s own `set_minimap_scale_changes_the_resolved_row_pitch`).
+    /// A minimap's `scale` changes the row pitch its pixel layout resolves —
+    /// no live cairo frame needed, since the layout is pure geometry.
     #[test]
-    fn set_minimap_scale_changes_the_resolved_row_pitch() {
+    fn minimap_scale_changes_the_resolved_row_pitch() {
         use crate::primitives::minimap::{Minimap, MinimapLine, MinimapScale};
 
-        let mut backend = GtkBackend::new();
-        let minimap = Minimap {
+        let backend = GtkBackend::new();
+        let mut minimap = Minimap {
             id: WidgetId::new("mm"),
             lines: vec![MinimapLine {
                 text: "fn main() {}".to_string(),
@@ -4361,19 +4287,20 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 1,
             total_buffer_lines: 1,
+            scale: Default::default(),
+            sizing: None,
         };
         let rect = QRect::new(0.0, 0.0, 20.0, 100.0);
 
-        assert_eq!(backend.minimap_scale(), MinimapScale::One);
-        let default_layout = backend.minimap_layout(rect, &minimap);
+        assert_eq!(minimap.scale, MinimapScale::One);
+        let default_layout = backend.layout_primitive(rect, &minimap);
         assert_eq!(
             default_layout.visible_lines[0].bounds.height,
             MinimapScale::One.row_pitch_px() as f32
         );
 
-        backend.set_minimap_scale(MinimapScale::Two);
-        assert_eq!(backend.minimap_scale(), MinimapScale::Two);
-        let scaled_layout = backend.minimap_layout(rect, &minimap);
+        minimap.scale = MinimapScale::Two;
+        let scaled_layout = backend.layout_primitive(rect, &minimap);
         assert_eq!(
             scaled_layout.visible_lines[0].bounds.height,
             MinimapScale::Two.row_pitch_px() as f32
@@ -6248,103 +6175,6 @@ mod tests {
         let mut backend = GtkBackend::new();
         Backend::set_ui_font(&mut backend, "Cantarell, system-ui, Sans 12");
         assert_eq!(backend.ui_font, "Cantarell,Sans,Sans 12");
-    }
-
-    /// A GTK consumer that paints its editor content itself (bespoke
-    /// Cairo, not [`Backend::draw_editor`]) must be able to resolve
-    /// `Backend::editor_col_at_x` off a single `GtkBackend` it owns —
-    /// no `enter_frame_scope`, no prior `draw_editor` call to populate
-    /// `last_editor_pango_layout`. The fallback builds a bare
-    /// `pango::Layout` straight off `pango_ctx`, so the result must track
-    /// `Backend::set_editor_font` at two different sizes, not a font
-    /// baked in once at setup.
-    #[test]
-    fn gtk_backend_editor_col_at_x_tracks_set_editor_font_without_a_frame() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        let surface = ImageSurface::create(Format::ARgb32, 400, 40).expect("create ImageSurface");
-        let cr = Context::new(&surface).expect("Context::new");
-        // The only click-time setup a consumer needs: the stable widget
-        // Pango context, exactly as `gtk::run::activate` seeds it on
-        // `DrawingArea` realize via `set_pango_context`.
-        let stable_ctx = pangocairo::functions::create_context(&cr);
-        let mut backend = GtkBackend::new();
-        backend.set_pango_context(stable_ctx);
-
-        let line = crate::EditorLine {
-            raw_text: "abcdefghijklmnopqrstuvwxyz".to_string(),
-            gutter_text: String::new(),
-            spans: Vec::new(),
-            line_idx: 0,
-            is_current_line: false,
-            is_fold_header: false,
-            folded_line_count: 0,
-            git_diff: None,
-            diff_status: None,
-            diagnostics: Vec::new(),
-            spell_errors: Vec::new(),
-            is_breakpoint: false,
-            is_conditional_bp: false,
-            is_dap_current: false,
-            is_wrap_continuation: false,
-            segment_col_offset: 0,
-            annotation: None,
-            ghost_suffix: None,
-            is_ghost_continuation: false,
-            indent_guides: Vec::new(),
-            colorcolumns: Vec::new(),
-        };
-        let editor = crate::Editor {
-            id: WidgetId::new("ed"),
-            rect: Rect::new(0.0, 0.0, 400.0, 40.0),
-            lines: vec![line],
-            cursor: None,
-            extra_cursors: Vec::new(),
-            selection: None,
-            extra_selections: Vec::new(),
-            yank_highlight: None,
-            scroll_top: 0,
-            scroll_left: 0,
-            total_lines: 1,
-            max_col: 26,
-            gutter_char_width: 0,
-            is_active: true,
-            show_active_bg: false,
-            has_git_diff: false,
-            has_breakpoints: false,
-            diagnostic_gutter: std::collections::HashMap::new(),
-            code_action_lines: std::collections::HashSet::new(),
-            bracket_match_positions: Vec::new(),
-            active_indent_col: None,
-            tabstop: 4,
-            cursorline: false,
-            lightbulb_glyph: '!',
-        };
-        // No gutter, no scroll: `EditorLayout::text_bounds.x` is 0 and
-        // `col_at_x`'s scroll term drops out, so `editor_layout` needn't
-        // be recomputed per font size below — the glyph-level resolution
-        // (`pango::Layout::xy_to_index`) is where the live font actually
-        // matters, not this geometry.
-        let editor_layout = Backend::editor_layout(&backend, editor.rect, &editor);
-        let click_x = 80.0_f32;
-
-        Backend::set_editor_font(&mut backend, "Monospace", 8.0);
-        let small_font_col =
-            Backend::editor_col_at_x(&backend, &editor_layout, &editor, 0, click_x);
-
-        Backend::set_editor_font(&mut backend, "Monospace", 32.0);
-        let large_font_col =
-            Backend::editor_col_at_x(&backend, &editor_layout, &editor, 0, click_x);
-
-        assert!(
-            small_font_col > 0 && small_font_col < 26,
-            "a small font must fit several but not all 26 chars before x=80: got {small_font_col}"
-        );
-        assert!(
-            large_font_col < small_font_col,
-            "a 4x larger editor font must fit strictly fewer characters before the same \
-             x=80 click: small_font(8pt)={small_font_col}, large_font(32pt)={large_font_col}"
-        );
     }
 
     // --- #624: chrome primitives must paint/measure with `ui_font`, not
@@ -8594,13 +8424,12 @@ mod tests {
         );
     }
 
-    /// `editor_layout`'s default body must match the gutter/text geometry
-    /// the paint path actually uses: `gutter_width = editor.gutter_char_width
+    /// The editor's pixel layout on this backend matches the gutter/text
+    /// geometry its paint uses: `gutter_width = editor.gutter_char_width
     /// * char_width` and `text_x_offset = rect.x + gutter_width -
-    /// h_scroll_offset`. The paint path uses `editor.rect`, not the `rect`
-    /// argument, so callers must keep `editor.rect == rect` in sync.
+    /// h_scroll_offset`.
     #[test]
-    fn gtk_backend_editor_layout_matches_draw_editor_gutter_and_text_geometry() {
+    fn gtk_backend_editor_layout_matches_its_paint_gutter_and_text_geometry() {
         let mut backend = GtkBackend::new();
         backend.current_char_width = 10.0;
         backend.current_line_height = 20.0;
@@ -8630,37 +8459,39 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
 
-        let layout = Backend::editor_layout(&backend, rect, &editor);
+        let layout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &editor);
         let gutter = layout
             .gutter_bounds
             .expect("gutter_char_width=3 must produce a gutter region");
         assert_eq!(
             gutter.width,
             editor.gutter_char_width as f32 * backend.current_char_width as f32,
-            "editor_layout's gutter width must match draw_editor's `gutter_width = \
-             editor.gutter_char_width * char_width` (src/gtk/editor.rs)"
+            "the layout's gutter width must be `gutter_width = \
+             editor.gutter_char_width * char_width`"
         );
         assert_eq!(
             layout.text_bounds.x,
             rect.x + gutter.width,
-            "editor_layout's text_bounds.x must match draw_editor's `text_x_offset = rect.x + \
-             gutter_width` when scroll_left is 0 (src/gtk/editor.rs)"
+            "the layout's text_bounds.x must be `text_x_offset = rect.x + \
+             gutter_width` when scroll_left is 0"
         );
 
-        // Paint via the real trait method with this exact geometry —
-        // proves it doesn't panic and exercises the formula this test
-        // pins.
+        // Paint with this exact geometry — proves it doesn't panic and
+        // exercises the formula this test pins.
         use pangocairo::cairo::{Context, Format, ImageSurface};
         let surface = ImageSurface::create(Format::ARgb32, 200, 100).expect("create ImageSurface");
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
-        backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_editor(rect, &editor));
+        backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            crate::DrawsPrimitives::draw_primitive(b, rect, &editor);
+        });
     }
 
-    /// Paint an overflowing 200x80 editor through `GtkBackend::draw_editor`
-    /// after `set_editor_v_scrollbar_width(v_scrollbar_w)`, returning
+    /// Paint an overflowing 200x80 editor with
+    /// `paint_options.v_scrollbar_w = v_scrollbar_w` on `GtkBackend`, returning
     /// the pixel colour at `(x, 76)` for each `x` in `xs` — a row inside
     /// the scrollbar track, below the thumb.
     fn editor_v_scrollbar_probe(v_scrollbar_w: Option<f32>, xs: &[i32]) -> Vec<(u8, u8, u8)> {
@@ -8668,14 +8499,16 @@ mod tests {
         let rect = QRect::new(0.0, 0.0, 200.0, 80.0);
         let mut editor = crate::primitives::editor::Editor::new(WidgetId::new("ed"), rect);
         editor.total_lines = 50;
+        editor.paint_options.v_scrollbar_w = v_scrollbar_w;
         let mut backend = GtkBackend::new();
-        backend.set_editor_v_scrollbar_width(v_scrollbar_w);
         let mut surface =
             ImageSurface::create(Format::ARgb32, 200, 80).expect("create ImageSurface");
         {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
-            backend.enter_frame_scope(&cr, &pango_layout, |b| b.draw_editor(rect, &editor));
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                crate::DrawsPrimitives::draw_primitive(b, rect, &editor);
+            });
         }
         surface.flush();
         let stride = surface.stride() as usize;
@@ -8688,13 +8521,12 @@ mod tests {
             .collect()
     }
 
-    /// `Backend::set_editor_v_scrollbar_width(Some(14.0))` makes
-    /// `GtkBackend::draw_editor` paint a scrollbar column exactly 14px
-    /// wide — `[186, 200)` in a 200px viewport — instead of one
-    /// `current_char_width` (8px), and `Backend::editor_layout` reports
-    /// the same column for hit-testing.
+    /// `paint_options.v_scrollbar_w = Some(14.0)` makes the editor paint a
+    /// scrollbar column exactly 14px wide — `[186, 200)` in a 200px
+    /// viewport — instead of one `current_char_width` (8px), and its
+    /// layout reports the same column for hit-testing.
     #[test]
-    fn gtk_backend_set_editor_v_scrollbar_width_paints_14px_column() {
+    fn gtk_backend_editor_v_scrollbar_w_paints_14px_column() {
         let bg = crate::Theme::default().background;
         let bg = (bg.r, bg.g, bg.b);
         let xs: Vec<i32> = (185..200).collect();
@@ -8711,13 +8543,12 @@ mod tests {
         );
         assert_ne!(default_px[1], bg, "default column is 8px: x=192 is track");
 
-        let mut backend = GtkBackend::new();
-        backend.set_editor_v_scrollbar_width(Some(14.0));
-        assert_eq!(backend.editor_v_scrollbar_width(), Some(14.0));
+        let backend = GtkBackend::new();
         let rect = QRect::new(0.0, 0.0, 200.0, 80.0);
         let mut editor = crate::primitives::editor::Editor::new(WidgetId::new("ed"), rect);
         editor.total_lines = 50;
-        let vsb = Backend::editor_layout(&backend, rect, &editor)
+        editor.paint_options.v_scrollbar_w = Some(14.0);
+        let vsb = crate::DrawsPrimitives::layout_primitive(&backend, rect, &editor)
             .v_scrollbar_bounds
             .expect("buffer overflows");
         assert_eq!((vsb.x, vsb.width), (186.0, 14.0));
@@ -8980,8 +8811,8 @@ mod tests {
                 fallback_text: "[i]".to_string(),
             };
             // Empty bytes decode-fail on the real GTK path too — this call
-            // only needs to prove it reaches the same code `Backend::
-            // draw_image` does, not any particular decode outcome.
+            // only needs to prove it reaches the decoder, not any
+            // particular decode outcome.
             let _ = b.surface_draw_image(QRect::new(0.0, 40.0, 8.0, 8.0), &image);
         });
 

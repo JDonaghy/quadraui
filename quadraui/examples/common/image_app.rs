@@ -1,12 +1,10 @@
 //! Image + MenuBar leading-icon-slot `AppLogic` ([`tui_image`] /
 //! [`gtk_image`]).
 //!
-//! [`quadraui::Image`] painted through `Backend::draw_image` — GTK
+//! [`quadraui::Image`] painted through its widget contract — GTK
 //! decodes and paints the real `quadra_logo.png` asset via
 //! `gdk_pixbuf`; TUI paints the descriptor's `fallback_text` instead
-//! (`Backend::draw_image` cannot rasterise pixels on TUI — see that
-//! trait method's doc comment for why that's a deliberate
-//! `ImagePaintResult::Unsupported`, not a silent no-op).
+//! unless the terminal can show real pixels.
 //!
 //! A leading icon slot on the menu bar: the bar's rect is narrowed by
 //! the icon's width before *both* `MenuBar::present` (paint) and
@@ -119,7 +117,7 @@ impl AppLogic for ImageApp {
         let lh = backend.line_height();
         let (_full, icon_rect, items_rect) = self.bar_rects(backend);
 
-        let _ = backend.draw_image(icon_rect, &self.logo());
+        let _ = backend.draw_primitive(icon_rect, &self.logo());
         let _ = self.menu_bar.present(backend, items_rect);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);

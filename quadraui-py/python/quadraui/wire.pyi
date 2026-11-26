@@ -1079,6 +1079,21 @@ class MinimapSpanDescriptor(TypedDict):
     end_col: int
     color: Color
 
+MinimapScale = Literal['One', 'Two']
+
+class _MinimapVsCodeParityPayload(TypedDict):
+    target_cols: float
+    fraction: float
+    min: float
+    max: float
+
+class _MinimapSizingDict(TypedDict):
+    FixedPitch: NotRequired[float]
+    RepeatToFill: NotRequired[float]
+    VsCodeParity: NotRequired[_MinimapVsCodeParityPayload]
+
+MinimapSizing = Union[Literal['Fill'], _MinimapSizingDict]
+
 class MinimapDescriptor(TypedDict):
     id: WidgetId
     lines: List[MinimapLineDescriptor]
@@ -1086,6 +1101,8 @@ class MinimapDescriptor(TypedDict):
     visible_row_start: int
     visible_row_count: int
     total_buffer_lines: int
+    scale: NotRequired[MinimapScale]
+    sizing: NotRequired[Optional[MinimapSizing]]
 
 class ActivityItemDescriptor(TypedDict):
     id: WidgetId
@@ -1364,6 +1381,11 @@ class EditorLine(TypedDict):
     indent_guides: NotRequired[List[int]]
     colorcolumns: NotRequired[List[int]]
 
+class EditorPaintOptions(TypedDict):
+    suppress_v_scrollbar: NotRequired[bool]
+    v_scrollbar_w: NotRequired[Optional[float]]
+    right_reserve_w: NotRequired[float]
+
 class EditorDescriptor(TypedDict):
     id: WidgetId
     rect: Rect
@@ -1389,6 +1411,7 @@ class EditorDescriptor(TypedDict):
     tabstop: int
     cursorline: bool
     lightbulb_glyph: NotRequired[str]
+    paint_options: NotRequired[EditorPaintOptions]
 
 class _FrClickFindInput(TypedDict):
     FindInput: int
@@ -1770,7 +1793,6 @@ LayoutLeafNode = TypedDict(
         "scripted_widget": NotRequired[ScriptedWidgetDescriptor],
         "progress": NotRequired[ProgressBarDescriptor],
         "spinner": NotRequired[SpinnerDescriptor],
-        "image": NotRequired[ImageDescriptor],
         "form": NotRequired[FormDescriptor],
         "text_input": NotRequired[TextInputDescriptor],
         "text_field": NotRequired[TextFieldDescriptor],
@@ -1781,7 +1803,6 @@ LayoutLeafNode = TypedDict(
         "message_list": NotRequired[MessageListDescriptor],
         "board": NotRequired[BoardModelDescriptor],
         "pipeline_view": NotRequired[PipelineViewDescriptor],
-        "minimap": NotRequired[MinimapDescriptor],
         "multi_section_view": NotRequired[MultiSectionViewDescriptor],
         "diff_view": NotRequired[DiffViewDescriptor],
         "tree_table": NotRequired[TreeTableDescriptor],
@@ -1790,7 +1811,6 @@ LayoutLeafNode = TypedDict(
         "menu_bar": NotRequired[MenuBarDescriptor],
         "command_line": NotRequired[CommandLineDescriptor],
         "scrollbar": NotRequired[ScrollbarDescriptor],
-        "editor": NotRequired[EditorDescriptor],
         "canvas": NotRequired[CanvasDescriptor],
         "scroll_view": NotRequired[ScrollViewDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
@@ -1811,6 +1831,9 @@ LayoutLeafNode = TypedDict(
         "activity_bar": NotRequired[ActivityBarDescriptor],
         "palette": NotRequired[PaletteDescriptor],
         "context_menu": NotRequired[ContextMenuDescriptor],
+        "editor": NotRequired[EditorDescriptor],
+        "minimap": NotRequired[MinimapDescriptor],
+        "image": NotRequired[ImageDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1833,7 +1856,6 @@ class RenderFrameDict(TypedDict):
     tab_bar: NotRequired[Optional[TabBarDescriptor]]
     progress: NotRequired[Optional[ProgressBarDescriptor]]
     spinner: NotRequired[Optional[SpinnerDescriptor]]
-    image: NotRequired[Optional[ImageDescriptor]]
     form: NotRequired[Optional[FormDescriptor]]
     text_input: NotRequired[Optional[TextInputDescriptor]]
     text_field: NotRequired[Optional[TextFieldDescriptor]]
@@ -1844,7 +1866,6 @@ class RenderFrameDict(TypedDict):
     message_list: NotRequired[Optional[MessageListDescriptor]]
     board: NotRequired[Optional[BoardModelDescriptor]]
     pipeline_view: NotRequired[Optional[PipelineViewDescriptor]]
-    minimap: NotRequired[Optional[MinimapDescriptor]]
     multi_section_view: NotRequired[Optional[MultiSectionViewDescriptor]]
     diff_view: NotRequired[Optional[DiffViewDescriptor]]
     tree_table: NotRequired[Optional[TreeTableDescriptor]]
@@ -1853,7 +1874,6 @@ class RenderFrameDict(TypedDict):
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
     command_line: NotRequired[Optional[CommandLineDescriptor]]
     scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
-    editor: NotRequired[Optional[EditorDescriptor]]
     canvas: NotRequired[Optional[CanvasDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
@@ -1874,6 +1894,9 @@ class RenderFrameDict(TypedDict):
     activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
     palette: NotRequired[Optional[PaletteDescriptor]]
     context_menu: NotRequired[Optional[ContextMenuDescriptor]]
+    editor: NotRequired[Optional[EditorDescriptor]]
+    minimap: NotRequired[Optional[MinimapDescriptor]]
+    image: NotRequired[Optional[ImageDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
@@ -2161,6 +2184,55 @@ class _TerminalEventDict(TypedDict):
 
 # Mouse release has no payload -- bare `"SelectEnd"`, unlike every other variant.
 TerminalEvent = Union[Literal['SelectEnd'], _TerminalEventDict]
+
+class _EditorBufferPosPayload(TypedDict):
+    line: int
+    col: int
+
+class _EditorGutterPayload(TypedDict):
+    line_idx: int
+    gutter_col: int
+
+class _EditorHitDict(TypedDict):
+    BufferPos: NotRequired[_EditorBufferPosPayload]
+    Gutter: NotRequired[_EditorGutterPayload]
+
+EditorHit = Union[Literal['VScrollbar', 'HScrollbar', 'Empty'], _EditorHitDict]
+
+class _PointerKindDict(TypedDict):
+    Down: NotRequired[MouseButton]
+    Up: NotRequired[MouseButton]
+    DoubleClick: NotRequired[MouseButton]
+
+PointerKind = Union[Literal['Move', 'Enter', 'Leave'], _PointerKindDict]
+
+class _EditorPointerPayload(TypedDict):
+    hit: EditorHit
+    col: int
+    kind: PointerKind
+    mods: Modifiers
+
+class _EditorScrollbarPayload(TypedDict):
+    axis: ScrollAxis
+    fraction: float
+    kind: PointerKind
+    mods: Modifiers
+
+class _EditorWheelPayload(TypedDict):
+    dx: float
+    dy: float
+    mods: Modifiers
+
+class EditorEvent(TypedDict):
+    Pointer: NotRequired[_EditorPointerPayload]
+    Scrollbar: NotRequired[_EditorScrollbarPayload]
+    Wheel: NotRequired[_EditorWheelPayload]
+
+class _MinimapSeekPayload(TypedDict):
+    fraction: float
+
+class MinimapEvent(TypedDict):
+    Seek: NotRequired[_MinimapSeekPayload]
 
 class _DataPointClickedPayload(TypedDict):
     id: WidgetId
@@ -2589,6 +2661,8 @@ class _UiEventDict(TypedDict):
     StatusBar: NotRequired[Tuple[WidgetId, StatusBarEvent]]
     ActivityBar: NotRequired[Tuple[WidgetId, ActivityBarEvent]]
     Terminal: NotRequired[Tuple[WidgetId, TerminalEvent]]
+    Editor: NotRequired[Tuple[WidgetId, EditorEvent]]
+    Minimap: NotRequired[Tuple[WidgetId, MinimapEvent]]
     TextDisplay: NotRequired[Tuple[WidgetId, TextDisplayEvent]]
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]

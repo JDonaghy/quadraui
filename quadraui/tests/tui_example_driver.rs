@@ -9374,10 +9374,9 @@ fn pressing_r_toggles_the_minimap_sizing_label() {
 // ─── ImageApp: Image primitive + MenuBar leading icon slot ────────────────
 //
 // TUI can't rasterise `examples/assets/quadra_logo.png`, so
-// `Backend::draw_image` paints the descriptor's `fallback_text` ("[Q]")
-// instead — this is the one driver test proving that fallback path (and
-// its `ImagePaintResult::Unsupported` contract) actually reaches the
-// screen, not just the unit tests in `tui::image::tests`. It also proves
+// the `Image` widget paints the descriptor's `fallback_text` ("[Q]")
+// instead — this is the one driver test proving that fallback path
+// actually reaches the screen, not just the widget's own cell tests. It also proves
 // the leading-icon-slot composition end to end: the menu items are
 // visible past the reserved icon width, and a click on the first item
 // still lands on it.

@@ -2356,7 +2356,7 @@ pub(crate) fn render_frame<A: AppLogic>(
     // app-configurable via `Backend::set_editor_font`
     // (`ShellConfig::with_editor_font` for `ShellApp` consumers). Read
     // fresh every frame so a runtime font change takes effect on the
-    // next repaint. Monospace is required because `draw_editor`'s
+    // next repaint. Monospace is required because the editor's
     // scroll formula (`scroll_left * char_width`) assumes uniform glyph
     // width; the untouched default resolves to the fontconfig monospace
     // alias (DejaVu Sans Mono, JetBrains Mono, etc).

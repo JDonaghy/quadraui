@@ -7279,6 +7279,181 @@ mod tests {
         );
     }
 
+    /// Paints one widget leaf of `kind` over the whole viewport through the
+    /// layout tree, the shape a binding app's `{"row": [{"<kind>": ...}]}`
+    /// render produces.
+    struct LayoutWidgetLeafLogic {
+        id: &'static str,
+        kind: &'static str,
+        widget: Rc<dyn DynWidget>,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl LayoutWidgetLeafLogic {
+        fn new(id: &'static str, kind: &'static str, widget: Rc<dyn DynWidget>) -> Self {
+            Self {
+                id,
+                kind,
+                widget,
+                engine: InteractionEngine::new(),
+                sink: RefCell::new(RecordingSink::default()),
+            }
+        }
+
+        fn events(&self, keep: impl Fn(&UiEvent) -> bool) -> Vec<UiEvent> {
+            self.sink
+                .borrow()
+                .dispatched
+                .iter()
+                .filter(|(event, _)| keep(event))
+                .map(|(event, _)| event.clone())
+                .collect()
+        }
+    }
+
+    impl AppLogic for LayoutWidgetLeafLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::Leaf(LayoutLeaf {
+                id: self.id.to_string(),
+                descriptor: LeafDescriptor::Widget {
+                    kind: self.kind,
+                    widget: self.widget.clone(),
+                },
+                scroll_px: None,
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits);
+            self.engine.set_hits(hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// The binding-host leg of `Editor`'s pointer parity: a press at text
+    /// column 3 on view row 1 of a 20x6 `"editor"` leaf dispatches the same
+    /// `Editor(ed, Pointer { BufferPos { 11, 3 }, 3, Down(Left) })` the
+    /// `TuiDriver` leg (`quadraui/tests/editor_minimap_event_parity.rs`)
+    /// produces.
+    #[test]
+    fn press_on_editor_text_dispatches_the_pointer_parity_event() {
+        let line = |idx: usize, text: &str| quadraui::EditorLine {
+            raw_text: text.to_string(),
+            gutter_text: format!("{:>3} ", idx + 1),
+            spans: vec![],
+            line_idx: idx,
+            is_current_line: false,
+            is_fold_header: false,
+            folded_line_count: 0,
+            git_diff: None,
+            diff_status: None,
+            diagnostics: vec![],
+            spell_errors: vec![],
+            is_breakpoint: false,
+            is_conditional_bp: false,
+            is_dap_current: false,
+            is_wrap_continuation: false,
+            segment_col_offset: 0,
+            annotation: None,
+            ghost_suffix: None,
+            is_ghost_continuation: false,
+            indent_guides: vec![],
+            colorcolumns: vec![],
+        };
+        let editor = quadraui::Editor::new(WidgetId::new("ed"), Rect::new(0.0, 0.0, 20.0, 6.0))
+            .with_lines(vec![
+                line(10, "fn main() {"),
+                line(11, "    hello();"),
+                line(12, "}"),
+            ])
+            .with_scroll_top(10)
+            .with_total_lines(60)
+            .with_gutter_char_width(4)
+            .with_is_active(true);
+        let logic = LayoutWidgetLeafLogic::new("ed", "editor", Rc::new(editor));
+        let mut driver = TuiDriver::new(logic, 20, 6);
+        driver.render();
+        driver.click(4.0 + 3.0, 1.0);
+        assert_eq!(
+            driver.app().events(|e| matches!(e, UiEvent::Editor(..))),
+            vec![UiEvent::Editor(
+                WidgetId::new("ed"),
+                quadraui::EditorEvent::Pointer {
+                    hit: quadraui::EditorHit::BufferPos { line: 11, col: 3 },
+                    col: 3,
+                    kind: quadraui::interactive::PointerKind::Down(MouseButton::Left),
+                    mods: Modifiers::default(),
+                }
+            )]
+        );
+    }
+
+    /// The binding-host leg of `Minimap`'s seek parity: a press at the
+    /// vertical middle of a 4x8 `"minimap"` leaf dispatches the same
+    /// `Minimap(mm, Seek { fraction: 0.5 })` the `TuiDriver` leg
+    /// (`quadraui/tests/editor_minimap_event_parity.rs`) produces.
+    #[test]
+    fn press_at_the_minimap_middle_dispatches_the_seek_parity_event() {
+        let minimap = quadraui::Minimap {
+            id: WidgetId::new("mm"),
+            lines: (0..32)
+                .map(|i| quadraui::MinimapLine {
+                    text: "fn main() {}".to_string(),
+                    line_idx: i,
+                })
+                .collect(),
+            syntax_spans: vec![],
+            visible_row_start: 0,
+            visible_row_count: 8,
+            total_buffer_lines: 32,
+            scale: Default::default(),
+            sizing: None,
+        };
+        let logic = LayoutWidgetLeafLogic::new("mm", "minimap", Rc::new(minimap));
+        let mut driver = TuiDriver::new(logic, 4, 8);
+        driver.render();
+        driver.click(1.0, 4.0);
+        assert_eq!(
+            driver.app().events(|e| matches!(e, UiEvent::Minimap(..))),
+            vec![UiEvent::Minimap(
+                WidgetId::new("mm"),
+                quadraui::MinimapEvent::Seek { fraction: 0.5 }
+            )]
+        );
+    }
+
+    /// An `"image"` leaf decodes through the generic widget registry and
+    /// paints its fallback text on a terminal with no graphics channel.
+    #[test]
+    fn an_image_leaf_paints_its_fallback_text() {
+        let image = quadraui::Image {
+            id: WidgetId::new("img"),
+            source: quadraui::ImageSource::Bytes(Vec::new()),
+            intrinsic_size: Some((16, 16)),
+            fit: quadraui::ImageFit::Contain,
+            fallback_text: "[LOGO]".to_string(),
+        };
+        let logic = LayoutWidgetLeafLogic::new("img", "image", Rc::new(image));
+        let mut driver = TuiDriver::new(logic, 20, 3);
+        driver.render();
+        assert!(
+            driver.find("[LOGO]").is_some(),
+            "the fallback text paints:\n{}",
+            driver.screen()
+        );
+    }
+
     /// Mirrors [`MinimalLogic`], painting one `"terminal"` widget leaf.
     struct TerminalLogic {
         term: quadraui::Terminal,

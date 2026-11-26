@@ -247,6 +247,12 @@ widget_kinds! {
     // schema already publishes for them.
     "palette" => crate::Palette,
     "form" => crate::Form,
+    // Ungated: `Editor`'s and `Minimap`'s `Primitive`/`Interactive` impls
+    // and `Image`'s `Primitive` impl carry no feature gate. The kind
+    // strings are the ones the wire schema already publishes for them.
+    "editor" => crate::Editor,
+    "minimap" => crate::Minimap,
+    "image" => crate::Image,
 }
 
 #[cfg(test)]

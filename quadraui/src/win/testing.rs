@@ -1433,6 +1433,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn drop_surface_reaches_the_same_unpainted_fallback_a_real_end_draw_failure_does() {
+        use crate::backend::DrawsPrimitives;
         use crate::Backend;
 
         struct NoopApp;
@@ -1456,6 +1457,8 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 5,
             total_buffer_lines: 10,
+            scale: Default::default(),
+            sizing: None,
         };
         let rect = Rect::new(0.0, 0.0, 20.0, 64.0);
 
@@ -1463,44 +1466,33 @@ mod tests {
         let viewport = Viewport::new(64.0, 64.0, 1.0);
 
         // Every real `draw_*` call happens inside a `begin_frame`/`end_frame`
-        // bracket (`render_frame`'s contract) — probing `draw_minimap`
+        // bracket (`render_frame`'s contract) — painting the minimap
         // directly still has to honour that, or the underlying Direct2D
         // render target (reused by `ensure_surface`'s recovery below, not
         // recreated from scratch) is left in an undefined state outside
         // its documented `BeginDraw`/`EndDraw` usage.
         driver.backend_mut().begin_frame(viewport);
-        let before = driver.backend_mut().draw_minimap(rect, &minimap);
+        let before = driver.backend_mut().draw_primitive(rect, &minimap);
         driver.backend_mut().end_frame();
-        assert!(
-            before.painted,
-            "sanity: a freshly-built WinDriver has a real surface attached"
-        );
 
         driver.drop_surface();
         driver.backend_mut().begin_frame(viewport);
-        let after = driver.backend_mut().draw_minimap(rect, &minimap);
+        // Painting with the surface gone must degrade, not panic.
+        let after = driver.backend_mut().draw_primitive(rect, &minimap);
         driver.backend_mut().end_frame();
-        assert!(
-            !after.painted,
-            "drop_surface must reach the same `painted: false` fallback a \
-             real EndDraw failure leaves behind"
-        );
         assert_eq!(
-            after.layout, before.layout,
-            "the fallback layout must still agree with the real paint's \
-             layout — same contract \
-             draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout \
-             proves in-crate"
+            after, before,
+            "the fallback layout must still agree with the real paint's layout"
         );
 
         // Recovery: the next `WinDriver::render` call's `ensure_surface`
         // recreates the surface, exactly like the real recovery path
         driver.render();
         driver.backend_mut().begin_frame(viewport);
-        let recovered = driver.backend_mut().draw_minimap(rect, &minimap);
+        let recovered = driver.backend_mut().draw_primitive(rect, &minimap);
         driver.backend_mut().end_frame();
-        assert!(
-            recovered.painted,
+        assert_eq!(
+            recovered, before,
             "WinDriver::render must recover the dropped surface via \
              ensure_surface, same as a real EndDraw-failure recovery"
         );

@@ -114,12 +114,19 @@ use crate::text_util::char_cell_width;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
+mod contract;
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+pub(crate) mod paint_pixels;
+
+pub use contract::{MinimapEvent, MinimapState};
+
 /// Declarative description of a `Minimap` widget.
 ///
 /// # Examples
 ///
 /// ```
-/// use quadraui::{Minimap, MinimapHit, MinimapLine, MinimapSizing, Rect, WidgetId};
+/// use quadraui::{Minimap, MinimapHit, MinimapLine, MinimapScale, MinimapSizing, Rect, WidgetId};
 ///
 /// let minimap = Minimap {
 ///     id: WidgetId::new("minimap:editor"),
@@ -133,6 +140,8 @@ use serde::{Deserialize, Serialize};
 ///     visible_row_start: 0,
 ///     visible_row_count: 20,
 ///     total_buffer_lines: 100,
+///     scale: MinimapScale::One,
+///     sizing: None,
 /// };
 ///
 /// let bounds = Rect::new(0.0, 0.0, 10.0, 24.0);
@@ -155,6 +164,16 @@ pub struct Minimap {
     pub visible_row_count: usize,
     /// Total buffer lines (used to compute the scroll thumb).
     pub total_buffer_lines: usize,
+    /// The on-screen size of one character cell on a pixel surface — see
+    /// [`MinimapScale`]. A cell grid paints braille at a fixed density and
+    /// ignores it.
+    #[serde(default)]
+    pub scale: MinimapScale,
+    /// The row-pitch strategy [`crate::Primitive::layout`] uses. `None`
+    /// tiles rows at one cell row each on a cell grid, and at
+    /// [`MinimapScale::row_pitch_px`] on a pixel surface.
+    #[serde(default)]
+    pub sizing: Option<MinimapSizing>,
 }
 
 /// One sampled line in a [`Minimap`].
@@ -237,7 +256,7 @@ pub struct MinimapLayout {
     ///
     /// A host that colour-aggregates its own [`Minimap::syntax_spans`] via
     /// [`aggregate_spans`] must build its [`MinimapGrid::cols_per_cell`]
-    /// from **this** field — read back from a `minimap_layout`/`draw_minimap`
+    /// from **this** field — read back from the minimap's resolved layout
     /// call against the same [`Minimap::lines`] — rather than hardcoding a
     /// constant. Before #1032 this was the only way TUI's scale could be
     /// known: it was a compile-time constant a host could copy, but once
@@ -282,13 +301,13 @@ pub const MAX_ROW_PITCH: f32 = 8.0;
 /// Every backend's row pitch drives some paint cost per row — GTK's and
 /// Win-GUI's drive a Pango/DirectWrite font size (or, below the
 /// legibility floor, a colour block), and TUI's drives how many cell rows
-/// `draw_minimap` paints per row (exactly one — braille rows are
+/// the minimap paints per row (exactly one — braille rows are
 /// cell-native, with no font to scale, but that still means a
 /// file-length-dependent pitch turns into file-length-dependent *gaps*
 /// rather than a file-length-dependent glyph size, which was #992). A
 /// file-length-dependent pitch is the defect #667 (GTK) and #992 (TUI)
 /// both remove: every backend now sizes with [`Self::FixedPitch`].
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum MinimapSizing {
     /// Stretch rows to fill `bounds.height`, capped at [`MAX_ROW_PITCH`].
     /// A file shorter than the strip at that cap top-aligns
@@ -679,6 +698,65 @@ impl Minimap {
             1.0,
         ))
     }
+}
+
+/// Buffer lines one braille row packs on a cell grid: a braille glyph is
+/// four dots tall, one dot row per buffer line.
+pub const BRAILLE_LINES_PER_ROW: usize = 4;
+
+/// The narrowest buffer-columns-per-cell scale braille paints at: one
+/// buffer column per dot, two dots per cell.
+pub const BRAILLE_COLS_PER_CELL: usize = 2;
+
+impl Minimap {
+    /// The cell-grid layout in `rect` under `sizing`: [`BRAILLE_LINES_PER_ROW`]
+    /// buffer lines per row, with [`MinimapLayout::cols_per_cell`] set to
+    /// [`resolve_cols_per_cell`] for `rect`'s width.
+    pub fn cell_layout(&self, rect: Rect, sizing: MinimapSizing) -> MinimapLayout {
+        let mut layout = self.layout_with_sizing(rect, BRAILLE_LINES_PER_ROW, sizing);
+        layout.cols_per_cell = resolve_cols_per_cell(self, rect.width.max(0.0) as usize);
+        layout
+    }
+
+    /// The pixel-surface layout in `rect`: one buffer line per row, under
+    /// `sizing`, or at `scale`'s [`MinimapScale::row_pitch_px`] when
+    /// `sizing` is `None`.
+    pub fn pixel_layout(
+        &self,
+        rect: Rect,
+        scale: MinimapScale,
+        sizing: Option<MinimapSizing>,
+    ) -> MinimapLayout {
+        let sizing = sizing.unwrap_or(MinimapSizing::FixedPitch(scale.row_pitch_px() as f32));
+        self.layout_with_sizing(
+            rect,
+            crate::primitives::layout_metrics::pixel::MINIMAP_LINES_PER_ROW,
+            sizing,
+        )
+    }
+}
+
+/// The horizontal scale a braille strip `width_cells` wide paints at:
+/// buffer columns folded into one cell, chosen so the strip's
+/// `width_cells * 2` dot columns span the widest sampled line, capped at
+/// [`COLUMN_CAPACITY`] columns.
+///
+/// A file whose widest line already fits resolves to
+/// [`BRAILLE_COLS_PER_CELL`], one buffer column per dot. The result is
+/// always even (two dots per cell), so it is safe to pass straight into a
+/// [`MinimapGrid::cols_per_cell`].
+pub fn resolve_cols_per_cell(minimap: &Minimap, width_cells: usize) -> usize {
+    let width_cells = width_cells.max(1);
+    let max_line_len = minimap
+        .lines
+        .iter()
+        .map(|l| l.text.chars().count())
+        .max()
+        .unwrap_or(0);
+    let capped = max_line_len.min(COLUMN_CAPACITY);
+    let dot_budget = width_cells * 2;
+    let resolved_cols_per_dot = capped.div_ceil(dot_budget).max(1);
+    resolved_cols_per_dot * 2
 }
 
 /// Ceiling on how many real buffer lines [`sample_blocks`] reads for one
@@ -1112,7 +1190,7 @@ pub enum MinimapRenderMode {
 }
 
 /// Pure function of the row pitch: is `line_px` legible enough to shape
-/// real text? Every backend's `draw_minimap` calls this exact function to
+/// real text? The minimap's pixel painter calls this exact function to
 /// pick a branch, so it is the one source of truth for the threshold —
 /// tests exercise it directly instead of needing a live paint surface.
 pub fn is_legible(line_px: f64) -> bool {
@@ -1153,29 +1231,17 @@ pub fn minimap_font_px(line_px: f64) -> f64 {
 // `MinimapSizing::FixedPitch` instead of the bare `ROW_PITCH_PX`
 // constant.
 //
-// This is deliberately not a field on [`Minimap`] itself — `Minimap` is
-// not `#[non_exhaustive]`, and any out-of-tree struct-literal
-// constructor (`CLAUDE.md`'s downstream-consumers section: `vimcode`
-// builds `Minimap` values directly) would need to grow a new field at
-// every call site the instant this crate added one. Instead each
-// backend carries its own scale as paint-time state (`Backend::
-// minimap_scale`/`set_minimap_scale`, both default-provided so the
-// trait's existing 2-argument `draw_minimap(rect, minimap)` /
-// `minimap_layout(rect, minimap)` call shape — the exact shape
-// `vimcode::render`'s `Backend::minimap_layout`/`draw_minimap` call
-// sites use — never has to change).
+// The scale rides on the descriptor as [`Minimap::scale`], so layout is
+// a function of the descriptor alone.
 
 /// VS Code-parity minimap render scale (`editor.minimap.scale`) — how
 /// large a logical pixel cell one character occupies in
 /// [`MinimapRenderMode::Characters`].
 ///
-/// Backends read this off [`crate::backend::Backend::minimap_scale`]
-/// (a per-backend paint-time setting, not a field on [`Minimap`] — see
-/// the section docs above for why) and feed [`Self::row_pitch_px`] into
-/// [`MinimapSizing::FixedPitch`] in place of the bare [`ROW_PITCH_PX`]
-/// constant, and [`Self::cell_w_px`] into their per-column paint-walk
-/// x-advance (in place of a hardcoded `1.0`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+/// [`Minimap::scale`] carries it. [`Minimap::pixel_layout`] feeds
+/// [`Self::row_pitch_px`] into [`MinimapSizing::FixedPitch`], and the
+/// pixel painter steps each column by [`Self::cell_w_px`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub enum MinimapScale {
     /// A 1 px wide × [`ROW_PITCH_PX`]-tall cell — the pre-#1143 default.
     /// [`ROW_PITCH_PX`] (2) sits below [`LEGIBILITY_FLOOR_PX`] (4), so
@@ -1518,6 +1584,19 @@ impl Default for MinimapAtlasCache {
     }
 }
 
+thread_local! {
+    /// The atlas the shared pixel painter blits from, keyed on the sample
+    /// sheet's content and the tile size, so a font, scale or DPI change
+    /// rebuilds it and an unchanged frame does not.
+    static ATLAS_CACHE: std::cell::RefCell<MinimapAtlasCache> =
+        std::cell::RefCell::new(MinimapAtlasCache::new());
+}
+
+/// Run `f` against this thread's [`MinimapAtlasCache`].
+pub(crate) fn with_atlas_cache<R>(f: impl FnOnce(&mut MinimapAtlasCache) -> R) -> R {
+    ATLAS_CACHE.with(|cache| f(&mut cache.borrow_mut()))
+}
+
 /// Truncate `text` to at most `n` display cells ([`char_cell_width`]), on a
 /// char boundary. A wide glyph (CJK, emoji, ...) that would only partially
 /// fit is dropped whole rather than split. Never allocates — returns a
@@ -1551,8 +1630,8 @@ pub fn color_at_column(row_spans: &[MinimapSpan], col: usize, default_fg: Color)
 /// [`aggregate_spans`]'s documented output order — once across a
 /// caller-driven sequence of *non-decreasing* `line_idx` queries, hence one
 /// merge-walk in O(rows + spans) total rather than one `filter` scan of the
-/// whole slice per row (#667 pt. 4). Shared by every backend's
-/// `draw_minimap` row loop.
+/// whole slice per row (#667 pt. 4). Shared by the minimap painters'
+/// row loops.
 pub struct SpanCursor<'a> {
     spans: &'a [MinimapSpan],
     pos: usize,
@@ -1564,8 +1643,8 @@ impl<'a> SpanCursor<'a> {
     }
 
     /// The contiguous run of spans covering `line_idx`. `line_idx` must be
-    /// non-decreasing across successive calls (true for every backend's
-    /// `draw_minimap` row loop) — an out-of-order query would silently
+    /// non-decreasing across successive calls (true for every minimap
+    /// painter's row loop) — an out-of-order query would silently
     /// miss spans the cursor already walked past.
     pub fn row_spans(&mut self, line_idx: usize) -> &'a [MinimapSpan] {
         while self.pos < self.spans.len() && self.spans[self.pos].line_idx < line_idx {
@@ -1601,6 +1680,8 @@ mod tests {
             visible_row_start,
             visible_row_count,
             total_buffer_lines: n,
+            scale: Default::default(),
+            sizing: None,
         }
     }
 
@@ -2405,6 +2486,8 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 8,
             total_buffer_lines: 8,
+            scale: Default::default(),
+            sizing: None,
         };
         let bounds = Rect::new(0.0, 0.0, 10.0, 40.0);
         let via_fill = mm.layout_with_sizing(bounds, 2, MinimapSizing::Fill);

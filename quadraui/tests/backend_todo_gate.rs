@@ -2,9 +2,8 @@
 //! the four real per-platform `Backend` implementations (`TuiBackend`,
 //! `GtkBackend`, `MacBackend`, `WinBackend`) is a latent host abort in every
 //! consuming app the instant a generic `AppLogic` calls it through
-//! `&mut dyn Backend`. That already happened once: `MacBackend::draw_minimap`
-//! and related methods were bare, un-gated `todo!()`s that took down the
-//! macOS GUI on first paint.
+//! `&mut dyn Backend` — a bare, un-gated `todo!()` takes down the GUI on
+//! first paint.
 //!
 //! A raw `todo!()` count cannot tell that dangerous case apart from
 //! Win-GUI's dozens of *legitimate* stubs, each shaped like:
@@ -162,11 +161,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_editor",
-        "\"Direct2D editor rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_message_list",
         "\"Direct2D message list rasteriser (no surface attached yet)\"",
     ),
@@ -204,16 +198,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
         "src/win/backend.rs",
         "fn draw_board",
         "\"Direct2D board rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_minimap",
-        "\"Direct2D minimap rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_image",
-        "\"Direct2D image rasteriser (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",
@@ -811,11 +795,11 @@ mod self_test {
 
     #[test]
     fn sibling_statement_cfg_does_not_gate_the_next_statement() {
-        // WinBackend::draw_minimap's shape: a sibling `#[cfg(...)]` on one
+        // A Win `draw_*` method's shape: a sibling `#[cfg(...)]` on one
         // statement does not gate the next statement.
         let src = r#"
             impl Backend for WinBackend {
-                fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) {
+                fn draw_board(&mut self, rect: Rect, minimap: &Minimap) {
                     #[cfg(target_os = "windows")]
                     if let Some(surface) = &self.surface { return; }
                     #[cfg(not(target_os = "windows"))]
@@ -836,14 +820,14 @@ mod self_test {
 
     #[test]
     fn cfg_on_enclosing_block_gates_everything_inside_it() {
-        // The `minimap_layout`/`list_layout`/… shape: the WHOLE `{ }` arm
+        // The `list_layout`/… shape: the WHOLE `{ }` arm
         // carries the cfg, so a todo!() with no attrs of its own, nested
         // inside it, is still excluded from a native build.
         let src = r#"
             impl Backend for WinBackend {
-                fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout {
+                fn board_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout {
                     #[cfg(target_os = "windows")]
-                    { win_minimap_layout(minimap, rect) }
+                    { win_board_layout(minimap, rect) }
                     #[cfg(not(target_os = "windows"))]
                     {
                         let _ = (rect, minimap);
@@ -946,7 +930,7 @@ mod self_test {
         // A bare `todo!()` with no cfg at all is dangerous.
         let src = r#"
             impl Backend for MacBackend {
-                fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) {
+                fn draw_board(&mut self, rect: Rect, minimap: &Minimap) {
                     todo!("not implemented yet")
                 }
             }

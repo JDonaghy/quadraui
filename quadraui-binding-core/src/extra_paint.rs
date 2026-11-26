@@ -13,12 +13,12 @@ use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
     render_markdown_to_styled, Backend, BoardModel, Canvas, Chart, Column, ComboBox, CommandLine,
-    DatePicker, Decoration, DiffView, Editor, FieldKind, FindReplacePanel, FontRole, Form,
-    FormField, Icon, Image, LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView,
-    NaturalSize, NumberInput, NumberInputHit, PipelineView, Point, ProgressBar, Rect,
-    RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StyledText, TextDisplay,
-    TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable,
-    TreeTableController, TreeTableNodeData, WidgetId,
+    DatePicker, Decoration, DiffView, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon,
+    LabelPosition, MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput,
+    NumberInputHit, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
+    ScrollView, Scrollbar, Spinner, StyledText, TextDisplay, TextDisplayLine, TextField, TextInput,
+    TextRegion, Theme, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData,
+    WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -238,42 +238,6 @@ impl ExtraPaint for Spinner {
             glyph_width + char_width.max(1.0) + label_w
         };
         NaturalSize::new(Some(width), Some(line_height))
-    }
-}
-
-impl ExtraPaint for Image {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_image(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Natural size depends on whether this backend can rasterise the
-    /// real image at all. On a cell-grid backend with no graphics
-    /// protocol (`char_width() <= 1.0` — the same test every chrome-
-    /// padding estimate on this trait uses), `self.fallback_text` is
-    /// what actually paints (see [`quadraui::Image::fallback_text`]'s
-    /// own doc), so that text's own measured width is the real natural
-    /// size, not `intrinsic_size`'s pixel dimensions, which have no
-    /// defined cell-grid mapping. On a pixel backend, `intrinsic_size`
-    /// (device-independent pixels, close enough to this backend's own
-    /// native units for a best-effort estimate) is the real content
-    /// size when known; `None` when it isn't, same as every other axis
-    /// with no cheap measurement.
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        if backend.char_width() <= 1.0 {
-            if self.fallback_text.is_empty() {
-                return NaturalSize::NONE;
-            }
-            let (w, _) = backend.measure_text(&self.fallback_text, FontRole::Chrome);
-            return NaturalSize::new(Some(w), Some(backend.line_height()));
-        }
-        match self.intrinsic_size {
-            Some((w, h)) => NaturalSize::new(Some(w as f32), Some(h as f32)),
-            None => NaturalSize::NONE,
-        }
     }
 }
 
@@ -1218,16 +1182,6 @@ impl ExtraPaint for PipelineView {
     }
 }
 
-impl ExtraPaint for Minimap {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_minimap(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
 impl ExtraPaint for MultiSectionView {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_multi_section_view(area, self);
@@ -1641,32 +1595,6 @@ impl ExtraPaint for Scrollbar {
     }
 }
 
-impl ExtraPaint for Editor {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let _ = backend.draw_editor(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check, same limitation [`TextInput::hit_test`]
-    /// documents above: this trait has no backend-metrics parameter to
-    /// resolve a click to a buffer line/column via
-    /// [`quadraui::Editor::layout`]'s own `cell_width`/`line_height`
-    /// arguments, so any click inside `area` counts as landing on the
-    /// editor. A host that wants `Editor::layout(..).hit_test(..)`'s
-    /// buffer-position/gutter/scrollbar detail re-derives it from the
-    /// enriched `MouseDown`'s position plus its own metrics.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-}
-
 impl ExtraPaint for Canvas {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         let _ = backend.draw_canvas(area, self);
@@ -1860,7 +1788,6 @@ macro_rules! extra_primitives {
 extra_primitives! {
     "progress" => ProgressBar,
     "spinner" => Spinner,
-    "image" => Image,
     "form" => Form,
     "text_input" => TextInput,
     "text_field" => TextField,
@@ -1871,7 +1798,6 @@ extra_primitives! {
     "message_list" => MessageList,
     "board" => BoardModel,
     "pipeline_view" => PipelineView,
-    "minimap" => Minimap,
     "multi_section_view" => MultiSectionView,
     "diff_view" => DiffView,
     "tree_table" => TreeTable,
@@ -1880,7 +1806,6 @@ extra_primitives! {
     "menu_bar" => MenuBar,
     "command_line" => CommandLine,
     "scrollbar" => Scrollbar,
-    "editor" => Editor,
     "canvas" => Canvas,
     "scroll_view" => ScrollView,
     "find_replace" => FindReplacePanel,
@@ -1904,12 +1829,13 @@ extra_primitives! {
 ///
 /// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`,
 /// `"command_center"`, `"terminal"`, `"status_bar"`, `"activity_bar"`,
-/// `"palette"` and `"context_menu"` are this table's members: unlike every
-/// [`EXTRA_PRIMITIVE_KINDS`] entry, none of [`quadraui::IconGrid`],
-/// [`quadraui::CellGrid`], [`quadraui::Switch`], [`quadraui::RadioGroup`],
-/// [`quadraui::Button`], [`quadraui::CommandCenter`], [`quadraui::Terminal`],
-/// [`quadraui::StatusBar`], [`quadraui::ActivityBar`], [`quadraui::Palette`]
-/// or [`quadraui::ContextMenu`] has a bespoke
+/// `"palette"`, `"context_menu"`, `"editor"`, `"minimap"` and `"image"` are
+/// this table's members: unlike every [`EXTRA_PRIMITIVE_KINDS`] entry, none
+/// of [`quadraui::IconGrid`], [`quadraui::CellGrid`], [`quadraui::Switch`],
+/// [`quadraui::RadioGroup`], [`quadraui::Button`], [`quadraui::CommandCenter`],
+/// [`quadraui::Terminal`], [`quadraui::StatusBar`], [`quadraui::ActivityBar`],
+/// [`quadraui::Palette`], [`quadraui::ContextMenu`], [`quadraui::Editor`],
+/// [`quadraui::Minimap`] or [`quadraui::Image`] has a bespoke
 /// [`ExtraPaint`] impl to write
 /// here — painting, whole-area hit testing and [`DynWidget::handle`]
 /// routing are already fully generic (see
@@ -1943,12 +1869,16 @@ extra_primitives! {
 /// `"palette"`; and [`quadraui::ContextMenu`]'s own
 /// [`crate::interactive::Interactive`] impl (row hover, click-to-activate,
 /// arrow-key selection, Enter) covers a `"context_menu"` placed as a
-/// layout leaf. A further kind joins this table only when it
+/// layout leaf. [`quadraui::Editor`]'s and [`quadraui::Minimap`]'s own
+/// [`crate::interactive::Interactive`] impls hold only gesture state (a
+/// drag anchor, a seek drag), and [`quadraui::Image`] is non-interactive
+/// with its natural size from its own `Primitive::measure`, so `"editor"`,
+/// `"minimap"` and `"image"` need nothing more. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 11] = [
+pub const WIDGET_KINDS: [&str; 14] = [
     "icon_grid",
     "cell_grid",
     "switch",
@@ -1960,6 +1890,9 @@ pub const WIDGET_KINDS: [&str; 11] = [
     "activity_bar",
     "palette",
     "context_menu",
+    "editor",
+    "minimap",
+    "image",
 ];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased

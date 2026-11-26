@@ -9,8 +9,8 @@
 //!   ([`super::braille`]).
 //! - [`crate::DrawOp::TextRun`] / [`crate::DrawOp::Image`] snap to the
 //!   nearest whole cell (text can't live inside a dot cell) — `Image`
-//!   paints [`crate::Image::fallback_text`], same posture as
-//!   [`super::image::draw_image`].
+//!   paints [`crate::Image::fallback_text`], same posture as the
+//!   `Image` widget's own cell painter.
 //! - [`crate::DrawOp::PushClip`] / [`crate::DrawOp::PopClip`] quantise
 //!   their rect outward to whole cells.
 //!
@@ -657,16 +657,18 @@ pub fn draw_canvas(buf: &mut Buffer, area: RRect, canvas: &Canvas, theme: &Theme
 /// `DrawOp::TextRun`/`DrawOp::Image` fallback text into) is quantised
 /// outward to whole cells, clipped by the same per-op
 /// [`CellClip`] stack [`draw_canvas`] replays, and handed to
-/// [`crate::tui::image::draw_image_kitty`] — the same decode-cache,
-/// id-registry, and transmit/placement-byte-queueing path
-/// [`crate::tui::backend::TuiBackend::draw_image`] drives for the
-/// standalone `Image` primitive, so an image reached through either
-/// path shares one id if its source and placed cell size match.
+/// [`crate::tui::cell_surface::draw_image_kitty`] — the same decode-cache,
+/// id-registry, and transmit/placement-byte-queueing path the cell
+/// surface's graphics channel drives for the standalone `Image`
+/// primitive, so an image reached through either path shares one id if
+/// its source and placed cell size match. An op the Kitty path cannot
+/// place or decode gets the standalone primitive's centered fallback
+/// text instead.
 ///
 /// Called by `TuiBackend::draw_canvas` only when
 /// [`crate::tui::backend::TuiBackend::kitty_graphics`] is `Some` and
 /// the backend is truecolor — see that trait method's body. Behind the
-/// `tui-images` Cargo feature, same as [`crate::tui::image::draw_image_kitty`]
+/// `tui-images` Cargo feature, same as [`crate::tui::cell_surface::draw_image_kitty`]
 /// itself.
 #[cfg(feature = "tui-images")]
 pub(crate) fn draw_canvas_kitty_images(
@@ -675,7 +677,7 @@ pub(crate) fn draw_canvas_kitty_images(
     canvas: &Canvas,
     theme: &Theme,
     cell_px: (u16, u16),
-    state: &mut crate::tui::image::KittyImageState,
+    state: &mut crate::tui::cell_surface::KittyImageState,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -704,7 +706,19 @@ pub(crate) fn draw_canvas_kitty_images(
             (x1 - x0) as u16,
             (y1 - y0) as u16,
         );
-        crate::tui::image::draw_image_kitty(buf, op_area, image, theme, cell_px, state);
+        if !crate::tui::cell_surface::draw_image_kitty(buf, op_area, image, cell_px, state) {
+            let fallback_area = crate::Rect::new(
+                op_area.x as f32,
+                op_area.y as f32,
+                op_area.width as f32,
+                op_area.height as f32,
+            );
+            image.paint_fallback_cells(
+                fallback_area,
+                &mut crate::tui::BufferCellSurface::new(buf),
+                theme,
+            );
+        }
     }
 }
 
@@ -857,7 +871,7 @@ mod tests {
         draw_canvas(&mut buf, area, &c, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), '[', "fallback text paints first");
 
-        let mut state = crate::tui::image::KittyImageState::new();
+        let mut state = crate::tui::cell_surface::KittyImageState::new();
         draw_canvas_kitty_images(&mut buf, area, &c, &Theme::default(), (8, 16), &mut state);
 
         assert_eq!(

@@ -68,20 +68,12 @@ mod dialog;
 /// full — see its module docs.
 #[cfg(target_os = "windows")]
 mod diff_view;
-/// Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod editor;
 /// Win32 message → `quadraui::UiEvent` translation (mouse, keyboard,
 /// focus). Pure free functions, host-independent and unit-tested off
 /// Windows — mirrors `crate::gtk::events` / `crate::macos::events`. See
 /// its module docs. `WM_SIZE`/`WM_DPICHANGED`/`WM_CLOSE` translation
 /// is handled in `msg` + `run` — see this module's docs.
 pub mod events;
-/// Direct2D + WIC rasteriser for [`crate::primitives::image::Image`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod image;
 /// Direct2D / DirectWrite rasteriser for [`crate::ListView`].
 /// [`list::win_list_layout`] is pure geometry and compiles/runs
 /// everywhere; only [`list::draw_list`] is Windows-only — see that
@@ -91,11 +83,6 @@ mod list;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod message_list;
-/// Direct2D / DirectWrite rasteriser for
-/// [`crate::primitives::minimap::Minimap`]. Windows-only in full —
-/// see its module docs.
-#[cfg(target_os = "windows")]
-mod minimap;
 /// Win32 message-payload decoding (`WPARAM`/`LPARAM` word unpacking, DPI
 /// ratio). Crate-private and host-independent — it is the one part of this
 /// backend that is pure arithmetic, so it is the one part that can be
@@ -258,21 +245,12 @@ pub use data_table::win_data_table_layout;
 pub use dialog::draw_dialog;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
-pub use editor::draw_editor;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use image::draw_image;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
 pub use list::draw_list;
 #[doc(hidden)]
 pub use list::win_list_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use message_list::draw_message_list;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use minimap::{draw_minimap, win_minimap_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_metrics};

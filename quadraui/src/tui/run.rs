@@ -885,21 +885,13 @@ where
             for (at, cell) in popup_cells {
                 buf[at] = cell;
             }
-            // Apply the editor cursor position cached by `draw_editor`.
-            // `Backend::draw_editor` only has the buffer,
-            // not the `Frame`, so it stashes the position on `TuiBackend`
-            // for us to apply here — the one place per frame with access
-            // to the real `Frame::set_cursor_position`. `run_with_shell`
-            // and `TuiDriver` both go through this same `render_frame`, so
-            // they pick up the behavior for free.
-            if let Some(pos) = backend.take_last_cursor_position() {
-                frame.set_cursor_position(pos);
-            }
-            // Same handoff as the editor cursor above, for whatever last
-            // called `CellSurface::set_cursor` this frame — runs second,
-            // so it wins if a frame somehow drives both (today nothing
-            // does; `draw_primitive`'s default body never calls
-            // `CellSurface::set_cursor`, only `ratatui_buffer`).
+            // Apply the caret whatever last called `CellSurface::set_cursor`
+            // this frame placed (an editor's bar or underline caret). A
+            // widget paints only the buffer, not the `Frame`, so the
+            // position is stashed on `TuiBackend` for this one place per
+            // frame with access to the real `Frame::set_cursor_position`.
+            // `run_with_shell` and `TuiDriver` both go through this same
+            // `render_frame`, so they pick up the behavior for free.
             backend.apply_last_cell_surface_cursor(frame);
         })
         .map_err(|e| io::Error::other(e.to_string()))?;
@@ -1412,24 +1404,20 @@ mod tests {
 
     // ── Editor cursor-position pipeline ────────────────────────────────────────
     //
-    // `Backend::draw_editor`'s `EditorPaintResult::cursor_position` is applied
-    // to the real ratatui `Frame` by `render_frame`, observable via `TestBackend`'s
-    // own cursor state.
+    // An editor's bar or underline caret is applied to the real ratatui
+    // `Frame` by `render_frame`, observable via `TestBackend`'s own cursor
+    // state.
 
     /// Minimal app that paints a single-line `Editor` with a `Bar`-shaped
     /// cursor at a configurable column. `Bar`/`Underline` cursors are the
-    /// shapes `tui::draw_editor` reports via `EditorPaintResult::cursor_position`
-    /// (a `Block` cursor is drawn as an inverted cell instead — see
-    /// `tui/editor.rs`'s cursor-paint match).
+    /// shapes the editor's cell painter places through
+    /// `CellSurface::set_cursor` (a `Block` cursor is drawn as an inverted
+    /// cell instead).
     struct EditorCursorApp {
         cursor_col: usize,
         /// When false, `render` paints no editor at all — used to verify the
         /// cursor position doesn't linger from a previous frame.
         show_editor: bool,
-        /// Last `Backend::draw_editor` return value, captured verbatim
-        /// (the terminal-cursor tests go through the higher-level `TuiDriver`
-        /// handoff).
-        last_result: std::cell::RefCell<Option<crate::backend::EditorPaintResult>>,
     }
 
     impl EditorCursorApp {
@@ -1437,7 +1425,6 @@ mod tests {
             Self {
                 cursor_col,
                 show_editor: true,
-                last_result: std::cell::RefCell::new(None),
             }
         }
 
@@ -1495,6 +1482,7 @@ mod tests {
                 tabstop: 4,
                 cursorline: false,
                 lightbulb_glyph: '\0',
+                paint_options: Default::default(),
             }
         }
     }
@@ -1505,8 +1493,7 @@ mod tests {
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             if self.show_editor {
                 let editor = self.build_editor();
-                let result = backend.draw_editor(editor.rect, &editor);
-                *self.last_result.borrow_mut() = Some(result);
+                crate::DrawsPrimitives::draw_primitive(backend, editor.rect, &editor);
             }
         }
 
@@ -1527,7 +1514,7 @@ mod tests {
         assert_eq!(
             driver.terminal_cursor_position(),
             Some((3, 0)),
-            "draw_editor's cursor_position must reach Frame::set_cursor_position"
+            "the editor's caret must reach Frame::set_cursor_position"
         );
     }
 
@@ -1545,30 +1532,7 @@ mod tests {
         assert_eq!(
             driver.terminal_cursor_position(),
             Some((7, 0)),
-            "a later frame's draw_editor call must overwrite the previous cursor position"
-        );
-    }
-
-    /// `TuiBackend::draw_editor` must widen the TUI-internal,
-    /// already cell-rounded `(u16, u16)` cursor position into the portable
-    /// `EditorPaintResult::cursor_position_native` `Point` with the same
-    /// `(x, y)` ordering.
-    #[test]
-    fn draw_editor_result_maps_cell_cursor_to_native_point() {
-        let mut driver = TuiDriver::new(EditorCursorApp::new(3), 40, 10);
-        driver.render();
-
-        let result = driver
-            .app()
-            .last_result
-            .borrow()
-            .clone()
-            .expect("render() must call draw_editor and capture its result");
-
-        assert_eq!(
-            result.cursor_position_native,
-            Some(Point::new(3.0, 0.0)),
-            "cursor_position_native must carry the cell-rounded (x, y) pair widened to f32"
+            "a later frame's editor paint must overwrite the previous cursor position"
         );
     }
 
@@ -1607,8 +1571,8 @@ mod tests {
 
     /// `CellSurface::set_cursor` must reach `Frame::set_cursor_position`
     /// through `TuiBackend::last_cell_surface_cursor`, the same
-    /// buffer-only-paint-to-frame-level-side-effect handoff
-    /// `draw_editor`'s cached cursor uses.
+    /// buffer-only-paint-to-frame-level-side-effect handoff an editor's
+    /// caret uses.
     #[test]
     fn cell_surface_set_cursor_reaches_the_terminal_frame() {
         let mut driver = TuiDriver::new(CellSurfaceCursorApp::new(5, 2), 40, 10);
@@ -1707,7 +1671,7 @@ mod kitty_graphics_tests {
                 fit: ImageFit::Fill,
                 fallback_text: "[PHOTO]".into(),
             };
-            backend.draw_image(QRect::new(0.0, 0.0, 4.0, 4.0), &image);
+            crate::DrawsPrimitives::draw_primitive(backend, QRect::new(0.0, 0.0, 4.0, 4.0), &image);
         }
 
         fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

@@ -4,8 +4,8 @@
 //! (`Contain` letterboxes within the icon slot; `Cover` fills it,
 //! cropping) painted left of a small `File`/`Edit`/`View` menu bar —
 //! GTK decodes the real PNG via `gdk_pixbuf`; TUI paints the
-//! descriptor's `fallback_text` instead (both through one
-//! `Backend::draw_image` call).
+//! descriptor's `fallback_text` instead (both through the widget's own
+//! contract).
 
 use quadraui::{
     resolve_bar_height, Backend, BackendCaps, Color, DrawsPrimitives, Image, ImageFit, ImageHit,
@@ -130,7 +130,7 @@ impl Demo for ImageDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let (_full, icon_rect, items_rect) = Self::bar_rects(area, backend);
-        let _ = backend.draw_image(icon_rect, &self.logo(variant));
+        let _ = backend.draw_primitive(icon_rect, &self.logo(variant));
         let _ = self.menu_bar.present(backend, items_rect);
 
         let status_rect = Self::status_rect(area, backend);

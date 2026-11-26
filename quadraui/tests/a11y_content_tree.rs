@@ -86,9 +86,9 @@ fn editor_line(text: &str, idx: usize) -> EditorLine {
 }
 
 fn editor_with(lines: Vec<EditorLine>) -> Surface {
-    Surface::Editor {
+    Surface::Widget {
         rect: VIEWPORT,
-        editor: Editor::new(WidgetId::from("editor"), rect(10.0)).with_lines(lines),
+        widget: Box::new(Editor::new(WidgetId::from("editor"), rect(10.0)).with_lines(lines)),
     }
 }
 
@@ -915,9 +915,9 @@ fn image_falls_back_to_fallback_text_as_label() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Image {
+    scenario.push(Surface::Widget {
         rect: rect(4.0),
-        image,
+        widget: Box::new(image),
     });
 
     scenario.snapshot().assert_matches(
@@ -938,9 +938,9 @@ fn image_with_empty_fallback_text_is_unlabelled() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Image {
+    scenario.push(Surface::Widget {
         rect: rect(4.0),
-        image,
+        widget: Box::new(image),
     });
 
     scenario.snapshot().assert_matches(
@@ -961,12 +961,14 @@ fn minimap_is_hidden_presentation() {
         visible_row_start: 0,
         visible_row_count: 0,
         total_buffer_lines: 0,
+        scale: Default::default(),
+        sizing: None,
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Minimap {
+    scenario.push(Surface::Widget {
         rect: rect(10.0),
-        minimap,
+        widget: Box::new(minimap),
     });
 
     scenario.snapshot().assert_matches(

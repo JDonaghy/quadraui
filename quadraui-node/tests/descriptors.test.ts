@@ -1173,7 +1173,8 @@ test("inline tree leaf editor focuses it and routes the hit", () => {
 
   assert.equal(received.length, 2, JSON.stringify(received));
   assert.equal(received[0].FocusChanged, "editor:main");
-  assert.equal(received[1].MouseDown.widget, "editor:main");
+  assert.equal(received[1].Editor[0], "editor:main");
+  assert.ok("Pointer" in received[1].Editor[1], JSON.stringify(received));
 });
 
 test("inline tree leaf terminal focuses it and starts a selection", () => {

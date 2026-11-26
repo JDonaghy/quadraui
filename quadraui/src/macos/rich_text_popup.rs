@@ -256,10 +256,10 @@ mod tests {
 
         // The descriptor's default role — must paint the chrome font.
         let (chrome_surface, chrome_layout) = paint_with_role(crate::FontRole::Chrome);
-        let (editor_surface, editor_layout) = paint_with_role(crate::FontRole::Editor);
+        let (editor_surface, editor_popup_layout) = paint_with_role(crate::FontRole::Editor);
 
         let chrome_right = ink_right_edge(&chrome_surface, chrome_layout.content_bounds);
-        let editor_right = ink_right_edge(&editor_surface, editor_layout.content_bounds);
+        let editor_right = ink_right_edge(&editor_surface, editor_popup_layout.content_bounds);
 
         assert!(
             editor_right > 0,

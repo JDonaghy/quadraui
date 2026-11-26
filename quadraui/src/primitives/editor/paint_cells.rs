@@ -1,255 +1,148 @@
-//! TUI rasteriser for the [`Editor`] primitive.
+//! The cell-grid painter for [`Editor`], written against
+//! [`CellSurface`].
 //!
-//! Handles every editor paint category: backgrounds (active /
-//! cursorline / DAP-stopped / diff), gutter (BP / git / diagnostics /
+//! Paints every editor category: backgrounds (active / cursorline /
+//! DAP-stopped / diff), gutter (breakpoint / git / diagnostics /
 //! lightbulb / line numbers), syntax-highlighted text, indent guides,
-//! color columns, ghost continuation, diagnostic + spell underlines,
-//! bracket-match, selections (primary / multi-cursor / yank-flash),
-//! cursor (Block via fg/bg swap, Bar/Underline returned to host),
-//! secondary cursors, and AI ghost text.
+//! colour columns, ghost continuation, diagnostic and spell underlines,
+//! bracket match, selections (primary / multi-cursor / yank flash), the
+//! primary caret, secondary carets and AI ghost text, then both
+//! scrollbars.
 //!
-//! ## Scrollbars
+//! Geometry comes from the [`EditorLayout`] the caller resolved, so paint
+//! and hit-testing share one source: the gutter, text and scrollbar
+//! columns are that layout's rects rounded to whole cells.
 //!
-//! The rasteriser internally calls [`super::draw_scrollbar`] for both
-//! vertical and horizontal scrollbars when overflow is present.
-//! [`draw_editor_with_reserve`] additionally accepts `right_reserve_w`
-//! so a host can reserve a strip (a minimap, say) between the text and
-//! the vertical scrollbar without moving the scrollbar off the
-//! viewport's true right edge.
+//! # Caret
 //!
-//! ## Status line
+//! A [`CursorShape::Block`] caret is painted by inverting its cell. A
+//! `Bar` or `Underline` caret cannot be drawn inside a cell, so it is
+//! reported through [`CellSurface::set_cursor`] for the terminal to show;
+//! nothing is reported when there is no caret.
 //!
-//! The per-window status line is **not** painted by this rasteriser.
-//! The host is responsible for reserving a row at the bottom of `area`
-//! if `Editor.status_line` would be drawn there. The host should shrink
-//! `area` by 1 if a status line is present, call `draw_editor`, then
-//! paint the status line at the reserved row.
-//!
-//! ## Cursor side-effect
-//!
-//! The TUI [`Frame`](ratatui::Frame) cursor (used by Bar / Underline
-//! shapes) is set by calling `Frame::set_cursor_position`. To keep this
-//! rasteriser pure-paint, the Bar / Underline cursor *position* is
-//! returned via [`EditorPaintResult::cursor_position`]; the host calls
-//! `set_cursor_position` after this function returns. Block cursors are
-//! painted directly by inverting the buffer cell's fg/bg.
+//! The per-window status line is not painted here: a host reserves a row
+//! below the editor for it.
 
-use crate::primitives::editor::{
-    CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLine, EditorSelection, GitLineStatus,
+use super::{
+    CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLayout, EditorLine, EditorSelection,
+    GitLineStatus,
 };
-use crate::primitives::scrollbar::Scrollbar;
+use crate::cell_surface::{self, CellStyle, CellSurface};
+use crate::primitives::scrollbar::{cell_paint as scrollbar_cells, Scrollbar, ScrollbarLayout};
 use crate::text_util::{char_col_to_visual, snap_to_char_boundary};
 use crate::theme::Theme;
 use crate::types::Color;
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::{Color as RColor, Modifier};
 
-use super::{qc, set_cell, set_cell_styled};
-
-/// Output of [`draw_editor`] — carries side-effects the host needs
-/// to apply *after* the buffer paint completes.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct EditorPaintResult {
-    /// Screen-space `(x, y)` for `Frame::set_cursor_position` when the
-    /// cursor shape is `Bar` or `Underline`. `None` when the cursor is
-    /// off-screen, missing, or in `Block` mode (Block is painted
-    /// directly into the buffer via fg/bg inversion).
-    pub cursor_position: Option<(u16, u16)>,
+/// A plain glyph style: both colours, no modifier.
+fn solid(fg: Color, bg: Color) -> CellStyle {
+    CellStyle {
+        fg: Some(fg),
+        bg: Some(bg),
+        ..CellStyle::default()
+    }
 }
 
-/// Paint an [`Editor`] into `buf`. See module docs for paint-category
-/// inventory and exclusions (status line stays with the host).
-///
-/// Equivalent to [`draw_editor_with_reserve`] with `right_reserve_w: 0`
-/// — the common case: no reserved trailing strip, so the paint stops
-/// short of only the vertical scrollbar column (when one is present).
-pub fn draw_editor(
-    buf: &mut Buffer,
-    area: Rect,
-    editor: &Editor,
-    theme: &Theme,
-) -> EditorPaintResult {
-    draw_editor_with_reserve(buf, area, editor, theme, 0)
+/// Rewrite the cell at `(x, y)` in place — its glyph and style as `edit`
+/// leaves them. Out-of-bounds cells are left alone.
+fn restyle(
+    cells: &mut dyn CellSurface,
+    x: u16,
+    y: u16,
+    edit: impl FnOnce(&mut char, &mut CellStyle),
+) {
+    if let Some((mut ch, mut style)) = cells.get(x, y) {
+        edit(&mut ch, &mut style);
+        cells.put_char(x, y, ch, style);
+    }
 }
 
-/// [`draw_editor`], plus a fixed-width strip (in `buf` cells) a caller
-/// can reserve between the buffer text and the vertical scrollbar —
-/// mirroring [`Editor::layout_with_options_and_reserve`]'s
-/// `right_reserve_w`, the paint-side half of that layout parameter.
-///
-/// A host that wants to dock something (a minimap strip, for example)
-/// between the text and the scrollbar would otherwise have to narrow
-/// `area` itself, which drags the vertical scrollbar left with it —
-/// flush against the text instead of anchored at the viewport's true
-/// right edge. `right_reserve_w` decouples the two: it is trimmed off
-/// the *trailing* edge of `area` before the gutter/text/scrollbar
-/// layout is derived, so the background fill, per-row text (and
-/// everything derived from it — row highlight, indent guides, color
-/// columns, ghost continuation, diagnostic/spell underlines,
-/// bracket-match), selection overlays, the block cursor, secondary
-/// cursors, AI ghost text and the horizontal scrollbar track all stop
-/// short of the reserved strip, while the vertical scrollbar keeps
-/// hugging `area.x + area.width - 1` regardless.
-///
-/// The strip is left untouched for a caller to paint something else
-/// into without that content being overwritten on the next repaint; a
-/// caller derives its bounds as the gap between the narrowed text area
-/// and the vertical scrollbar column (or the area's right edge when
-/// there is no vertical scrollbar). `right_reserve_w: 0` reproduces
-/// [`draw_editor`] exactly.
-pub fn draw_editor_with_reserve(
-    buf: &mut Buffer,
-    area: Rect,
+/// Round a layout coordinate to a whole cell.
+fn cell(v: f32) -> u16 {
+    v.max(0.0).round() as u16
+}
+
+/// Paint `editor` into the cells `layout` resolved. `right_reserve_w` is
+/// the strip (in cells) the layout left between the text and the
+/// vertical scrollbar; it is left untouched for the host to paint into.
+pub(crate) fn paint(
     editor: &Editor,
-    theme: &Theme,
+    layout: &EditorLayout,
     right_reserve_w: u16,
-) -> EditorPaintResult {
-    let mut result = EditorPaintResult::default();
+    cells: &mut dyn CellSurface,
+    theme: &Theme,
+) {
+    let area_x = cell(layout.bounds.x);
+    let area_y = cell(layout.bounds.y);
+    let area_w = cell(layout.bounds.width);
+    let area_h = cell(layout.bounds.height);
 
-    // Bounds-check overlay writes against the buffer's *actual* allocated
-    // extent, not the caller-supplied `area`. The two can diverge across
-    // a resize: the host computes `area` from a layout pass against one
-    // terminal size, and by the time this paint runs `buf` may already
-    // have been reallocated for a smaller size. Indexing against a stale,
-    // larger `area` panics with "index outside of buffer"; indexing
-    // against `buf.area` is always safe.
-    let buf_area = buf.area;
-
-    let window_bg = qc(if editor.show_active_bg {
+    let window_bg = if editor.show_active_bg {
         theme.editor_active_background
     } else {
         theme.background
-    });
-    let default_fg = qc(theme.foreground);
+    };
+    let default_fg = theme.foreground;
     let gutter_w = editor.gutter_char_width as u16;
-    let viewport_lines = area.height as usize;
-    let has_scrollbar = editor.total_lines > viewport_lines
-        && area.width > gutter_w.saturating_add(right_reserve_w).saturating_add(1);
-    let viewport_cols = (area.width as usize).saturating_sub(
-        gutter_w as usize + right_reserve_w as usize + if has_scrollbar { 1 } else { 0 },
-    );
-    let has_h_scrollbar = editor.max_col > viewport_cols && area.height > 1;
-    // Width shared by the background fill, the per-row text and the
-    // horizontal scrollbar track: `area.width` minus the gutter, minus
-    // `right_reserve_w`, minus the vertical scrollbar's own column —
-    // i.e. everything up to (but not including) the reserved trailing
-    // strip.
-    let text_width = area
-        .width
-        .saturating_sub(gutter_w)
+    let viewport_lines = area_h as usize;
+    let has_scrollbar = layout.v_scrollbar_bounds.is_some();
+    let viewport_cols = layout.visible_cols;
+    let has_h_scrollbar = layout.h_scrollbar_bounds.is_some();
+    let v_scrollbar_w: u16 = if has_scrollbar { 1 } else { 0 };
+    // Shared by the per-row text, every text-column overlay and the
+    // horizontal scrollbar track: everything up to (not including) the
+    // reserved strip and the vertical scrollbar column.
+    let text_width = cell(layout.text_bounds.width);
+    // The background wash also covers the gutter.
+    let bg_width = area_w
         .saturating_sub(right_reserve_w)
-        .saturating_sub(if has_scrollbar { 1 } else { 0 });
-    let bg_width = area
-        .width
-        .saturating_sub(right_reserve_w)
-        .saturating_sub(if has_scrollbar { 1 } else { 0 });
+        .saturating_sub(v_scrollbar_w);
 
     // ── Background fill ─────────────────────────────────────────
-    for row in 0..area.height {
+    let bg_style = solid(default_fg, window_bg);
+    for row in 0..area_h {
         for col in 0..bg_width {
-            set_cell(buf, area.x + col, area.y + row, ' ', default_fg, window_bg);
+            cells.put_char(area_x + col, area_y + row, ' ', bg_style);
         }
     }
 
     for (row_idx, line) in editor.lines.iter().enumerate() {
-        let screen_y = area.y + row_idx as u16;
-        if screen_y >= area.y + area.height {
+        let screen_y = area_y + row_idx as u16;
+        if screen_y >= area_y + area_h {
             break;
         }
 
         // Cursorline / Diff / DAP stopped-line background.
         let line_bg = if line.is_dap_current {
-            qc(theme.dap_stopped_bg)
+            theme.dap_stopped_bg
         } else {
             match line.diff_status {
-                Some(DiffLine::Added) => qc(theme.diff_added_bg),
-                Some(DiffLine::Removed) => qc(theme.diff_removed_bg),
-                Some(DiffLine::Padding) => qc(theme.diff_padding_bg),
+                Some(DiffLine::Added) => theme.diff_added_bg,
+                Some(DiffLine::Removed) => theme.diff_removed_bg,
+                Some(DiffLine::Padding) => theme.diff_padding_bg,
                 _ if line.is_current_line && editor.is_active && editor.cursorline => {
-                    qc(theme.cursorline_bg)
+                    theme.cursorline_bg
                 }
                 _ => window_bg,
             }
         };
         if line_bg != window_bg {
-            // Stop short of the vertical scrollbar column and the
-            // reserved trailing strip (`bg_width`, computed above) — the
-            // row highlight must not bleed into either.
+            // The row highlight stops short of the vertical scrollbar
+            // column and the reserved strip.
+            let style = solid(default_fg, line_bg);
             for col in 0..bg_width {
-                set_cell(buf, area.x + col, screen_y, ' ', default_fg, line_bg);
+                cells.put_char(area_x + col, screen_y, ' ', style);
             }
         }
 
         // ── Gutter ──────────────────────────────────────────────
         if gutter_w > 0 {
-            let line_num_fg = qc(if line.is_current_line {
-                theme.line_number_active_fg
-            } else {
-                theme.line_number_fg
-            });
-            // The bp column offset: 1 when has_breakpoints, else 0.
-            // The git column offset: bp_offset + 1 when has_git_diff, else bp_offset.
-            let bp_offset = if editor.has_breakpoints { 1 } else { 0 };
-            let git_offset = if editor.has_git_diff {
-                bp_offset + 1
-            } else {
-                bp_offset
-            };
-            for (i, ch) in line.gutter_text.chars().enumerate() {
-                let gx = area.x + i as u16;
-                if gx >= area.x + gutter_w {
-                    break;
-                }
-                let fg = if editor.has_breakpoints && i == 0 {
-                    if line.is_dap_current || line.is_breakpoint {
-                        qc(theme.diagnostic_error)
-                    } else {
-                        line_num_fg
-                    }
-                } else if editor.has_git_diff && i == bp_offset {
-                    qc(match line.git_diff {
-                        Some(GitLineStatus::Added) => theme.git_added,
-                        Some(GitLineStatus::Modified) => theme.git_modified,
-                        Some(GitLineStatus::Deleted) => theme.git_deleted,
-                        None => theme.line_number_fg,
-                    })
-                } else {
-                    let _ = git_offset;
-                    line_num_fg
-                };
-                set_cell(buf, gx, screen_y, ch, fg, line_bg);
-            }
-            // Diagnostic gutter icon is painted at column `bp_offset` to
-            // keep the breakpoint marker visible when both are present.
-            let diag_x = area.x + bp_offset as u16;
-            if let Some(severity) = editor.diagnostic_gutter.get(&line.line_idx) {
-                let (diag_ch, diag_color) = match severity {
-                    DiagnosticSeverity::Error => ('●', qc(theme.diagnostic_error)),
-                    DiagnosticSeverity::Warning => ('●', qc(theme.diagnostic_warning)),
-                    DiagnosticSeverity::Information => ('●', qc(theme.diagnostic_info)),
-                    DiagnosticSeverity::Hint => ('●', qc(theme.diagnostic_hint)),
-                };
-                set_cell(buf, diag_x, screen_y, diag_ch, diag_color, line_bg);
-            } else if !line.is_wrap_continuation
-                && editor.code_action_lines.contains(&line.line_idx)
-                && editor.lightbulb_glyph != '\0'
-            {
-                set_cell(
-                    buf,
-                    diag_x,
-                    screen_y,
-                    editor.lightbulb_glyph,
-                    qc(theme.lightbulb),
-                    line_bg,
-                );
-            }
+            paint_gutter_row(editor, line, cells, theme, area_x, screen_y, line_bg);
         }
 
         // ── Text (narrowed by the scrollbar column and any reserve) ─
-        let text_area_x = area.x + gutter_w;
+        let text_area_x = area_x + gutter_w;
         render_text_line(
-            buf,
+            cells,
             text_area_x,
             screen_y,
             text_width,
@@ -260,147 +153,137 @@ pub fn draw_editor_with_reserve(
             editor.tabstop,
         );
 
-        // ── Indent guides ───────────────────────────────────────
-        if !line.indent_guides.is_empty() {
-            let guide_fg = qc(theme.indent_guide_fg);
-            let active_fg = qc(theme.indent_guide_active_fg);
-            for &guide_col in &line.indent_guides {
-                if guide_col < editor.scroll_left {
-                    continue;
-                }
-                let vis_col = (guide_col - editor.scroll_left) as u16;
-                if vis_col >= text_width {
-                    break;
-                }
-                let cx = text_area_x + vis_col;
-                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
-                    let cell = &mut buf[(cx, screen_y)];
-                    if cell.symbol() == " " {
-                        let is_active = editor.active_indent_col == Some(guide_col);
-                        let fg = if is_active { active_fg } else { guide_fg };
-                        cell.set_char('│');
-                        cell.set_fg(fg);
-                    }
-                }
+        // Screen column of visual column `vcol`, or `None` when it is
+        // scrolled off the left or past the text width.
+        let screen_col = |vcol: usize| -> Option<u16> {
+            if vcol < editor.scroll_left {
+                return None;
             }
+            let vis_col = (vcol - editor.scroll_left) as u16;
+            (vis_col < text_width).then_some(text_area_x + vis_col)
+        };
+
+        // ── Indent guides ───────────────────────────────────────
+        for &guide_col in &line.indent_guides {
+            if guide_col < editor.scroll_left {
+                continue;
+            }
+            let Some(cx) = screen_col(guide_col) else {
+                break;
+            };
+            let is_active = editor.active_indent_col == Some(guide_col);
+            let fg = if is_active {
+                theme.indent_guide_active_fg
+            } else {
+                theme.indent_guide_fg
+            };
+            restyle(cells, cx, screen_y, |ch, style| {
+                if *ch == ' ' {
+                    *ch = '│';
+                    style.fg = Some(fg);
+                }
+            });
         }
 
         // ── Color columns ───────────────────────────────────────
-        if !line.colorcolumns.is_empty() {
-            let cc_bg = qc(theme.colorcolumn_bg);
-            for &cc_col in &line.colorcolumns {
-                if cc_col < editor.scroll_left {
-                    continue;
-                }
-                let vis_col = (cc_col - editor.scroll_left) as u16;
-                if vis_col >= text_width {
-                    break;
-                }
-                let cx = text_area_x + vis_col;
-                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
-                    let cell = &mut buf[(cx, screen_y)];
-                    cell.set_bg(cc_bg);
-                }
+        for &cc_col in &line.colorcolumns {
+            if cc_col < editor.scroll_left {
+                continue;
             }
+            let Some(cx) = screen_col(cc_col) else {
+                break;
+            };
+            restyle(cells, cx, screen_y, |_, style| {
+                style.bg = Some(theme.colorcolumn_bg);
+            });
         }
 
         // ── Ghost continuation lines ────────────────────────────
         if line.is_ghost_continuation {
             if let Some(ghost) = &line.ghost_suffix {
-                let ghost_fg = qc(theme.ghost_text_fg);
+                let style = solid(theme.ghost_text_fg, line_bg);
                 for (i, ch) in ghost.chars().enumerate() {
                     let gx = text_area_x + i as u16;
                     if gx >= text_area_x + text_width {
                         break;
                     }
-                    set_cell(buf, gx, screen_y, ch, ghost_fg, line_bg);
+                    cells.put_char(gx, screen_y, ch, style);
                 }
             }
         }
 
         // ── Diagnostic underlines ───────────────────────────────
         for dm in &line.diagnostics {
-            let diag_fg = qc(match dm.severity {
-                DiagnosticSeverity::Error => theme.diagnostic_error,
-                DiagnosticSeverity::Warning => theme.diagnostic_warning,
-                DiagnosticSeverity::Information => theme.diagnostic_info,
-                DiagnosticSeverity::Hint => theme.diagnostic_hint,
-            });
-            let vis_start = char_col_to_visual(&line.raw_text, dm.start_col, editor.tabstop);
-            let vis_end = char_col_to_visual(&line.raw_text, dm.end_col, editor.tabstop);
-            for vcol in vis_start..vis_end {
-                if vcol < editor.scroll_left {
-                    continue;
-                }
-                let vis_col = (vcol - editor.scroll_left) as u16;
-                if vis_col >= text_width {
-                    break;
-                }
-                let cx = text_area_x + vis_col;
-                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
-                    let cell = &mut buf[(cx, screen_y)];
-                    cell.set_fg(diag_fg);
-                    cell.modifier |= Modifier::UNDERLINED;
-                    cell.underline_color = diag_fg;
-                }
-            }
+            let diag_fg = severity_color(dm.severity, theme);
+            underline_range(
+                cells,
+                editor,
+                line,
+                (dm.start_col, dm.end_col),
+                diag_fg,
+                screen_y,
+                &screen_col,
+            );
         }
 
         // ── Spell error underlines ──────────────────────────────
-        let spell_fg = qc(theme.spell_error);
         for sm in &line.spell_errors {
-            let vis_start = char_col_to_visual(&line.raw_text, sm.start_col, editor.tabstop);
-            let vis_end = char_col_to_visual(&line.raw_text, sm.end_col, editor.tabstop);
-            for vcol in vis_start..vis_end {
-                if vcol < editor.scroll_left {
-                    continue;
-                }
-                let vis_col = (vcol - editor.scroll_left) as u16;
-                if vis_col >= text_width {
-                    break;
-                }
-                let cx = text_area_x + vis_col;
-                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
-                    let cell = &mut buf[(cx, screen_y)];
-                    cell.set_fg(spell_fg);
-                    cell.modifier |= Modifier::UNDERLINED;
-                    cell.underline_color = spell_fg;
-                }
-            }
+            underline_range(
+                cells,
+                editor,
+                line,
+                (sm.start_col, sm.end_col),
+                theme.spell_error,
+                screen_y,
+                &screen_col,
+            );
         }
 
         // ── Bracket match highlighting ──────────────────────────
-        let bracket_bg = qc(theme.bracket_match_bg);
         for &(view_line, col) in &editor.bracket_match_positions {
-            if view_line == row_idx {
-                let vis = char_col_to_visual(&line.raw_text, col, editor.tabstop);
-                if vis < editor.scroll_left {
-                    continue;
-                }
-                let vis_col = (vis - editor.scroll_left) as u16;
-                if vis_col >= text_width {
-                    continue;
-                }
-                let cx = text_area_x + vis_col;
-                if cx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
-                    let cell = &mut buf[(cx, screen_y)];
-                    cell.set_bg(bracket_bg);
-                }
+            if view_line != row_idx {
+                continue;
+            }
+            let vis = char_col_to_visual(&line.raw_text, col, editor.tabstop);
+            if let Some(cx) = screen_col(vis) {
+                restyle(cells, cx, screen_y, |_, style| {
+                    style.bg = Some(theme.bracket_match_bg);
+                });
             }
         }
     }
 
     // ── Selection overlays ──────────────────────────────────────
+    let text_area_x = area_x + gutter_w;
     if let Some(sel) = &editor.selection {
-        render_selection(buf, area, editor, sel, theme, theme.selection, text_width);
+        render_selection(
+            cells,
+            area_y,
+            text_area_x,
+            editor,
+            sel,
+            theme,
+            theme.selection,
+            text_width,
+        );
     }
     for esel in &editor.extra_selections {
-        render_selection(buf, area, editor, esel, theme, theme.selection, text_width);
+        render_selection(
+            cells,
+            area_y,
+            text_area_x,
+            editor,
+            esel,
+            theme,
+            theme.selection,
+            text_width,
+        );
     }
     if let Some(yh) = &editor.yank_highlight {
         render_selection(
-            buf,
-            area,
+            cells,
+            area_y,
+            text_area_x,
             editor,
             yh,
             theme,
@@ -410,18 +293,13 @@ pub fn draw_editor_with_reserve(
     }
 
     // ── Vertical scrollbar ──────────────────────────────────────
-    if has_scrollbar {
-        let track_h = if has_h_scrollbar {
-            area.height.saturating_sub(1)
-        } else {
-            area.height
-        };
-        if track_h > 0 {
+    if let Some(track) = layout.v_scrollbar_bounds {
+        if cell(track.height) > 0 {
             let track = crate::event::Rect::new(
-                (area.x + area.width - 1) as f32,
-                area.y as f32,
+                (area_x + area_w - 1) as f32,
+                area_y as f32,
                 1.0,
-                track_h as f32,
+                cell(track.height) as f32,
             );
             let scrollbar = Scrollbar::vertical(
                 "tui:editor:v_scrollbar",
@@ -431,25 +309,20 @@ pub fn draw_editor_with_reserve(
                 viewport_lines as f32,
                 1.0,
             );
-            super::draw_scrollbar(buf, &scrollbar, theme, theme.background);
+            let sb_layout = ScrollbarLayout::resolve(&scrollbar, scrollbar.track);
+            scrollbar_cells::paint(&sb_layout, cells, theme, theme.background);
         }
     }
 
     // ── Horizontal scrollbar ────────────────────────────────────
     if has_h_scrollbar && editor.max_col > 0 && viewport_cols > 0 {
-        let cell_bg = if editor.show_active_bg {
-            theme.editor_active_background
-        } else {
-            theme.background
-        };
-        let sb_y = area.y + area.height - 1;
-        let track_x = area.x + gutter_w;
-        // Same width as the text columns above — the h-scrollbar spans
-        // exactly the text region, stopping short of both the vertical
-        // scrollbar column and the reserved trailing strip.
-        let track_w = text_width;
-        if track_w > 0 {
-            let track = crate::event::Rect::new(track_x as f32, sb_y as f32, track_w as f32, 1.0);
+        let cell_bg = window_bg;
+        let sb_y = area_y + area_h - 1;
+        // The track spans exactly the text columns, stopping short of
+        // the vertical scrollbar column and the reserved strip.
+        if text_width > 0 {
+            let track =
+                crate::event::Rect::new(text_area_x as f32, sb_y as f32, text_width as f32, 1.0);
             let scrollbar = Scrollbar::horizontal(
                 "tui:editor:h_scrollbar",
                 track,
@@ -458,31 +331,28 @@ pub fn draw_editor_with_reserve(
                 viewport_cols as f32,
                 1.0,
             );
-            super::draw_scrollbar(buf, &scrollbar, theme, cell_bg);
+            let sb_layout = ScrollbarLayout::resolve(&scrollbar, scrollbar.track);
+            scrollbar_cells::paint(&sb_layout, cells, theme, cell_bg);
 
-            // Corner cell (intersection of v-scrollbar column and h-scrollbar row).
+            // Corner cell where the two scrollbars meet.
             if has_scrollbar {
-                set_cell(
-                    buf,
-                    area.x + area.width - 1,
+                cells.put_char(
+                    area_x + area_w - 1,
                     sb_y,
                     '┘',
-                    qc(theme.separator),
-                    qc(cell_bg),
+                    solid(theme.separator, cell_bg),
                 );
             }
         }
     }
 
-    // Exclusive right bound (in screen columns) of the text region the
-    // cursor / ghost text / secondary cursors are allowed to paint into:
-    // the gutter plus `text_width`, i.e. up to but not including the
-    // reserved trailing strip and the vertical scrollbar column.
-    let text_right = area.x + gutter_w + text_width;
+    // Exclusive right bound of the columns the carets and ghost text may
+    // paint into: the gutter plus the text width.
+    let text_right = text_area_x + text_width;
 
     // ── Cursor ──────────────────────────────────────────────────
     if let Some(cursor) = &editor.cursor {
-        let cursor_screen_y = area.y + cursor.pos.view_line as u16;
+        let cursor_screen_y = area_y + cursor.pos.view_line as u16;
         let raw = editor
             .lines
             .get(cursor.pos.view_line)
@@ -490,50 +360,58 @@ pub fn draw_editor_with_reserve(
             .unwrap_or("");
         let vis_col = char_col_to_visual(raw, cursor.pos.col, editor.tabstop)
             .saturating_sub(editor.scroll_left) as u16;
-        let cursor_screen_x = area.x + gutter_w + vis_col;
+        let cursor_screen_x = text_area_x + vis_col;
 
-        let buf_area = buf.area;
         match cursor.shape {
             CursorShape::Block => {
-                if cursor_screen_x < text_right.min(buf_area.x + buf_area.width)
-                    && cursor_screen_y < buf_area.y + buf_area.height
-                {
-                    let cell = &mut buf[(cursor_screen_x, cursor_screen_y)];
-                    cell.set_bg(qc(theme.cursor)).set_fg(qc(theme.background));
+                if cursor_screen_x < text_right {
+                    restyle(cells, cursor_screen_x, cursor_screen_y, |_, style| {
+                        style.bg = Some(theme.cursor);
+                        style.fg = Some(theme.background);
+                    });
                 }
             }
-            CursorShape::Bar | CursorShape::Underline => {
-                result.cursor_position = Some((cursor_screen_x, cursor_screen_y));
+            CursorShape::Bar => {
+                cells.set_cursor(
+                    cursor_screen_x,
+                    cursor_screen_y,
+                    cell_surface::CursorShape::Bar,
+                );
+            }
+            CursorShape::Underline => {
+                cells.set_cursor(
+                    cursor_screen_x,
+                    cursor_screen_y,
+                    cell_surface::CursorShape::Underline,
+                );
             }
         }
     }
 
-    // ── AI ghost text (after cursor on cursor line) ─────────────
+    // ── AI ghost text (after the caret on its line) ─────────────
     if let Some(cursor) = &editor.cursor {
         if let Some(rl) = editor.lines.get(cursor.pos.view_line) {
             if let Some(ghost) = &rl.ghost_suffix {
-                let ghost_screen_y = area.y + cursor.pos.view_line as u16;
+                let ghost_screen_y = area_y + cursor.pos.view_line as u16;
                 let vis_col = char_col_to_visual(&rl.raw_text, cursor.pos.col, editor.tabstop)
                     .saturating_sub(editor.scroll_left) as u16;
-                let ghost_start_x = area.x + gutter_w + vis_col;
-                let ghost_fg = qc(theme.ghost_text_fg);
+                let ghost_start_x = text_area_x + vis_col;
+                let style = solid(theme.ghost_text_fg, window_bg);
                 for (i, ch) in ghost.chars().enumerate() {
                     let gx = ghost_start_x + i as u16;
                     if gx >= text_right {
                         break;
                     }
-                    set_cell(buf, gx, ghost_screen_y, ch, ghost_fg, window_bg);
+                    cells.put_char(gx, ghost_screen_y, ch, style);
                 }
             }
         }
     }
 
     // ── Secondary cursors (multi-cursor) ────────────────────────
-    let cursor_color = qc(theme.cursor);
-    let bg_color = qc(theme.background);
     let has_extra_sels = !editor.extra_selections.is_empty();
     for extra_pos in &editor.extra_cursors {
-        let sy = area.y + extra_pos.view_line as u16;
+        let sy = area_y + extra_pos.view_line as u16;
         let col = if has_extra_sels {
             extra_pos.col + 1
         } else {
@@ -546,46 +424,143 @@ pub fn draw_editor_with_reserve(
             .unwrap_or("");
         let vis_col =
             char_col_to_visual(raw, col, editor.tabstop).saturating_sub(editor.scroll_left) as u16;
-        let sx = area.x + gutter_w + vis_col;
-        let buf_area = buf.area;
-        if sx < text_right.min(buf_area.x + buf_area.width) && sy < buf_area.y + buf_area.height {
-            let cell = &mut buf[(sx, sy)];
-            cell.set_bg(cursor_color).set_fg(bg_color);
+        let sx = text_area_x + vis_col;
+        if sx < text_right {
+            restyle(cells, sx, sy, |_, style| {
+                style.bg = Some(theme.cursor);
+                style.fg = Some(theme.background);
+            });
         }
     }
-
-    result
 }
 
-// ─── Private helpers ────────────────────────────────────────────────────
+/// The theme colour for a diagnostic of `severity`.
+fn severity_color(severity: DiagnosticSeverity, theme: &Theme) -> Color {
+    match severity {
+        DiagnosticSeverity::Error => theme.diagnostic_error,
+        DiagnosticSeverity::Warning => theme.diagnostic_warning,
+        DiagnosticSeverity::Information => theme.diagnostic_info,
+        DiagnosticSeverity::Hint => theme.diagnostic_hint,
+    }
+}
 
-/// Convert a UTF-8 byte offset into a character index. Returns the
-/// total char count if the offset is past the end. Snaps to the
-/// nearest char boundary at or before `byte_offset` (via
-/// [`snap_to_char_boundary`]) so non-boundary inputs don't panic.
-/// Mirrors `vimcode::tui_main::byte_to_char_idx`.
+/// Underline the character columns `cols` of `line` in `color`, recolouring
+/// their glyphs to match.
+fn underline_range(
+    cells: &mut dyn CellSurface,
+    editor: &Editor,
+    line: &EditorLine,
+    cols: (usize, usize),
+    color: Color,
+    screen_y: u16,
+    screen_col: &dyn Fn(usize) -> Option<u16>,
+) {
+    let vis_start = char_col_to_visual(&line.raw_text, cols.0, editor.tabstop);
+    let vis_end = char_col_to_visual(&line.raw_text, cols.1, editor.tabstop);
+    for vcol in vis_start..vis_end {
+        if vcol < editor.scroll_left {
+            continue;
+        }
+        let Some(cx) = screen_col(vcol) else {
+            break;
+        };
+        restyle(cells, cx, screen_y, |_, style| {
+            style.fg = Some(color);
+            style.underline = Some(color);
+        });
+    }
+}
+
+/// One row of the gutter: the gutter text (breakpoint, git and line-number
+/// columns each in their own colour), then the diagnostic or lightbulb
+/// glyph in the breakpoint-adjacent column.
+fn paint_gutter_row(
+    editor: &Editor,
+    line: &EditorLine,
+    cells: &mut dyn CellSurface,
+    theme: &Theme,
+    area_x: u16,
+    screen_y: u16,
+    line_bg: Color,
+) {
+    let gutter_w = editor.gutter_char_width as u16;
+    let line_num_fg = if line.is_current_line {
+        theme.line_number_active_fg
+    } else {
+        theme.line_number_fg
+    };
+    // The breakpoint column is column 0 when present; the git column
+    // follows it.
+    let bp_offset = if editor.has_breakpoints { 1 } else { 0 };
+    for (i, ch) in line.gutter_text.chars().enumerate() {
+        let gx = area_x + i as u16;
+        if gx >= area_x + gutter_w {
+            break;
+        }
+        let fg = if editor.has_breakpoints && i == 0 {
+            if line.is_dap_current || line.is_breakpoint {
+                theme.diagnostic_error
+            } else {
+                line_num_fg
+            }
+        } else if editor.has_git_diff && i == bp_offset {
+            match line.git_diff {
+                Some(GitLineStatus::Added) => theme.git_added,
+                Some(GitLineStatus::Modified) => theme.git_modified,
+                Some(GitLineStatus::Deleted) => theme.git_deleted,
+                None => theme.line_number_fg,
+            }
+        } else {
+            line_num_fg
+        };
+        cells.put_char(gx, screen_y, ch, solid(fg, line_bg));
+    }
+    // The diagnostic glyph sits beside the breakpoint marker so both stay
+    // visible.
+    let diag_x = area_x + bp_offset as u16;
+    if let Some(severity) = editor.diagnostic_gutter.get(&line.line_idx) {
+        cells.put_char(
+            diag_x,
+            screen_y,
+            '●',
+            solid(severity_color(*severity, theme), line_bg),
+        );
+    } else if !line.is_wrap_continuation
+        && editor.code_action_lines.contains(&line.line_idx)
+        && editor.lightbulb_glyph != '\0'
+    {
+        cells.put_char(
+            diag_x,
+            screen_y,
+            editor.lightbulb_glyph,
+            solid(theme.lightbulb, line_bg),
+        );
+    }
+}
+
+/// The character index of UTF-8 byte offset `byte_offset` in `text`,
+/// snapped to the char boundary at or before it; the total char count
+/// past the end.
 fn byte_to_char_idx(text: &str, byte_offset: usize) -> usize {
     text[..snap_to_char_boundary(text, byte_offset)]
         .chars()
         .count()
 }
 
-/// Paint one [`EditorLine`]'s text spans into `buf`, scrolled by
-/// `scroll_left`, expanding tabs to `tabstop` and applying syntax
-/// foreground / background / bold / italic from each [`StyledSpan`].
-/// Inline annotations (virtual text) paint in `theme.annotation_fg`
-/// after the line content. Mirrors
-/// `vimcode::tui_main::render_impl::render_text_line`.
+/// Paint one [`EditorLine`]'s text, scrolled by `scroll_left`, expanding
+/// tabs to `tabstop` and applying each span's foreground, background,
+/// bold and italic. Inline annotations (virtual text) paint in
+/// `theme.annotation_fg` after the line content.
 #[allow(clippy::too_many_arguments)]
 fn render_text_line(
-    buf: &mut Buffer,
+    cells: &mut dyn CellSurface,
     x_start: u16,
     y: u16,
     max_width: u16,
     line: &EditorLine,
     scroll_left: usize,
     theme: &Theme,
-    window_bg: RColor,
+    window_bg: Color,
     tabstop: usize,
 ) {
     let raw = &line.raw_text;
@@ -593,7 +568,8 @@ fn render_text_line(
 
     let mut char_fgs: Vec<Color> = vec![theme.foreground; chars.len()];
     let mut char_bgs: Vec<Option<Color>> = vec![None; chars.len()];
-    let mut char_mods: Vec<Modifier> = vec![Modifier::empty(); chars.len()];
+    let mut char_bold: Vec<bool> = vec![false; chars.len()];
+    let mut char_italic: Vec<bool> = vec![false; chars.len()];
 
     for span in &line.spans {
         let start = byte_to_char_idx(raw, span.start_byte);
@@ -601,35 +577,29 @@ fn render_text_line(
         for i in start..end {
             char_fgs[i] = span.style.fg;
             char_bgs[i] = span.style.bg;
-            let mut m = Modifier::empty();
-            if span.style.bold {
-                m |= Modifier::BOLD;
-            }
-            if span.style.italic {
-                m |= Modifier::ITALIC;
-            }
-            char_mods[i] = m;
+            char_bold[i] = span.style.bold;
+            char_italic[i] = span.style.italic;
         }
     }
 
     let tabstop = tabstop.max(1);
     let mut vis_col: usize = 0;
-    let mut cells: Vec<(usize, char, usize)> = Vec::with_capacity(chars.len());
+    let mut glyphs: Vec<(usize, char, usize)> = Vec::with_capacity(chars.len());
     for (i, &ch) in chars.iter().enumerate() {
         if ch == '\t' {
             let next_stop = ((vis_col / tabstop) + 1) * tabstop;
             while vis_col < next_stop {
-                cells.push((vis_col, ' ', i));
+                glyphs.push((vis_col, ' ', i));
                 vis_col += 1;
             }
         } else {
-            cells.push((vis_col, ch, i));
+            glyphs.push((vis_col, ch, i));
             vis_col += 1;
         }
     }
     let total_vis_cols = vis_col;
 
-    for &(vcol, ch, ci) in &cells {
+    for &(vcol, ch, ci) in &glyphs {
         if vcol < scroll_left {
             continue;
         }
@@ -637,65 +607,57 @@ fn render_text_line(
         if col >= max_width {
             break;
         }
-        let fg = qc(char_fgs[ci]);
-        let bg = char_bgs[ci].map(qc).unwrap_or(window_bg);
-        if char_mods[ci].is_empty() {
-            set_cell(buf, x_start + col, y, ch, fg, bg);
-        } else {
-            set_cell_styled(buf, x_start + col, y, ch, fg, bg, char_mods[ci], None);
-        }
+        let style = CellStyle {
+            bold: char_bold[ci],
+            italic: char_italic[ci],
+            ..solid(char_fgs[ci], char_bgs[ci].unwrap_or(window_bg))
+        };
+        cells.put_char(x_start + col, y, ch, style);
     }
 
     // Inline annotation / virtual text (e.g. git blame).
     if let Some(ann) = &line.annotation {
         let visible_cols = total_vis_cols.saturating_sub(scroll_left);
         let ann_start = x_start + visible_cols.min(max_width as usize) as u16;
-        let ann_fg = qc(theme.annotation_fg);
+        let style = solid(theme.annotation_fg, window_bg);
         for (i, ch) in ann.chars().enumerate() {
             let col = ann_start + i as u16;
             if col >= x_start + max_width {
                 break;
             }
-            set_cell(buf, col, y, ch, ann_fg, window_bg);
+            cells.put_char(col, y, ch, style);
         }
     }
 }
 
-/// Paint one selection range overlay onto `buf`. Walks the editor's
-/// visible lines, calling [`EditorSelection::cols_on`] to map each
-/// buffer-coordinate selection row to segment-local visual columns (so
-/// wrapped lines highlight only the segment that overlaps the selection
-/// range, and ghost-continuation / diff-padding rows are skipped
-/// entirely). Sets each touched cell's bg to `color`, preserving the
-/// cell's existing fg unless that fg equals the window background (in
-/// which case the cell would be invisible against the new bg, so it's
-/// swapped to the theme's default foreground). Mirrors
-/// `vimcode::tui_main::render_impl::render_selection`.
+/// Paint one selection overlay. [`EditorSelection::cols_on`] maps each
+/// visible row onto its own segment-local columns (so a wrapped line
+/// highlights only the overlapping segment, and ghost-continuation and
+/// diff-padding rows are skipped). Each touched cell takes `color` as its
+/// background; a glyph whose foreground matched the window background
+/// switches to the theme foreground so it stays visible.
+#[allow(clippy::too_many_arguments)]
 fn render_selection(
-    buf: &mut Buffer,
-    area: Rect,
+    cells: &mut dyn CellSurface,
+    area_y: u16,
+    text_area_x: u16,
     editor: &Editor,
     sel: &EditorSelection,
     theme: &Theme,
     color: Color,
     text_width: u16,
 ) {
-    let window_bg = qc(if editor.show_active_bg {
+    let window_bg = if editor.show_active_bg {
         theme.editor_active_background
     } else {
         theme.background
-    });
-    let default_fg = qc(theme.foreground);
-    let sel_bg = qc(color);
-    let gutter_w = editor.gutter_char_width as u16;
-    let text_area_x = area.x + gutter_w;
-    let text_width = text_width as usize;
+    };
 
     for (row_idx, line) in editor.lines.iter().enumerate() {
         let Some(cols) = sel.cols_on(line) else {
             continue;
         };
-        let screen_y = area.y + row_idx as u16;
+        let screen_y = area_y + row_idx as u16;
 
         let vis_start = char_col_to_visual(&line.raw_text, cols.start, editor.tabstop);
         let vis_end = char_col_to_visual(&line.raw_text, cols.end, editor.tabstop);
@@ -705,29 +667,68 @@ fn render_selection(
                 continue;
             }
             let screen_col = (vis - editor.scroll_left) as u16;
-            if screen_col >= text_width as u16 {
+            if screen_col >= text_width {
                 break;
             }
-            let sx = text_area_x + screen_col;
-            let buf_area = buf.area;
-            if sx < buf_area.x + buf_area.width && screen_y < buf_area.y + buf_area.height {
-                let cell = &mut buf[(sx, screen_y)];
-                let old_fg = cell.fg;
-                cell.set_bg(sel_bg);
-                if old_fg == window_bg {
-                    cell.set_fg(default_fg);
+            restyle(cells, text_area_x + screen_col, screen_y, |_, style| {
+                let old_fg = style.fg.map(|c| (c.r, c.g, c.b));
+                style.bg = Some(color);
+                if old_fg == Some((window_bg.r, window_bg.g, window_bg.b)) {
+                    style.fg = Some(theme.foreground);
                 }
-            }
+            });
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use super::super::{DiagnosticMark, SelectionKind, SpellMark};
     use super::*;
-    use crate::primitives::editor::{DiagnosticMark, SelectionKind, SpellMark};
+    use crate::tui::{ratatui_color as qc, set_cell, BufferCellSurface};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect as RtRect;
+    use ratatui::style::Color as RColor;
+
+    /// The caret a test paint reported: `Some` for a `Bar`/`Underline`
+    /// caret the painter placed through [`crate::CellSurface::set_cursor`].
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    struct CaretReport {
+        cursor_position: Option<(u16, u16)>,
+    }
+
+    fn paint_editor(buf: &mut Buffer, area: RtRect, editor: &Editor, theme: &Theme) -> CaretReport {
+        paint_editor_with_reserve(buf, area, editor, theme, 0)
+    }
+
+    /// Paints `editor` into `buf` with a `right_reserve_w`-cell strip left
+    /// unpainted between the text and the vertical scrollbar.
+    fn paint_editor_with_reserve(
+        buf: &mut Buffer,
+        area: RtRect,
+        editor: &Editor,
+        theme: &Theme,
+        right_reserve_w: u16,
+    ) -> CaretReport {
+        let layout = editor.layout_with_options_and_reserve(
+            crate::Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+            1.0,
+            1.0,
+            super::super::EditorPaintOptions::default(),
+            None,
+            right_reserve_w as f32,
+        );
+        let mut surface = BufferCellSurface::new(buf);
+        paint(editor, &layout, right_reserve_w, &mut surface, theme);
+        CaretReport {
+            cursor_position: surface.cursor().map(|(x, y, _)| (x, y)),
+        }
+    }
 
     /// Minimal one-line [`EditorLine`] carrying decoration-overlay
     /// categories at the given columns. All columns land past `raw_text`'s
@@ -793,10 +794,11 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '\0',
+            paint_options: Default::default(),
         }
     }
 
-    /// `draw_editor` must bounds-check every overlay write against
+    /// `paint_editor` must bounds-check every overlay write against
     /// `buf.area` (the buffer's real, already-resized extent), not the
     /// caller-supplied `area`. A resize between layout computation and
     /// `ratatui::Terminal::draw` can leave `area` describing a larger
@@ -821,7 +823,7 @@ mod tests {
         let area = RtRect::new(0, 0, 20, 5);
 
         // Must not panic.
-        let _ = draw_editor(&mut buf, area, &editor, &theme);
+        let _ = paint_editor(&mut buf, area, &editor, &theme);
     }
 
     /// `right_reserve_w` must carve out a strip at the trailing edge of
@@ -849,7 +851,7 @@ mod tests {
             }
         }
 
-        let _ = draw_editor_with_reserve(&mut buf, area, &editor, &theme, right_reserve_w);
+        let _ = paint_editor_with_reserve(&mut buf, area, &editor, &theme, right_reserve_w);
 
         let scrollbar_x = area.x + area.width - 1;
         for y in 0..area.height {
@@ -922,7 +924,7 @@ mod tests {
     /// row, and a diff-padding row — same matrix
     /// `tests/conformance/editor.rs` proves against
     /// `EditorSelection::cols_on` directly, proven again here through a
-    /// real `draw_editor` paint so this backend's own call site is
+    /// real `paint_editor` paint so this backend's own call site is
     /// covered too.
     #[test]
     fn draw_editor_selection_respects_wrapped_ghost_and_diff_padding_rows() {
@@ -959,7 +961,7 @@ mod tests {
 
         let mut buf = Buffer::empty(RtRect::new(0, 0, 10, 4));
         let area = RtRect::new(0, 0, 10, 4);
-        let _ = draw_editor(&mut buf, area, &editor, &theme);
+        let _ = paint_editor(&mut buf, area, &editor, &theme);
 
         let sel_bg = qc(theme.selection);
         let window_bg = qc(theme.background);
@@ -987,7 +989,7 @@ mod tests {
         );
     }
 
-    /// `draw_editor_with_reserve(..., 0)` must reproduce `draw_editor`
+    /// `paint_editor_with_reserve(..., 0)` must reproduce `paint_editor`
     /// cell-for-cell — the convenience wrapper is a thin forward, not an
     /// independent code path that could silently drift from it.
     #[test]
@@ -1001,8 +1003,8 @@ mod tests {
         let area = RtRect::new(0, 0, 10, 4);
         let mut buf_a = Buffer::empty(area);
         let mut buf_b = Buffer::empty(area);
-        let result_a = draw_editor(&mut buf_a, area, &editor, &theme);
-        let result_b = draw_editor_with_reserve(&mut buf_b, area, &editor, &theme, 0);
+        let result_a = paint_editor(&mut buf_a, area, &editor, &theme);
+        let result_b = paint_editor_with_reserve(&mut buf_b, area, &editor, &theme, 0);
 
         assert_eq!(result_a, result_b);
         for y in 0..area.height {
@@ -1047,7 +1049,7 @@ mod tests {
         }
 
         let right_reserve_w = 2;
-        let _ = draw_editor_with_reserve(&mut buf, area, &editor, &theme, right_reserve_w);
+        let _ = paint_editor_with_reserve(&mut buf, area, &editor, &theme, right_reserve_w);
 
         let cursorline_bg = qc(theme.cursorline_bg);
 

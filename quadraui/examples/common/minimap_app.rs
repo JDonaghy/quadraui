@@ -102,7 +102,7 @@ impl MinimapApp {
         }
     }
 
-    fn minimap_scale(&self) -> MinimapScale {
+    fn scale(&self) -> MinimapScale {
         if self.scale_two {
             MinimapScale::Two
         } else {
@@ -113,7 +113,7 @@ impl MinimapApp {
     /// `None` keeps every backend's own default (`FixedPitch(1.0)` on
     /// every rasteriser today); `Some` is only ever `RepeatToFill`, which
     /// only TUI currently honours — see the module doc's `r` control.
-    fn minimap_sizing(&self) -> Option<MinimapSizing> {
+    fn sizing(&self) -> Option<MinimapSizing> {
         if self.stretch {
             Some(MinimapSizing::RepeatToFill(1.0))
         } else {
@@ -131,10 +131,10 @@ impl MinimapApp {
     /// line accessors that materialize rows on demand.
     ///
     /// `backend` is used to read the horizontal cell scale TUI's rasteriser
-    /// will paint dots at (`backend.minimap_layout(..).cols_per_cell`) — GTK's
+    /// will paint dots at (`backend.layout_primitive(..).cols_per_cell`) — GTK's
     /// scale is always `1`, so this same call works unmodified on either
     /// backend. Reading it keeps `MinimapGrid::cols_per_cell` in lockstep with
-    /// whatever `draw_minimap` paints: when TUI's scale became buffer-width-
+    /// whatever the minimap paints: when TUI's scale became buffer-width-
     /// adaptive, a copied constant would silently desync colour from dot
     /// content once a file's lines got wide enough to trigger the adaptive
     /// widening.
@@ -166,8 +166,8 @@ impl MinimapApp {
         };
 
         // `syntax_spans` starts empty: layout only reads `lines`, so a
-        // partial `Minimap` (no spans yet) is enough to ask the backend
-        // what scale it will paint at.
+        // partial `Minimap` (no spans yet) is enough to resolve the scale
+        // it will paint at.
         let mut minimap = Minimap {
             id: WidgetId::new("minimap"),
             lines,
@@ -175,10 +175,14 @@ impl MinimapApp {
             visible_row_start,
             visible_row_count,
             total_buffer_lines: total_lines,
+            scale: self.scale(),
+            sizing: self.sizing(),
         };
 
         let minimap_rect = self.minimap_rect(backend);
-        let cols_per_cell = backend.minimap_layout(minimap_rect, &minimap).cols_per_cell;
+        let cols_per_cell = backend
+            .layout_primitive(minimap_rect, &minimap)
+            .cols_per_cell;
 
         // A couple of illustrative syntax spans — "fn" in one colour,
         // comments in another — aggregated down to whatever cell size
@@ -277,13 +281,11 @@ impl AppLogic for MinimapApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        backend.set_minimap_scale(self.minimap_scale());
-        backend.set_minimap_sizing(self.minimap_sizing());
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let minimap_rect = self.minimap_rect(backend);
         let minimap = self.minimap(backend);
-        let _ = backend.draw_minimap(minimap_rect, &minimap);
+        let _ = backend.draw_primitive(minimap_rect, &minimap);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
@@ -335,7 +337,7 @@ impl AppLogic for MinimapApp {
             } => {
                 let minimap_rect = self.minimap_rect(backend);
                 let minimap = self.minimap(backend);
-                let layout = backend.minimap_layout(minimap_rect, &minimap);
+                let layout = backend.layout_primitive(minimap_rect, &minimap);
                 if let MinimapHit::Seek { fraction } = layout.hit_test(position.x, position.y) {
                     self.seek(fraction);
                 }

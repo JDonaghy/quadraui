@@ -33,13 +33,12 @@
 use quadraui::{
     compute_hunks, AppLogic, Backend, BadgeStatus, BoardCard, BoardColumn, BoardModel, Canvas,
     CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable,
-    Decoration, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, Editor, EditorCursor,
-    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan,
-    FindReplacePanel, Image, ImageFit, ImageSource, ListItem, ListView, MessageList, MessageRow,
-    Minimap, MinimapLine, MsvAxis, MultiSectionView, PipelineStage, PipelineView, ProgressBar,
-    Reaction, Rect, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
-    SectionSize, SelectionMode, Series, Spinner, Split, SplitDirection, SplitTree, StageStatus,
-    StyledText, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
+    Decoration, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, FindReplacePanel, ListItem,
+    ListView, MessageList, MessageRow, MsvAxis, MultiSectionView, PipelineStage, PipelineView,
+    ProgressBar, Reaction, Rect, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody,
+    SectionHeader, SectionSize, SelectionMode, Series, Spinner, Split, SplitDirection, SplitTree,
+    StageStatus, StyledText, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent,
+    WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -479,64 +478,6 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_editor",
-        needle: Some("c0edit"),
-        paint: |b, area| {
-            let fg = Color::rgb(220, 220, 220);
-            let text = "c0edit".to_string();
-            let len = text.len();
-            let line = EditorLine {
-                raw_text: text,
-                gutter_text: "   1".to_string(),
-                spans: vec![EditorStyledSpan {
-                    start_byte: 0,
-                    end_byte: len,
-                    style: EditorStyle {
-                        fg,
-                        bg: None,
-                        bold: false,
-                        italic: false,
-                        font_scale: 1.0,
-                    },
-                }],
-                line_idx: 0,
-                is_current_line: true,
-                is_fold_header: false,
-                folded_line_count: 0,
-                git_diff: None,
-                diff_status: None,
-                diagnostics: vec![],
-                spell_errors: vec![],
-                is_breakpoint: false,
-                is_conditional_bp: false,
-                is_dap_current: false,
-                is_wrap_continuation: false,
-                segment_col_offset: 0,
-                annotation: None,
-                ghost_suffix: None,
-                is_ghost_continuation: false,
-                indent_guides: vec![],
-                colorcolumns: vec![],
-            };
-            let editor = Editor::new(id("editor"), area)
-                .with_lines(vec![line])
-                .with_cursor(EditorCursor {
-                    pos: EditorCursorPos {
-                        view_line: 0,
-                        col: 0,
-                    },
-                    shape: EditorCursorShape::Block,
-                })
-                .with_total_lines(1)
-                .with_max_col(6)
-                .with_gutter_char_width(4)
-                .with_is_active(true)
-                .with_cursorline(true)
-                .with_lightbulb_glyph('\0');
-            let _ = b.draw_editor(area, &editor);
-        },
-    },
-    Case {
         method: "draw_find_replace",
         needle: Some("c0find"),
         paint: |b, area| {
@@ -666,57 +607,6 @@ pub const CASES: &[Case] = &[
                 col_scroll_offset: 0,
             };
             let _ = b.draw_board(area, &model);
-        },
-    },
-    // GTK's font-scaling technique paints real text, but TUI's braille
-    // technique never shapes literal glyphs at all — a needle search for
-    // painted text would pass on one backend and fail the other for
-    // reasons that have nothing to do with a broken rasteriser. Both
-    // backends register a zone for the minimap's own bounds instead (the
-    // same "chrome-only" observability path `draw_scrollbar` above uses),
-    // so this case works identically on both.
-    Case {
-        method: "draw_minimap",
-        needle: None,
-        paint: |b, area| {
-            let minimap = Minimap {
-                id: id("minimap"),
-                lines: vec![
-                    MinimapLine {
-                        text: "c0mini".to_string(),
-                        line_idx: 0,
-                    },
-                    MinimapLine {
-                        text: "fn main() {}".to_string(),
-                        line_idx: 1,
-                    },
-                ],
-                syntax_spans: vec![],
-                visible_row_start: 0,
-                visible_row_count: 2,
-                total_buffer_lines: 2,
-            };
-            let _ = b.draw_minimap(area, &minimap);
-        },
-    },
-    // GTK paints real pixels (no text run); TUI paints
-    // `fallback_text` into the buffer. A single needle can't cover both
-    // paint techniques, so — like `draw_minimap` above — this relies on
-    // the `zones()` fallback, which both backends register
-    // unconditionally in `draw_image` (even on a decode failure, as
-    // this case deliberately exercises via an empty byte source).
-    Case {
-        method: "draw_image",
-        needle: None,
-        paint: |b, area| {
-            let image = Image {
-                id: id("image"),
-                source: ImageSource::Bytes(vec![]),
-                intrinsic_size: Some((16, 16)),
-                fit: ImageFit::Contain,
-                fallback_text: "c0img".to_string(),
-            };
-            let _ = b.draw_image(area, &image);
         },
     },
     Case {
@@ -920,7 +810,7 @@ mod tests {
     fn cases_cover_every_draw_method_on_the_trait() {
         let trait_methods: Vec<&str> = draw_fn_names(backend_trait_body());
         assert!(
-            trait_methods.len() >= 25,
+            trait_methods.len() >= 20,
             "sanity check failed: expected dozens of `fn draw_*` trait methods in backend.rs, \
              found only {} — the line-based parser above likely broke against a reformatted \
              file rather than the trait actually shrinking: {trait_methods:?}",

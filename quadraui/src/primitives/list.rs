@@ -3781,7 +3781,7 @@ mod primitive_parity_tests {
             self.calls.push("pop_clip".to_string());
         }
         fn surface_draw_image(&mut self, rect: Rect, _image: &Image) -> ImagePaintResult {
-            self.calls.push(format!("draw_image {rect:?}"));
+            self.calls.push(format!("surface_draw_image {rect:?}"));
             ImagePaintResult::Unsupported
         }
     }

@@ -276,7 +276,7 @@ impl Demo for EditorDemo {
             1 => {
                 self.font.apply_override(backend);
                 let editor = FontState::build_editor(editor_area);
-                backend.draw_editor(editor.rect, &editor);
+                backend.draw_primitive(editor.rect, &editor);
                 format!(
                     " editor font: {DEMO_FONT_FAMILY} {DEMO_FONT_SIZE_PT}pt  calls: {} ",
                     self.font.calls.get()
@@ -285,7 +285,7 @@ impl Demo for EditorDemo {
             _ => {
                 self.font.restore_default_if_overridden(backend);
                 let editor = self.hscroll.build_editor(editor_area);
-                backend.draw_editor(editor.rect, &editor);
+                backend.draw_primitive(editor.rect, &editor);
                 let vpc = HScrollState::viewport_cols(editor_area, backend);
                 format!(
                     " col {} / {}  scroll_left {}  viewport_cols {} ",

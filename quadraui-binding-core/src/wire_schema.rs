@@ -1884,6 +1884,29 @@ pub fn schema() -> Vec<DefJson> {
             field("color", color.clone()),
         ],
     ));
+    let minimap_scale_alias = b.define(alias("MinimapScale", lit(&["One", "Two"])));
+    let minimap_vscode_parity_payload = b.define(obj(
+        "_MinimapVsCodeParityPayload",
+        vec![
+            field("target_cols", float_()),
+            field("fraction", float_()),
+            field("min", float_()),
+            field("max", float_()),
+        ],
+    ));
+    let minimap_sizing_dict = b.define(flat(
+        "_MinimapSizingDict",
+        &[
+            ("FixedPitch", float_()),
+            ("RepeatToFill", float_()),
+            ("VsCodeParity", minimap_vscode_parity_payload),
+        ],
+        vec![],
+    ));
+    let minimap_sizing_alias = b.define(alias(
+        "MinimapSizing",
+        uniont(vec![lit(&["Fill"]), minimap_sizing_dict]),
+    ));
     let minimap_descriptor = b.define(obj(
         "MinimapDescriptor",
         vec![
@@ -1893,6 +1916,8 @@ pub fn schema() -> Vec<DefJson> {
             field("visible_row_start", int_()),
             field("visible_row_count", int_()),
             field("total_buffer_lines", int_()),
+            field_opt("scale", minimap_scale_alias),
+            field_opt("sizing", nullable(minimap_sizing_alias)),
         ],
     ));
     let activity_item_descriptor = b.define(obj(
@@ -2268,6 +2293,14 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("colorcolumns", list(int_())),
         ],
     ));
+    let editor_paint_options = b.define(obj(
+        "EditorPaintOptions",
+        vec![
+            field_opt("suppress_v_scrollbar", bool_()),
+            field_opt("v_scrollbar_w", nullable(float_())),
+            field_opt("right_reserve_w", float_()),
+        ],
+    ));
     let editor_descriptor = b.define(obj(
         "EditorDescriptor",
         vec![
@@ -2295,6 +2328,7 @@ pub fn schema() -> Vec<DefJson> {
             field("tabstop", int_()),
             field("cursorline", bool_()),
             field_opt("lightbulb_glyph", str_()),
+            field_opt("paint_options", editor_paint_options),
         ],
     ));
     let find_replace_click_target_find_input =
@@ -2896,7 +2930,6 @@ pub fn schema() -> Vec<DefJson> {
         let ty = match kind {
             "progress" => progress_bar_descriptor.clone(),
             "spinner" => spinner_descriptor.clone(),
-            "image" => image_descriptor.clone(),
             "form" => form_descriptor.clone(),
             "text_input" => text_input_descriptor.clone(),
             "text_field" => text_field_descriptor.clone(),
@@ -2907,14 +2940,12 @@ pub fn schema() -> Vec<DefJson> {
             "message_list" => message_list_descriptor.clone(),
             "board" => board_model_descriptor.clone(),
             "pipeline_view" => pipeline_view_descriptor.clone(),
-            "minimap" => minimap_descriptor.clone(),
             "multi_section_view" => multi_section_view_descriptor.clone(),
             "diff_view" => diff_view_descriptor.clone(),
             "toolbar" => toolbar_descriptor.clone(),
             "menu_bar" => menu_bar_descriptor.clone(),
             "command_line" => command_line_descriptor.clone(),
             "scrollbar" => scrollbar_descriptor.clone(),
-            "editor" => editor_descriptor.clone(),
             "canvas" => canvas_descriptor.clone(),
             "scroll_view" => scroll_view_descriptor.clone(),
             "find_replace" => find_replace_panel_descriptor.clone(),
@@ -2952,6 +2983,9 @@ pub fn schema() -> Vec<DefJson> {
             "activity_bar" => activity_bar_descriptor.clone(),
             "palette" => palette_descriptor.clone(),
             "context_menu" => context_menu_descriptor.clone(),
+            "editor" => editor_descriptor.clone(),
+            "minimap" => minimap_descriptor.clone(),
+            "image" => image_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3404,6 +3438,87 @@ pub fn schema() -> Vec<DefJson> {
         "TerminalEvent",
         uniont(vec![lit(&["SelectEnd"]), terminal_event_dict]),
         "Mouse release has no payload -- bare `\"SelectEnd\"`, unlike every other variant.",
+    ));
+
+    let editor_buffer_pos_payload = b.define(obj(
+        "_EditorBufferPosPayload",
+        vec![field("line", int_()), field("col", int_())],
+    ));
+    let editor_gutter_payload = b.define(obj(
+        "_EditorGutterPayload",
+        vec![field("line_idx", int_()), field("gutter_col", int_())],
+    ));
+    let editor_hit_dict = b.define(flat(
+        "_EditorHitDict",
+        &[
+            ("BufferPos", editor_buffer_pos_payload),
+            ("Gutter", editor_gutter_payload),
+        ],
+        vec![],
+    ));
+    b.define(alias(
+        "EditorHit",
+        uniont(vec![
+            lit(&["VScrollbar", "HScrollbar", "Empty"]),
+            editor_hit_dict,
+        ]),
+    ));
+    let pointer_kind_dict = b.define(flat(
+        "_PointerKindDict",
+        &[
+            ("Down", re("MouseButton")),
+            ("Up", re("MouseButton")),
+            ("DoubleClick", re("MouseButton")),
+        ],
+        vec![],
+    ));
+    b.define(alias(
+        "PointerKind",
+        uniont(vec![lit(&["Move", "Enter", "Leave"]), pointer_kind_dict]),
+    ));
+    let editor_pointer_payload = b.define(obj(
+        "_EditorPointerPayload",
+        vec![
+            field("hit", re("EditorHit")),
+            field("col", int_()),
+            field("kind", re("PointerKind")),
+            field("mods", modifiers.clone()),
+        ],
+    ));
+    let editor_scrollbar_payload = b.define(obj(
+        "_EditorScrollbarPayload",
+        vec![
+            field("axis", re("ScrollAxis")),
+            field("fraction", float_()),
+            field("kind", re("PointerKind")),
+            field("mods", modifiers.clone()),
+        ],
+    ));
+    let editor_wheel_payload = b.define(obj(
+        "_EditorWheelPayload",
+        vec![
+            field("dx", float_()),
+            field("dy", float_()),
+            field("mods", modifiers.clone()),
+        ],
+    ));
+    b.define(flat(
+        "EditorEvent",
+        &[
+            ("Pointer", editor_pointer_payload),
+            ("Scrollbar", editor_scrollbar_payload),
+            ("Wheel", editor_wheel_payload),
+        ],
+        vec![],
+    ));
+    let minimap_seek_payload = b.define(obj(
+        "_MinimapSeekPayload",
+        vec![field("fraction", float_())],
+    ));
+    b.define(flat(
+        "MinimapEvent",
+        &[("Seek", minimap_seek_payload)],
+        vec![],
     ));
 
     let data_point_clicked_payload = b.define(obj(
@@ -3930,6 +4045,8 @@ pub fn schema() -> Vec<DefJson> {
             ("StatusBar", tup(vec![re("WidgetId"), re("StatusBarEvent")])),
             ("ActivityBar", tup(vec![re("WidgetId"), re("ActivityBarEvent")])),
             ("Terminal", tup(vec![re("WidgetId"), re("TerminalEvent")])),
+            ("Editor", tup(vec![re("WidgetId"), re("EditorEvent")])),
+            ("Minimap", tup(vec![re("WidgetId"), re("MinimapEvent")])),
             ("TextDisplay", tup(vec![re("WidgetId"), re("TextDisplayEvent")])),
             ("Chart", tup(vec![re("WidgetId"), re("ChartEvent")])),
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
@@ -4006,7 +4123,7 @@ mod coverage {
         DataTableEvent, DateFormat, DateLocale, DatePicker, Decoration, DiagnosticMark,
         DiagnosticSeverity, DiffEditability, DiffHunk, DiffLine, DiffMode, DiffPane, DiffRow,
         DiffRowKind, DiffView, DrawOp, Editor, EditorCursor, EditorCursorPos as CursorPos,
-        EditorCursorShape as CursorShape, EditorLine, EditorSelection,
+        EditorCursorShape as CursorShape, EditorLine, EditorPaintOptions, EditorSelection,
         EditorSelectionKind as SelectionKind, EditorStyle, EditorStyledSpan, EmptyBody, FieldKind,
         FindReplaceClickTarget, FindReplacePanel, Form, FormEvent, FormField, FormSpacing,
         FrHitRegion, GitLineStatus, HeaderAction, Icon, IconGrid, IconGridItem, Image, ImageFit,
@@ -5462,7 +5579,9 @@ mod coverage {
             syntax_spans,
             visible_row_start,
             visible_row_count,
-            total_buffer_lines
+            total_buffer_lines,
+            scale,
+            sizing
         }
     );
     assert_fields!(
@@ -5731,6 +5850,14 @@ mod coverage {
     assert_fields!(assert_cursor_pos_fields, CursorPos { view_line, col });
     assert_fields!(assert_editor_cursor_fields, EditorCursor { pos, shape });
     assert_fields!(
+        assert_editor_paint_options_fields,
+        EditorPaintOptions {
+            suppress_v_scrollbar,
+            v_scrollbar_w,
+            right_reserve_w
+        }
+    );
+    assert_fields!(
         assert_editor_selection_fields,
         EditorSelection {
             kind,
@@ -5820,7 +5947,8 @@ mod coverage {
             active_indent_col,
             tabstop,
             cursorline,
-            lightbulb_glyph
+            lightbulb_glyph,
+            paint_options
         }
     );
     fn assert_find_replace_click_target(t: FindReplaceClickTarget) {
@@ -6553,6 +6681,7 @@ mod coverage {
                 "tabstop",
                 "cursorline",
                 "lightbulb_glyph",
+                "paint_options",
             ]
         );
 
@@ -6900,6 +7029,8 @@ mod coverage {
                 "StatusBar",
                 "ActivityBar",
                 "Terminal",
+                "Editor",
+                "Minimap",
                 "TextDisplay",
                 "Chart",
                 "DataTable",

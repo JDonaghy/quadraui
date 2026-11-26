@@ -302,7 +302,7 @@ const BACKEND_TRAIT_SRC: &str = include_str!("../../src/backend.rs");
 ///
 /// `CAP_CONTRACTS` covers the ones a `BackendCaps` field gates, and C0 covers the
 /// defaulted `draw_*` methods. This returns the remainder — `set_theme`, `set_nerd_fonts`,
-/// `scales_text_rows`, `editor_col_at_x`, `register_zone` — that nothing else in this
+/// `scales_text_rows`, `register_zone` — that nothing else in this
 /// suite looks at.
 ///
 /// Derived from source rather than listed, so a new defaulted method enters the report
@@ -430,12 +430,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "a terminal cell cannot grow; the `false` default is the correct answer, not a missing \
          one — scaled rows render bold at normal cell height",
     ),
-    (
-        "tui",
-        "editor_col_at_x",
-        "the default *is* uniform-monospace division (`EditorLayout::col_at_x`), which is exact \
-         for a cell grid — GTK overrides it only because Pango advance widths vary",
-    ),
     // TUI: `tree_paints_own_scrollbar` — scrolling a tree in a terminal has
     // no spare pixels for an overlay scrollbar, so `draw_tree` never paints
     // one and the default `false` is the honest answer: the host
@@ -480,11 +474,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     (
         "macos",
-        "editor_col_at_x",
-        "no CoreText hit-test resolution yet; the uniform-division default is used",
-    ),
-    (
-        "macos",
         "snap_height",
         "pixel backend — CoreText paints fractional heights exactly, so the identity default is \
          correct, not unfinished work (quadraui#632)",
@@ -492,7 +481,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // Win: every method is a `todo!()` stub. Listed one by one anyway — "the whole
     // backend is a stub" is exactly the kind of blanket excuse that outlives the stub.
     ("win", "scales_text_rows", "stub backend — see #19"),
-    ("win", "editor_col_at_x", "stub backend — see #19"),
     (
         "win",
         "snap_height",
@@ -529,11 +517,10 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          Win-GUI window keeps its native non-client titlebar, so no Win-drawn control overlaps \
          the app's title band; override this and delete this line when CSD lands",
     ),
-    // `editor_layout` / `diff_view_layout` each ship with a trait default that is a pure
-    // function of `Backend::char_width()` / `Backend::line_height()` (plus, for
-    // `diff_view_layout`, `DiffView::mode`) — the exact same values every backend's own
-    // `draw_editor` / `draw_diff_view` already resolves them to. There is no
-    // backend-specific measurement these two could add, unlike `board_layout` /
+    // `diff_view_layout` ships with a trait default that is a pure function of
+    // `Backend::line_height()` and `DiffView::mode` — the exact same values every
+    // backend's own `draw_diff_view` already resolves them to. There is no
+    // backend-specific measurement it could add, unlike `board_layout` /
     // `list_layout`, which route through backend-native constants and have no default at
     // all. All four backends take the default as the honest answer.
     //
@@ -542,18 +529,8 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     // `DiffView::layout`, differing only in one degenerate corner.
     (
         "tui",
-        "editor_layout",
-        "pure fn of char_width()/line_height() — see the block comment above (#506)",
-    ),
-    (
-        "tui",
         "diff_view_layout",
         "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "gtk",
-        "editor_layout",
-        "pure fn of char_width()/line_height() — see the block comment above (#506)",
     ),
     (
         "gtk",
@@ -562,18 +539,8 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     (
         "macos",
-        "editor_layout",
-        "pure fn of char_width()/line_height() — see the block comment above (#506)",
-    ),
-    (
-        "macos",
         "diff_view_layout",
         "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "win",
-        "editor_layout",
-        "pure fn of char_width()/line_height() — see the block comment above (#506)",
     ),
     (
         "win",
@@ -655,135 +622,25 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
     ),
     // `set_caret_shape` drives the terminal/OS *hardware* caret to match an Editor's shape.
     // TUI is the only backend with a hardware caret distinct from the one it paints (DECSCUSR).
-    // GTK/macOS/Win-GUI all paint their own caret glyph as part of `draw_editor` and have no
+    // GTK/macOS/Win-GUI all paint their own caret glyph as part of the editor paint and have no
     // separate hardware cursor to steer, so the trait's no-op default is the honest answer.
     (
         "gtk",
         "set_caret_shape",
-        "GtkBackend paints its own caret in draw_editor; there is no separate hardware caret to \
+        "GtkBackend paints its own caret in the editor paint; there is no separate hardware caret to \
          steer (#1015)",
     ),
     (
         "macos",
         "set_caret_shape",
-        "MacBackend paints its own caret in draw_editor; there is no separate hardware caret to \
+        "MacBackend paints its own caret in the editor paint; there is no separate hardware caret to \
          steer (#1015)",
     ),
     (
         "win",
         "set_caret_shape",
-        "WinBackend paints its own caret in draw_editor; there is no separate hardware caret to \
+        "WinBackend paints its own caret in the editor paint; there is no separate hardware caret to \
          steer (#1015)",
-    ),
-    // `minimap_scale`/`set_minimap_scale` pick the on-screen size of one character cell in
-    // `MinimapRenderMode::Characters`. TUI's braille rasteriser has no font to scale at all
-    // (it packs 4 buffer lines x 2 columns into one cell-native `U+2800`-block dot cell),
-    // so the trait's no-op default is the correct answer. GTK/macOS/Win-GUI override both.
-    (
-        "tui",
-        "minimap_scale",
-        "braille has no font to scale — the cell-native dot packing described in \
-         primitives::minimap's module doc has no `MinimapScale` concept to hold (#1143)",
-    ),
-    (
-        "tui",
-        "set_minimap_scale",
-        "braille has no font to scale — the cell-native dot packing described in \
-         primitives::minimap's module doc has no `MinimapScale` concept to hold (#1143)",
-    ),
-    // `minimap_sizing`/`set_minimap_sizing` let a host override the row-pitch strategy
-    // (e.g. `MinimapSizing::RepeatToFill` to stretch a short file across a tall strip).
-    // `RepeatToFill` exists to solve a problem specific to a cell-native rasteriser: TUI can
-    // only address whole terminal-cell rows, so stretching a short file to fill a tall strip
-    // needs the whole-number-multiple trick to avoid a fractional, unaddressable pitch.
-    // GTK/macOS/Win-GUI paint `FixedPitch` at a continuous float pixel `y` (see each
-    // rasteriser's `vline.bounds.y`-driven paint loop), so the same stretch is already just a
-    // larger `FixedPitch(px)` literal with no cell-boundary rounding to solve — they have
-    // nothing to opt into and the trait's no-op default is the correct answer.
-    (
-        "gtk",
-        "minimap_sizing",
-        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
-         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
-         multiple trick solves a cell-quantisation problem that is TUI-only",
-    ),
-    (
-        "gtk",
-        "set_minimap_sizing",
-        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
-         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
-         multiple trick solves a cell-quantisation problem that is TUI-only",
-    ),
-    (
-        "macos",
-        "minimap_sizing",
-        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
-         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
-         multiple trick solves a cell-quantisation problem that is TUI-only",
-    ),
-    (
-        "macos",
-        "set_minimap_sizing",
-        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
-         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
-         multiple trick solves a cell-quantisation problem that is TUI-only",
-    ),
-    (
-        "win",
-        "minimap_sizing",
-        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
-         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
-         multiple trick solves a cell-quantisation problem that is TUI-only",
-    ),
-    (
-        "win",
-        "set_minimap_sizing",
-        "paints `FixedPitch` at a continuous float pixel y, so stretching a short file is \
-         already just a larger `FixedPitch(px)` literal — `RepeatToFill`'s whole-number-\
-         multiple trick solves a cell-quantisation problem that is TUI-only",
-    ),
-    // `set_editor_right_reserve_w`/`editor_right_reserve_w` let a host reserve a trailing
-    // strip (e.g. a docked minimap) between the editor's text area and its vertical
-    // scrollbar without moving the scrollbar. Only the TUI rasteriser implements it so
-    // far; on GTK/macOS/Win-GUI the setter is dropped and the getter answers `None`, so
-    // `draw_editor` and `editor_layout` both reserve nothing — painting and hit-testing
-    // stay consistent with each other, the strip is just not carved out yet. Each
-    // pixel backend picks this up in its own per-backend issue.
-    (
-        "gtk",
-        "set_editor_right_reserve_w",
-        "unimplemented on GTK — draw_editor reserves no trailing strip yet; the TUI \
-         rasteriser is the only implementer so far (one backend per issue)",
-    ),
-    (
-        "gtk",
-        "editor_right_reserve_w",
-        "answers `None` because the setter is a no-op here, which keeps editor_layout's \
-         hit-testing in agreement with what draw_editor actually painted",
-    ),
-    (
-        "macos",
-        "set_editor_right_reserve_w",
-        "unimplemented on macOS — draw_editor reserves no trailing strip yet; the TUI \
-         rasteriser is the only implementer so far (one backend per issue)",
-    ),
-    (
-        "macos",
-        "editor_right_reserve_w",
-        "answers `None` because the setter is a no-op here, which keeps editor_layout's \
-         hit-testing in agreement with what draw_editor actually painted",
-    ),
-    (
-        "win",
-        "set_editor_right_reserve_w",
-        "unimplemented on Win-GUI — draw_editor reserves no trailing strip yet; the TUI \
-         rasteriser is the only implementer so far (one backend per issue)",
-    ),
-    (
-        "win",
-        "editor_right_reserve_w",
-        "answers `None` because the setter is a no-op here, which keeps editor_layout's \
-         hit-testing in agreement with what draw_editor actually painted",
     ),
     // `set_current_line_height`/`set_current_char_width` let a host re-apply a pixel
     // backend's font-derived metrics. TUI is a fixed-cell backend — its line height and
@@ -865,23 +722,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "cell_surface",
         "Win-GUI paints a pixel canvas through PaintSurface, not a cell grid — there is no \
          CellSurface to hand back",
-    ),
-    // ── TUI: `set_editor_v_scrollbar_width` / `editor_v_scrollbar_width`.
-    // The editor's vertical scrollbar on a terminal is one cell wide by
-    // construction — a pixel width has no cell grid to land on — so TUI
-    // ignores the setter and reports `None`, per the trait doc. GUI
-    // backends override both.
-    (
-        "tui",
-        "set_editor_v_scrollbar_width",
-        "a terminal scrollbar column is one cell wide; a pixel width has nothing to map to, \
-         per Backend::set_editor_v_scrollbar_width's own doc",
-    ),
-    (
-        "tui",
-        "editor_v_scrollbar_width",
-        "TUI ignores set_editor_v_scrollbar_width, so the always-None default is the truthful \
-         answer",
     ),
     // ── wheel_delta_rows: TUI, GTK and Win32 all already report wheel
     // deltas in row-notch units (crossterm's `±1.0` per notch, GTK's
