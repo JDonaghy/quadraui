@@ -56,7 +56,7 @@ impl DatePickerApp {
                 self.picker.selected = Some(date);
                 Reaction::Redraw
             }
-            None => Reaction::Continue,
+            Some(DatePickerEvent::OpenChanged(_)) | None => Reaction::Continue,
         }
     }
 

@@ -4779,6 +4779,11 @@ pub enum FormEvent {
         id: WidgetId,
         value: crate::primitives::date_picker::CalendarDate,
     },
+    /// A dropdown `DatePicker` asked for its calendar popup to open or
+    /// close — [`crate::primitives::date_picker::DatePickerEvent::OpenChanged`].
+    /// Applying it means writing `open` onto the picker's `open`. Only a
+    /// standalone picker reports it, under its own id.
+    DateOpenChanged { id: WidgetId, open: bool },
     /// Keyboard focus moved to a different field.
     FocusChanged { id: WidgetId },
     /// A `Button` was clicked or activated with Enter / Space.
