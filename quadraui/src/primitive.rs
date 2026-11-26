@@ -681,6 +681,14 @@ pub struct PaintEnv<'a> {
     pub state: &'a dyn PaintState,
     /// The resolved hover/press state this paint renders.
     pub interaction: &'a InteractionState,
+    /// The painted widget's own persistent
+    /// [`Interactive::State`], type-erased; read it with
+    /// [`Self::widget_state_as`]. [`crate::DrawsPrimitives::draw_dyn`]
+    /// fills it from the runtime's per-thread store
+    /// ([`crate::widget_state::with_widget_states`]) for an identified
+    /// widget that has received an event; `None` otherwise, which a
+    /// widget paints as `State::default()`.
+    pub widget_state: Option<&'a dyn std::any::Any>,
 }
 
 /// The panic message for a cell painter that delegates to a `ratatui`
@@ -700,6 +708,7 @@ impl std::fmt::Debug for PaintEnv<'_> {
             .field("services", &self.services)
             .field("row_height", &self.row_height)
             .field("interaction", self.interaction)
+            .field("widget_state", &self.widget_state.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -714,7 +723,36 @@ impl<'a> PaintEnv<'a> {
             row_height: style.row_height,
             state: &(),
             interaction: &NO_INTERACTION,
+            widget_state: None,
         }
+    }
+
+    /// This env with the widget's persistent state replaced.
+    pub fn with_widget_state(mut self, widget_state: Option<&'a dyn std::any::Any>) -> Self {
+        self.widget_state = widget_state;
+        self
+    }
+
+    /// The painted widget's persistent state as its concrete
+    /// [`Interactive::State`] type `T`, or `None` when there is none or
+    /// it is another type.
+    ///
+    /// ```
+    /// use quadraui::{PaintEnv, Style, Theme};
+    ///
+    /// #[derive(Default)]
+    /// struct DragState {
+    ///     grabbed: Option<usize>,
+    /// }
+    ///
+    /// let (theme, style) = (Theme::default(), Style::default());
+    /// let state = DragState { grabbed: Some(2) };
+    /// let env = PaintEnv::new(&theme, &style).with_widget_state(Some(&state));
+    /// assert_eq!(env.widget_state_as::<DragState>().unwrap().grabbed, Some(2));
+    /// assert!(env.widget_state_as::<u32>().is_none());
+    /// ```
+    pub fn widget_state_as<T: std::any::Any>(&self) -> Option<&'a T> {
+        self.widget_state?.downcast_ref::<T>()
     }
 
     /// This env with `row_height` replaced.
@@ -962,6 +1000,18 @@ pub trait Primitive: A11yPrimitive {
         None
     }
 
+    /// Present the primitive through the platform itself, without
+    /// painting it, when `backend` presents it natively — the macOS menu
+    /// bar installed as the system one. Returns whether it did; on
+    /// `false` the caller paints it as usual.
+    /// [`crate::frame::ScreenLayout::draw`] asks every widget surface
+    /// before painting it. Default: `false`, a primitive that is always
+    /// painted.
+    fn native_presentation(&self, backend: &mut dyn crate::Backend, rect: Rect) -> bool {
+        let _ = (backend, rect);
+        false
+    }
+
     /// Paint `layout` (as produced by [`Self::layout`]) onto `surface`,
     /// with the theme, style and hover/press state `env` carries.
     fn paint(&self, layout: &Self::Layout, surface: &mut dyn PaintSurface, env: &PaintEnv);
@@ -1073,6 +1123,10 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// this widget's own layout type.
     fn paint_zone(&self, layout: &dyn PrimitiveLayout, units: Units) -> Option<Rect>;
 
+    /// Present this widget through the platform, without painting it —
+    /// see [`Primitive::native_presentation`].
+    fn native_presentation(&self, backend: &mut dyn crate::Backend, rect: Rect) -> bool;
+
     /// Paint `layout` (as produced by [`Self::layout`]) onto `target`.
     /// Replaces [`Primitive::paint`]/[`Primitive::paint_cells`]'s split
     /// with a single method that matches on [`PaintTarget`] itself, since
@@ -1122,6 +1176,16 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// [`Interactive::a11y_actions`].
     fn a11y_actions(&self, state: &dyn std::any::Any) -> Vec<A11yAction>;
 
+    /// The popups this widget has open — see [`Interactive::popups`].
+    /// `state` `None` (no stored state yet) or of the wrong type answers
+    /// as `State::default()`; a `layout` of the wrong type answers no
+    /// popups.
+    fn popups(
+        &self,
+        state: Option<&dyn std::any::Any>,
+        layout: &dyn PrimitiveLayout,
+    ) -> Vec<crate::popup::Popup>;
+
     /// Clone this widget's content into a serializable [`OwnedContent`]
     /// for [`crate::frame::OwnedFrame::from_layout`]. Default:
     /// [`OwnedContent::Opaque`] — correct for a widget with no
@@ -1168,6 +1232,10 @@ where
     fn paint_zone(&self, layout: &dyn PrimitiveLayout, units: Units) -> Option<Rect> {
         let layout = layout.downcast_ref::<W::Layout>()?;
         Primitive::paint_zone(self, layout, units)
+    }
+
+    fn native_presentation(&self, backend: &mut dyn crate::Backend, rect: Rect) -> bool {
+        Primitive::native_presentation(self, backend, rect)
     }
 
     fn paint(&self, layout: &dyn PrimitiveLayout, target: PaintTarget<'_>, env: &PaintEnv) {
@@ -1220,6 +1288,20 @@ where
         match state.downcast_ref::<W::State>() {
             Some(state) => Interactive::a11y_actions(self, state),
             None => Vec::new(),
+        }
+    }
+
+    fn popups(
+        &self,
+        state: Option<&dyn std::any::Any>,
+        layout: &dyn PrimitiveLayout,
+    ) -> Vec<crate::popup::Popup> {
+        let Some(layout) = layout.downcast_ref::<W::Layout>() else {
+            return Vec::new();
+        };
+        match state.and_then(|s| s.downcast_ref::<W::State>()) {
+            Some(state) => Interactive::popups(self, state, layout),
+            None => Interactive::popups(self, &W::State::default(), layout),
         }
     }
 

@@ -3519,6 +3519,16 @@ pub trait DrawsPrimitives: Backend {
     /// a hover tint stays with what is under the pointer when the content
     /// moves without the pointer moving.
     ///
+    /// # Persistent state and popups
+    ///
+    /// When `w` carries an id, the env also carries its persistent
+    /// [`crate::Interactive::State`] from the runtime's per-thread store
+    /// ([`crate::primitive::PaintEnv::widget_state`]), and every popup
+    /// `w` has open ([`DynWidget::popups`]) is resolved against `rect` and
+    /// the viewport and queued. The runner paints that queue above the
+    /// whole frame after the app's `render`
+    /// ([`crate::popup::paint_open_popups`]).
+    ///
     /// # Painted-layout record
     ///
     /// When `w` carries an id ([`DynWidget::id`]), this also records
@@ -3571,24 +3581,43 @@ pub trait DrawsPrimitives: Backend {
             _ => crate::interaction::ambient_interaction(),
         };
         let interaction = state.interaction().unwrap_or(&ambient);
-        let env = PaintEnv::new(&theme, &style)
-            .with_row_height(ctx.line_height)
-            .with_state(state)
-            .with_interaction(interaction);
         let clip = grow_rect(rect, w.paint_bleed(&style));
-        let mut painted_units = None;
-        if let Some(surface) = self.paint_surface() {
-            surface.surface_push_clip(clip);
-            paint_in_role(surface, w.font_role(), &mut |s| {
-                w.paint(layout.as_ref(), PaintTarget::Surface(s), &env)
+        // The widget's persistent state is borrowed from the per-thread
+        // store for the paint and the popup query, both of which read it.
+        let (painted_units, popups) =
+            crate::widget_state::with_widget_state_ref(w.id(), |widget_state| {
+                let env = PaintEnv::new(&theme, &style)
+                    .with_row_height(ctx.line_height)
+                    .with_state(state)
+                    .with_interaction(interaction)
+                    .with_widget_state(widget_state);
+                let mut painted_units = None;
+                if let Some(surface) = self.paint_surface() {
+                    surface.surface_push_clip(clip);
+                    paint_in_role(surface, w.font_role(), &mut |s| {
+                        w.paint(layout.as_ref(), PaintTarget::Surface(s), &env)
+                    });
+                    surface.surface_pop_clip();
+                    painted_units = Some(Units::Pixels);
+                }
+                #[cfg(feature = "tui")]
+                if let Some(cells) = self.cell_surface() {
+                    w.paint(layout.as_ref(), PaintTarget::Cells(cells), &env);
+                    painted_units = Some(Units::Cells);
+                }
+                let popups = match w.id() {
+                    Some(_) => w.popups(widget_state, layout.as_ref()),
+                    None => Vec::new(),
+                };
+                (painted_units, popups)
             });
-            surface.surface_pop_clip();
-            painted_units = Some(Units::Pixels);
-        }
-        #[cfg(feature = "tui")]
-        if let Some(cells) = self.cell_surface() {
-            w.paint(layout.as_ref(), PaintTarget::Cells(cells), &env);
-            painted_units = Some(Units::Cells);
+        if let (Some(&owner), false) = (w.id(), popups.is_empty()) {
+            let viewport = viewport_rect(self.viewport());
+            for popup in popups {
+                crate::popup::queue_popup(crate::popup::OpenPopup::resolve(
+                    owner, rect, popup, viewport,
+                ));
+            }
         }
         if let Some(id) = w.id() {
             // A modal widget reached through the contract marks its own
@@ -3610,6 +3639,12 @@ pub trait DrawsPrimitives: Backend {
         }
         layout
     }
+}
+
+/// `viewport` as a rect at the origin — the bounds a popup is placed
+/// inside ([`crate::popup::Popup::resolve`]).
+pub(crate) fn viewport_rect(viewport: Viewport) -> Rect {
+    Rect::new(0.0, 0.0, viewport.width, viewport.height)
 }
 
 /// Run `paint` against `surface`, in the editor font when `role` asks for

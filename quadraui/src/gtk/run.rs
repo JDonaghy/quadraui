@@ -2417,6 +2417,7 @@ pub(crate) fn render_frame<A: AppLogic>(
     backend.enter_frame_scope(cr, &layout, |b| {
         // Single-area runner: pass the default `AreaId`.
         app.render(b, A::AreaId::default());
+        crate::popup::paint_open_popups(b);
         // After app.render: paint the focus-ring convention.
         if let Some(rect) = focus_ring_rect {
             b.draw_focus_ring(rect);

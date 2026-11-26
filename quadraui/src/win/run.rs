@@ -496,6 +496,7 @@ pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewp
     backend.begin_frame(viewport);
     let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         app.render(&mut *backend, Default::default());
+        crate::popup::paint_open_popups(&mut *backend);
     }));
     if let Err(payload) = rendered {
         crate::desktop::report_caught_panic_once(

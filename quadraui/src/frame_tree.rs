@@ -40,6 +40,7 @@
 //! reads more naturally for its own `render()`/`frame_tree()` split.
 
 use crate::event::{Point, Rect};
+use crate::popup::OpenPopup;
 use crate::primitive::DynWidget;
 use crate::types::WidgetId;
 
@@ -56,14 +57,31 @@ pub struct FrameTreeNode {
     pub widget: Box<dyn DynWidget>,
 }
 
-/// This frame's widget-contract nodes, in back-to-front z-order — see
-/// the module doc. Empty by default, mirroring
-/// [`crate::runner::AppLogic::tab_stops`]'s own empty default: an app
-/// that never overrides `frame_tree` gets zero behavior change from the
-/// routing engine this feeds.
+/// This frame's widget-contract nodes, in back-to-front z-order, plus
+/// the popups those nodes have open — see the module doc. Empty by
+/// default, mirroring [`crate::runner::AppLogic::tab_stops`]'s own empty
+/// default: an app that never overrides `frame_tree` gets zero behavior
+/// change from the routing engine this feeds.
+///
+/// Popups sit above every node: [`Self::hit`] answers a popup before
+/// any node, whatever order the nodes were pushed in. The routing engine
+/// fills them in from each node's
+/// [`crate::interactive::Interactive::popups`] before it routes an
+/// event; an app never pushes them itself.
 #[derive(Default)]
 pub struct FrameTree {
     nodes: Vec<FrameTreeNode>,
+    popups: Vec<OpenPopup>,
+}
+
+/// What [`FrameTree::hit`] found under a point.
+#[derive(Clone, Copy)]
+pub enum FrameHit<'a> {
+    /// An open popup — its owner receives the event as
+    /// [`crate::interactive::RoutedEvent::PopupEvent`].
+    Popup(&'a OpenPopup),
+    /// A node, when no popup covers the point.
+    Node(&'a FrameTreeNode),
 }
 
 impl FrameTree {
@@ -79,6 +97,32 @@ impl FrameTree {
         self.nodes.push(FrameTreeNode { id, rect, widget });
     }
 
+    /// Add one open popup, kept in paint order: ascending
+    /// [`OpenPopup::z`], ties in push order. A popup with the same owner
+    /// and key as one already here replaces it.
+    pub fn push_popup(&mut self, popup: OpenPopup) {
+        crate::popup::insert_by_z(&mut self.popups, popup);
+    }
+
+    /// Every open popup, in paint (back-to-front) order.
+    pub fn popups(&self) -> &[OpenPopup] {
+        &self.popups
+    }
+
+    /// The topmost open popup whose rect contains `point`.
+    pub fn popup_at(&self, point: Point) -> Option<&OpenPopup> {
+        self.popups.iter().rev().find(|p| p.rect.contains(point))
+    }
+
+    /// What is under `point`: the topmost popup containing it, otherwise
+    /// the topmost node ([`Self::hit_test`]).
+    pub fn hit(&self, point: Point) -> Option<FrameHit<'_>> {
+        match self.popup_at(point) {
+            Some(popup) => Some(FrameHit::Popup(popup)),
+            None => self.hit_test(point).map(FrameHit::Node),
+        }
+    }
+
     /// Whether this tree has no widgets at all.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
@@ -92,6 +136,7 @@ impl FrameTree {
     /// The topmost node whose rect contains `point` — the last-pushed
     /// match, mirroring [`crate::frame::FrameHitMap::hit_test`]'s
     /// "highest-z wins" rule. `None` when no node contains `point`.
+    /// Ignores popups; [`Self::hit`] checks those first.
     pub fn hit_test(&self, point: Point) -> Option<&FrameTreeNode> {
         self.nodes
             .iter()
@@ -176,6 +221,63 @@ mod tests {
 
         let hit = tree.hit_test(Point::new(1.0, 1.0)).unwrap();
         assert_eq!(hit.id, front_id);
+    }
+
+    fn open_popup(owner: &str, rect: Rect, z: i32) -> OpenPopup {
+        let popup = crate::popup::Popup::new(
+            crate::popup::PopupKey(0),
+            Rect::default(),
+            crate::primitive::Size::new(rect.width, rect.height),
+            Toy,
+        )
+        .z(z)
+        .side(crate::popup::PopupSide::Over);
+        OpenPopup::resolve(
+            WidgetId::new(owner),
+            Rect::new(rect.x, rect.y, 0.0, 0.0),
+            popup,
+            Rect::default(),
+        )
+    }
+
+    /// A popup answers before a node pushed after its owner: popups sit
+    /// above every node.
+    #[test]
+    fn hit_prefers_a_popup_over_any_node() {
+        let mut tree = FrameTree::new();
+        let (owner, owner_rect, owner_widget) = node("owner", Rect::new(0.0, 0.0, 10.0, 1.0));
+        let (top, top_rect, top_widget) = node("top", Rect::new(0.0, 0.0, 20.0, 20.0));
+        tree.push(owner, owner_rect, owner_widget);
+        tree.push(top, top_rect, top_widget);
+        tree.push_popup(open_popup("owner", Rect::new(0.0, 1.0, 10.0, 3.0), 0));
+
+        match tree.hit(Point::new(2.0, 2.0)) {
+            Some(FrameHit::Popup(p)) => assert_eq!(p.owner, owner),
+            _ => panic!("the popup should win over the node beneath it"),
+        }
+        match tree.hit(Point::new(15.0, 2.0)) {
+            Some(FrameHit::Node(n)) => assert_eq!(n.id, top),
+            _ => panic!("outside the popup the topmost node answers"),
+        }
+        assert_eq!(tree.hit_test(Point::new(2.0, 2.0)).unwrap().id, top);
+    }
+
+    /// Among overlapping popups the highest `z` answers, whatever order
+    /// they were pushed in; equal `z` falls back to push order.
+    #[test]
+    fn popup_at_prefers_the_highest_z_then_the_last_pushed() {
+        let mut tree = FrameTree::new();
+        let area = Rect::new(0.0, 0.0, 5.0, 5.0);
+        tree.push_popup(open_popup("high", area, 2));
+        tree.push_popup(open_popup("low", area, 0));
+        tree.push_popup(open_popup("mid", area, 1));
+        let at = |tree: &FrameTree| tree.popup_at(Point::new(1.0, 1.0)).unwrap().owner;
+        assert_eq!(at(&tree), WidgetId::new("high"));
+        let order: Vec<_> = tree.popups().iter().map(|p| p.owner).collect();
+        assert_eq!(order, ["low", "mid", "high"].map(WidgetId::new).to_vec());
+
+        tree.push_popup(open_popup("late", area, 2));
+        assert_eq!(at(&tree), WidgetId::new("late"));
     }
 
     #[test]

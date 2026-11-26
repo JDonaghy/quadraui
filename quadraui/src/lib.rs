@@ -493,6 +493,11 @@ pub mod interactive;
 pub mod frame_tree;
 pub mod widget_state;
 
+// Widget-owned popups: `Popup`, what `Interactive::popups` returns; the
+// resolved `OpenPopup`; and the per-frame queue the runner paints above
+// the frame. Compiled unconditionally, same rationale as `frame_tree`.
+pub mod popup;
+
 // `kind` string → descriptor type registry a binding/wire layer decodes
 // a JSON-shaped widget payload against, without knowing the concrete
 // `Primitive` type that kind names — see that module's own doc.
@@ -905,8 +910,12 @@ pub use interactive::{
 };
 // The widget-contract routing engine's two public types — see
 // `frame_tree`/`widget_state`'s own module docs.
-pub use frame_tree::{FrameTree, FrameTreeNode};
-pub use widget_state::{WidgetRoutingState, WidgetStateStore};
+pub use frame_tree::{FrameHit, FrameTree, FrameTreeNode};
+pub use widget_state::{with_widget_states, WidgetRoutingState, WidgetStateStore};
+// Widget-owned popups — see `popup`'s own module doc.
+pub use popup::{
+    paint_open_popups, DismissReason, OpenPopup, Popup, PopupDismiss, PopupKey, PopupSide,
+};
 // `decode_widget`/`decode_widget_from`/`KindError` — see `widget_kinds`'s
 // own module doc. `widget_kinds!` itself is exported at the crate root by
 // `#[macro_export]`, not re-exported here, the same convention as

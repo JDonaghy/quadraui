@@ -837,6 +837,7 @@ where
                 // `AreaId`. Multi-area runners (GTK) pass the AreaId for
                 // whichever surface is repainting.
                 app.render(b, A::AreaId::default());
+                crate::popup::paint_open_popups(b);
             });
             // Clear any `underline_color` ConPTY would misparse as
             // blink/faint before any further
