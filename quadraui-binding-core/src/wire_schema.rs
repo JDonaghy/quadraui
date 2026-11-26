@@ -3920,6 +3920,11 @@ pub fn schema() -> Vec<DefJson> {
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
             ("TreeTable", tup(vec![re("WidgetId"), re("TreeTableEvent")])),
             ("CellGrid", tup(vec![re("WidgetId"), re("CellGridEvent")])),
+            // A shell, bottom-panel or workspace intent rides as the
+            // event's own externally-tagged serde shape.
+            ("AppShell", tup(vec![re("WidgetId"), any_()])),
+            ("BottomPanel", tup(vec![re("WidgetId"), any_()])),
+            ("Workspace", tup(vec![re("WidgetId"), any_()])),
             ("Toolbar", tup(vec![re("WidgetId"), re("ToolbarEvent")])),
             ("Canvas", tup(vec![re("WidgetId"), re("CanvasEvent")])),
             ("BackendNative", backend_native_event),
@@ -6874,6 +6879,9 @@ mod coverage {
                 "DataTable",
                 "TreeTable",
                 "CellGrid",
+                "AppShell",
+                "BottomPanel",
+                "Workspace",
                 "Toolbar",
                 "Canvas",
                 "BackendNative",
