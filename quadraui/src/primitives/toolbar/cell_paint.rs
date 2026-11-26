@@ -823,32 +823,10 @@ pub fn draw_toolbar_with_overflow(
             },
         };
         let is_focused = overflow_btn.is_none() && bar.focused_index == Some(vis.item_idx);
-        // The `»` entry's id is a sentinel no host hands back as its own
-        // `hovered_id`/`pressed_id` — pin both to `None` so it always
-        // paints in the resting `fg`/`bar_bg` pair.
-        let (item_hovered_id, item_pressed_id) = if overflow_btn.is_some() {
-            (None, None)
-        } else {
-            (hovered_id, pressed_id)
-        };
 
         draw_toolbar_item(
-            buf,
-            rows,
-            text_row,
-            vis,
-            btn,
-            is_focused,
-            theme,
-            item_hovered_id,
-            item_pressed_id,
-            bar_bg,
-            fg,
-            muted,
-            hover_bg,
-            hover_fg,
-            active_bg,
-            focus_bg,
+            buf, rows, text_row, vis, btn, is_focused, theme, hovered_id, pressed_id, bar_bg, fg,
+            muted, hover_bg, hover_fg, active_bg, focus_bg,
         );
     }
 

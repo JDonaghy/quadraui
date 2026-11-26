@@ -3513,7 +3513,11 @@ pub trait DrawsPrimitives: Backend {
     /// ambient pointer state ([`crate::interaction::ambient_interaction`])
     /// the runtime tracks against this record. Passing `&()` therefore
     /// paints live hover; passing an explicit
-    /// [`crate::InteractionState`] pins it.
+    /// [`crate::InteractionState`] pins it. When the ambient hover names
+    /// `w`, it is resolved again against the rect and sub-parts `w` is
+    /// painted at now ([`crate::interaction`]'s `ambient_for_painted`), so
+    /// a hover tint stays with what is under the pointer when the content
+    /// moves without the pointer moving.
     ///
     /// # Painted-layout record
     ///
@@ -3549,7 +3553,23 @@ pub trait DrawsPrimitives: Backend {
             w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect)
         };
         let theme = self.theme();
-        let ambient = crate::interaction::ambient_interaction();
+        let sub_regions: Vec<_> = match w.id() {
+            Some(_) => w
+                .sub_regions(layout.as_ref())
+                .into_iter()
+                .map(|(r, sub)| {
+                    (
+                        Rect::new(r.x + rect.x, r.y + rect.y, r.width, r.height),
+                        sub,
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        };
+        let ambient = match (state.interaction(), w.id()) {
+            (None, Some(id)) => crate::interaction::ambient_for_painted(id, rect, &sub_regions),
+            _ => crate::interaction::ambient_interaction(),
+        };
         let interaction = state.interaction().unwrap_or(&ambient);
         let env = PaintEnv::new(&theme, &style)
             .with_row_height(ctx.line_height)
@@ -3579,16 +3599,6 @@ pub trait DrawsPrimitives: Backend {
             if let Some(zone) = painted_units.and_then(|u| w.paint_zone(layout.as_ref(), u)) {
                 self.register_zone(*id, zone);
             }
-            let sub_regions = w
-                .sub_regions(layout.as_ref())
-                .into_iter()
-                .map(|(r, sub)| {
-                    (
-                        Rect::new(r.x + rect.x, r.y + rect.y, r.width, r.height),
-                        sub,
-                    )
-                })
-                .collect();
             let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
             let recorded = w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect);
             crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {

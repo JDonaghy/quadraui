@@ -301,13 +301,14 @@ pub(crate) trait PreprocessBackend {
 /// Pre-processing handled here, in priority order (anything not matched
 /// falls through to `app.handle` unchanged):
 ///
-/// 1. [`UiEvent::MouseDown`] → [`PreprocessBackend::fold_double_click`]:
+/// 1. Every event feeds the ambient pointer state
+///    ([`crate::interaction::track_pointer`]) while a press still carries
+///    its button; a hover or press change merges [`Reaction::Redraw`]
+///    into whatever this function returns.
+///
+///    Then [`UiEvent::MouseDown`] → [`PreprocessBackend::fold_double_click`]:
 ///    fold into [`UiEvent::DoubleClick`] if it lands in the backend's
 ///    double-click window.
-///
-///    Then every event feeds the ambient pointer state
-///    ([`crate::interaction::track_pointer`]); a hover or press change
-///    merges [`Reaction::Redraw`] into whatever this function returns.
 /// 2. Widget-contract routing, only when
 ///    [`PreprocessBackend::widget_routing_mut`] returns `Some` *and*
 ///    [`AppLogic::frame_tree`] returns a non-empty
@@ -399,18 +400,19 @@ where
     B: PreprocessBackend + crate::Backend,
     A: AppLogic,
 {
-    // ── 1. Double-click folding ────────────────────────────────────────
-    let event = backend.fold_double_click(event);
-
-    // ── 1b. Ambient pointer hover/press ────────────────────────────────
+    // ── 1. Ambient pointer hover/press ─────────────────────────────────
     // Resolved against the widgets painted in the frame on screen, so a
     // hover or press change repaints whether or not anything claims the
-    // event below.
+    // event below. Tracked before double-click folding, while a press
+    // still says which button it is.
     let pointer_reaction = if crate::interaction::track_pointer(&event) {
         Reaction::Redraw
     } else {
         Reaction::Continue
     };
+
+    // ── 1b. Double-click folding ───────────────────────────────────────
+    let event = backend.fold_double_click(event);
 
     // ── 2. Widget-contract routing ─────────────────────────────────────
     // A `Bubble` payload is a `Reaction` step 2 produced without claiming
@@ -2479,12 +2481,6 @@ mod widget_routing_tests {
         assert_eq!(outcome, Reaction::Redraw);
     }
 
-    /// `dispatch_widget_routed_event` folds `Handled::Consumed`'s `Redraw`
-    /// baseline with the `Reaction` an emitted `UiEvent` produced via
-    /// `Reaction::merge`, not last-write-wins: a shift-click emits one
-    /// extra event that `CounterApp::handle` answers with `Continue`, and
-    /// the widget itself answers `Consumed` — the merged result must stay
-    /// `Redraw`, never be overwritten down to `Continue`.
     /// A pointer move onto a widget painted this frame redraws even when
     /// nothing routes or claims the move: the ambient hover changed. The
     /// same move again changes nothing and stays `Continue`.
@@ -2524,6 +2520,12 @@ mod widget_routing_tests {
         crate::primitive::clear_painted_widgets();
     }
 
+    /// `dispatch_widget_routed_event` folds `Handled::Consumed`'s `Redraw`
+    /// baseline with the `Reaction` an emitted `UiEvent` produced via
+    /// `Reaction::merge`, not last-write-wins: a shift-click emits one
+    /// extra event that `CounterApp::handle` answers with `Continue`, and
+    /// the widget itself answers `Consumed` — the merged result must stay
+    /// `Redraw`, never be overwritten down to `Continue`.
     #[test]
     fn consumed_merges_with_an_emitted_events_reaction_not_last_write_wins() {
         let (mut backend, mut app) = harness();

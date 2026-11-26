@@ -1389,7 +1389,7 @@ impl PaintedWidgets {
 
 /// Half-open containment, matching [`crate::TabBarLayout::hit_test`]'s own
 /// convention: the right/bottom edge belongs to the next rect along.
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
+pub(crate) fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
 

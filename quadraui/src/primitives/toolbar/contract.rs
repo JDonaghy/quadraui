@@ -766,9 +766,9 @@ impl Toolbar {
     }
 
     /// The id the painters highlight for `part`: the button a slot or a
-    /// dropdown arrow belongs to, or a `Group` child's own id. `None` for
-    /// the `»` affordance, which paints at rest, and for a part that no
-    /// longer names a button in [`Self::buttons`].
+    /// dropdown arrow belongs to, a `Group` child's own id, or the `»`
+    /// affordance's [`super::toolbar_overflow_widget_id`]. `None` for a
+    /// part that names no button in [`Self::buttons`].
     #[cfg_attr(
         not(any(
             feature = "tui",
@@ -784,7 +784,7 @@ impl Toolbar {
             self.buttons.get(match part {
                 ToolbarSubPart::Button(i) | ToolbarSubPart::DropdownArrow(i) => i,
                 ToolbarSubPart::GroupChild { item, .. } => item,
-                ToolbarSubPart::OverflowChevron => return None,
+                ToolbarSubPart::OverflowChevron => return Some(super::toolbar_overflow_widget_id()),
             })?,
         ) {
             (
@@ -1434,7 +1434,10 @@ mod tests {
         );
         assert_eq!(id(ToolbarSubPart::GroupChild { item: 3, child: 2 }), None);
         assert_eq!(id(ToolbarSubPart::Button(9)), None);
-        assert_eq!(id(ToolbarSubPart::OverflowChevron), None);
+        assert_eq!(
+            id(ToolbarSubPart::OverflowChevron),
+            Some(super::super::toolbar_overflow_widget_id())
+        );
     }
 
     /// [`Toolbar::interaction_ids`] reads this bar's own address out of
@@ -1583,6 +1586,59 @@ mod tests {
             Handled::Event(ToolbarEvent::OverflowRequested {
                 id: super::super::toolbar_overflow_widget_id(),
             }),
+        );
+    }
+
+    /// An env hovering a `Menu` bar's `»` affordance paints its cells in
+    /// `theme.hover_bg`, where the same bar at rest does not.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn paint_cells_tints_a_hovered_overflow_chevron() {
+        use ratatui::buffer::Buffer;
+
+        let crowded = crowded_bar().with_overflow(super::super::ToolbarOverflow::Menu);
+        let layout = Primitive::layout(
+            &crowded,
+            &LayoutCtx::new(1.0, 1.0, false),
+            Rect::new(0.0, 0.0, 24.0, 1.0),
+        );
+        let chevron = layout
+            .layout
+            .visible_items
+            .iter()
+            .find(|v| v.kind == ToolbarItemKind::Overflow)
+            .expect("a crowded `Menu` bar lays out the chevron")
+            .bounds;
+        let theme = crate::Theme::default();
+        let style = crate::Style::default();
+        let paint_with = |interaction: crate::InteractionState| {
+            let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, 24, 1));
+            Primitive::paint_cells(
+                &crowded,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&theme, &style).with_interaction(&interaction),
+            );
+            buf
+        };
+        let hover_bg = crate::tui::ratatui_color(theme.hover_bg);
+        let x = chevron.x.round() as u16;
+        let chevron_bg = |buf: &Buffer| buf[(x, 0)].bg;
+
+        assert_ne!(
+            chevron_bg(&paint_with(crate::InteractionState::new())),
+            hover_bg
+        );
+        let over_chevron = Some((
+            crowded.id.clone(),
+            Some(ToolbarSubPart::OverflowChevron.sub_target()),
+        ));
+        assert_eq!(
+            chevron_bg(&paint_with(crate::InteractionState::from_targets(
+                over_chevron,
+                None
+            ))),
+            hover_bg,
         );
     }
 

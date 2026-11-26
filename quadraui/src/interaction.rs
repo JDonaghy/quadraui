@@ -100,8 +100,9 @@
 
 use std::cell::Cell;
 
-use crate::event::{MouseButton, UiEvent};
+use crate::event::{MouseButton, Point, Rect, UiEvent};
 use crate::focus::FocusAddress;
+use crate::interactive::SubTarget;
 use crate::types::WidgetId;
 
 /// Tracks which widget is hovered and which is pressed, keyed by
@@ -286,15 +287,7 @@ impl InteractionState {
                 position,
                 button: MouseButton::Left,
                 ..
-            } => {
-                let hit = hit_test(position.x, position.y);
-                let target = match (*widget, hit) {
-                    (Some(w), Some(h)) if h.0 == w => Some(h),
-                    (Some(w), _) => Some((w, None)),
-                    (None, hit) => hit,
-                };
-                self.set_pressed_target(target)
-            }
+            } => self.set_pressed_target(press_target(*widget, hit_test(position.x, position.y))),
             UiEvent::MouseUp {
                 button: MouseButton::Left,
                 ..
@@ -307,32 +300,57 @@ impl InteractionState {
     /// widgets [`crate::DrawsPrimitives::draw_dyn`] painted in the frame
     /// currently on screen ([`crate::primitive::painted_hit`]).
     ///
-    /// Follows [`Self::handle_mouse_at`], plus two pointer rules: a left
-    /// `MouseDown` also moves hover to the address under the press (the
-    /// pointer is there, whether or not a `MouseMoved` preceded it), and
-    /// [`UiEvent::WindowFocused`]`(false)` clears both slots, since this
-    /// window cannot see where the pointer is. Applying the same event
-    /// twice changes nothing the second time.
+    /// Follows [`Self::handle_mouse_at`], plus these pointer rules:
+    ///
+    /// - a left `MouseDown` also moves hover to the address under the
+    ///   press (the pointer is there, whether or not a `MouseMoved`
+    ///   preceded it);
+    /// - a [`UiEvent::DoubleClick`] is the second press of a click pair,
+    ///   so it hovers and presses exactly as a left `MouseDown` does;
+    /// - a `MouseMoved` whose button mask holds no left button clears
+    ///   the press, so a release this window never saw (the button let
+    ///   go outside it) does not leave a press latched;
+    /// - [`UiEvent::WindowFocused`]`(false)` clears both slots, since this
+    ///   window cannot see where the pointer is.
+    ///
+    /// Applying the same event twice changes nothing the second time.
     pub fn track_painted(&mut self, event: &UiEvent) -> bool {
         match event {
             UiEvent::WindowFocused(false) => self.clear(),
             UiEvent::MouseDown {
+                widget,
                 position,
                 button: MouseButton::Left,
                 ..
-            } => {
+            }
+            | UiEvent::DoubleClick { widget, position } => {
                 let hit = crate::primitive::painted_hit(position.x, position.y);
                 let hovered = self.set_hovered_target(hit);
-                let pressed = self.handle_mouse_at(event, |_, _| hit);
+                let pressed = self.set_pressed_target(press_target(*widget, hit));
                 hovered || pressed
             }
-            UiEvent::MouseMoved { .. }
-            | UiEvent::MouseUp {
+            UiEvent::MouseMoved { buttons, .. } => {
+                let released = !buttons.left && self.set_pressed_target(None);
+                let hovered = self.handle_mouse_at(event, crate::primitive::painted_hit);
+                released || hovered
+            }
+            UiEvent::MouseUp {
                 button: MouseButton::Left,
                 ..
             } => self.handle_mouse_at(event, crate::primitive::painted_hit),
             _ => false,
         }
+    }
+}
+
+/// The address a left press lands on: the press event's own resolved
+/// `widget`, on the sub-part `hit` found when it agrees on the widget and
+/// on no sub-part otherwise; `hit` as-is when the event names no widget.
+fn press_target(widget: Option<WidgetId>, hit: Option<FocusAddress>) -> Option<FocusAddress> {
+    match (widget, hit) {
+        (Some(w), Some(h)) if h.0 == w => Some(h),
+        (Some(w), _) => Some((w, None)),
+        (None, hit) => hit,
     }
 }
 
@@ -346,18 +364,70 @@ thread_local! {
     /// ratcheted downwards), and every backend handles input and paints
     /// on the one thread that owns its event loop.
     static AMBIENT: Cell<InteractionState> = const { Cell::new(InteractionState::new()) };
+
+    /// Where the last pointer event on this thread put the pointer, or
+    /// `None` once the window has lost sight of it — what
+    /// [`ambient_for_painted`] re-resolves hover against.
+    static POINTER: Cell<Option<Point>> = const { Cell::new(None) };
 }
 
 /// Feed `event` into this thread's ambient pointer state
 /// ([`InteractionState::track_painted`]). Returns `true` if hover or
 /// press changed, so the caller should redraw.
 pub fn track_pointer(event: &UiEvent) -> bool {
+    match event {
+        UiEvent::MouseMoved { position, .. }
+        | UiEvent::MouseDown { position, .. }
+        | UiEvent::MouseUp { position, .. }
+        | UiEvent::DoubleClick { position, .. }
+        | UiEvent::Scroll { position, .. } => POINTER.with(|p| p.set(Some(*position))),
+        UiEvent::WindowFocused(false) => POINTER.with(|p| p.set(None)),
+        _ => {}
+    }
     AMBIENT.with(|ambient| {
         let mut state = ambient.get();
         let changed = state.track_painted(event);
         ambient.set(state);
         changed
     })
+}
+
+/// The ambient pointer state as widget `id` paints it at `rect`, whose
+/// absolute sub-part rects are `sub_regions`.
+///
+/// Hover is resolved against the frame on screen when a pointer event
+/// arrives, so content that moves under a still pointer (a scroll, a key,
+/// a timer) leaves it naming a part the pointer has left.
+/// While `id` holds the ambient hover, this resolves that hover again
+/// against the geometry `id` is painted at now: the sub-part under the
+/// last pointer position, or no hover when the pointer is outside `rect`.
+/// The result is stored as the ambient state, so the next pointer event
+/// starts from what is painted. Hover on any other widget is returned
+/// unchanged.
+pub(crate) fn ambient_for_painted(
+    id: &WidgetId,
+    rect: Rect,
+    sub_regions: &[(Rect, SubTarget)],
+) -> InteractionState {
+    let mut state = ambient_interaction();
+    if state.hovered() != Some(id) {
+        return state;
+    }
+    let Some(pointer) = POINTER.with(Cell::get) else {
+        return state;
+    };
+    let (x, y) = (pointer.x, pointer.y);
+    let target = crate::primitive::contains(rect, x, y).then(|| {
+        let sub = sub_regions
+            .iter()
+            .find(|(r, _)| crate::primitive::contains(*r, x, y))
+            .map(|(_, sub)| *sub);
+        (*id, sub)
+    });
+    if state.set_hovered_target(target) {
+        AMBIENT.with(|ambient| ambient.set(state));
+    }
+    state
 }
 
 /// A snapshot of this thread's ambient pointer state — what
@@ -372,6 +442,7 @@ pub fn ambient_interaction() -> InteractionState {
 /// widget tree the state refers to.
 pub fn reset_ambient_interaction() {
     AMBIENT.with(|ambient| ambient.set(InteractionState::new()));
+    POINTER.with(|p| p.set(None));
 }
 
 #[cfg(test)]
@@ -383,6 +454,17 @@ mod tests {
         UiEvent::MouseMoved {
             position: Point::new(x, y),
             buttons: Default::default(),
+        }
+    }
+
+    /// A move with the left button held — a drag.
+    fn mouse_dragged(x: f32, y: f32) -> UiEvent {
+        UiEvent::MouseMoved {
+            position: Point::new(x, y),
+            buttons: crate::event::ButtonMask {
+                left: true,
+                ..Default::default()
+            },
         }
     }
 
@@ -623,11 +705,102 @@ mod tests {
             !state.track_painted(&mouse_down(None, 3.0, 0.0)),
             "the same event twice changes nothing"
         );
-        assert!(state.track_painted(&mouse_moved(15.0, 0.0)));
+        assert!(state.track_painted(&mouse_dragged(15.0, 0.0)));
         assert_eq!(state.pressed_target(), Some((id, Some(SubTarget(0)))));
         assert_eq!(state.hovered_target(), Some((id, Some(SubTarget(1)))));
         assert!(state.track_painted(&mouse_up(15.0, 0.0)));
         assert_eq!(state.pressed_target(), None);
+        clear_painted_widgets();
+    }
+
+    /// A release delivered somewhere else (the button let go outside the
+    /// window) shows up as a move with no button held: that move ends the
+    /// press, so returning to the widget hovers it and does not press it.
+    #[test]
+    fn track_painted_a_move_with_no_button_held_ends_a_press() {
+        let id = WidgetId::new("two-part");
+        paint_two_part_widget(id);
+        let mut state = InteractionState::new();
+        state.track_painted(&mouse_down(None, 3.0, 0.0));
+        assert!(state.track_painted(&mouse_moved(3.0, 0.0)));
+        assert_eq!(state.pressed_target(), None);
+        assert_eq!(state.hovered_target(), Some((id, Some(SubTarget(0)))));
+        assert!(!state.track_painted(&mouse_moved(3.0, 0.0)));
+        clear_painted_widgets();
+    }
+
+    /// The second press of a double-click hovers and presses the address
+    /// under it, the same as a plain left press.
+    #[test]
+    fn track_painted_a_double_click_presses_what_is_under_it() {
+        let id = WidgetId::new("two-part");
+        paint_two_part_widget(id);
+        let mut state = InteractionState::new();
+        assert!(state.track_painted(&UiEvent::DoubleClick {
+            widget: None,
+            position: Point::new(12.0, 0.0),
+        }));
+        assert_eq!(state.pressed_target(), Some((id, Some(SubTarget(1)))));
+        assert_eq!(state.hovered_target(), Some((id, Some(SubTarget(1)))));
+        assert!(state.track_painted(&mouse_up(12.0, 0.0)));
+        assert_eq!(state.pressed_target(), None);
+        clear_painted_widgets();
+    }
+
+    /// A widget holding the ambient hover that is painted somewhere else
+    /// keeps the hover only on the sub-part now under the last pointer
+    /// position, and loses it once the pointer is outside it.
+    #[test]
+    fn ambient_hover_follows_a_widget_that_moves_under_a_still_pointer() {
+        let id = WidgetId::new("two-part");
+        paint_two_part_widget(id);
+        reset_ambient_interaction();
+        track_pointer(&mouse_moved(3.0, 0.0));
+        assert_eq!(
+            ambient_interaction().hovered_target(),
+            Some((id, Some(SubTarget(0))))
+        );
+
+        let shifted = |x: f32| {
+            vec![
+                (crate::event::Rect::new(x, 0.0, 10.0, 1.0), SubTarget(0)),
+                (
+                    crate::event::Rect::new(x + 10.0, 0.0, 10.0, 1.0),
+                    SubTarget(1),
+                ),
+            ]
+        };
+        let painted = ambient_for_painted(
+            &id,
+            crate::event::Rect::new(-10.0, 0.0, 20.0, 1.0),
+            &shifted(-10.0),
+        );
+        assert_eq!(painted.hovered_target(), Some((id, Some(SubTarget(1)))));
+        assert_eq!(ambient_interaction(), painted);
+
+        let gone = ambient_for_painted(
+            &id,
+            crate::event::Rect::new(30.0, 0.0, 20.0, 1.0),
+            &shifted(30.0),
+        );
+        assert_eq!(gone.hovered_target(), None);
+        assert_eq!(ambient_interaction().hovered_target(), None);
+        reset_ambient_interaction();
+        clear_painted_widgets();
+    }
+
+    /// Re-resolving one widget leaves another widget's hover alone.
+    #[test]
+    fn ambient_for_painted_ignores_a_widget_that_is_not_hovered() {
+        let id = WidgetId::new("two-part");
+        paint_two_part_widget(id);
+        reset_ambient_interaction();
+        track_pointer(&mouse_moved(3.0, 0.0));
+        let other = WidgetId::new("elsewhere");
+        let painted =
+            ambient_for_painted(&other, crate::event::Rect::new(0.0, 0.0, 20.0, 1.0), &[]);
+        assert_eq!(painted.hovered_target(), Some((id, Some(SubTarget(0)))));
+        reset_ambient_interaction();
         clear_painted_widgets();
     }
 
