@@ -41,7 +41,7 @@ use windows_numerics::Vector2;
 
 use crate::event::Rect;
 use crate::win::msg::pt_to_dip;
-use crate::Color;
+use crate::{Color, TextRunStyle};
 
 /// Live DirectWrite handles for the configured editor font: the shared
 /// factory plus an `IDWriteTextFormat` for the current family + size.
@@ -267,11 +267,7 @@ impl DWrite {
     /// `text` laid out on one line in the regular format, each run's
     /// weight, slant and font size (its scale times the format's) applied
     /// over its range.
-    fn line_layout(
-        &self,
-        text: &str,
-        runs: &[crate::TextRunStyle],
-    ) -> WinResult<IDWriteTextLayout> {
+    fn line_layout(&self, text: &str, runs: &[TextRunStyle]) -> WinResult<IDWriteTextLayout> {
         let wide: Vec<u16> = text.encode_utf16().collect();
         // SAFETY: `factory`/`text_format` are this handle's live
         // interfaces; `wide` outlives this synchronous call.
@@ -319,12 +315,14 @@ impl DWrite {
                 continue;
             };
             if crate::testing::text_run_sink_active() {
-                let byte_range = run.byte_range_in(text).unwrap_or_default();
-                let x0 = self.text_x_at_index(text, runs, byte_range.start);
-                let x1 = self.text_x_at_index(text, runs, byte_range.end);
+                let bytes = run.byte_range_in(text).unwrap_or_default();
+                let x0 = self.text_x_at_index(text, runs, bytes.start);
+                let w = self.text_x_at_index(text, runs, bytes.end) - x0;
                 let h = self.natural_line_height() * run.scale;
-                let rect = Rect::new(origin.x + x0, origin.y, x1 - x0, h);
-                crate::testing::record_text_run(&text[byte_range], rect);
+                crate::testing::record_text_run(
+                    &text[bytes],
+                    Rect::new(origin.x + x0, origin.y, w, h),
+                );
             }
             let effect: IUnknown = get_or_create_brush(target, run.fg)?.cast()?;
             // SAFETY: `layout` is the live layout built above; `effect`
@@ -354,28 +352,12 @@ impl DWrite {
         byte_idx: usize,
     ) -> f32 {
         let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
-        if end == 0 {
-            return 0.0;
-        }
         let mut metrics = Default::default();
         self.line_layout(&text[..end], runs)
             // SAFETY: `layout` is the live layout just built; `metrics`
             // is a plain stack struct the call writes through.
             .and_then(|layout| unsafe { layout.GetMetrics(&mut metrics) })
             .map_or(0.0, |()| metrics.widthIncludingTrailingWhitespace)
-    }
-
-    /// The cluster boundary of `text`, laid out with `runs` applied,
-    /// nearest to `x` DIPs from the line start.
-    pub(crate) fn text_index_at_x(
-        &self,
-        text: &str,
-        runs: &[crate::TextRunStyle],
-        x: f32,
-    ) -> usize {
-        crate::paint_surface::nearest_text_boundary(text, x, &mut |i| {
-            self.text_x_at_index(text, runs, i)
-        })
     }
 
     fn format_for(&self, bold: bool) -> &IDWriteTextFormat {

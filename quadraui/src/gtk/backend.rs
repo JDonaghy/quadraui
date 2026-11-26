@@ -3720,18 +3720,6 @@ impl PaintSurface for EditorSurface<'_> {
         })
     }
 
-    fn surface_text_index_at_x(
-        &mut self,
-        text: &str,
-        runs: &[crate::TextRunStyle],
-        _role: crate::FontRole,
-        x: f32,
-    ) -> usize {
-        with_role_layout(self.backend, FontRole::Editor, |_, layout| {
-            super::surface::text_index_at_x(layout, text, runs, x)
-        })
-    }
-
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         self.backend
             .surface_draw_line(from, to, color, stroke_width)
@@ -4158,18 +4146,6 @@ impl PaintSurface for GtkBackend {
     ) -> f32 {
         with_role_layout(self, role, |_, layout| {
             super::surface::text_x_at_index(layout, text, runs, byte_idx)
-        })
-    }
-
-    fn surface_text_index_at_x(
-        &mut self,
-        text: &str,
-        runs: &[crate::TextRunStyle],
-        role: crate::FontRole,
-        x: f32,
-    ) -> usize {
-        with_role_layout(self, role, |_, layout| {
-            super::surface::text_index_at_x(layout, text, runs, x)
         })
     }
 

@@ -301,16 +301,6 @@ impl PaintSurface for CgSurface<'_> {
         super::text::text_x_at_index(self.font_or_panic(), text, runs, byte_idx)
     }
 
-    fn surface_text_index_at_x(
-        &mut self,
-        text: &str,
-        runs: &[crate::TextRunStyle],
-        _role: crate::FontRole,
-        x: f32,
-    ) -> usize {
-        super::text::text_index_at_x(self.font_or_panic(), text, runs, x)
-    }
-
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         // SAFETY: see `surface_fill_rect`.
         unsafe {

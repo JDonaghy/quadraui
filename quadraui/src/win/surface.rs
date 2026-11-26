@@ -169,16 +169,6 @@ impl PaintSurface for D2dSurface<'_> {
         self.dwrite_or_panic().text_x_at_index(text, runs, byte_idx)
     }
 
-    fn surface_text_index_at_x(
-        &mut self,
-        text: &str,
-        runs: &[crate::TextRunStyle],
-        _role: crate::FontRole,
-        x: f32,
-    ) -> usize {
-        self.dwrite_or_panic().text_index_at_x(text, runs, x)
-    }
-
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         let _ = draw_line(self.target, from.x, from.y, to.x, to.y, color, stroke_width);
     }

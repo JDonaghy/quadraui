@@ -152,27 +152,6 @@ pub(crate) fn text_x_at_index(
     (x as f64 / pango::SCALE as f64) as f32
 }
 
-/// The grapheme boundary of `text` on `layout`, with `runs`' attributes
-/// applied, nearest to `x` pixels from the line start: Pango's hit
-/// index, moved past the cluster when `x` falls in its trailing half.
-pub(crate) fn text_index_at_x(
-    layout: &pango::Layout,
-    text: &str,
-    runs: &[TextRunStyle],
-    x: f32,
-) -> usize {
-    layout.set_text(text);
-    layout.set_attributes(Some(&line_attrs(text, runs)));
-    let x_pango = (f64::from(x.max(0.0)) * pango::SCALE as f64).round() as i32;
-    let (_inside, index, trailing) = layout.xy_to_index(x_pango, 0);
-    layout.set_attributes(None);
-    let mut idx = crate::text_util::snap_to_char_boundary(text, index.max(0) as usize);
-    for _ in 0..trailing.max(0) {
-        idx = crate::text_util::next_char_boundary(text, idx);
-    }
-    idx.min(text.len())
-}
-
 /// A rendered sheet with the `(family, chars, cell size)` it was rendered for.
 type CachedSheet = (String, String, (u32, u32), AlphaSheet);
 
@@ -486,16 +465,6 @@ impl PaintSurface for CairoSurface<'_> {
         byte_idx: usize,
     ) -> f32 {
         text_x_at_index(self.layout_or_panic(), text, runs, byte_idx)
-    }
-
-    fn surface_text_index_at_x(
-        &mut self,
-        text: &str,
-        runs: &[TextRunStyle],
-        _role: crate::FontRole,
-        x: f32,
-    ) -> usize {
-        text_index_at_x(self.layout_or_panic(), text, runs, x)
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {

@@ -4766,10 +4766,7 @@ impl PaintSurface for WinBackend {
             return surface.surface_text_x_at_index(text, runs, role, byte_idx);
         }
         let _ = role;
-        let cw = Backend::char_width(self);
-        crate::paint_surface::styled_prefix_x(text, runs, byte_idx, &mut |seg, run| {
-            crate::text_util::display_width(seg) as f32 * cw * run.map_or(1.0, |r| r.scale)
-        })
+        crate::paint_surface::monospace_text_x(text, runs, byte_idx, Backend::char_width(self))
     }
 
     fn surface_draw_line(
@@ -5011,10 +5008,12 @@ impl PaintSurface for EditorSurface<'_> {
             return surface.surface_text_x_at_index(text, runs, role, byte_idx);
         }
         let _ = role;
-        let cw = Backend::char_width(&*self.backend);
-        crate::paint_surface::styled_prefix_x(text, runs, byte_idx, &mut |seg, run| {
-            crate::text_util::display_width(seg) as f32 * cw * run.map_or(1.0, |r| r.scale)
-        })
+        crate::paint_surface::monospace_text_x(
+            text,
+            runs,
+            byte_idx,
+            Backend::char_width(&*self.backend),
+        )
     }
 
     fn surface_draw_line(

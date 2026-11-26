@@ -224,6 +224,19 @@ pub(crate) fn styled_prefix_x(
     x
 }
 
+/// [`styled_prefix_x`] on a monospace grid of `char_width`-wide cells:
+/// each byte range's display width in cells, times its run's scale.
+pub(crate) fn monospace_text_x(
+    text: &str,
+    runs: &[TextRunStyle],
+    byte_idx: usize,
+    char_width: f32,
+) -> f32 {
+    styled_prefix_x(text, runs, byte_idx, &mut |seg, run| {
+        crate::text_util::display_width(seg) as f32 * char_width * run.map_or(1.0, |r| r.scale)
+    })
+}
+
 /// A single segment of the open or closed polyline [`PaintSurface::surface_draw_path`]
 /// strokes.
 ///
@@ -631,10 +644,7 @@ pub trait PaintSurface {
         byte_idx: usize,
     ) -> f32 {
         let _ = role;
-        let cw = self.surface_char_width();
-        styled_prefix_x(text, runs, byte_idx, &mut |seg, run| {
-            crate::text_util::display_width(seg) as f32 * cw * run.map_or(1.0, |r| r.scale)
-        })
+        monospace_text_x(text, runs, byte_idx, self.surface_char_width())
     }
 
     /// Byte index of the grapheme boundary nearest to `x` in `text`

@@ -604,19 +604,6 @@ pub(crate) fn text_x_at_index(
     })
 }
 
-/// The cluster boundary of `text` in `font`, with each run at its scale,
-/// nearest to `x` points from the line start.
-pub(crate) fn text_index_at_x(
-    font: &CTFont,
-    text: &str,
-    runs: &[crate::TextRunStyle],
-    x: f32,
-) -> usize {
-    crate::paint_surface::nearest_text_boundary(text, x, &mut |i| {
-        text_x_at_index(font, text, runs, i)
-    })
-}
-
 /// Like [`draw_text`], but additionally scales the glyph run horizontally
 /// by `scale_x` around its own origin `(x, y)`.
 ///

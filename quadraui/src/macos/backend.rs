@@ -3480,18 +3480,6 @@ impl PaintSurface for EditorSurface<'_> {
             .surface_text_x_at_index(text, runs, role, byte_idx)
     }
 
-    fn surface_text_index_at_x(
-        &mut self,
-        text: &str,
-        runs: &[crate::TextRunStyle],
-        role: crate::FontRole,
-        x: f32,
-    ) -> usize {
-        self.backend
-            .text_surface_for(crate::FontRole::Editor)
-            .surface_text_index_at_x(text, runs, role, x)
-    }
-
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         self.backend
             .surface_draw_line(from, to, color, stroke_width)
@@ -3791,17 +3779,6 @@ impl PaintSurface for MacBackend {
     ) -> f32 {
         self.text_surface_for(role)
             .surface_text_x_at_index(text, runs, role, byte_idx)
-    }
-
-    fn surface_text_index_at_x(
-        &mut self,
-        text: &str,
-        runs: &[crate::TextRunStyle],
-        role: crate::FontRole,
-        x: f32,
-    ) -> usize {
-        self.text_surface_for(role)
-            .surface_text_index_at_x(text, runs, role, x)
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
