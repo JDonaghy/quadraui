@@ -732,6 +732,58 @@ impl TabBarSubPart {
     }
 }
 
+/// The pointer-driven slice of a tab bar's paint state, decoded from a
+/// [`crate::PaintEnv`]'s hover and press for one bar.
+///
+/// A pointer on a tab's close glyph also hovers the tab it belongs to,
+/// so the tab keeps its hover tint while the glyph gets its own. A press
+/// tints a tab only when it landed on the tab body; pressing the close
+/// glyph leaves the tab at its hover tint.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct TabPointer {
+    hovered_tab: Option<usize>,
+    pressed_tab: Option<usize>,
+    hovered_close_tab: Option<usize>,
+}
+
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl TabPointer {
+    fn from_env(bar: &TabBar, env: &crate::PaintEnv) -> Self {
+        let hovered = env
+            .hovered_sub(&bar.id)
+            .and_then(TabBarSubPart::from_sub_target);
+        let pressed = env
+            .pressed_sub(&bar.id)
+            .and_then(TabBarSubPart::from_sub_target);
+        let in_range = |i: usize| (i < bar.tabs.len()).then_some(i);
+        Self {
+            hovered_tab: match hovered {
+                Some(TabBarSubPart::Tab(i) | TabBarSubPart::TabClose(i)) => in_range(i),
+                _ => None,
+            },
+            pressed_tab: match pressed {
+                Some(TabBarSubPart::Tab(i)) => in_range(i),
+                _ => None,
+            },
+            hovered_close_tab: match hovered {
+                Some(TabBarSubPart::TabClose(i)) => in_range(i),
+                _ => None,
+            },
+        }
+    }
+}
+
 /// Every addressable sub-part of a resolved [`TabBarLayout`], paired with
 /// the [`crate::interactive::SubTarget`] that names it, in the layout's
 /// own bar-relative space.
@@ -2581,6 +2633,14 @@ pub mod cell_paint {
             .unwrap_or(default)
     }
 
+    /// Which tab the pointer is over and which one is pressed, as tab
+    /// indices into [`TabBar::tabs`].
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub struct TabCellPointer {
+        pub hovered_tab: Option<usize>,
+        pub pressed_tab: Option<usize>,
+    }
+
     /// Paint `bar` into `area` on `buf` from the already-resolved `layout`,
     /// and return its hit geometry.
     ///
@@ -2633,6 +2693,10 @@ pub mod cell_paint {
     ///   — `glyph` or `fallback` — is resolved (see
     ///   [`crate::Backend::nerd_fonts_enabled`]), and is ignored when
     ///   `glyphs` does not set the mark being drawn.
+    /// - **Pointer:** the tab `pointer` names as hovered or pressed has
+    ///   its background tinted with [`Theme::list_hover_bg`] or the deeper
+    ///   [`Theme::list_pressed_bg`] (pressed wins), the same tints the
+    ///   pixel painter uses.
     ///
     /// Downstream: vimcode's `tab_hit_width` (`src/render.rs`) is
     /// deliberately pinned on a `.chars().count()` measure because it must
@@ -2652,6 +2716,7 @@ pub mod cell_paint {
         theme: &Theme,
         glyphs: Option<&TabBarGlyphs>,
         nerd_fonts_enabled: bool,
+        pointer: TabCellPointer,
     ) -> TabBarHits {
         if area.width == 0 || area.height == 0 {
             return TabBarHits::default();
@@ -2729,6 +2794,18 @@ pub mod cell_paint {
                 (true, false) => (active_fg, active_bg),
                 (false, true) => (preview_inactive_fg, bar_bg),
                 (false, false) => (inactive_fg, bar_bg),
+            };
+            let resting_bg = if tab.is_active {
+                theme.tab_active_bg
+            } else {
+                theme.tab_bar_bg
+            };
+            let bg = if pointer.pressed_tab == Some(vt.tab_idx) {
+                ratatui_color(theme.list_pressed_bg(resting_bg))
+            } else if pointer.hovered_tab == Some(vt.tab_idx) {
+                ratatui_color(theme.list_hover_bg(resting_bg))
+            } else {
+                bg
             };
 
             // Keyboard-focus treatment: swap fg/bg — reverse video — across
@@ -3325,14 +3402,14 @@ impl crate::primitive::Primitive for TabBar {
             // rect lines up with it too.
             let translated =
                 translate_tab_bar_layout(layout.layout.clone(), layout.area.x, layout.area.y);
-            // The descriptor's focus request is the one piece of paint
-            // state that is not pointer-derived, so it comes from
-            // `chrome` here exactly as it does in every
-            // the descriptor; hover and press have no paint-time
-            // sidecar on this path.
+            // Hover and press come from the paint env; the focus request
+            // is not pointer-derived, so it comes from `chrome`.
+            let pointer = TabPointer::from_env(self, env);
             let state = native_surface_paint::TabBarPaintState {
+                hovered_tab: pointer.hovered_tab,
+                pressed_tab: pointer.pressed_tab,
+                hovered_close_tab: pointer.hovered_close_tab,
                 focused_index: self.chrome.focused_index,
-                ..Default::default()
             };
             native_surface_paint::paint(
                 self,
@@ -3376,6 +3453,7 @@ impl crate::primitive::Primitive for TabBar {
             .ratatui_buffer()
             .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        let pointer = TabPointer::from_env(self, env);
         let _ = cell_paint::paint(
             buf,
             area,
@@ -3386,6 +3464,10 @@ impl crate::primitive::Primitive for TabBar {
             theme,
             Some(&self.glyphs),
             layout.nerd_fonts_enabled,
+            cell_paint::TabCellPointer {
+                hovered_tab: pointer.hovered_tab,
+                pressed_tab: pointer.pressed_tab,
+            },
         );
     }
 }
@@ -4050,6 +4132,66 @@ mod interactive_tests {
             painted.starts_with("main.rs"),
             "expected the first tab's label to paint at the bar's own origin, got {painted:?}"
         );
+    }
+
+    #[cfg(feature = "tui")]
+    fn cell_bg_of_tab(interaction: &crate::InteractionState, tab: usize) -> ratatui::style::Color {
+        let b = bar(&["alpha", "beta"], 0);
+        let (ctx, rect) = cell_regime();
+        let layout = Primitive::layout(&b, &ctx, rect);
+        let x = layout
+            .layout
+            .visible_tabs
+            .iter()
+            .find(|vt| vt.tab_idx == tab)
+            .map(|vt| vt.bounds.x as u16 + 1)
+            .expect("tab is visible");
+        let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 1));
+        let theme = crate::theme::Theme::default();
+        let style = crate::Style::default();
+        Primitive::paint_cells(
+            &b,
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            &crate::PaintEnv::new(&theme, &style).with_interaction(interaction),
+        );
+        buf[(x, 0)].bg
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn cell_paint_tints_the_hovered_and_pressed_tab_from_the_paint_env() {
+        let theme = crate::theme::Theme::default();
+        let target = (
+            WidgetId::new("tabs:test"),
+            Some(TabBarSubPart::Tab(1).sub_target()),
+        );
+        let resting = cell_bg_of_tab(&crate::InteractionState::new(), 1);
+        assert_eq!(resting, crate::tui::ratatui_color(theme.tab_bar_bg));
+
+        let hovered = cell_bg_of_tab(
+            &crate::InteractionState::from_targets(Some(target), None),
+            1,
+        );
+        assert_eq!(
+            hovered,
+            crate::tui::ratatui_color(theme.list_hover_bg(theme.tab_bar_bg))
+        );
+
+        let pressed = cell_bg_of_tab(
+            &crate::InteractionState::from_targets(Some(target), Some(target)),
+            1,
+        );
+        assert_eq!(
+            pressed,
+            crate::tui::ratatui_color(theme.list_pressed_bg(theme.tab_bar_bg))
+        );
+
+        let other_tab = cell_bg_of_tab(
+            &crate::InteractionState::from_targets(Some(target), None),
+            0,
+        );
+        assert_eq!(other_tab, crate::tui::ratatui_color(theme.tab_active_bg));
     }
 }
 
@@ -5255,6 +5397,90 @@ mod primitive_parity_tests {
             "the background fill must start at rect.x ({}); call was {bg_fill:?}",
             rect.x,
         );
+    }
+
+    fn paint_with_interaction(interaction: &crate::InteractionState) -> (Vec<String>, Theme) {
+        let bar = sample_bar();
+        let rect = Rect::new(0.0, 0.0, 220.0, 24.0);
+        let ctx = LayoutCtx::new(24.0, 8.0, false);
+        let theme = Theme::default();
+        let style = Style::default();
+        let layout = Primitive::layout(&bar, &ctx, rect);
+        let mut surface = LogSurface::default();
+        Primitive::paint(
+            &bar,
+            &layout,
+            &mut surface,
+            &crate::PaintEnv::new(&theme, &style).with_interaction(interaction),
+        );
+        (surface.calls, theme)
+    }
+
+    fn fills_with(calls: &[String], color: Color) -> bool {
+        let color = format!("{color:?}");
+        calls
+            .iter()
+            .any(|c| c.starts_with("fill_") && c.ends_with(&color))
+    }
+
+    #[test]
+    fn a_hovered_tab_in_the_paint_env_tints_toward_list_hover_bg() {
+        let id = sample_bar().id;
+        let hovered = crate::InteractionState::from_targets(
+            Some((id, Some(TabBarSubPart::Tab(1).sub_target()))),
+            None,
+        );
+        let (calls, theme) = paint_with_interaction(&hovered);
+        assert!(
+            fills_with(&calls, theme.list_hover_bg(theme.tab_bar_bg)),
+            "hovering tab 1 must tint it; calls were {calls:?}"
+        );
+
+        let (resting, _) = paint_with_interaction(&crate::InteractionState::new());
+        assert!(!fills_with(&resting, theme.list_hover_bg(theme.tab_bar_bg)));
+    }
+
+    #[test]
+    fn a_pressed_tab_in_the_paint_env_tints_toward_list_pressed_bg() {
+        let target = (sample_bar().id, Some(TabBarSubPart::Tab(1).sub_target()));
+        let pressed = crate::InteractionState::from_targets(Some(target), Some(target));
+        let (calls, theme) = paint_with_interaction(&pressed);
+        assert!(
+            fills_with(&calls, theme.list_pressed_bg(theme.tab_bar_bg)),
+            "pressing tab 1 must tint it pressed; calls were {calls:?}"
+        );
+    }
+
+    #[test]
+    fn a_hovered_close_glyph_paints_its_backdrop_and_keeps_the_tab_hovered() {
+        let id = sample_bar().id;
+        let hovered = crate::InteractionState::from_targets(
+            Some((id, Some(TabBarSubPart::TabClose(1).sub_target()))),
+            None,
+        );
+        let (calls, theme) = paint_with_interaction(&hovered);
+        let tab_bg = theme.list_hover_bg(theme.tab_bar_bg);
+        assert!(fills_with(&calls, tab_bg), "calls were {calls:?}");
+        assert!(
+            fills_with(
+                &calls,
+                crate::primitives::layout_metrics::tab_close_hover_bg(tab_bg, theme.foreground)
+            ),
+            "the close glyph must paint its hover backdrop; calls were {calls:?}"
+        );
+    }
+
+    #[test]
+    fn hover_on_another_widget_leaves_the_tabs_at_rest() {
+        let other = crate::InteractionState::from_targets(
+            Some((
+                WidgetId::new("tabs:other"),
+                Some(TabBarSubPart::Tab(1).sub_target()),
+            )),
+            None,
+        );
+        let (calls, theme) = paint_with_interaction(&other);
+        assert!(!fills_with(&calls, theme.list_hover_bg(theme.tab_bar_bg)));
     }
 }
 

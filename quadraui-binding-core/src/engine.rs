@@ -27,12 +27,12 @@ use quadraui::{
     wheel_row_delta, Backend, Button, CanvasEvent, CellGrid, CellGridEvent,
     CellGridPrimitiveLayout, Column, CompletionItemMeasure, Completions, CompletionsHit,
     CompletionsLayout, ContextMenu, ContextMenuItem, ContextMenuPlacement, DataTableEvent, Dialog,
-    EditOp, EventCx, EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent,
-    InteractionState, Key, KeyEvent, MenuBar, MessageDialogButton, Modifiers, MouseButton,
-    NamedKey, Point, PointerKind, PointerShape, Rect, RichTextPopup, RichTextPopupHit,
-    RichTextPopupLayout, RoutedEvent, ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent,
-    TextInput, Toast, ToastCorner, ToastHit, ToastOverlay, ToastStackLayout, Tooltip,
-    TooltipLayout, TooltipMeasure, TreeEvent, TreeTableNodeData, UiEvent, WidgetId,
+    EditOp, EventCx, EventHost, Float, FloatLayout, FloatMeasure, Form, FormEvent, Key, KeyEvent,
+    MenuBar, MessageDialogButton, Modifiers, MouseButton, NamedKey, Point, PointerKind,
+    PointerShape, Rect, RichTextPopup, RichTextPopupHit, RichTextPopupLayout, RoutedEvent,
+    ScrollAxis, ScrollViewEvent, TabBarEvent, TextDisplayEvent, TextInput, Toast, ToastCorner,
+    ToastHit, ToastOverlay, ToastStackLayout, Tooltip, TooltipLayout, TooltipMeasure, TreeEvent,
+    TreeTableNodeData, UiEvent, WidgetId,
 };
 
 use crate::drag::{
@@ -42,9 +42,9 @@ use crate::drag::{
 };
 use crate::extra_paint::{extra_as, TreeTableControllerDescriptor};
 use crate::hit::{
-    chrome_hover_hit, data_table_rows_and_viewport, event_position, hit_test_painted,
-    list_rows_and_viewport, set_event_widget, tree_rows_and_viewport, tree_total_rows_and_viewport,
-    windowed_leaf_extent, HitDetail, LoadedRows, PaintedHit,
+    data_table_rows_and_viewport, event_position, hit_test_painted, list_rows_and_viewport,
+    set_event_widget, tree_rows_and_viewport, tree_total_rows_and_viewport, windowed_leaf_extent,
+    HitDetail, LoadedRows, PaintedHit,
 };
 use crate::host::{
     apply_data_table_nav_key, apply_list_nav_key, apply_scroll_offset, apply_split_divider_drag,
@@ -120,9 +120,7 @@ impl LayoutContent {
     /// itself has no focusable leaf at all.
     fn render(&self, backend: &mut dyn Backend, area: Rect, extra_stops: &[(WidgetId, Rect)]) {
         let mut painted = Vec::new();
-        paint_layout(backend, area, &self.node, &mut painted, &|_| {
-            InteractionState::default()
-        });
+        paint_layout(backend, area, &self.node, &mut painted);
         let mut seen = Vec::new();
         for hit in &painted {
             let PaintedHit::Extra {
@@ -1200,21 +1198,8 @@ pub struct InteractionEngine {
     /// replace-by-id) lives in those two methods instead of being
     /// hand-rolled seven times.
     overlays: Vec<Overlay>,
-    /// Per-bar hovered child, keyed by the chrome-bar extra's own id
-    /// (`Toolbar`'s button, `StatusBar`'s segment, `ActivityBar`'s item) —
-    /// updated on every `MouseMoved` via [`chrome_hover_hit`] and read back
-    /// by [`Self::chrome_interaction`] so `render` paints real hover state
-    /// instead of `InteractionState::default()`. A bar absent from this
-    /// map has nothing hovered.
-    chrome_hover: RefCell<HashMap<WidgetId, WidgetId>>,
-    /// Per-bar pressed child, mirroring [`Self::chrome_hover`]. Set on a
-    /// `MouseDown` landing on a chrome-bar child and cleared unconditionally
-    /// on every `MouseUp`, same as [`Self::active_drag`]/[`Self::scrollbar_drag`]/
-    /// [`Self::column_drag`].
-    chrome_pressed: RefCell<HashMap<WidgetId, WidgetId>>,
-    /// The whole-widget-level hover target — any painted primitive, not
-    /// just a chrome-bar child (see [`Self::chrome_hover`] for that
-    /// narrower case) — the most recent `MouseMoved` landed on, paired
+    /// The whole-widget-level hover target — any painted primitive — the
+    /// most recent `MouseMoved` landed on, paired
     /// with its [`HitDetail`]. [`InteractionEngine::handle`] compares this
     /// against each new `MouseMoved`'s own `hit_test_painted` result and,
     /// when it changes (by id or by detail alone — e.g. moving from one
@@ -2426,18 +2411,6 @@ impl InteractionEngine {
         ))
     }
 
-    /// The hover/pressed [`InteractionState`] for the chrome-bar extra
-    /// painted under id `bar_id` this frame, read from [`Self::chrome_hover`]/
-    /// [`Self::chrome_pressed`] — call from `render`, once per chrome-bar
-    /// extra, right before repainting it, so it shows real hover/pressed
-    /// state instead of [`InteractionState::default()`].
-    pub fn chrome_interaction(&self, bar_id: WidgetId) -> InteractionState {
-        InteractionState::from_parts(
-            self.chrome_hover.borrow().get(&bar_id).copied(),
-            self.chrome_pressed.borrow().get(&bar_id).copied(),
-        )
-    }
-
     /// Rebuilds [`Self::menu_system`]'s menu list from this frame's `"menu_bar"`
     /// extra (if any) and paints its dropdown/submenu popups on top of the
     /// plain bar `hits` already recorded, then remembers the bar's absolute
@@ -3636,7 +3609,29 @@ impl InteractionEngine {
         outcome
     }
 
+    /// Routes one input event and returns how the host should react.
+    ///
+    /// Every event first feeds this thread's ambient pointer state
+    /// ([`quadraui::interaction::track_pointer`]), which the widgets read
+    /// at paint time for hover and press; a change there asks for a
+    /// redraw whatever the routing below returns. Feeding an event the
+    /// host's runner already tracked is a no-op, so a host may route
+    /// through both.
     pub fn handle(
+        &mut self,
+        event: UiEvent,
+        backend: &mut dyn Backend,
+        sink: &mut dyn EventSink,
+    ) -> quadraui::Reaction {
+        let pointer = if quadraui::interaction::track_pointer(&event) {
+            quadraui::Reaction::Redraw
+        } else {
+            quadraui::Reaction::Continue
+        };
+        pointer.merge(self.route(event, backend, sink))
+    }
+
+    fn route(
         &mut self,
         mut event: UiEvent,
         backend: &mut dyn Backend,
@@ -3699,7 +3694,6 @@ impl InteractionEngine {
                     });
                 }
             }
-            self.chrome_pressed.borrow_mut().clear();
             // Mirrors the resets above for a `"form"` extra's own
             // scrollbar-thumb drag: `FormController::handle_event`'s `MouseUp`
             // arm clears `scroll_drag` unconditionally (it doesn't check
@@ -4341,38 +4335,12 @@ impl InteractionEngine {
             }
         }
 
-        // Chrome-bar (`Toolbar`/`StatusBar`/`ActivityBar`) hover bookkeeping,
-        // read back by `chrome_interaction` so `render` paints real hover
-        // state. Handled directly via `chrome_hover_hit` rather than the
-        // `hit`/`hit_test_painted` computed below, since `event_position`
-        // never resolves a position for `MouseMoved` (enriching its own
-        // `widget` field isn't this module's job) — so `hit_test_painted`
-        // never runs for it either. A hover transition folds a `Redraw`
-        // into `menu_reaction` (merged into the final `Reaction` below) —
-        // otherwise a slot-based `insert_*` host with no render-callback
-        // promotion (unlike `quadraui-py`'s `reaction_for_callback`) would
-        // record the new hovered child and never actually repaint it.
-        if let UiEvent::MouseMoved { position, .. } = &event {
-            let chrome_hit = chrome_hover_hit(&self.hit_map.borrow(), *position);
-            let mut hover = self.chrome_hover.borrow_mut();
-            let before = hover.clone();
-            hover.retain(|bar, _| chrome_hit.map(|(hit_bar, _)| hit_bar) == Some(*bar));
-            if let Some((bar, action)) = chrome_hit {
-                hover.insert(bar, action);
-            }
-            if *hover != before {
-                menu_reaction = menu_reaction.merge(Reaction::Redraw);
-            }
-        }
-
         // Whole-widget hover bookkeeping — see `Self::hover`'s own doc.
         // Synthesizes `UiEvent::MouseEntered`/`UiEvent::MouseLeft` through
         // `sink` so a binding's own handler gets a real hit-tested hover
         // signal instead of re-deriving hit-testing itself from the raw
-        // `MouseMoved` position, mirroring the chrome-bar hover bookkeeping
-        // just above but at `hit_test_painted`'s full granularity (toolbar
-        // button, tree row, list item, details-pane body, ...) rather than
-        // `chrome_hover_hit`'s narrower chrome-bar-child scope. Each
+        // `MouseMoved` position, at `hit_test_painted`'s full granularity
+        // (toolbar button, tree row, list item, details-pane body, ...). Each
         // synthesized event carries its own `HitDetail` the same way a
         // click would, so a row-to-row move within the same `Tree` (same
         // `WidgetId`, different detail) still reaches the binding as a
@@ -4718,16 +4686,6 @@ impl InteractionEngine {
             .and_then(|position| hit_test_painted(&self.hit_map.borrow(), position));
         if let Some((id, _)) = hit {
             set_event_widget(&mut event, id);
-        }
-
-        // A `MouseDown` landing on a chrome-bar child presses it, mirroring
-        // `Self::chrome_hover`'s bookkeeping above — cleared unconditionally
-        // on the next `MouseUp` (top of this function), regardless of
-        // where that `MouseUp` lands.
-        if let (UiEvent::MouseDown { .. }, Some((action, HitDetail::ExtraChrome { bar }))) =
-            (&event, &hit)
-        {
-            self.chrome_pressed.borrow_mut().insert(*bar, *action);
         }
 
         // A `MouseDown` landing on a leaf `Self::drag_roles` marks
@@ -5487,7 +5445,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.render_overlays(backend);
             self.engine.set_hits(hits);
@@ -5540,7 +5497,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.sync_forms(backend, &hits);
             self.engine.set_hits(hits);
@@ -5597,7 +5553,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.sync_forms(backend, &hits);
             self.engine.set_hits(hits);
@@ -5663,9 +5618,7 @@ mod tests {
                 Spacing::default(),
             ));
             let mut hits = Vec::new();
-            paint_layout(backend, area, &content, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &content, &mut hits);
             self.engine.sync_forms(backend, &hits);
             self.engine.set_hits(hits);
         }
@@ -5707,9 +5660,7 @@ mod tests {
                 scroll_px: None,
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &content, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &content, &mut hits);
             render_overlays(&self.engine, backend, hits);
         }
 
@@ -6004,9 +5955,7 @@ mod tests {
                 scroll_px: None,
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &content, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &content, &mut hits);
             render_overlays(&self.engine, backend, hits);
         }
 
@@ -7098,7 +7047,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.render_overlays(backend);
             self.engine.set_hits(hits);
@@ -7174,9 +7122,7 @@ mod tests {
                 scroll_px: None,
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -7362,7 +7308,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.render_overlays(backend);
             self.engine.set_hits(hits);
@@ -7543,7 +7488,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.render_overlays(backend);
             self.engine.set_hits(hits);
@@ -9397,7 +9341,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.set_hits(hits);
         }
@@ -9855,7 +9798,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.set_hits(hits);
         }
@@ -10050,7 +9992,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.set_hits(hits);
         }
@@ -10285,7 +10226,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.set_hits(hits);
         }
@@ -10463,7 +10403,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.set_hits(hits);
         }
@@ -10729,7 +10668,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.set_hits(hits);
         }
@@ -10910,9 +10848,7 @@ mod tests {
                     }),
                 ],
             });
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -11062,9 +10998,7 @@ mod tests {
                 })),
                 spacing: Spacing::default(),
             });
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -11288,9 +11222,7 @@ mod tests {
             let viewport = backend.viewport();
             let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
             let node = LayoutNode::Tabs(tabs);
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -11475,9 +11407,7 @@ mod tests {
                     scroll_px: None,
                 })),
             });
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -11589,7 +11519,6 @@ mod tests {
                     data_table_scroll_px: None,
                 },
                 &mut hits,
-                &|id| self.engine.chrome_interaction(id),
             );
             self.engine.set_hits(hits);
         }
@@ -11970,9 +11899,7 @@ mod tests {
             });
             resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -12113,9 +12040,7 @@ mod tests {
             });
             resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -12617,9 +12542,7 @@ mod tests {
                 scroll_px: None,
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -12819,9 +12742,7 @@ mod tests {
                 scroll_px: None,
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 

@@ -323,7 +323,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
         let mut outcome = EventOutcome::Continue;
         for ev in events {
             let step = if matches!(ev, UiEvent::MouseMoved { .. }) {
-                app.handle(ev, backend)
+                runtime::pointer_reaction(&ev).merge(app.handle(ev, backend))
             } else {
                 dispatch_event(ev, backend, app, caret_visible, caret_pause)
             };
@@ -358,7 +358,7 @@ pub(crate) fn dispatch_event<A: AppLogic>(
             .next()
             .expect("dispatch_mouse_up always returns exactly one MouseUp")
         };
-        return app.handle(ev, backend);
+        return runtime::pointer_reaction(&ev).merge(app.handle(ev, backend));
     }
 
     // Everything else — double-click folding, ActivityBar redirect,
