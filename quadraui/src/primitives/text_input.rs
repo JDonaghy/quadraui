@@ -1271,6 +1271,13 @@ impl crate::primitive::Primitive for TextInput {
         crate::frame::OwnedContent::TextInput(self.clone())
     }
 
+    /// The focus-visible ring strokes outside the input's own box, at the
+    /// outset gap `focus_ring_geometry` uses, so the paint clip has to
+    /// reach the far edge of that stroke.
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        crate::primitives::button::FOCUS_RING_GAP + style.focus_ring_width / 2.0
+    }
+
     /// One row per buffer line plus the two border rows, and — as a
     /// width — the longest line plus the border/padding inset
     /// [`TextInput::layout`] reserves on both sides.

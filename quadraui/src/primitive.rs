@@ -718,6 +718,17 @@ pub trait Primitive: A11yPrimitive {
     /// Resolve this primitive's layout for `rect`.
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout;
 
+    /// How far past its `rect` this primitive paints on a pixel surface,
+    /// on every side: an overlay's drop shadow, or a border stroke
+    /// centred on its edge. [`crate::DrawsPrimitives::draw_primitive`]
+    /// and [`crate::DrawsPrimitives::draw_dyn`] widen their paint clip by
+    /// this much, so that chrome is not cut off at the widget's own edge.
+    /// Default: `0.0`, a primitive that paints only inside its `rect`.
+    fn paint_bleed(&self, style: &Style) -> f32 {
+        let _ = style;
+        0.0
+    }
+
     /// Paint `layout` (as produced by [`Self::layout`]) onto `surface`.
     fn paint(
         &self,
@@ -824,6 +835,10 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// [`PrimitiveLayout`] — see [`Primitive::layout`].
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Box<dyn PrimitiveLayout>;
 
+    /// How far past its `rect` this widget paints — see
+    /// [`Primitive::paint_bleed`].
+    fn paint_bleed(&self, style: &Style) -> f32;
+
     /// Paint `layout` (as produced by [`Self::layout`]) onto `target`.
     /// Replaces [`Primitive::paint`]/[`Primitive::paint_cells`]'s split
     /// with a single method that matches on [`PaintTarget`] itself, since
@@ -914,6 +929,10 @@ where
 
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Box<dyn PrimitiveLayout> {
         Box::new(Primitive::layout(self, ctx, rect))
+    }
+
+    fn paint_bleed(&self, style: &Style) -> f32 {
+        Primitive::paint_bleed(self, style)
     }
 
     fn paint(

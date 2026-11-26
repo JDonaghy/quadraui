@@ -1339,6 +1339,10 @@ pub(crate) mod cell_paint {
 /// backends that have no dedicated native rasteriser for `Button` —
 /// the same minimal-chrome fallback [`crate::primitives::progress`]
 /// already uses for `ProgressBar`.
+/// Outset gap between a primitive's own edge and its focus-visible
+/// ring, in surface-native units (GTK/macOS points, Win-GUI DIPs).
+pub(crate) const FOCUS_RING_GAP: f32 = 2.0;
+
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -1353,9 +1357,7 @@ pub(crate) mod native_surface_paint {
     use crate::style::Style;
     use crate::theme::Theme;
 
-    /// Outset gap between a primitive's own edge and its focus-visible
-    /// ring, in surface-native units (GTK/macOS points, Win-GUI DIPs).
-    const FOCUS_RING_GAP: f32 = 2.0;
+    use super::FOCUS_RING_GAP;
 
     /// Resolved pixel geometry for a primitive's focus-visible ring:
     /// the outset rect to stroke, the corner radius to stroke it with,
