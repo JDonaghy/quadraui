@@ -5417,9 +5417,9 @@ mod tests {
     /// real layout and registers its click zone.
     #[test]
     fn minimap_paints_and_registers_its_zone() {
-        use crate::backend::DrawsPrimitives;
         use super::super::headless::BitmapSurface;
         use super::super::text::make_font;
+        use crate::backend::DrawsPrimitives;
 
         const W: u32 = 100;
         const H: u32 = 200;
@@ -5461,9 +5461,9 @@ mod tests {
     /// agrees with the layout the paint just returned.
     #[test]
     fn minimap_layout_agrees_with_its_paint() {
-        use crate::backend::DrawsPrimitives;
         use super::super::headless::BitmapSurface;
         use super::super::text::make_font;
+        use crate::backend::DrawsPrimitives;
 
         let surface = BitmapSurface::new(100, 200);
         let mut b = MacBackend::new();
@@ -5590,8 +5590,8 @@ mod tests {
     /// registers its zone.
     #[test]
     fn image_paints_and_registers_its_zone() {
-        use crate::backend::DrawsPrimitives;
         use super::super::headless::BitmapSurface;
+        use crate::backend::DrawsPrimitives;
 
         const W: u32 = 64;
         const H: u32 = 64;

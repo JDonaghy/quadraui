@@ -3704,7 +3704,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `scripted_widget` | `ScriptedWidgetDescriptor` | no |  |
 | `progress` | `ProgressBarDescriptor` | no |  |
 | `spinner` | `SpinnerDescriptor` | no |  |
-| `image` | `ImageDescriptor` | no |  |
 | `form` | `FormDescriptor` | no |  |
 | `text_input` | `TextInputDescriptor` | no |  |
 | `text_field` | `TextFieldDescriptor` | no |  |
@@ -3715,7 +3714,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `message_list` | `MessageListDescriptor` | no |  |
 | `board` | `BoardModelDescriptor` | no |  |
 | `pipeline_view` | `PipelineViewDescriptor` | no |  |
-| `minimap` | `MinimapDescriptor` | no |  |
 | `multi_section_view` | `MultiSectionViewDescriptor` | no |  |
 | `diff_view` | `DiffViewDescriptor` | no |  |
 | `tree_table` | `TreeTableDescriptor` | no |  |
@@ -3724,7 +3722,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `menu_bar` | `MenuBarDescriptor` | no |  |
 | `command_line` | `CommandLineDescriptor` | no |  |
 | `scrollbar` | `ScrollbarDescriptor` | no |  |
-| `editor` | `EditorDescriptor` | no |  |
 | `canvas` | `CanvasDescriptor` | no |  |
 | `scroll_view` | `ScrollViewDescriptor` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor` | no |  |
@@ -3745,6 +3742,9 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `activity_bar` | `ActivityBarDescriptor` | no |  |
 | `palette` | `PaletteDescriptor` | no |  |
 | `context_menu` | `ContextMenuDescriptor` | no |  |
+| `editor` | `EditorDescriptor` | no |  |
+| `minimap` | `MinimapDescriptor` | no |  |
+| `image` | `ImageDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3773,7 +3773,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `tab_bar` | `TabBarDescriptor \| null` | no |  |
 | `progress` | `ProgressBarDescriptor \| null` | no |  |
 | `spinner` | `SpinnerDescriptor \| null` | no |  |
-| `image` | `ImageDescriptor \| null` | no |  |
 | `form` | `FormDescriptor \| null` | no |  |
 | `text_input` | `TextInputDescriptor \| null` | no |  |
 | `text_field` | `TextFieldDescriptor \| null` | no |  |
@@ -3784,7 +3783,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `message_list` | `MessageListDescriptor \| null` | no |  |
 | `board` | `BoardModelDescriptor \| null` | no |  |
 | `pipeline_view` | `PipelineViewDescriptor \| null` | no |  |
-| `minimap` | `MinimapDescriptor \| null` | no |  |
 | `multi_section_view` | `MultiSectionViewDescriptor \| null` | no |  |
 | `diff_view` | `DiffViewDescriptor \| null` | no |  |
 | `tree_table` | `TreeTableDescriptor \| null` | no |  |
@@ -3793,7 +3791,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
 | `command_line` | `CommandLineDescriptor \| null` | no |  |
 | `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
-| `editor` | `EditorDescriptor \| null` | no |  |
 | `canvas` | `CanvasDescriptor \| null` | no |  |
 | `scroll_view` | `ScrollViewDescriptor \| null` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
@@ -3814,6 +3811,9 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `activity_bar` | `ActivityBarDescriptor \| null` | no |  |
 | `palette` | `PaletteDescriptor \| null` | no |  |
 | `context_menu` | `ContextMenuDescriptor \| null` | no |  |
+| `editor` | `EditorDescriptor \| null` | no |  |
+| `minimap` | `MinimapDescriptor \| null` | no |  |
+| `image` | `ImageDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`

@@ -8486,8 +8486,8 @@ mod tests {
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
         backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                crate::DrawsPrimitives::draw_primitive(b, rect, &editor);
-            });
+            crate::DrawsPrimitives::draw_primitive(b, rect, &editor);
+        });
     }
 
     /// Paint an overflowing 200x80 editor with

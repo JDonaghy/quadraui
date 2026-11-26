@@ -2930,7 +2930,6 @@ pub fn schema() -> Vec<DefJson> {
         let ty = match kind {
             "progress" => progress_bar_descriptor.clone(),
             "spinner" => spinner_descriptor.clone(),
-            "image" => image_descriptor.clone(),
             "form" => form_descriptor.clone(),
             "text_input" => text_input_descriptor.clone(),
             "text_field" => text_field_descriptor.clone(),
@@ -2941,14 +2940,12 @@ pub fn schema() -> Vec<DefJson> {
             "message_list" => message_list_descriptor.clone(),
             "board" => board_model_descriptor.clone(),
             "pipeline_view" => pipeline_view_descriptor.clone(),
-            "minimap" => minimap_descriptor.clone(),
             "multi_section_view" => multi_section_view_descriptor.clone(),
             "diff_view" => diff_view_descriptor.clone(),
             "toolbar" => toolbar_descriptor.clone(),
             "menu_bar" => menu_bar_descriptor.clone(),
             "command_line" => command_line_descriptor.clone(),
             "scrollbar" => scrollbar_descriptor.clone(),
-            "editor" => editor_descriptor.clone(),
             "canvas" => canvas_descriptor.clone(),
             "scroll_view" => scroll_view_descriptor.clone(),
             "find_replace" => find_replace_panel_descriptor.clone(),
@@ -2986,6 +2983,9 @@ pub fn schema() -> Vec<DefJson> {
             "activity_bar" => activity_bar_descriptor.clone(),
             "palette" => palette_descriptor.clone(),
             "context_menu" => context_menu_descriptor.clone(),
+            "editor" => editor_descriptor.clone(),
+            "minimap" => minimap_descriptor.clone(),
+            "image" => image_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));

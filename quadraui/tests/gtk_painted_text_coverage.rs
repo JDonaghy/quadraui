@@ -296,8 +296,8 @@ fn editor_font_demo_paints_locatable_gutter_and_code_lines() {
     assert_locatable(
         &driver,
         &[
-            ("draw_editor", "The quick brown fox jumps over the lazy dog"),
-            ("draw_editor", "set_editor_font() painted this"),
+            ("editor", "The quick brown fox jumps over the lazy dog"),
+            ("editor", "set_editor_font() painted this"),
         ],
     );
 }

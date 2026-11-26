@@ -1930,7 +1930,6 @@ export interface LayoutLeafNode {
   scripted_widget?: ScriptedWidgetDescriptor;
   progress?: ProgressBarDescriptor;
   spinner?: SpinnerDescriptor;
-  image?: ImageDescriptor;
   form?: FormDescriptor;
   text_input?: TextInputDescriptor;
   text_field?: TextFieldDescriptor;
@@ -1941,7 +1940,6 @@ export interface LayoutLeafNode {
   message_list?: MessageListDescriptor;
   board?: BoardModelDescriptor;
   pipeline_view?: PipelineViewDescriptor;
-  minimap?: MinimapDescriptor;
   multi_section_view?: MultiSectionViewDescriptor;
   diff_view?: DiffViewDescriptor;
   tree_table?: TreeTableDescriptor;
@@ -1950,7 +1948,6 @@ export interface LayoutLeafNode {
   menu_bar?: MenuBarDescriptor;
   command_line?: CommandLineDescriptor;
   scrollbar?: ScrollbarDescriptor;
-  editor?: EditorDescriptor;
   canvas?: CanvasDescriptor;
   scroll_view?: ScrollViewDescriptor;
   find_replace?: FindReplacePanelDescriptor;
@@ -1971,6 +1968,9 @@ export interface LayoutLeafNode {
   activity_bar?: ActivityBarDescriptor;
   palette?: PaletteDescriptor;
   context_menu?: ContextMenuDescriptor;
+  editor?: EditorDescriptor;
+  minimap?: MinimapDescriptor;
+  image?: ImageDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -1991,7 +1991,6 @@ export interface RenderFrameDict {
   tab_bar?: TabBarDescriptor | null;
   progress?: ProgressBarDescriptor | null;
   spinner?: SpinnerDescriptor | null;
-  image?: ImageDescriptor | null;
   form?: FormDescriptor | null;
   text_input?: TextInputDescriptor | null;
   text_field?: TextFieldDescriptor | null;
@@ -2002,7 +2001,6 @@ export interface RenderFrameDict {
   message_list?: MessageListDescriptor | null;
   board?: BoardModelDescriptor | null;
   pipeline_view?: PipelineViewDescriptor | null;
-  minimap?: MinimapDescriptor | null;
   multi_section_view?: MultiSectionViewDescriptor | null;
   diff_view?: DiffViewDescriptor | null;
   tree_table?: TreeTableDescriptor | null;
@@ -2011,7 +2009,6 @@ export interface RenderFrameDict {
   menu_bar?: MenuBarDescriptor | null;
   command_line?: CommandLineDescriptor | null;
   scrollbar?: ScrollbarDescriptor | null;
-  editor?: EditorDescriptor | null;
   canvas?: CanvasDescriptor | null;
   scroll_view?: ScrollViewDescriptor | null;
   find_replace?: FindReplacePanelDescriptor | null;
@@ -2032,6 +2029,9 @@ export interface RenderFrameDict {
   activity_bar?: ActivityBarDescriptor | null;
   palette?: PaletteDescriptor | null;
   context_menu?: ContextMenuDescriptor | null;
+  editor?: EditorDescriptor | null;
+  minimap?: MinimapDescriptor | null;
+  image?: ImageDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

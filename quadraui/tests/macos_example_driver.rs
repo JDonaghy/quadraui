@@ -420,8 +420,8 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
 
 // ─── MinimapApp / ImageApp: macOS must degrade, not panic ──────────────────
 //
-// `MacBackend::draw_minimap`/`draw_image` now have real implementations
-// on macOS. `MacDriver::new` paints the first frame immediately (same as every
+// The minimap and the image paint real pixels on macOS through their
+// widget contracts. `MacDriver::new` paints the first frame immediately (same as every
 // other constructor in this file), so constructing either driver below
 // demonstrates these backends no longer panic on macOS — the exact inverse of
 // the four-backend promise these fixtures already prove on TUI/GTK
@@ -431,7 +431,7 @@ fn data_table_divider_before_last_column_resizes_in_drag_direction() {
 const MINIMAP_W: u32 = 800;
 const MINIMAP_H: u32 = 300;
 
-/// `draw_minimap` is called every frame `MinimapApp::render` runs; this
+/// The minimap paints every frame `MinimapApp::render` runs; this
 /// proves that keeps working (and keeps scrolling) on macOS. The minimap
 /// track has a real Core Graphics/Core Text rasteriser.
 #[test]
@@ -454,7 +454,7 @@ fn minimap_app_renders_every_frame_without_panicking_and_scrolls() {
 const IMAGE_W: u32 = 400;
 const IMAGE_H: u32 = 200;
 
-/// `draw_image` decodes the demo's real `quadra_logo.png` asset and
+/// The image decodes the demo's real `quadra_logo.png` asset and
 /// paints it via Core Graphics/ImageIO on macOS — no longer the only
 /// backend that could paint nothing for `ImageApp`'s logo. The menu bar
 /// beside the icon still routes clicks correctly, proving the real paint

@@ -1614,7 +1614,10 @@ mod minimap_pixel_tests {
                     }
                 }
             }
-            assert!(painted_any, "expected paint_minimap to paint visible blocks");
+            assert!(
+                painted_any,
+                "expected paint_minimap to paint visible blocks"
+            );
         }
 
         /// Paint↔click round trip at a non-zero origin — regression guard for

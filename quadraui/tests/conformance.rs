@@ -1148,11 +1148,11 @@ mod c0_verdict_tests {
         // `survived: false` must win even when the other two flags claim
         // success — a panic mid-paint means those flags describe a frame
         // that was never actually produced.
-        let v = classify_c0_case(&outcome(false, true, true), "draw_editor", None, "win");
+        let v = classify_c0_case(&outcome(false, true, true), "draw_board", None, "win");
         assert_eq!(v.cell, "PANIC");
         assert_eq!(
             v.gap_line.as_deref(),
-            Some("win/draw_editor: panicked mid-paint")
+            Some("win/draw_board: panicked mid-paint")
         );
     }
 

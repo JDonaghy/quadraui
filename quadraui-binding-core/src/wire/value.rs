@@ -971,7 +971,12 @@ mod tests {
             "fit": "Contain",
             "fallback_text": "",
         });
-        crate::extra_paint::decode_extra_primitive("test", "image", &value)
-            .expect("valid image with byte source");
+        crate::extra_paint::decode_widget_leaf(
+            &DecodeDiagnostics::default(),
+            "test",
+            "image",
+            &value,
+        )
+        .expect("valid image with byte source");
     }
 }

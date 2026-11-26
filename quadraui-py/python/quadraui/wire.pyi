@@ -1793,7 +1793,6 @@ LayoutLeafNode = TypedDict(
         "scripted_widget": NotRequired[ScriptedWidgetDescriptor],
         "progress": NotRequired[ProgressBarDescriptor],
         "spinner": NotRequired[SpinnerDescriptor],
-        "image": NotRequired[ImageDescriptor],
         "form": NotRequired[FormDescriptor],
         "text_input": NotRequired[TextInputDescriptor],
         "text_field": NotRequired[TextFieldDescriptor],
@@ -1804,7 +1803,6 @@ LayoutLeafNode = TypedDict(
         "message_list": NotRequired[MessageListDescriptor],
         "board": NotRequired[BoardModelDescriptor],
         "pipeline_view": NotRequired[PipelineViewDescriptor],
-        "minimap": NotRequired[MinimapDescriptor],
         "multi_section_view": NotRequired[MultiSectionViewDescriptor],
         "diff_view": NotRequired[DiffViewDescriptor],
         "tree_table": NotRequired[TreeTableDescriptor],
@@ -1813,7 +1811,6 @@ LayoutLeafNode = TypedDict(
         "menu_bar": NotRequired[MenuBarDescriptor],
         "command_line": NotRequired[CommandLineDescriptor],
         "scrollbar": NotRequired[ScrollbarDescriptor],
-        "editor": NotRequired[EditorDescriptor],
         "canvas": NotRequired[CanvasDescriptor],
         "scroll_view": NotRequired[ScrollViewDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
@@ -1834,6 +1831,9 @@ LayoutLeafNode = TypedDict(
         "activity_bar": NotRequired[ActivityBarDescriptor],
         "palette": NotRequired[PaletteDescriptor],
         "context_menu": NotRequired[ContextMenuDescriptor],
+        "editor": NotRequired[EditorDescriptor],
+        "minimap": NotRequired[MinimapDescriptor],
+        "image": NotRequired[ImageDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1856,7 +1856,6 @@ class RenderFrameDict(TypedDict):
     tab_bar: NotRequired[Optional[TabBarDescriptor]]
     progress: NotRequired[Optional[ProgressBarDescriptor]]
     spinner: NotRequired[Optional[SpinnerDescriptor]]
-    image: NotRequired[Optional[ImageDescriptor]]
     form: NotRequired[Optional[FormDescriptor]]
     text_input: NotRequired[Optional[TextInputDescriptor]]
     text_field: NotRequired[Optional[TextFieldDescriptor]]
@@ -1867,7 +1866,6 @@ class RenderFrameDict(TypedDict):
     message_list: NotRequired[Optional[MessageListDescriptor]]
     board: NotRequired[Optional[BoardModelDescriptor]]
     pipeline_view: NotRequired[Optional[PipelineViewDescriptor]]
-    minimap: NotRequired[Optional[MinimapDescriptor]]
     multi_section_view: NotRequired[Optional[MultiSectionViewDescriptor]]
     diff_view: NotRequired[Optional[DiffViewDescriptor]]
     tree_table: NotRequired[Optional[TreeTableDescriptor]]
@@ -1876,7 +1874,6 @@ class RenderFrameDict(TypedDict):
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
     command_line: NotRequired[Optional[CommandLineDescriptor]]
     scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
-    editor: NotRequired[Optional[EditorDescriptor]]
     canvas: NotRequired[Optional[CanvasDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
@@ -1897,6 +1894,9 @@ class RenderFrameDict(TypedDict):
     activity_bar: NotRequired[Optional[ActivityBarDescriptor]]
     palette: NotRequired[Optional[PaletteDescriptor]]
     context_menu: NotRequired[Optional[ContextMenuDescriptor]]
+    editor: NotRequired[Optional[EditorDescriptor]]
+    minimap: NotRequired[Optional[MinimapDescriptor]]
+    image: NotRequired[Optional[ImageDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]

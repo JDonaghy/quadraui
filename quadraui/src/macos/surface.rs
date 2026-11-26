@@ -1298,7 +1298,10 @@ mod minimap_pixel_tests {
                     }
                 }
             }
-            assert!(painted_any, "expected paint_minimap to paint visible blocks");
+            assert!(
+                painted_any,
+                "expected paint_minimap to paint visible blocks"
+            );
         }
 
         /// Paint↔click round trip at a non-zero origin — tests the invariant
@@ -1336,8 +1339,9 @@ mod minimap_pixel_tests {
             let font = test_font();
             let surface = BitmapSurface::new(W as u32, H as u32);
 
-            let painted =
-                unsafe { paint_minimap(surface.context_ptr(), &font, rect, &mm, &Theme::default()) };
+            let painted = unsafe {
+                paint_minimap(surface.context_ptr(), &font, rect, &mm, &Theme::default())
+            };
             let no_paint = mac_minimap_layout(&mm, rect);
             assert_eq!(painted, no_paint);
         }
