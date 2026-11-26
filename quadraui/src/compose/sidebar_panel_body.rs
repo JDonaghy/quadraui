@@ -825,7 +825,7 @@ mod settings_chrome_tests {
         fn paint(height: u16, query: &str, active: bool) -> Buffer {
             let mut buf = Buffer::empty(RRect::new(0, 0, 20, 3));
             let mut cursor = None;
-            let mut surface = TuiCellSurface::new(&mut buf, ColorDepth::TrueColor, &mut cursor);
+            let mut surface = TuiCellSurface::over(&mut buf, ColorDepth::TrueColor, &mut cursor);
             paint_settings_chrome_cells(
                 &mut surface,
                 &Theme::default(),

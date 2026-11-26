@@ -120,7 +120,6 @@ impl ActivityNavApp {
             selection_bg: Some(Color::rgb(70, 70, 100)),
             is_keyboard_focused: self.bar_focused,
             style: Default::default(),
-            hovered: None,
         }
     }
 

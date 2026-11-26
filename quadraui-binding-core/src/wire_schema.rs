@@ -612,8 +612,6 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("icon", nullable(icon.clone())),
             field_opt("icon_position", button_icon_position.clone()),
             field_opt("icon_gap", float_()),
-            field_opt("hovered", bool_()),
-            field_opt("pressed", bool_()),
         ],
     ));
     let button_spec_descriptor = b.define(obj(
@@ -1563,8 +1561,6 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("value", bool_()),
             field_opt("disabled", bool_()),
             field_opt("focused", bool_()),
-            field_opt("hovered", bool_()),
-            field_opt("pressed", bool_()),
         ],
     ));
     let checkbox_descriptor = b.define(obj(
@@ -1700,8 +1696,6 @@ pub fn schema() -> Vec<DefJson> {
             field("id", re("WidgetId")),
             field("label", str_()),
             field_opt("disabled", bool_()),
-            field_opt("hovered", bool_()),
-            field_opt("pressed", bool_()),
         ],
     ));
     let radio_group_descriptor = b.define(obj(
@@ -1925,7 +1919,6 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("selection_bg", nullable(color.clone())),
             field_opt("is_keyboard_focused", bool_()),
             field_opt("style", activity_bar_style_descriptor),
-            field_opt("hovered", nullable(int_())),
         ],
     ));
     let palette_mode = b.define(alias("PaletteMode", lit(&["List", "Input"])));
@@ -4686,9 +4679,7 @@ mod coverage {
             tooltip,
             icon,
             icon_position,
-            icon_gap,
-            hovered,
-            pressed
+            icon_gap
         }
     );
     assert_fields!(
@@ -5118,9 +5109,7 @@ mod coverage {
             id,
             value,
             disabled,
-            focused,
-            hovered,
-            pressed
+            focused
         }
     );
     fn assert_scroll_axis(a: ScrollAxis) {
@@ -5176,9 +5165,7 @@ mod coverage {
         RadioOption {
             id,
             label,
-            disabled,
-            hovered,
-            pressed
+            disabled
         }
     );
     assert_fields_non_exhaustive!(
@@ -5456,8 +5443,7 @@ mod coverage {
             active_accent,
             selection_bg,
             is_keyboard_focused,
-            style,
-            hovered
+            style
         }
     );
     fn assert_palette_mode(m: PaletteMode) {
@@ -6322,8 +6308,6 @@ mod coverage {
                 "icon",
                 "icon_position",
                 "icon_gap",
-                "hovered",
-                "pressed",
             ],
             extra: {
                 // `ButtonVariant` is itself `#[non_exhaustive]`; constructing
@@ -6420,7 +6404,7 @@ mod coverage {
             "Switch",
             "SwitchDescriptor",
             Switch::new(WidgetId::new("test")),
-            ["id", "value", "disabled", "focused", "hovered", "pressed"]
+            ["id", "value", "disabled", "focused"]
         );
 
         value_shape_test!(
@@ -6477,7 +6461,7 @@ mod coverage {
             "RadioOption",
             "RadioOptionDescriptor",
             RadioOption::new(WidgetId::new("test:option"), "label"),
-            ["id", "label", "disabled", "hovered", "pressed"]
+            ["id", "label", "disabled"]
         );
 
         value_shape_test!(

@@ -164,8 +164,8 @@ use quadraui::paths::{self, AppPathKind};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::{StepOutcome, TuiRunner};
 use quadraui::{
-    AppLogic, Backend, Button, DataTable, InteractionState, Key, ListView, ListViewHit, Modifiers,
-    NamedKey, Point, Reaction, Rect, TabBar, TextDisplay, TreeView, UiEvent, Viewport,
+    AppLogic, Backend, Button, DataTable, Key, ListView, ListViewHit, Modifiers, NamedKey, Point,
+    Reaction, Rect, TabBar, TextDisplay, TreeView, UiEvent, Viewport,
 };
 use quadraui_binding_core::{draw_bands, panic_message, BindingHost};
 
@@ -587,9 +587,7 @@ impl AppLogic for FfiApp {
         // hit-testing feature of its own, so the painted hits it collects
         // are discarded rather than fed to an `InteractionEngine`.
         let mut hits = Vec::new();
-        draw_bands(backend, self.host.render_refs(), &mut hits, &|_| {
-            InteractionState::default()
-        });
+        draw_bands(backend, self.host.render_refs(), &mut hits);
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

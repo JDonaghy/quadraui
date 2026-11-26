@@ -620,6 +620,7 @@ fn tab_icons_demo_click_past_a_decorated_tab_label_activates_that_tab() {
     // reservation or close hit region is.
     let (x, y) = tab_icons_initial_slot_tail(&driver, 2);
     driver.click(x, y);
+    tab_icons_move_off_bar(&mut driver);
 
     let main_after = bg_at(&driver, &main);
     let readme_after = bg_at(&driver, &readme);
@@ -628,6 +629,30 @@ fn tab_icons_demo_click_past_a_decorated_tab_label_activates_that_tab() {
         "clicking inside tab 2's painted slot should make it active",
     );
     assert_eq!(main_after, readme_before, "and tab 0 should go inactive");
+}
+
+#[test]
+fn tab_icons_demo_hovering_an_inactive_tab_tints_it_until_the_pointer_leaves() {
+    let mut driver = MacDriver::new(TabIconsDemo::new(), TAB_ICONS_W, TAB_ICONS_H);
+    let readme = driver
+        .find_bounds("README.md")
+        .expect("tab 2's label should paint");
+    let bg = |d: &MacDriver<TabIconsDemo>| {
+        d.pixel(
+            (readme.x - TAB_ICON_GAP_PT / 2.0) as u32,
+            (readme.y + readme.height / 2.0) as u32,
+        )
+    };
+    let resting = bg(&driver);
+
+    driver.mouse_move(
+        readme.x + readme.width / 2.0,
+        readme.y + readme.height / 2.0,
+    );
+    assert_ne!(bg(&driver), resting, "a hovered tab paints its hover tint");
+
+    tab_icons_move_off_bar(&mut driver);
+    assert_eq!(bg(&driver), resting, "moving off restores the resting fill");
 }
 
 #[test]
@@ -697,6 +722,15 @@ fn tab_icons_initial_close_center(driver: &MacDriver<TabIconsDemo>, tab_idx: usi
 /// tab's leading edge (or the bar's own right edge, for the last tab) —
 /// for [`TabIconsDemo`]'s initial layout. See [`tab_icons_initial_hits`].
 #[allow(deprecated)] // `TabBarHits` is `#[deprecated]`
+/// Releases the button and moves the pointer below the tab bar, so a tab
+/// that a click left (or slid) under the pointer paints its resting
+/// colour rather than pressed or hovered. `click` only presses.
+fn tab_icons_move_off_bar(driver: &mut MacDriver<TabIconsDemo>) {
+    let (x, y) = (1.0, TAB_ICONS_H as f32 - 1.0);
+    driver.mouse_up(x, y);
+    driver.mouse_move(x, y);
+}
+
 fn tab_icons_initial_slot_tail(driver: &MacDriver<TabIconsDemo>, tab_idx: usize) -> (f32, f32) {
     let lh = driver.backend().line_height();
     let hits = tab_icons_initial_hits(driver);
@@ -749,6 +783,7 @@ fn tab_icons_demo_closing_the_active_tab_activates_the_next_one() {
 
     let (x, y) = tab_icons_initial_close_center(&driver, 0);
     driver.click(x, y);
+    tab_icons_move_off_bar(&mut driver);
     assert!(
         driver.find_bounds("main.rs").is_none(),
         "closing the active tab should remove it: {:?}",
@@ -807,6 +842,7 @@ fn tab_icons_demo_closing_a_middle_active_tab_activates_its_right_neighbour() {
     // tab 1's close-glyph center correctly here.
     let (x, y) = tab_icons_initial_close_center(&driver, 1);
     driver.click(x, y);
+    tab_icons_move_off_bar(&mut driver);
     assert!(
         driver.find_bounds("Cargo.toml").is_none(),
         "closing tab 1 should remove it: {:?}",

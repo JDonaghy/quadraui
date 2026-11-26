@@ -1080,8 +1080,6 @@ Alias for `"Leading" | "Trailing"`.
 | `icon` | `Icon \| null` | no |  |
 | `icon_position` | `ButtonIconPosition` | no |  |
 | `icon_gap` | `number` | no |  |
-| `hovered` | `boolean` | no |  |
-| `pressed` | `boolean` | no |  |
 
 <a id="wire-buttonspecdescriptor"></a>
 #### `ButtonSpecDescriptor`
@@ -2120,8 +2118,6 @@ Alias for `"Contain" | "Cover" | "Fill" | "None"`.
 | `value` | `boolean` | no |  |
 | `disabled` | `boolean` | no |  |
 | `focused` | `boolean` | no |  |
-| `hovered` | `boolean` | no |  |
-| `pressed` | `boolean` | no |  |
 
 <a id="wire-checkboxdescriptor"></a>
 #### `CheckboxDescriptor`
@@ -2258,8 +2254,6 @@ Alias for `"Vertical" | "Horizontal"`.
 | `id` | `WidgetId` | yes |  |
 | `label` | `string` | yes |  |
 | `disabled` | `boolean` | no |  |
-| `hovered` | `boolean` | no |  |
-| `pressed` | `boolean` | no |  |
 
 <a id="wire-radiogroupdescriptor"></a>
 #### `RadioGroupDescriptor`
@@ -2514,7 +2508,6 @@ Alias for `"Pending" | "Running" | "Passed" | "Warning" | "Blocked"`.
 | `selection_bg` | `Color \| null` | no |  |
 | `is_keyboard_focused` | `boolean` | no |  |
 | `style` | `ActivityBarStyleDescriptor` | no |  |
-| `hovered` | `number \| null` | no |  |
 
 <a id="wire-palettemode"></a>
 #### `PaletteMode`

@@ -6187,7 +6187,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: true,
             style: Default::default(),
-            hovered: None,
         };
         // The frame's painted-widget record is what `end_frame` reads the
         // focused rail from, so paint the bar through the widget contract
@@ -6872,7 +6871,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
@@ -7429,113 +7427,6 @@ mod tests {
             (px.r, px.g, px.b),
             (custom_bg.r, custom_bg.g, custom_bg.b),
             "tab bar background must reflect the live theme, not `Theme::default()`",
-        );
-    }
-
-    /// The shared palette painter's `paint_interactive`, run on
-    /// `WinBackend`'s own surface, must tint the pinned create-action
-    /// row — the one stable id a [`crate::Palette`] carries
-    /// (`palette.id` itself) — toward `Theme::menu_item_hover_bg` when
-    /// hovered and `Theme::menu_item_pressed_bg` when pressed.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn win_backend_palette_create_row_hover_and_pressed_tints() {
-        use crate::win::testing::HeadlessSurface;
-        use crate::{InteractionState, PaletteItem, PaletteMode};
-
-        const W: u32 = 200;
-        const H: u32 = 200;
-
-        let palette_id = WidgetId::new("test:palette");
-        let mut palette = crate::Palette {
-            id: palette_id,
-            title: "Commands".into(),
-            create_label: Some("Create 'op'".into()),
-            show_query: true,
-            mode: PaletteMode::List,
-            ..Default::default()
-        };
-        palette.items = vec![PaletteItem {
-            text: crate::types::StyledText::plain("one".to_string()),
-            detail: None,
-            icon: None,
-            match_positions: vec![],
-            depth: 0,
-            expandable: false,
-            expanded: false,
-        }];
-        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-
-        let paint_with = |interaction: &InteractionState| -> HeadlessSurface {
-            let surface = HeadlessSurface::new(W, H).expect("create headless surface");
-            let mut backend = WinBackend::new();
-            backend
-                .attach_headless(surface.target().clone(), W, H)
-                .expect("attach headless surface");
-            backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let (layout, rows_h) =
-                crate::primitives::palette::pixel_layout(rect.width, rect.height, &palette, 16.0);
-            let theme = Theme::default();
-            let style = backend.style();
-            crate::primitives::palette::native_surface_paint::paint_interactive(
-                &palette,
-                rect,
-                &layout,
-                rows_h,
-                16.0,
-                false,
-                &mut backend,
-                &theme,
-                &style,
-                interaction,
-            );
-            backend.end_frame();
-            surface
-        };
-
-        let (layout, _rows_h) =
-            crate::primitives::palette::pixel_layout(rect.width, rect.height, &palette, 16.0);
-        let create_bounds = layout
-            .create_bounds
-            .expect("palette with create_label must report create_bounds");
-        let probe_x = (create_bounds.x + 4.0) as u32;
-        let probe_y = (create_bounds.y + create_bounds.height / 2.0) as u32;
-
-        // The paint above passes `Theme::default()`, so the expected
-        // colours below match that, not a `set_theme` override.
-        let theme = crate::theme::Theme::default();
-
-        let resting = paint_with(&InteractionState::new());
-        let px = resting.pixel_at(probe_x, probe_y);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (theme.hover_bg.r, theme.hover_bg.g, theme.hover_bg.b),
-            "an un-hovered create row must keep its plain Theme::hover_bg fill",
-        );
-
-        let hover_interaction = InteractionState::from_parts(Some(palette_id), None);
-        let hovered = paint_with(&hover_interaction);
-        let px = hovered.pixel_at(probe_x, probe_y);
-        let hover_expected = theme.menu_item_hover_bg(theme.hover_bg);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "hovering the create row must tint it toward Theme::menu_item_hover_bg",
-        );
-
-        let pressed_interaction = InteractionState::from_parts(Some(palette_id), Some(palette_id));
-        let pressed = paint_with(&pressed_interaction);
-        let px = pressed.pixel_at(probe_x, probe_y);
-        let pressed_expected = theme.menu_item_pressed_bg(theme.hover_bg);
-        assert_eq!(
-            (px.r, px.g, px.b),
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            "pressing the create row must tint it toward Theme::menu_item_pressed_bg",
-        );
-        assert_ne!(
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "pressed and hover tints must read as visibly different colours",
         );
     }
 
@@ -10587,7 +10478,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let _ = crate::DrawsPrimitives::draw_dyn(&mut backend, rect, &activity_bar, &());
 

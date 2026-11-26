@@ -301,7 +301,12 @@ pub(crate) trait PreprocessBackend {
 /// Pre-processing handled here, in priority order (anything not matched
 /// falls through to `app.handle` unchanged):
 ///
-/// 1. [`UiEvent::MouseDown`] → [`PreprocessBackend::fold_double_click`]:
+/// 1. Every event feeds the ambient pointer state
+///    ([`crate::interaction::track_pointer`]) while a press still carries
+///    its button; a hover or press change merges [`Reaction::Redraw`]
+///    into whatever this function returns.
+///
+///    Then [`UiEvent::MouseDown`] → [`PreprocessBackend::fold_double_click`]:
 ///    fold into [`UiEvent::DoubleClick`] if it lands in the backend's
 ///    double-click window.
 /// 2. Widget-contract routing, only when
@@ -395,7 +400,18 @@ where
     B: PreprocessBackend + crate::Backend,
     A: AppLogic,
 {
-    // ── 1. Double-click folding ────────────────────────────────────────
+    // ── 1. Ambient pointer hover/press ─────────────────────────────────
+    // Resolved against the widgets painted in the frame on screen, so a
+    // hover or press change repaints whether or not anything claims the
+    // event below. Tracked before double-click folding, while a press
+    // still says which button it is.
+    let pointer_reaction = if crate::interaction::track_pointer(&event) {
+        Reaction::Redraw
+    } else {
+        Reaction::Continue
+    };
+
+    // ── 1b. Double-click folding ───────────────────────────────────────
     let event = backend.fold_double_click(event);
 
     // ── 2. Widget-contract routing ─────────────────────────────────────
@@ -405,8 +421,8 @@ where
     // (`merge`'s identity) in all but the few cases named on
     // `WidgetRouteOutcome::Bubble`.
     let widget_side_reaction = match route_widget_event(&event, backend, app) {
-        WidgetRouteOutcome::Claimed(outcome) => return outcome,
-        WidgetRouteOutcome::Bubble(side_effect) => side_effect,
+        WidgetRouteOutcome::Claimed(outcome) => return pointer_reaction.merge(outcome),
+        WidgetRouteOutcome::Bubble(side_effect) => pointer_reaction.merge(side_effect),
     };
 
     // ── 3. ActivityBar keyboard focus intercept ─────────────────────
@@ -2109,8 +2125,7 @@ mod widget_routing_tests {
             &self,
             _layout: &Rect,
             _surface: &mut dyn crate::paint_surface::PaintSurface,
-            _theme: &crate::theme::Theme,
-            _style: &crate::style::Style,
+            _env: &crate::PaintEnv,
         ) {
         }
     }
@@ -2466,6 +2481,45 @@ mod widget_routing_tests {
         assert_eq!(outcome, Reaction::Redraw);
     }
 
+    /// A pointer move onto a widget painted this frame redraws even when
+    /// nothing routes or claims the move: the ambient hover changed. The
+    /// same move again changes nothing and stays `Continue`.
+    #[test]
+    fn a_move_onto_a_painted_widget_redraws_for_ambient_hover() {
+        let (mut backend, mut app) = harness();
+        crate::interaction::reset_ambient_interaction();
+        let painted = WidgetId::new("painted-only");
+        crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
+            id: painted,
+            rect: Rect::new(40.0, 0.0, 10.0, 3.0),
+            layout: Box::new(()),
+            sub_regions: Vec::new(),
+        });
+        let move_to = |x: f32| UiEvent::MouseMoved {
+            position: Point::new(x, 1.0),
+            buttons: Default::default(),
+        };
+
+        assert_eq!(
+            preprocess_event(move_to(45.0), &mut backend, &mut app),
+            Reaction::Redraw
+        );
+        assert_eq!(
+            crate::interaction::ambient_interaction().hovered(),
+            Some(&painted)
+        );
+        assert_eq!(
+            preprocess_event(move_to(46.0), &mut backend, &mut app),
+            Reaction::Continue
+        );
+        assert_eq!(
+            preprocess_event(move_to(80.0), &mut backend, &mut app),
+            Reaction::Redraw
+        );
+        assert_eq!(crate::interaction::ambient_interaction().hovered(), None);
+        crate::primitive::clear_painted_widgets();
+    }
+
     /// `dispatch_widget_routed_event` folds `Handled::Consumed`'s `Redraw`
     /// baseline with the `Reaction` an emitted `UiEvent` produced via
     /// `Reaction::merge`, not last-write-wins: a shift-click emits one
@@ -2614,8 +2668,7 @@ mod widget_routing_tests {
             &self,
             _layout: &Rect,
             _surface: &mut dyn crate::paint_surface::PaintSurface,
-            _theme: &crate::theme::Theme,
-            _style: &crate::style::Style,
+            _env: &crate::PaintEnv,
         ) {
         }
     }
@@ -2934,8 +2987,7 @@ mod widget_routing_tests {
             &self,
             _layout: &Rect,
             _surface: &mut dyn crate::paint_surface::PaintSurface,
-            _theme: &crate::theme::Theme,
-            _style: &crate::style::Style,
+            _env: &crate::PaintEnv,
         ) {
         }
     }

@@ -542,9 +542,10 @@ impl crate::primitive::Primitive for Tooltip {
         &self,
         layout: &TooltipLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -581,17 +582,11 @@ impl crate::primitive::Primitive for Tooltip {
     fn paint_cells(
         &self,
         layout: &TooltipLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, layout, &self.chrome, &mut surface, theme);
+        let theme = env.theme();
+        cell_paint::paint(self, layout, &self.chrome, cells, theme);
     }
 }
 
@@ -1625,8 +1620,7 @@ mod tests {
                 &tooltip,
                 &layout,
                 &mut via_primitive,
-                &Theme::default(),
-                &Style::default(),
+                &crate::PaintEnv::new(&Theme::default(), &Style::default()),
             );
             let direct = paint_with(TooltipBorder::Full);
             assert_eq!(via_primitive.runs, direct.runs);
@@ -1960,7 +1954,12 @@ mod tests {
             let tt = tooltip_with();
             let layout = make_layout(1.0, 1.0, 10.0, 3.0);
             let mut via_primitive = Buffer::empty(Rect::new(0, 0, 20, 6));
-            Primitive::paint_cells(&tt, &layout, &mut via_primitive, &Theme::default());
+            Primitive::paint_cells(
+                &tt,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut via_primitive),
+                &crate::PaintEnv::new(&Theme::default(), &crate::Style::default()),
+            );
             let mut direct = Buffer::empty(Rect::new(0, 0, 20, 6));
             draw_tooltip(&mut direct, &tt, &layout, &Theme::default());
             assert_eq!(via_primitive, direct);
@@ -1976,7 +1975,12 @@ mod tests {
             let rect = QRect::new(0.0, 0.0, size.width.unwrap(), size.height.unwrap());
             let layout = Primitive::layout(&tt, &super::cell_ctx(), rect);
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 10));
-            Primitive::paint_cells(&tt, &layout, &mut buf, &Theme::default());
+            Primitive::paint_cells(
+                &tt,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&Theme::default(), &crate::Style::default()),
+            );
 
             let row = |y: u16| -> String { (0..8).map(|x| cell_char(&buf, x, y)).collect() };
             assert_eq!(row(0), "┌──────┐");
@@ -2003,7 +2007,7 @@ mod cell_test_paint {
         buf: &'a mut Buffer,
         sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
     ) -> impl crate::CellSurface + 'a {
-        crate::tui::cell_surface::TuiCellSurface::new(
+        crate::tui::cell_surface::TuiCellSurface::over(
             buf,
             crate::backend::ColorDepth::TrueColor,
             sink,

@@ -268,8 +268,7 @@ pub enum PaintedHit {
         /// Absolute bounds + action id of each clickable child
         /// [`ExtraPaint::paint_chrome`] resolved this frame — empty for
         /// every extra but `Toolbar`'s buttons, `StatusBar`'s segments, and
-        /// `ActivityBar`'s items. Checked by [`hit_test_painted`] (and
-        /// [`chrome_hover_hit`], for `MouseMoved`) ahead of
+        /// `ActivityBar`'s items. Checked by [`hit_test_painted`] ahead of
         /// [`ExtraPaint::hit_test`], so a click on one of these children
         /// resolves to the *child's* id rather than just "landed somewhere
         /// on the bar".
@@ -1072,29 +1071,6 @@ pub fn drag_roles_by_widget_id(roles: &HashMap<String, DragRole>) -> HashMap<Wid
         .collect()
 }
 
-/// Hit-tests `point` against only the `chrome_hits` lists
-/// [`PaintedHit::Extra`] entries carry (`Toolbar`'s buttons, `StatusBar`'s
-/// segments, `ActivityBar`'s items) — the subset [`InteractionEngine`][crate::engine::InteractionEngine]
-/// needs on every `MouseMoved` for hover bookkeeping, which
-/// [`hit_test_painted`] never runs for: its own [`event_position`] doesn't
-/// resolve a position for that event kind (enriching `MouseMoved`'s own
-/// `widget` field isn't this module's job). Checked in reverse paint
-/// order, matching [`hit_test_painted`]'s own precedence. Returns
-/// `(bar_id, action_id)`.
-pub fn chrome_hover_hit(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetId, WidgetId)> {
-    for hit in hit_map.iter().rev() {
-        if let PaintedHit::Extra {
-            id, chrome_hits, ..
-        } = hit
-        {
-            if let Some((_, action)) = chrome_hits.iter().find(|(r, _)| r.contains(point)) {
-                return Some((*id, *action));
-            }
-        }
-    }
-    None
-}
-
 /// The screen position to hit-test against [`PaintedHit`]s, for the one
 /// `event` variants whose own `widget` field this module enriches. `None`
 /// for every other variant (e.g. `MouseMoved`, `MouseEntered`, key events),
@@ -1571,7 +1547,11 @@ mod tests {
         let layout = Primitive::layout(&primitive, &ctx, area);
         let cell_area = ratatui::layout::Rect::new(0, 0, 10, 4);
         let mut buf = ratatui::buffer::Buffer::empty(cell_area);
-        primitive.paint_cells(&layout, &mut buf, &quadraui::Theme::default());
+        primitive.paint_cells(
+            &layout,
+            &mut quadraui::tui::BufferCellSurface::new(&mut buf),
+            &quadraui::PaintEnv::new(&quadraui::Theme::default(), &quadraui::Style::default()),
+        );
 
         let hits = vec![PaintedHit::Extra {
             id: WidgetId::new("widget"),

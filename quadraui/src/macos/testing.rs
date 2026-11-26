@@ -832,6 +832,10 @@ mod tests {
         let (x, y) = driver.find("Toggle").expect("Toggle label painted");
         let reaction = driver.click(x, y);
         assert_eq!(reaction, Reaction::Redraw, "click should trigger a redraw");
+        // The pointer is still pressed on the segment; clear the ambient
+        // press and repaint so the probe reads the resting ON colour.
+        crate::interaction::reset_ambient_interaction();
+        driver.render();
 
         let bounds = driver
             .find_bounds("Toggle")
@@ -910,7 +914,6 @@ mod tests {
                     selection_bg: None,
                     is_keyboard_focused: self.focused,
                     style: Default::default(),
-                    hovered: None,
                 },
                 &(),
             );

@@ -8820,6 +8820,26 @@ fn tab_icons_demo_clicking_a_tab_close_glyph_closes_that_tab() {
 }
 
 #[test]
+fn tab_icons_demo_hovering_an_inactive_tab_tints_it_until_the_pointer_leaves() {
+    let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
+    let readme = driver
+        .find_bounds("README.md")
+        .expect("tab 2's label should be painted");
+    let bg = |d: &TuiDriver<TabIconsDemo>| {
+        d.style_at(readme.x as u16, readme.y as u16)
+            .expect("README.md cell")
+            .bg
+    };
+    let resting = bg(&driver);
+
+    driver.mouse_move(readme.x, readme.y);
+    assert_ne!(bg(&driver), resting, "a hovered tab paints its hover tint");
+
+    driver.mouse_move(0.0, 9.0);
+    assert_eq!(bg(&driver), resting, "moving off restores the resting fill");
+}
+
+#[test]
 fn tab_icons_demo_closing_the_active_tab_activates_the_next_one() {
     let mut driver = TuiDriver::new(TabIconsDemo::new(), 100, 10);
     // Tab 0 ("main.rs") starts active.
@@ -8835,6 +8855,9 @@ fn tab_icons_demo_closing_the_active_tab_activates_the_next_one() {
         .tab_close_center(&tab_icons_bar_id(), 0)
         .expect("tab 0 should have painted close-glyph geometry");
     driver.click(x, y);
+    // The pointer would otherwise rest on the tab that slid under it and
+    // paint it hovered; move it off the bar to read the resting colour.
+    driver.mouse_move(0.0, 9.0);
 
     assert!(
         driver.find_bounds("main.rs").is_none(),
@@ -8893,6 +8916,8 @@ fn tab_icons_demo_closing_a_middle_active_tab_activates_its_right_neighbour() {
         .tab_close_center(&bar_id, 1)
         .expect("tab 1 should have painted close-glyph geometry");
     driver.click(x, y);
+    // See the move-off in the test above.
+    driver.mouse_move(0.0, 9.0);
 
     assert!(
         driver.find_bounds("Cargo.toml").is_none(),
@@ -10651,7 +10676,7 @@ mod three_widget_focus_demo {
     use quadraui::{
         A11yInfo, A11yPrimitive, AppLogic, Backend, Color, EventCx, FocusSpec, FocusStop, Handled,
         Interactive, Key, LayoutCtx, Never, PaintSurface, Primitive, Reaction, Rect, ScreenLayout,
-        Style, Surface, Theme, UiEvent, WidgetId,
+        Surface, UiEvent, WidgetId,
     };
     use std::cell::RefCell;
 
@@ -10710,13 +10735,7 @@ mod three_widget_focus_demo {
             rect
         }
 
-        fn paint(
-            &self,
-            layout: &Rect,
-            surface: &mut dyn PaintSurface,
-            _theme: &Theme,
-            _style: &Style,
-        ) {
+        fn paint(&self, layout: &Rect, surface: &mut dyn PaintSurface, _env: &quadraui::PaintEnv) {
             surface.surface_draw_text_run(*layout, self.label, Color::rgb(255, 255, 255));
         }
     }
@@ -10770,13 +10789,7 @@ mod three_widget_focus_demo {
             rect
         }
 
-        fn paint(
-            &self,
-            layout: &Rect,
-            surface: &mut dyn PaintSurface,
-            _theme: &Theme,
-            _style: &Style,
-        ) {
+        fn paint(&self, layout: &Rect, surface: &mut dyn PaintSurface, _env: &quadraui::PaintEnv) {
             surface.surface_draw_text_run(*layout, self.label, Color::rgb(255, 255, 255));
         }
     }

@@ -741,9 +741,9 @@ impl crate::primitive::Primitive for CommandLine {
         &self,
         layout: &CommandLinePrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -779,17 +779,11 @@ impl crate::primitive::Primitive for CommandLine {
     fn paint_cells(
         &self,
         layout: &CommandLinePrimitiveLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, &layout.layout, &mut surface, theme, layout.selection);
+        let theme = env.theme();
+        cell_paint::paint(self, &layout.layout, cells, theme, layout.selection);
     }
 }
 
@@ -1728,7 +1722,7 @@ mod cell_test_paint {
             ),
         );
         let mut sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::over(
             buf,
             crate::backend::ColorDepth::TrueColor,
             &mut sink,

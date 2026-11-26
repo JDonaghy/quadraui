@@ -162,8 +162,6 @@ class ButtonDescriptor(TypedDict):
     icon: NotRequired[Optional[Icon]]
     icon_position: NotRequired[ButtonIconPosition]
     icon_gap: NotRequired[float]
-    hovered: NotRequired[bool]
-    pressed: NotRequired[bool]
 
 class ButtonSpecDescriptor(TypedDict):
     label: str
@@ -871,8 +869,6 @@ class SwitchDescriptor(TypedDict):
     value: NotRequired[bool]
     disabled: NotRequired[bool]
     focused: NotRequired[bool]
-    hovered: NotRequired[bool]
-    pressed: NotRequired[bool]
 
 class CheckboxDescriptor(TypedDict):
     id: WidgetId
@@ -956,8 +952,6 @@ class RadioOptionDescriptor(TypedDict):
     id: WidgetId
     label: str
     disabled: NotRequired[bool]
-    hovered: NotRequired[bool]
-    pressed: NotRequired[bool]
 
 class RadioGroupDescriptor(TypedDict):
     id: WidgetId
@@ -1109,7 +1103,6 @@ class ActivityBarDescriptor(TypedDict):
     selection_bg: NotRequired[Optional[Color]]
     is_keyboard_focused: NotRequired[bool]
     style: NotRequired[ActivityBarStyleDescriptor]
-    hovered: NotRequired[Optional[int]]
 
 PaletteMode = Literal['List', 'Input']
 

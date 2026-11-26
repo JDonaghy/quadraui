@@ -170,8 +170,20 @@ fn the_open_menu_is_tinted_through_the_painted_widget() {
     let (x, y) = driver.find("Edit").expect("Edit painted");
     driver.click(x, y);
 
+    // While the button is held, the pressed tint outranks the open fill.
     let theme = Theme::default();
     let edit = driver.find_bounds("Edit").expect("Edit painted");
+    let held = driver
+        .style_at(edit.x as u16, edit.y as u16)
+        .expect("cell inside the strip");
+    assert_eq!(
+        held.bg,
+        ratatui_color(theme.menu_item_pressed_bg(theme.tab_bar_bg))
+    );
+
+    // Released, the pointer still rests on the open menu, whose fill
+    // hover must not weaken.
+    driver.mouse_up(x, y);
     let style = driver
         .style_at(edit.x as u16, edit.y as u16)
         .expect("cell inside the strip");
@@ -266,8 +278,19 @@ fn escape_closes_the_open_menu_and_leaves_the_strip() {
     assert_eq!(driver.app().bar.open_item, None);
     assert_eq!(driver.app().bar.focused_item, None);
 
-    // The strip is still painted, just with nothing open.
+    // The strip is still painted, just with nothing open. The pointer
+    // still rests on View, so it reads as hovered until it moves off.
     let theme = Theme::default();
+    driver.mouse_up(x, y);
+    let view = driver.find_bounds("View").expect("View painted");
+    let hovered = driver
+        .style_at(view.x as u16, view.y as u16)
+        .expect("cell inside the strip");
+    assert_eq!(
+        hovered.bg,
+        ratatui_color(theme.menu_item_hover_bg(theme.tab_bar_bg))
+    );
+    driver.mouse_move(x, f32::from(ROWS) - 1.0);
     let view = driver.find_bounds("View").expect("View painted");
     let style = driver
         .style_at(view.x as u16, view.y as u16)

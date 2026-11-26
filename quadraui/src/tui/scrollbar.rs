@@ -36,6 +36,6 @@ pub(crate) fn draw_scrollbar_layout(
 ) {
     // The painter never moves the cursor, so the sink is never read.
     let mut cursor_sink = None;
-    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    let mut surface = TuiCellSurface::over(buf, ColorDepth::TrueColor, &mut cursor_sink);
     cell_paint::paint(layout, &mut surface, theme, cell_bg);
 }

@@ -265,9 +265,9 @@ impl crate::primitive::Primitive for Spinner {
         &self,
         layout: &SpinnerLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -289,9 +289,14 @@ impl crate::primitive::Primitive for Spinner {
     fn paint_cells(
         &self,
         layout: &SpinnerLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        // CSR: ratatui_buffer escape hatch
+        let buf = cells
+            .ratatui_buffer()
+            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         crate::tui::draw_spinner_layout(buf, self, layout, theme);
     }
 }

@@ -16,8 +16,8 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Button, InteractionState,
-    KeyBinding, Reaction, StyledSpan, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
+    Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Button, KeyBinding, Reaction,
+    StyledSpan, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 use quadraui_binding_core::{draw_bands, BindingHost};
 
@@ -41,9 +41,7 @@ impl AppLogic for HostApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
-        draw_bands(backend, self.host.render_refs(), &mut hits, &|_| {
-            InteractionState::default()
-        });
+        draw_bands(backend, self.host.render_refs(), &mut hits);
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

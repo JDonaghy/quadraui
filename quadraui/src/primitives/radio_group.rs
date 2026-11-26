@@ -54,23 +54,6 @@ pub struct RadioOption {
     pub label: String,
     #[serde(default)]
     pub disabled: bool,
-    /// Whether the pointer currently sits over this option. Set by the
-    /// host from its own hover tracking (an
-    /// [`crate::interaction::InteractionState`] keyed by
-    /// [`RadioOption::id`], or any other source); read by this type's
-    /// own shared pixel painter (`native_surface_paint::paint`) to tint
-    /// this option's marker toward [`crate::Theme::button_hover_bg`] —
-    /// the same host-set convention [`RadioGroup::focused`] already
-    /// follows.
-    #[serde(default)]
-    pub hovered: bool,
-    /// Whether the pointer currently holds this option pressed. Same
-    /// host-set convention as [`RadioOption::hovered`]; read by that
-    /// same pixel painter to tint the marker toward
-    /// [`crate::Theme::button_pressed_bg`], which wins over
-    /// [`RadioOption::hovered`] when both are set.
-    #[serde(default)]
-    pub pressed: bool,
 }
 
 impl RadioOption {
@@ -79,8 +62,6 @@ impl RadioOption {
             id,
             label: label.into(),
             disabled: false,
-            hovered: false,
-            pressed: false,
         }
     }
 }
@@ -352,20 +333,28 @@ impl crate::primitive::Primitive for RadioGroup {
         }
     }
 
-    /// The shared pixel painter, against the already-resolved `layout`.
+    /// The shared pixel painter, against the already-resolved `layout`,
+    /// tinting the option `env` reports hovered or pressed.
     fn paint(
         &self,
         layout: &RadioGroupLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
-        native_surface_paint::paint_resolved(self, layout, surface, theme);
+        native_surface_paint::paint_resolved(
+            self,
+            layout,
+            surface,
+            theme,
+            env.hovered_sub(&self.id).map(|sub| sub.0 as usize),
+            env.pressed_sub(&self.id).map(|sub| sub.0 as usize),
+        );
         #[cfg(not(any(
             feature = "gtk",
             feature = "win",
@@ -383,17 +372,11 @@ impl crate::primitive::Primitive for RadioGroup {
     fn paint_cells(
         &self,
         layout: &RadioGroupLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, layout, &mut surface, theme);
+        let theme = env.theme();
+        cell_paint::paint(self, layout, cells, theme);
     }
 }
 
@@ -647,9 +630,8 @@ pub(crate) mod native_surface_paint {
     /// option's row using `row_height`, and returning
     /// [`RadioGroupLayout`] for host click dispatch. Tints each
     /// enabled option's marker toward
-    /// [`Theme::button_hover_bg`]/[`Theme::button_pressed_bg`] when
-    /// that option's [`RadioOption::hovered`]/[`RadioOption::pressed`]
-    /// is set — the same [`PressableVisual`] priority (pressed beats
+    /// [`Theme::button_hover_bg`]/[`Theme::button_pressed_bg`] when its
+    /// index is `hovered`/`pressed` — the same [`PressableVisual`] priority (pressed beats
     /// hovered beats resting)
     /// [`crate::primitives::button::native_surface_paint::paint`]
     /// already resolves for [`crate::Button`].
@@ -659,12 +641,14 @@ pub(crate) mod native_surface_paint {
         theme: &Theme,
         rect: Rect,
         row_height: f32,
+        hovered: Option<usize>,
+        pressed: Option<usize>,
     ) -> RadioGroupLayout {
         let layout = group.layout(rect, |_option: &RadioOption| RadioOptionMeasure {
             width: rect.width,
             height: row_height,
         });
-        paint_resolved(group, &layout, surface, theme);
+        paint_resolved(group, &layout, surface, theme, hovered, pressed);
         layout
     }
 
@@ -677,6 +661,8 @@ pub(crate) mod native_surface_paint {
         layout: &RadioGroupLayout,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        hovered: Option<usize>,
+        pressed: Option<usize>,
     ) {
         for (index, option) in group.options.iter().enumerate() {
             let Some(item) = layout.items.get(index) else {
@@ -695,7 +681,11 @@ pub(crate) mod native_surface_paint {
             let marker_color = if option.disabled {
                 theme.muted_fg
             } else {
-                match PressableVisual::resolve(option.pressed, false, option.hovered) {
+                match PressableVisual::resolve(
+                    pressed == Some(index),
+                    false,
+                    hovered == Some(index),
+                ) {
                     PressableVisual::PressedOrActive => theme.button_pressed_bg(resting_marker),
                     PressableVisual::Hovered => theme.button_hover_bg(resting_marker),
                     PressableVisual::Resting => resting_marker,
@@ -817,19 +807,26 @@ pub(crate) mod native_surface_paint {
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&group, &mut surface, &theme, RECT, ROW_HEIGHT);
+            paint(&group, &mut surface, &theme, RECT, ROW_HEIGHT, None, None);
 
             assert_eq!(first_marker_stroke(&surface), theme.border_fg);
         }
 
         #[test]
         fn hovered_option_tints_its_marker_toward_button_hover_bg() {
-            let mut group = group();
-            group.options[0].hovered = true;
+            let group = group();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&group, &mut surface, &theme, RECT, ROW_HEIGHT);
+            paint(
+                &group,
+                &mut surface,
+                &theme,
+                RECT,
+                ROW_HEIGHT,
+                Some(0),
+                None,
+            );
 
             assert_eq!(
                 first_marker_stroke(&surface),
@@ -839,12 +836,19 @@ pub(crate) mod native_surface_paint {
 
         #[test]
         fn pressed_option_tints_its_marker_toward_button_pressed_bg() {
-            let mut group = group();
-            group.options[0].pressed = true;
+            let group = group();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&group, &mut surface, &theme, RECT, ROW_HEIGHT);
+            paint(
+                &group,
+                &mut surface,
+                &theme,
+                RECT,
+                ROW_HEIGHT,
+                None,
+                Some(0),
+            );
 
             assert_eq!(
                 first_marker_stroke(&surface),
@@ -857,11 +861,18 @@ pub(crate) mod native_surface_paint {
         fn disabled_option_does_not_tint_when_hovered() {
             let mut group = group();
             group.options[0].disabled = true;
-            group.options[0].hovered = true;
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&group, &mut surface, &theme, RECT, ROW_HEIGHT);
+            paint(
+                &group,
+                &mut surface,
+                &theme,
+                RECT,
+                ROW_HEIGHT,
+                Some(0),
+                None,
+            );
 
             assert_eq!(first_marker_stroke(&surface), theme.muted_fg);
         }
@@ -870,14 +881,59 @@ pub(crate) mod native_surface_paint {
         /// marker.
         #[test]
         fn hovering_one_option_does_not_tint_another() {
-            let mut group = group();
-            group.options[1].hovered = true;
+            let group = group();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&group, &mut surface, &theme, RECT, ROW_HEIGHT);
+            paint(
+                &group,
+                &mut surface,
+                &theme,
+                RECT,
+                ROW_HEIGHT,
+                Some(1),
+                None,
+            );
 
             assert_eq!(first_marker_stroke(&surface), theme.border_fg);
+        }
+
+        /// The contract painter tints the option whose sub-target its
+        /// [`crate::PaintEnv`] reports hovered or pressed on the group.
+        #[test]
+        fn contract_paint_tints_the_env_addressed_option() {
+            use crate::interaction::InteractionState;
+            use crate::interactive::SubTarget;
+            use crate::primitive::{PaintEnv, Primitive};
+
+            let group = group();
+            let theme = Theme::default();
+            let style = crate::Style::default();
+            let layout = group.layout(RECT, |_option: &RadioOption| RadioOptionMeasure {
+                width: RECT.width,
+                height: ROW_HEIGHT,
+            });
+            let stroke_with = |interaction: &InteractionState| {
+                let env = PaintEnv::new(&theme, &style).with_interaction(interaction);
+                let mut surface = RecordingSurface::default();
+                Primitive::paint(&group, &layout, &mut surface, &env);
+                first_marker_stroke(&surface)
+            };
+            let on = |sub: u64| Some((group.id, Some(SubTarget(sub))));
+
+            assert_eq!(stroke_with(&InteractionState::new()), theme.border_fg);
+            assert_eq!(
+                stroke_with(&InteractionState::from_targets(on(0), None)),
+                theme.button_hover_bg(theme.border_fg)
+            );
+            assert_eq!(
+                stroke_with(&InteractionState::from_targets(on(0), on(0))),
+                theme.button_pressed_bg(theme.border_fg)
+            );
+            assert_eq!(
+                stroke_with(&InteractionState::from_targets(on(1), None)),
+                theme.border_fg
+            );
         }
     }
 }
@@ -1072,29 +1128,25 @@ mod tests {
     }
 
     #[test]
-    fn option_new_defaults_to_enabled_and_untinted() {
+    fn option_new_defaults_to_enabled() {
         let option = RadioOption::new(WidgetId::new("theme:light"), "Light");
         assert!(!option.disabled);
-        assert!(!option.hovered);
-        assert!(!option.pressed);
     }
 
     #[test]
     fn option_serde_round_trip() {
         let mut option = RadioOption::new(WidgetId::new("theme:light"), "Light");
-        option.hovered = true;
-        option.pressed = true;
+        option.disabled = true;
         let json = serde_json::to_string(&option).unwrap();
         let back: RadioOption = serde_json::from_str(&json).unwrap();
         assert_eq!(option, back);
     }
 
     #[test]
-    fn option_serde_defaults_hovered_and_pressed_when_omitted() {
+    fn option_serde_defaults_disabled_when_omitted() {
         let json = r#"{"id":"theme:light","label":"Light"}"#;
         let option: RadioOption = serde_json::from_str(json).unwrap();
-        assert!(!option.hovered);
-        assert!(!option.pressed);
+        assert!(!option.disabled);
     }
 }
 
@@ -1263,7 +1315,12 @@ mod contract_tests {
         #[cfg(feature = "tui")]
         {
             let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 10, 2));
-            Primitive::paint_cells(&g, &layout, &mut buf, &crate::theme::Theme::default());
+            Primitive::paint_cells(
+                &g,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&crate::theme::Theme::default(), &crate::Style::default()),
+            );
             let row1: String = (0..10).map(|x| buf[(x, 1)].symbol()).collect();
             assert!(row1.starts_with("(\u{2022}) Dark") || row1.starts_with("(•) Dark"));
         }

@@ -70,27 +70,11 @@ pub struct Switch {
     /// gate activation.
     #[serde(default)]
     pub focused: bool,
-    /// Whether the pointer currently sits over this switch. Set by the
-    /// host from its own hover tracking (an [`crate::interaction::InteractionState`]
-    /// keyed by [`Switch::id`], or any other source); read by this
-    /// type's own shared pixel painter (`native_surface_paint::paint`)
-    /// to tint the track toward [`crate::Theme::button_hover_bg`] — the
-    /// same self-contained state convention [`Switch::focused`] already
-    /// follows.
-    #[serde(default)]
-    pub hovered: bool,
-    /// Whether the pointer currently holds this switch pressed. Same
-    /// host-set convention as [`Switch::hovered`]; read by that same
-    /// pixel painter to tint the track toward
-    /// [`crate::Theme::button_pressed_bg`], which wins over
-    /// [`Switch::hovered`] when both are set.
-    #[serde(default)]
-    pub pressed: bool,
 }
 
 impl Switch {
-    /// An off, enabled, unfocused, unhovered, unpressed switch — set
-    /// `value`/`disabled`/`focused`/`hovered`/`pressed` directly
+    /// An off, enabled, unfocused switch — set
+    /// `value`/`disabled`/`focused` directly
     /// afterwards (every field is `pub`) rather than via a `with_*`
     /// chain — see `docs/PRIMITIVE_RULES.md`'s rule-8 history of why
     /// this crate stopped adding those.
@@ -100,8 +84,6 @@ impl Switch {
             value: false,
             disabled: false,
             focused: false,
-            hovered: false,
-            pressed: false,
         }
     }
 
@@ -251,21 +233,29 @@ impl crate::primitive::Primitive for Switch {
         }
     }
 
-    /// The shared pixel painter, against the already-resolved `layout`.
+    /// The shared pixel painter, against the already-resolved `layout`,
+    /// tinted by whether `env` reports this switch hovered or pressed.
     fn paint(
         &self,
         layout: &SwitchLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        _style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            let _ = native_surface_paint::paint(self, surface, theme, layout.bounds);
+            let _ = native_surface_paint::paint(
+                self,
+                surface,
+                theme,
+                layout.bounds,
+                env.is_hovered(&self.id),
+                env.is_pressed(&self.id),
+            );
         }
         #[cfg(not(any(
             feature = "gtk",
@@ -284,17 +274,11 @@ impl crate::primitive::Primitive for Switch {
     fn paint_cells(
         &self,
         layout: &SwitchLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
-        cell_paint::paint(self, layout, &mut surface, theme);
+        let theme = env.theme();
+        cell_paint::paint(self, layout, cells, theme);
     }
 }
 
@@ -488,7 +472,7 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`Switch`] into `rect` on `surface`, returning
     /// [`SwitchLayout`] for host click dispatch. Tints the track toward
     /// [`Theme::button_hover_bg`]/[`Theme::button_pressed_bg`] when
-    /// [`Switch::hovered`]/[`Switch::pressed`] is set — the same
+    /// `is_hovered`/`is_pressed` is set — the same
     /// [`PressableVisual`] priority (pressed beats hovered beats
     /// resting) [`crate::primitives::button::native_surface_paint::paint`]
     /// already resolves for [`crate::Button`].
@@ -497,6 +481,8 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         rect: Rect,
+        is_hovered: bool,
+        is_pressed: bool,
     ) -> SwitchLayout {
         let layout = switch.layout(rect);
         if rect.width <= 0.0 || rect.height <= 0.0 {
@@ -511,7 +497,7 @@ pub(crate) mod native_surface_paint {
         let track_color = if switch.disabled {
             theme.surface_bg
         } else {
-            match PressableVisual::resolve(switch.pressed, false, switch.hovered) {
+            match PressableVisual::resolve(is_pressed, false, is_hovered) {
                 PressableVisual::PressedOrActive => theme.button_pressed_bg(resting_track),
                 PressableVisual::Hovered => theme.button_hover_bg(resting_track),
                 PressableVisual::Resting => resting_track,
@@ -618,19 +604,18 @@ pub(crate) mod native_surface_paint {
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&switch, &mut surface, &theme, RECT);
+            paint(&switch, &mut surface, &theme, RECT, false, false);
 
             assert_eq!(track_fill(&surface), theme.surface_bg);
         }
 
         #[test]
         fn hovered_switch_tints_the_track_toward_button_hover_bg() {
-            let mut switch = switch();
-            switch.hovered = true;
+            let switch = switch();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&switch, &mut surface, &theme, RECT);
+            paint(&switch, &mut surface, &theme, RECT, true, false);
 
             assert_eq!(
                 track_fill(&surface),
@@ -640,12 +625,11 @@ pub(crate) mod native_surface_paint {
 
         #[test]
         fn pressed_switch_tints_the_track_toward_button_pressed_bg() {
-            let mut switch = switch();
-            switch.pressed = true;
+            let switch = switch();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&switch, &mut surface, &theme, RECT);
+            paint(&switch, &mut surface, &theme, RECT, false, true);
 
             assert_eq!(
                 track_fill(&surface),
@@ -657,13 +641,11 @@ pub(crate) mod native_surface_paint {
         /// also being hovered, and the deeper pressed tint must win.
         #[test]
         fn pressed_and_hovered_resolves_to_the_pressed_tint() {
-            let mut switch = switch();
-            switch.hovered = true;
-            switch.pressed = true;
+            let switch = switch();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&switch, &mut surface, &theme, RECT);
+            paint(&switch, &mut surface, &theme, RECT, true, true);
 
             assert_eq!(
                 track_fill(&surface),
@@ -678,13 +660,50 @@ pub(crate) mod native_surface_paint {
         fn disabled_switch_does_not_tint_when_hovered() {
             let mut switch = switch();
             switch.disabled = true;
-            switch.hovered = true;
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
 
-            paint(&switch, &mut surface, &theme, RECT);
+            paint(&switch, &mut surface, &theme, RECT, true, false);
 
             assert_eq!(track_fill(&surface), theme.surface_bg);
+        }
+
+        /// The contract painter reads hover and press from its
+        /// [`crate::PaintEnv`], addressed by the switch's own id.
+        #[test]
+        fn contract_paint_tints_from_the_env_interaction() {
+            use crate::interaction::InteractionState;
+            use crate::primitive::{PaintEnv, Primitive};
+
+            let switch = switch();
+            let theme = Theme::default();
+            let style = crate::Style::default();
+            let fill_with = |interaction: &InteractionState| {
+                let env = PaintEnv::new(&theme, &style).with_interaction(interaction);
+                let mut surface = RecordingSurface::default();
+                Primitive::paint(&switch, &switch.layout(RECT), &mut surface, &env);
+                track_fill(&surface)
+            };
+
+            assert_eq!(fill_with(&InteractionState::new()), theme.surface_bg);
+            assert_eq!(
+                fill_with(&InteractionState::from_parts(Some(switch.id), None)),
+                theme.button_hover_bg(theme.surface_bg)
+            );
+            assert_eq!(
+                fill_with(&InteractionState::from_parts(
+                    Some(switch.id),
+                    Some(switch.id)
+                )),
+                theme.button_pressed_bg(theme.surface_bg)
+            );
+            assert_eq!(
+                fill_with(&InteractionState::from_parts(
+                    Some(WidgetId::new("settings:other")),
+                    None
+                )),
+                theme.surface_bg
+            );
         }
     }
 }
@@ -698,13 +717,11 @@ mod tests {
     }
 
     #[test]
-    fn new_defaults_to_off_enabled_unfocused_and_untinted() {
+    fn new_defaults_to_off_enabled_and_unfocused() {
         let s = switch();
         assert!(!s.value);
         assert!(!s.disabled);
         assert!(!s.focused);
-        assert!(!s.hovered);
-        assert!(!s.pressed);
     }
 
     #[test]
@@ -798,22 +815,18 @@ mod tests {
         let mut s = switch();
         s.value = true;
         s.focused = true;
-        s.hovered = true;
-        s.pressed = true;
         let json = serde_json::to_string(&s).unwrap();
         let back: Switch = serde_json::from_str(&json).unwrap();
         assert_eq!(s, back);
     }
 
     #[test]
-    fn serde_defaults_value_disabled_focused_hovered_pressed_to_false_when_omitted() {
+    fn serde_defaults_value_disabled_focused_to_false_when_omitted() {
         let json = r#"{"id":"settings:wrap"}"#;
         let s: Switch = serde_json::from_str(json).unwrap();
         assert!(!s.value);
         assert!(!s.disabled);
         assert!(!s.focused);
-        assert!(!s.hovered);
-        assert!(!s.pressed);
     }
 }
 
@@ -886,7 +899,12 @@ mod contract_tests {
         #[cfg(feature = "tui")]
         {
             let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 4, 1));
-            Primitive::paint_cells(&s, &layout, &mut buf, &crate::theme::Theme::default());
+            Primitive::paint_cells(
+                &s,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&crate::theme::Theme::default(), &crate::Style::default()),
+            );
             assert_eq!(buf[(1u16, 0u16)].symbol(), " ");
             assert_eq!(buf[(2u16, 0u16)].symbol(), "●");
         }

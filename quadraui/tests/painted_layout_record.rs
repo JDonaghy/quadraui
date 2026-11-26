@@ -141,8 +141,7 @@ impl Primitive for Anonymous {
         &self,
         _layout: &Rect,
         _surface: &mut dyn quadraui::PaintSurface,
-        _theme: &quadraui::Theme,
-        _style: &quadraui::Style,
+        _env: &quadraui::PaintEnv,
     ) {
     }
 }

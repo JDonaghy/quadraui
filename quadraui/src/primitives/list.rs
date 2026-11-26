@@ -2416,9 +2416,10 @@ impl crate::primitive::Primitive for ListView {
         &self,
         layout: &Self::Layout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -2487,9 +2488,14 @@ impl crate::primitive::Primitive for ListView {
     fn paint_cells(
         &self,
         layout: &Self::Layout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        // CSR: ratatui_buffer escape hatch
+        let buf = cells
+            .ratatui_buffer()
+            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         // `ListPaintState::default()` is the "no such state" value
         // [`crate::primitive::PaintState`]'s own defaults describe —
@@ -3821,8 +3827,7 @@ mod primitive_parity_tests {
             &list,
             &via_primitive_layout,
             &mut via_primitive_surface,
-            &theme,
-            &style,
+            &crate::PaintEnv::new(&theme, &style),
         );
 
         let direct_layout = crate::primitives::layout_metrics::list_layout(
@@ -3887,8 +3892,7 @@ mod primitive_parity_tests {
             &list,
             &via_primitive_layout,
             &mut via_primitive_surface,
-            &theme,
-            &style,
+            &crate::PaintEnv::new(&theme, &style),
         );
 
         let direct_layout = crate::primitives::layout_metrics::list_layout(

@@ -508,7 +508,7 @@ mod tests {
         let item: ItemImpl = syn::parse_str(
             "impl crate::primitive::Primitive for ListView { type Layout = (); type Event = (); \
              fn layout(&self, _c: &LayoutCtx, _r: Rect) {} fn paint(&self, _l: &(), _s: &mut dyn \
-             PaintSurface, _t: &Theme, _st: &Style) {} }",
+             PaintSurface, _env: &quadraui::PaintEnv) {} }",
         )
         .unwrap();
         assert!(impl_trait_is_primitive(&item));

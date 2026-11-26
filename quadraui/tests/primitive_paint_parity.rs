@@ -209,7 +209,12 @@ fn list_paint_cells_matches_draw_list_then_diverges_under_scroll_px() {
 
     let layout = Primitive::layout(&list, &ctx, area());
     let mut via_primitive = Buffer::empty(cell_area());
-    Primitive::paint_cells(&list, &layout, &mut via_primitive, &theme);
+    Primitive::paint_cells(
+        &list,
+        &layout,
+        &mut quadraui::tui::BufferCellSurface::new(&mut via_primitive),
+        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
+    );
 
     let mut direct_default = Buffer::empty(cell_area());
     quadraui::tui::draw_list(
@@ -258,7 +263,12 @@ fn tree_paint_cells_matches_draw_tree_then_diverges_under_scroll_px() {
 
     let layout = Primitive::layout(&tree, &ctx, area());
     let mut via_primitive = Buffer::empty(cell_area());
-    Primitive::paint_cells(&tree, &layout, &mut via_primitive, &theme);
+    Primitive::paint_cells(
+        &tree,
+        &layout,
+        &mut quadraui::tui::BufferCellSurface::new(&mut via_primitive),
+        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
+    );
 
     let mut direct_default = Buffer::empty(cell_area());
     quadraui::tui::draw_tree(
@@ -309,7 +319,12 @@ fn data_table_paint_cells_matches_draw_data_table_then_diverges_under_hover() {
 
     let layout = Primitive::layout(&table, &ctx, area());
     let mut via_primitive = Buffer::empty(cell_area());
-    Primitive::paint_cells(&table, &layout, &mut via_primitive, &theme);
+    Primitive::paint_cells(
+        &table,
+        &layout,
+        &mut quadraui::tui::BufferCellSurface::new(&mut via_primitive),
+        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
+    );
 
     let mut direct_default = Buffer::empty(cell_area());
     quadraui::tui::draw_data_table(&mut direct_default, cell_area(), &table, &theme, None);
@@ -357,7 +372,12 @@ fn tree_table_paint_cells_matches_draw_tree_table_then_diverges_under_hover() {
 
     let layout = Primitive::layout(&tt, &ctx, area());
     let mut via_primitive = Buffer::empty(cell_area());
-    Primitive::paint_cells(&tt, &layout, &mut via_primitive, &theme);
+    Primitive::paint_cells(
+        &tt,
+        &layout,
+        &mut quadraui::tui::BufferCellSurface::new(&mut via_primitive),
+        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
+    );
 
     let mut direct_default = Buffer::empty(cell_area());
     quadraui::tui::draw_tree_table(

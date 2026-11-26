@@ -114,12 +114,20 @@ fn color_from_ratatui(c: RatatuiColor) -> Option<Color> {
     }
 }
 
-/// [`CellSurface`] over a live ratatui buffer — the trait's one
-/// implementor today, built fresh by [`crate::tui::backend::TuiBackend::cell_surface`]
-/// each call. See `crate::cell_surface`'s module doc for scope.
+/// The [`CellSurface`] [`crate::tui::backend::TuiBackend::cell_surface`]
+/// builds fresh each call: a [`BufferCellSurface`] whose cursor writes go
+/// to a sink the backend owns, with no lifetime tying it to the buffer.
+/// See `crate::cell_surface`'s module doc for scope.
+pub(crate) type TuiCellSurface = BufferCellSurface<'static>;
+
+/// A [`CellSurface`] over a caller-owned buffer, for tests and headless
+/// paint: wrap a `ratatui` [`Buffer`] with [`Self::new`] and hand it to
+/// [`crate::Primitive::paint_cells`] with no backend in reach. The TUI
+/// backend paints through this same type, so a primitive painted here
+/// lands exactly the cells it does on screen.
 ///
-/// Holds `buf` as a raw pointer rather than `&mut Buffer` so this type
-/// carries no lifetime parameter: [`crate::tui::backend::TuiBackend`]
+/// Holds `buf` as a raw pointer rather than `&mut Buffer` so the backend's
+/// [`TuiCellSurface`] carries no lifetime of its own: [`crate::tui::backend::TuiBackend`]
 /// itself has none (matching every other `Backend` implementor), so a
 /// field holding the `&mut dyn CellSurface`
 /// [`crate::tui::backend::TuiBackend::cell_surface`] hands back could not
@@ -128,10 +136,12 @@ fn color_from_ratatui(c: RatatuiColor) -> Option<Color> {
 /// stores for the identical reason — see that field's own doc, "Frame-scope
 /// mechanism" — except `Buffer` itself has no lifetime to erase, so the raw
 /// pointer here is simply `*mut Buffer`, no `()` type-erasure cast needed.
-pub(crate) struct TuiCellSurface {
-    /// Valid only while the [`crate::tui::backend::TuiBackend::enter_frame_scope`]
-    /// call that produced the `&mut Buffer` passed to [`Self::new`] is
-    /// still on the stack — the same invariant
+pub struct BufferCellSurface<'a> {
+    /// Valid for `'a` when built by [`Self::new`]. Built by [`Self::over`],
+    /// it carries no lifetime: valid only while the caller's buffer is —
+    /// for the backend, while the
+    /// [`crate::tui::backend::TuiBackend::enter_frame_scope`] call that
+    /// produced it is still on the stack, the same invariant
     /// [`crate::tui::backend::TuiBackend::current_frame_mut`]'s own doc
     /// documents for the `Frame` pointer this is ultimately derived from.
     /// Every accessor reaches it only through [`Self::buf`].
@@ -149,16 +159,34 @@ pub(crate) struct TuiCellSurface {
     /// [`crate::tui::backend::TuiBackend::cell_surface`] call can't drop a
     /// write in flight.
     cursor_sink: *mut Option<(u16, u16, CursorShape)>,
+    /// Whether `cursor_sink` is this value's own allocation, freed on drop.
+    owns_sink: bool,
+    _buf: std::marker::PhantomData<&'a mut Buffer>,
 }
 
-impl TuiCellSurface {
+impl<'a> BufferCellSurface<'a> {
+    /// A surface over `buf` for as long as this value lives. Reports
+    /// [`ColorDepth::TrueColor`]; read the last cursor placement back with
+    /// [`Self::cursor`].
+    pub fn new(buf: &'a mut Buffer) -> Self {
+        let mut surface = Self::over(buf, ColorDepth::TrueColor, Box::into_raw(Box::new(None)));
+        surface.owns_sink = true;
+        surface
+    }
+
+    /// Where the painted content last placed the cursor, if anywhere.
+    pub fn cursor(&self) -> Option<(u16, u16, CursorShape)> {
+        // SAFETY: see the `cursor_sink` field's own doc.
+        unsafe { *self.cursor_sink }
+    }
+
     /// `cursor_sink` takes a raw pointer (not `&mut Option<…>`) so a
     /// caller can obtain it in a statement before borrowing `self` again
     /// for `buf` — matching this struct's own `buf: *mut Buffer` field,
     /// which exists for the identical reason (see this type's own doc). A
     /// plain `&mut` reference coerces to this parameter type at every call
     /// site, so constructing one is never `unsafe` on its own.
-    pub(crate) fn new(
+    pub(crate) fn over(
         buf: &mut Buffer,
         color_depth: ColorDepth,
         cursor_sink: *mut Option<(u16, u16, CursorShape)>,
@@ -167,6 +195,8 @@ impl TuiCellSurface {
             buf: buf as *mut Buffer,
             color_depth,
             cursor_sink,
+            owns_sink: false,
+            _buf: std::marker::PhantomData,
         }
     }
 
@@ -180,7 +210,17 @@ impl TuiCellSurface {
     }
 }
 
-impl CellSurface for TuiCellSurface {
+impl Drop for BufferCellSurface<'_> {
+    fn drop(&mut self) {
+        if self.owns_sink {
+            // SAFETY: an owned sink came from `Box::into_raw` in `new` and
+            // is freed exactly once, here.
+            drop(unsafe { Box::from_raw(self.cursor_sink) });
+        }
+    }
+}
+
+impl CellSurface for BufferCellSurface<'_> {
     fn size(&self) -> (u16, u16) {
         // SAFETY: see `Self::buf`'s own doc — read-only use, no reference
         // escapes this method.
@@ -329,7 +369,7 @@ mod tests {
     fn tui_cell_surface_put_wide_blanks_continuation_cell() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
         let mut cursor_sink = None;
-        let mut surface = TuiCellSurface::new(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
+        let mut surface = TuiCellSurface::over(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
         surface.put_wide(2, 1, '中', CellStyle::default());
         assert_eq!(buf[(2, 1)].symbol(), "中");
         assert_eq!(
@@ -343,7 +383,7 @@ mod tests {
     fn tui_cell_surface_put_str_clipped_never_splits_a_double_width_glyph() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
         let mut cursor_sink = None;
-        let mut surface = TuiCellSurface::new(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
+        let mut surface = TuiCellSurface::over(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
         // "日本語" is 3 double-width glyphs (6 columns). A 5-column budget
         // fits two glyphs (4 columns) but not a third's two columns.
         let written = surface.put_str_clipped(0, 0, "日本語", 5, CellStyle::default());
@@ -369,7 +409,7 @@ mod tests {
             let mut buf = Buffer::empty(Rect::new(0, 0, 6, 4));
             let mut cursor_sink = None;
             let mut surface =
-                TuiCellSurface::new(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
+                TuiCellSurface::over(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
             surface.draw_border(
                 crate::Rect::new(1.0, 1.0, 4.0, 3.0),
                 set,
@@ -412,7 +452,7 @@ mod tests {
     fn tui_cell_surface_draw_border_too_small_paints_nothing() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 6, 4));
         let mut cursor_sink = None;
-        let mut surface = TuiCellSurface::new(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
+        let mut surface = TuiCellSurface::over(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
         surface.draw_border(
             crate::Rect::new(1.0, 1.0, 1.0, 1.0),
             BorderSet::Square,
@@ -429,7 +469,7 @@ mod tests {
     fn tui_cell_surface_get_round_trips_put_char() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
         let mut cursor_sink = None;
-        let mut surface = TuiCellSurface::new(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
+        let mut surface = TuiCellSurface::over(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
         let style = CellStyle {
             fg: Some(Color::rgb(10, 20, 30)),
             bg: Some(Color::rgb(40, 50, 60)),
@@ -449,7 +489,7 @@ mod tests {
     fn tui_cell_surface_get_out_of_bounds_is_none() {
         let mut buf = Buffer::empty(Rect::new(5, 5, 10, 10));
         let mut cursor_sink = None;
-        let surface = TuiCellSurface::new(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
+        let surface = TuiCellSurface::over(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
         assert!(surface.get(0, 0).is_none());
     }
 
@@ -457,7 +497,7 @@ mod tests {
     fn tui_cell_surface_set_cursor_forwards_position_and_shape_to_the_sink() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
         let mut cursor_sink = None;
-        let mut surface = TuiCellSurface::new(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
+        let mut surface = TuiCellSurface::over(&mut buf, ColorDepth::TrueColor, &mut cursor_sink);
         assert_eq!(cursor_sink, None);
         surface.set_cursor(4, 2, CursorShape::Bar);
         assert_eq!(cursor_sink, Some((4, 2, CursorShape::Bar)));
@@ -467,7 +507,29 @@ mod tests {
     fn tui_cell_surface_color_depth_reports_the_constructor_value() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
         let mut cursor_sink = None;
-        let surface = TuiCellSurface::new(&mut buf, ColorDepth::Ansi16, &mut cursor_sink);
+        let surface = TuiCellSurface::over(&mut buf, ColorDepth::Ansi16, &mut cursor_sink);
         assert_eq!(surface.color_depth(), ColorDepth::Ansi16);
+    }
+
+    #[test]
+    fn buffer_cell_surface_paints_like_the_backend_surface_and_keeps_the_cursor() {
+        let mut direct = Buffer::empty(Rect::new(0, 0, 10, 3));
+        let mut sink = None;
+        TuiCellSurface::over(&mut direct, ColorDepth::TrueColor, &mut sink).put_str_clipped(
+            1,
+            1,
+            "日a",
+            5,
+            CellStyle::default(),
+        );
+        let mut wrapped = Buffer::empty(Rect::new(0, 0, 10, 3));
+        let mut surface = BufferCellSurface::new(&mut wrapped);
+        assert_eq!(surface.cursor(), None);
+        surface.put_str_clipped(1, 1, "日a", 5, CellStyle::default());
+        surface.set_cursor(3, 2, CursorShape::Block);
+        assert_eq!(surface.cursor(), Some((3, 2, CursorShape::Block)));
+        assert!(surface.ratatui_buffer().is_some());
+        drop(surface);
+        assert_eq!(wrapped, direct);
     }
 }

@@ -11,7 +11,7 @@
 //! (`LayoutNode`/`paint_layout`).
 
 use quadraui::tui::testing::TuiDriver;
-use quadraui::{AppLogic, Backend, InteractionState, Reaction, Rect, UiEvent};
+use quadraui::{AppLogic, Backend, Reaction, Rect, UiEvent};
 use quadraui_binding_core::{decode_render_output, draw_bands, paint_layout, RenderOutput};
 use serde_json::{json, Value};
 
@@ -24,15 +24,14 @@ impl AppLogic for DictApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
-        let chrome = |_id| InteractionState::default();
         match decode_render_output("test", &self.value).expect("valid render payload") {
             RenderOutput::Flat(frame) => {
-                draw_bands(backend, frame.as_refs(), &mut hits, &chrome);
+                draw_bands(backend, frame.as_refs(), &mut hits);
             }
             RenderOutput::Tree(node) => {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                paint_layout(backend, area, &node, &mut hits, &chrome);
+                paint_layout(backend, area, &node, &mut hits);
             }
         }
     }

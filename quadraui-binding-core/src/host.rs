@@ -3105,9 +3105,7 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            draw_bands(backend, self.host.render_refs(), &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            draw_bands(backend, self.host.render_refs(), &mut hits);
             render_overlays(&self.engine, backend, hits);
         }
 
@@ -3260,9 +3258,7 @@ mod tests {
             let resolved =
                 resolve_render_refs(self.engine.widget_state(), backend, self.host.render_refs());
             let mut hits = Vec::new();
-            draw_bands(backend, resolved.as_refs(), &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            draw_bands(backend, resolved.as_refs(), &mut hits);
             render_overlays(&self.engine, backend, hits);
         }
 
@@ -3543,9 +3539,7 @@ mod tests {
             });
             resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -3677,9 +3671,7 @@ mod tests {
             });
             resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -3855,9 +3847,7 @@ mod tests {
             });
             resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -3990,9 +3980,7 @@ mod tests {
             });
             resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -4216,9 +4204,7 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut hits = Vec::new();
-            draw_bands(backend, self.host.render_refs(), &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            draw_bands(backend, self.host.render_refs(), &mut hits);
             render_overlays(&self.engine, backend, hits);
         }
 
@@ -4689,9 +4675,7 @@ mod tests {
             let mut hits = Vec::new();
             let viewport = backend.viewport();
             let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-            paint_layout(backend, area, &self.tree, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &self.tree, &mut hits);
             let mut leaf_tooltips = HashMap::new();
             collect_leaf_tooltips(&self.tree, &mut leaf_tooltips);
             self.host.set_leaf_tooltips(leaf_tooltips);

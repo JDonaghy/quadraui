@@ -531,7 +531,7 @@ fn draw_text_row_cells(
 ) {
     let fallback = Color::rgb(0, 0, 0);
     let mut cursor_sink = None;
-    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    let mut surface = TuiCellSurface::over(buf, ColorDepth::TrueColor, &mut cursor_sink);
     text_field_cell_paint::put_text_row(
         &mut surface,
         y,
@@ -1081,7 +1081,7 @@ fn draw_field_number_input(
     let layout = number.layout(rect);
     // The painter never moves the cursor, so the sink is never read.
     let mut cursor_sink = None;
-    let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+    let mut surface = TuiCellSurface::over(buf, ColorDepth::TrueColor, &mut cursor_sink);
     crate::primitives::number_input::cell_paint::paint(number, &layout, &mut surface, theme);
 }
 
@@ -1158,7 +1158,7 @@ fn draw_field_radio_group(
     );
     // The painter never moves the cursor, so the sink is never read.
     let mut cursor_sink = None;
-    let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+    let mut surface = crate::tui::cell_surface::TuiCellSurface::over(
         buf,
         crate::backend::ColorDepth::TrueColor,
         &mut cursor_sink,

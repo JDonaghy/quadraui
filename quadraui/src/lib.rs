@@ -895,7 +895,7 @@ pub use paint_surface::{PaintSurface, PathVerb};
 // unaliased `CellStyle` (spreadsheet-cell formatting) at this crate root.
 pub use cell_surface::{BorderSet, CellStyle as CellSurfaceStyle, CellSurface, CursorShape};
 // The `Primitive` trait — see that module's doc.
-pub use primitive::{LayoutCtx, Primitive};
+pub use primitive::{LayoutCtx, PaintEnv, Primitive};
 // The behaviour half of the widget contract — see `interactive`'s module
 // doc. `non_interactive!` itself is exported at the crate root by
 // `#[macro_export]`, not re-exported here.

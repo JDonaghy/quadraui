@@ -80,7 +80,7 @@ use quadraui::primitives::canvas::native_surface_paint;
 use quadraui::{
     A11yChild, A11yInfo, A11yPrimitive, Backend, Canvas, CanvasEvent, CanvasHit, CanvasLayout,
     CanvasRegion, DrawOp, DrawsPrimitives, Key, Modifiers, MouseButton, NaturalSize, PaintSurface,
-    Point, Rect, Style, Theme, WidgetId,
+    Point, Rect, Theme, WidgetId,
 };
 
 use crate::extra_paint::ExtraPaint;
@@ -619,9 +619,10 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
         &self,
         layout: &ScriptedLayout,
         surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        style: &Style,
+        env: &quadraui::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         let ctx = LayoutCtx::new(
             LayoutCtx::resolve_row_height(surface.surface_line_height(), style),
             surface.surface_char_width(),
@@ -640,9 +641,14 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
     fn paint_cells(
         &self,
         layout: &ScriptedLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &Theme,
+        cells: &mut dyn quadraui::CellSurface,
+        env: &quadraui::PaintEnv,
     ) {
+        let theme = env.theme();
+        // CSR: ratatui_buffer escape hatch
+        let buf = cells
+            .ratatui_buffer()
+            .expect(quadraui::primitive::CELL_BUFFER_REQUIRED);
         let ctx = LayoutCtx::new(1.0, 1.0, false);
         let (canvas, _) = self.resolve_paint(&ctx, layout.rect, theme);
         let area = q_rect_to_ratatui(layout.rect);
@@ -719,7 +725,7 @@ impl<W: ScriptWidget + 'static> ExtraPaint for ScriptedPrimitive<W> {
 mod tests {
     use super::*;
     use quadraui::event::Viewport;
-    use quadraui::{A11yRole, Color, FontRole};
+    use quadraui::{A11yRole, Color, FontRole, Style};
 
     /// A scripted widget built directly in Rust test code, the way a
     /// binding would build one from its script runtime — a single
@@ -851,8 +857,7 @@ mod tests {
             &primitive,
             &layout,
             &mut surface,
-            &Theme::default(),
-            &Style::default(),
+            &quadraui::PaintEnv::new(&Theme::default(), &Style::default()),
         );
 
         assert_eq!(surface.fills.len(), 1);
@@ -867,7 +872,11 @@ mod tests {
         let layout = primitive.layout(&ctx(), rect);
         let area = ratatui::layout::Rect::new(0, 0, 10, 4);
         let mut buf = ratatui::buffer::Buffer::empty(area);
-        primitive.paint_cells(&layout, &mut buf, &Theme::default());
+        primitive.paint_cells(
+            &layout,
+            &mut quadraui::tui::BufferCellSurface::new(&mut buf),
+            &quadraui::PaintEnv::new(&Theme::default(), &quadraui::Style::default()),
+        );
 
         assert_ne!(buf[(0, 0)].symbol().chars().next().unwrap_or(' '), ' ');
     }
@@ -882,8 +891,7 @@ mod tests {
             &primitive,
             &layout,
             &mut surface,
-            &Theme::default(),
-            &Style::default(),
+            &quadraui::PaintEnv::new(&Theme::default(), &Style::default()),
         );
 
         // The region covers the right half: `(8.0, 2.0)` lands inside it,
@@ -928,8 +936,7 @@ mod tests {
             &primitive,
             &layout,
             &mut surface,
-            &Theme::default(),
-            &Style::default(),
+            &quadraui::PaintEnv::new(&Theme::default(), &Style::default()),
         );
         let _ = primitive.a11y_info();
         let _ = ExtraPaint::natural_size(&primitive, &mut backend);
@@ -942,8 +949,7 @@ mod tests {
             &primitive,
             &layout,
             &mut surface,
-            &Theme::default(),
-            &Style::default(),
+            &quadraui::PaintEnv::new(&Theme::default(), &Style::default()),
         );
         let _ = primitive.a11y_info();
         let _ = ExtraPaint::natural_size(&primitive, &mut backend);
@@ -966,8 +972,7 @@ mod tests {
             &primitive,
             &layout,
             &mut surface,
-            &Theme::default(),
-            &Style::default(),
+            &quadraui::PaintEnv::new(&Theme::default(), &Style::default()),
         );
         let after_first_frame = primitive.call_count();
 
@@ -977,8 +982,7 @@ mod tests {
             &primitive,
             &layout,
             &mut surface,
-            &Theme::default(),
-            &Style::default(),
+            &quadraui::PaintEnv::new(&Theme::default(), &Style::default()),
         );
 
         assert!(primitive.call_count() > after_first_frame);

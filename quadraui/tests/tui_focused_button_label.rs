@@ -24,7 +24,12 @@ fn focus_ring_over_a_tall_button_cell_keeps_the_label() {
         rect.height as f32,
     );
     let layout = Primitive::layout(&button, &ctx, q_rect);
-    Primitive::paint_cells(&button, &layout, &mut buf, &theme);
+    Primitive::paint_cells(
+        &button,
+        &layout,
+        &mut quadraui::tui::BufferCellSurface::new(&mut buf),
+        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
+    );
     draw_focus_ring(&mut buf, rect, &theme);
 
     let screen: String = (0..rect.height)

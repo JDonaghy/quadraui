@@ -2379,10 +2379,11 @@ where
 }
 
 /// Stable id for [`ToolbarOverflow::Menu`]'s own trailing `»` entry.
-/// Never matched against — the primitive strips its `action_id` back to
-/// `None` before returning the layout (see [`Toolbar::layout_menu`]) — it
-/// only needs to be *some* id so [`measure_button`]/a backend's own
-/// measure closure sizes it through the ordinary `Action` formula.
+/// The primitive strips its `action_id` back to `None` before returning
+/// the layout (see [`Toolbar::layout_menu`]), so no click dispatches it;
+/// [`measure_button`]/a backend's own measure closure sizes the entry
+/// through the ordinary `Action` formula, and the painters match it as
+/// the hovered/pressed id when the pointer is on the `»`.
 pub(crate) fn toolbar_overflow_widget_id() -> WidgetId {
     WidgetId::new("quadraui:toolbar-overflow")
 }
@@ -3314,6 +3315,73 @@ pub(crate) mod native_surface_paint {
                 "a pressed spec-backed action must tint through \
                  `theme.button_pressed_bg`; fills were {:?}",
                 surface.fills,
+            );
+        }
+
+        /// An env hovering a `Menu` bar's `»` affordance tints it with
+        /// the same `theme.hover_bg` pill every other action gets, and
+        /// paints no such pill at rest.
+        #[test]
+        fn a_hovered_overflow_chevron_paints_the_hover_tint() {
+            use crate::primitive::{LayoutCtx, Primitive};
+            use crate::primitives::toolbar::{ToolbarOverflow, ToolbarSubPart};
+
+            let action = |id: &str, label: &str| ToolbarButton::Action {
+                id: WidgetId::new(id),
+                label: label.to_string(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+                spec: None,
+            };
+            let bar = Toolbar::new(WidgetId::new("tb"))
+                .with_buttons(vec![
+                    action("tb:a", "Alpha"),
+                    action("tb:b", "Bravo"),
+                    action("tb:c", "Charlie"),
+                ])
+                .with_overflow(ToolbarOverflow::Menu);
+            let layout = Primitive::layout(
+                &bar,
+                &LayoutCtx::new(24.0, 8.0, false),
+                Rect::new(0.0, 0.0, 180.0, 24.0),
+            );
+            let chevron = layout
+                .layout
+                .visible_items
+                .iter()
+                .find(|v| v.kind == ToolbarItemKind::Overflow)
+                .expect("a crowded `Menu` bar lays out the chevron")
+                .bounds;
+            let theme = Theme::default();
+            let style = crate::Style::default();
+            let paint_with = |interaction: crate::InteractionState| {
+                let mut surface = RecordingSurface::default();
+                Primitive::paint(
+                    &bar,
+                    &layout,
+                    &mut surface,
+                    &crate::PaintEnv::new(&theme, &style).with_interaction(&interaction),
+                );
+                surface.fills
+            };
+            let tinted = |fills: &[(Rect, Color)]| {
+                fills.iter().any(|(r, c)| {
+                    *c == theme.hover_bg && r.x >= chevron.x && r.x < chevron.x + chevron.width
+                })
+            };
+
+            assert!(!tinted(&paint_with(crate::InteractionState::new())));
+            let over_chevron = Some((
+                bar.id.clone(),
+                Some(ToolbarSubPart::OverflowChevron.sub_target()),
+            ));
+            let hovered = paint_with(crate::InteractionState::from_targets(over_chevron, None));
+            assert!(
+                tinted(&hovered),
+                "the hovered chevron must paint `theme.hover_bg`; fills were {hovered:?}",
             );
         }
 

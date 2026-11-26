@@ -250,30 +250,37 @@ impl Primitive for SidebarPanel {
     }
 
     /// Runs the shared pixel painter at the resolved header geometry,
-    /// with no pointer state ([`Primitive::paint`] carries no interaction
-    /// channel); the descriptor's own [`Toolbar::focused_index`] still
-    /// paints its focus ring.
+    /// tinting the header button `env` reports hovered or pressed under
+    /// this panel's id (see [`Self::header_interaction`]); the
+    /// descriptor's own [`Toolbar::focused_index`] paints its focus ring.
     fn paint(
         &self,
         layout: &Self::Layout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            let state = SidebarPanelState::default();
+            let (hovered, pressed) = match &self.toolbar {
+                Some(bar) => {
+                    let interaction = self.header_interaction(bar, env);
+                    bar.interaction_ids(&env.with_interaction(&interaction))
+                }
+                None => (None, None),
+            };
             native_surface_paint::paint(
                 self,
                 layout,
                 surface,
                 theme,
-                state.toolbar.hovered_id.as_ref(),
-                state.toolbar.pressed_id.as_ref(),
+                hovered.as_ref(),
+                pressed.as_ref(),
             );
             let _ = style;
         }
@@ -288,20 +295,41 @@ impl Primitive for SidebarPanel {
     }
 
     /// Paints the header through the header toolbar's own
-    /// [`Primitive::paint_cells`]; the content rows are left untouched
-    /// for the host.
+    /// [`Primitive::paint_cells`], with the hover and press
+    /// [`Self::header_interaction`] re-addresses to it; the content rows
+    /// are left untouched for the host.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
         layout: &Self::Layout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
         if let (Some(bar), Some(toolbar)) = (&self.toolbar, &layout.toolbar) {
             if toolbar.area.width > 0.0 && toolbar.area.height > 0.0 {
-                Primitive::paint_cells(bar, toolbar, buf, theme);
+                let interaction = self.header_interaction(bar, env);
+                Primitive::paint_cells(bar, toolbar, cells, &env.with_interaction(&interaction));
             }
         }
+    }
+}
+
+impl SidebarPanel {
+    /// `env`'s hover and press re-addressed from this panel to its header
+    /// `bar`. The painted-widget record names the panel, whose
+    /// [`Interactive::sub_regions`] are the header's own, so each
+    /// sub-part carries over unchanged.
+    #[cfg_attr(
+        not(any(
+            feature = "tui",
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )),
+        allow(dead_code)
+    )]
+    fn header_interaction(&self, bar: &Toolbar, env: &crate::PaintEnv) -> crate::InteractionState {
+        env.child_interaction(&self.id, &bar.id)
     }
 }
 
@@ -1434,7 +1462,11 @@ mod cell_paint_tests {
 
     fn paint(panel: &SidebarPanel, area: Rect, buf: &mut Buffer) -> SidebarPanelLayout {
         let layout = panel.layout(&LayoutCtx::new(1.0, 1.0, false), area);
-        panel.paint_cells(&layout, buf, &Theme::default());
+        panel.paint_cells(
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(buf),
+            &crate::PaintEnv::new(&Theme::default(), &crate::Style::default()),
+        );
         layout
     }
 
@@ -1451,6 +1483,57 @@ mod cell_paint_tests {
         assert_eq!(cell_char(&buf, 0, 1), ' ');
         assert_eq!(layout.content_bounds.y, 1.0);
         assert_eq!(layout.content_bounds.height, 9.0);
+    }
+
+    /// Hover and press addressed to the panel reach its header toolbar:
+    /// the header paints exactly as the toolbar does on its own when the
+    /// same sub-part is addressed to the toolbar's id.
+    #[test]
+    fn panel_addressed_hover_and_press_tint_the_header_button() {
+        use crate::primitives::toolbar::ToolbarSubPart;
+
+        let panel = panel_with_toolbar();
+        let bar = panel.toolbar.clone().expect("panel has a header toolbar");
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let area = Rect::new(0.0, 0.0, 40.0, 10.0);
+        let layout = panel.layout(&LayoutCtx::new(1.0, 1.0, false), area);
+        let header = layout.toolbar.clone().expect("header layout");
+        let sub = Some(ToolbarSubPart::Button(0).sub_target());
+        let blank = || Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
+        let panel_buf = |interaction: crate::InteractionState| {
+            let mut buf = blank();
+            panel.paint_cells(
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&theme, &style).with_interaction(&interaction),
+            );
+            buf
+        };
+        let bar_buf = |interaction: crate::InteractionState| {
+            let mut buf = blank();
+            Primitive::paint_cells(
+                &bar,
+                &header,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&theme, &style).with_interaction(&interaction),
+            );
+            buf
+        };
+        let on_panel = Some((panel.id, sub));
+        let on_bar = Some((bar.id, sub));
+
+        let at_rest = panel_buf(crate::InteractionState::new());
+        let hovered = panel_buf(crate::InteractionState::from_targets(on_panel, None));
+        assert_ne!(hovered, at_rest, "panel hover must tint the header button");
+        assert_eq!(
+            hovered,
+            bar_buf(crate::InteractionState::from_targets(on_bar, None))
+        );
+        assert_eq!(
+            panel_buf(crate::InteractionState::from_targets(on_panel, on_panel)),
+            bar_buf(crate::InteractionState::from_targets(on_bar, on_bar))
+        );
     }
 
     /// Paint and click round-trip at a non-zero origin too.

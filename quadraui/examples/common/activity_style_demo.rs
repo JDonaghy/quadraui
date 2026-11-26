@@ -59,7 +59,6 @@ impl ActivityStyleDemo {
             selection_bg: None,
             is_keyboard_focused: false,
             style: self.style(),
-            hovered: None,
         }
     }
 

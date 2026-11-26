@@ -172,8 +172,6 @@ export interface ButtonDescriptor {
   icon?: Icon | null;
   icon_position?: ButtonIconPosition;
   icon_gap?: number;
-  hovered?: boolean;
-  pressed?: boolean;
 }
 
 export interface ButtonSpecDescriptor {
@@ -919,8 +917,6 @@ export interface SwitchDescriptor {
   value?: boolean;
   disabled?: boolean;
   focused?: boolean;
-  hovered?: boolean;
-  pressed?: boolean;
 }
 
 export interface CheckboxDescriptor {
@@ -1016,8 +1012,6 @@ export interface RadioOptionDescriptor {
   id: WidgetId;
   label: string;
   disabled?: boolean;
-  hovered?: boolean;
-  pressed?: boolean;
 }
 
 export interface RadioGroupDescriptor {
@@ -1191,7 +1185,6 @@ export interface ActivityBarDescriptor {
   selection_bg?: Color | null;
   is_keyboard_focused?: boolean;
   style?: ActivityBarStyleDescriptor;
-  hovered?: number | null;
 }
 
 export type PaletteMode = "List" | "Input";

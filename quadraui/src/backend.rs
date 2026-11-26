@@ -46,8 +46,7 @@ use crate::modal_stack::ModalStack;
 use crate::paths::AppPathKind;
 use crate::power::{BlockerId, PowerSaveKind, ThermalState};
 use crate::primitive::{
-    DynWidget, LayoutCtx, PaintEnv, PaintServices, PaintState, PaintTarget, Primitive,
-    PrimitiveLayout, Units,
+    DynWidget, LayoutCtx, PaintEnv, PaintState, PaintTarget, Primitive, PrimitiveLayout, Units,
 };
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
@@ -3414,12 +3413,14 @@ pub trait DrawsPrimitives: Backend {
     /// asked to fill — a `Primitive::paint` impl that draws wider than
     /// `layout.area` (e.g. an unclamped text run) is clipped rather than
     /// bleeding into whatever paints next. On the
-    /// [`Backend::cell_surface`] path, a `Some` cell surface whose
-    /// [`crate::CellSurface::ratatui_buffer`] answers `None` is a
-    /// programmer error — calling this outside a frame scope — and is
-    /// reported with an `expect` panic rather than silently skipping
-    /// [`Primitive::paint_cells`], mirroring every `TuiBackend::draw_*`
-    /// method's own "called outside enter_frame_scope" panic.
+    /// [`Backend::cell_surface`] path, the cell surface is handed straight
+    /// to [`Primitive::paint_cells`].
+    ///
+    /// The primitive paints with the ambient pointer state
+    /// ([`crate::interaction::ambient_interaction`]) in its
+    /// [`crate::primitive::PaintEnv`]. Nothing is recorded for hit-testing,
+    /// so that state only ever names widgets painted through
+    /// [`Self::draw_dyn`].
     ///
     /// Once painted, an identified primitive whose
     /// [`Primitive::paint_zone`] answers `Some` for the surface kind it
@@ -3439,24 +3440,24 @@ pub trait DrawsPrimitives: Backend {
         let layout = self.layout_primitive(rect, primitive);
         let style = self.style();
         let theme = self.theme();
+        let row_height = primitive_layout_ctx(self).line_height;
+        let interaction = crate::interaction::ambient_interaction();
+        let env = PaintEnv::new(&theme, &style)
+            .with_row_height(row_height)
+            .with_interaction(&interaction);
         let clip = grow_rect(rect, primitive.paint_bleed(&style));
         let mut painted_units = None;
         if let Some(surface) = self.paint_surface() {
             surface.surface_push_clip(clip);
             paint_in_role(surface, primitive.font_role(), &mut |s| {
-                primitive.paint(&layout, s, &theme, &style)
+                primitive.paint(&layout, s, &env)
             });
             surface.surface_pop_clip();
             painted_units = Some(Units::Pixels);
         }
         #[cfg(feature = "tui")]
-        if let Some(cell_surface) = self.cell_surface() {
-            let buf = cell_surface.ratatui_buffer().expect(
-                "Backend::cell_surface answered Some but CellSurface::ratatui_buffer \
-                 answered None — DrawsPrimitives::draw_primitive must run inside a frame \
-                 scope (TuiBackend::enter_frame_scope)",
-            );
-            primitive.paint_cells(&layout, buf, &theme);
+        if let Some(cells) = self.cell_surface() {
+            primitive.paint_cells(&layout, cells, &env);
             painted_units = Some(Units::Cells);
         }
         if let Some(id) = primitive.id() {
@@ -3504,6 +3505,20 @@ pub trait DrawsPrimitives: Backend {
     /// Registers [`DynWidget::paint_zone`]'s rect as the widget's zone
     /// after painting it, exactly as [`Self::draw_primitive`] does.
     ///
+    /// # Hover and press
+    ///
+    /// The widget reads hover and press from the
+    /// [`crate::primitive::PaintEnv`] this builds: `state`'s own
+    /// [`PaintState::interaction`] when it answers `Some`, otherwise the
+    /// ambient pointer state ([`crate::interaction::ambient_interaction`])
+    /// the runtime tracks against this record. Passing `&()` therefore
+    /// paints live hover; passing an explicit
+    /// [`crate::InteractionState`] pins it. When the ambient hover names
+    /// `w`, it is resolved again against the rect and sub-parts `w` is
+    /// painted at now ([`crate::interaction`]'s `ambient_for_painted`), so
+    /// a hover tint stays with what is under the pointer when the content
+    /// moves without the pointer moving.
+    ///
     /// # Painted-layout record
     ///
     /// When `w` carries an id ([`DynWidget::id`]), this also records
@@ -3538,31 +3553,41 @@ pub trait DrawsPrimitives: Backend {
             w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect)
         };
         let theme = self.theme();
-        let env = PaintEnv {
-            services: PaintServices {
-                theme: &theme,
-                style: &style,
-            },
-            row_height: ctx.line_height,
+        let sub_regions: Vec<_> = match w.id() {
+            Some(_) => w
+                .sub_regions(layout.as_ref())
+                .into_iter()
+                .map(|(r, sub)| {
+                    (
+                        Rect::new(r.x + rect.x, r.y + rect.y, r.width, r.height),
+                        sub,
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
         };
+        let ambient = match (state.interaction(), w.id()) {
+            (None, Some(id)) => crate::interaction::ambient_for_painted(id, rect, &sub_regions),
+            _ => crate::interaction::ambient_interaction(),
+        };
+        let interaction = state.interaction().unwrap_or(&ambient);
+        let env = PaintEnv::new(&theme, &style)
+            .with_row_height(ctx.line_height)
+            .with_state(state)
+            .with_interaction(interaction);
         let clip = grow_rect(rect, w.paint_bleed(&style));
         let mut painted_units = None;
         if let Some(surface) = self.paint_surface() {
             surface.surface_push_clip(clip);
             paint_in_role(surface, w.font_role(), &mut |s| {
-                w.paint(layout.as_ref(), PaintTarget::Surface(s), &env, state)
+                w.paint(layout.as_ref(), PaintTarget::Surface(s), &env)
             });
             surface.surface_pop_clip();
             painted_units = Some(Units::Pixels);
         }
         #[cfg(feature = "tui")]
-        if let Some(cell_surface) = self.cell_surface() {
-            let buf = cell_surface.ratatui_buffer().expect(
-                "Backend::cell_surface answered Some but CellSurface::ratatui_buffer \
-                 answered None — DrawsPrimitives::draw_dyn must run inside a frame \
-                 scope (TuiBackend::enter_frame_scope)",
-            );
-            w.paint(layout.as_ref(), PaintTarget::Cells(buf), &env, state);
+        if let Some(cells) = self.cell_surface() {
+            w.paint(layout.as_ref(), PaintTarget::Cells(cells), &env);
             painted_units = Some(Units::Cells);
         }
         if let Some(id) = w.id() {
@@ -3574,16 +3599,6 @@ pub trait DrawsPrimitives: Backend {
             if let Some(zone) = painted_units.and_then(|u| w.paint_zone(layout.as_ref(), u)) {
                 self.register_zone(*id, zone);
             }
-            let sub_regions = w
-                .sub_regions(layout.as_ref())
-                .into_iter()
-                .map(|(r, sub)| {
-                    (
-                        Rect::new(r.x + rect.x, r.y + rect.y, r.width, r.height),
-                        sub,
-                    )
-                })
-                .collect();
             let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
             let recorded = w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect);
             crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {

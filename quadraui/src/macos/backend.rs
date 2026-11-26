@@ -8672,7 +8672,6 @@ mod tests {
                 selection_bg: None,
                 is_keyboard_focused: false,
                 style: Default::default(),
-                hovered: None,
             };
             b.enter_frame_scope(surface.context_ptr(), |backend| {
                 crate::DrawsPrimitives::draw_dyn(

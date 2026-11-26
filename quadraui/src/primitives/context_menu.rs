@@ -273,7 +273,7 @@ pub struct ContextMenuItem {
     /// `icon.is_some()`, every item's label (icon-bearing or not)
     /// indents by the same fixed gutter width, so the column stays
     /// aligned even when only some items fill it. Both
-    /// [`native_surface_paint::paint_with_glyphs`] (pixel backends) and
+    /// [`native_surface_paint::paint`] (pixel backends) and
     /// the TUI rasteriser apply this rule the same way.
     #[serde(default)]
     pub icon: Option<Icon>,
@@ -1100,24 +1100,26 @@ impl Primitive for ContextMenu {
         }
     }
 
-    /// The shared pixel painter,
-    /// `native_surface_paint::paint_with_glyphs`, rendering shortcut hints
-    /// for the host platform, [`Self::glyphs`]'s marks and each item's own
-    /// icon resolved at [`ContextMenuPrimitiveLayout::nerd_fonts_enabled`].
+    /// The shared pixel painter, `native_surface_paint::paint`, rendering
+    /// shortcut hints for the host platform, [`Self::glyphs`]'s marks,
+    /// each item's own icon resolved at
+    /// [`ContextMenuPrimitiveLayout::nerd_fonts_enabled`], and the
+    /// pointer's hover/press tint from `env`.
     fn paint(
         &self,
         layout: &ContextMenuPrimitiveLayout,
         surface: &mut dyn crate::paint_surface::PaintSurface,
-        theme: &crate::theme::Theme,
-        style: &crate::style::Style,
+        env: &crate::PaintEnv,
     ) {
+        let theme = env.theme();
+        let style = env.style();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            native_surface_paint::paint_with_glyphs(
+            native_surface_paint::paint(
                 self,
                 &layout.layout,
                 host_platform(),
@@ -1126,6 +1128,7 @@ impl Primitive for ContextMenu {
                 style,
                 Some(&self.glyphs),
                 layout.nerd_fonts_enabled,
+                PointerTint::from_env(&self.id, env),
             );
         }
         #[cfg(not(any(
@@ -1133,7 +1136,7 @@ impl Primitive for ContextMenu {
             feature = "win",
             all(feature = "macos", target_os = "macos")
         )))]
-        let _ = (layout, surface, theme, style);
+        let _ = (layout, surface, theme, style, env);
     }
 
     /// [`cell_paint::paint`] over `buf`. [`Self::glyphs`] and
@@ -1144,24 +1147,86 @@ impl Primitive for ContextMenu {
     fn paint_cells(
         &self,
         layout: &ContextMenuPrimitiveLayout,
-        buf: &mut ratatui::buffer::Buffer,
-        theme: &crate::theme::Theme,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
     ) {
-        // The painter never moves the cursor, so the sink is never read.
-        let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
-            buf,
-            crate::backend::ColorDepth::TrueColor,
-            &mut cursor_sink,
-        );
+        let theme = env.theme();
         cell_paint::paint(
             self,
             &layout.layout,
-            &mut surface,
+            cells,
             theme,
             Some(&self.glyphs),
             layout.nerd_fonts_enabled,
+            PointerTint::from_env(&self.id, env),
         );
+    }
+}
+
+/// The sub-parts of one widget the pointer hovers and presses this
+/// frame, read from a [`crate::PaintEnv`], with the one row-tint rule
+/// every menu-shaped painter shares: a pressed row takes
+/// [`crate::Theme::menu_item_pressed_bg`], a row the widget already
+/// emphasises (open, keyboard-selected) keeps that emphasis, and only
+/// then does a hovered row take [`crate::Theme::menu_item_hover_bg`].
+/// Emphasis outranks hover because the emphasised row is often the
+/// hovered one too, and hover must never weaken it.
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos"),
+        feature = "tui"
+    )),
+    allow(dead_code)
+)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PointerTint {
+    pub(crate) hovered: Option<SubTarget>,
+    pub(crate) pressed: Option<SubTarget>,
+}
+
+#[cfg_attr(
+    not(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos"),
+        feature = "tui"
+    )),
+    allow(dead_code)
+)]
+impl PointerTint {
+    /// `id`'s hovered and pressed sub-parts, under
+    /// [`crate::PaintEnv::pressed`]'s press-while-hovered rule.
+    pub(crate) fn from_env(id: &WidgetId, env: &crate::PaintEnv) -> Self {
+        Self {
+            hovered: env.hovered_sub(id),
+            pressed: env.pressed_sub(id),
+        }
+    }
+
+    /// The fill for the row addressed by `sub`, over a resting `base`
+    /// colour. `live` is `false` for a row that cannot be activated
+    /// (disabled, a separator), which never takes a pointer tint.
+    /// `emphasis` is the row's own highlight, if the widget gives it one.
+    /// `None` leaves the row at `base`.
+    pub(crate) fn row_bg(
+        self,
+        sub: SubTarget,
+        live: bool,
+        emphasis: Option<Color>,
+        base: Color,
+        theme: &crate::Theme,
+    ) -> Option<Color> {
+        if live && self.pressed == Some(sub) {
+            Some(theme.menu_item_pressed_bg(base))
+        } else if emphasis.is_some() {
+            emphasis
+        } else if live && self.hovered == Some(sub) {
+            Some(theme.menu_item_hover_bg(base))
+        } else {
+            None
+        }
     }
 }
 
@@ -1322,9 +1387,9 @@ impl Interactive for ContextMenu {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{shortcut_text, ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
+    use super::{shortcut_text, ContextMenu, ContextMenuGlyphs, ContextMenuLayout, PointerTint};
     use crate::accelerator::Platform;
-    use crate::interaction::InteractionState;
+    use crate::interactive::SubTarget;
     use crate::paint_surface::PaintSurface;
     use crate::style::Style;
     use crate::theme::Theme;
@@ -1333,7 +1398,7 @@ pub(crate) mod native_surface_paint {
 
     /// Pixel width of the leading check-mark/icon glyph itself, when the
     /// menu-wide gutter column (see `has_icon_gutter` in
-    /// `paint_with_glyphs_impl`) is reserved.
+    /// `paint`) is reserved.
     const ICON_COLUMN_WIDTH: f32 = 16.0;
     /// Gap between the glyph column and the label text that follows it.
     const ICON_COLUMN_GAP: f32 = 4.0;
@@ -1346,10 +1411,14 @@ pub(crate) mod native_surface_paint {
     /// `platform` selects the key-equivalent render form (`⌘S` vs.
     /// `Ctrl+S`) — see [`shortcut_text`]. `style` supplies
     /// the corner radius/border width/shadow elevation the popup box
-    /// paints with — callers pass `&self.style()`. The menu's own
-    /// [`ContextMenu::glyphs`] supplies the check-mark / submenu-arrow
-    /// marks; [`paint_with_glyphs`] additionally takes a caller-supplied
-    /// override set and the `nerd_fonts_enabled` flag that resolves it.
+    /// paints with. `glyphs` overrides the check-mark / submenu-arrow
+    /// marks, and `None` falls back to the menu's own
+    /// [`ContextMenu::glyphs`]; `nerd_fonts_enabled` (see
+    /// [`crate::Backend::nerd_fonts_enabled`]) selects each override
+    /// [`Icon`]'s `glyph` vs. `fallback` form. `pointer` names the rows
+    /// the pointer hovers and presses, by item index, and tints them
+    /// under [`PointerTint::row_bg`]'s rule over the keyboard selection.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         menu: &ContextMenu,
         menu_layout: &ContextMenuLayout,
@@ -1357,117 +1426,9 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         style: &Style,
-    ) -> Vec<(Rect, WidgetId)> {
-        paint_with_glyphs(
-            menu,
-            menu_layout,
-            platform,
-            surface,
-            theme,
-            style,
-            None,
-            false,
-        )
-    }
-
-    /// [`paint`], reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`]: the item whose
-    /// [`ContextMenuItem::id`] matches `interaction.hovered()` /
-    /// `interaction.pressed()` paints with
-    /// [`Theme::menu_item_hover_bg`] / [`Theme::menu_item_pressed_bg`]
-    /// instead of its plain selection/resting fill.
-    pub(crate) fn paint_interactive(
-        menu: &ContextMenu,
-        menu_layout: &ContextMenuLayout,
-        platform: Platform,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        style: &Style,
-        interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        paint_with_glyphs_interactive(
-            menu,
-            menu_layout,
-            platform,
-            surface,
-            theme,
-            style,
-            None,
-            false,
-            interaction,
-        )
-    }
-
-    /// Identical to [`paint`], plus an explicit [`ContextMenuGlyphs`]
-    /// override for the check-mark / submenu-arrow glyphs and the
-    /// `nerd_fonts_enabled` flag (see [`crate::Backend::nerd_fonts_enabled`])
-    /// that selects each override [`Icon`]'s `glyph` vs. `fallback` form.
-    /// `glyphs: None` (what [`paint`] passes) falls back to the menu's
-    /// own [`ContextMenu::glyphs`], so an unset descriptor field renders
-    /// byte-for-byte the same as today's codicon defaults.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn paint_with_glyphs(
-        menu: &ContextMenu,
-        menu_layout: &ContextMenuLayout,
-        platform: Platform,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        style: &Style,
         glyphs: Option<&ContextMenuGlyphs>,
         nerd_fonts_enabled: bool,
-    ) -> Vec<(Rect, WidgetId)> {
-        paint_with_glyphs_impl(
-            menu,
-            menu_layout,
-            platform,
-            surface,
-            theme,
-            style,
-            glyphs,
-            nerd_fonts_enabled,
-            None,
-        )
-    }
-
-    /// [`paint_with_glyphs`] + [`paint_interactive`]'s hover/pressed
-    /// treatment combined — the method a backend that wants both glyph
-    /// overrides and hover feedback calls.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn paint_with_glyphs_interactive(
-        menu: &ContextMenu,
-        menu_layout: &ContextMenuLayout,
-        platform: Platform,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        style: &Style,
-        glyphs: Option<&ContextMenuGlyphs>,
-        nerd_fonts_enabled: bool,
-        interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        paint_with_glyphs_impl(
-            menu,
-            menu_layout,
-            platform,
-            surface,
-            theme,
-            style,
-            glyphs,
-            nerd_fonts_enabled,
-            Some(interaction),
-        )
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn paint_with_glyphs_impl(
-        menu: &ContextMenu,
-        menu_layout: &ContextMenuLayout,
-        platform: Platform,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        style: &Style,
-        glyphs: Option<&ContextMenuGlyphs>,
-        nerd_fonts_enabled: bool,
-        interaction: Option<&InteractionState>,
+        pointer: PointerTint,
     ) -> Vec<(Rect, WidgetId)> {
         let bounds = menu_layout.bounds;
         if bounds.width <= 0.0 || bounds.height <= 0.0 {
@@ -1541,28 +1502,17 @@ pub(crate) mod native_surface_paint {
                 continue;
             }
 
+            // The keyboard-moved cursor is this row's emphasis: a mouse
+            // can hover the very row the keyboard last selected, and
+            // `theme.selected_bg` reads as the stronger of the two cues.
             let is_selected = vis.item_idx == menu.selected_idx && vis.clickable;
-            let item_id = menu.items[vis.item_idx].id;
-            let is_pressed = vis.clickable
-                && item_id.is_some_and(|id| interaction.is_some_and(|i| i.is_pressed(&id)));
-            let is_hovered = vis.clickable
-                && item_id.is_some_and(|id| interaction.is_some_and(|i| i.is_hovered(&id)));
-            // `is_selected` (the keyboard-moved cursor) outranks
-            // `is_hovered` here: a mouse can hover the very row the
-            // keyboard last selected, and `theme.selected_bg` is meant
-            // to read as the stronger of the two cues. Were hover
-            // checked first, hovering the selected row would downgrade
-            // it to the fainter `menu_item_hover_bg`. Pressed still wins
-            // over both.
-            let row_bg = if is_pressed {
-                Some(theme.menu_item_pressed_bg(bg))
-            } else if is_selected {
-                Some(theme.selected_bg)
-            } else if is_hovered {
-                Some(theme.menu_item_hover_bg(bg))
-            } else {
-                None
-            };
+            let row_bg = pointer.row_bg(
+                SubTarget(vis.item_idx as u64),
+                vis.clickable,
+                is_selected.then_some(theme.selected_bg),
+                bg,
+                theme,
+            );
             if let Some(row_bg) = row_bg {
                 let sel_rect =
                     Rect::new(row.x + 1.0, row.y, (row.width - 2.0).max(0.0), row.height);
@@ -1718,9 +1668,10 @@ pub(crate) mod native_surface_paint {
 /// stays out").
 #[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
-    use super::{shortcut_text, ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
+    use super::{shortcut_text, ContextMenu, ContextMenuGlyphs, ContextMenuLayout, PointerTint};
     use crate::accelerator::Platform;
     use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::interactive::SubTarget;
     use crate::theme::Theme;
     use crate::types::Color;
 
@@ -1760,6 +1711,7 @@ pub(crate) mod cell_paint {
         theme: &Theme,
         glyphs: Option<&ContextMenuGlyphs>,
         nerd_fonts_enabled: bool,
+        pointer: PointerTint,
     ) {
         // An explicit argument wins; with none, the menu's own
         // descriptor field is the override set, so every paint path
@@ -1847,6 +1799,19 @@ pub(crate) mod cell_paint {
                 (dim_fg, bg)
             } else {
                 (fg, bg)
+            };
+            // A pressed row keeps the plain foreground on the pressed
+            // tint, even over the inverted selection; a hovered row only
+            // tints when the selection's inversion is not already there.
+            let (item_fg, item_bg) = match pointer.row_bg(
+                SubTarget(vis.item_idx as u64),
+                vis.clickable,
+                (is_selected && vis.clickable).then_some(item_bg),
+                bg,
+                theme,
+            ) {
+                Some(tint) if tint != item_bg => (fg, tint),
+                _ => (item_fg, item_bg),
             };
             let row_style = solid(item_fg, item_bg);
             for dx in 0..inner_w {
@@ -1966,7 +1931,7 @@ mod cell_paint_tests {
         nerd_fonts_enabled: bool,
     ) {
         let mut cursor_sink = None;
-        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::over(
             buf,
             crate::backend::ColorDepth::TrueColor,
             &mut cursor_sink,
@@ -1978,6 +1943,7 @@ mod cell_paint_tests {
             theme,
             glyphs,
             nerd_fonts_enabled,
+            PointerTint::default(),
         );
     }
 
@@ -2222,6 +2188,96 @@ mod cell_paint_tests {
         let row_y = layout.visible_items[0].bounds.y.round() as u16;
         let bg = buf[(inner_x, row_y)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(255, 255, 255));
+    }
+
+    /// Paints `menu` through [`Primitive::paint_cells`] with the pointer
+    /// on row `hovered` and pressing row `pressed`, the way
+    /// `draw_dyn` hands the widget its [`crate::PaintEnv`].
+    fn paint_with_pointer(
+        buf: &mut Buffer,
+        menu: &ContextMenu,
+        theme: &Theme,
+        hovered: Option<usize>,
+        pressed: Option<usize>,
+    ) -> ContextMenuPrimitiveLayout {
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let layout = Primitive::layout(menu, &ctx, crate::event::Rect::new(0.0, 0.0, 30.0, 10.0));
+        let at = |idx: Option<usize>| idx.map(|i| (menu.id, Some(SubTarget(i as u64))));
+        let interaction = crate::InteractionState::from_targets(at(hovered), at(pressed));
+        let style = crate::Style::default();
+        let env = crate::PaintEnv::new(theme, &style).with_interaction(&interaction);
+        let mut cells = crate::tui::BufferCellSurface::new(buf);
+        Primitive::paint_cells(menu, &layout, &mut cells, &env);
+        layout
+    }
+
+    /// The background of row `idx`'s first inner cell.
+    fn row_bg(
+        buf: &Buffer,
+        layout: &ContextMenuPrimitiveLayout,
+        idx: usize,
+    ) -> ratatui::style::Color {
+        let vis = layout
+            .layout
+            .visible_items
+            .iter()
+            .find(|v| v.item_idx == idx)
+            .expect("row visible");
+        buf[(vis.bounds.x.round() as u16, vis.bounds.y.round() as u16)].bg
+    }
+
+    #[test]
+    fn hovered_row_takes_the_menu_hover_tint_on_cells() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let theme = Theme::default();
+        let layout = paint_with_pointer(&mut buf, &menu, &theme, Some(1), None);
+        assert_eq!(
+            row_bg(&buf, &layout, 1),
+            crate::tui::ratatui_color(theme.menu_item_hover_bg(theme.tab_bar_bg))
+        );
+        assert_eq!(
+            row_bg(&buf, &layout, 3),
+            crate::tui::ratatui_color(theme.tab_bar_bg),
+            "a row the pointer is not on stays at rest"
+        );
+    }
+
+    #[test]
+    fn pressed_row_takes_the_menu_pressed_tint_on_cells() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu();
+        let theme = Theme::default();
+        let layout = paint_with_pointer(&mut buf, &menu, &theme, Some(3), Some(3));
+        assert_eq!(
+            row_bg(&buf, &layout, 3),
+            crate::tui::ratatui_color(theme.menu_item_pressed_bg(theme.tab_bar_bg))
+        );
+    }
+
+    #[test]
+    fn hovering_the_selected_row_keeps_its_inversion_on_cells() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let menu = make_menu(); // selected_idx = 0
+        let theme = Theme::default();
+        let layout = paint_with_pointer(&mut buf, &menu, &theme, Some(0), None);
+        assert_eq!(
+            row_bg(&buf, &layout, 0),
+            crate::tui::ratatui_color(theme.foreground)
+        );
+    }
+
+    #[test]
+    fn a_row_that_cannot_be_activated_never_tints_on_cells() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
+        let mut menu = make_menu();
+        menu.items[1].disabled = true;
+        let theme = Theme::default();
+        let layout = paint_with_pointer(&mut buf, &menu, &theme, Some(1), Some(1));
+        assert_eq!(
+            row_bg(&buf, &layout, 1),
+            crate::tui::ratatui_color(theme.tab_bar_bg)
+        );
     }
 
     #[test]
@@ -3769,16 +3825,15 @@ mod tests {
             (m, layout)
         }
 
-        /// With no [`ContextMenuGlyphs`] override, `paint_with_glyphs`
-        /// (what `paint` always calls) paints the default codicon
-        /// check mark — byte-for-byte today's behaviour.
+        /// With no [`ContextMenuGlyphs`] override and the menu's own
+        /// glyphs unset, `paint` paints the default codicon check mark.
         #[test]
         fn no_override_paints_default_codicon_check() {
             let mut item = cm_action("a", "Save");
             item.checked = Some(true);
             let (m, layout) = popup_layout(item);
             let mut surface = RecordingSurface::default();
-            native_surface_paint::paint_with_glyphs(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
@@ -3787,6 +3842,7 @@ mod tests {
                 &Style::default(),
                 None,
                 false,
+                PointerTint::default(),
             );
             let expected = crate::codicon::CHECK.to_string();
             assert!(
@@ -3806,7 +3862,7 @@ mod tests {
             let (m, layout) = popup_layout(item);
             let glyphs = ContextMenuGlyphs::new().with_checked_glyph("V");
             let mut surface = RecordingSurface::default();
-            native_surface_paint::paint_with_glyphs(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
@@ -3815,6 +3871,7 @@ mod tests {
                 &Style::default(),
                 Some(&glyphs),
                 true,
+                PointerTint::default(),
             );
             assert!(surface.runs.iter().any(|r| r == "V"));
             let default_codicon = crate::codicon::CHECK.to_string();
@@ -3841,8 +3898,7 @@ mod tests {
                     &m,
                     &layout,
                     &mut surface,
-                    &Theme::default(),
-                    &Style::default(),
+                    &crate::PaintEnv::new(&Theme::default(), &Style::default()),
                 );
                 surface.runs
             };
@@ -3866,7 +3922,7 @@ mod tests {
             let (m, layout) = popup_layout(item);
             let glyphs = ContextMenuGlyphs::new().with_submenu_arrow_glyph(">");
             let mut surface = RecordingSurface::default();
-            native_surface_paint::paint_with_glyphs(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
@@ -3875,6 +3931,7 @@ mod tests {
                 &Style::default(),
                 Some(&glyphs),
                 true,
+                PointerTint::default(),
             );
             assert!(surface.runs.iter().any(|r| r == ">"));
             let default_codicon = crate::codicon::CHEVRON_RIGHT.to_string();
@@ -3892,7 +3949,7 @@ mod tests {
             let (m, layout) = popup_layout(item);
 
             let mut surface = RecordingSurface::default();
-            native_surface_paint::paint_with_glyphs(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
@@ -3901,6 +3958,7 @@ mod tests {
                 &Style::default(),
                 None,
                 true,
+                PointerTint::default(),
             );
             assert!(
                 surface.runs.iter().any(|r| r == "G"),
@@ -3909,7 +3967,7 @@ mod tests {
             );
 
             let mut fallback_surface = RecordingSurface::default();
-            native_surface_paint::paint_with_glyphs(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
@@ -3918,6 +3976,7 @@ mod tests {
                 &Style::default(),
                 None,
                 false,
+                PointerTint::default(),
             );
             assert!(
                 fallback_surface.runs.iter().any(|r| r == "F"),
@@ -3937,7 +3996,7 @@ mod tests {
             let (m, layout) = popup_layout(item);
 
             let mut surface = RecordingSurface::default();
-            native_surface_paint::paint_with_glyphs(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
@@ -3946,6 +4005,7 @@ mod tests {
                 &Style::default(),
                 None,
                 true,
+                PointerTint::default(),
             );
             let expected_check = crate::codicon::CHECK.to_string();
             assert!(surface.runs.iter().any(|r| r == &expected_check));
@@ -4054,6 +4114,9 @@ mod tests {
                 &mut surface,
                 &Theme::default(),
                 &style,
+                None,
+                false,
+                PointerTint::default(),
             );
 
             let (label_rect, _) = surface
@@ -4108,6 +4171,9 @@ mod tests {
                 &mut surface,
                 &Theme::default(),
                 &style,
+                None,
+                false,
+                PointerTint::default(),
             );
 
             let (icon_rect, _) = surface
@@ -4226,6 +4292,18 @@ mod tests {
             }
         }
 
+        /// The tint `m`'s painter receives with the pointer on row
+        /// `hovered` and pressing row `pressed`, read back through a
+        /// [`crate::PaintEnv`] the way [`Primitive::paint`] reads it.
+        fn tint(m: &ContextMenu, hovered: Option<usize>, pressed: Option<usize>) -> PointerTint {
+            let theme = Theme::default();
+            let style = Style::default();
+            let at = |idx: Option<usize>| idx.map(|i| (m.id, Some(SubTarget(i as u64))));
+            let interaction = InteractionState::from_targets(at(hovered), at(pressed));
+            let env = crate::PaintEnv::new(&theme, &style).with_interaction(&interaction);
+            PointerTint::from_env(&m.id, &env)
+        }
+
         fn popup(id: &str) -> (ContextMenu, ContextMenuLayout) {
             let m = menu(vec![cm_action(id, "Copy"), cm_action("other", "Paste")]);
             let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -4244,17 +4322,18 @@ mod tests {
             // `hovering_the_selected_row_keeps_selected_bg_not_hover_bg`.
             let (m, layout) = popup("copy");
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(WidgetId::new("other")));
+            let tint = tint(&m, Some(1), None);
             let mut surface = RecordingSurface::default();
-            native_surface_paint::paint_interactive(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
                 &mut surface,
                 &theme,
                 &Style::default(),
-                &interaction,
+                None,
+                false,
+                tint,
             );
             let expected = theme.menu_item_hover_bg(theme.hover_bg);
             assert!(
@@ -4272,17 +4351,18 @@ mod tests {
             // the fainter hover tint.
             let (m, layout) = popup("copy");
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(WidgetId::new("copy")));
+            let tint = tint(&m, Some(0), None);
             let mut surface = RecordingSurface::default();
-            native_surface_paint::paint_interactive(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
                 &mut surface,
                 &theme,
                 &Style::default(),
-                &interaction,
+                None,
+                false,
+                tint,
             );
             let hover_bg = theme.menu_item_hover_bg(theme.hover_bg);
             assert!(
@@ -4301,16 +4381,18 @@ mod tests {
         fn leaving_the_item_clears_the_hover_fill() {
             let (m, layout) = popup("copy");
             let theme = Theme::default();
-            let interaction = InteractionState::new(); // nothing hovered
+            let tint = tint(&m, None, None);
             let mut surface = RecordingSurface::default();
-            native_surface_paint::paint_interactive(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
                 &mut surface,
                 &theme,
                 &Style::default(),
-                &interaction,
+                None,
+                false,
+                tint,
             );
             let hover_bg = theme.menu_item_hover_bg(theme.hover_bg);
             assert!(
@@ -4324,18 +4406,18 @@ mod tests {
         fn pressed_item_paints_menu_item_pressed_bg_not_hover_bg() {
             let (m, layout) = popup("copy");
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(WidgetId::new("copy")));
-            interaction.set_pressed(Some(WidgetId::new("copy")));
+            let tint = tint(&m, Some(0), Some(0));
             let mut surface = RecordingSurface::default();
-            native_surface_paint::paint_interactive(
+            native_surface_paint::paint(
                 &m,
                 &layout,
                 Platform::Linux,
                 &mut surface,
                 &theme,
                 &Style::default(),
-                &interaction,
+                None,
+                false,
+                tint,
             );
             let pressed = theme.menu_item_pressed_bg(theme.hover_bg);
             let hover = theme.menu_item_hover_bg(theme.hover_bg);
@@ -4921,7 +5003,12 @@ mod widget_contract_tests {
 
         let layout = resolved(&menu);
         let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 30, 10));
-        Primitive::paint_cells(&menu, &layout, &mut buf, &crate::theme::Theme::default());
+        Primitive::paint_cells(
+            &menu,
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            &crate::PaintEnv::new(&crate::theme::Theme::default(), &crate::Style::default()),
+        );
 
         let inner_x = layout.layout.bounds.x.round() as u16;
         let right = inner_x + layout.layout.bounds.width.round() as u16;
@@ -4956,7 +5043,12 @@ mod widget_contract_tests {
             let ctx = LayoutCtx::new(1.0, 1.0, nerd);
             let layout = Primitive::layout(&menu, &ctx, AREA);
             let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 30, 10));
-            Primitive::paint_cells(&menu, &layout, &mut buf, &theme);
+            Primitive::paint_cells(
+                &menu,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&theme, &crate::Style::default()),
+            );
             let x = layout.layout.bounds.x.round() as u16;
             let y = layout.layout.visible_items[0].bounds.y.round() as u16;
             buf[(x, y)].symbol().to_string()

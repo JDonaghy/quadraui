@@ -64,7 +64,7 @@
 //! `quadraui::Backend`/`quadraui::gtk`/`quadraui::macos`/`quadraui::win`:
 //!
 //! ```
-//! use quadraui::primitive::{LayoutCtx, Primitive};
+//! use quadraui::primitive::{LayoutCtx, PaintEnv, Primitive};
 //! use quadraui::{A11yInfo, A11yPrimitive, Color, PaintSurface, Rect, Style, Theme};
 //!
 //! /// A single filled swatch.
@@ -86,13 +86,7 @@
 //!         rect
 //!     }
 //!
-//!     fn paint(
-//!         &self,
-//!         layout: &Rect,
-//!         surface: &mut dyn PaintSurface,
-//!         _theme: &Theme,
-//!         _style: &Style,
-//!     ) {
+//!     fn paint(&self, layout: &Rect, surface: &mut dyn PaintSurface, _env: &PaintEnv) {
 //!         surface.surface_fill_rect(*layout, self.color);
 //!     }
 //! }
@@ -126,12 +120,16 @@
 //! let ctx = LayoutCtx::new(16.0, 8.0, false);
 //! let mut surface = NullSurface::default();
 //! let layout = swatch.layout(&ctx, Rect::new(0.0, 0.0, 10.0, 10.0));
-//! swatch.paint(&layout, &mut surface, &Theme::default(), &Style::default());
+//! let (theme, style) = (Theme::default(), Style::default());
+//! swatch.paint(&layout, &mut surface, &PaintEnv::new(&theme, &style));
 //! ```
 
 use crate::a11y::{A11yAction, A11yPrimitive};
+#[cfg(feature = "tui")]
+use crate::cell_surface::CellSurface;
 use crate::event::Rect;
 use crate::frame::OwnedContent;
+use crate::interaction::InteractionState;
 use crate::interactive::{EventCx, FocusSpec, Interactive, RoutedEvent, WidgetAction};
 use crate::paint_surface::PaintSurface;
 use crate::style::Style;
@@ -600,8 +598,8 @@ impl dyn PrimitiveLayout {
 /// Which paint destination [`crate::backend::DrawsPrimitives::draw_primitive`]
 /// resolved for a call, without the borrow itself — the tag half of
 /// [`PaintTarget`]. Lets code branch on "pixel surface or cell grid"
-/// before it has a live `&mut dyn PaintSurface`/`&mut
-/// ratatui::buffer::Buffer` in hand to match on, e.g. for logging or a
+/// before it has a live `&mut dyn PaintSurface`/`&mut dyn CellSurface`
+/// in hand to match on, e.g. for logging or a
 /// capability check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -609,8 +607,7 @@ pub enum SubTarget {
     /// A pixel backend's [`PaintSurface`] — GTK, macOS, Win. Reached via
     /// [`crate::Backend::paint_surface`].
     Surface,
-    /// TUI's cell grid. Reached via
-    /// [`crate::Backend::cell_surface`]/[`crate::CellSurface::ratatui_buffer`].
+    /// TUI's cell grid. Reached via [`crate::Backend::cell_surface`].
     #[cfg(feature = "tui")]
     Cells,
 }
@@ -629,7 +626,7 @@ pub enum PaintTarget<'a> {
     Surface(&'a mut dyn PaintSurface),
     /// TUI's cell grid.
     #[cfg(feature = "tui")]
-    Cells(&'a mut ratatui::buffer::Buffer),
+    Cells(&'a mut dyn CellSurface),
 }
 
 impl PaintTarget<'_> {
@@ -645,10 +642,7 @@ impl PaintTarget<'_> {
 
 /// The non-geometry inputs every [`Primitive::paint`] call needs besides
 /// its own `Layout` and paint destination: [`crate::Theme`] +
-/// [`crate::Style`], bundled by reference so a future paint entry point
-/// can take one value instead of two. Not required by [`Primitive::paint`]
-/// today — that still takes `theme`/`style` as the two loose parameters
-/// it always has.
+/// [`crate::Style`], bundled by reference inside [`PaintEnv`].
 #[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct PaintServices<'a> {
@@ -658,19 +652,24 @@ pub struct PaintServices<'a> {
     pub style: &'a Style,
 }
 
-/// Everything a [`DynWidget::paint`] call needs beyond its own `Layout`
-/// and [`PaintTarget`] (passed as that method's own separate parameter,
-/// since a `PaintTarget` borrows exclusively and [`PaintEnv`] itself is
-/// taken by shared reference): the [`PaintServices`] (theme + style) and
-/// the row pitch [`LayoutCtx::resolve_row_height`] resolved for this
-/// frame.
+/// Everything a [`Primitive::paint`] / [`Primitive::paint_cells`] /
+/// [`DynWidget::paint`] call needs beyond its own `Layout` and paint
+/// destination: the [`PaintServices`] (theme + style), the row pitch
+/// [`LayoutCtx::resolve_row_height`] resolved for this frame, the
+/// caller's per-call [`PaintState`], and the hover/press
+/// [`InteractionState`] the widget paints with.
 ///
-/// [`crate::backend::DrawsPrimitives::draw_dyn`] builds one of these per
-/// call; [`crate::backend::DrawsPrimitives::draw_primitive`]'s
-/// [`Primitive::paint`] path still takes `theme`/`style` as loose
-/// parameters instead — widening that signature to accept a `PaintEnv`
-/// is scoped to a widget's own re-port onto this trait.
-#[derive(Debug, Clone, Copy)]
+/// [`crate::backend::DrawsPrimitives::draw_dyn`] and
+/// [`crate::backend::DrawsPrimitives::draw_primitive`] build one of these
+/// per call. `interaction` is already resolved: the caller's own state
+/// when its [`PaintState::interaction`] answers `Some`, otherwise the
+/// ambient pointer state ([`crate::interaction::ambient_interaction`]).
+/// A caller painting without a backend (a unit test, a headless
+/// renderer) builds one with [`Self::new`] and the `with_*` builders.
+///
+/// `#[non_exhaustive]`, so a field added later reaches every widget
+/// without another signature change; construct it through [`Self::new`].
+#[derive(Clone, Copy)]
 #[non_exhaustive]
 pub struct PaintEnv<'a> {
     /// What to paint with.
@@ -678,6 +677,134 @@ pub struct PaintEnv<'a> {
     /// This frame's resolved row pitch — see
     /// [`LayoutCtx::resolve_row_height`].
     pub row_height: f32,
+    /// The caller's per-call paint state.
+    pub state: &'a dyn PaintState,
+    /// The resolved hover/press state this paint renders.
+    pub interaction: &'a InteractionState,
+}
+
+/// The panic message for a cell painter that delegates to a `ratatui`
+/// rasteriser when its [`CellSurface`] has no `ratatui` buffer behind it.
+#[cfg(feature = "tui")]
+#[doc(hidden)]
+pub const CELL_BUFFER_REQUIRED: &str =
+    "this cell painter needs a ratatui-backed CellSurface (TuiBackend inside \
+     enter_frame_scope, or quadraui::tui::BufferCellSurface)";
+
+/// The empty interaction [`PaintEnv::new`] starts from.
+static NO_INTERACTION: InteractionState = InteractionState::new();
+
+impl std::fmt::Debug for PaintEnv<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PaintEnv")
+            .field("services", &self.services)
+            .field("row_height", &self.row_height)
+            .field("interaction", self.interaction)
+            .finish_non_exhaustive()
+    }
+}
+
+impl<'a> PaintEnv<'a> {
+    /// An env over `theme` and `style`, with `row_height` taken from
+    /// [`Style::row_height`], no per-call state, and nothing hovered or
+    /// pressed.
+    pub fn new(theme: &'a Theme, style: &'a Style) -> Self {
+        Self {
+            services: PaintServices { theme, style },
+            row_height: style.row_height,
+            state: &(),
+            interaction: &NO_INTERACTION,
+        }
+    }
+
+    /// This env with `row_height` replaced.
+    pub fn with_row_height(mut self, row_height: f32) -> Self {
+        self.row_height = row_height;
+        self
+    }
+
+    /// This env with the per-call paint state replaced.
+    pub fn with_state(mut self, state: &'a dyn PaintState) -> Self {
+        self.state = state;
+        self
+    }
+
+    /// This env with the hover/press state replaced.
+    pub fn with_interaction(mut self, interaction: &'a InteractionState) -> Self {
+        self.interaction = interaction;
+        self
+    }
+
+    /// The theme to paint with.
+    pub fn theme(&self) -> &'a Theme {
+        self.services.theme
+    }
+
+    /// The style to paint with.
+    pub fn style(&self) -> &'a Style {
+        self.services.style
+    }
+
+    /// Whether `id` is hovered: `None` when it is not, `Some(None)` when
+    /// the pointer is on the widget but on no sub-part, `Some(Some(sub))`
+    /// when it is on sub-part `sub`.
+    pub fn hovered(&self, id: &WidgetId) -> Option<Option<crate::interactive::SubTarget>> {
+        match self.interaction.hovered_target() {
+            Some((hovered, sub)) if hovered == *id => Some(sub),
+            _ => None,
+        }
+    }
+
+    /// Whether `id` paints pressed, in the same shape as
+    /// [`Self::hovered`]. A press counts only while the pointer is still
+    /// on the address it pressed: dragging off a pressed button shows it
+    /// at rest, and dragging back shows it pressed again.
+    pub fn pressed(&self, id: &WidgetId) -> Option<Option<crate::interactive::SubTarget>> {
+        match self.interaction.pressed_target() {
+            Some((pressed, sub))
+                if pressed == *id && self.interaction.hovered_target() == Some((pressed, sub)) =>
+            {
+                Some(sub)
+            }
+            _ => None,
+        }
+    }
+
+    /// The hovered sub-part of `id`, if the pointer is on one.
+    pub fn hovered_sub(&self, id: &WidgetId) -> Option<crate::interactive::SubTarget> {
+        self.hovered(id).flatten()
+    }
+
+    /// The pressed sub-part of `id`, under [`Self::pressed`]'s rule.
+    pub fn pressed_sub(&self, id: &WidgetId) -> Option<crate::interactive::SubTarget> {
+        self.pressed(id).flatten()
+    }
+
+    /// Whether the pointer is anywhere on `id`.
+    pub fn is_hovered(&self, id: &WidgetId) -> bool {
+        self.hovered(id).is_some()
+    }
+
+    /// Whether `id` paints pressed, under [`Self::pressed`]'s rule.
+    pub fn is_pressed(&self, id: &WidgetId) -> bool {
+        self.pressed(id).is_some()
+    }
+
+    /// The interaction state re-addressed from `parent` to `child`: each
+    /// slot that names `parent` names `child` instead, on the same
+    /// sub-part, and every other slot is dropped. For a composite widget
+    /// that paints a child under its own id — the child reads its hover
+    /// through the parent's address.
+    pub fn child_interaction(&self, parent: &WidgetId, child: &WidgetId) -> InteractionState {
+        let readdress = |target: Option<crate::focus::FocusAddress>| match target {
+            Some((id, sub)) if id == *parent => Some((*child, sub)),
+            _ => None,
+        };
+        InteractionState::from_targets(
+            readdress(self.interaction.hovered_target()),
+            readdress(self.interaction.pressed_target()),
+        )
+    }
 }
 
 /// Per-frame paint-time state a [`Primitive`] impl may want layered on
@@ -688,12 +815,10 @@ pub struct PaintEnv<'a> {
 /// `ListPaintState`/`TreePaintState`/`DataTablePaintState` aliases)
 /// already repeats structurally.
 ///
-/// Not required by [`Primitive::paint`] today — adopting it crate-wide is
-/// scoped to each widget's own re-port onto this trait, which then has a
-/// named trait to implement against instead of inventing one per widget
-/// again. Every method defaults to "no such state", so implementing this
-/// trait for a type that doesn't track one of these concepts costs
-/// nothing.
+/// A caller hands one to [`crate::backend::DrawsPrimitives::draw_dyn`],
+/// and the widget reads it back as [`PaintEnv::state`]. Every method
+/// defaults to "no such state", so implementing this trait for a type
+/// that doesn't track one of these concepts costs nothing.
 pub trait PaintState {
     /// Index of the row currently hovered, if any.
     fn hovered_idx(&self) -> Option<usize> {
@@ -723,6 +848,12 @@ pub trait PaintState {
     fn focus_ring_visible(&self) -> bool {
         false
     }
+    /// The hover/press state this call paints with, overriding the
+    /// ambient pointer state. Default: `None` — paint with the ambient
+    /// state ([`crate::interaction::ambient_interaction`]).
+    fn interaction(&self) -> Option<&InteractionState> {
+        None
+    }
 }
 
 /// `()` carries no paint-time state at all — the value
@@ -731,8 +862,17 @@ pub trait PaintState {
 /// [`crate::primitives::cell_grid::CellGrid`] through
 /// [`crate::frame::Surface::Widget`], which already keeps its
 /// hover/selection/cursor state as persistent fields on itself — see
-/// that widget's own [`Primitive::paint`] doc).
+/// that widget's own [`Primitive::paint`] doc). Paints with the ambient
+/// pointer state.
 impl PaintState for () {}
+
+/// An explicit hover/press state: the paint uses exactly this, not the
+/// ambient pointer state.
+impl PaintState for InteractionState {
+    fn interaction(&self) -> Option<&InteractionState> {
+        Some(self)
+    }
+}
 
 /// A widget a pixel [`crate::Backend`] can paint without a bespoke
 /// `draw_*`/`*_layout` method pair. See the module doc for the full
@@ -822,16 +962,11 @@ pub trait Primitive: A11yPrimitive {
         None
     }
 
-    /// Paint `layout` (as produced by [`Self::layout`]) onto `surface`.
-    fn paint(
-        &self,
-        layout: &Self::Layout,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        style: &Style,
-    );
+    /// Paint `layout` (as produced by [`Self::layout`]) onto `surface`,
+    /// with the theme, style and hover/press state `env` carries.
+    fn paint(&self, layout: &Self::Layout, surface: &mut dyn PaintSurface, env: &PaintEnv);
 
-    /// Paint `layout` onto a TUI cell buffer —
+    /// Paint `layout` onto a TUI cell grid —
     /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s default body
     /// calls this instead of [`Self::paint`] whenever
     /// [`crate::backend::Backend::cell_surface`] answers `Some`
@@ -862,17 +997,18 @@ pub trait Primitive: A11yPrimitive {
     /// rasteriser to the shared `native_surface_paint` helper, not a
     /// `PaintSurface` implementor.
     ///
-    /// Takes `&mut ratatui::buffer::Buffer` directly (the same type
-    /// [`crate::tui::draw_list`] itself takes) rather than inventing a
-    /// quadraui-local cell-surface abstraction — every `tui`-feature
-    /// consumer already depends on the same `ratatui` version to call
-    /// [`crate::tui::draw_list`] and friends, so this adds no new
-    /// dependency surface.
+    /// Takes the backend-neutral [`CellSurface`], so a widget reaches the
+    /// cursor ([`CellSurface::set_cursor`]) and inline graphics
+    /// ([`CellSurface::emit_graphics`]) verbs, and no `ratatui` type
+    /// appears in this trait. A painter that still delegates to a
+    /// `crate::tui` rasteriser over a `ratatui` buffer reaches it through
+    /// [`CellSurface::ratatui_buffer`], marked `// CSR:` at the call. A
+    /// caller with a bare buffer and no backend wraps it in
+    /// `quadraui::tui::BufferCellSurface`.
     ///
     /// `#[cfg(feature = "tui")]`: unlike [`Self::paint`], which exists
-    /// unconditionally because every pixel backend needs it, nothing
-    /// outside a `tui`-enabled build can construct a `ratatui::buffer::Buffer`
-    /// to call this with.
+    /// unconditionally because every pixel backend needs it, only a
+    /// `tui`-enabled build has a cell backend to call this.
     ///
     /// Default: no-op — correct for a `Primitive` implementor with no
     /// TUI story at all (every built-in primitive that has a TUI
@@ -882,8 +1018,8 @@ pub trait Primitive: A11yPrimitive {
     /// on screen, the same "resolve layout, maybe paint" contract that
     /// default already has for a `PaintSurface`-less backend.
     #[cfg(feature = "tui")]
-    fn paint_cells(&self, layout: &Self::Layout, buf: &mut ratatui::buffer::Buffer, theme: &Theme) {
-        let _ = (layout, buf, theme);
+    fn paint_cells(&self, layout: &Self::Layout, cells: &mut dyn CellSurface, env: &PaintEnv) {
+        let _ = (layout, cells, env);
     }
 }
 
@@ -942,14 +1078,10 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// with a single method that matches on [`PaintTarget`] itself, since
     /// a type-erased caller (e.g.
     /// [`crate::backend::DrawsPrimitives::draw_dyn`]) has exactly one
-    /// paint call to make regardless of which target it resolved.
-    fn paint(
-        &self,
-        layout: &dyn PrimitiveLayout,
-        target: PaintTarget<'_>,
-        env: &PaintEnv,
-        state: &dyn PaintState,
-    );
+    /// paint call to make regardless of which target it resolved. The
+    /// caller's [`PaintState`] and the resolved hover/press state travel
+    /// in `env`.
+    fn paint(&self, layout: &dyn PrimitiveLayout, target: PaintTarget<'_>, env: &PaintEnv);
 
     /// How this widget participates in keyboard tab order — see
     /// [`Interactive::focus`].
@@ -1038,31 +1170,14 @@ where
         Primitive::paint_zone(self, layout, units)
     }
 
-    fn paint(
-        &self,
-        layout: &dyn PrimitiveLayout,
-        target: PaintTarget<'_>,
-        env: &PaintEnv,
-        state: &dyn PaintState,
-    ) {
-        let _ = state;
+    fn paint(&self, layout: &dyn PrimitiveLayout, target: PaintTarget<'_>, env: &PaintEnv) {
         let Some(layout) = layout.downcast_ref::<W::Layout>() else {
             return;
         };
         match target {
-            PaintTarget::Surface(surface) => {
-                Primitive::paint(
-                    self,
-                    layout,
-                    surface,
-                    env.services.theme,
-                    env.services.style,
-                );
-            }
+            PaintTarget::Surface(surface) => Primitive::paint(self, layout, surface, env),
             #[cfg(feature = "tui")]
-            PaintTarget::Cells(buf) => {
-                Primitive::paint_cells(self, layout, buf, env.services.theme);
-            }
+            PaintTarget::Cells(cells) => Primitive::paint_cells(self, layout, cells, env),
         }
     }
 
@@ -1274,7 +1389,7 @@ impl PaintedWidgets {
 
 /// Half-open containment, matching [`crate::TabBarLayout::hit_test`]'s own
 /// convention: the right/bottom edge belongs to the next rect along.
-fn contains(rect: Rect, x: f32, y: f32) -> bool {
+pub(crate) fn contains(rect: Rect, x: f32, y: f32) -> bool {
     x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height
 }
 
@@ -1500,7 +1615,8 @@ mod tests {
     fn paint_target_kind_reports_cells() {
         let area = ratatui::layout::Rect::new(0, 0, 4, 4);
         let mut buf = ratatui::buffer::Buffer::empty(area);
-        let target = PaintTarget::Cells(&mut buf);
+        let mut cells = crate::tui::BufferCellSurface::new(&mut buf);
+        let target = PaintTarget::Cells(&mut cells);
         assert_eq!(target.kind(), SubTarget::Cells);
     }
 
@@ -1520,15 +1636,87 @@ mod tests {
     fn paint_env_bundles_services_and_row_height() {
         let theme = Theme::default();
         let style = Style::default();
-        let env = PaintEnv {
-            services: PaintServices {
-                theme: &theme,
-                style: &style,
-            },
-            row_height: 22.0,
-        };
+        let env = PaintEnv::new(&theme, &style).with_row_height(22.0);
         assert_eq!(*env.services.theme, theme);
+        assert_eq!(*env.style(), style);
         assert_eq!(env.row_height, 22.0);
+        assert_eq!(*env.interaction, InteractionState::new());
+    }
+
+    fn address(id: &str, sub: Option<u64>) -> crate::focus::FocusAddress {
+        (WidgetId::new(id), sub.map(crate::interactive::SubTarget))
+    }
+
+    #[test]
+    fn paint_env_hovered_reports_the_widget_and_its_sub_part() {
+        let (theme, style) = (Theme::default(), Style::default());
+        let state = InteractionState::from_targets(Some(address("bar", Some(2))), None);
+        let env = PaintEnv::new(&theme, &style).with_interaction(&state);
+        let bar = WidgetId::new("bar");
+        assert_eq!(
+            env.hovered(&bar),
+            Some(Some(crate::interactive::SubTarget(2)))
+        );
+        assert_eq!(
+            env.hovered_sub(&bar),
+            Some(crate::interactive::SubTarget(2))
+        );
+        assert!(env.is_hovered(&bar));
+        assert!(!env.is_hovered(&WidgetId::new("other")));
+        assert_eq!(env.hovered(&WidgetId::new("other")), None);
+
+        let on_widget = InteractionState::from_targets(Some(address("bar", None)), None);
+        let env = env.with_interaction(&on_widget);
+        assert_eq!(env.hovered(&bar), Some(None));
+        assert_eq!(env.hovered_sub(&bar), None);
+    }
+
+    #[test]
+    fn paint_env_pressed_requires_the_pointer_on_the_pressed_address() {
+        let (theme, style) = (Theme::default(), Style::default());
+        let bar = WidgetId::new("bar");
+        let held = InteractionState::from_targets(
+            Some(address("bar", Some(1))),
+            Some(address("bar", Some(1))),
+        );
+        let env = PaintEnv::new(&theme, &style).with_interaction(&held);
+        assert!(env.is_pressed(&bar));
+        assert_eq!(
+            env.pressed_sub(&bar),
+            Some(crate::interactive::SubTarget(1))
+        );
+
+        let dragged_off = InteractionState::from_targets(
+            Some(address("bar", Some(2))),
+            Some(address("bar", Some(1))),
+        );
+        let env = env.with_interaction(&dragged_off);
+        assert!(!env.is_pressed(&bar));
+        assert_eq!(env.pressed(&bar), None);
+
+        let pointer_gone = InteractionState::from_targets(None, Some(address("bar", Some(1))));
+        let env = env.with_interaction(&pointer_gone);
+        assert!(!env.is_pressed(&bar));
+    }
+
+    #[test]
+    fn paint_env_child_interaction_readdresses_parent_slots_to_the_child() {
+        let (theme, style) = (Theme::default(), Style::default());
+        let state = InteractionState::from_targets(
+            Some(address("panel", Some(3))),
+            Some(address("elsewhere", None)),
+        );
+        let env = PaintEnv::new(&theme, &style).with_interaction(&state);
+        let child = env.child_interaction(&WidgetId::new("panel"), &WidgetId::new("header"));
+        assert_eq!(child.hovered_target(), Some(address("header", Some(3))));
+        assert_eq!(child.pressed_target(), None);
+    }
+
+    #[test]
+    fn interaction_state_overrides_and_unit_defers_to_ambient() {
+        let state = InteractionState::from_parts(Some(WidgetId::new("w")), None);
+        assert_eq!(PaintState::interaction(&state), Some(&state));
+        assert_eq!(PaintState::interaction(&()), None);
     }
 
     /// A type implementing [`PaintState`] with no overrides gets every
