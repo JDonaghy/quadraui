@@ -11,11 +11,11 @@ use std::rc::Rc;
 use serde::{Deserialize, Deserializer};
 
 use quadraui::{
-    Backend, Button, DataRow, DataTable, Decoration, FontRole, InteractionState, ListItem,
-    ListView, ListViewHit, ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize,
-    Split, SplitDirection, SplitHit, SplitLayout, Style, StyledText, TabBar, TabBarLayout,
-    TabChrome, TextDisplay, TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme,
-    TreePath, TreeRow, TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
+    Backend, Button, DataRow, DataTable, Decoration, FontRole, ListItem, ListView, ListViewHit,
+    ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize, Split, SplitDirection,
+    SplitHit, SplitLayout, Style, StyledText, TabBar, TabBarLayout, TabChrome, TextDisplay,
+    TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme, TreePath, TreeRow,
+    TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
@@ -266,17 +266,9 @@ pub(crate) fn next_band(
 /// Paints each present slot top-to-bottom in a fixed-height band, skipping
 /// any slot once the viewport runs out of room. Appends a [`PaintedHit`] to
 /// `hits` for every slot painted, so a later pointer event can be routed to
-/// it. `chrome_interaction` supplies the hover/pressed [`InteractionState`]
-/// a chrome-bar extra (`Toolbar`'s buttons, `StatusBar`'s segments) paints
-/// with, keyed by that extra's own id — a binding with no such bookkeeping
-/// (or a test with no extras at all) passes `&|_| InteractionState::default()`.
+/// it.
 #[allow(deprecated)]
-pub fn draw_bands(
-    backend: &mut dyn Backend,
-    refs: RenderRefs<'_>,
-    hits: &mut Vec<PaintedHit>,
-    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
-) {
+pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Vec<PaintedHit>) {
     let viewport = backend.viewport();
     // Band heights below are given in text LINES, not raw viewport units: a
     // button is 3 lines tall, a tree 4. `viewport` and `line_height` share
@@ -387,8 +379,7 @@ pub fn draw_bands(
     for kind in crate::extra_paint::EXTRA_PRIMITIVE_KINDS {
         if let Some(extra) = refs.extra.get(kind) {
             if let Some(rect) = band(3.0) {
-                let interaction = chrome_interaction(extra.id());
-                let (chrome_hits, tree_table_hit) = paint_extra(backend, extra, rect, &interaction);
+                let (chrome_hits, tree_table_hit) = paint_extra(backend, extra, rect);
                 hits.push(PaintedHit::Extra {
                     id: extra.id(),
                     area: rect,
@@ -432,7 +423,6 @@ fn paint_extra(
     backend: &mut dyn Backend,
     extra: &Rc<dyn ExtraPaint>,
     area: Rect,
-    interaction: &InteractionState,
 ) -> (Vec<(Rect, WidgetId)>, Option<TreeTableHitState>) {
     if let Some(tree_table) = extra_as::<TreeTable>(extra) {
         let layout = backend.draw_tree_table(area, tree_table, None);
@@ -440,7 +430,7 @@ fn paint_extra(
         let total_rows = tree_table.table.rows.len();
         (Vec::new(), Some((layout, scroll_offset, total_rows)))
     } else {
-        (extra.paint_chrome(backend, area, interaction), None)
+        (extra.paint_chrome(backend, area), None)
     }
 }
 
@@ -576,16 +566,8 @@ pub fn paint_layout(
     area: Rect,
     node: &LayoutNode,
     hits: &mut Vec<PaintedHit>,
-    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
 ) {
-    paint_layout_windowed(
-        backend,
-        area,
-        node,
-        hits,
-        chrome_interaction,
-        &HashMap::new(),
-    );
+    paint_layout_windowed(backend, area, node, hits, &HashMap::new());
 }
 
 /// [`paint_layout`], additionally honoring each windowed leaf's `{start,
@@ -604,7 +586,6 @@ pub fn paint_layout_windowed(
     area: Rect,
     node: &LayoutNode,
     hits: &mut Vec<PaintedHit>,
-    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
     windows: &HashMap<String, ItemsWindow>,
 ) {
     match node {
@@ -614,14 +595,7 @@ pub fn paint_layout_windowed(
             let area = inset_for_spacing(area, container, char_width, line_height);
             let rects = layout_container_rects(backend, area, container, true);
             for (child, rect) in container.children.iter().zip(rects) {
-                paint_layout_windowed(
-                    backend,
-                    rect,
-                    &child.node,
-                    hits,
-                    chrome_interaction,
-                    windows,
-                );
+                paint_layout_windowed(backend, rect, &child.node, hits, windows);
             }
         }
         LayoutNode::Column(container) => {
@@ -630,25 +604,16 @@ pub fn paint_layout_windowed(
             let area = inset_for_spacing(area, container, char_width, line_height);
             let rects = layout_container_rects(backend, area, container, false);
             for (child, rect) in container.children.iter().zip(rects) {
-                paint_layout_windowed(
-                    backend,
-                    rect,
-                    &child.node,
-                    hits,
-                    chrome_interaction,
-                    windows,
-                );
+                paint_layout_windowed(backend, rect, &child.node, hits, windows);
             }
         }
         LayoutNode::Grid(grid) => {
             let rects = grid_cell_rects(grid, area, backend.char_width(), backend.line_height());
             for (child, rect) in grid.children.iter().zip(rects) {
-                paint_layout_windowed(backend, rect, child, hits, chrome_interaction, windows);
+                paint_layout_windowed(backend, rect, child, hits, windows);
             }
         }
-        LayoutNode::Leaf(leaf) => {
-            paint_leaf_windowed(backend, area, leaf, hits, chrome_interaction, windows)
-        }
+        LayoutNode::Leaf(leaf) => paint_leaf_windowed(backend, area, leaf, hits, windows),
         LayoutNode::Split(split) => {
             let char_width = backend.char_width();
             let line_height = backend.line_height();
@@ -695,22 +660,8 @@ pub fn paint_layout_windowed(
             hits.push(PaintedHit::Split {
                 layout: layout.clone(),
             });
-            paint_layout_windowed(
-                backend,
-                layout.first_bounds,
-                &split.first,
-                hits,
-                chrome_interaction,
-                windows,
-            );
-            paint_layout_windowed(
-                backend,
-                layout.second_bounds,
-                &split.second,
-                hits,
-                chrome_interaction,
-                windows,
-            );
+            paint_layout_windowed(backend, layout.first_bounds, &split.first, hits, windows);
+            paint_layout_windowed(backend, layout.second_bounds, &split.second, hits, windows);
         }
         LayoutNode::Tabs(tabs) => {
             let char_width = backend.char_width();
@@ -741,14 +692,7 @@ pub fn paint_layout_windowed(
                 (area.height - strip_height).max(0.0),
             );
             if let Some(selected) = tabs.entries.get(tabs.selected) {
-                paint_layout_windowed(
-                    backend,
-                    content_rect,
-                    &selected.content,
-                    hits,
-                    chrome_interaction,
-                    windows,
-                );
+                paint_layout_windowed(backend, content_rect, &selected.content, hits, windows);
             }
         }
         LayoutNode::SidebarPanel(sidebar_node) => {
@@ -759,7 +703,6 @@ pub fn paint_layout_windowed(
                 content_bounds,
                 &sidebar_node.content,
                 hits,
-                chrome_interaction,
                 windows,
             );
         }
@@ -770,21 +713,14 @@ pub fn paint_layout_windowed(
                 layout: layout.clone(),
             });
             for ((_, rect), content) in layout.leaves.iter().zip(split_tree.leaves.iter()) {
-                paint_layout_windowed(backend, *rect, content, hits, chrome_interaction, windows);
+                paint_layout_windowed(backend, *rect, content, hits, windows);
             }
         }
         LayoutNode::Scroll(scroll_node) => {
-            paint_scroll(
-                backend,
-                area,
-                scroll_node,
-                hits,
-                chrome_interaction,
-                windows,
-            );
+            paint_scroll(backend, area, scroll_node, hits, windows);
         }
         LayoutNode::Styled(styled) => {
-            paint_styled(backend, area, styled, hits, chrome_interaction, windows);
+            paint_styled(backend, area, styled, hits, windows);
         }
     }
 }
@@ -803,18 +739,10 @@ fn paint_styled(
     area: Rect,
     styled: &LayoutStyled,
     hits: &mut Vec<PaintedHit>,
-    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
     windows: &HashMap<String, ItemsWindow>,
 ) {
     let push = push_styled_override(backend, &styled.style);
-    paint_layout_windowed(
-        backend,
-        area,
-        &styled.node,
-        hits,
-        chrome_interaction,
-        windows,
-    );
+    paint_layout_windowed(backend, area, &styled.node, hits, windows);
     pop_styled_override(backend, push);
 }
 
@@ -930,7 +858,6 @@ fn paint_scroll(
     area: Rect,
     scroll_node: &LayoutScroll,
     hits: &mut Vec<PaintedHit>,
-    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
     windows: &HashMap<String, ItemsWindow>,
 ) {
     let metrics = ScrollMetrics {
@@ -1032,14 +959,7 @@ fn paint_scroll(
             if let LayoutNode::Row(container) | LayoutNode::Column(container) = content {
                 for (child, slot) in container.children.iter().zip(slots) {
                     if slot.visible {
-                        paint_layout_windowed(
-                            backend,
-                            slot.rect,
-                            &child.node,
-                            hits,
-                            chrome_interaction,
-                            windows,
-                        );
+                        paint_layout_windowed(backend, slot.rect, &child.node, hits, windows);
                     }
                 }
             }
@@ -1061,24 +981,10 @@ fn paint_scroll(
                 match offset_windowed_leaf_scrolled_to_offset(content, offset, metrics.line_height)
                 {
                     Some(shadow) => {
-                        paint_layout_windowed(
-                            backend,
-                            rect,
-                            &shadow,
-                            hits,
-                            chrome_interaction,
-                            windows,
-                        );
+                        paint_layout_windowed(backend, rect, &shadow, hits, windows);
                     }
                     None => {
-                        paint_layout_windowed(
-                            backend,
-                            rect,
-                            content,
-                            hits,
-                            chrome_interaction,
-                            windows,
-                        );
+                        paint_layout_windowed(backend, rect, content, hits, windows);
                     }
                 }
             }
@@ -2835,16 +2741,8 @@ pub fn paint_leaf(
     area: Rect,
     leaf: &LayoutLeaf,
     hits: &mut Vec<PaintedHit>,
-    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
 ) {
-    paint_leaf_windowed(
-        backend,
-        area,
-        leaf,
-        hits,
-        chrome_interaction,
-        &HashMap::new(),
-    );
+    paint_leaf_windowed(backend, area, leaf, hits, &HashMap::new());
 }
 
 /// [`paint_leaf`], additionally painting this leaf's `List`/`Tree`/
@@ -2860,7 +2758,6 @@ pub fn paint_leaf_windowed(
     area: Rect,
     leaf: &LayoutLeaf,
     hits: &mut Vec<PaintedHit>,
-    chrome_interaction: &dyn Fn(WidgetId) -> InteractionState,
     windows: &HashMap<String, ItemsWindow>,
 ) {
     let id = WidgetId::new(leaf.id.clone());
@@ -3058,8 +2955,7 @@ pub fn paint_leaf_windowed(
             });
         }
         LeafDescriptor::Extra(extra) => {
-            let interaction = chrome_interaction(id);
-            let (chrome_hits, tree_table_hit) = paint_extra(backend, extra, area, &interaction);
+            let (chrome_hits, tree_table_hit) = paint_extra(backend, extra, area);
             hits.push(PaintedHit::Extra {
                 id,
                 area,
@@ -3156,7 +3052,6 @@ mod tests {
                 data_table_scroll_px: None,
             },
             &mut hits,
-            &|_| InteractionState::default(),
         );
 
         let widget_hit_id = hits
@@ -3457,9 +3352,7 @@ mod tests {
                 spacing: Spacing::default(),
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -3571,9 +3464,7 @@ mod tests {
                 node: Box::new(row),
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -3682,9 +3573,7 @@ mod tests {
                 node: Box::new(row),
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -3792,9 +3681,7 @@ mod tests {
                     Spacing::default(),
                 ));
                 let mut hits = Vec::new();
-                paint_layout(backend, area, &row, &mut hits, &|id| {
-                    self.engine.chrome_interaction(id)
-                });
+                paint_layout(backend, area, &row, &mut hits);
                 self.engine.set_hits(hits);
             }
             fn handle(
@@ -3887,9 +3774,7 @@ mod tests {
                 )
                 .expect("valid tree");
                 let mut hits = Vec::new();
-                paint_layout(backend, area, &node, &mut hits, &|id| {
-                    self.engine.chrome_interaction(id)
-                });
+                paint_layout(backend, area, &node, &mut hits);
                 self.engine.set_hits(hits);
             }
             fn handle(
@@ -4735,9 +4620,7 @@ mod tests {
                 spacing: Spacing::default(),
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -4920,9 +4803,7 @@ mod tests {
                 spacing: Spacing::default(),
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -5025,9 +4906,7 @@ mod tests {
                 spacing: Spacing::default(),
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -5122,9 +5001,7 @@ mod tests {
                 spacing: Spacing::default(),
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -5210,9 +5087,7 @@ mod tests {
                 spacing: Spacing::default(),
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -5302,9 +5177,7 @@ mod tests {
                 spacing: Spacing::default(),
             });
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -5509,9 +5382,7 @@ mod tests {
             let node = crate::wire::decode_layout_node("render", value)
                 .expect("the grid dict should decode");
             let mut hits = Vec::new();
-            paint_layout(backend, area, &node, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &node, &mut hits);
             self.engine.set_hits(hits);
         }
 
@@ -5802,14 +5673,7 @@ mod tests {
                 );
                 let windows = diagnostics.items_windows();
                 let mut hits = Vec::new();
-                paint_layout_windowed(
-                    backend,
-                    area,
-                    &node,
-                    &mut hits,
-                    &|id| self.engine.chrome_interaction(id),
-                    &windows,
-                );
+                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
                 self.engine.set_hits(hits);
             }
 
@@ -6006,14 +5870,7 @@ mod tests {
                 );
                 let windows = diagnostics.items_windows();
                 let mut hits = Vec::new();
-                paint_layout_windowed(
-                    backend,
-                    area,
-                    &node,
-                    &mut hits,
-                    &|id| self.engine.chrome_interaction(id),
-                    &windows,
-                );
+                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
                 self.engine.set_hits(hits);
             }
 
@@ -6242,14 +6099,7 @@ mod tests {
                     &windows,
                 );
                 let mut hits = Vec::new();
-                paint_layout_windowed(
-                    backend,
-                    area,
-                    &node,
-                    &mut hits,
-                    &|id| self.engine.chrome_interaction(id),
-                    &windows,
-                );
+                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
                 self.engine.set_hits(hits);
             }
 
@@ -6538,14 +6388,7 @@ mod tests {
                 .expect("a text_display leaf with items_window must decode");
                 let windows = diagnostics.items_windows();
                 let mut hits = Vec::new();
-                paint_layout_windowed(
-                    backend,
-                    area,
-                    &node,
-                    &mut hits,
-                    &|_| InteractionState::default(),
-                    &windows,
-                );
+                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
                 assert!(
                     hits.iter().any(|hit| matches!(
                         hit,

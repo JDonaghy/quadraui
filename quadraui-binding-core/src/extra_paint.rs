@@ -14,11 +14,11 @@ use quadraui::DrawsPrimitives;
 use quadraui::{
     render_markdown_to_styled, Backend, BoardModel, Canvas, Chart, Column, ComboBox, CommandLine,
     CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor, FieldKind, FindReplacePanel,
-    FontRole, Form, FormField, Icon, Image, InteractionState, LabelPosition, MenuBar, MessageList,
-    Minimap, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, PipelineView, Point,
-    ProgressBar, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StyledText,
-    TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton,
-    TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
+    FontRole, Form, FormField, Icon, Image, LabelPosition, MenuBar, MessageList, Minimap,
+    MultiSectionView, NaturalSize, NumberInput, NumberInputHit, PipelineView, Point, ProgressBar,
+    Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StyledText, TextDisplay,
+    TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable,
+    TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -88,9 +88,9 @@ pub trait ExtraPaint: std::any::Any {
         NaturalSize::NONE
     }
 
-    /// Paints with real hover/pressed state, returning the absolute bounds
-    /// and action id of each clickable child this descriptor just painted —
-    /// a chrome bar's button ([`quadraui::Toolbar`]).
+    /// Paints, returning the absolute bounds and action id of each
+    /// clickable child this descriptor just painted — a chrome bar's
+    /// button ([`quadraui::Toolbar`]).
     /// `crate::render::draw_bands`/`paint_leaf` call this (not
     /// [`ExtraPaint::paint`] directly) so the returned regions can be
     /// recorded into [`crate::hit::PaintedHit::Extra::chrome_hits`] and
@@ -98,17 +98,15 @@ pub trait ExtraPaint: std::any::Any {
     /// `hit_test`'s plain `bool` has no way to say *which* child a point
     /// landed on.
     ///
-    /// Default: ignores `interaction` and forwards to [`ExtraPaint::paint`]
-    /// with no clickable children — correct for every extra except
+    /// Hover and press reach the painted widget through the paint env's
+    /// ambient pointer state, so this takes no interaction state of its
+    /// own.
+    ///
+    /// Default: forwards to [`ExtraPaint::paint`] with no clickable
+    /// children — correct for every extra except
     /// `Toolbar`, which overrides this to report its own per-child click
     /// targets.
-    fn paint_chrome(
-        &self,
-        backend: &mut dyn Backend,
-        area: Rect,
-        interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        let _ = interaction;
+    fn paint_chrome(&self, backend: &mut dyn Backend, area: Rect) -> Vec<(Rect, WidgetId)> {
         self.paint(backend, area);
         Vec::new()
     }
@@ -1144,12 +1142,7 @@ impl ExtraPaint for Markdown {
     /// wrap on GTK), so a chrome rect never drifts from where the backend
     /// actually drew that row the way a flat one-row-per-line guess would
     /// on any line long enough to wrap.
-    fn paint_chrome(
-        &self,
-        backend: &mut dyn Backend,
-        area: Rect,
-        _interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
+    fn paint_chrome(&self, backend: &mut dyn Backend, area: Rect) -> Vec<(Rect, WidgetId)> {
         let theme = backend.theme();
         let (td, rendered) = self.render(&theme);
         backend.draw_dyn(area, &td, &());
@@ -1455,6 +1448,10 @@ impl ExtraPaint for TreeTableControllerDescriptor {
 /// and [`ToolbarWithOverflow`]'s so the two wire shapes agree on exactly
 /// which items become clickable.
 ///
+/// Painting through [`Backend::draw_dyn`] records the bar in the painted
+/// widget store, so the ambient pointer state can hit-test its buttons
+/// and the bar paints their hover and press.
+///
 /// The contract's layout is bar-local, so every bound is shifted by
 /// `area`'s origin into the ABSOLUTE frame [`ExtraPaint::hit_test`] uses.
 /// Disabled actions and non-action items (separators, labels) have no
@@ -1468,7 +1465,13 @@ fn paint_toolbar_chrome(
     area: Rect,
     bar: &Toolbar,
 ) -> Vec<(Rect, WidgetId)> {
-    let layout = backend.draw_primitive(area, bar).layout;
+    let Some(layout) = backend
+        .draw_dyn(area, bar, &())
+        .downcast_ref::<quadraui::primitives::toolbar::ToolbarPrimitiveLayout>()
+        .map(|resolved| resolved.layout.clone())
+    else {
+        return Vec::new();
+    };
     let absolute = |r: Rect| Rect::new(r.x + area.x, r.y + area.y, r.width, r.height);
     layout
         .visible_items
@@ -1512,19 +1515,14 @@ fn toolbar_tab_stop(bar: &Toolbar) -> bool {
 
 impl ExtraPaint for Toolbar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        self.paint_chrome(backend, area, &InteractionState::default());
+        self.paint_chrome(backend, area);
     }
 
     fn id(&self) -> WidgetId {
         self.id
     }
 
-    fn paint_chrome(
-        &self,
-        backend: &mut dyn Backend,
-        area: Rect,
-        _interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
+    fn paint_chrome(&self, backend: &mut dyn Backend, area: Rect) -> Vec<(Rect, WidgetId)> {
         paint_toolbar_chrome(backend, area, self)
     }
 
@@ -1614,7 +1612,7 @@ impl<'de> serde::Deserialize<'de> for ToolbarWithOverflow {
 
 impl ExtraPaint for ToolbarWithOverflow {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        self.paint_chrome(backend, area, &InteractionState::default());
+        self.paint_chrome(backend, area);
     }
 
     fn id(&self) -> WidgetId {
@@ -1624,12 +1622,7 @@ impl ExtraPaint for ToolbarWithOverflow {
     /// Paints the descriptor with [`Self::overflow`] and
     /// [`Self::priorities`] folded on — for `ToolbarOverflow::Clip` with no
     /// registered priorities, identical to a plain [`Toolbar`] extra.
-    fn paint_chrome(
-        &self,
-        backend: &mut dyn Backend,
-        area: Rect,
-        _interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
+    fn paint_chrome(&self, backend: &mut dyn Backend, area: Rect) -> Vec<(Rect, WidgetId)> {
         let bar = self
             .toolbar
             .clone()
@@ -2080,9 +2073,7 @@ mod tests {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 let mut hits = Vec::new();
-                paint_layout(backend, area, &tree, &mut hits, &|id| {
-                    self.engine.chrome_interaction(id)
-                });
+                paint_layout(backend, area, &tree, &mut hits);
                 self.engine.set_hits(hits);
             }
 
@@ -2182,9 +2173,7 @@ mod tests {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 let mut hits = Vec::new();
-                paint_layout(backend, area, &tree, &mut hits, &|id| {
-                    self.engine.chrome_interaction(id)
-                });
+                paint_layout(backend, area, &tree, &mut hits);
                 crate::host::render_overlays(&self.engine, backend, hits);
             }
 
@@ -2234,6 +2223,116 @@ mod tests {
                         && *button_id == WidgetId::new("toolbar:save")
             )),
             "expected a ButtonClicked event for the inline toolbar leaf, got {dispatched:?}"
+        );
+    }
+
+    /// A toolbar extra paints through `draw_dyn`, so it is recorded in the
+    /// painted widget store under its own id with one sub-part per button,
+    /// and [`crate::engine::InteractionEngine::handle`] feeds a pointer move
+    /// over a button into the ambient pointer state, asking for a redraw
+    /// when the hovered button changes — also for a host that never runs
+    /// the move through a runner of its own.
+    #[test]
+    fn toolbar_extra_is_hit_tested_by_the_ambient_pointer_state() {
+        use crate::engine::InteractionEngine;
+        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::render::paint_layout;
+
+        struct ToolbarLeafApp {
+            engine: InteractionEngine,
+            sink: RefCell<RecordingSink>,
+        }
+
+        impl AppLogic for ToolbarLeafApp {
+            type AreaId = ();
+
+            fn render(&self, backend: &mut dyn Backend, _area: ()) {
+                let save = |id: &str| ToolbarButton::Action {
+                    id: WidgetId::new(id),
+                    label: "Save".into(),
+                    icon: None,
+                    key_hint: None,
+                    enabled: true,
+                    is_active: false,
+                    tooltip: String::new(),
+                    spec: None,
+                };
+                let toolbar = Toolbar::new(WidgetId::new("toolbar:main"))
+                    .with_buttons(vec![save("toolbar:save"), save("toolbar:keep")]);
+                let tree = LayoutNode::Row(LayoutContainer::new(
+                    vec![LayoutNode::Leaf(LayoutLeaf {
+                        id: "toolbar:main".into(),
+                        descriptor: LeafDescriptor::Extra(Rc::new(toolbar)),
+                        scroll_px: None,
+                    })],
+                    Spacing::default(),
+                ));
+                let viewport = backend.viewport();
+                let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+                let mut hits = Vec::new();
+                paint_layout(backend, area, &tree, &mut hits);
+                crate::host::render_overlays(&self.engine, backend, hits);
+            }
+
+            fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+                self.engine
+                    .handle(event, backend, &mut *self.sink.borrow_mut())
+            }
+        }
+
+        let app = ToolbarLeafApp {
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(app, 30, 5);
+        quadraui::interaction::reset_ambient_interaction();
+
+        let button_points: Vec<Point> = driver
+            .app()
+            .engine
+            .hit_map()
+            .iter()
+            .find_map(|hit| match hit {
+                PaintedHit::Extra {
+                    id, chrome_hits, ..
+                } if *id == WidgetId::new("toolbar:main") => Some(
+                    chrome_hits
+                        .iter()
+                        .map(|(rect, _)| Point::new(rect.x, rect.y))
+                        .collect(),
+                ),
+                _ => None,
+            })
+            .expect("toolbar leaf should have painted its buttons");
+        assert_eq!(button_points.len(), 2);
+
+        let painted = |p: Point| quadraui::primitive::painted_hit(p.x, p.y);
+        let first = painted(button_points[0]).expect("first button is in the painted store");
+        let second = painted(button_points[1]).expect("second button is in the painted store");
+        assert_eq!(first.0, WidgetId::new("toolbar:main"));
+        assert!(first.1.is_some() && second.1.is_some() && first.1 != second.1);
+
+        let mut move_to = |p: Point| {
+            let (backend, app) = driver.parts_mut();
+            let sink = &mut *app.sink.borrow_mut();
+            app.engine.handle(
+                UiEvent::MouseMoved {
+                    position: p,
+                    buttons: Default::default(),
+                },
+                backend,
+                sink,
+            )
+        };
+        assert_eq!(move_to(button_points[0]), Reaction::Redraw);
+        assert_eq!(
+            quadraui::interaction::ambient_interaction().hovered_target(),
+            Some(first)
+        );
+        assert_eq!(move_to(button_points[1]), Reaction::Redraw);
+        assert_eq!(
+            quadraui::interaction::ambient_interaction().hovered_target(),
+            Some(second)
         );
     }
 
@@ -2318,9 +2417,7 @@ mod tests {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 let mut hits = Vec::new();
-                paint_layout(backend, area, &tree, &mut hits, &|id| {
-                    self.engine.chrome_interaction(id)
-                });
+                paint_layout(backend, area, &tree, &mut hits);
                 self.engine.set_hits(hits);
             }
 
@@ -2411,9 +2508,7 @@ mod tests {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 let mut hits = Vec::new();
-                paint_layout(backend, area, &tree, &mut hits, &|id| {
-                    self.engine.chrome_interaction(id)
-                });
+                paint_layout(backend, area, &tree, &mut hits);
                 self.engine.set_hits(hits);
             }
 
@@ -2570,9 +2665,7 @@ mod tests {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 let mut hits = Vec::new();
-                paint_layout(backend, area, &tree, &mut hits, &|id| {
-                    self.engine.chrome_interaction(id)
-                });
+                paint_layout(backend, area, &tree, &mut hits);
                 self.engine.set_hits(hits);
             }
 
@@ -2663,9 +2756,7 @@ mod tests {
                 let viewport = backend.viewport();
                 let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
                 let mut hits = Vec::new();
-                paint_layout(backend, area, &tree, &mut hits, &|id| {
-                    self.engine.chrome_interaction(id)
-                });
+                paint_layout(backend, area, &tree, &mut hits);
                 crate::host::render_overlays(&self.engine, backend, hits);
             }
 
@@ -2740,9 +2831,7 @@ mod tests {
             let viewport = backend.viewport();
             let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
             let mut hits = Vec::new();
-            paint_layout(backend, area, &tree, &mut hits, &|id| {
-                self.engine.chrome_interaction(id)
-            });
+            paint_layout(backend, area, &tree, &mut hits);
             self.engine.set_hits(hits);
         }
 
