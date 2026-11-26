@@ -130,6 +130,10 @@ mod tests {
                     footer: None,
                     bordered: false,
                 };
+                // The logical-record ordering under test is what the
+                // DataTable rasteriser records, until DataTable paints
+                // through the widget contract.
+                #[allow(deprecated)]
                 let _ = backend.draw_data_table(
                     Rect::new(0.0, i as f32 * ROW_H, W as f32, ROW_H),
                     &table,
