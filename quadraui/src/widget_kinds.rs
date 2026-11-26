@@ -234,6 +234,19 @@ widget_kinds! {
     // carry no feature gate. The kind string is the one the wire schema
     // already publishes for it.
     "terminal" => crate::Terminal,
+    "status_bar" => crate::StatusBar,
+    "activity_bar" => crate::ActivityBar,
+    // Ungated like `TabBar`: the menu widgets' `Primitive`/`Interactive`
+    // impls carry no feature gate. The kind strings are the ones the wire
+    // schema already publishes for them.
+    "toolbar" => crate::Toolbar,
+    "menu_bar" => crate::MenuBar,
+    "context_menu" => crate::ContextMenu,
+    // Ungated: `Palette`'s and `Form`'s `Primitive`/`Interactive` impls
+    // carry no feature gate. The kind strings are the ones the wire
+    // schema already publishes for them.
+    "palette" => crate::Palette,
+    "form" => crate::Form,
 }
 
 #[cfg(test)]
@@ -322,6 +335,42 @@ mod tests {
         )
         .expect("scrollbar decodes");
         assert_eq!(scrollbar.id().map(|id| id.as_str()), Some("gutter"));
+    }
+
+    /// The menu widgets decode from the wire shape their descriptors
+    /// serialize to, with every optional field defaulted.
+    #[test]
+    fn decodes_the_menu_kinds() {
+        let toolbar = decode_widget(
+            "toolbar",
+            serde_json::json!({"id": "tools", "buttons": [{"Separator": null}]}),
+        )
+        .expect("toolbar decodes");
+        assert_eq!(toolbar.id().map(|id| id.as_str()), Some("tools"));
+
+        let menu_bar = decode_widget(
+            "menu_bar",
+            serde_json::json!({
+                "id": "menus",
+                "items": [{"id": "menu:file", "label": "&File", "disabled": false, "submenu": null}],
+                "open_item": null,
+                "focused_item": null,
+            }),
+        )
+        .expect("menu_bar decodes");
+        assert_eq!(menu_bar.id().map(|id| id.as_str()), Some("menus"));
+
+        let context_menu = decode_widget(
+            "context_menu",
+            serde_json::json!({
+                "id": "popup",
+                "items": [],
+                "selected_idx": 0,
+                "bg": null,
+            }),
+        )
+        .expect("context_menu decodes");
+        assert_eq!(context_menu.id().map(|id| id.as_str()), Some("popup"));
     }
 
     #[test]

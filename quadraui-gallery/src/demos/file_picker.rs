@@ -13,12 +13,13 @@
 //! `CARGO_MANIFEST_DIR` resolving at run time nor drifts as future demos
 //! are added to this crate's own source tree.
 
+use quadraui::DrawsPrimitives;
 use std::path::PathBuf;
 
 use quadraui::{
     Backend, BackendCaps, Color, FilePickerController, FilePickerMode, FolderPickerController,
-    Handled, InteractionState, PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment,
-    Style, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
+    Handled, PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent,
+    WidgetId, PALETTE_CHROME_ROWS,
 };
 use tempfile::TempDir;
 
@@ -160,11 +161,7 @@ impl Demo for FilePickerDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let bar_h = chrome_strip_height(backend, |s| s.status_bar_height);
         let bar_rect = Rect::new(area.x, area.y + area.height - bar_h, area.width, bar_h);
-        let _ = backend.draw_status_bar_interactive(
-            bar_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(bar_rect, &self.status_bar(), &());
 
         let popup_rect = Self::popup_rect(area, backend);
         match variant {

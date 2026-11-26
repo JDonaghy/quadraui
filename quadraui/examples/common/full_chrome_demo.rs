@@ -28,9 +28,10 @@
 //! they shift back down without losing the configured height.
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Color, Handled, ImageSource, InteractionState, Key, Modifiers, MouseButton, NamedKey,
-    PointerShape, Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
+    Backend, Color, Handled, ImageSource, Key, Modifiers, MouseButton, NamedKey, PointerShape,
+    Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
     StatusBarInteraction, StatusBarSegment, UiEvent, WidgetId,
 };
 
@@ -132,7 +133,7 @@ impl FullChromeDemo {
             right_segments: vec![],
         };
         let rect = Rect::new(bounds.x, bounds.y, bounds.width, lh.min(bounds.height));
-        backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
+        backend.draw_dyn(rect, &bar, &());
     }
 
     /// Build the title bar's `StatusBar`: the existing plain-text label on
@@ -221,19 +222,12 @@ impl ShellAppTrait for FullChromeDemo {
             let rect = Rect::new(tb.x, tb.y, tb.width, lh.min(tb.height));
             let bar =
                 Self::build_title_bar("TITLE BAR  |  File  Edit  View  Help", title_fg, title_bg);
-            // The rasteriser reads one `InteractionState`.
-            // `StatusBarInteraction` still owns the *state machine*
-            // (press/release/click resolution against a cached layout);
-            // this only adapts its two ids into the new call shape.
-            let bar_layout = backend.draw_status_bar_interactive(
-                rect,
-                &bar,
-                &InteractionState::from_parts(
-                    self.title_bar_interaction.hovered_id().cloned(),
-                    self.title_bar_interaction.pressed_id().cloned(),
-                ),
-            );
-            self.title_bar_interaction.set_layout(bar_layout);
+            // `StatusBarInteraction` owns the press/release state
+            // machine; it resolves clicks against the same layout the
+            // widget contract paints with.
+            let _ = backend.draw_dyn(rect, &bar, &());
+            self.title_bar_interaction
+                .set_layout(backend.layout_primitive(rect, &bar).layout);
         }
 
         if let Some(content) = layout.sidebar_content_bounds {

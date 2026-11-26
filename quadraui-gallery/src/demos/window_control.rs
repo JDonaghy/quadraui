@@ -10,7 +10,7 @@
 //! rest, so both outcomes are deterministic here.
 
 use quadraui::{
-    Backend, BackendCaps, BackendError, Color, InteractionState, Reaction, Rect, ServiceResult,
+    Backend, BackendCaps, BackendError, Color, DrawsPrimitives, Reaction, Rect, ServiceResult,
     StatusBar, StatusBarSegment, Style, Toolbar, ToolbarButton, ToolbarHit, UiEvent, WidgetId,
 };
 
@@ -180,18 +180,10 @@ impl Demo for WindowControlDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = chrome_strip_height(backend, |s| s.toolbar_height);
         let bar_rect = Rect::new(area.x, area.y, area.width, lh);
-        let _ = backend.draw_toolbar_interactive(
-            bar_rect,
-            &self.toolbar(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(bar_rect, &self.toolbar(variant), &());
 
         let status_rect = Rect::new(area.x, area.y + lh, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(
@@ -206,8 +198,11 @@ impl Demo for WindowControlDemo {
             let bar_rect = Rect::new(area.x, area.y, area.width, lh);
             if position.y >= bar_rect.y && position.y < bar_rect.y + bar_rect.height {
                 let bar = self.toolbar(variant);
-                let layout = backend.toolbar_layout(bar_rect, &bar);
-                if let ToolbarHit::Button(id) = layout.hit_test(position.x, position.y) {
+                // The widget contract's layout is bar-local.
+                let layout = backend.layout_primitive(bar_rect, &bar);
+                if let ToolbarHit::Button(id) =
+                    layout.hit_test(position.x - bar_rect.x, position.y - bar_rect.y)
+                {
                     self.dispatch(&id, backend);
                     return Reaction::Redraw;
                 }

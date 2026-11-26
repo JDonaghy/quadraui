@@ -23,10 +23,11 @@
 //! - q / Esc                     quit (when no dropdown is open)
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Color, ContextMenuItem, InteractionState, Key, MenuDef, MenuEvent, MenuSystem,
-    NamedKey, Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
-    StatusBarSegment, StyledText, UiEvent, WidgetId,
+    Backend, Color, ContextMenuItem, Key, MenuDef, MenuEvent, MenuSystem, NamedKey, Reaction, Rect,
+    ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar, StatusBarSegment, StyledText,
+    UiEvent, WidgetId,
 };
 
 pub struct ShellMenuDemo {
@@ -117,7 +118,7 @@ impl ShellAppTrait for ShellMenuDemo {
             layout.main_content_bounds.width,
             lh.min(layout.main_content_bounds.height),
         );
-        let _ = backend.draw_status_bar_interactive(status_rect, &status, &InteractionState::new());
+        let _ = backend.draw_dyn(status_rect, &status, &());
     }
 
     fn handle(

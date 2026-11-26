@@ -320,12 +320,13 @@ impl<'a> LayoutCtx<'a> {
     /// The height of one line of text painted in `role`'s font:
     /// [`Self::editor_line_height`] for [`crate::FontRole::Editor`], and
     /// the height attached with [`Self::with_chrome_text_line_height`]
-    /// (else [`Self::line_height`]) for [`crate::FontRole::Chrome`] and
-    /// [`crate::FontRole::Icon`], which paint in the chrome font.
+    /// (else [`Self::line_height`]) for [`crate::FontRole::Chrome`],
+    /// [`crate::FontRole::ChromeBold`] and [`crate::FontRole::Icon`], which
+    /// paint in the chrome font.
     pub fn text_line_height(&self, role: crate::FontRole) -> f32 {
         match role {
             crate::FontRole::Editor => self.editor_line_height(),
-            crate::FontRole::Chrome | crate::FontRole::Icon => {
+            crate::FontRole::Chrome | crate::FontRole::ChromeBold | crate::FontRole::Icon => {
                 self.chrome_text_line_height.unwrap_or(self.line_height)
             }
         }

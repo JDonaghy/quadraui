@@ -128,10 +128,9 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
             ("draw_tree", "OPEN EDITORS"),
             ("draw_tree", "backend.rs"),
             ("draw_tree", "PROJECT"),
-            // `draw_activity_bar` paints icon glyphs (its labels are
-            // tooltips, which are never painted). Recorded through the
-            // rasteriser's `cr.translate(rect.x, rect.y)`, so this also
-            // pins the user→device coordinate conversion.
+            // The activity bar paints icon glyphs (its labels are
+            // tooltips, which are never painted), so this also pins the
+            // user→device coordinate conversion for its glyphs.
             //
             // `"G"` (source-control), not `ShellApp`'s first icon `"E"`:
             // `find_bounds` is a *substring* search over painted texts in
@@ -146,17 +145,16 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
     );
 }
 
-/// The activity bar is painted under an active `cr.translate(...)` (see
-/// `GtkBackend::draw_activity_bar`), which is the one place a naive
-/// current-point read would record bar-local instead of surface
-/// coordinates. Its glyphs must land inside the bar's own column.
+/// The activity bar's glyphs are the place a naive current-point read
+/// would record bar-local instead of surface coordinates. Its glyphs must
+/// land inside the bar's own column.
 ///
 /// # Needle choice
 ///
 /// Both probes must be needles *no other* painted text in this fixture
 /// contains, because [`GtkDriver::find_bounds`] is a substring search over
 /// painted texts in paint order and `AppShell` paints the sidebar's
-/// `" EXPLORER "` panel-title status bar before `draw_activity_bar` runs.
+/// `" EXPLORER "` panel-title status bar before the activity bar paints.
 /// `"G"` (source-control) and `"*"` (settings) are unique to the
 /// activity bar's own glyphs.
 #[test]
@@ -195,13 +193,13 @@ fn toolbar_app_paints_locatable_buttons_and_labels() {
     assert_locatable(
         &driver,
         &[
-            ("draw_toolbar", "Continue"),
-            ("draw_toolbar", "Pause"),
-            ("draw_toolbar", "Filter"),
+            ("draw_dyn(Toolbar)", "Continue"),
+            ("draw_dyn(Toolbar)", "Pause"),
+            ("draw_dyn(Toolbar)", "Filter"),
             // Disabled action: painted dimmed, still locatable.
-            ("draw_toolbar", "Debug"),
+            ("draw_dyn(Toolbar)", "Debug"),
             // `ToolbarButton::Label` (non-clickable state text).
-            ("draw_toolbar", "running"),
+            ("draw_dyn(Toolbar)", "running"),
         ],
     );
 }
@@ -217,8 +215,8 @@ fn full_chrome_demo_paints_locatable_menu_bar_and_command_line() {
     assert_locatable(
         &driver,
         &[
-            ("draw_menu_bar", "File"),
-            ("draw_menu_bar", "Help"),
+            ("draw_dyn(MenuBar)", "File"),
+            ("draw_dyn(MenuBar)", "Help"),
             ("draw_command_line", ":command-line-slot"),
             ("draw_status_bar", "Ln 1, Col 1"),
         ],
@@ -350,15 +348,15 @@ fn menu_bar_app_paints_locatable_context_menu_items() {
     let mut driver = GtkDriver::new(menu_bar_app::MenuBarApp::new(), W, H);
     let (fx, fy) = driver
         .find("File")
-        .expect("File label should be painted by draw_menu_bar");
+        .expect("File label should be painted by the menu bar");
     driver.click(fx, fy);
     assert_locatable(
         &driver,
         &[
-            ("draw_context_menu", "New File"),
-            ("draw_context_menu", "Open File"),
-            ("draw_context_menu", "Save"),
-            ("draw_context_menu", "Quit"),
+            ("draw_dyn(ContextMenu)", "New File"),
+            ("draw_dyn(ContextMenu)", "Open File"),
+            ("draw_dyn(ContextMenu)", "Save"),
+            ("draw_dyn(ContextMenu)", "Quit"),
         ],
     );
 }

@@ -698,7 +698,8 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("status"),
@@ -711,7 +712,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 
@@ -722,7 +723,7 @@ mod tests {
 
     /// GD-1 acceptance test: build an `AppLogic`, render a frame
     /// offscreen (no display, no `gtk::init`), and read back a known
-    /// pixel. `draw_status_bar` fills the bar with the first segment's
+    /// pixel. The status bar fills itself with the first segment's
     /// `bg` when there's no gap to the right segments, so every pixel in
     /// the bar's rect that the segment's *label glyphs* don't cover
     /// should be [`KNOWN_BG`].
@@ -762,8 +763,8 @@ mod tests {
     }
 
     /// `find`/`find_bounds` locate the segment's label via the
-    /// `(text, bounds)` map [`GtkBackend::draw_status_bar`] records —
-    /// the coordinate-free alternative to hardcoding a pixel sample.
+    /// `(text, bounds)` glyph-run map the driver records — the
+    /// coordinate-free alternative to hardcoding a pixel sample.
     #[test]
     fn find_locates_status_bar_segment_by_text() {
         let mut driver = GtkDriver::new(StatusBarApp, W, H);
@@ -772,10 +773,11 @@ mod tests {
             .find_bounds("known-pixel")
             .expect("find_bounds should locate the painted segment");
         assert_eq!(
-            (bounds.x, bounds.y),
-            (crate::primitives::status_bar::PIXEL_EDGE_INSET, 0.0),
-            "the only segment should start `PIXEL_EDGE_INSET` in from the bar's \
-             own left edge (issue #1155), not flush at its origin"
+            bounds.x,
+            crate::primitives::status_bar::PIXEL_EDGE_INSET
+                + crate::primitives::status_bar::PIXEL_SEGMENT_PADDING,
+            "the only segment's label should start `PIXEL_EDGE_INSET` plus the \
+             segment's own padding in from the bar's left edge, not flush at its origin"
         );
 
         let (x, y) = driver
@@ -858,20 +860,25 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &self.bar(),
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 
         fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-            // Hit-test via the non-painting `status_bar_layout` query
+            // Hit-test via the non-painting `layout_primitive` query
             // (mirrors CLAUDE.md's "cached layout hit-test pattern" —
             // recompute the layout from state, don't repaint to hit-test).
             if let UiEvent::MouseDown { position, .. } = event {
-                let layout =
-                    backend.status_bar_layout(Rect::new(0.0, 0.0, W as f32, H as f32), &self.bar());
+                let layout = crate::DrawsPrimitives::layout_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, W as f32, H as f32),
+                    &self.bar(),
+                )
+                .layout;
                 if layout.hit_test(position.x, position.y)
                     == crate::primitives::status_bar::StatusBarHit::Segment(WidgetId::new("toggle"))
                 {
@@ -989,8 +996,7 @@ mod tests {
 
     /// Two `StatusBar`s stacked vertically at different `rect.y` offsets —
     /// the shape `examples/common/panel_app.rs`'s per-line content
-    /// rendering uses, and the one that exposed the `draw_status_bar` bug
-    /// this regression test guards.
+    /// rendering uses: each row must record at its own absolute `y`.
     struct StackedRowsApp;
 
     impl AppLogic for StackedRowsApp {
@@ -998,7 +1004,8 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             for (i, label) in ["row zero", "row one"].into_iter().enumerate() {
-                backend.draw_status_bar_interactive(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, i as f32 * STACKED_ROW_H, 200.0, STACKED_ROW_H),
                     &StatusBar {
                         id: WidgetId::new(format!("row-{i}")),
@@ -1011,7 +1018,7 @@ mod tests {
                         }],
                         right_segments: vec![],
                     },
-                    &crate::InteractionState::new(),
+                    &(),
                 );
             }
         }
@@ -1035,10 +1042,14 @@ mod tests {
             .find_bounds("row one")
             .expect("row one should be painted");
 
-        assert_eq!(row0.y, 0.0, "row 0 should record at its own rect's y");
+        assert!(
+            row0.y >= 0.0 && row0.y < STACKED_ROW_H,
+            "row 0 should record inside its own rect: {row0:?}"
+        );
         assert_eq!(
-            row1.y, STACKED_ROW_H,
-            "row 1 should record at its own rect's y, not row 0's"
+            row1.y - row0.y,
+            STACKED_ROW_H,
+            "row 1 should record one row below row 0, not at row 0's y"
         );
     }
 

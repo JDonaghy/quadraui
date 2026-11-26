@@ -20,8 +20,8 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Anchor, Backend, BackendCaps, Color, Float, FloatLayout, FloatMeasure, InteractionState, Key,
-    NamedKey, Reaction, Rect, Side, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    Anchor, Backend, BackendCaps, Color, Float, FloatLayout, FloatMeasure, Key, NamedKey, Reaction,
+    Rect, Side, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -124,7 +124,7 @@ impl FloatDemo {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(row, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(row, &bar, &());
     }
 
     fn paint_menu_content(&self, backend: &mut dyn Backend, layout: &FloatLayout) {

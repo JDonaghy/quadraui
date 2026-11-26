@@ -22,11 +22,11 @@
 //! — routed through one handler (`handle_menu_event`) regardless of which
 //! path produced them.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, ContextMenu, ContextMenuController, ContextMenuItem,
-    ContextMenuOutcome, ContextMenuPlacement, Icon, InteractionState, Key, MenuStyle, MouseButton,
-    NamedKey, Reaction, Rect, ResolvedMenuStyle, StatusBar, StatusBarSegment, StyledText, UiEvent,
-    WidgetId,
+    ContextMenuOutcome, ContextMenuPlacement, Icon, Key, MenuStyle, MouseButton, NamedKey,
+    Reaction, Rect, ResolvedMenuStyle, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct ContextMenuStyleDemo {
@@ -160,7 +160,7 @@ impl AppLogic for ContextMenuStyleDemo {
         let viewport = backend.viewport();
         let row_h = backend.line_height();
         let rect = Rect::new(0.0, viewport.height - row_h, viewport.width, row_h);
-        let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(rect, &bar, &());
 
         // Layer the painted context menu (if one is open) above
         // everything else, per `ContextMenuController`'s contract. A

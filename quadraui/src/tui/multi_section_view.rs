@@ -12,9 +12,7 @@
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect as TuiRect;
 
-use super::{
-    draw_form, draw_list, draw_message_list, draw_tree, qc, ratatui_color, set_cell, set_cell_wide,
-};
+use super::{draw_list, draw_message_list, draw_tree, qc, ratatui_color, set_cell, set_cell_wide};
 use crate::event::Rect as QRect;
 use crate::primitives::multi_section_view::{
     Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
@@ -362,7 +360,7 @@ fn paint_body(
                 draw_list(buf, area, &l_clone, theme, nerd_fonts_enabled);
             }
         }
-        SectionBody::Form(f) => draw_form(buf, area, f, theme),
+        SectionBody::Form(f) => crate::primitives::form::cell_paint::draw_form(buf, area, f, theme),
         SectionBody::Chart(c) => {
             super::draw_chart(buf, area, c, theme, None, None);
         }
@@ -2539,7 +2537,7 @@ mod tests {
         // Now hit-test the Form layout inside the body to verify
         // individual items are reachable.
         if let SectionBody::Form(f) = &v.sections[0].body {
-            let form_layout = crate::tui::form::tui_form_layout(
+            let form_layout = crate::primitives::form::cell_layout::tui_form_layout(
                 f,
                 TuiRect::new(0, 0, body_b.width as u16, body_b.height as u16),
             );

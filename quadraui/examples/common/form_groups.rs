@@ -17,10 +17,11 @@
 //! - `Tab` / `Shift+Tab`    → cycle focused field (via FocusTree)
 //! - `q` / `Esc`            → quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusTree, Form, FormField, FormHit,
-    InteractionState, Key, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
+    AppLogic, Backend, ButtonRowItem, Color, FieldKind, FocusTree, Form, FormField, FormHit, Key,
+    MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 /// Builds a [`FocusTree`] whose tab order is a fixed list of ids, each
@@ -257,7 +258,7 @@ impl FormGroupsApp {
     fn click(&mut self, backend: &mut dyn Backend, x: f32, y: f32) {
         let form = self.build_form();
         let area = Self::form_rect(backend);
-        let layout = backend.form_layout(area, &form);
+        let layout = quadraui::DrawsPrimitives::layout_primitive(&*backend, area, &form).layout;
         let hit = layout.hit_test(x, y);
         match hit {
             FormHit::Field(ref id) => {
@@ -335,12 +336,8 @@ impl AppLogic for FormGroupsApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
-        backend.draw_form(form_rect, &self.build_form());
-        let _hits = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.build_status_bar(),
-            &InteractionState::new(),
-        );
+        quadraui::DrawsPrimitives::draw_primitive(backend, form_rect, &self.build_form());
+        let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

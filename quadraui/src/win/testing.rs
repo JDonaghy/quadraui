@@ -1035,9 +1035,7 @@ impl<A: AppLogic> ConformanceDriver for WinDriver<A> {
             text_runs: self.core.backend().text_runs().to_vec(),
             // Zones registered this frame via `Backend::register_zone` —
             // `AppShell::render`'s shell-chrome zones (activity-bar items,
-            // sidebar header/content, status bar, title bar, ...) plus
-            // `WinBackend::draw_menu_bar`/`draw_status_bar_interactive`'s
-            // own band-content zones. Primitives
+            // sidebar header/content, status bar, title bar, ...). Primitives
             // that don't yet call `register_zone` contribute no zone,
             // mirroring `GtkDriver::inventory`/`MacDriver::inventory`.
             zones: self.core.backend().zones.clone(),
@@ -1137,7 +1135,7 @@ mod tests {
 
     /// A minimal `AppLogic` that paints one `StatusBar` segment — the
     /// acceptance scenario that `WinDriver::find` should locate a status-bar
-    /// label after a real `WinBackend::draw_status_bar` paint.
+    /// label after a real widget-contract paint on `WinBackend`.
     /// `target_os`-gated: its only use site is too.
     #[cfg(target_os = "windows")]
     struct StatusBarApp;
@@ -1147,7 +1145,8 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn crate::Backend, _area: ()) {
-            backend.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, 200.0, 20.0),
                 &crate::StatusBar {
                     id: crate::WidgetId::new("status"),
@@ -1160,7 +1159,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         }
 

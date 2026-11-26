@@ -18,10 +18,11 @@
 //! - `q` / `Esc`                quit
 
 use quadraui::compose::app_shell::{AppShell, AppShellEvent, PanelDefinition};
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    ActivityBarEvent, AppLogic, Backend, Color, Decoration, InteractionState, Key, NamedKey,
-    NavigationMode, Reaction, Rect, SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem,
-    StatusBar, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
+    ActivityBarEvent, AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode,
+    Reaction, Rect, SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
+    StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 pub struct ShellApp {
@@ -187,14 +188,9 @@ impl AppLogic for ShellApp {
             layout.main_content_bounds.width,
             lh,
         );
-        let _ =
-            backend.draw_status_bar_interactive(label_rect, &main_label, &InteractionState::new());
+        let _ = backend.draw_dyn(label_rect, &main_label, &());
 
-        let _ = backend.draw_status_bar_interactive(
-            status_area,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_area, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

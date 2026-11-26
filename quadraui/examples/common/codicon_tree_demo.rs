@@ -17,10 +17,10 @@
 //!   on every backend)
 //! - `q` / `Esc` quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, Icon, InteractionState, Key, NamedKey, Reaction, Rect,
-    SelectionMode, StatusBar, StatusBarSegment, StyledText, TreeRow, TreeStyle, TreeView, UiEvent,
-    WidgetId,
+    AppLogic, Backend, Color, Decoration, Icon, Key, NamedKey, Reaction, Rect, SelectionMode,
+    StatusBar, StatusBarSegment, StyledText, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.0;
@@ -143,11 +143,7 @@ impl AppLogic for CodiconTreeDemo {
         };
         backend.draw_tree(Self::tree_rect(backend), &tree);
 
-        let _ = backend.draw_status_bar_interactive(
-            Self::status_rect(backend),
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(Self::status_rect(backend), &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

@@ -25,10 +25,11 @@
 //!   degrade.
 
 use quadraui::compose::Handled;
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    native_dialog_options, Backend, BackendCaps, Color, Dialog, DialogButton, DialogSeverity,
-    InteractionState, Key, MessageDialogButton, MessageDialogController, MessageDialogOptions,
-    Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
+    native_dialog_options, Backend, BackendCaps, Color, Dialog, DialogButton, DialogSeverity, Key,
+    MessageDialogButton, MessageDialogController, MessageDialogOptions, Reaction, Rect, StatusBar,
+    StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -172,11 +173,7 @@ impl Demo for MessageDialogDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         let bar_rect = Rect::new(area.x, area.y, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            bar_rect,
-            &self.status_bar(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(bar_rect, &self.status_bar(variant), &());
 
         if variant == 0 {
             if let Some(dialog) = &self.dialog {

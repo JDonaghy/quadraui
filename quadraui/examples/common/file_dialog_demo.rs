@@ -34,9 +34,10 @@
 //! why that split matters. [`FileDialogDemo::with_initial_dir`] roots
 //! every dialog somewhere other than the backend's default.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, FileDialogOptions, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, FileDialogOptions, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 use std::path::PathBuf;
 
@@ -166,11 +167,7 @@ impl AppLogic for FileDialogDemo {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

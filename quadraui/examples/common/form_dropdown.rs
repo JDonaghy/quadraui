@@ -16,10 +16,11 @@
 //! - `Up` / `Down` → move the selection (and the popup's highlight)
 //! - `q` / `Esc`   → quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, FieldKind, Form, FormController, FormControllerAction, FormEvent,
-    FormField, Handled, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, StyledText, UiEvent, WidgetId,
+    FormField, Handled, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
+    UiEvent, WidgetId,
 };
 
 pub struct FormDropdownApp {
@@ -131,11 +132,7 @@ impl AppLogic for FormDropdownApp {
         let form_rect = Self::form_rect(backend);
         let status_rect = Self::status_rect(backend);
         self.fc.render(backend, form_rect);
-        let _hits = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.build_status_bar(),
-            &InteractionState::new(),
-        );
+        let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

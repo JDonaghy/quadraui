@@ -658,7 +658,7 @@ fn shell_app_clicking_a_sidebar_tree_row_selects_it() {
     );
 }
 
-/// `MenuBarApp`'s items are painted by `draw_menu_bar`. Clicking one by
+/// `MenuBarApp`'s items are painted by the menu bar widget. Clicking one by
 /// text opens its dropdown — and the dropdown's own items become
 /// locatable in the same map, so the whole menu interaction is now
 /// scriptable coordinate-free on GTK.
@@ -946,16 +946,16 @@ fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
     );
 }
 
-// ─── draw_solid_fill vs draw_status_bar_interactive mechanism ───────────────
+// ─── draw_solid_fill vs status bar mechanism ────────────────────────────────
 //
-// A caller that hands `draw_status_bar_interactive` a row rect taller than
+// A caller that hands a status bar a row rect taller than
 // the backend's `current_line_height` receives a fill exactly as tall as the
 // rect. `Backend::draw_solid_fill` (the replacement for dividers) also fills
 // the whole rect with no segment/text layout — a cheaper primitive.
 
 /// Paints one rect, taller than the backend's default line height, with each
-/// of the two candidate primitives — `draw_status_bar_interactive` and
-/// `draw_solid_fill` — side by side so a single frame can assert on both.
+/// of the two candidate primitives — a `StatusBar` through the widget
+/// contract and `draw_solid_fill` — side by side so a single frame can assert on both.
 struct SolidFillVsStatusBarProbe;
 
 /// Height of the probe rects — comfortably taller than any backend's
@@ -969,7 +969,7 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn quadraui::Backend, _area: ()) {
-        use quadraui::{InteractionState, StatusBar, StatusBarSegment, WidgetId};
+        use quadraui::{DrawsPrimitives, StatusBar, StatusBarSegment, WidgetId};
 
         let status_bar_rect = quadraui::Rect::new(0.0, 0.0, 40.0, PROBE_RECT_HEIGHT);
         let bar = StatusBar {
@@ -983,8 +983,7 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
             }],
             right_segments: vec![],
         };
-        let _ =
-            backend.draw_status_bar_interactive(status_bar_rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(status_bar_rect, &bar, &());
 
         let solid_fill_rect = quadraui::Rect::new(60.0, 0.0, 40.0, PROBE_RECT_HEIGHT);
         backend.draw_solid_fill(solid_fill_rect, PROBE_FILL_COLOR);
@@ -995,18 +994,18 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
     }
 }
 
-/// `GtkBackend::draw_status_bar_interactive` must fill the *whole* rect it's
-/// given — no `current_line_height` ceiling. Sampling near the bottom of a
+/// A status bar painted through the widget contract must fill the *whole*
+/// rect it's given — no `current_line_height` ceiling. Sampling near the bottom of a
 /// `PROBE_RECT_HEIGHT`-tall rect must land on the fill.
 #[test]
-fn draw_status_bar_interactive_fills_a_rect_taller_than_line_height_completely() {
+fn status_bar_fills_a_rect_taller_than_line_height_completely() {
     let mut driver = GtkDriver::new(SolidFillVsStatusBarProbe, 200, PROBE_RECT_HEIGHT as i32);
     let near_bottom_y = (PROBE_RECT_HEIGHT - 4.0) as i32;
 
     assert_eq!(
         driver.pixel(20, near_bottom_y),
         (PROBE_FILL_COLOR.r, PROBE_FILL_COLOR.g, PROBE_FILL_COLOR.b),
-        "draw_status_bar_interactive must fill all the way to the bottom of a \
+        "a status bar must fill all the way to the bottom of a \
          rect taller than current_line_height (#1179) — a caller-supplied rect \
          taller than the chrome line height must not leave an unpainted strip",
     );
@@ -1068,9 +1067,11 @@ fn sidebar_panel_body_gtk_initial_paint_shows_header_and_search() {
 /// ever appears in `HeaderAndSearch` mode.
 #[test]
 fn sidebar_panel_body_gtk_header_only_mode_paints_header_without_search_placeholder() {
+    // Wide enough that the status bar's `chrome=header last: …` segment
+    // paints unclipped next to the key hint, so its text is findable.
     let mut driver = GtkDriver::new(
         SidebarPanelBodyDemo::new(),
-        SIDEBAR_PANEL_BODY_W,
+        SIDEBAR_PANEL_BODY_W * 2,
         SIDEBAR_PANEL_BODY_H,
     );
     driver.type_char('c'); // HeaderAndSearch → None
@@ -1096,7 +1097,11 @@ fn sidebar_panel_body_gtk_header_only_mode_paints_header_without_search_placehol
 
 // ─── ContextMenuStyleDemo: MenuStyle + ContextMenuController ───────────────
 
-const CTX_MENU_W: i32 = 400;
+/// Wide enough that the demo's status line fits unsqueezed under a wide
+/// sans font: with DejaVu Sans the "Last action" and "style=… effective=…"
+/// segments plus padding, edge insets and the group gap need about 419px,
+/// and a narrower bar ellipsizes the left segment the assertions read.
+const CTX_MENU_W: i32 = 480;
 const CTX_MENU_H: i32 = 300;
 
 /// Opening a context menu through `ContextMenuController::open` with the
@@ -1165,7 +1170,7 @@ fn context_menu_style_demo_gtk_escape_dismisses() {
 // ─── SubmenuApp: pull-right cascading submenus ──────────────────────────────
 //
 // Same `SubmenuApp` as `tui_submenu`/`gtk_submenu` — driven entirely through
-// `Backend::draw_context_menu` / `MenuSystem`, proving that GTK's shared
+// the `ContextMenu` widget / `MenuSystem`, proving that GTK's shared
 // `native_surface_paint::paint` renders the `▶` affordance and that the
 // cascading open/close/click state machine behaves the same as it does on TUI.
 

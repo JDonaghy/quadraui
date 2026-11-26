@@ -10,10 +10,9 @@
 //! need) and hands the resolved positions to [`Form::layout`], which
 //! owns the scroll clamp and the hit regions.
 //!
-//! Lives next to the descriptor rather than in `crate::tui` so the
-//! contract's cell layout and the legacy `Backend::form_layout` path
-//! resolve through one body of code by construction;
-//! [`crate::tui::form`] only re-exports these names.
+//! Lives next to the descriptor rather than in `crate::tui`, so the
+//! contract's cell layout and an embedded form body resolve through one
+//! body of code.
 
 use ratatui::layout::Rect;
 
@@ -176,7 +175,8 @@ pub fn tui_form_layout(form: &Form, area: Rect) -> crate::primitives::form::Form
 
 /// Same as [`tui_form_layout`], but takes an already-computed
 /// `left_label_width` so a caller that also needs that value (like
-/// [`draw_form`]) only runs [`left_label_column_width`] once per frame.
+/// `cell_paint::draw_form`) only runs [`left_label_column_width`] once
+/// per frame.
 pub(crate) fn tui_form_layout_with_label_width(
     form: &Form,
     area: Rect,

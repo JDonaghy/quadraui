@@ -40,9 +40,9 @@
 //!
 //! Every primitive that has a `Backend::draw_*` method has a matching
 //! [`Surface`] variant (`Board`, `DiffView`, `Image`, `MessageList`,
-//! `Minimap`, `PipelineView`, `Progress`, `Spinner`, `SplitTree`,
-//! `Toolbar` included). `Backend::draw_<name>` stays reachable directly
-//! for the reasons above; there is no primitive that is categorically
+//! `Minimap`, `PipelineView`, `Progress`, `Spinner`, `SplitTree`
+//! included). `Backend::draw_<name>` stays reachable directly for the
+//! reasons above; there is no primitive that is categorically
 //! unreachable through the declarative path.
 //!
 //! ## `FrameHitMap` is serializable; [`OwnedFrame`] is the owned `Frame`
@@ -212,7 +212,7 @@ use crate::primitives::chart::Chart;
 use crate::primitives::command_center::CommandCenter;
 use crate::primitives::command_line::CommandLine;
 use crate::primitives::completions::Completions;
-use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
+use crate::primitives::context_menu::ContextMenu;
 use crate::primitives::data_table::DataTable;
 use crate::primitives::dialog::Dialog;
 use crate::primitives::diff_view::DiffView;
@@ -268,17 +268,6 @@ pub enum Surface {
         rect: Rect,
         editor: Editor,
     },
-    StatusBar {
-        rect: Rect,
-        bar: StatusBar,
-        hovered: Option<WidgetId>,
-        pressed: Option<WidgetId>,
-    },
-    ActivityBar {
-        rect: Rect,
-        bar: ActivityBar,
-        hovered: Option<usize>,
-    },
     MultiSectionView {
         rect: Rect,
         view: MultiSectionView,
@@ -291,14 +280,6 @@ pub enum Surface {
         rect: Rect,
         list: ListView,
     },
-    Form {
-        rect: Rect,
-        form: Form,
-    },
-    MenuBar {
-        rect: Rect,
-        bar: MenuBar,
-    },
     Split {
         rect: Rect,
         split: Split,
@@ -306,14 +287,6 @@ pub enum Surface {
     Scrollbar {
         rect: Rect,
         sb: Scrollbar,
-    },
-    Palette {
-        rect: Rect,
-        palette: Palette,
-    },
-    ContextMenu {
-        menu: ContextMenu,
-        layout: ContextMenuLayout,
     },
     FindReplace {
         rect: Rect,
@@ -390,17 +363,6 @@ pub enum Surface {
         rect: Rect,
         tree: SplitTree,
     },
-    /// Mirrors [`Surface::StatusBar`]'s `hovered`/`pressed` shape: a
-    /// `Surface` carries the two optional ids rather than a whole
-    /// [`crate::interaction::InteractionState`], and
-    /// [`ScreenLayout::draw`] builds the `WidgetId`-keyed store from
-    /// them at the call boundary.
-    Toolbar {
-        rect: Rect,
-        bar: Toolbar,
-        hovered: Option<WidgetId>,
-        pressed: Option<WidgetId>,
-    },
 }
 
 /// Identifies which surface zone a point landed in.
@@ -440,12 +402,6 @@ pub enum FrameZone {
     TabBar {
         idx: usize,
     },
-    StatusBar {
-        idx: usize,
-    },
-    ActivityBar {
-        idx: usize,
-    },
     MultiSectionView {
         idx: usize,
     },
@@ -455,22 +411,10 @@ pub enum FrameZone {
     List {
         idx: usize,
     },
-    Form {
-        idx: usize,
-    },
-    MenuBar {
-        idx: usize,
-    },
     Split {
         idx: usize,
     },
     Scrollbar {
-        idx: usize,
-    },
-    Palette {
-        idx: usize,
-    },
-    ContextMenu {
         idx: usize,
     },
     FindReplace {
@@ -519,9 +463,6 @@ pub enum FrameZone {
         idx: usize,
     },
     SplitTree {
-        idx: usize,
-    },
-    Toolbar {
         idx: usize,
     },
     Empty,
@@ -753,28 +694,6 @@ impl ScreenLayout {
                 Surface::Editor { rect, editor } => {
                     backend.draw_editor(*rect, editor);
                 }
-                Surface::StatusBar {
-                    rect,
-                    bar,
-                    hovered,
-                    pressed,
-                } => {
-                    // `Surface::StatusBar` carries the two optional
-                    // ids; the trait wants the `WidgetId`-keyed
-                    // hover/pressed store, so build one from them here
-                    // at the call boundary.
-                    let interaction =
-                        crate::interaction::InteractionState::from_parts(*hovered, *pressed);
-                    backend.draw_status_bar_interactive(*rect, bar, &interaction);
-                }
-                Surface::ActivityBar { rect, bar, hovered } => {
-                    backend.draw_activity_bar_with_style(
-                        *rect,
-                        bar,
-                        *hovered,
-                        &crate::ActivityBarStyle::default(),
-                    );
-                }
                 Surface::MultiSectionView { rect, view } => {
                     backend.draw_multi_section_view(*rect, view);
                 }
@@ -786,23 +705,11 @@ impl ScreenLayout {
                 Surface::List { rect, list } => {
                     backend.draw_list(*rect, list);
                 }
-                Surface::Form { rect, form } => {
-                    backend.draw_form(*rect, form);
-                }
-                Surface::MenuBar { rect, bar } => {
-                    backend.draw_menu_bar(*rect, bar);
-                }
                 Surface::Split { rect, split } => {
                     backend.draw_split(*rect, split);
                 }
                 Surface::Scrollbar { rect, sb } => {
                     backend.draw_scrollbar(*rect, sb);
-                }
-                Surface::Palette { rect, palette } => {
-                    backend.draw_palette(*rect, palette);
-                }
-                Surface::ContextMenu { menu, layout } => {
-                    backend.draw_context_menu(menu, layout);
                 }
                 Surface::FindReplace { rect, panel } => {
                     backend.draw_find_replace(*rect, panel);
@@ -816,7 +723,16 @@ impl ScreenLayout {
                     backend.draw_data_table(*rect, table, *hovered);
                 }
                 Surface::Widget { rect, widget } => {
-                    backend.draw_dyn(*rect, widget.as_ref(), &());
+                    // A menu bar may be the platform's own rather than a
+                    // painted strip; `MenuBar::present` makes that call.
+                    match widget.as_ref().downcast_ref::<crate::MenuBar>() {
+                        Some(bar) => {
+                            let _ = bar.present(backend, *rect);
+                        }
+                        None => {
+                            backend.draw_dyn(*rect, widget.as_ref(), &());
+                        }
+                    }
                 }
                 Surface::Chart {
                     rect,
@@ -855,16 +771,6 @@ impl ScreenLayout {
                 }
                 Surface::SplitTree { rect, tree } => {
                     backend.draw_split_tree(*rect, tree);
-                }
-                Surface::Toolbar {
-                    rect,
-                    bar,
-                    hovered,
-                    pressed,
-                } => {
-                    let interaction =
-                        crate::interaction::InteractionState::from_parts(*hovered, *pressed);
-                    backend.draw_toolbar_interactive(*rect, bar, &interaction);
                 }
             }
 
@@ -909,10 +815,9 @@ impl ScreenLayout {
     ///
     /// Only surfaces that carry both a plain `rect` and an owning
     /// [`WidgetId`] participate. Excluded, deliberately:
-    /// - Transient overlays (`ContextMenu`, `FindReplace`) — these
-    ///   already own their own internal focus/dismiss handling while
-    ///   open, and being modal, nothing behind them should be
-    ///   Tab-reachable anyway.
+    /// - Transient overlays (`FindReplace`) — these already own their
+    ///   own internal focus/dismiss handling while open, and being
+    ///   modal, nothing behind them should be Tab-reachable anyway.
     /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
     ///   containers/controls with no independent focusable identity of
     ///   their own.
@@ -939,14 +844,9 @@ impl ScreenLayout {
             .iter()
             .flat_map(|s| match s {
                 Surface::Editor { rect, editor } => vec![(editor.id, *rect)],
-                Surface::StatusBar { rect, bar, .. } => vec![(bar.id, *rect)],
-                Surface::ActivityBar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
                 Surface::Tree { rect, tree } => vec![(tree.id, *rect)],
                 Surface::List { rect, list } => vec![(list.id, *rect)],
-                Surface::Form { rect, form } => vec![(form.id, *rect)],
-                Surface::MenuBar { rect, bar } => vec![(bar.id, *rect)],
-                Surface::Palette { rect, palette } => vec![(palette.id, *rect)],
                 Surface::DataTable { rect, table, .. } => vec![(table.id, *rect)],
                 Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
                 Surface::Chart { rect, chart, .. } => vec![(chart.id, *rect)],
@@ -956,14 +856,12 @@ impl ScreenLayout {
                 Surface::Minimap { rect, minimap } => vec![(minimap.id, *rect)],
                 Surface::PipelineView { rect, view } => vec![(view.id, *rect)],
                 Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
-                Surface::Toolbar { rect, bar, .. } => vec![(bar.id, *rect)],
                 Surface::Image { .. }
                 | Surface::Spinner { .. }
                 | Surface::Canvas { .. }
                 | Surface::Progress { .. }
                 | Surface::Split { .. }
                 | Surface::Scrollbar { .. }
-                | Surface::ContextMenu { .. }
                 | Surface::FindReplace { .. }
                 | Surface::SplitTree { .. } => Vec::new(),
             })
@@ -1007,17 +905,11 @@ impl ScreenLayout {
     fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
             Surface::Editor { rect, .. } => (*rect, FrameZone::Editor { idx }),
-            Surface::StatusBar { rect, .. } => (*rect, FrameZone::StatusBar { idx }),
-            Surface::ActivityBar { rect, .. } => (*rect, FrameZone::ActivityBar { idx }),
             Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
             Surface::Tree { rect, .. } => (*rect, FrameZone::Tree { idx }),
             Surface::List { rect, .. } => (*rect, FrameZone::List { idx }),
-            Surface::Form { rect, .. } => (*rect, FrameZone::Form { idx }),
-            Surface::MenuBar { rect, .. } => (*rect, FrameZone::MenuBar { idx }),
             Surface::Split { rect, .. } => (*rect, FrameZone::Split { idx }),
             Surface::Scrollbar { rect, .. } => (*rect, FrameZone::Scrollbar { idx }),
-            Surface::Palette { rect, .. } => (*rect, FrameZone::Palette { idx }),
-            Surface::ContextMenu { layout, .. } => (layout.bounds, FrameZone::ContextMenu { idx }),
             Surface::FindReplace { rect, .. } => (*rect, FrameZone::FindReplace { idx }),
             Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
             Surface::Widget { rect, widget } => (
@@ -1038,7 +930,6 @@ impl ScreenLayout {
             Surface::Progress { rect, .. } => (*rect, FrameZone::Progress { idx }),
             Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
             Surface::SplitTree { rect, .. } => (*rect, FrameZone::SplitTree { idx }),
-            Surface::Toolbar { rect, .. } => (*rect, FrameZone::Toolbar { idx }),
         }
     }
 
@@ -1132,11 +1023,16 @@ pub enum OwnedContent {
     /// variant rather than reusing it.
     ListWidget(ListView),
     Form(Form),
+    /// Captured from a [`MenuBar`] reached through [`Surface::Widget`] via
+    /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`].
     MenuBar(MenuBar),
     Split(Split),
     Scrollbar(Scrollbar),
     Palette(Palette),
     Tooltip(Tooltip),
+    /// Captured from a [`ContextMenu`] reached through [`Surface::Widget`]
+    /// via [`DynWidget::capture`] — maps to [`FrameZone::Widget`]. Like
+    /// every transient overlay, it is not replayed.
     ContextMenu(ContextMenu),
     Dialog(Dialog),
     Float(Float),
@@ -1166,6 +1062,8 @@ pub enum OwnedContent {
     SplitTree(SplitTree),
     TextInput(TextInput),
     TextField(TextField),
+    /// Captured from a [`Toolbar`] reached through [`Surface::Widget`] via
+    /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`].
     Toolbar(Toolbar),
     /// Captured from a [`Switch`] reached through [`Surface::Widget`] via
     /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the only
@@ -1213,16 +1111,10 @@ impl OwnedContent {
                 backend.draw_primitive(rect, bar);
             }
             OwnedContent::StatusBar(bar) => {
-                let interaction = crate::interaction::InteractionState::from_parts(None, None);
-                backend.draw_status_bar_interactive(rect, bar, &interaction);
+                backend.draw_primitive(rect, bar);
             }
             OwnedContent::ActivityBar(bar) => {
-                backend.draw_activity_bar_with_style(
-                    rect,
-                    bar,
-                    None,
-                    &crate::ActivityBarStyle::default(),
-                );
+                backend.draw_primitive(rect, bar);
             }
             OwnedContent::CommandLine(cmd) => {
                 backend.draw_primitive(rect, cmd);
@@ -1271,15 +1163,19 @@ impl OwnedContent {
                     let _ = (rect, list, backend);
                 }
             }
-            OwnedContent::Form(form) => backend.draw_form(rect, form),
+            OwnedContent::Form(form) => {
+                backend.draw_primitive(rect, form);
+            }
             OwnedContent::MenuBar(bar) => {
-                backend.draw_menu_bar(rect, bar);
+                let _ = bar.present(backend, rect);
             }
             OwnedContent::Split(split) => {
                 backend.draw_split(rect, split);
             }
             OwnedContent::Scrollbar(sb) => backend.draw_scrollbar(rect, sb),
-            OwnedContent::Palette(palette) => backend.draw_palette(rect, palette),
+            OwnedContent::Palette(palette) => {
+                backend.draw_primitive(rect, palette);
+            }
             OwnedContent::Toast(stack) => {
                 backend.draw_primitive(rect, stack);
             }
@@ -1339,8 +1235,7 @@ impl OwnedContent {
                 backend.draw_primitive(rect, tf);
             }
             OwnedContent::Toolbar(bar) => {
-                let interaction = crate::interaction::InteractionState::from_parts(None, None);
-                backend.draw_toolbar_interactive(rect, bar, &interaction);
+                backend.draw_primitive(rect, bar);
             }
             OwnedContent::Switch(switch) => {
                 // `impl Primitive for Switch` is unconditional, like
@@ -1394,8 +1289,14 @@ impl OwnedContent {
                 idx,
                 id: Some(bar.id),
             },
-            OwnedContent::StatusBar(_) => FrameZone::StatusBar { idx },
-            OwnedContent::ActivityBar(_) => FrameZone::ActivityBar { idx },
+            OwnedContent::StatusBar(bar) => FrameZone::Widget {
+                idx,
+                id: Some(bar.id),
+            },
+            OwnedContent::ActivityBar(bar) => FrameZone::Widget {
+                idx,
+                id: Some(bar.id),
+            },
             OwnedContent::CommandLine(cmd) => FrameZone::Widget {
                 idx,
                 id: Some(cmd.id),
@@ -1415,16 +1316,28 @@ impl OwnedContent {
                 idx,
                 id: Some(list.id),
             },
-            OwnedContent::Form(_) => FrameZone::Form { idx },
-            OwnedContent::MenuBar(_) => FrameZone::MenuBar { idx },
+            OwnedContent::Form(form) => FrameZone::Widget {
+                idx,
+                id: Some(form.id),
+            },
+            OwnedContent::MenuBar(bar) => FrameZone::Widget {
+                idx,
+                id: Some(bar.id),
+            },
             OwnedContent::Split(_) => FrameZone::Split { idx },
             OwnedContent::Scrollbar(_) => FrameZone::Scrollbar { idx },
-            OwnedContent::Palette(_) => FrameZone::Palette { idx },
+            OwnedContent::Palette(palette) => FrameZone::Widget {
+                idx,
+                id: Some(palette.id),
+            },
             OwnedContent::Tooltip(tooltip) => FrameZone::Widget {
                 idx,
                 id: Some(tooltip.id),
             },
-            OwnedContent::ContextMenu(_) => FrameZone::ContextMenu { idx },
+            OwnedContent::ContextMenu(menu) => FrameZone::Widget {
+                idx,
+                id: Some(menu.id),
+            },
             OwnedContent::Dialog(dialog) => FrameZone::Widget {
                 idx,
                 id: Some(dialog.id),
@@ -1477,7 +1390,10 @@ impl OwnedContent {
                 idx,
                 id: Some(tf.id),
             },
-            OwnedContent::Toolbar(_) => FrameZone::Toolbar { idx },
+            OwnedContent::Toolbar(bar) => FrameZone::Widget {
+                idx,
+                id: Some(bar.id),
+            },
             OwnedContent::Switch(switch) => FrameZone::Widget {
                 idx,
                 id: Some(switch.id),
@@ -1713,12 +1629,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::Editor { rect, editor } => {
             (*rect, Some(editor.id), OwnedContent::Editor(editor.clone()))
         }
-        Surface::StatusBar { rect, bar, .. } => {
-            (*rect, Some(bar.id), OwnedContent::StatusBar(bar.clone()))
-        }
-        Surface::ActivityBar { rect, bar, .. } => {
-            (*rect, Some(bar.id), OwnedContent::ActivityBar(bar.clone()))
-        }
         Surface::MultiSectionView { rect, view } => (
             *rect,
             Some(view.id),
@@ -1726,18 +1636,8 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         ),
         Surface::Tree { rect, tree } => (*rect, Some(tree.id), OwnedContent::Tree(tree.clone())),
         Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List(list.clone())),
-        Surface::Form { rect, form } => (*rect, Some(form.id), OwnedContent::Form(form.clone())),
-        Surface::MenuBar { rect, bar } => (*rect, Some(bar.id), OwnedContent::MenuBar(bar.clone())),
         Surface::Split { rect, split } => (*rect, None, OwnedContent::Split(split.clone())),
         Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar(sb.clone())),
-        Surface::Palette { rect, palette } => (
-            *rect,
-            Some(palette.id),
-            OwnedContent::Palette(palette.clone()),
-        ),
-        Surface::ContextMenu { menu, layout } => {
-            (layout.bounds, None, OwnedContent::ContextMenu(menu.clone()))
-        }
         Surface::FindReplace { rect, .. } => (*rect, None, OwnedContent::FindReplace),
         Surface::DataTable { rect, table, .. } => (
             *rect,
@@ -1778,9 +1678,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         ),
         Surface::Spinner { rect, spinner } => (*rect, None, OwnedContent::Spinner(spinner.clone())),
         Surface::SplitTree { rect, tree } => (*rect, None, OwnedContent::SplitTree(tree.clone())),
-        Surface::Toolbar { rect, bar, .. } => {
-            (*rect, Some(bar.id), OwnedContent::Toolbar(bar.clone()))
-        }
     }
 }
 
@@ -1917,11 +1814,11 @@ mod tests {
         // Overlay covers top-left quadrant.
         map.push(
             Rect::new(0.0, 0.0, 50.0, 50.0),
-            FrameZone::Palette { idx: 1 },
+            FrameZone::FindReplace { idx: 1 },
         );
 
         // Point in the overlay → highest-z wins.
-        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::Palette { idx: 1 });
+        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::FindReplace { idx: 1 });
         // Point outside the overlay but inside editor.
         assert_eq!(map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.
@@ -1945,12 +1842,12 @@ mod tests {
         map.push(Rect::new(0.0, 0.0, 80.0, 1.0), FrameZone::TabBar { idx: 1 });
         map.push(
             Rect::new(0.0, 23.0, 80.0, 1.0),
-            FrameZone::StatusBar { idx: 2 },
+            FrameZone::Scrollbar { idx: 2 },
         );
 
         assert_eq!(map.hit_test(40.0, 0.5), FrameZone::TabBar { idx: 1 });
         assert_eq!(map.hit_test(40.0, 12.0), FrameZone::Editor { idx: 0 });
-        assert_eq!(map.hit_test(40.0, 23.5), FrameZone::StatusBar { idx: 2 });
+        assert_eq!(map.hit_test(40.0, 23.5), FrameZone::Scrollbar { idx: 2 });
     }
 
     #[test]
@@ -2164,9 +2061,9 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
             editor,
         });
-        layout.push(Surface::Palette {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 50.0, 50.0),
-            palette,
+            widget: Box::new(palette),
         });
 
         // No `&mut dyn Backend` in scope anywhere in this test — proves
@@ -2176,7 +2073,13 @@ mod tests {
 
         assert_eq!(hit_map.len(), 2);
         // Point in the overlay → highest-z (last-pushed) wins.
-        assert_eq!(hit_map.hit_test(25.0, 25.0), FrameZone::Palette { idx: 1 });
+        assert_eq!(
+            hit_map.hit_test(25.0, 25.0),
+            FrameZone::Widget {
+                idx: 1,
+                id: Some("pal".into())
+            }
+        );
         // Point outside the overlay but inside the editor.
         assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.
@@ -2305,9 +2208,9 @@ mod tests {
             rect: editor.rect,
             editor,
         });
-        layout.push(Surface::Palette {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 50.0, 5.0),
-            palette,
+            widget: Box::new(palette),
         });
         // Structural chrome: must not appear in tab order at all.
         layout.push(Surface::Split {
@@ -2466,11 +2369,9 @@ mod tests {
             rect,
             widget: Box::new(text_input),
         });
-        layout.push(Surface::Toolbar {
+        layout.push(Surface::Widget {
             rect,
-            bar: toolbar,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(toolbar),
         });
 
         let hit_map = layout.hit_map();
@@ -2508,7 +2409,13 @@ mod tests {
                 id: Some(WidgetId::new("ti")),
             }
         );
-        assert_eq!(zones[13], &FrameZone::Toolbar { idx: 13 });
+        assert_eq!(
+            zones[13],
+            &FrameZone::Widget {
+                idx: 13,
+                id: Some(WidgetId::new("tb")),
+            }
+        );
 
         // A drop overlay is pushed at `DropOverlay::bounds()`.
         assert_eq!(hit_map.zones()[3].0, overlay.bounds());
@@ -2519,14 +2426,15 @@ mod tests {
         // non-cancellable `Progress` (no activatable affordance).
         let stops = layout.tab_stops();
         let stop_ids: Vec<&str> = stops.iter().map(|(id, _)| id.as_str()).collect();
-        for id in ["board", "cc", "diff", "ml", "mm", "pv", "ti", "tb"] {
+        for id in ["board", "cc", "diff", "ml", "mm", "pv", "ti"] {
             assert!(stop_ids.contains(&id), "{id} should be a tab stop");
         }
-        // A `SidebarPanel` is pointer-only (`FocusSpec::None`).
-        for id in ["img", "sn", "pb", "leaf", "sp"] {
+        // A `SidebarPanel` is pointer-only (`FocusSpec::None`), and a
+        // toolbar with no button has nothing to focus.
+        for id in ["img", "sn", "pb", "leaf", "sp", "tb"] {
             assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
         }
-        assert_eq!(stop_ids.len(), 8);
+        assert_eq!(stop_ids.len(), 7);
     }
 
     /// A cancellable `Progress` bar *does* get a tab stop — the cancel
@@ -3224,12 +3132,12 @@ mod tests {
     fn frame_hit_map_serde_round_trip() {
         let mut map = FrameHitMap::new();
         map.push(Rect::new(0.0, 0.0, 10.0, 10.0), FrameZone::Board { idx: 0 });
-        map.push(Rect::new(0.0, 0.0, 5.0, 5.0), FrameZone::Toolbar { idx: 1 });
+        map.push(Rect::new(0.0, 0.0, 5.0, 5.0), FrameZone::Spinner { idx: 1 });
 
         let json = serde_json::to_string(&map).expect("FrameHitMap serializes");
         let restored: FrameHitMap = serde_json::from_str(&json).expect("FrameHitMap deserializes");
         assert_eq!(restored, map);
-        assert_eq!(restored.hit_test(1.0, 1.0), FrameZone::Toolbar { idx: 1 });
+        assert_eq!(restored.hit_test(1.0, 1.0), FrameZone::Spinner { idx: 1 });
 
         // `from_zones` is the inverse of `zones()` — a map rebuilt from
         // its own owned data behaves identically.
@@ -3289,9 +3197,9 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
             editor,
         });
-        layout.push(Surface::Palette {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 50.0, 50.0),
-            palette,
+            widget: Box::new(palette),
         });
 
         let captured = OwnedFrame::from_layout(&layout);
@@ -3305,7 +3213,13 @@ mod tests {
         assert_eq!(hit_map.len(), 2);
         // Point in the overlay → highest-z (last-pushed) wins, same as
         // `ScreenLayout::hit_map` would have reported for the source.
-        assert_eq!(hit_map.hit_test(25.0, 25.0), FrameZone::Palette { idx: 1 });
+        assert_eq!(
+            hit_map.hit_test(25.0, 25.0),
+            FrameZone::Widget {
+                idx: 1,
+                id: Some("pal".into())
+            }
+        );
         // Point outside the overlay but inside the editor.
         assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.

@@ -6,10 +6,11 @@
 //! cards) — the same [`BoardModel`] shape, showing it handles the
 //! nothing-to-select case gracefully.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardModel,
-    CardBadge, Color, InteractionState, Key, MoveDir, Reaction, Rect, StatusBar, StatusBarSegment,
-    Style, UiEvent, WidgetId,
+    CardBadge, Color, Key, MoveDir, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent,
+    WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -209,11 +210,7 @@ impl Demo for BoardDemo {
         let _ = backend.draw_board(board_rect, self.model(variant));
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(), &());
     }
 
     fn handle(

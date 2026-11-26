@@ -110,8 +110,8 @@ pub fn mac_tree_layout_with_scroll_px(
 /// `nerd_fonts_enabled` picks `row.icon.glyph` when `true` and
 /// `row.icon.fallback` when `false` — pass
 /// `MacBackend`'s own flag (set via [`crate::Backend::set_nerd_fonts`]),
-/// same convention as `MacBackend::draw_activity_bar_with_style` and the
-/// TUI/GTK `draw_tree` rasterisers.
+/// same convention as the activity bar and the TUI/GTK `draw_tree`
+/// rasterisers.
 ///
 /// # Safety
 ///

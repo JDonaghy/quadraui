@@ -10394,8 +10394,8 @@ def handle(event):
     /// too wide to share one row: the second button must flow onto the
     /// bar's second line (a greater `y`) instead of clipping off-screen —
     /// proving the dict/object `"overflow"` key set by a Python render
-    /// callback actually reaches `Backend::draw_toolbar_with_overflow`,
-    /// not just `draw_toolbar_interactive`'s Clip-only path.
+    /// callback actually reaches the toolbar's painted layout, not just
+    /// the Clip-only default.
     #[test]
     fn toolbar_wrap_overflow_flows_the_second_button_onto_a_new_row() {
         Python::attach(|py| {

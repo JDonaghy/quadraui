@@ -907,7 +907,11 @@ impl ChatController {
 
         // ── 7. Send / Stop segment ───────────────────────────────────────
         if let Some(send_rect) = layout.send {
-            backend.draw_form(send_rect, &self.build_send_form());
+            crate::backend::DrawsPrimitives::draw_primitive(
+                backend,
+                send_rect,
+                &self.build_send_form(),
+            );
         }
     }
 
@@ -4255,8 +4259,8 @@ mod tests {
 
     /// TUI: the Send/Stop segment paints "Send" while idle and
     /// "Stop" while busy, and the persistent hint row paints its text —
-    /// through the real `TuiBackend::draw_form` / `draw_message_list`
-    /// rasterisers, not a mock.
+    /// through the real `Form` cell painter and `draw_message_list`
+    /// rasteriser, not a mock.
     #[cfg(feature = "tui")]
     #[test]
     fn tui_render_paints_send_stop_segment_and_hint() {

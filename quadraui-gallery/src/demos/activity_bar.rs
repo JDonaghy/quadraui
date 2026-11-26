@@ -3,12 +3,11 @@
 //!
 //! Two variants show the two ways an active item can be highlighted:
 //! a left-edge accent line (`ActivityBar::active_accent`), or a VS-Code-style
-//! soft row fill requested through `Backend::draw_activity_bar_with_style` —
-//! never a field on `ActivityBar` itself.
+//! soft row fill requested through the bar's own `ActivityBar::style`.
 
 use quadraui::{
-    ActivityBar, ActivityBarStyle, ActivityItem, Backend, BackendCaps, Color, Reaction, Rect,
-    UiEvent, WidgetId,
+    ActivityBar, ActivityBarStyle, ActivityItem, Backend, BackendCaps, Color, DrawsPrimitives,
+    Reaction, Rect, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -61,6 +60,12 @@ impl ActivityBarDemo {
             },
             selection_bg: None,
             is_keyboard_focused: false,
+            style: if variant == 1 {
+                self.style()
+            } else {
+                ActivityBarStyle::default()
+            },
+            hovered: None,
         }
     }
 
@@ -96,15 +101,7 @@ impl Demo for ActivityBarDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = area;
-        let bar = self.bar(variant);
-        if variant == 0 {
-            // Deliberately exercises the deprecated positional entry point
-            // (variant 1 below demonstrates its `_with_style` replacement).
-            #[allow(deprecated)]
-            let _ = backend.draw_activity_bar(rect, &bar, None);
-        } else {
-            let _ = backend.draw_activity_bar_with_style(rect, &bar, None, &self.style());
-        }
+        let _ = backend.draw_dyn(rect, &self.bar(variant), &());
     }
 
     fn handle(
@@ -125,10 +122,7 @@ impl Demo for ActivityBarDemo {
                     return Reaction::Continue;
                 }
                 let bar = self.bar(variant);
-                // No replacement seam exists for a no-paint geometry query —
-                // see `Backend::activity_bar_layout`'s deprecation note.
-                #[allow(deprecated)]
-                let hits = backend.activity_bar_layout(rect, &bar);
+                let hits = backend.layout_primitive(rect, &bar).row_hits(&bar);
                 let rel_y = position.y - rect.y;
                 for hit in &hits {
                     if rel_y >= hit.y_start && rel_y < hit.y_end {

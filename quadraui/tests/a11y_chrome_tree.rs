@@ -11,12 +11,12 @@ use quadraui::compose::app_shell::AppShell;
 use quadraui::testing::a11y::A11yScenario;
 use quadraui::{
     compute_find_replace_hit_regions, ActivityBar, ActivityItem, Color, CommandCenter, CommandLine,
-    ContextMenu, ContextMenuItem, ContextMenuItemMeasure, Dialog, DialogButton, DialogMeasure,
-    DropOverlay, FieldKind, FindReplacePanel, Form, FormField, Icon, MenuBar, MenuBarItem,
-    ProgressBar, Rect, RichTextLink, RichTextPopup, RichTextPopupMeasure, Scrollbar, Spinner,
-    Split, SplitDirection, SplitTree, StatusBar, StatusBarSegment, StyledText, Surface, TabBar,
-    TabBarSegment, TabItem, Toast, ToastCorner, ToastOverlay, ToastSeverity, ToolbarItemMeasure,
-    Tooltip, TooltipMeasure, ValidationState, WidgetId, FR_PANEL_WIDTH,
+    ContextMenu, ContextMenuItem, Dialog, DialogButton, DialogMeasure, DropOverlay, FieldKind,
+    FindReplacePanel, Form, FormField, Icon, MenuBar, MenuBarItem, ProgressBar, Rect, RichTextLink,
+    RichTextPopup, RichTextPopupMeasure, Scrollbar, Spinner, Split, SplitDirection, SplitTree,
+    StatusBar, StatusBarSegment, StyledText, Surface, TabBar, TabBarSegment, TabItem, Toast,
+    ToastCorner, ToastOverlay, ToastSeverity, ToolbarItemMeasure, Tooltip, TooltipMeasure,
+    ValidationState, WidgetId, FR_PANEL_WIDTH,
 };
 
 const VIEWPORT: Rect = Rect {
@@ -104,12 +104,13 @@ fn activity_bar_items_are_tabs_in_a_toolbar() {
         active_accent: None,
         selection_bg: None,
         is_keyboard_focused: false,
+        style: Default::default(),
+        hovered: None,
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::ActivityBar {
+        .with_surface(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 4.0, 24.0),
-            bar,
-            hovered: None,
+            widget: Box::new(bar),
         })
         .snapshot();
 
@@ -143,11 +144,9 @@ fn status_bar_segments_split_into_buttons_and_labels() {
         right_segments: vec![segment("Ln 1, Col 1", None)],
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::StatusBar {
+        .with_surface(Surface::Widget {
             rect: rect(23.0, 1.0),
-            bar,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(bar),
         })
         .snapshot();
 
@@ -238,9 +237,9 @@ fn menu_bar_announces_names_without_alt_markers() {
         focused_item: Some(0),
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::MenuBar {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 1.0),
-            bar,
+            widget: Box::new(bar),
         })
         .with_focus(WidgetId::new("menubar"))
         .snapshot();
@@ -278,11 +277,11 @@ fn context_menu_exposes_items_checks_and_separators() {
         placement: Default::default(),
         glyphs: Default::default(),
     };
-    let layout = menu.layout(2.0, 2.0, VIEWPORT, 20.0, |_| {
-        ContextMenuItemMeasure::new(1.0)
-    });
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::ContextMenu { menu, layout })
+        .with_surface(Surface::Widget {
+            rect: Rect::new(2.0, 2.0, 20.0, 6.0),
+            widget: Box::new(menu),
+        })
         .snapshot();
 
     snapshot.assert_matches(
@@ -346,9 +345,9 @@ fn form_fields_carry_role_state_and_a_live_validation_alert() {
         spacing: Default::default(),
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::Form {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 6.0),
-            form,
+            widget: Box::new(form),
         })
         .snapshot();
 
@@ -409,9 +408,9 @@ fn a_field_that_owns_its_own_set_size_does_not_borrow_the_forms_position() {
         spacing: Default::default(),
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::Form {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 6.0),
-            form,
+            widget: Box::new(form),
         })
         .snapshot();
 
@@ -474,11 +473,9 @@ fn an_open_dialog_is_modal_and_hides_the_rest_of_the_tree() {
         right_segments: vec![],
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::StatusBar {
+        .with_surface(Surface::Widget {
             rect: rect(23.0, 1.0),
-            bar: status,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(status),
         })
         .with_surface(Surface::Widget {
             rect: layout.bounds,
@@ -832,23 +829,18 @@ fn appshell_demo_whole_window_tree() {
     let app = AppShellDemo::new();
 
     let mut scenario = A11yScenario::new().with_root_label("AppShell Demo");
-    scenario.push(Surface::ActivityBar {
+    scenario.push(Surface::Widget {
         rect: layout.activity_bar_bounds,
-        bar: shell.build_activity_bar(),
-        hovered: None,
+        widget: Box::new(shell.build_activity_bar()),
     });
-    scenario.push(Surface::StatusBar {
+    scenario.push(Surface::Widget {
         rect: layout.sidebar_header_bounds.expect("sidebar header"),
-        bar: sidebar_header(&shell),
-        hovered: None,
-        pressed: None,
+        widget: Box::new(sidebar_header(&shell)),
     });
     for (rect, bar) in app.content_bars(&layout, 1.0) {
-        scenario.push(Surface::StatusBar {
+        scenario.push(Surface::Widget {
             rect,
-            bar,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(bar),
         });
     }
 

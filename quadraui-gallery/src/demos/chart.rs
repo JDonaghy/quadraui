@@ -5,9 +5,10 @@
 //! chart — the stacked/grouped pair share one dataset so switching
 //! between them shows the same numbers composed vs. compared.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Chart, ChartKind, Color, InteractionState, Reaction, Rect, Series,
-    StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
+    Backend, BackendCaps, Chart, ChartKind, Color, Reaction, Rect, Series, StatusBar,
+    StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -216,11 +217,7 @@ impl Demo for ChartDemo {
         let _ = backend.draw_chart(chart_rect, &self.chart(variant), hp, cx);
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
     }
 
     fn handle(

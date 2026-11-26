@@ -64,10 +64,6 @@
 //!
 //! Skipping step 3 means clicking blank space at the left of the right
 //! group can trigger random toggles — confusing and undebuggable.
-//!
-//! See vimcode's `src/gtk/quadraui_gtk.rs::draw_status_bar` and
-//! `src/tui_main/quadraui_tui.rs::draw_status_bar` for reference
-//! implementations.
 
 use crate::compose::Handled;
 use crate::event::Rect;
@@ -760,8 +756,8 @@ pub(crate) mod cell_paint {
 }
 
 // Shared implementation for painting status bars across GTK, Windows,
-// and macOS. Each backend's `draw_status_bar` calls [`paint`] with its
-// native [`PaintSurface`], measuring and rendering text with backend-
+// and macOS. The widget's own `Primitive::paint` calls [`paint`] with each
+// backend's native [`PaintSurface`], measuring and rendering text with backend-
 // specific overrides as needed.
 //
 // Bold-aware measurement: GTK and Windows measure segment width against
@@ -771,8 +767,7 @@ pub(crate) mod cell_paint {
 // it to preserve their bold measurement.
 //
 // Zero-size guard: a non-positive `width` or `line_height` short-
-// circuits without touching the surface, matching the contract of
-// [`crate::Backend::draw_status_bar`].
+// circuits without touching the surface.
 //
 // `#[allow(dead_code)]`: `paint` is only called when a pixel backend
 // (GTK, Windows, or macOS) is compiled in.
@@ -798,9 +793,8 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a [`StatusBar`] into `(x, y, width, line_height)` on
     /// `surface`, returning the resolved [`StatusBarLayout`] for the
-    /// caller's click dispatch — same contract as
-    /// [`crate::Backend::draw_status_bar`]: hit regions are **bar-local**
-    /// (relative to `x`/`y`).
+    /// caller's click dispatch: hit regions are **bar-local** (relative to
+    /// `x`/`y`).
     ///
     /// `hovered_id` / `pressed_id` tint the matching clickable segment's
     /// background (lighten on hover, darken on press) — the primitive
@@ -1703,32 +1697,29 @@ impl crate::primitive::Primitive for StatusBar {
     /// On a cell grid the bar is measured one cell per character by
     /// [`cell_layout`]; on a pixel surface segment widths come from the
     /// calling backend's own [`crate::Backend::measure_text`] (through
-    /// [`crate::primitive::LayoutCtx::text_width`]) and the bar reserves
+    /// [`crate::primitive::LayoutCtx::text_width`], in
+    /// [`crate::FontRole::ChromeBold`] for a bold segment so its box is as
+    /// wide as the bold text the painter draws) and the bar reserves
     /// [`PIXEL_EDGE_INSET`]/[`PIXEL_SEGMENT_PADDING`], the same insets
     /// every pixel rasteriser paints with.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> StatusBarPrimitiveLayout {
         let layout = match ctx.units() {
             crate::primitive::Units::Cells => cell_layout(self, rect),
-            _ => {
-                let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
-                    ctx,
-                    role: crate::FontRole::Chrome,
-                };
-                self.layout_padded(
-                    rect.width,
-                    rect.height,
-                    PIXEL_MIN_GAP,
-                    PIXEL_EDGE_INSET,
-                    PIXEL_SEGMENT_PADDING,
-                    |seg| {
-                        StatusSegmentMeasure::new(
-                            crate::primitives::layout_metrics::TextMeasure::width_of(
-                                &measure, &seg.text,
-                            ),
-                        )
-                    },
-                )
-            }
+            _ => self.layout_padded(
+                rect.width,
+                rect.height,
+                PIXEL_MIN_GAP,
+                PIXEL_EDGE_INSET,
+                PIXEL_SEGMENT_PADDING,
+                |seg| {
+                    let role = if seg.bold {
+                        crate::FontRole::ChromeBold
+                    } else {
+                        crate::FontRole::Chrome
+                    };
+                    StatusSegmentMeasure::new(ctx.text_width(&seg.text, role))
+                },
+            ),
         };
         StatusBarPrimitiveLayout { area: rect, layout }
     }
@@ -1778,9 +1769,8 @@ impl crate::primitive::Primitive for StatusBar {
         }
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_status_bar`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] over `buf`, wrapped in the TUI
+    /// [`crate::CellSurface`].
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1788,13 +1778,20 @@ impl crate::primitive::Primitive for StatusBar {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = ratatui::layout::Rect::new(
-            layout.area.x.max(0.0).round() as u16,
-            layout.area.y.max(0.0).round() as u16,
-            layout.area.width.max(0.0).round() as u16,
-            layout.area.height.max(0.0).round() as u16,
+        let area = Rect::new(
+            layout.area.x.max(0.0).round(),
+            layout.area.y.max(0.0).round(),
+            layout.area.width.max(0.0).round(),
+            layout.area.height.max(0.0).round(),
         );
-        crate::tui::draw_status_bar(buf, area, self, &layout.layout, theme, None, None);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, &layout.layout, area, &mut surface, theme, None, None);
     }
 }
 
@@ -2502,20 +2499,49 @@ mod tests {
 }
 
 /// The cell painter's own paint coverage, driven through
-/// [`crate::tui::draw_status_bar`] — the delegate that wraps a ratatui
-/// `Buffer` in the [`crate::CellSurface`] [`cell_paint::paint`] takes.
+/// [`cell_paint::paint`] over a ratatui `Buffer`.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
     use super::{
         cell_layout, StatusBar, StatusBarHit, StatusBarLayout, StatusBarSegment,
         StatusSegmentMeasure, StatusSegmentSide,
     };
+    use crate::backend::ColorDepth;
     use crate::theme::Theme;
-    use crate::tui::{draw_status_bar, ratatui_color};
+    use crate::tui::cell_surface::TuiCellSurface;
+    use crate::tui::ratatui_color;
     use crate::types::{Color, WidgetId};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
     use ratatui::style::Modifier;
+
+    /// [`super::cell_paint::paint`] over `buf` at the ratatui `area`.
+    fn draw_status_bar(
+        buf: &mut Buffer,
+        area: Rect,
+        bar: &StatusBar,
+        layout: &StatusBarLayout,
+        theme: &Theme,
+        hovered_id: Option<&WidgetId>,
+        pressed_id: Option<&WidgetId>,
+    ) -> StatusBarLayout {
+        let mut cursor_sink = None;
+        let mut surface = TuiCellSurface::new(buf, ColorDepth::TrueColor, &mut cursor_sink);
+        super::cell_paint::paint(
+            bar,
+            layout,
+            crate::event::Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+            &mut surface,
+            theme,
+            hovered_id,
+            pressed_id,
+        )
+    }
 
     fn make_bar() -> StatusBar {
         StatusBar {
@@ -3201,6 +3227,35 @@ mod widget_contract_tests {
         assert_eq!(layout.layout.bar_height, 22.0);
     }
 
+    /// A bold segment is measured in `FontRole::ChromeBold`, so a backend
+    /// that measures bold text wider gives the segment a wider box and
+    /// the next segment's hit region starts where the painter draws it.
+    #[test]
+    fn pixel_layout_measures_a_bold_segment_in_the_bold_chrome_role() {
+        let measurer = |text: &str, role: crate::FontRole| {
+            let base = 8.0 * text.chars().count() as f32;
+            if role == crate::FontRole::ChromeBold {
+                base + 10.0
+            } else {
+                base
+            }
+        };
+        let ctx = LayoutCtx::new(16.0, 8.0, false).with_measurer(&measurer);
+        let first_and_next = |bold: bool| {
+            let mut bar = bar();
+            bar.left_segments[0].bold = bold;
+            let layout = Primitive::layout(&bar, &ctx, Rect::new(0.0, 0.0, 600.0, 22.0));
+            (
+                layout.layout.visible_segments[0].bounds.width,
+                layout.layout.visible_segments[1].bounds.x,
+            )
+        };
+        let (regular_w, regular_next) = first_and_next(false);
+        let (bold_w, bold_next) = first_and_next(true);
+        assert_eq!(bold_w, regular_w + 10.0);
+        assert_eq!(bold_next, regular_next + 10.0);
+    }
+
     #[test]
     fn measure_reports_one_row_on_a_cell_grid() {
         let bar = bar();
@@ -3389,5 +3444,385 @@ mod widget_contract_tests {
                 }
             )
         );
+    }
+}
+
+/// The macOS pixel coverage for the bar, painted through the widget
+/// contract ([`crate::DrawsPrimitives::draw_dyn`]) onto a headless
+/// Core Graphics bitmap.
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod mac_paint_tests {
+    use super::{
+        StatusBar, StatusBarHit, StatusBarLayout, StatusBarPrimitiveLayout, StatusBarSegment,
+        StatusSegmentSide,
+    };
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::macos::headless::BitmapSurface;
+    use crate::macos::text::make_font;
+    use crate::macos::MacBackend;
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
+    use crate::{Backend, DrawsPrimitives};
+    use core_text::font::CTFont;
+
+    const W: u32 = 320;
+    const H: u32 = 24;
+    const FONT_SIZE: f64 = 14.0;
+
+    fn font() -> CTFont {
+        make_font("Menlo", FONT_SIZE).expect("Menlo installed on every macOS host")
+    }
+
+    /// A backend with **both** font slots set to the harness font.
+    ///
+    /// The status bar paints and measures through `MacBackend::chrome_font` /
+    /// `chrome_line_height`, not the editor `current_font`. `MacBackend::new`
+    /// seeds chrome with the ~11pt system UI font, whose line height is under
+    /// half of this module's `H = 24` surface. Setting both keeps every
+    /// assertion about status-bar geometry at a known `FONT_SIZE`.
+    fn backend_with_test_fonts() -> MacBackend {
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.set_chrome_font(font());
+        backend
+    }
+
+    /// Three-segment bar:
+    /// - Left[0]: "(L) " sentinel with bg `(10, 20, 30)` — sets the
+    ///   bar fill (first segment's bg) to a colour distinct from the
+    ///   clickable segment, so paint-shift mutations can't hide
+    ///   behind a matching bar fill.
+    /// - Left[1]: " Save " clickable, bg `(40, 80, 120)`.
+    /// - Right[0]: " 1:1 " non-clickable, bg `(40, 80, 120)`.
+    ///
+    /// Leading/trailing spaces give glyph-free padding pixels for
+    /// bg-colour probing — same trick the TUI reference tests use.
+    fn sample_bar() -> StatusBar {
+        StatusBar {
+            id: WidgetId::new("status"),
+            left_segments: vec![
+                StatusBarSegment {
+                    text: "(L) ".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(10, 20, 30),
+                    bold: false,
+                    action_id: None,
+                },
+                StatusBarSegment {
+                    text: " Save ".into(),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(40, 80, 120),
+                    bold: false,
+                    action_id: Some(WidgetId::new("status:save")),
+                },
+            ],
+            right_segments: vec![StatusBarSegment {
+                text: " 1:1 ".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(40, 80, 120),
+                bold: false,
+                action_id: None,
+            }],
+        }
+    }
+
+    /// Paint a bar through the widget contract and return both the
+    /// surface (for pixel inspection) and the layout (for hit_test).
+    fn paint_via_backend(bar: &StatusBar) -> (BitmapSurface, StatusBarLayout) {
+        paint_via_backend_at(bar, 0.0, 0.0)
+    }
+
+    /// Like [`paint_via_backend`] but paints at an arbitrary `(x, y)`
+    /// origin instead of always `(0, 0)`. Lets tests exercise the
+    /// paint-time `x`/`y` shift independently of the bar-local
+    /// `StatusBarLayout` it returns.
+    fn paint_via_backend_at(bar: &StatusBar, x: f32, y: f32) -> (BitmapSurface, StatusBarLayout) {
+        let surface = BitmapSurface::new(W, H);
+        // Clear so we can distinguish "painted by status_bar" from
+        // "untouched memory" cleanly.
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let mut backend = backend_with_test_fonts();
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b
+                .draw_dyn(QRect::new(x, y, W as f32 - x, H as f32 - y), bar, &())
+                .downcast_ref::<StatusBarPrimitiveLayout>()
+                .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+                .layout
+                .clone();
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().unwrap())
+    }
+
+    /// Probe a column near the leading space of the clickable "Save"
+    /// segment — a glyph-free padding region that exposes the
+    /// segment's bg fill without interference from rasterised text.
+    /// Sample near the top edge where line_height is guaranteed
+    /// painted and glyphs (anchored at the ascent baseline) don't
+    /// reach.
+    fn probe_save_segment_bg(surface: &BitmapSurface, layout: &StatusBarLayout) -> (u8, u8, u8) {
+        let save = layout
+            .visible_segments
+            .iter()
+            .filter(|vs| vs.side == StatusSegmentSide::Left)
+            .nth(1)
+            .expect("save segment visible");
+        let probe_x = (save.bounds.x as u32) + 1;
+        let probe_y = 2;
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y);
+        (r, g, b)
+    }
+
+    #[test]
+    fn paints_segment_backgrounds() {
+        let bar = sample_bar();
+        let (surface, layout) = paint_via_backend(&bar);
+        assert_eq!(
+            probe_save_segment_bg(&surface, &layout),
+            (40, 80, 120),
+            "left-segment bg should match StatusBarSegment.bg",
+        );
+    }
+
+    /// Shared body for `round_trip_click_hits_clickable_segment` and its
+    /// `_at_nonzero_origin` sibling. Paints `sample_bar()` at
+    /// `(origin_x, origin_y)`, then round-trips an absolute click through
+    /// localisation the way a real host does before calling `hit_test`, and
+    /// checks the *painted* segment lands at the origin-shifted absolute
+    /// position. Guards against a paint/layout frame mismatch.
+    fn round_trip_click_hits_clickable_segment_at(origin_x: f32, origin_y: f32) {
+        let bar = sample_bar();
+        let (surface, layout) = paint_via_backend_at(&bar, origin_x, origin_y);
+
+        let save = layout
+            .visible_segments
+            .iter()
+            .filter(|vs| vs.side == StatusSegmentSide::Left)
+            .nth(1)
+            .expect("save segment visible");
+
+        // Paint-vs-layout frame check: the segment's bg must be painted
+        // at the origin-shifted absolute x, not at the bar-local x.
+        let probe_x = (origin_x + save.bounds.x) as u32 + 1;
+        let probe_y = origin_y as u32 + 2;
+        let (r, g, b, _) = surface.pixel(probe_x, probe_y);
+        assert_eq!(
+            (r, g, b),
+            (40, 80, 120),
+            "painted Save segment bg should be at absolute x = origin_x + local bounds.x",
+        );
+
+        // Round trip: absolute click position -> localise like a real
+        // host -> hit_test against the bar-local layout.
+        let abs_x = origin_x + save.bounds.x + save.bounds.width * 0.5;
+        let abs_y = origin_y + save.bounds.y + save.bounds.height * 0.5;
+        let local_x = abs_x - origin_x;
+        let local_y = abs_y - origin_y;
+        let hit = layout.hit_test(local_x, local_y);
+        assert_eq!(
+            hit,
+            StatusBarHit::Segment(WidgetId::new("status:save")),
+            "expected clickable Save segment hit at local ({}, {})",
+            local_x,
+            local_y,
+        );
+
+        // Sanity check: the right segment is non-clickable, so a hit
+        // inside its bounds must return Empty.
+        let right = layout
+            .visible_segments
+            .iter()
+            .find(|vs| vs.side == StatusSegmentSide::Right)
+            .expect("right segment visible");
+        let right_hit = layout.hit_test(
+            right.bounds.x + right.bounds.width * 0.5,
+            right.bounds.y + right.bounds.height * 0.5,
+        );
+        assert_eq!(
+            right_hit,
+            StatusBarHit::Empty,
+            "non-clickable right segment must hit Empty",
+        );
+    }
+
+    #[test]
+    fn round_trip_click_hits_clickable_segment() {
+        round_trip_click_hits_clickable_segment_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn round_trip_click_hits_clickable_segment_at_nonzero_origin() {
+        // The origin-(0,0) variant above can't exercise localisation —
+        // `abs_x - x` is a no-op when `x == 0`. Paint at a non-zero
+        // origin so the round trip only passes if paint and layout agree
+        // on which frame `x`/`y` apply in.
+        round_trip_click_hits_clickable_segment_at(7.0, 4.0);
+    }
+
+    #[test]
+    fn empty_bar_falls_back_to_theme_background() {
+        // No segments → fill colour comes from theme.background.
+        let bar = StatusBar {
+            id: WidgetId::new("empty"),
+            left_segments: vec![],
+            right_segments: vec![],
+        };
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+
+        let mut backend = backend_with_test_fonts();
+        backend.set_current_theme(Theme {
+            background: Color::rgb(1, 2, 3),
+            ..Theme::default()
+        });
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_dyn(QRect::new(0.0, 0.0, W as f32, H as f32), &bar, &());
+        });
+        backend.end_frame();
+
+        // Every pixel should carry the theme bg.
+        let (r, g, b, _) = surface.pixel(W / 2, H / 2);
+        assert_eq!(
+            (r, g, b),
+            (1, 2, 3),
+            "empty bar should be filled with theme.background",
+        );
+    }
+
+    /// [`crate::DrawsPrimitives::layout_primitive`] must return exactly
+    /// the layout the widget painted.
+    #[test]
+    fn layout_twin_matches_the_painted_layout() {
+        let bar = sample_bar();
+        let (_surface, painted) = paint_via_backend(&bar);
+
+        let backend = backend_with_test_fonts();
+        let computed = backend
+            .layout_primitive(QRect::new(0.0, 0.0, W as f32, H as f32), &bar)
+            .layout;
+
+        assert_eq!(
+            painted.visible_segments.len(),
+            computed.visible_segments.len(),
+        );
+        for (p, c) in painted
+            .visible_segments
+            .iter()
+            .zip(computed.visible_segments.iter())
+        {
+            assert_eq!(p.segment_idx, c.segment_idx);
+            assert_eq!(p.side, c.side);
+            assert!((p.bounds.x - c.bounds.x).abs() < 0.001);
+            assert!((p.bounds.width - c.bounds.width).abs() < 0.001);
+        }
+    }
+
+    /// The no-paint twin is also origin-independent: hit regions are
+    /// bar-local, so painting at a non-zero origin does not move them.
+    #[test]
+    fn layout_twin_is_bar_local_at_a_nonzero_origin() {
+        let bar = sample_bar();
+        let (_surface, painted) = paint_via_backend_at(&bar, 0.0, 0.0);
+        let backend = backend_with_test_fonts();
+        let computed = backend
+            .layout_primitive(QRect::new(17.0, 3.0, W as f32, H as f32), &bar)
+            .layout;
+        for (p, c) in painted
+            .visible_segments
+            .iter()
+            .zip(computed.visible_segments.iter())
+        {
+            assert!(
+                (p.bounds.x - c.bounds.x).abs() < 0.001,
+                "segment x moved with the origin: {} vs {}",
+                p.bounds.x,
+                c.bounds.x,
+            );
+        }
+    }
+}
+
+/// The GTK Cairo coverage for the shared pixel painter.
+#[cfg(all(test, feature = "gtk"))]
+mod gtk_paint_tests {
+    use super::{StatusBar, StatusBarHit, StatusBarSegment};
+    use crate::theme::Theme;
+    use crate::types::{Color, WidgetId};
+    use gtk4::pango;
+    use pangocairo::cairo::{Context as CairoContext, Format, ImageSurface};
+
+    fn headless_cairo_and_pango() -> (ImageSurface, pango::Layout) {
+        let surface = ImageSurface::create(Format::ARgb32, 200, 200).expect("create ImageSurface");
+        let cr = CairoContext::new(&surface).expect("Context::new");
+        let layout = pangocairo::functions::create_layout(&cr);
+        (surface, layout)
+    }
+
+    fn test_bar() -> StatusBar {
+        StatusBar {
+            id: WidgetId::new("sb"),
+            left_segments: vec![StatusBarSegment {
+                text: "Ready".into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: Some(WidgetId::new("sb:action")),
+            }],
+            right_segments: vec![],
+        }
+    }
+
+    /// The painted layout is **bar-local**: `StatusBar::layout` (called by
+    /// `paint` internally) only ever receives `width`/`line_height` — the
+    /// `x`/`y` the painter paints at only offset the drawing calls, never
+    /// fold into the returned `StatusBarLayout`. Painting at a non-zero
+    /// origin must therefore produce byte-identical segment bounds / hit
+    /// regions to painting at the origin.
+    fn round_trip_at(x: f64, y: f64) {
+        let (surface, pango_layout) = headless_cairo_and_pango();
+        let cr = CairoContext::new(&surface).expect("Context::new");
+        let theme = Theme::default();
+        let bar = test_bar();
+
+        let mut backend = crate::gtk::GtkBackend::new();
+        let (at_origin, shifted) = backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            let at_origin = super::native_surface_paint::paint(
+                &bar, b, &theme, 0.0, 0.0, 100.0, 20.0, None, None,
+            );
+            let shifted = super::native_surface_paint::paint(
+                &bar, b, &theme, x as f32, y as f32, 100.0, 20.0, None, None,
+            );
+            (at_origin, shifted)
+        });
+
+        assert_eq!(
+            at_origin, shifted,
+            "the bar-local layout must not shift segment bounds by x/y"
+        );
+
+        let seg = shifted.visible_segments[0];
+        let cx = seg.bounds.x + 1.0;
+        let cy = seg.bounds.y + 1.0;
+        assert_eq!(
+            shifted.hit_test(cx, cy),
+            StatusBarHit::Segment(bar.left_segments[0].action_id.clone().unwrap())
+        );
+    }
+
+    #[test]
+    fn paint_and_click_round_trip() {
+        round_trip_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard.
+    #[test]
+    fn paint_and_click_round_trip_at_nonzero_origin() {
+        round_trip_at(7.0, 13.0);
     }
 }

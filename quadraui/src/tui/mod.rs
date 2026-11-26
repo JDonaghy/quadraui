@@ -21,7 +21,6 @@ use ratatui::style::{Color as RatatuiColor, Modifier};
 
 use crate::types::{Color, Decoration, StyledText};
 
-mod activity_bar;
 pub mod backend;
 mod board;
 mod braille;
@@ -45,14 +44,12 @@ pub mod color;
 // `pub(crate)` rather than private: `CommandLine`'s own
 // `Primitive::paint_cells` reaches this module's `Buffer` →
 // `CellSurface` adapter, which cannot be built outside `crate::tui`.
-mod context_menu;
 mod data_table;
 mod diff_view;
 mod editor;
 pub mod events;
 mod find_replace;
 mod focus_ring;
-mod form;
 mod image;
 // Decode + downscale for the Kitty graphics protocol.
 // Gated separately from `kitty_graphics` below: this module alone needs
@@ -69,11 +66,9 @@ mod image_decode;
 // emit_osc52_with` reuses them instead of carrying its own copy.
 mod kitty_graphics;
 mod list;
-mod menu_bar;
 mod message_list;
 mod minimap;
 mod multi_section_view;
-mod palette;
 mod pipeline_view;
 mod progress;
 mod run;
@@ -85,14 +80,12 @@ mod spinner;
 mod split;
 mod split_junction;
 mod split_tree;
-mod status_bar;
 pub mod testing;
 pub mod text;
 // vt100/ANSI-byte-stream conformance observer — needs
 // `vt100` itself, which only `terminal` pulls in (`terminal = ["dep:vt100",
 // ...]` in Cargo.toml), so this is gated on both features, same as
 // `tests/tui_pty_smoke.rs`.
-mod toolbar;
 mod tree;
 #[cfg(feature = "terminal")]
 pub mod vt_testing;
@@ -106,8 +99,6 @@ pub mod vt_testing;
 // zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
-#[doc(hidden)]
-pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::TuiBackend;
 #[doc(hidden)]
 pub use board::{draw_board, tui_board_layout};
@@ -117,20 +108,11 @@ pub use canvas::{draw_canvas, tui_canvas_layout, tui_canvas_region_hit_test};
 pub use cell_grid::{draw_cell_grid, tui_cell_grid_layout};
 #[doc(hidden)]
 pub use chart::{draw_chart, tui_chart_layout};
-#[doc(hidden)]
-#[doc(hidden)]
-#[doc(hidden)]
-pub use context_menu::{
-    draw_context_menu, draw_context_menu_with_glyphs, draw_context_menu_with_submenus,
-    BORDER_INSET as CONTEXT_MENU_BORDER_INSET,
-};
 pub use data_table::draw_data_table;
 #[doc(hidden)]
 pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_table_with_state};
 #[doc(hidden)]
 pub use data_table::{draw_tree_table, tree_table_layout};
-#[doc(hidden)]
-#[doc(hidden)]
 #[doc(hidden)]
 pub use diff_view::draw_diff_view;
 #[doc(hidden)]
@@ -140,11 +122,7 @@ pub use editor::{draw_editor_with_reserve, EditorPaintResult};
 #[doc(hidden)]
 pub use find_replace::draw_find_replace;
 #[doc(hidden)]
-#[doc(hidden)]
 pub use focus_ring::draw_focus_ring;
-pub use form::draw_form;
-#[doc(hidden)]
-pub use form::{draw_settings_chrome, tui_form_layout};
 #[doc(hidden)]
 pub use image::draw_image;
 #[doc(hidden)]
@@ -152,9 +130,6 @@ pub use list::{
     draw_list, draw_list_with_scroll_px, draw_list_with_state, tui_list_layout,
     tui_list_layout_with_scroll_px,
 };
-pub(crate) use menu_bar::draw_menu_bar_layout;
-#[doc(hidden)]
-pub use menu_bar::{draw_menu_bar, tui_menu_bar_layout};
 #[doc(hidden)]
 pub use message_list::draw_message_list;
 pub use minimap::draw_minimap;
@@ -165,15 +140,10 @@ pub use minimap::{
 };
 pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
 #[doc(hidden)]
-pub(crate) use palette::draw_palette_with_style;
-#[doc(hidden)]
-pub use palette::{draw_palette, tui_palette_layout};
-#[doc(hidden)]
 pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};
 pub(crate) use progress::draw_progress_layout;
 #[doc(hidden)]
 pub use progress::{draw_progress, tui_progress_layout};
-#[doc(hidden)]
 pub use run::{run, run_with, RunConfig, StepOutcome, TuiRunner};
 #[doc(hidden)]
 pub use scrollbar::draw_scrollbar;
@@ -189,8 +159,6 @@ pub use spinner::{draw_spinner, tui_spinner_layout};
 pub use split::{draw_split, tui_split_layout};
 #[doc(hidden)]
 pub use split_tree::{draw_split_tree, tui_split_tree_layout};
-#[doc(hidden)]
-pub use status_bar::draw_status_bar;
 // The cell-measure constants live with the primitive, next to the shared
 // cell-grid painter that reads them; `tui::` re-exports them under the
 // names apps already build their `TabMeasure`s against.
@@ -201,17 +169,6 @@ pub use crate::primitives::tab_bar::{
 #[doc(hidden)]
 pub use text::truncate_to_width_ellipsis;
 pub use text::{char_cell_width, display_width, truncate_to_width};
-#[doc(hidden)]
-#[doc(hidden)]
-#[doc(hidden)]
-#[doc(hidden)]
-pub use toolbar::tui_toolbar_layout;
-#[doc(hidden)]
-pub use toolbar::{
-    draw_toolbar, draw_toolbar_oriented, draw_toolbar_with_options, draw_toolbar_with_overflow,
-    tui_toolbar_layout_with_options, tui_toolbar_layout_with_overflow,
-};
-#[doc(hidden)]
 pub use tree::{draw_tree, tui_tree_layout};
 #[doc(hidden)]
 pub use tree::{draw_tree_with_scroll_px, tui_tree_layout_with_scroll_px};

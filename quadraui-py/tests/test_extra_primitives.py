@@ -2034,9 +2034,13 @@ def test_clicking_a_status_bar_segment_emits_segment_clicked():
     )
     app.screen()
 
-    event = _click(app, 1.0, 0.0)
+    # A status-bar segment activates on release over the segment it was
+    # pressed on, like every desktop button.
+    events = _press_and_release_events(app, 1.0, 0.0)
 
-    widget_id, status_event = event["StatusBar"]
+    status_events = [e["StatusBar"] for e in events if "StatusBar" in e]
+    assert len(status_events) == 1, events
+    widget_id, status_event = status_events[0]
     assert widget_id == "status_bar:main"
     assert status_event == {"SegmentClicked": {"id": "status:branch"}}
 
@@ -2060,9 +2064,13 @@ def test_clicking_an_activity_bar_item_emits_item_clicked():
     )
     app.screen()
 
-    event = _click(app, 0.0, 0.0)
+    # The rail is a focus stop, so the click may also report focus moving
+    # onto it; only the activation is checked here.
+    events = _click_events(app, 0.0, 0.0)
 
-    widget_id, activity_event = event["ActivityBar"]
+    activity_events = [e["ActivityBar"] for e in events if "ActivityBar" in e]
+    assert len(activity_events) == 1, events
+    widget_id, activity_event = activity_events[0]
     assert widget_id == "activity_bar:main"
     assert activity_event == {"ItemClicked": {"id": "activity:explorer"}}
 
@@ -2132,9 +2140,13 @@ def test_inline_tree_leaf_status_bar_click_emits_segment_clicked():
     app.set_render(render)
     app.screen()
 
-    event = _click(app, 1.0, 0.0)
+    # A status-bar segment activates on release over the segment it was
+    # pressed on, like every desktop button.
+    events = _press_and_release_events(app, 1.0, 0.0)
 
-    widget_id, status_event = event["StatusBar"]
+    status_events = [e["StatusBar"] for e in events if "StatusBar" in e]
+    assert len(status_events) == 1, events
+    widget_id, status_event = status_events[0]
     assert widget_id == "status_bar:main"
     assert status_event == {"SegmentClicked": {"id": "status:branch"}}
 
@@ -2165,9 +2177,13 @@ def test_inline_tree_leaf_activity_bar_click_emits_item_clicked():
     app.set_render(render)
     app.screen()
 
-    event = _click(app, 0.0, 0.0)
+    # The rail is a focus stop, so the click may also report focus moving
+    # onto it; only the activation is checked here.
+    events = _click_events(app, 0.0, 0.0)
 
-    widget_id, activity_event = event["ActivityBar"]
+    activity_events = [e["ActivityBar"] for e in events if "ActivityBar" in e]
+    assert len(activity_events) == 1, events
+    widget_id, activity_event = activity_events[0]
     assert widget_id == "activity_bar:main"
     assert activity_event == {"ItemClicked": {"id": "activity:explorer"}}
 
@@ -2808,6 +2824,23 @@ def _click(app, x, y):
     received = _click_events(app, x, y)
     assert len(received) == 1
     return received[0]
+
+
+def _press_and_release_events(app, x, y):
+    """Dispatches a left `MouseDown` then `MouseUp` at `(x, y)` and runs
+    one step after each, returning every event the registered handler
+    captured, in order."""
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    for kind in ("MouseDown", "MouseUp"):
+        payload = {"button": "Left", "position": {"x": x, "y": y}}
+        if kind == "MouseDown":
+            payload["modifiers"] = {}
+        else:
+            payload["widget"] = None
+        app.push_event({kind: payload})
+        app.run(1)
+    return received
 
 
 def _click_events(app, x, y):

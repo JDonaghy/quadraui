@@ -19,6 +19,7 @@
 //! activates the item whose label starts with that character.
 
 use crate::a11y::A11yAction;
+use crate::backend::{Backend, DrawsPrimitives, ResolvedMenuStyle};
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;
 use crate::event::{Key, MouseButton, NamedKey, Rect};
@@ -81,10 +82,9 @@ pub struct MenuBarItem {
     #[serde(default)]
     pub disabled: bool,
     /// Declarative dropdown items. When `Some`, native menu installers
-    /// build the dropdown directly from this list. In-window
-    /// rasterisers (TUI / GTK `draw_menu_bar`) ignore the field today;
-    /// apps that draw their own dropdown via the `MenuSystem` compose
-    /// helper continue to wire that path independently.
+    /// build the dropdown directly from this list. The in-window
+    /// painters ignore the field; apps that draw their own dropdown via
+    /// the `MenuSystem` compose helper wire that path independently.
     #[serde(default)]
     pub submenu: Option<Vec<crate::primitives::context_menu::ContextMenuItem>>,
 }
@@ -117,7 +117,7 @@ pub const BAR_HEIGHT: f32 = 30.0;
 /// `candidate_line_height.max(`[`BAR_HEIGHT`]`)` — the in-canvas bar is
 /// floored at the fixed metric, same as every other resolver of this
 /// shape in the crate (`GtkBackend::resolved_row_height`,
-/// `resolved_toolbar_height`, `palette::item_row_height`), so a chrome
+/// `palette::item_row_height`), so a chrome
 /// font taller than the token still gets the room it measured instead of
 /// being clipped. On TUI (`candidate_line_height <= 1.0`, the cell-grid
 /// convention where one row is `1.0` "unit" tall) the candidate passes
@@ -463,6 +463,54 @@ pub enum MenuBarEvent {
     Closed,
 }
 
+impl MenuBar {
+    /// Shows this bar in `rect` the way `backend`'s menu style asks for,
+    /// returning the layout clicks resolve against.
+    ///
+    /// Under [`ResolvedMenuStyle::Native`] (macOS by default) the bar is
+    /// installed as the platform's own menu bar through
+    /// [`Backend::install_menu_bar`], which skips an unchanged bar, so
+    /// calling this every frame is cheap. Nothing paints in the window,
+    /// and the layout is [`Self::presented_layout`]'s zero-height one.
+    /// Otherwise the strip paints through
+    /// [`DrawsPrimitives::draw_dyn`] and the layout is the widget
+    /// contract's own.
+    ///
+    /// Every caller that shows a standalone menu bar goes through this
+    /// (frame replay, the binding layer, [`crate::compose::MenuSystem`]),
+    /// so the native-or-painted decision lives in one place.
+    pub fn present(&self, backend: &mut dyn Backend, rect: Rect) -> MenuBarLayout {
+        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
+            backend.install_menu_bar(self);
+            return native_layout(rect);
+        }
+        let _ = backend.draw_dyn(rect, self, &());
+        backend.layout_primitive(rect, self).layout
+    }
+
+    /// The layout [`Self::present`] returns for `rect`, without painting
+    /// or installing anything: a zero-height layout with no items under
+    /// [`ResolvedMenuStyle::Native`], where the platform's menu bar lives
+    /// outside the window and nothing in it can be hit; otherwise the
+    /// widget contract's own layout.
+    pub fn presented_layout(&self, backend: &dyn Backend, rect: Rect) -> MenuBarLayout {
+        if backend.effective_menu_style() == ResolvedMenuStyle::Native {
+            return native_layout(rect);
+        }
+        backend.layout_primitive(rect, self).layout
+    }
+}
+
+/// The layout of a bar installed as the platform's own menu bar: its
+/// origin and width, no height and no items.
+fn native_layout(rect: Rect) -> MenuBarLayout {
+    MenuBarLayout {
+        bounds: Rect::new(rect.x, rect.y, rect.width, 0.0),
+        visible_items: Vec::new(),
+        hit_regions: Vec::new(),
+    }
+}
+
 impl WidgetAction for MenuBarEvent {
     /// [`Self::MenuOpened`] is the one strip outcome the crate's
     /// [`crate::UiEvent`] vocabulary names directly
@@ -591,9 +639,8 @@ impl Primitive for MenuBar {
         }
     }
 
-    /// The shared pixel painter — the same
-    /// `native_surface_paint::paint` every pixel backend's
-    /// `draw_menu_bar` wrapper calls, in its no-mnemonic form on macOS
+    /// The shared pixel painter, `native_surface_paint::paint`, in its
+    /// no-mnemonic form on macOS
     /// (that platform has no Alt-mnemonic convention, so underlining a
     /// character nothing responds to would be a visual lie).
     fn paint(
@@ -624,9 +671,7 @@ impl Primitive for MenuBar {
         let _ = (layout, surface, theme);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_menu_bar`] because the `Buffer` →
-    /// [`crate::CellSurface`] adapter is private to `crate::tui`.
+    /// [`cell_paint::paint`] over `buf`.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -634,7 +679,14 @@ impl Primitive for MenuBar {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_menu_bar_layout(buf, self, &layout.layout, theme);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, &layout.layout, &mut surface, theme);
     }
 }
 
@@ -804,8 +856,7 @@ pub(crate) mod native_surface_paint {
     /// whose [`MenuBarItem::id`](super::MenuBarItem::id) matches
     /// `interaction.hovered()` / `interaction.pressed()` paints with
     /// [`Theme::menu_item_hover_bg`] / [`Theme::menu_item_pressed_bg`]
-    /// instead of its plain resting fill — see
-    /// [`crate::Backend::draw_menu_bar_with_state`]'s own doc.
+    /// instead of its plain resting fill.
     pub(crate) fn paint_interactive(
         bar: &MenuBar,
         layout: &MenuBarLayout,
@@ -1672,9 +1723,9 @@ mod tests {
 }
 
 /// The cell painter's own paint↔click round trips, run against a real
-/// ratatui buffer through [`crate::tui::draw_menu_bar`] — the thin
-/// delegate that adapts a `Buffer` into the [`crate::CellSurface`]
-/// [`cell_paint::paint`] takes.
+/// ratatui buffer through the test-local [`draw_menu_bar`], which adapts
+/// a `Buffer` into the [`crate::CellSurface`] [`cell_paint::paint`]
+/// takes.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
     use super::*;
@@ -1683,7 +1734,31 @@ mod cell_paint_tests {
     use ratatui::style::Modifier;
 
     use crate::theme::Theme;
-    use crate::tui::{draw_menu_bar, ratatui_color};
+    use crate::tui::ratatui_color;
+
+    /// Lays `bar` out on the cell grid at `area` and paints it, returning
+    /// the layout a click is hit-tested against.
+    fn draw_menu_bar(
+        buf: &mut Buffer,
+        area: TuiRect,
+        bar: &MenuBar,
+        theme: &Theme,
+    ) -> MenuBarLayout {
+        let layout = bar.cell_layout(Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ));
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(bar, &layout, &mut surface, theme);
+        layout
+    }
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
@@ -2294,5 +2369,33 @@ mod widget_contract_tests {
             crate::frame::OwnedContent::MenuBar(captured) => assert_eq!(captured, bar),
             other => panic!("expected OwnedContent::MenuBar, got {other:?}"),
         }
+    }
+
+    /// Event parity's in-crate leg: an [`A11yAction::Click`] routed
+    /// through [`crate::a11y::route_widget_action`] opens the menu the
+    /// cursor sits on — the same `UiEvent::MenuActivated` a pointer click
+    /// on that item produces. The pointer leg (TuiDriver) asserts the
+    /// same event in `tests/widget_contract_menus_event_parity.rs`.
+    #[test]
+    fn route_widget_action_click_matches_the_parity_event() {
+        let bar = MenuBar {
+            focused_item: Some(0),
+            ..bar()
+        };
+        let id = bar.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, AREA, Box::new(bar));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let events = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &cell_ctx(),
+            id,
+            A11yAction::Click,
+        );
+        assert_eq!(
+            events,
+            vec![UiEvent::MenuActivated(WidgetId::new("menu:file"))]
+        );
     }
 }

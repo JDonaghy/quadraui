@@ -212,7 +212,7 @@ use crate::{ButtonMask, Modifiers, MouseButton, UiEvent};
 ///
 /// Not `target_os`-gated: none of `WinBackend`'s `PreprocessBackend`
 /// methods touch Direct2D/Win32 directly (they read plain `Option`/`Vec`
-/// fields populated by `register_accelerator`/`draw_activity_bar`, or
+/// fields populated by `register_accelerator`/`end_frame`, or
 /// forward to `dispatch::DoubleClickDetector`/`text_selection`, neither
 /// of which has a WinAPI dependency), so this compiles and behaves
 /// identically on every host — same "compiles everywhere" posture as
@@ -3396,10 +3396,8 @@ mod win32 {
     /// A live-window `WM_NCHITTEST` round trip. Every other test in
     /// this file proves the Rust-side half — `nc_hit_test`'s
     /// classification, and (in `win::backend`'s own test module) that
-    /// `draw_menu_bar`/`draw_status_bar_interactive` call
-    /// `register_zone` for their own clickable bounds, and that a
-    /// widget-contract command centre's painted sub-regions read as
-    /// client area — but the regression only showed up once a
+    /// widget-contract menu bars', status bars' and command centres'
+    /// painted sub-regions read as client area — but the regression only showed up once a
     /// real `WM_NCHITTEST` round-trips through a real `wndproc` on a
     /// real `HWND`. This module creates a real top-level window, paints
     /// real menu-bar / status-bar / command-centre widgets into its
@@ -3458,8 +3456,10 @@ mod win32 {
                     open_item: None,
                     focused_item: None,
                 };
-                let menu_layout = backend
-                    .draw_menu_bar(crate::event::Rect::new(0.0, 0.0, 100.0, band_height), &bar);
+                let bar_rect = crate::event::Rect::new(0.0, 0.0, 100.0, band_height);
+                let _ = crate::DrawsPrimitives::draw_dyn(&mut *backend, bar_rect, &bar, &());
+                let menu_layout =
+                    crate::DrawsPrimitives::layout_primitive(&*backend, bar_rect, &bar).layout;
 
                 let status = crate::StatusBar {
                     id: crate::types::WidgetId::new("probe:status"),
@@ -3474,11 +3474,11 @@ mod win32 {
                 };
                 let status_rect =
                     crate::event::Rect::new(viewport.width - 40.0, 0.0, 40.0, band_height);
-                let status_layout = backend.draw_status_bar_interactive(
-                    status_rect,
-                    &status,
-                    &crate::interaction::InteractionState::new(),
-                );
+                let status_layout =
+                    crate::backend::DrawsPrimitives::draw_dyn(backend, status_rect, &status, &())
+                        .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+                        .map(|painted| painted.layout.clone())
+                        .expect("a StatusBar lays out as StatusBarPrimitiveLayout");
 
                 let cc = crate::CommandCenter {
                     id: crate::types::WidgetId::new("probe:cc"),
@@ -3503,15 +3503,12 @@ mod win32 {
                             v.bounds.y + v.bounds.height / 2.0,
                         )
                     });
-                // `status_layout`'s `hit_regions` bounds are
-                // bar-local (see `register_status_bar_segment_zones`'s
-                // doc in `win::backend`), so the real absolute probe
-                // point needs `status_rect`'s own origin added back in —
-                // deriving it from the bar-local bounds alone would (pre-
-                // fix) have landed near this band's *left* edge instead
-                // of the close button's real position near the right
-                // edge, and could pass "for the wrong reason" by luck
-                // landing inside an unrelated zone.
+                // `status_layout`'s `hit_regions` bounds are bar-local,
+                // so the real absolute probe point needs `status_rect`'s
+                // own origin added back in — deriving it from the
+                // bar-local bounds alone would land near this band's
+                // *left* edge instead of the close button's real position
+                // near the right edge.
                 let close_button = status_layout.hit_regions.iter().find_map(|(r, hit)| {
                     matches!(hit, crate::primitives::status_bar::StatusBarHit::Segment(_)).then(
                         || {
@@ -3698,8 +3695,8 @@ mod win32 {
         /// title/menu band must reach the app as an ordinary `MouseDown`,
         /// not get swallowed as a title-bar drag. The test above proves
         /// `nc_hit_test`'s classification is right when the band and its
-        /// widgets are hand-registered (`LiveWindowApp::render` calls
-        /// `Backend::register_zone`/`draw_menu_bar` directly) — this one
+        /// widgets are painted directly (`LiveWindowApp::render` calls
+        /// `Backend::register_zone`/`draw_dyn` itself) — this one
         /// proves the same real `WM_NCHITTEST` round trip when the band
         /// comes from the actual consumer-shaped composition instead:
         /// `AppShell`'s title-bar band (`ShellConfig::with_title_bar`)
@@ -3728,7 +3725,8 @@ mod win32 {
                 self.menu_system.render(backend, bar_rect);
 
                 let bar = self.menu_system.menu_bar();
-                let menu_layout = backend.menu_bar_layout(bar_rect, &bar);
+                let menu_layout =
+                    crate::DrawsPrimitives::layout_primitive(&*backend, bar_rect, &bar).layout;
                 let file_item = menu_layout
                     .visible_items
                     .iter()

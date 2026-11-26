@@ -369,7 +369,7 @@ fn draw_form_paints_in_chrome_font() {
             min_control_width: None,
             spacing: Default::default(),
         };
-        b.draw_form(area, &form);
+        quadraui::DrawsPrimitives::draw_dyn(b, area, &form, &());
     });
 }
 
@@ -422,7 +422,7 @@ fn draw_palette_paints_in_chrome_font() {
             expandable: false,
             expanded: false,
         }];
-        b.draw_palette(area, &palette);
+        quadraui::DrawsPrimitives::draw_dyn(b, area, &palette, &());
     });
 }
 

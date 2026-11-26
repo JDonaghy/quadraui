@@ -58,8 +58,8 @@ use crate::Rect;
 ///
 /// Bounds are converted with `Context::user_to_device`, so a rasteriser
 /// painting under an active `cr.translate(...)` / `cr.scale(...)` (e.g.
-/// `Backend::draw_activity_bar`, which translates by the bar's origin
-/// before delegating) still records absolute surface coordinates — the
+/// a rasteriser that translates by its own origin before delegating)
+/// still records absolute surface coordinates — the
 /// space `GtkDriver::click` takes.
 pub(crate) fn show_layout(cr: &Context, layout: &pango::Layout) {
     if crate::testing::text_run_sink_active() {
@@ -90,19 +90,20 @@ mod tests {
     use crate::backend::Backend;
     use crate::gtk::backend::GtkBackend;
     use crate::gtk::testing::GtkDriver;
-    use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
     use crate::runner::{AppLogic, Reaction};
-    use crate::types::{Color, WidgetId};
-    use crate::{InteractionState, Rect, UiEvent};
+    use crate::types::WidgetId;
+    use crate::{Rect, UiEvent};
     use pangocairo::cairo::{Context, Format, ImageSurface};
 
     const W: i32 = 200;
     const H: i32 = 60;
     const ROW_H: f32 = 20.0;
 
-    /// Two stacked `StatusBar`s — the primitive that records *both* a
-    /// logical label (from `GtkBackend::draw_status_bar`) and a per-glyph-run
-    /// record (from this module). Used to pin the ordering contract.
+    /// Two stacked one-column `DataTable`s whose header titles are the
+    /// needles — the data table records *both* a logical label (each
+    /// header cell, from `GtkBackend::draw_data_table`) and a
+    /// per-glyph-run record (from this module). Used to pin the ordering
+    /// contract.
     struct StackedBarsApp;
 
     impl AppLogic for StackedBarsApp {
@@ -110,20 +111,33 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             for (i, label) in ["row zero", "row one"].into_iter().enumerate() {
-                backend.draw_status_bar_interactive(
+                let table = crate::DataTable {
+                    id: WidgetId::new(format!("row-{i}")),
+                    columns: vec![crate::Column {
+                        title: label.to_string(),
+                        width: crate::ColumnWidth::Flex(1.0),
+                        align: crate::ColumnAlign::Left,
+                    }],
+                    rows: vec![],
+                    selected_idx: None,
+                    scroll_offset: 0,
+                    sort: None,
+                    has_focus: false,
+                    show_scrollbar: false,
+                    min_total_width: None,
+                    h_scroll: 0.0,
+                    column_overrides: vec![],
+                    footer: None,
+                    bordered: false,
+                };
+                // The logical-record ordering under test is what the
+                // DataTable rasteriser records, until DataTable paints
+                // through the widget contract.
+                #[allow(deprecated)]
+                let _ = backend.draw_data_table(
                     Rect::new(0.0, i as f32 * ROW_H, W as f32, ROW_H),
-                    &StatusBar {
-                        id: WidgetId::new(format!("row-{i}")),
-                        left_segments: vec![StatusBarSegment {
-                            text: label.to_string(),
-                            fg: Color::rgb(255, 255, 255),
-                            bg: Color::rgb(20, 20, 20),
-                            bold: false,
-                            action_id: None,
-                        }],
-                        right_segments: vec![],
-                    },
-                    &InteractionState::new(),
+                    &table,
+                    None,
                 );
             }
         }
@@ -150,8 +164,8 @@ mod tests {
         crate::gtk::run::render_frame(&mut backend, &StackedBarsApp, &cr, W, H);
         let with = backend.painted_text_for_test().len();
 
-        // Only the two logical `draw_status_bar` records survive with the
-        // sink off; enabling it adds the frame's glyph runs on top.
+        // Only the two logical header records survive with the sink off;
+        // enabling it adds the frame's glyph runs on top.
         assert_eq!(
             without, 2,
             "with recording off only the trait method's own records should land"
@@ -177,7 +191,7 @@ mod tests {
 
         assert_eq!(
             row0.y, 0.0,
-            "row 0 should resolve to `draw_status_bar`'s own record at the bar's y"
+            "row 0 should resolve to the header's own record at the table's y"
         );
         assert_eq!(
             row1.y, ROW_H,
@@ -199,8 +213,7 @@ mod tests {
 
     /// Bounds are recorded in device (surface) space, so a rasteriser
     /// painting under an active transform still reports coordinates
-    /// `GtkDriver::click` can use verbatim. `Backend::draw_activity_bar`
-    /// is the real caller that does this.
+    /// `GtkDriver::click` can use verbatim.
     #[test]
     fn translated_paints_record_absolute_coordinates() {
         let surface = ImageSurface::create(Format::ARgb32, W, H).expect("surface");

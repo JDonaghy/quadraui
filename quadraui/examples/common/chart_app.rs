@@ -11,9 +11,10 @@
 //! - 1 / 2 / 3 / 4   switch view to sparkline / line / stacked bar / grouped bar
 //! - q / Esc         quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Chart, ChartKind, Color, InteractionState, Key, NamedKey, Reaction, Rect,
-    Series, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Chart, ChartKind, Color, Key, NamedKey, Reaction, Rect, Series, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct ChartApp {
@@ -204,11 +205,7 @@ impl AppLogic for ChartApp {
         }
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

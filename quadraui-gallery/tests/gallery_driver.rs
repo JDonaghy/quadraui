@@ -589,7 +589,7 @@ fn toolbar_filter_click_updates_the_hint_line() {
 /// 220 columns, not the 160 the sibling test above uses: this test looks
 /// for the groups' *label* text ("Icons"/"Columns"), which only paints at
 /// `GroupDegradeTier::Full`. Narrower than this and
-/// `tui::toolbar::choose_group_tier` drops to icon-only glyphs instead —
+/// the toolbar's cell layout drops to icon-only glyphs instead —
 /// correct behaviour (the whole point of the degrade ladder), just not
 /// what this test is asserting against.
 #[test]
@@ -650,7 +650,7 @@ fn toolbar_group_third_segment_click_emits_group_selected_and_paints_it_active()
 /// clears it, and a direct click on the `MenuButton` reports its own
 /// painted anchor rect — end to end through `ToolbarDemo::handle`, not
 /// just the primitive's own layout/paint (that's `quadraui`'s own
-/// `gtk::toolbar`/`primitives::toolbar` test suite's job).
+/// `primitives::toolbar` test suite's job).
 #[test]
 fn toolbar_finder_style_field_focus_edit_and_menu_button_anchor() {
     let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 160, 32);
@@ -1036,7 +1036,7 @@ fn text_selection_drag_then_ctrl_c_copies() {
 
 /// Clicking the "Aa" (case-sensitive) toggle on the `Form` demo's
 /// "Search & replace" variant flips it off — proves
-/// `backend.form_layout(...).hit_test(...)` routes the click to the
+/// the form's widget-contract layout routes the click to the
 /// toggle it actually landed on, not just that the form paints.
 #[test]
 fn form_toggle_click_updates_the_status_line() {

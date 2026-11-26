@@ -5,9 +5,10 @@
 //! same ~120-line synthetic buffer. `Up`/`Down` scroll the viewport
 //! band; clicking the strip seeks to that fraction of the file.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    aggregate_spans, sample_blocks, Backend, BackendCaps, Color, InteractionState, Key, Minimap,
-    MinimapGrid, MinimapHit, MinimapScale, MinimapSpan, MouseButton, Reaction, Rect, StatusBar,
+    aggregate_spans, sample_blocks, Backend, BackendCaps, Color, Key, Minimap, MinimapGrid,
+    MinimapHit, MinimapScale, MinimapSpan, MouseButton, Reaction, Rect, StatusBar,
     StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
@@ -195,11 +196,7 @@ impl Demo for MinimapDemo {
         let _ = backend.draw_minimap(minimap_rect, &minimap);
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
     }
 
     fn handle(

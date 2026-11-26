@@ -24,7 +24,7 @@ use super::shell_layout;
 use crate::primitives::activity_bar::{ActivityBar, ActivityBarRowHit, ActivityItem};
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
 use crate::types::{Color, Icon, WidgetId};
-use crate::{Backend, ButtonMask, InteractionState, MouseButton, Point, Rect, Style, UiEvent};
+use crate::{Backend, ButtonMask, MouseButton, Point, Rect, Style, UiEvent};
 
 // ── Public types ─────────────────────────────────────────────────────
 
@@ -346,7 +346,7 @@ pub struct AppShell {
     icon_overrides: HashMap<WidgetId, Icon>,
     /// Colour [`Self::build_activity_bar`] sets on the emitted
     /// [`ActivityBar::active_accent`] — the active-panel accent line/strip
-    /// each backend's `draw_activity_bar_with_style` paints when `Some`.
+    /// every activity-bar painter draws when `Some`.
     /// `None` (the default) paints no accent, matching the pre-existing
     /// behaviour for a host that never calls
     /// [`Self::set_active_accent`]/[`Self::with_active_accent`].
@@ -1138,6 +1138,8 @@ impl AppShell {
             active_accent: self.active_accent,
             selection_bg: self.selection_bg,
             is_keyboard_focused: focused,
+            style: Default::default(),
+            hovered: None,
         }
     }
 
@@ -1154,7 +1156,7 @@ impl AppShell {
     ///
     /// Per-item zones (one per activity-bar entry, keyed by that panel's
     /// own `WidgetId`) are registered separately in [`Self::render`],
-    /// right after `draw_activity_bar_with_style` returns the hit list —
+    /// right after the activity bar paints —
     /// this function only covers the coarser, one-per-frame chrome regions.
     fn register_chrome_zones(backend: &mut dyn Backend, layout: &AppShellLayout) {
         backend.register_zone(WidgetId::new("app-shell:window"), layout.window_bounds);
@@ -1195,13 +1197,17 @@ impl AppShell {
         let layout = self.compute_layout(area, lh, &style, &|h: f32| backend.snap_height(h));
         Self::register_chrome_zones(backend, &layout);
 
-        let bar = self.build_activity_bar();
-        let hits = backend.draw_activity_bar_with_style(
+        let mut bar = self.build_activity_bar();
+        bar.hovered = self.activity_keyboard.hovered_idx();
+        let hits = crate::backend::DrawsPrimitives::draw_dyn(
+            backend,
             layout.activity_bar_bounds,
             &bar,
-            self.activity_keyboard.hovered_idx(),
-            &crate::ActivityBarStyle::default(),
-        );
+            &(),
+        )
+        .downcast_ref::<crate::primitives::activity_bar::ActivityBarPrimitiveLayout>()
+        .map(|painted| painted.row_hits(&bar))
+        .unwrap_or_default();
         // Register each activity-bar item's own zone (its real `WidgetId`,
         // e.g. `panel:git`) *before* `hits` moves into the hover-hit cache
         // below — this is the per-item provenance
@@ -1236,10 +1242,11 @@ impl AppShell {
                     }],
                     right_segments: vec![],
                 };
-                let _ = backend.draw_status_bar_interactive(
+                let _ = crate::backend::DrawsPrimitives::draw_dyn(
+                    backend,
                     header_bounds,
                     &header_bar,
-                    &InteractionState::new(),
+                    &(),
                 );
             }
         }
@@ -2206,7 +2213,13 @@ mod tests {
         let theme = crate::theme::Theme::default();
         let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(0, 0, 40, 10));
         let area = ratatui::layout::Rect::new(0, 0, 4, 10);
-        crate::tui::draw_activity_bar(&mut buf, area, bar, &theme, None, nerd_fonts_enabled);
+        crate::primitives::activity_bar::cell_paint::paint(
+            &mut buf,
+            area,
+            bar,
+            &theme,
+            nerd_fonts_enabled,
+        );
         (area.x..area.x + area.width)
             .map(|x| buf[(x, area.y)].symbol().to_string())
             .collect::<String>()

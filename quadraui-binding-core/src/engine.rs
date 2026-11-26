@@ -7114,6 +7114,184 @@ mod tests {
         }
     }
 
+    /// Paints one `"palette"` widget leaf over the whole viewport through
+    /// the layout tree, the shape a binding app's `{"row": [{"palette":
+    /// ...}]}` render produces.
+    struct PaletteLeafLogic {
+        palette: quadraui::Palette,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl PaletteLeafLogic {
+        fn new() -> Self {
+            let row = |text: &str| quadraui::PaletteItem {
+                text: StyledText::plain(text),
+                detail: None,
+                icon: None,
+                match_positions: Vec::new(),
+                depth: 0,
+                expandable: false,
+                expanded: false,
+            };
+            Self {
+                palette: quadraui::Palette {
+                    id: WidgetId::new("pal"),
+                    title: "Commands".to_string(),
+                    items: vec![row("alpha"), row("beta"), row("gamma")],
+                    total_count: 3,
+                    has_focus: true,
+                    ..quadraui::Palette::default()
+                },
+                engine: InteractionEngine::new(),
+                sink: RefCell::new(RecordingSink::default()),
+            }
+        }
+
+        fn palette_events(&self) -> Vec<UiEvent> {
+            self.sink
+                .borrow()
+                .dispatched
+                .iter()
+                .filter(|(event, _)| matches!(event, UiEvent::Palette(..)))
+                .map(|(event, _)| event.clone())
+                .collect()
+        }
+    }
+
+    impl AppLogic for PaletteLeafLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let viewport = backend.viewport();
+            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+            let node = LayoutNode::Leaf(LayoutLeaf {
+                id: "pal".to_string(),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "palette",
+                    widget: Rc::new(self.palette.clone()),
+                },
+                scroll_px: None,
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits, &|id| {
+                self.engine.chrome_interaction(id)
+            });
+            self.engine.set_hits(hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// The binding-host leg of `Palette`'s click parity: a `MouseDown` on
+    /// the third row of a `"palette"` leaf resolves through
+    /// [`InteractionEngine::handle`] to the same
+    /// `Palette(pal, SelectionChanged { idx: 2 })` the `TuiDriver` leg
+    /// (`quadraui/tests/palette_form_event_parity.rs`) produces.
+    #[test]
+    fn click_on_a_palette_row_dispatches_the_selection_parity_event() {
+        let mut driver = TuiDriver::new(PaletteLeafLogic::new(), 40, 14);
+        driver.render();
+        let (x, y) = quadraui::primitive::painted_sub_center(
+            &WidgetId::new("pal"),
+            quadraui::interactive::SubTarget(2),
+        )
+        .expect("the palette records each row it painted");
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers: Modifiers::default(),
+        });
+        assert_eq!(
+            driver.app().palette_events(),
+            vec![UiEvent::Palette(
+                WidgetId::new("pal"),
+                quadraui::PaletteEvent::SelectionChanged { idx: 2 }
+            )]
+        );
+    }
+
+    /// The binding-host leg of `Palette`'s confirm parity: Enter on a
+    /// focused `"palette"` leaf dispatches the same
+    /// `Palette(pal, ItemConfirmed { idx: 0 })` the `TuiDriver` leg and
+    /// the `a11y::route_widget_action` leg produce.
+    #[test]
+    fn enter_on_a_focused_palette_dispatches_the_confirm_parity_event() {
+        let mut driver = TuiDriver::new(PaletteLeafLogic::new(), 40, 14);
+        driver.render();
+        {
+            let (backend, _app) = driver.parts_mut();
+            backend.set_focus(Some(WidgetId::new("pal")));
+        }
+        driver.dispatch(UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Enter),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        });
+        assert_eq!(
+            driver.app().palette_events(),
+            vec![UiEvent::Palette(
+                WidgetId::new("pal"),
+                quadraui::PaletteEvent::ItemConfirmed { idx: 0 }
+            )]
+        );
+    }
+
+    /// The binding-host leg of `Form`'s toggle parity: a `MouseDown` on a
+    /// `"form"` leaf's focused toggle row dispatches the same
+    /// `Form(settings, ToggleChanged { notify, true })` the `TuiDriver`
+    /// leg (`quadraui/tests/palette_form_event_parity.rs`) and the
+    /// `a11y::route_widget_action` leg produce.
+    #[test]
+    fn click_on_a_form_toggle_row_dispatches_the_toggle_parity_event() {
+        use quadraui::{FieldKind, FormEvent};
+
+        let mut form = uncontrolled_text_form("settings", &[]);
+        form.fields = vec![quadraui::FormField {
+            kind: FieldKind::Toggle { value: false },
+            label: StyledText::plain("Notify"),
+            ..text_input_field("notify")
+        }];
+        form.focused_field = Some(WidgetId::new("notify"));
+        form.has_focus = true;
+        let logic = FormLogic {
+            form,
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 14);
+        driver.render();
+        let (x, y) = driver.find("Notify").expect("the toggle row is painted");
+        driver.click(x, y);
+        let toggles: Vec<UiEvent> = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .filter(|(event, _)| matches!(event, UiEvent::Form(_, FormEvent::ToggleChanged { .. })))
+            .map(|(event, _)| event.clone())
+            .collect();
+        assert_eq!(
+            toggles,
+            vec![UiEvent::Form(
+                WidgetId::new("settings"),
+                FormEvent::ToggleChanged {
+                    id: WidgetId::new("notify"),
+                    value: true
+                }
+            )]
+        );
+    }
+
     /// Mirrors [`MinimalLogic`], painting one `"terminal"` widget leaf.
     struct TerminalLogic {
         term: quadraui::Terminal,
@@ -7320,6 +7498,169 @@ mod tests {
                 "expected CommandCenterActivated {target:?}: {dispatched:?}"
             );
         }
+    }
+
+    /// Mirrors [`CommandCenterLogic`], painting one generic-widget leaf
+    /// of any [`crate::extra_paint::WIDGET_KINDS`] kind.
+    struct WidgetLeafLogic {
+        kind: &'static str,
+        widget: Rc<dyn DynWidget>,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl WidgetLeafLogic {
+        fn new(kind: &'static str, widget: Rc<dyn DynWidget>) -> Self {
+            Self {
+                kind,
+                widget,
+                engine: InteractionEngine::new(),
+                sink: RefCell::new(RecordingSink::default()),
+            }
+        }
+    }
+
+    impl AppLogic for WidgetLeafLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut hits = Vec::new();
+            let extra = HashMap::new();
+            let mut widgets: HashMap<String, Rc<dyn DynWidget>> = HashMap::new();
+            widgets.insert(self.kind.to_string(), self.widget.clone());
+            draw_bands(
+                backend,
+                RenderRefs {
+                    text_display: None,
+                    list: None,
+                    tree: None,
+                    data_table: None,
+                    tab_bar: None,
+                    extra: &extra,
+                    widgets: &widgets,
+                    list_scroll_px: None,
+                    tree_scroll_px: None,
+                    data_table_scroll_px: None,
+                },
+                &mut hits,
+                &|id| self.engine.chrome_interaction(id),
+            );
+            self.engine.render_overlays(backend);
+            self.engine.set_hits(hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// A left press and release at `(x, y)`, the gesture every desktop
+    /// click is.
+    fn click_through_the_engine(driver: &mut TuiDriver<WidgetLeafLogic>, x: f32, y: f32) {
+        driver.dispatch(UiEvent::MouseDown {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+            modifiers: Modifiers::default(),
+        });
+        driver.dispatch(UiEvent::MouseUp {
+            widget: None,
+            button: MouseButton::Left,
+            position: Point::new(x, y),
+        });
+    }
+
+    /// The binding-host leg of `StatusBar`'s event parity: a click on a
+    /// clickable segment of a `"status_bar"` leaf resolves through
+    /// [`InteractionEngine::handle`] to the same
+    /// `UiEvent::StatusBar(bar, SegmentClicked { .. })` the `TuiDriver`
+    /// leg (`quadraui/tests/widget_contract_status_bar.rs`) produces.
+    /// `StatusBar` declares no a11y actions, so there is no
+    /// `a11y::route_widget_action` leg.
+    #[test]
+    fn click_on_a_status_bar_segment_dispatches_segment_clicked() {
+        let bar_id = WidgetId::new("status");
+        let segment_id = WidgetId::new("status:branch");
+        let segment = |text: &str, action_id: Option<WidgetId>| quadraui::StatusBarSegment {
+            text: text.into(),
+            fg: quadraui::Color::rgb(230, 230, 230),
+            bg: quadraui::Color::rgb(40, 80, 120),
+            bold: false,
+            action_id,
+        };
+        let bar = quadraui::StatusBar {
+            id: bar_id,
+            left_segments: vec![segment("NORMAL", None), segment(" main ", Some(segment_id))],
+            right_segments: vec![],
+        };
+        let mut driver = TuiDriver::new(WidgetLeafLogic::new("status_bar", Rc::new(bar)), 40, 5);
+
+        let (x, y) =
+            quadraui::primitive::painted_sub_center(&bar_id, quadraui::interactive::SubTarget(1))
+                .expect("the status bar records each segment it painted");
+        click_through_the_engine(&mut driver, x, y);
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| *event
+                == UiEvent::StatusBar(
+                    bar_id,
+                    quadraui::StatusBarEvent::SegmentClicked { id: segment_id }
+                )),
+            "expected SegmentClicked for the clicked segment: {dispatched:?}"
+        );
+    }
+
+    /// The binding-host leg of `ActivityBar`'s event parity: a click on
+    /// the first row of an `"activity_bar"` leaf resolves through
+    /// [`InteractionEngine::handle`] to the same
+    /// `UiEvent::ActivityBar(bar, ItemClicked { .. })` the `TuiDriver` leg
+    /// (`quadraui/tests/widget_contract_activity_bar.rs`) and the
+    /// `a11y::route_widget_action` leg (`ActivityBar`'s own
+    /// `widget_contract_tests`) produce.
+    #[test]
+    fn click_on_an_activity_bar_row_dispatches_item_clicked() {
+        let bar_id = WidgetId::new("activity");
+        let item = |id: &str, icon: &str| quadraui::ActivityItem {
+            id: WidgetId::new(id),
+            icon: icon.into(),
+            tooltip: id.into(),
+            is_active: false,
+            is_keyboard_selected: false,
+        };
+        let bar = quadraui::ActivityBar {
+            id: bar_id,
+            top_items: vec![item("activity:explorer", "E"), item("activity:search", "S")],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
+        };
+        let mut driver = TuiDriver::new(WidgetLeafLogic::new("activity_bar", Rc::new(bar)), 40, 5);
+
+        let (x, y) =
+            quadraui::primitive::painted_sub_center(&bar_id, quadraui::interactive::SubTarget(0))
+                .expect("the activity bar records each row it painted");
+        click_through_the_engine(&mut driver, x, y);
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|(event, _)| *event
+                == UiEvent::ActivityBar(
+                    bar_id,
+                    quadraui::ActivityBarEvent::ItemClicked {
+                        id: WidgetId::new("activity:explorer")
+                    }
+                )),
+            "expected ItemClicked for the first row: {dispatched:?}"
+        );
     }
 
     /// Enter on a focused layout-tree `Button` round-trips through
@@ -11335,6 +11676,105 @@ mod tests {
             ),
             "expected Toolbar(toolbar:main, ButtonClicked{{id: filter, is_active: true}}): {:?}",
             dispatched
+        );
+    }
+
+    /// The binding-host leg of the menu widgets' three-way event parity:
+    /// a click on the first enabled button of a standalone `"toolbar"`
+    /// extra dispatches exactly the event the widget contract's own
+    /// TuiDriver leg (`quadraui/tests/widget_contract_menus_event_parity.rs`)
+    /// and its `a11y::route_widget_action` leg resolve the same bar to.
+    #[test]
+    fn toolbar_click_matches_the_widget_contract_parity_event() {
+        use quadraui::{Toolbar, ToolbarButton};
+
+        let action = |id: &str, label: &str, enabled: bool| ToolbarButton::Action {
+            spec: None,
+            id: WidgetId::new(id),
+            label: label.to_string(),
+            icon: None,
+            key_hint: None,
+            enabled,
+            is_active: false,
+            tooltip: String::new(),
+        };
+        let logic = ToolbarLogic {
+            toolbar: Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+                action("tb:a", "A", true),
+                ToolbarButton::Separator,
+                action("tb:b", "B", false),
+            ]),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 5);
+        driver.render();
+        let (x, y) = driver.find("A").expect("the first button paints");
+        driver.click(x, y);
+
+        let dispatched: Vec<UiEvent> = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .map(|(event, _)| event.clone())
+            .collect();
+        assert_eq!(
+            dispatched,
+            vec![UiEvent::Toolbar(
+                WidgetId::new("tb"),
+                ToolbarEvent::ButtonClicked {
+                    id: WidgetId::new("tb:a"),
+                    is_active: true,
+                },
+            )]
+        );
+    }
+
+    /// The binding-host leg of the context menu's event parity: a click
+    /// on a popup row opened through [`InteractionEngine::open_context_menu`]
+    /// dispatches the `UiEvent::ContextMenuItemActivated` the widget
+    /// contract's TuiDriver and `a11y::route_widget_action` legs resolve
+    /// the same row to.
+    #[test]
+    fn context_menu_click_matches_the_widget_contract_parity_event() {
+        use quadraui::ContextMenuItem;
+
+        let logic = MinimalLogic {
+            button: Button::new(WidgetId::new("go"), "Go"),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 40, 20);
+        {
+            let (backend, app) = driver.parts_mut();
+            let item = |id: &str, label: &str| ContextMenuItem {
+                id: Some(WidgetId::new(id)),
+                label: quadraui::types::StyledText::plain(label),
+                ..Default::default()
+            };
+            app.engine.open_context_menu(
+                vec![item("copy", "Copy"), item("paste", "Paste")],
+                Point::new(1.0, 1.0),
+                backend,
+            );
+        }
+        driver.render();
+        let (x, y) = driver.find("Copy").expect("the popup paints its rows");
+        driver.click(x, y);
+
+        let dispatched: Vec<UiEvent> = driver
+            .app()
+            .sink
+            .borrow()
+            .dispatched
+            .iter()
+            .map(|(event, _)| event.clone())
+            .collect();
+        assert_eq!(
+            dispatched,
+            vec![UiEvent::ContextMenuItemActivated(WidgetId::new("copy"))]
         );
     }
 

@@ -32,7 +32,7 @@
 //! rather than going through the queue.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -61,16 +61,13 @@ use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::activity_bar::ActivityBarRowHit;
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::context_menu::{ContextMenu, ContextMenuLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
-use crate::primitives::form::FormLayout;
-use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
+use crate::primitives::menu_bar::MenuBar;
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
@@ -80,15 +77,13 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
-use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tree::TreeViewLayout;
 use crate::testing::{TextRun, ZoneRec};
-use crate::transition::Transition;
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, FieldKind, Form, Key, ListView, Modifiers, Palette,
-    ParsedBinding, PlatformServices, StatusBar, Theme, TreeView,
+    Accelerator, AcceleratorId, Key, ListView, Modifiers, ParsedBinding, PlatformServices, Theme,
+    TreeView,
 };
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this
@@ -240,15 +235,11 @@ pub struct MacBackend {
     /// call. Holds it alive so action selectors on installed `NSMenuItem`s
     /// don't dangle. Replaced wholesale on each re-install.
     menu_target: Option<objc2::rc::Retained<super::menu_bar_install::QuadraMenuTarget>>,
-    /// Last [`MenuBar`] installed via the native-default
-    /// [`Backend::draw_menu_bar`] path. Compared against
-    /// the incoming `bar` on every call so a generic caller (`frame.rs`,
-    /// `MenuSystem::render`) can call `draw_menu_bar` unconditionally
-    /// every frame without reinstalling an unchanged `NSMenu` tree each
-    /// tick — see [`Self::install_menu_bar_if_changed`]. `None` until
-    /// the native path installs for the first time; also `None` on a
-    /// backend that never takes the native path (e.g. `Custom` style),
-    /// which never reads this field.
+    /// Last [`MenuBar`] installed through [`Backend::install_menu_bar`].
+    /// Compared against the incoming `bar` on every call so a per-frame
+    /// caller (`MenuSystem::render`) does not reinstall an unchanged
+    /// `NSMenu` tree each tick — see [`Self::install_menu_bar_if_changed`].
+    /// `None` until the first install.
     last_native_menu_bar: Option<MenuBar>,
     /// Tray/status-bar icon state — see [`super::tray`]'s
     /// module doc and `impl TrayService for MacBackend` below.
@@ -309,7 +300,7 @@ pub struct MacBackend {
     text_runs: Vec<TextRun>,
     /// `WidgetId` of the [`ActivityBar`] that painted itself with
     /// `is_keyboard_focused = true` this frame, if any. Set by
-    /// [`Backend::draw_activity_bar`], cleared by [`Backend::begin_frame`]
+    /// [`Backend::end_frame`] from the painted-widget record, cleared by [`Backend::begin_frame`]
     /// (same per-frame lifecycle as `zones`), read by
     /// [`super::run::dispatch_event`] to redirect the next `KeyPressed`
     /// into the bar. Mirrors `GtkBackend::focused_activity_bar`.
@@ -357,7 +348,7 @@ pub struct MacBackend {
     requested_cursor: PointerShape,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     // /. Picks `Icon::glyph` vs `Icon::fallback` in
-    /// `draw_activity_bar` and (since #804) `draw_tree`. Set via
+    /// the activity bar and `draw_tree`. Set via
     /// [`Backend::set_nerd_fonts`]; defaults to `true` on this backend —
     /// see `GtkBackend`'s matching field doc for why a
     /// GUI backend with the bundled codicon font always available
@@ -373,7 +364,7 @@ pub struct MacBackend {
     /// elsewhere via [`Backend::focus_tree`].
     focus_tree: crate::focus::FocusTree,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`.
-    /// Picks `Icon::glyph` vs `Icon::fallback` in `draw_activity_bar` and
+    /// Picks `Icon::glyph` vs `Icon::fallback` in the activity bar and
     /// `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
     /// on this backend — see `GtkBackend`'s matching field doc for why a
     /// GUI backend with the bundled codicon font always available carries
@@ -402,13 +393,6 @@ pub struct MacBackend {
     /// does. [`Self::poll_events`] drains this into its output alongside
     /// `events` and `user_events`, on the AppKit main thread.
     notification_events: Arc<Mutex<VecDeque<UiEvent>>>,
-    /// Per-toolbar-item hover-fade-in animation, keyed by
-    /// [`crate::primitives::toolbar::VisibleToolbarItem::action_id`].
-    /// Inserted in [`Self::draw_toolbar_with_options`] the first frame an
-    /// item is hovered and dropped the frame it stops being hovered: an
-    /// entrance-only scoping, since there is no hover-exit state to keep
-    /// animating once the pointer has moved on.
-    hover_fade: HashMap<WidgetId, Transition>,
     /// Opt-in retention of the frame this backend last painted, handed
     /// out by [`Backend::frame_capture`] and read by
     /// [`Backend::last_frame`]. Disabled and empty by default, so a live
@@ -835,7 +819,6 @@ impl MacBackend {
             wake_callback,
             tick_callback: Arc::new(std::sync::OnceLock::new()),
             notification_events,
-            hover_fade: HashMap::new(),
             frame_capture: crate::frame::FrameCapture::default(),
         }
     }
@@ -1036,8 +1019,7 @@ impl MacBackend {
     /// Unlike previous versions, `chrome_font` now *does* consult
     /// [`Self::nerd_font_fallback_family`] — the same `font_with_fallback`
     /// cascade [`Self::set_current_font`] applies. Icon glyphs in
-    /// `draw_tree`/`draw_activity_bar_with_style`/
-    /// `draw_toolbar_interactive` now
+    /// `draw_tree` and the activity-bar and toolbar widgets now
     /// paint through `chrome_font`, not `current_font` — without this,
     /// a host that calls `set_nerd_font_fallback` would see icon glyphs
     /// render correctly in the editor but as tofu in every chrome
@@ -1130,18 +1112,6 @@ impl MacBackend {
     pub(crate) fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
         if candidate_line_height > 1.0 {
             candidate_line_height.max(self.current_style.row_height as f64)
-        } else {
-            candidate_line_height
-        }
-    }
-
-    /// Resolve a toolbar's row height: `Style::toolbar_height` on a
-    /// pixel backend, floored the same way
-    /// [`Self::resolved_row_height`] is — same shape, for the toolbar
-    /// chrome metric instead of the row metric.
-    fn resolved_toolbar_height(&self, candidate_line_height: f64) -> f64 {
-        if candidate_line_height > 1.0 {
-            candidate_line_height.max(self.current_style.toolbar_height as f64)
         } else {
             candidate_line_height
         }
@@ -1423,89 +1393,11 @@ impl MacBackend {
         }
     }
 
-    /// Shared body of [`Backend::draw_status_bar_interactive`] /
-    /// [`Backend::draw_status_bar_interactive_scaled`]. `font_scale`
-    /// multiplies `chrome_font`'s point size for this paint only — `1.0`
-    /// is the unscaled case.
-    ///
-    /// Temporarily swaps `chrome_font`/`chrome_line_height`/
-    /// `chrome_char_width` (restored in every case, including the
-    /// `font_scale == 1.0` no-op path, which skips the swap entirely
-    /// rather than swap-then-immediately-restore the same values) rather
-    /// than calling [`Self::set_chrome_font`] — that setter also
-    /// re-applies [`Self::nerd_font_fallback_family`]'s cascade, which
-    /// `chrome_font` already carries; re-running it here would append the
-    /// fallback family to the family list a second time.
-    fn status_bar_paint_scaled(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-        font_scale: f32,
-    ) -> StatusBarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        let saved = if font_scale != 1.0 {
-            // `.max(0.1)` guards against a degenerate `font_scale` (e.g.
-            // `0.0` or negative) handing `clone_with_font_size` a
-            // zero/negative point size — `CTFont` has no documented
-            // fallback for that, so without a floor the behaviour would be
-            // backend-inconsistent with GTK's own `.max(1)` guard on its
-            // (integer, `PANGO_SCALE`-ths-of-a-point) size for the same
-            // input. `0.1pt` mirrors GTK's intent of "paint (nearly)
-            // nothing, honestly" rather than silently falling back to some
-            // ambient size.
-            let scaled_size = (self.chrome_font.pt_size() * font_scale as f64).max(0.1);
-            let scaled_font = self.chrome_font.clone_with_font_size(scaled_size);
-            let metrics = super::text::font_metrics(&scaled_font);
-            let saved_font = std::mem::replace(&mut self.chrome_font, scaled_font);
-            let saved_lh = self.chrome_line_height;
-            let saved_cw = self.chrome_char_width;
-            self.chrome_line_height = metrics.line_height;
-            self.chrome_char_width = metrics.char_width;
-            Some((saved_font, saved_lh, saved_cw))
-        } else {
-            None
-        };
-        // The status bar is chrome, not editor content, so it paints
-        // through `ChromeSurface` (routes text through
-        // `chrome_font`/`chrome_line_height`/`chrome_char_width`) —
-        // self-documenting at this call site that the *scaled* chrome
-        // font swapped in above, not whatever `self`'s own `PaintSurface`
-        // impl happens to default to, is what this paint must use. See
-        // `ChromeSurface`'s doc.
-        let theme = self.current_theme;
-        // Pass the rect's own height, not just the chrome line height,
-        // so a caller that hands this a `rect` taller than the chrome
-        // font's own line height (e.g. a fixed-height breadcrumb row)
-        // gets a background fill that covers `rect.height` entirely,
-        // matching `WinBackend`'s already-correct call.
-        let line_height = rect.height;
-        let mut surface = ChromeSurface { backend: self };
-        let layout = crate::primitives::status_bar::native_surface_paint::paint(
-            bar,
-            &mut surface,
-            &theme,
-            rect.x,
-            rect.y,
-            rect.width,
-            line_height,
-            hovered_id,
-            pressed_id,
-        );
-        if let Some((saved_font, saved_lh, saved_cw)) = saved {
-            self.chrome_font = saved_font;
-            self.chrome_line_height = saved_lh;
-            self.chrome_char_width = saved_cw;
-        }
-        layout
-    }
-
-    /// Install `bar` as the real system `NSMenu` via
-    /// [`Self::install_menu_bar`] unless it's unchanged from the last
-    /// native-path install — see the `Backend::draw_menu_bar` impl's
-    /// "Per-frame idempotence" doc section below for why a per-frame
-    /// caller needs this to be idempotent rather than rebuilding the
-    /// whole `NSMenu` tree on every call.
+    /// Install `bar` as the real system `NSMenu` unless it's unchanged
+    /// from the last install, so a caller that installs every frame
+    /// ([`crate::compose::MenuSystem::render`] under the native style)
+    /// rebuilds the `NSMenu` tree only on an actual menu-state change (a
+    /// new accelerator, a toggled checkmark, …).
     ///
     /// Returns `true` when the `NSMenu` tree was (re)built, `false` when
     /// the call was a no-op because `bar` matched the last install.
@@ -1513,84 +1405,30 @@ impl MacBackend {
         if self.last_native_menu_bar.as_ref() == Some(bar) {
             return false;
         }
-        self.install_menu_bar(bar);
+        self.install_native_menu(bar);
         self.last_native_menu_bar = Some(bar.clone());
         true
     }
 
-    /// The in-window painted menu-bar strip. Reachable as the
-    /// `Custom`-style fallback from the `Backend::draw_menu_bar` trait
-    /// method below, and directly by tests that want the painted pixels
-    /// regardless of `menu_style`.
-    fn draw_menu_bar_painted(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_menu_bar called outside enter_frame_scope",
+    /// Builds `bar`'s `NSMenu` tree and installs it as the application's
+    /// main menu. A silent no-op off the main thread: Rust's test runner
+    /// hands every `#[test]` fn its own spawned thread, and a harness
+    /// driving `ShellApp::setup` must not panic over menus — the same
+    /// posture the helpers in [`super::menu_bar_install`] and
+    /// `request_frame_in`'s "no callback yet" no-op take.
+    fn install_native_menu(&mut self, bar: &MenuBar) {
+        let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
+            return;
+        };
+        // Replacing wholesale — the previous target drops when this
+        // assignment runs, after the new menu is installed.
+        let target = super::menu_bar_install::install_menu_bar(
+            mtm,
+            bar,
+            self.events.clone(),
+            self.redraw_kicker(mtm),
         );
-        // The menu bar is chrome (`ChromePrimitive::MenuBar`)
-        // — see `draw_tree`'s comment for why this reads `chrome_font`
-        // instead of `current_font`.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        // SAFETY: ctx non-null inside frame scope.
-        unsafe {
-            super::menu_bar::draw_menu_bar(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-            )
-        }
-    }
-
-    /// [`Self::draw_menu_bar_painted`], reading hover/pressed state from
-    /// `interaction` — the `Custom`-style fallback
-    /// [`Backend::draw_menu_bar_with_state`] reaches, mirroring the
-    /// plain/interactive split [`Self::draw_menu_bar_painted`] and this
-    /// method share with [`Backend::draw_menu_bar`]/
-    /// [`Backend::draw_menu_bar_with_state`] themselves.
-    fn draw_menu_bar_painted_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &MenuBar,
-        interaction: &crate::InteractionState,
-    ) -> MenuBarLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_menu_bar_with_state called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        // SAFETY: ctx non-null inside frame scope.
-        unsafe {
-            super::menu_bar::draw_menu_bar_with_state(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-                interaction,
-            )
-        }
-    }
-}
-
-/// The in-window layout of a menu bar AppKit draws natively: zero
-/// height and no items, since the real menu bar lives outside the window.
-fn native_menu_bar_layout(rect: Rect) -> MenuBarLayout {
-    MenuBarLayout {
-        bounds: Rect::new(rect.x, rect.y, rect.width, 0.0),
-        visible_items: Vec::new(),
-        hit_regions: Vec::new(),
+        self.menu_target = Some(target);
     }
 }
 
@@ -1713,12 +1551,12 @@ impl Backend for MacBackend {
         // `overlay_bounds_this_frame`'s own doc. Same per-frame lifecycle
         // as `zones`.
         self.overlay_bounds_this_frame.clear();
-        // Clear the focused activity bar — re-set by `draw_activity_bar`
+        // Clear the focused activity bar — re-set by `end_frame`
         // during this render pass if a bar is still keyboard-focused. Same
         // per-frame lifecycle as `zones`, matching `GtkBackend::begin_frame`.
         self.focused_activity_bar = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
+        // to earn them again (via draw_primitive/draw_dyn).
         self.modal_stack.borrow_mut().reset_frame_paint();
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`/
@@ -1727,6 +1565,9 @@ impl Backend for MacBackend {
     }
 
     fn end_frame(&mut self) {
+        // The rail that holds keyboard focus is whichever activity bar this
+        // frame painted with `is_keyboard_focused` set.
+        self.focused_activity_bar = crate::primitives::activity_bar::painted_keyboard_focused_bar();
         // No-op flush-wise. AppKit's `drawRect:` flushes when it returns;
         // this method exists for parity with backends that need an
         // explicit flush.
@@ -2066,33 +1907,14 @@ impl Backend for MacBackend {
         self.core.set_menu_style(style);
     }
 
-    /// This used to `.expect()` the `MainThreadMarker`, which panics
-    /// whenever called off the main thread. Every *real* call site
-    /// (`macos::shell_runner`) is already on the main thread — but Rust's
-    /// test runner hands every `#[test]` fn its own spawned thread, so any
-    /// harness driving `ShellApp::setup` through a call to this method
-    /// panicked, taking down a `setup()` that has nothing else to do with
-    /// menus. The sibling helpers in [`super::menu_bar_install`] already
-    /// degrade gracefully instead of panicking; this matches that shape —
-    /// a silent no-op off the main thread, same posture as
-    /// `request_frame_in`'s "no callback yet" no-op.
+    /// Installs `bar` as the system menu bar; an unchanged `bar` is a
+    /// no-op — see [`Self::install_menu_bar_if_changed`].
     fn install_menu_bar(&mut self, bar: &crate::primitives::menu_bar::MenuBar) {
-        let Some(mtm) = objc2_foundation::MainThreadMarker::new() else {
-            return;
-        };
-        // Replacing wholesale — the previous target drops when this
-        // assignment runs, after the new menu is installed.
-        let target = super::menu_bar_install::install_menu_bar(
-            mtm,
-            bar,
-            self.events.clone(),
-            self.redraw_kicker(mtm),
-        );
-        self.menu_target = Some(target);
+        let _ = self.install_menu_bar_if_changed(bar);
     }
 
-    /// See [`Self::install_menu_bar`]'s doc — same off-main-thread
-    /// degradation, same rationale.
+    /// A silent no-op off the main thread — see
+    /// [`Self::install_native_menu`]'s doc for the rationale.
     fn show_context_menu(
         &mut self,
         menu: &crate::primitives::context_menu::ContextMenu,
@@ -2543,7 +2365,8 @@ impl Backend for MacBackend {
     /// has been called.
     fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
         let font = match role {
-            crate::FontRole::Chrome | crate::FontRole::Icon => &self.chrome_font,
+            crate::FontRole::Chrome | crate::FontRole::ChromeBold => &self.chrome_font,
+            crate::FontRole::Icon => &self.chrome_font,
             crate::FontRole::Editor => self.current_font.as_ref().unwrap_or(&self.chrome_font),
         };
         let (w, h) = super::text::measure_text(font, text);
@@ -2903,146 +2726,6 @@ impl Backend for MacBackend {
             self.chrome_char_width,
         )
     }
-    /// Shared field-kind painting lives in
-    /// [`crate::primitives::form::paint`] now — see that fn's doc for why
-    /// `FieldKind::Toolbar` is the one variant painted here instead,
-    /// after `paint` releases its exclusive borrow of `self`.
-    fn draw_form(&mut self, rect: Rect, form: &Form) {
-        debug_assert!(
-            !self.current_cg().is_null(),
-            "MacBackend::draw_form called outside enter_frame_scope",
-        );
-        // `Form` is chrome, not editor content — see `draw_data_table`'s
-        // comment. `crate::primitives::form::paint` below paints through
-        // `self` as `&mut dyn PaintSurface`, which defaults to
-        // `chrome_font` too (see `MacBackend`'s own `PaintSurface` impl),
-        // so this `font` variable — used only for layout/measurement
-        // here — has to agree with it.
-        let font = self.chrome_font.clone();
-        let theme = self.current_theme;
-        let flayout = super::form::mac_form_layout(form, rect, self.current_line_height, &font);
-        let origin = Point::new(rect.x, rect.y);
-        crate::primitives::form::paint(form, &flayout, self, &theme, origin);
-
-        for vf in &flayout.visible_fields {
-            let Some(field) = form.fields.get(vf.field_idx) else {
-                continue;
-            };
-            let FieldKind::Toolbar(toolbar) = &field.kind else {
-                continue;
-            };
-            let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-            let no_label = label_text.is_empty();
-            let (label_w, _) = super::text::measure_text(&font, &label_text);
-            let row_x = (origin.x + vf.bounds.x) as f64;
-            let row_y = (origin.y + vf.bounds.y) as f64;
-            let row_w = vf.bounds.width as f64;
-            let row_h = vf.bounds.height as f64;
-            // Starts at the form's shared control column (`FormLayout::toolbar_field_rect`).
-            let (toolbar_x, toolbar_w) =
-                flayout.toolbar_field_rect(row_x, row_w, label_w, no_label);
-            if toolbar_w > 0.0 {
-                let ctx = self.current_cg();
-                debug_assert!(
-                    !ctx.is_null(),
-                    "MacBackend::draw_form called outside enter_frame_scope",
-                );
-                // SAFETY: ctx is non-null inside the frame scope.
-                unsafe {
-                    super::toolbar::draw_toolbar(
-                        ctx, &font, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
-                    );
-                }
-            }
-        }
-    }
-    fn draw_palette(&mut self, rect: Rect, palette: &Palette) {
-        // See `modal_stack.rs`'s "Paint-consistency detection" docs —
-        // records that this palette's surface was actually painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        // `Palette` is chrome, not editor content — see
-        // `draw_data_table`'s comment.
-        let theme = self.current_theme;
-        let style = self.style();
-        let line_height = self.current_line_height;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
-            return;
-        }
-        let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
-            rect.width,
-            rect.height,
-            palette,
-            line_height as f32,
-        );
-        // Calls the shared paint directly (rather than through
-        // `super::palette::draw_palette`, whose public signature stays
-        // additive-only and so cannot take a live `&Style`) so this live
-        // backend path honours `Self::set_style` overrides.
-        let mut surface = self.chrome_surface("draw_palette");
-        crate::primitives::palette::native_surface_paint::paint(
-            palette,
-            rect,
-            &palette_layout,
-            rows_h,
-            line_height as f32,
-            nerd_fonts_enabled,
-            &mut surface,
-            &theme,
-            &style,
-        );
-    }
-    /// [`Self::draw_palette`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_palette_with_state`]'s own
-    /// doc. Routes through
-    /// [`crate::primitives::palette::native_surface_paint::paint_interactive`],
-    /// the interactive twin of the plain `paint` [`Self::draw_palette`]
-    /// calls.
-    fn draw_palette_with_state(
-        &mut self,
-        rect: Rect,
-        palette: &Palette,
-        interaction: &crate::InteractionState,
-    ) {
-        self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        let theme = self.current_theme;
-        let style = self.style();
-        let line_height = self.current_line_height;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
-            return;
-        }
-        let (palette_layout, rows_h) = crate::primitives::palette::native_surface_paint::layout(
-            rect.width,
-            rect.height,
-            palette,
-            line_height as f32,
-        );
-        let mut surface = self.chrome_surface("draw_palette_with_state");
-        crate::primitives::palette::native_surface_paint::paint_interactive(
-            palette,
-            rect,
-            &palette_layout,
-            rows_h,
-            line_height as f32,
-            nerd_fonts_enabled,
-            &mut surface,
-            &theme,
-            &style,
-            interaction,
-        );
-    }
-
-    fn palette_layout(&self, rect: Rect, palette: &Palette) -> crate::PaletteLayout {
-        super::palette::mac_palette_layout(
-            palette,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.current_line_height,
-        )
-    }
 
     fn draw_settings_chrome(
         &mut self,
@@ -3052,166 +2735,18 @@ impl Backend for MacBackend {
         placeholder: &str,
         active: bool,
     ) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_settings_chrome called outside enter_frame_scope",
-        );
-        // The settings header/search bar is chrome (part of `Form`),
-        // not editor content — see `draw_data_table`'s comment.
-        let font = &self.chrome_font;
         let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::form::draw_settings_chrome(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                line_height,
-                header_text,
-                query,
-                placeholder,
-                active,
-                &theme,
-            );
-        }
-    }
-
-    fn draw_status_bar_interactive(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-    ) -> StatusBarLayout {
-        self.status_bar_paint_scaled(rect, bar, interaction, 1.0)
-    }
-
-    /// Same paint as [`Self::draw_status_bar_interactive`], scaling only
-    /// this call's chrome font size — see
-    /// [`crate::Backend::draw_status_bar_interactive_scaled`]'s doc for
-    /// the full rationale. Both this and the unscaled method above funnel
-    /// through [`Self::status_bar_paint_scaled`] so a fix to one applies
-    /// to both; `1.0` there is exactly the unscaled call with no scaling.
-    fn draw_status_bar_interactive_scaled(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-        font_scale: f32,
-    ) -> StatusBarLayout {
-        self.status_bar_paint_scaled(rect, bar, interaction, font_scale)
-    }
-    /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
-    /// that method for the real painting logic.
-    fn draw_activity_bar(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-    ) -> Vec<ActivityBarRowHit> {
-        self.draw_activity_bar_with_style(
+        let line_height = self.current_line_height as f32;
+        crate::compose::sidebar_panel_body::paint_settings_chrome(
+            self,
+            &theme,
             rect,
-            bar,
-            hovered_idx,
-            &crate::ActivityBarStyle::default(),
-        )
-    }
-
-    /// Paint via the shared
-    /// [`crate::primitives::activity_bar::native_surface_paint::paint`].
-    ///
-    /// Uses the backend's `chrome_font` for icon rendering — apps that
-    /// want Nerd-Font icons install a glyph-bearing font via
-    /// [`Self::set_current_font`] in `setup()` — but **not** at that
-    /// font's own size. The icon glyph always paints at
-    /// [`crate::ActivityBarStyle::resolved_icon_size_px`] via
-    /// [`core_text::font::CTFont::clone_with_font_size`] on `chrome_font`
-    /// — a same-family, same-fallback clone at a fixed size. `size` in
-    /// `clone_with_font_size` is Core Text points, which on macOS are
-    /// already device-independent pixels 1:1 (unlike GTK's Pango /
-    /// Win-GUI's DirectWrite, both of which apply the legacy 96/72 dpi
-    /// point-to-pixel ratio), so `resolved_icon_size_px()` is used here
-    /// without conversion.
-    fn draw_activity_bar_with_style(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-        style: &crate::ActivityBarStyle,
-    ) -> Vec<ActivityBarRowHit> {
-        // Track keyboard focus so `run::dispatch_event` can redirect the
-        // next `KeyPressed` into this bar — same contract
-        // `GtkBackend::draw_activity_bar` implements.
-        if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id);
-        }
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_activity_bar_with_style called outside enter_frame_scope",
+            line_height,
+            header_text,
+            query,
+            placeholder,
+            active,
         );
-        let layout = bar.layout(
-            rect.width,
-            rect.height,
-            super::activity_bar::ACTIVITY_ROW_PX as f32,
-        );
-        let icon_font = self
-            .chrome_font
-            .clone_with_font_size(style.resolved_icon_size_px() as f64);
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        // SAFETY: ctx non-null inside frame scope. The shared painter is
-        // bar-relative by contract — it paints into `(0, 0, width, height)`
-        // and returns bar-relative hit spans — so the CTM translate below
-        // is what actually places the ink at `rect`'s absolute origin,
-        // matching `GtkBackend::draw_activity_bar`'s
-        // `cr.translate(rect.x, rect.y)`. The returned
-        // `ActivityBarRowHit`s are untouched by the translate — they stay
-        // bar-relative, per contract.
-        unsafe {
-            CGContextSaveGState(ctx);
-            CGContextTranslateCTM(ctx, rect.x as f64, rect.y as f64);
-            let mut surface = super::surface::CgSurface {
-                ctx,
-                font: Some(&icon_font),
-            };
-            let hits = crate::primitives::activity_bar::native_surface_paint::paint(
-                bar,
-                &layout,
-                style,
-                &mut surface,
-                &theme,
-                hovered_idx,
-                nerd_fonts_enabled,
-            );
-            CGContextRestoreGState(ctx);
-            hits
-        }
-    }
-
-    fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout {
-        // No-paint twin of `draw_status_bar`: same `mac_status_bar_layout`
-        // call, so hit regions match the painted frame exactly. Hit
-        // regions are bar-local, so `rect.x` / `rect.y` are deliberately
-        // not folded in. Measures against `chrome_font`/`chrome_line_height`,
-        // matching `draw_status_bar_interactive`'s resolution.
-        super::status_bar::mac_status_bar_layout(
-            &self.chrome_font,
-            rect.width as f64,
-            self.chrome_line_height,
-            bar,
-        )
-    }
-
-    fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit> {
-        // No-paint twin of `draw_activity_bar`; both walk the same
-        // activity-bar layout, so the returned bar-relative spans
-        // are exactly the rows that were painted.
-        super::activity_bar::mac_activity_bar_layout(rect.width as f64, rect.height as f64, bar)
     }
 
     /// See `Backend::draw_solid_fill`'s doc — a pixel backend can
@@ -3223,98 +2758,6 @@ impl Backend for MacBackend {
         self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
     }
 
-    fn draw_context_menu(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-    ) -> Vec<(Rect, WidgetId)> {
-        // See draw_palette for why this happens before the CG borrow.
-        self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        // Chrome primitives are drawn through `chrome_font` —
-        // `draw_tree`'s comment explains the swap.
-        let theme = self.current_theme;
-        let style = self.style();
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        // Calls the shared paint directly (rather than through
-        // `super::context_menu::draw_context_menu`, whose public
-        // signature stays additive-only and so cannot take a live
-        // `&Style`) so this live backend path honours `Self::set_style`
-        // overrides.
-        let mut surface = self.chrome_surface("draw_context_menu");
-        // `None` keeps `paint_with_glyphs`'s check/arrow defaults; the
-        // flag resolves an item's own `ContextMenuItem::icon`.
-        crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
-            menu,
-            layout,
-            crate::accelerator::Platform::Macos,
-            &mut surface,
-            &theme,
-            &style,
-            None,
-            nerd_fonts_enabled,
-        )
-    }
-    /// [`Self::draw_context_menu`], but honouring an optional
-    /// [`crate::primitives::context_menu::ContextMenuGlyphs`] override for
-    /// the check-mark / submenu-arrow glyphs — `glyphs: None` reproduces
-    /// [`Self::draw_context_menu`] exactly.
-    fn draw_context_menu_with_glyphs(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-        glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>,
-    ) -> Vec<(Rect, WidgetId)> {
-        // See draw_palette for why this happens before the CG borrow.
-        self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        let theme = self.current_theme;
-        let style = self.style();
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        // Calls the shared paint directly — see `Self::draw_context_menu`'s
-        // comment for why.
-        let mut surface = self.chrome_surface("draw_context_menu_with_glyphs");
-        crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
-            menu,
-            layout,
-            crate::accelerator::Platform::Macos,
-            &mut surface,
-            &theme,
-            &style,
-            glyphs,
-            nerd_fonts_enabled,
-        )
-    }
-    /// [`Self::draw_context_menu`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_context_menu_with_state`]'s
-    /// own doc. Routes through
-    /// [`crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive`]
-    /// (the same `paint_with_glyphs` pipeline as [`Self::draw_context_menu`],
-    /// plus the interactive hover/pressed tint), with `glyphs: None`
-    /// so this reproduces [`Self::draw_context_menu`]'s check-mark /
-    /// submenu-arrow glyphs exactly.
-    fn draw_context_menu_with_state(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-        interaction: &crate::InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        // See draw_palette for why this happens before the CG borrow.
-        self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        let theme = self.current_theme;
-        let style = self.style();
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let mut surface = self.chrome_surface("draw_context_menu_with_state");
-        crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive(
-            menu,
-            layout,
-            crate::accelerator::Platform::Macos,
-            &mut surface,
-            &theme,
-            &style,
-            None,
-            nerd_fonts_enabled,
-            interaction,
-        )
-    }
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -3376,12 +2819,6 @@ impl Backend for MacBackend {
     }
     fn tree_paints_own_scrollbar(&self) -> bool {
         true
-    }
-    fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout {
-        // No-paint twin of `draw_form` — must agree with what that
-        // method painted.
-        let font = &self.chrome_font;
-        super::form::mac_form_layout(form, rect, self.current_line_height, font)
     }
     fn draw_editor(&mut self, _rect: Rect, editor: &Editor) -> EditorPaintResult {
         let ctx = self.current_cg();
@@ -3476,93 +2913,6 @@ impl Backend for MacBackend {
         );
     }
 
-    /// macOS's own idiomatic default for a top-level menu bar:
-    /// presents `bar` as the real system `NSMenu` whenever
-    /// [`Backend::effective_menu_style`] resolves to
-    /// [`crate::backend::ResolvedMenuStyle::Native`] — the default on
-    /// macOS, since [`Backend::backend_caps`] declares `native_menu:
-    /// true` here — falling back to [`Self::draw_menu_bar_painted`]'s
-    /// in-window strip once the app opts out via
-    /// [`Backend::set_menu_style`]`(`[`crate::backend::MenuStyle::Custom`]`)`.
-    ///
-    /// Every generic caller of this trait method — [`crate::frame`]'s
-    /// `Surface::MenuBar` dispatch, [`crate::compose::MenuSystem::render`]
-    /// — gets this for free through `&mut dyn Backend`, with no
-    /// macOS-specific call site required: macOS has no Alt-mnemonic
-    /// convention and VS Code itself defers to the system menu bar
-    /// there, so a painted `File Edit View` strip is the one that needs
-    /// opting into, not the other way round.
-    ///
-    /// # Layout contract
-    ///
-    /// The native path paints nothing and returns a layout whose
-    /// `bounds.height` is `0.0` — a caller computing "content starts
-    /// below the menu bar" from that height reserves no blank strip,
-    /// since AppKit's own menu bar lives outside the window entirely.
-    /// The painted (`Custom`) path returns exactly what
-    /// [`Self::draw_menu_bar_painted`] always has.
-    ///
-    /// # Per-frame idempotence
-    ///
-    /// Called every frame by the generic callers above, but
-    /// [`Self::install_menu_bar_if_changed`] only actually reinstalls
-    /// the `NSMenu` tree when `bar` differs from the last install — so
-    /// this does not churn `NSApp.setMainMenu:` on every tick, only on
-    /// an actual menu-state change (a new accelerator, a toggled
-    /// checkmark, …).
-    fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-        match self.effective_menu_style() {
-            crate::backend::ResolvedMenuStyle::Native => {
-                self.install_menu_bar_if_changed(bar);
-                native_menu_bar_layout(rect)
-            }
-            crate::backend::ResolvedMenuStyle::Custom => self.draw_menu_bar_painted(rect, bar),
-        }
-    }
-    /// [`Self::draw_menu_bar`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_menu_bar_with_state`]'s own
-    /// doc. The native-menu branch ignores `interaction`: AppKit's own
-    /// `NSMenu` highlights its items itself, so there is nothing for
-    /// this backend to tint. The `Custom` branch routes through
-    /// [`Self::draw_menu_bar_painted_with_state`] instead of
-    /// [`Self::draw_menu_bar_painted`] — the same split
-    /// [`Self::draw_menu_bar`] makes with its own two branches.
-    fn draw_menu_bar_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &MenuBar,
-        interaction: &crate::InteractionState,
-    ) -> MenuBarLayout {
-        match self.effective_menu_style() {
-            crate::backend::ResolvedMenuStyle::Native => {
-                self.install_menu_bar_if_changed(bar);
-                native_menu_bar_layout(rect)
-            }
-            crate::backend::ResolvedMenuStyle::Custom => {
-                self.draw_menu_bar_painted_with_state(rect, bar, interaction)
-            }
-        }
-    }
-    /// No-paint twin of [`Self::draw_menu_bar`] — must agree with what
-    /// that method returns, including its `MenuStyle` branch. Under the
-    /// native style the in-window strip has no items, so a hit-test
-    /// against this layout (as [`crate::compose::MenuSystem`]'s mouse
-    /// handling does) finds nothing to open instead of a painted
-    /// dropdown over content the strip never covered.
-    fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout {
-        if self.effective_menu_style() == crate::backend::ResolvedMenuStyle::Native {
-            return native_menu_bar_layout(rect);
-        }
-        let font = &self.chrome_font;
-        super::menu_bar::mac_menu_bar_layout(
-            font,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            bar,
-        )
-    }
     fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
         let layout = super::split::mac_split_layout(
             split,
@@ -3711,187 +3061,6 @@ impl Backend for MacBackend {
             rect.height as f64,
             self.chrome_line_height,
             self.chrome_char_width,
-        )
-    }
-
-    fn draw_toolbar_with_options(
-        &mut self,
-        rect: Rect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        interaction: &crate::interaction::InteractionState,
-        options: crate::primitives::toolbar::ToolbarPaintOptions,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-
-        let hover_fade_duration = if self.skip_animations {
-            Duration::ZERO
-        } else {
-            Duration::from_millis(120)
-        };
-        let now = std::time::Instant::now();
-
-        // Track a fade-in transition for whichever item is currently
-        // hovered; at most one id is hovered at a time, and there is no
-        // hover-exit state to keep animating once the pointer moves on.
-        if let Some(id) = hovered_id {
-            self.hover_fade.retain(|k, _| k == id);
-            self.hover_fade
-                .entry(*id)
-                .or_insert_with(|| Transition::start(hover_fade_duration));
-        } else {
-            self.hover_fade.clear();
-        }
-        let fade_progress =
-            hovered_id.and_then(|id| self.hover_fade.get(id).map(|t| t.progress_at(now)));
-        let still_fading = matches!(fade_progress, Some(p) if p < 1.0);
-
-        // While the fade-in is still animating, suppress the shared paint
-        // code's binary hover highlight (it would otherwise snap straight
-        // to full opacity) in favor of the translucent overlay painted
-        // below at `fade_progress` alpha.
-        let painted_hovered_id = if still_fading { None } else { hovered_id };
-
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_toolbar called outside enter_frame_scope",
-        );
-        // Chrome primitives are drawn through `chrome_font` —
-        // `draw_tree`'s comment explains the swap.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        let layout = unsafe {
-            super::toolbar::draw_toolbar_with_options(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                bar,
-                &theme,
-                painted_hovered_id,
-                pressed_id,
-                options,
-            )
-        };
-
-        if still_fading {
-            if let (Some(id), Some(progress)) = (hovered_id, fade_progress) {
-                if let Some(vis) = layout
-                    .visible_items
-                    .iter()
-                    .find(|v| v.action_id.as_ref() == Some(id))
-                {
-                    let item = vis.bounds;
-                    if item.width > 0.0 && item.height > 0.0 {
-                        // Mirrors `primitives::toolbar::native_surface_paint`'s
-                        // own hover-highlight geometry exactly, so the faded
-                        // overlay lines up with the opaque highlight it eases
-                        // into.
-                        const CORNER_RADIUS: f32 = 4.0;
-                        let inset = Rect::new(
-                            item.x + 2.0,
-                            item.y + 2.0,
-                            (item.width - 4.0).max(0.0),
-                            (item.height - 4.0).max(0.0),
-                        );
-                        let color = theme.hover_bg.with_alpha(progress as f64);
-                        // SAFETY: ctx is the same non-null frame-scope
-                        // pointer used by the paint call above.
-                        let mut surface = super::surface::CgSurface {
-                            ctx,
-                            font: Some(font),
-                        };
-                        surface.surface_fill_rounded_rect(inset, CORNER_RADIUS, color);
-                    }
-                }
-            }
-            self.request_frame_in(Duration::from_millis(16));
-        }
-
-        layout
-    }
-
-    fn toolbar_layout(
-        &self,
-        rect: Rect,
-        bar: &crate::primitives::toolbar::Toolbar,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        // No-paint twin of `draw_toolbar_interactive` — must agree with
-        // what that method painted, so it measures against `chrome_font` too.
-        super::toolbar::mac_toolbar_layout(
-            bar,
-            &self.chrome_font,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
-
-    fn draw_toolbar_with_overflow(
-        &mut self,
-        rect: Rect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        interaction: &crate::interaction::InteractionState,
-        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
-        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_toolbar_with_overflow called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        // `Wrap`'s per-row height — `rect.height` is the whole slot the
-        // host allocated the bar, not one row's height (see
-        // `super::toolbar::mac_toolbar_layout_with_overflow`'s doc).
-        let row_h = self.resolved_toolbar_height(self.chrome_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::toolbar::draw_toolbar_with_overflow(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                row_h,
-                bar,
-                &theme,
-                hovered_id,
-                pressed_id,
-                layout_options,
-                priorities,
-            )
-        }
-    }
-
-    fn toolbar_layout_with_overflow(
-        &self,
-        rect: Rect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
-        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        // No-paint twin of `draw_toolbar_with_overflow` — must agree with
-        // what that method painted, so it measures against `chrome_font`
-        // and sizes `Wrap`'s row height identically too.
-        let row_h = self.resolved_toolbar_height(self.chrome_line_height);
-        super::toolbar::mac_toolbar_layout_with_overflow(
-            bar,
-            &self.chrome_font,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            row_h,
-            layout_options,
-            priorities,
         )
     }
 
@@ -4296,170 +3465,15 @@ impl crate::backend::TrayService for MacBackend {
 // every existing rasteriser keeps using its own private copy untouched.
 // See `paint_surface`'s module doc for the full scope note and why these
 // methods are `surface_`-prefixed instead of colliding with `Backend`'s.
-/// Adapts `&mut MacBackend` to [`PaintSurface`], routing text
-/// measurement and painting through `chrome_font`/`chrome_line_height`/
-/// `chrome_char_width` explicitly — the same resolution
-/// `MacBackend`'s own `PaintSurface` impl (below) now defaults to for
-/// every non-editor-class primitive. A call site reaches for this
-/// adapter instead of plain `self` when it needs a *scoped* chrome
-/// font — [`Self::status_bar_paint_scaled`] temporarily swaps
-/// `chrome_font`/`chrome_line_height`/`chrome_char_width` to a scaled
-/// variant and restores them afterward, and wrapping `self` in this
-/// type for the paint keeps that swap's intent self-documenting at the
-/// call site regardless of what `MacBackend`'s own default happens to
-/// resolve to. See `chrome_font`'s field doc for why `chrome_font` and
-/// `current_font` must stay separate, and [`EditorSurface`] for the
-/// mirror-image adapter that opts an editor-class primitive back into
-/// `current_font`.
-///
-/// Every font-agnostic method (fills, strokes, clip, lines, images, frame
-/// lifecycle) forwards straight through to `MacBackend`'s own impl, which
-/// doesn't touch the font either way — only the three text-shaped methods
-/// below actually differ.
-struct ChromeSurface<'a> {
-    backend: &'a mut MacBackend,
-}
-
-impl PaintSurface for ChromeSurface<'_> {
-    fn surface_begin_frame(&mut self, viewport: Viewport) {
-        self.backend.surface_begin_frame(viewport)
-    }
-
-    fn surface_end_frame(&mut self) {
-        self.backend.surface_end_frame()
-    }
-
-    fn surface_viewport(&self) -> Viewport {
-        self.backend.surface_viewport()
-    }
-
-    fn surface_line_height(&self) -> f32 {
-        self.backend.chrome_line_height as f32
-    }
-
-    fn surface_char_width(&self) -> f32 {
-        self.backend.chrome_char_width as f32
-    }
-
-    fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-        let (w, h) = super::text::measure_text(&self.backend.chrome_font, text);
-        (w as f32, h as f32)
-    }
-
-    fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
-        self.backend.surface_fill_rect(rect, color)
-    }
-
-    fn surface_fill_rounded_rect(&mut self, rect: Rect, radius: f32, color: Color) {
-        self.backend.surface_fill_rounded_rect(rect, radius, color)
-    }
-
-    fn surface_stroke_rect(&mut self, rect: Rect, color: Color, stroke_width: f32) {
-        self.backend.surface_stroke_rect(rect, color, stroke_width)
-    }
-
-    fn surface_stroke_rounded_rect(
-        &mut self,
-        rect: Rect,
-        radius: f32,
-        color: Color,
-        stroke_width: f32,
-    ) {
-        self.backend
-            .surface_stroke_rounded_rect(rect, radius, color, stroke_width)
-    }
-
-    fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
-        let ctx = self.backend.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "ChromeSurface::surface_draw_text_run called outside enter_frame_scope",
-        );
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::text::draw_text(
-                ctx,
-                &self.backend.chrome_font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                ns_color_to_cg(color),
-            );
-        }
-    }
-
-    /// The chrome twin of `MacBackend`'s own override — same
-    /// `bold`/`italic`/`underline`-unsupported posture, same `scale_x`
-    /// support via [`super::text::draw_text_scaled_x`], just against
-    /// `chrome_font`.
-    ///
-    /// Not optional: this is the method the shared status-bar paint
-    /// actually calls. Without it the adapter would inherit the trait
-    /// default (forward to [`Self::surface_draw_text_run`]) — right font,
-    /// but `scale_x` silently dropped.
-    #[allow(clippy::too_many_arguments)]
-    fn surface_draw_text_run_styled(
-        &mut self,
-        rect: Rect,
-        text: &str,
-        color: Color,
-        bold: bool,
-        italic: bool,
-        underline: bool,
-        scale_x: f32,
-    ) {
-        let _ = (bold, italic, underline);
-        let ctx = self.backend.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "ChromeSurface::surface_draw_text_run_styled called outside enter_frame_scope",
-        );
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::text::draw_text_scaled_x(
-                ctx,
-                &self.backend.chrome_font,
-                text,
-                rect.x as f64,
-                rect.y as f64,
-                scale_x as f64,
-                ns_color_to_cg(color),
-            );
-        }
-    }
-
-    fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
-        self.backend
-            .surface_draw_line(from, to, color, stroke_width)
-    }
-
-    fn surface_push_clip(&mut self, rect: Rect) {
-        self.backend.surface_push_clip(rect)
-    }
-
-    fn surface_pop_clip(&mut self) {
-        self.backend.surface_pop_clip()
-    }
-
-    fn surface_draw_image(
-        &mut self,
-        rect: Rect,
-        image: &crate::primitives::image::Image,
-    ) -> crate::backend::ImagePaintResult {
-        self.backend.surface_draw_image(rect, image)
-    }
-}
-
-/// The editor-class twin of [`ChromeSurface`] just above. That adapter
-/// exists to reach `chrome_font` from a primitive-generic call site.
-/// This one exists to reach `current_font` from one, since
+/// Adapts `&mut MacBackend` to [`PaintSurface`] so a primitive-generic
+/// call site reaches `current_font`, since
 /// [`MacBackend`]'s own [`PaintSurface`] impl (below) defaults to
 /// `chrome_font` and a handful of primitives still need the editor font.
 /// The terminal and the plain text display paint through this trait and
 /// need `EditorSurface`; the diff view also paints through this trait
 /// and needs it too. The full-screen editor paints through its own
-/// dedicated Core Text calls instead of this trait at all, so it needs
-/// neither adapter.
+/// dedicated Core Text calls instead of this trait at all, so it does
+/// not need this adapter.
 ///
 /// Every font-agnostic method (fills, strokes, clip, lines, images, frame
 /// lifecycle) forwards straight through to [`MacBackend`]'s own impl,
@@ -4566,12 +3580,11 @@ impl PaintSurface for EditorSurface<'_> {
     /// [`super::text::draw_text_scaled_x`] (which fits the terminal's
     /// wide glyphs to their cell advance), just against `current_font`.
     ///
-    /// No `surface_draw_text_run_with_role` override here (nor on
-    /// [`ChromeSurface`]): both adapters are already constructed against
-    /// one specific, caller-chosen font, so the trait default's
-    /// "answered before this verb is reached" reasoning
-    /// ([`crate::PaintSurface::surface_draw_text_run_with_role`]'s doc)
-    /// applies to both. An explicit `FontRole::Chrome` request made
+    /// No `surface_draw_text_run_with_role` override here: this adapter is
+    /// already constructed against one specific, caller-chosen font, so
+    /// the trait default's "answered before this verb is reached"
+    /// reasoning ([`crate::PaintSurface::surface_draw_text_run_with_role`]'s
+    /// doc) applies. An explicit `FontRole::Chrome` request made
     /// through a live `EditorSurface` would still paint in
     /// `current_font` — there is no call site that does this today.
     #[allow(clippy::too_many_arguments)]
@@ -4649,6 +3662,27 @@ impl PaintSurface for MacBackend {
         true
     }
 
+    /// Paints through a [`super::surface::CgSurface`] carrying
+    /// `chrome_font` resized to `size_px` — Core Text points are
+    /// device-independent pixels 1:1, so no point conversion applies.
+    /// The resized font keeps `chrome_font`'s Nerd Font fallback cascade.
+    fn surface_with_icon_font(
+        &mut self,
+        size_px: f32,
+        paint: &mut dyn FnMut(&mut dyn PaintSurface),
+    ) -> bool {
+        let ctx = self.current_cg();
+        if ctx.is_null() {
+            return false;
+        }
+        let icon_font = self.chrome_font.clone_with_font_size(size_px as f64);
+        paint(&mut super::surface::CgSurface {
+            ctx,
+            font: Some(&icon_font),
+        });
+        true
+    }
+
     fn surface_end_frame(&mut self) {
         Backend::end_frame(self);
     }
@@ -4685,10 +3719,7 @@ impl PaintSurface for MacBackend {
         (w as f32, h as f32)
     }
 
-    // The trait default (ignore `bold`, forward here) already reproduces
-    // this backend's pre-#860 `status_bar` rasteriser exactly: it measured
-    // and rendered every segment at the same weight regardless of `bold`.
-
+    // The trait default (ignore `bold`) is this backend's measurement.
     fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -4800,7 +3831,7 @@ impl PaintSurface for MacBackend {
     /// and `current_font` are already genuinely different `CTFont`s on
     /// this backend (see `chrome_font`'s field doc), so a `dyn
     /// PaintSurface` caller holding a live `MacBackend` can now paint
-    /// either without a separate [`ChromeSurface`] wrapper. `italic` is
+    /// either without a separate wrapper. `italic` is
     /// dropped, matching [`Self::surface_draw_text_run_styled`]'s own
     /// documented "not rendered yet" posture — adding real italic
     /// support is out of this issue's scope.
@@ -4819,7 +3850,8 @@ impl PaintSurface for MacBackend {
             "MacBackend::surface_draw_text_run_with_role called outside enter_frame_scope",
         );
         let font = match role {
-            crate::FontRole::Chrome | crate::FontRole::Icon => &self.chrome_font,
+            crate::FontRole::Chrome | crate::FontRole::ChromeBold => &self.chrome_font,
+            crate::FontRole::Icon => &self.chrome_font,
             // Falls back to `chrome_font` — never `None` — instead of
             // panicking when a host draws `FontRole::Editor` text before
             // calling `set_current_font`.
@@ -5082,7 +4114,6 @@ pub(crate) unsafe fn ns_pop_clip(ctx: CGContextRef) {
 extern "C" {
     fn CGContextSaveGState(c: CGContextRef);
     fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextTranslateCTM(c: CGContextRef, tx: CGFloat, ty: CGFloat);
     fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
     fn CGContextSetRGBFillColor(
         c: CGContextRef,
@@ -6951,7 +5982,8 @@ mod tests {
         b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let layout = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |bk| {
-            let l = bk.draw_status_bar_interactive(
+            let l = crate::DrawsPrimitives::draw_dyn(
+                bk,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &StatusBar {
                     id: WidgetId::new("bg"),
@@ -6964,11 +5996,15 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
-            );
+                &(),
+            )
+            .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+            .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+            .layout
+            .clone();
             *layout.borrow_mut() = Some(l);
         });
-        let layout = layout.into_inner().expect("draw_status_bar ran");
+        let layout = layout.into_inner().expect("the status bar painted");
         let seg = layout
             .visible_segments
             .first()
@@ -7463,7 +6499,8 @@ mod tests {
 
     // ── Form (#808, PaintSurface Phase 2a) ──────────────────────────
 
-    /// `macos::form::draw_form` routes every `FieldKind` through the
+    /// A form painted through its widget contract routes every `FieldKind`
+    /// through the
     /// shared `primitives::form::paint`, which never silently drops a
     /// variant. This scans each field's row past where its shared
     /// label column ends — `primitives::form::left_control_column_start`,
@@ -7555,17 +6592,16 @@ mod tests {
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
-        // From `Backend::form_layout`, the no-paint twin `draw_form` is
-        // contractually required to agree with, rather than a local
-        // `mac_form_layout` call with a font of this test's own
-        // choosing: a `Form` is chrome, so the paint measures its
-        // per-field rows in `chrome_font`, and re-deriving them here
-        // against the editor face installed above would drift every
-        // row-relative probe below by the two advances' difference.
-        // Same reasoning as `macos::form::tests::paint_via_backend`.
-        let flayout = backend.form_layout(rect, &form);
+        // From the widget contract's own no-paint layout, which the
+        // paint is contractually required to agree with, rather than a
+        // local layout call with a font of this test's own choosing: a
+        // `Form` is chrome, so the paint measures its per-field rows in
+        // `chrome_font`, and re-deriving them here against the editor
+        // face installed above would drift every row-relative probe
+        // below by the two advances' difference.
+        let flayout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &form).layout;
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_form(rect, &form);
+            crate::DrawsPrimitives::draw_dyn(b, rect, &form, &());
         });
         backend.end_frame();
 
@@ -7576,7 +6612,7 @@ mod tests {
         // re-derived here: every field in this form has a non-empty
         // label and the default (`Left`) label position, which is
         // exactly `left_control_column_start`'s domain. `backend` is
-        // the same `PaintSurface` `draw_form` painted through, so the
+        // the same `PaintSurface` the form painted through, so the
         // label column it measures is the one that was painted.
         for vf in &flayout.visible_fields {
             let field = &form.fields[vf.field_idx];
@@ -7602,7 +6638,7 @@ mod tests {
                 painted_beyond_label,
                 "field {:?} ({:?}) must paint something past its shared label \
                  column (x >= {x0}) — a `_ => {{}}` fallthrough for Slider/\
-                 ColorPicker/Dropdown/TextArea in `macos::form::draw_form` would \
+                 ColorPicker/Dropdown/TextArea in the form painter would \
                  paint only the row background there",
                 field.id, field.kind,
             );
@@ -8387,7 +7423,8 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             b.surface_fill_rect(Rect::new(0.0, 0.0, W as f32, H as f32), sentinel);
-            b.draw_status_bar_interactive(
+            crate::DrawsPrimitives::draw_dyn(
+                b,
                 Rect::new(10.0, 10.0, 0.0, 15.0),
                 &StatusBar {
                     id: WidgetId::new("test:status-bar"),
@@ -8400,7 +7437,7 @@ mod tests {
                     }],
                     right_segments: vec![],
                 },
-                &crate::InteractionState::new(),
+                &(),
             );
         });
         backend.end_frame();
@@ -8576,8 +7613,8 @@ mod tests {
     // Acceptance coverage: macOS now carries a `chrome_font` distinct
     // from `current_font` (the editor font), defaulting to the CoreText
     // system UI font, and `Backend::set_ui_font`/`set_editor_font` are no
-    // longer no-ops. See `ChromeSurface`'s doc for the paint-time wiring
-    // these tests exercise through `draw_status_bar_interactive`.
+    // longer no-ops. The tests below exercise the paint-time wiring
+    // through a status bar painted with the widget contract.
 
     /// A `MacBackend` that never received a `set_ui_font` call must still
     /// default its chrome to the CoreText system UI font, not a monospace
@@ -8918,12 +7955,12 @@ mod tests {
     }
 
     /// Black-box acceptance test: paint a `StatusBar`
-    /// through the real `Backend::draw_status_bar_interactive` path and
+    /// through the widget contract and
     /// prove its painted geometry tracks `set_ui_font`, not
     /// `set_editor_font` — the two-font separation actually reaching a
     /// rasteriser, not just backend-internal state.
     #[test]
-    fn draw_status_bar_interactive_paints_with_chrome_font_not_editor_font() {
+    fn status_bar_paints_with_chrome_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
         use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
         use crate::Backend;
@@ -8951,11 +7988,16 @@ mod tests {
             };
             let layout = std::cell::RefCell::new(None);
             b.enter_frame_scope(surface.context_ptr(), |backend| {
-                let l = backend.draw_status_bar_interactive(
+                let l = crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, W as f32, H as f32),
                     &bar,
-                    &crate::InteractionState::new(),
-                );
+                    &(),
+                )
+                .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+                .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+                .layout
+                .clone();
                 *layout.borrow_mut() = Some(l);
             });
             b.end_frame();
@@ -9021,11 +8063,16 @@ mod tests {
         };
         let layout = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |backend| {
-            let l = backend.draw_status_bar_interactive(
+            let l = crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &bar,
-                &crate::InteractionState::new(),
-            );
+                &(),
+            )
+            .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+            .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+            .layout
+            .clone();
             *layout.borrow_mut() = Some(l);
         });
         b.end_frame();
@@ -9064,86 +8111,9 @@ mod tests {
         );
     }
 
-    /// `draw_status_bar_interactive_scaled` must paint narrower text at a
-    /// smaller `font_scale`, and must not leave the ambient chrome font
-    /// perturbed for the next call. An unscaled paint immediately after
-    /// must come back to exactly its own pre-scaled width.
-    #[test]
-    fn draw_status_bar_interactive_scaled_shrinks_without_perturbing_later_unscaled_paints() {
-        use super::super::headless::BitmapSurface;
-        use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
-        use crate::Backend;
-
-        const W: u32 = 600;
-        const H: u32 = 40;
-
-        fn sample_bar() -> StatusBar {
-            StatusBar {
-                id: WidgetId::new("status"),
-                left_segments: vec![StatusBarSegment {
-                    text: "Save".into(),
-                    fg: Color::rgb(255, 255, 255),
-                    bg: Color::rgb(10, 10, 10),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            }
-        }
-
-        let surface = BitmapSurface::new(W, H);
-        let mut b = MacBackend::new();
-        Backend::set_ui_font(&mut b, "Menlo 40");
-        b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-
-        let bar = sample_bar();
-        let unscaled_w = std::cell::RefCell::new(0.0f32);
-        let scaled_w = std::cell::RefCell::new(0.0f32);
-        let unscaled_w_again = std::cell::RefCell::new(0.0f32);
-        b.enter_frame_scope(surface.context_ptr(), |backend| {
-            let l1 = backend.draw_status_bar_interactive(
-                Rect::new(0.0, 0.0, W as f32, H as f32),
-                &bar,
-                &crate::InteractionState::new(),
-            );
-            *unscaled_w.borrow_mut() = l1.visible_segments[0].bounds.width;
-
-            let l2 = backend.draw_status_bar_interactive_scaled(
-                Rect::new(0.0, 0.0, W as f32, H as f32),
-                &bar,
-                &crate::InteractionState::new(),
-                0.5,
-            );
-            *scaled_w.borrow_mut() = l2.visible_segments[0].bounds.width;
-
-            let l3 = backend.draw_status_bar_interactive(
-                Rect::new(0.0, 0.0, W as f32, H as f32),
-                &bar,
-                &crate::InteractionState::new(),
-            );
-            *unscaled_w_again.borrow_mut() = l3.visible_segments[0].bounds.width;
-        });
-        b.end_frame();
-
-        let unscaled_w = unscaled_w.into_inner();
-        let scaled_w = scaled_w.into_inner();
-        let unscaled_w_again = unscaled_w_again.into_inner();
-
-        assert!(
-            scaled_w < unscaled_w * 0.75,
-            "font_scale=0.5 should paint noticeably narrower: {scaled_w} vs {unscaled_w}",
-        );
-        assert!(
-            (unscaled_w_again - unscaled_w).abs() < 0.01,
-            "an unscaled paint after a scaled one must match the original unscaled width \
-             exactly — chrome font state must be restored, not left scaled: \
-             {unscaled_w_again} vs {unscaled_w}",
-        );
-    }
-
-    /// `status_bar_layout` (the no-paint twin) must agree with what
-    /// `draw_status_bar_interactive` actually painted once both read
-    /// `chrome_font`, keeping the two call sites in sync.
+    /// `layout_primitive` (the no-paint twin) must agree with what
+    /// `draw_dyn` actually painted once both read `chrome_font`, keeping
+    /// the two call sites in sync.
     #[test]
     fn status_bar_layout_matches_painted_layout_after_set_ui_font() {
         use super::super::headless::BitmapSurface;
@@ -9173,17 +8143,27 @@ mod tests {
         let surface = BitmapSurface::new(W, H);
         let painted = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |backend| {
-            let l = backend.draw_status_bar_interactive(
+            let l = crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &bar,
-                &crate::InteractionState::new(),
-            );
+                &(),
+            )
+            .downcast_ref::<crate::primitives::status_bar::StatusBarPrimitiveLayout>()
+            .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+            .layout
+            .clone();
             *painted.borrow_mut() = Some(l);
         });
         b.end_frame();
         let painted = painted.into_inner().unwrap();
 
-        let computed = b.status_bar_layout(Rect::new(0.0, 0.0, W as f32, H as f32), &bar);
+        let computed = crate::DrawsPrimitives::layout_primitive(
+            &b,
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            &bar,
+        )
+        .layout;
         assert_eq!(
             painted.visible_segments.len(),
             computed.visible_segments.len(),
@@ -9237,10 +8217,11 @@ mod tests {
             right_segments: vec![],
         };
         b.enter_frame_scope(surface.context_ptr(), |backend| {
-            let _ = backend.draw_status_bar_interactive(
+            let _ = crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &bar,
-                &crate::InteractionState::new(),
+                &(),
             );
         });
         b.end_frame();
@@ -9495,13 +8476,12 @@ mod tests {
         assert_eq!(overridden_sb.track.width, 24.0);
     }
 
-    /// `menu_bar_layout`/`draw_menu_bar` twin of
-    /// `draw_tree_uses_ui_font_not_editor_font`: verify the returned
-    /// `MenuBarLayout`'s measured item width is correct. `draw_menu_bar`
-    /// hands back real geometry, so there is no need to rasterise and
-    /// re-measure.
+    /// The menu bar's twin of `draw_tree_uses_ui_font_not_editor_font`:
+    /// the widget contract's layout measures item labels in the chrome
+    /// font, so an item's width tracks `set_ui_font` and ignores
+    /// `set_editor_font`.
     #[test]
-    fn draw_menu_bar_uses_ui_font_not_editor_font() {
+    fn menu_bar_measures_in_ui_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
 
         const W: u32 = 800;
@@ -9512,9 +8492,6 @@ mod tests {
             let mut b = MacBackend::new();
             Backend::set_editor_font(&mut b, editor.0, editor.1);
             Backend::set_ui_font(&mut b, ui_font);
-            // The painted strip is the `Custom` opt-out on macOS; `Auto`
-            // installs the native menu bar and lays out no in-window items.
-            Backend::set_menu_style(&mut b, crate::backend::MenuStyle::Custom);
             b.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
             let bar = MenuBar {
@@ -9530,8 +8507,12 @@ mod tests {
             };
             let width = std::cell::RefCell::new(0.0f32);
             b.enter_frame_scope(surface.context_ptr(), |backend| {
-                let layout = backend.draw_menu_bar(Rect::new(0.0, 0.0, W as f32, H as f32), &bar);
-                *width.borrow_mut() = layout.visible_items[0].bounds.width;
+                let layout = crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, W as f32, H as f32),
+                    &bar,
+                );
+                *width.borrow_mut() = layout.layout.visible_items[0].bounds.width;
             });
             b.end_frame();
             width.into_inner()
@@ -9567,156 +8548,12 @@ mod tests {
         }
     }
 
-    /// `Backend::draw_menu_bar`'s default (`Auto`, unresolved by any
-    /// `set_menu_style` call) must take the native path — paint nothing
-    /// in-window and report a zero-height layout, so a caller sizing
-    /// content from `layout.bounds.height` reserves no blank strip
-    /// (AppKit's own menu bar lives outside the window entirely).
-    /// `install_menu_bar` itself silently no-ops off the main thread —
-    /// every `#[test]` fn runs on one; see
-    /// `install_menu_bar_off_main_thread_does_not_panic` above — so this
-    /// test only proves the layout/no-paint half of the contract. Going
-    /// through the trait method (`b.draw_menu_bar`, not a sidecar) is
-    /// itself part of what this pins: every generic caller gets the
-    /// native default for free.
-    #[test]
-    fn draw_menu_bar_defaults_to_native_and_zeroes_height_on_auto() {
-        use super::super::headless::BitmapSurface;
-
-        const W: u32 = 300;
-        const H: u32 = 24;
-        let surface = BitmapSurface::new(W, H);
-        surface.fill(1.0, 1.0, 1.0, 1.0);
-
-        let bar = sample_menu_bar_for_native_default_tests();
-        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-        let mut backend = MacBackend::new();
-        assert_eq!(backend.menu_style(), crate::backend::MenuStyle::Auto);
-
-        let layout = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            *layout.borrow_mut() = Some(b.draw_menu_bar(rect, &bar));
-        });
-        let layout = layout
-            .into_inner()
-            .expect("draw_menu_bar ran inside the frame scope");
-
-        assert_eq!(
-            layout.bounds.height, 0.0,
-            "native path must reserve no vertical space for an in-window strip"
-        );
-        assert_eq!(layout.bounds.width, rect.width);
-        assert!(layout.visible_items.is_empty());
-        assert!(layout.hit_regions.is_empty());
-
-        let painted_any = (0..W).any(|x| {
-            (0..H).any(|y| {
-                let (r, g, b, _) = surface.pixel(x, y);
-                (r, g, b) != (255, 255, 255)
-            })
-        });
-        assert!(
-            !painted_any,
-            "native path must not paint the in-window strip at all"
-        );
-    }
-
-    /// `menu_bar_layout` is `draw_menu_bar`'s no-paint twin, so it must
-    /// follow the same `MenuStyle` branch: empty under the native
-    /// default (a `MenuSystem` click on the unpainted strip must not
-    /// hit-test into a painted dropdown), the painted geometry under the
-    /// `Custom` opt-out.
-    #[test]
-    fn menu_bar_layout_agrees_with_draw_menu_bar_under_each_menu_style() {
-        use super::super::headless::BitmapSurface;
-
-        const W: u32 = 300;
-        const H: u32 = 24;
-        let bar = sample_menu_bar_for_native_default_tests();
-        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-
-        for style in [
-            crate::backend::MenuStyle::Auto,
-            crate::backend::MenuStyle::Custom,
-        ] {
-            let surface = BitmapSurface::new(W, H);
-            let mut backend = MacBackend::new();
-            backend.set_menu_style(style);
-            let no_paint = backend.menu_bar_layout(rect, &bar);
-            let painted =
-                backend.enter_frame_scope(surface.context_ptr(), |b| b.draw_menu_bar(rect, &bar));
-
-            assert_eq!(no_paint, painted, "{style:?}");
-            if style == crate::backend::MenuStyle::Custom {
-                assert!(
-                    !no_paint.visible_items.is_empty(),
-                    "the painted opt-out lays out its items"
-                );
-            }
-        }
-    }
-
-    /// Companion to the test above: once an app opts out via
-    /// `set_menu_style(MenuStyle::Custom)`, `Backend::draw_menu_bar`
-    /// must fall back to exactly what the painted strip
-    /// (`draw_menu_bar_painted`) always has — same non-zero-height
-    /// layout, same pixels — so the opt-out really is a
-    /// no-behaviour-change escape hatch, not a degraded one.
-    #[test]
-    fn draw_menu_bar_falls_back_to_painted_strip_on_custom() {
-        use super::super::headless::BitmapSurface;
-
-        const W: u32 = 300;
-        const H: u32 = 24;
-        let bar = sample_menu_bar_for_native_default_tests();
-        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-
-        // Reference: the painted strip directly, bypassing style
-        // resolution — what the `Custom` path must match exactly.
-        let direct_surface = BitmapSurface::new(W, H);
-        direct_surface.fill(1.0, 1.0, 1.0, 1.0);
-        let mut direct_backend = MacBackend::new();
-        let direct_layout = std::cell::RefCell::new(None);
-        direct_backend.enter_frame_scope(direct_surface.context_ptr(), |b| {
-            *direct_layout.borrow_mut() = Some(b.draw_menu_bar_painted(rect, &bar));
-        });
-        let direct_layout = direct_layout.into_inner().unwrap();
-
-        // Under test: the same bar, via the trait method with the
-        // `Custom` opt-out set.
-        let surface = BitmapSurface::new(W, H);
-        surface.fill(1.0, 1.0, 1.0, 1.0);
-        let mut backend = MacBackend::new();
-        backend.set_menu_style(crate::backend::MenuStyle::Custom);
-        let layout = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            *layout.borrow_mut() = Some(b.draw_menu_bar(rect, &bar));
-        });
-        let layout = layout.into_inner().unwrap();
-
-        assert_eq!(layout, direct_layout);
-        assert!(
-            layout.bounds.height > 0.0,
-            "the painted strip must reserve real vertical space"
-        );
-
-        for y in 0..H {
-            for x in 0..W {
-                assert_eq!(
-                    surface.pixel(x, y),
-                    direct_surface.pixel(x, y),
-                    "pixel ({x}, {y}) must match a direct draw_menu_bar_painted call once opted out",
-                );
-            }
-        }
-    }
-
     /// The "call once per frame" contract for the native
-    /// path: calling `Backend::draw_menu_bar` twice in a row with an
-    /// unchanged `bar` must not reinstall the `NSMenu` tree the second
-    /// time — `install_menu_bar_if_changed` must see `last_native_menu_bar`
-    /// already matching and skip straight past `install_menu_bar`.
-    /// `install_menu_bar`'s own AppKit half no-ops off the main thread
+    /// path: installing an unchanged `bar` twice in a row must not
+    /// reinstall the `NSMenu` tree the second time —
+    /// `install_menu_bar_if_changed` must see `last_native_menu_bar`
+    /// already matching and skip straight past `install_native_menu`.
+    /// `install_native_menu`'s own AppKit half no-ops off the main thread
     /// (every `#[test]` fn runs off it), so `menu_target` can't be used
     /// as the signal here; the helper's return value reports whether the
     /// `NSMenu` rebuild was entered at all, which is exactly the
@@ -9749,15 +8586,39 @@ mod tests {
         assert_eq!(backend.last_native_menu_bar.as_ref(), Some(&other));
     }
 
-    /// Regression test for `draw_activity_bar_with_style` — the method
-    /// every real paint path routes through (`draw_activity_bar` is a
-    /// deprecated shim over it; `AppShell::render` and `ScreenLayout::draw`'s
-    /// `Surface::ActivityBar` arm both call the styled method directly).
-    ///
-    /// Verifies that `draw_activity_bar_with_style` paints through
-    /// `chrome_font`, never `current_font`/the editor font. Icon extent is pinned to
-    /// `ActivityBarStyle::resolved_icon_size_px()` regardless of font point
-    /// size (see `macos::activity_bar` module doc). This test uses three
+    /// A standalone `MenuBar` in a frame tree, live or replayed from its
+    /// captured `OwnedFrame`, installs as the native menu bar under the
+    /// default menu style instead of painting an in-window strip, and
+    /// reports a zero-height layout.
+    #[test]
+    fn a_frame_tree_menu_bar_installs_natively_under_the_default_menu_style() {
+        let bar = sample_menu_bar_for_native_default_tests();
+        let rect = Rect::new(0.0, 0.0, 400.0, 22.0);
+        let mut layout = crate::frame::ScreenLayout::new();
+        layout.push(crate::frame::Surface::Widget {
+            rect,
+            widget: Box::new(bar.clone()),
+        });
+
+        let mut live = MacBackend::new();
+        assert_eq!(
+            live.effective_menu_style(),
+            crate::backend::ResolvedMenuStyle::Native
+        );
+        let _ = layout.draw(&mut live);
+        assert_eq!(live.last_native_menu_bar.as_ref(), Some(&bar));
+
+        let mut replayed = MacBackend::new();
+        let _ = crate::frame::OwnedFrame::from_layout(&layout).draw(&mut replayed);
+        assert_eq!(replayed.last_native_menu_bar.as_ref(), Some(&bar));
+
+        assert_eq!(bar.presented_layout(&replayed, rect).bounds.height, 0.0);
+    }
+
+    /// Verifies that an activity bar painted through the widget contract
+    /// paints through `chrome_font`, never `current_font`/the editor font.
+    /// Icon extent is pinned to `ActivityBarStyle::resolved_icon_size_px()`
+    /// regardless of font point size. This test uses three
     /// probes:
     /// - icon extent is independent of `editor_font`'s size;
     /// - icon extent is independent of `editor_font`'s family — a
@@ -9765,7 +8626,7 @@ mod tests {
     ///   glyph;
     /// - icon extent is independent of `ui_font`'s size.
     #[test]
-    fn draw_activity_bar_with_style_uses_ui_font_not_editor_font() {
+    fn activity_bar_uses_ui_font_not_editor_font() {
         use super::super::headless::BitmapSurface;
 
         const W: u32 = 200;
@@ -9810,13 +8671,15 @@ mod tests {
                 active_accent: None,
                 selection_bg: None,
                 is_keyboard_focused: false,
+                style: Default::default(),
+                hovered: None,
             };
             b.enter_frame_scope(surface.context_ptr(), |backend| {
-                backend.draw_activity_bar_with_style(
+                crate::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, 0.0, W as f32, H as f32),
                     &bar,
-                    None,
-                    &crate::ActivityBarStyle::default(),
+                    &(),
                 );
             });
             b.end_frame();
@@ -9849,7 +8712,7 @@ mod tests {
         );
 
         // Editor *family* must be just as inert as editor *size* — if
-        // `draw_activity_bar` ever regressed to reading `current_font`
+        // the rail painter ever regressed to reading `current_font`
         // instead of `chrome_font`, a family swap this different
         // (monospace code font vs a decorative display face) would move
         // the rendered glyph.
@@ -9860,10 +8723,7 @@ mod tests {
              menlo_editor={small_editor_extent}, papyrus_editor={other_editor_family_extent}"
         );
 
-        // Icon extent must also be ui_font-*size* independent —
-        // the fix this issue shipped, exercised through the mandatory
-        // `draw_activity_bar` entry point rather than only the styled
-        // one.
+        // Icon extent must also be ui_font-*size* independent.
         let huge_ui_font_extent = icon_extent(("Menlo", 8.0), Some("Helvetica 60"));
         assert!(
             small_editor_extent.abs_diff(huge_ui_font_extent) <= 1,

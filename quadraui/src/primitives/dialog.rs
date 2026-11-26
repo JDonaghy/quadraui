@@ -238,7 +238,7 @@ pub enum DialogInput {
     /// part of this variant — it reserves a blank hole where the form
     /// goes. [`crate::compose::form_dialog::FormDialogController`] is
     /// the intended (and today, only) way to use this variant: it paints
-    /// the form separately via [`crate::Backend::draw_form`] — the same
+    /// the form separately through its widget contract — the same
     /// cross-backend path every other `Form` host uses — and owns the
     /// Tab/Shift-Tab focus hand-off between the form's fields and this
     /// dialog's buttons.
@@ -628,8 +628,7 @@ impl Dialog {
     /// leave room for a border the rasteriser draws *outside*
     /// [`DialogLayout::bounds`] rather than inside it — e.g. a TUI backend
     /// whose box-drawing glyphs live one cell past the content box, the
-    /// same convention `tui::context_menu::draw_context_menu` (behind the
-    /// `tui` feature) already uses for `ContextMenu`. Pass `0.0` when the
+    /// same convention the `ContextMenu` cell painter already uses. Pass `0.0` when the
     /// border is painted *inside* the returned bounds — this crate's own
     /// `tui::dialog::draw_dialog` and every pixel backend do this.
     ///
@@ -919,12 +918,12 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
 //   approximate char width; Windows divided by plain `line_height`,
 //   causing the separator row to undershoot actual content width.
 //
-// `DialogInput::Toolbar` is not painted by `paint` — it still renders
-// through each backend's own `super::toolbar::draw_toolbar` (GTK/macOS)
-// or inline Direct2D code (Windows), called by the wrapper after `paint`
-// returns. Porting the toolbar rasteriser onto `PaintSurface` is a
-// separate future change. This skips nothing a caller observes: every
-// backend's `dialog_layout.input_bounds` position is unaffected.
+// `DialogInput::Toolbar` is not painted by `paint` — the wrapper paints
+// it after `paint` returns, through
+// `primitives::toolbar::native_surface_paint::paint_embedded` (GTK/macOS)
+// or inline Direct2D code (Windows). This skips nothing a caller
+// observes: every backend's `dialog_layout.input_bounds` position is
+// unaffected.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -1907,12 +1906,14 @@ pub(crate) mod cell_paint {
                     // state on the dialog paint path.
                     if let Some(buf) = surface.ratatui_buffer() {
                         let area = ratatui::layout::Rect::new(ix, iy, iw, 1);
-                        crate::tui::draw_toolbar(buf, area, toolbar, theme, None, None);
+                        crate::primitives::toolbar::cell_paint::draw_toolbar(
+                            buf, area, toolbar, theme, None, None,
+                        );
                     }
                 }
                 // `FormDialogController` (`compose::form_dialog`) paints
                 // the embedded form separately, through
-                // `Backend::draw_form` inside `input_bounds`, the same
+                // the `Form` widget contract inside `input_bounds`, the same
                 // cross-backend path every other `Form` host uses —
                 // nothing to draw here. A `ContentSlot` is likewise the
                 // host's own hole to fill.

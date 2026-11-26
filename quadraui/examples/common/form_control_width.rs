@@ -100,7 +100,8 @@ impl AppLogic for FormControlWidthApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
-        backend.draw_form(
+        quadraui::DrawsPrimitives::draw_primitive(
+            backend,
             Rect::new(0.0, 0.0, vp.width, vp.height),
             &Self::build_form(),
         );

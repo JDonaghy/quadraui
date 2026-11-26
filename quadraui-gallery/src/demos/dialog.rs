@@ -25,8 +25,7 @@
 use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, Color, Dialog, DialogButton, DialogHit, DialogLayout, DialogSeverity,
-    InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    UiEvent, WidgetId,
+    Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -226,7 +225,7 @@ impl DialogDemo {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(rect, &bar, &());
     }
 
     fn open_dialog(&mut self, backend: &mut dyn Backend, area: Rect, variant: usize) {
@@ -285,11 +284,7 @@ impl Demo for DialogDemo {
         );
 
         let status_rect = Rect::new(area.x, area.y + area.height - lh, area.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(variant), &());
 
         // Modal paints last (highest z) — the ModalStack has no opinion
         // on draw order, only on hit-test precedence.

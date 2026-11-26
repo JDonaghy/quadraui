@@ -110,24 +110,20 @@ pub(crate) fn test_render_guard() -> TestRenderGuard {
     }
 }
 
-mod activity_bar;
 mod app_font;
 pub mod backend;
 mod board;
 mod chart;
 mod combo_box;
 mod completions;
-mod context_menu;
 mod data_table;
 mod date_picker;
 mod dialog;
 mod diff_view;
 mod editor;
 pub mod events;
-mod form;
 mod image;
 mod list;
-mod menu_bar;
 // `MenuOverlay` is the module's only `pub` item and has zero reachers —
 // see the `pub use` block below for the full unused-flat-re-export
 // inventory this mirrors. `pub mod` (not `mod`): narrowing to `pub(crate)`
@@ -141,7 +137,6 @@ mod minimap;
 mod multi_section_view;
 mod number_input;
 mod painted_text;
-mod palette;
 mod pipeline_view;
 mod progress;
 mod rich_text_popup;
@@ -153,13 +148,11 @@ pub mod shell_runner;
 mod spinner;
 mod split;
 mod split_tree;
-mod status_bar;
 mod surface;
 pub mod testing;
 mod text_display;
 mod text_input;
 mod toast;
-mod toolbar;
 mod tooltip;
 mod tray;
 mod tree;
@@ -178,9 +171,6 @@ pub use crate::primitives::tab_bar::TabBarHits;
 // zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
-pub use activity_bar::ACTIVITY_ROW_PX;
-#[doc(hidden)]
-pub use activity_bar::{draw_activity_bar, draw_activity_bar_with_style};
 pub use backend::GtkBackend;
 #[doc(hidden)]
 pub use board::gtk_board_layout;
@@ -189,20 +179,14 @@ pub use chart::gtk_chart_layout;
 #[doc(hidden)]
 pub use completions::draw_completions;
 #[doc(hidden)]
-pub use context_menu::draw_context_menu;
-#[doc(hidden)]
 pub use dialog::draw_dialog;
 pub use editor::{draw_editor, editor_col_at_x};
 #[doc(hidden)]
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
 #[doc(hidden)]
-pub use form::draw_settings_chrome;
-#[doc(hidden)]
 pub use image::draw_image;
 #[doc(hidden)]
 pub use list::{draw_list, draw_list_with_state, gtk_list_layout};
-#[doc(hidden)]
-pub use menu_bar::{draw_menu_bar, draw_menu_bar_with_state, gtk_menu_bar_layout};
 #[doc(hidden)]
 pub use menu_overlay::MenuOverlay;
 #[doc(hidden)]
@@ -223,8 +207,6 @@ pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
 };
 #[doc(hidden)]
-pub use palette::{draw_palette, gtk_palette_layout};
-#[doc(hidden)]
 pub use pipeline_view::gtk_pipeline_view_layout;
 #[doc(hidden)]
 pub use progress::gtk_progress_layout;
@@ -241,24 +223,12 @@ pub use spinner::{draw_spinner, gtk_spinner_layout};
 pub use split::gtk_split_layout;
 #[doc(hidden)]
 pub use split_tree::gtk_split_tree_layout;
-// `draw_status_bar`/`MIN_GAP_PX` have zero reachers (vimcode migrated its
-// last direct caller onto `Backend::draw_status_bar_interactive` — see
-// `status_bar.rs`'s module doc) — `#[doc(hidden)]` like their siblings
-// above.
-#[doc(hidden)]
-pub use status_bar::{draw_status_bar, MIN_GAP_PX};
-#[doc(hidden)]
 #[doc(hidden)]
 pub use text_display::{draw_text_display, gtk_text_display_layout};
 #[doc(hidden)]
 pub use text_input::{draw_text_input, gtk_text_input_layout};
 #[doc(hidden)]
 pub use toast::gtk_toast_stack_layout;
-#[doc(hidden)]
-pub use toolbar::{
-    draw_toolbar, draw_toolbar_with_options, draw_toolbar_with_overflow, gtk_toolbar_layout,
-    gtk_toolbar_layout_with_overflow,
-};
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 pub use tree::draw_tree;
@@ -329,9 +299,8 @@ pub use pango::Layout as PangoLayout;
 /// until [`Backend::set_nerd_font_fallback`][crate::Backend::set_nerd_font_fallback]
 /// overrides it.
 ///
-/// Matches the family [`activity_bar::ICON_FONT_DESC`] and
-/// [`tab_icon_font`] already pin for the activity bar and tab
-/// icons — kept as one named constant so retargeting to a
+/// Matches the family [`tab_icon_font`] already pins for the
+/// activity bar and tab icons — kept as one named constant so retargeting to a
 /// differently-named Nerd Font patch (or a consumer's fontconfig alias)
 /// is a one-line change instead of hunting every rasteriser that
 /// references the literal.
@@ -491,9 +460,8 @@ mod tests {
 
     /// [`with_nerd_font_fallback`] mirrors [`chrome_font_description`]
     /// for callers that only have a live `FontDescription` to hand (e.g.
-    /// `gtk::palette::draw_palette`'s icon-glyph swap, which must not
-    /// disturb the row's base font for the label text painted around
-    /// it) — same family-list-append behaviour, size preserved.
+    /// an icon-glyph swap that must not disturb the row's base font for
+    /// the label text painted around it) — same family-list-append behaviour, size preserved.
     #[test]
     fn with_nerd_font_fallback_appends_to_an_existing_description() {
         let base = pango::FontDescription::from_string("Monospace 13");

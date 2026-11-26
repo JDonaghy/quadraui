@@ -20,13 +20,14 @@
 //! `ctx.shell_mut().toggle_sidebar()` directly instead of tracking a shadow
 //! `AppShell` that can drift from what's on screen.
 
+use quadraui::DrawsPrimitives;
 use std::cell::Cell;
 use std::rc::Rc;
 
 use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, Icon, InteractionState, Key, Modifiers, NamedKey, Reaction, Rect, ShellApp,
-    ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    Backend, Color, Icon, Key, Modifiers, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
+    ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
 };
 
 /// Shared handle onto the activity-bar rect the shell last handed this
@@ -265,7 +266,7 @@ impl ShellApp for AppShellDemo {
         self.probe.bounds.set(Some(layout.activity_bar_bounds));
 
         for (rect, bar) in self.content_bars(layout, lh) {
-            backend.draw_status_bar_interactive(rect, &bar, &InteractionState::new());
+            backend.draw_dyn(rect, &bar, &());
         }
     }
 

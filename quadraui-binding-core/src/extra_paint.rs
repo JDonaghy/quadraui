@@ -12,14 +12,13 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    render_markdown_to_styled, ActivityBar, ActivityBarStyle, Backend, BoardModel, Canvas, Chart,
-    Column, ComboBox, CommandLine, CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor,
-    FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon, Image, InteractionState,
-    LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView, NaturalSize, NumberInput,
-    NumberInputHit, Palette, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
-    ScrollView, Scrollbar, Spinner, StatusBar, StatusBarHit, StyledText, TextDisplay,
-    TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable,
-    TreeTableController, TreeTableNodeData, WidgetId,
+    render_markdown_to_styled, Backend, BoardModel, Canvas, Chart, Column, ComboBox, CommandLine,
+    CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor, FieldKind, FindReplacePanel,
+    FontRole, Form, FormField, Icon, Image, InteractionState, LabelPosition, MenuBar, MessageList,
+    Minimap, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, PipelineView, Point,
+    ProgressBar, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StyledText,
+    TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton,
+    TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -81,7 +80,7 @@ pub trait ExtraPaint: std::any::Any {
     /// extra with no single natural size to report: a viewport-filling
     /// primitive (`Editor`, `Canvas`, `ScrollView`, ...), a
     /// multi-cell grid (`DatePicker`), or a chrome bar meant to span
-    /// its whole axis (`Toolbar`, `StatusBar`, `MenuBar`, ...). The
+    /// its whole axis (`Toolbar`, `MenuBar`, ...). The
     /// impls below override it for the primitives with a genuinely
     /// compact or fixed-content shape.
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
@@ -91,8 +90,7 @@ pub trait ExtraPaint: std::any::Any {
 
     /// Paints with real hover/pressed state, returning the absolute bounds
     /// and action id of each clickable child this descriptor just painted —
-    /// a chrome bar's button ([`quadraui::Toolbar`]), segment
-    /// ([`quadraui::StatusBar`]), or item ([`quadraui::ActivityBar`]).
+    /// a chrome bar's button ([`quadraui::Toolbar`]).
     /// `crate::render::draw_bands`/`paint_leaf` call this (not
     /// [`ExtraPaint::paint`] directly) so the returned regions can be
     /// recorded into [`crate::hit::PaintedHit::Extra::chrome_hits`] and
@@ -102,8 +100,8 @@ pub trait ExtraPaint: std::any::Any {
     ///
     /// Default: ignores `interaction` and forwards to [`ExtraPaint::paint`]
     /// with no clickable children — correct for every extra except
-    /// `Toolbar`, `StatusBar` and `ActivityBar`, each of which overrides
-    /// this to report its own per-child click targets.
+    /// `Toolbar`, which overrides this to report its own per-child click
+    /// targets.
     fn paint_chrome(
         &self,
         backend: &mut dyn Backend,
@@ -181,7 +179,7 @@ pub fn extra_as_toolbar(extra: &Rc<dyn ExtraPaint>) -> Option<&Toolbar> {
 /// pixel backend (a nominal pill/box width — a cheap chrome estimate with
 /// no real `Style::padding` read at this layer). [`Checkbox`], its one
 /// caller below, paints through `Form`'s `FieldKind::Toggle` control,
-/// which is `3` cells wide (`quadraui::tui::form`'s
+/// which is `3` cells wide (the `Form` cell layout's
 /// `natural_content_width`).
 fn toggle_control_size(backend: &mut dyn Backend, cell_width: f32) -> (f32, f32) {
     let line_height = backend.line_height();
@@ -290,7 +288,7 @@ impl ExtraPaint for Form {
     /// `crate::engine::InteractionEngine::sync_menu_bar` already uses for
     /// `"menu_bar"`.
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, self);
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, self);
     }
 
     fn id(&self) -> WidgetId {
@@ -522,9 +520,9 @@ impl ExtraPaint for DatePicker {
 /// Wraps `kind` as the sole field of a throwaway single-field [`Form`]
 /// sharing `id` with both the form and its one field — the bridge every
 /// standalone `"checkbox"`/`"slider"`/`"select"`/`"password"`/`"textarea"`
-/// leaf below uses to paint through [`quadraui::Backend::draw_form`]
+/// leaf below uses to paint through the form's own widget contract
 /// rather than a second, leaf-specific rasteriser: a `Form`-embedded field
-/// of the same [`FieldKind`] paints through the exact same backend call,
+/// of the same [`FieldKind`] paints through the exact same painter,
 /// so there is nothing for any of these leaves to duplicate. The label
 /// column is hidden form-wide (there is only ever one field, with no
 /// label of its own) so the leaf's whole area goes to the control, the
@@ -603,7 +601,7 @@ impl Checkbox {
 
 impl ExtraPaint for Checkbox {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -619,9 +617,10 @@ impl ExtraPaint for Checkbox {
     }
 
     /// Toggle box only — [`single_field_form`] hides this leaf's own
-    /// `Form` label, and this leaf paints through `draw_form`, whose
-    /// `FieldKind::Toggle` control is `3` cells wide on a cell-grid
-    /// backend (`quadraui::tui::form`'s `natural_content_width`) — unlike
+    /// `Form` label, and this leaf paints through the form's widget
+    /// contract, whose `FieldKind::Toggle` control is `3` cells wide on a
+    /// cell-grid backend (the `Form` cell layout's
+    /// `natural_content_width`) — unlike
     /// [`Switch`], which paints a `4`-cell track directly.
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
         let (width, height) = toggle_control_size(backend, 3.0);
@@ -677,7 +676,7 @@ impl Slider {
 
 impl ExtraPaint for Slider {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -739,7 +738,7 @@ impl Select {
 
 impl ExtraPaint for Select {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -844,7 +843,7 @@ impl<'de> serde::Deserialize<'de> for PasswordInput {
 
 impl ExtraPaint for PasswordInput {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -980,7 +979,7 @@ impl TextArea {
 
 impl ExtraPaint for TextArea {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_form(area, &self.as_form());
+        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
     }
 
     fn id(&self) -> WidgetId {
@@ -1450,81 +1449,27 @@ impl ExtraPaint for TreeTableControllerDescriptor {
     }
 }
 
-impl ExtraPaint for ActivityBar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        self.paint_chrome(backend, area, &InteractionState::default());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// [`quadraui::Backend::draw_activity_bar_with_style`] takes a
-    /// positional `hovered_idx: Option<usize>` — a flat index into
-    /// [`quadraui::ActivityBarLayout::visible_items`], not a [`WidgetId`] —
-    /// so `interaction.hovered()` is first resolved against a no-paint
-    /// [`quadraui::Backend::activity_bar_layout`] call to recover that
-    /// index before the real paint. Row spans
-    /// ([`quadraui::ActivityBarRowHit::y_start`]/`y_end`) are relative to
-    /// `area`'s own top edge, so they're shifted by `area.x`/`area.y`
-    /// before being recorded — [`crate::hit::PaintedHit::Extra::chrome_hits`]
-    /// is always in the ABSOLUTE frame [`ExtraPaint::hit_test`] uses.
-    fn paint_chrome(
-        &self,
-        backend: &mut dyn Backend,
-        area: Rect,
-        interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        // No replacement seam exists for a no-paint geometry query — see
-        // `quadraui::Backend::activity_bar_layout`'s deprecation note.
-        #[allow(deprecated)]
-        let hovered_idx = interaction.hovered().and_then(|hovered_id| {
-            backend
-                .activity_bar_layout(area, self)
-                .iter()
-                .position(|row| row.id == *hovered_id)
-        });
-        // `ActivityBarRowHit` carries only `y_start`/`y_end` — no x/width of
-        // its own — so `area.width` is the only width the `Backend` trait
-        // exposes for this row; it matches what `draw_bands` actually fills
-        // the row's background with (a full-band-width horizontal strip in
-        // the fixed-slot layout), not a narrower vertical-strip assumption.
-        backend
-            .draw_activity_bar_with_style(area, self, hovered_idx, &ActivityBarStyle::default())
-            .into_iter()
-            .map(|row| {
-                (
-                    Rect::new(
-                        area.x,
-                        area.y + row.y_start,
-                        area.width,
-                        row.y_end - row.y_start,
-                    ),
-                    row.id,
-                )
-            })
-            .collect()
-    }
-}
-
-/// Converts a [`quadraui::ToolbarLayout`]'s `visible_items` into the
-/// `(Rect, WidgetId)` chrome-hit list [`ExtraPaint::paint_chrome`] returns —
-/// shared by [`Toolbar`]'s own impl and [`ToolbarWithOverflow`]'s so the two
-/// wire shapes (plain Clip-only vs. [`quadraui::ToolbarOverflow`]-aware)
-/// agree on exactly which items become clickable.
+/// Paints `bar` through the widget contract and converts the resolved
+/// layout's `visible_items` into the `(Rect, WidgetId)` chrome-hit list
+/// [`ExtraPaint::paint_chrome`] returns — shared by [`Toolbar`]'s own impl
+/// and [`ToolbarWithOverflow`]'s so the two wire shapes agree on exactly
+/// which items become clickable.
 ///
-/// [`quadraui::Backend::draw_toolbar_interactive`]/
-/// [`quadraui::Backend::draw_toolbar_with_overflow`]'s own
-/// [`quadraui::ToolbarLayout::visible_items`] is already in the ABSOLUTE
-/// frame [`ExtraPaint::hit_test`] uses, so no translation is needed —
-/// unlike [`ActivityBar::paint_chrome`]'s bar-relative row spans. Disabled
-/// actions and non-action items (separators, labels) have no `action_id` or
-/// aren't `clickable`, so they never become a hit region, matching
-/// [`quadraui::ToolbarLayout::hit_test`]'s own skip rule. A
+/// The contract's layout is bar-local, so every bound is shifted by
+/// `area`'s origin into the ABSOLUTE frame [`ExtraPaint::hit_test`] uses.
+/// Disabled actions and non-action items (separators, labels) have no
+/// `action_id` or aren't `clickable`, so they never become a hit region,
+/// matching [`quadraui::ToolbarLayout::hit_test`]'s own skip rule. A
 /// [`quadraui::ToolbarButton::Group`] item is itself never clickable — its
 /// `group_children` are walked instead, same split
 /// [`quadraui::ToolbarLayout::hit_test`] makes.
-fn toolbar_chrome_hits(layout: quadraui::ToolbarLayout) -> Vec<(Rect, WidgetId)> {
+fn paint_toolbar_chrome(
+    backend: &mut dyn Backend,
+    area: Rect,
+    bar: &Toolbar,
+) -> Vec<(Rect, WidgetId)> {
+    let layout = backend.draw_primitive(area, bar).layout;
+    let absolute = |r: Rect| Rect::new(r.x + area.x, r.y + area.y, r.width, r.height);
     layout
         .visible_items
         .into_iter()
@@ -1533,11 +1478,11 @@ fn toolbar_chrome_hits(layout: quadraui::ToolbarLayout) -> Vec<(Rect, WidgetId)>
                 item.group_children
                     .into_iter()
                     .filter(|child| child.clickable)
-                    .filter_map(|child| child.action_id.map(|id| (child.bounds, id)))
+                    .filter_map(|child| child.action_id.map(|id| (absolute(child.bounds), id)))
                     .collect()
             } else if item.clickable {
                 item.action_id
-                    .map(|id| (item.bounds, id))
+                    .map(|id| (absolute(item.bounds), id))
                     .into_iter()
                     .collect()
             } else {
@@ -1578,9 +1523,9 @@ impl ExtraPaint for Toolbar {
         &self,
         backend: &mut dyn Backend,
         area: Rect,
-        interaction: &InteractionState,
+        _interaction: &InteractionState,
     ) -> Vec<(Rect, WidgetId)> {
-        toolbar_chrome_hits(backend.draw_toolbar_interactive(area, self, interaction))
+        paint_toolbar_chrome(backend, area, self)
     }
 
     fn tab_stop(&self) -> bool {
@@ -1604,17 +1549,14 @@ pub struct ToolbarOverflowPriorityEntry {
 /// Wire-decoded shape of the `"toolbar"` extra when its dict carries an
 /// `"overflow"` and/or `"overflow_priorities"` key — reached via the same
 /// `"toolbar"` kind [`Toolbar`] itself decodes, see
-/// [`Self::deserialize`]. Both knobs are decoded here, rather than read
-/// off the [`quadraui::Toolbar`] fields of the same names, because
-/// [`Self::paint_chrome`] hands them to
-/// [`quadraui::Backend::draw_toolbar_with_overflow`] as the per-call
-/// [`quadraui::ToolbarLayoutOptions`]/[`quadraui::ToolbarOverflowPriorities`]
-/// arguments that method takes. Both are
-/// `#[serde(default)]` on the wire (`Self::deserialize`'s `Wire` shape):
-/// a payload with neither key decodes to `overflow:
-/// ToolbarOverflow::Clip` and empty `overflow_priorities`, which
-/// [`Self::paint_chrome`] paints byte-identically to a plain [`Toolbar`]
-/// extra — unchanged from today's rendering.
+/// [`Self::deserialize`]. The wire's priorities are a list of
+/// `{"id", "priority"}` entries rather than [`quadraui::Toolbar`]'s own
+/// table, so both knobs are decoded here and folded onto the descriptor
+/// at paint time. Both are `#[serde(default)]` on the wire
+/// (`Self::deserialize`'s `Wire` shape): a payload with neither key
+/// decodes to `overflow: ToolbarOverflow::Clip` and empty
+/// `overflow_priorities`, which [`Self::paint_chrome`] paints
+/// byte-identically to a plain [`Toolbar`] extra.
 #[derive(Debug, Clone)]
 pub struct ToolbarWithOverflow {
     pub toolbar: Toolbar,
@@ -1627,8 +1569,8 @@ pub struct ToolbarWithOverflow {
 
 impl ToolbarWithOverflow {
     /// [`Self::overflow_priorities`] folded into the
-    /// [`quadraui::ToolbarOverflowPriorities`] table
-    /// [`quadraui::Backend::draw_toolbar_with_overflow`] takes.
+    /// [`quadraui::ToolbarOverflowPriorities`] table the descriptor
+    /// carries.
     pub fn priorities(&self) -> quadraui::ToolbarOverflowPriorities {
         self.overflow_priorities.iter().fold(
             quadraui::ToolbarOverflowPriorities::new(),
@@ -1679,27 +1621,21 @@ impl ExtraPaint for ToolbarWithOverflow {
         self.toolbar.id
     }
 
-    /// Always routes through [`quadraui::Backend::draw_toolbar_with_overflow`]
-    /// — for `overflow: ToolbarOverflow::Clip` with no registered
-    /// priorities (today's default), that method is byte-for-byte
-    /// identical to [`quadraui::Backend::draw_toolbar_interactive`] (see
-    /// `quadraui::Toolbar::layout_with_overflow`'s own doc), so decoding a
-    /// payload with neither new key changes nothing about how it paints.
+    /// Paints the descriptor with [`Self::overflow`] and
+    /// [`Self::priorities`] folded on — for `ToolbarOverflow::Clip` with no
+    /// registered priorities, identical to a plain [`Toolbar`] extra.
     fn paint_chrome(
         &self,
         backend: &mut dyn Backend,
         area: Rect,
-        interaction: &InteractionState,
+        _interaction: &InteractionState,
     ) -> Vec<(Rect, WidgetId)> {
-        let options = quadraui::ToolbarLayoutOptions::new().with_overflow(self.overflow);
-        let priorities = self.priorities();
-        toolbar_chrome_hits(backend.draw_toolbar_with_overflow(
-            area,
-            &self.toolbar,
-            interaction,
-            options,
-            &priorities,
-        ))
+        let bar = self
+            .toolbar
+            .clone()
+            .with_overflow(self.overflow)
+            .with_overflow_priorities(self.priorities());
+        paint_toolbar_chrome(backend, area, &bar)
     }
 
     fn tab_stop(&self) -> bool {
@@ -1708,46 +1644,14 @@ impl ExtraPaint for ToolbarWithOverflow {
 }
 
 impl ExtraPaint for MenuBar {
+    /// Installed as the platform's own menu bar under a native menu
+    /// style, painted otherwise — see [`MenuBar::present`].
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_menu_bar(area, self);
+        let _ = self.present(backend, area);
     }
 
     fn id(&self) -> WidgetId {
         self.id
-    }
-}
-
-impl ExtraPaint for StatusBar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        self.paint_chrome(backend, area, &InteractionState::default());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Unlike [`Toolbar::paint_chrome`], [`quadraui::StatusBarLayout::hit_regions`]
-    /// are bar-LOCAL (relative to `area`'s own origin — see
-    /// [`quadraui::Backend::draw_status_bar_interactive`]'s own doc), so
-    /// each region is shifted by `area.x`/`area.y` before being recorded.
-    fn paint_chrome(
-        &self,
-        backend: &mut dyn Backend,
-        area: Rect,
-        interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        backend
-            .draw_status_bar_interactive(area, self, interaction)
-            .hit_regions
-            .into_iter()
-            .filter_map(|(rect, hit)| match hit {
-                StatusBarHit::Segment(id) => Some((
-                    Rect::new(area.x + rect.x, area.y + rect.y, rect.width, rect.height),
-                    id,
-                )),
-                StatusBarHit::Empty => None,
-            })
-            .collect()
     }
 }
 
@@ -1758,44 +1662,6 @@ impl ExtraPaint for CommandLine {
 
     fn id(&self) -> WidgetId {
         self.id
-    }
-}
-
-impl ExtraPaint for Palette {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        self.paint_chrome(backend, area, &InteractionState::default());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// [`quadraui::Backend::draw_palette_with_state`] only tints the
-    /// pinned create-action row — the one row in a `Palette` with a
-    /// stable id, `palette.id` itself (see that method's own doc for
-    /// why [`quadraui::PaletteItem`] rows stay out of `InteractionState`) —
-    /// so the one chrome hit recorded here is that row, when present.
-    /// Its bounds come from a no-paint [`quadraui::Backend::palette_layout`]
-    /// call — the same layout `draw_palette_with_state` paints from —
-    /// shifted into the ABSOLUTE frame [`ExtraPaint::hit_test`] uses,
-    /// mirroring [`ActivityBar::paint_chrome`]'s own translation.
-    fn paint_chrome(
-        &self,
-        backend: &mut dyn Backend,
-        area: Rect,
-        interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        backend.draw_palette_with_state(area, self, interaction);
-        backend
-            .palette_layout(area, self)
-            .create_bounds
-            .map(|b| {
-                vec![(
-                    Rect::new(area.x + b.x, area.y + b.y, b.width, b.height),
-                    self.id,
-                )]
-            })
-            .unwrap_or_default()
     }
 }
 
@@ -2044,12 +1910,9 @@ extra_primitives! {
     "diff_view" => DiffView,
     "tree_table" => TreeTable,
     "tree_table_controller" => TreeTableControllerDescriptor,
-    "activity_bar" => ActivityBar,
     "toolbar" => ToolbarWithOverflow,
     "menu_bar" => MenuBar,
-    "status_bar" => StatusBar,
     "command_line" => CommandLine,
-    "palette" => Palette,
     "scrollbar" => Scrollbar,
     "editor" => Editor,
     "canvas" => Canvas,
@@ -2074,10 +1937,13 @@ extra_primitives! {
 /// counterpart of [`decode_extra_primitive_checked`].
 ///
 /// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`,
-/// `"command_center"` and `"terminal"` are this table's members: unlike every
+/// `"command_center"`, `"terminal"`, `"status_bar"`, `"activity_bar"`,
+/// `"palette"` and `"context_menu"` are this table's members: unlike every
 /// [`EXTRA_PRIMITIVE_KINDS`] entry, none of [`quadraui::IconGrid`],
 /// [`quadraui::CellGrid`], [`quadraui::Switch`], [`quadraui::RadioGroup`],
-/// [`quadraui::Button`], [`quadraui::CommandCenter`] or [`quadraui::Terminal`] has a bespoke
+/// [`quadraui::Button`], [`quadraui::CommandCenter`], [`quadraui::Terminal`],
+/// [`quadraui::StatusBar`], [`quadraui::ActivityBar`], [`quadraui::Palette`]
+/// or [`quadraui::ContextMenu`] has a bespoke
 /// [`ExtraPaint`] impl to write
 /// here — painting, whole-area hit testing and [`DynWidget::handle`]
 /// routing are already fully generic (see
@@ -2099,14 +1965,24 @@ extra_primitives! {
 /// covers `"button"`; [`quadraui::CommandCenter`]'s own
 /// [`crate::interactive::Interactive`] impl (a press on an arrow or the
 /// search box, Enter/Space on the focused strip) covers
-/// `"command_center"`; and [`quadraui::Terminal`]'s own
+/// `"command_center"`; [`quadraui::Terminal`]'s own
 /// [`crate::interactive::Interactive`] impl (click-to-focus, selection
-/// drag, wheel scroll) covers `"terminal"`. A further kind joins this table only when it
+/// drag, wheel scroll) covers `"terminal"`; [`quadraui::StatusBar`]'s own
+/// [`crate::interactive::Interactive`] impl (press and release on one
+/// clickable segment) covers `"status_bar"`;
+/// [`quadraui::ActivityBar`]'s own [`crate::interactive::Interactive`] impl
+/// (click-to-activate, Up/Down cursor, Enter) covers `"activity_bar"`; and
+/// [`quadraui::Palette`]'s own [`crate::interactive::Interactive`] impl
+/// (query editing, list navigation, click-to-select, Enter/Escape) covers
+/// `"palette"`; and [`quadraui::ContextMenu`]'s own
+/// [`crate::interactive::Interactive`] impl (row hover, click-to-activate,
+/// arrow-key selection, Enter) covers a `"context_menu"` placed as a
+/// layout leaf. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 7] = [
+pub const WIDGET_KINDS: [&str; 11] = [
     "icon_grid",
     "cell_grid",
     "switch",
@@ -2114,6 +1990,10 @@ pub const WIDGET_KINDS: [&str; 7] = [
     "button",
     "command_center",
     "terminal",
+    "status_bar",
+    "activity_bar",
+    "palette",
+    "context_menu",
 ];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
@@ -2136,9 +2016,8 @@ mod tests {
     use super::*;
     use crate::hit::PaintedHit;
     use crate::layout::{LayoutLeaf, LeafDescriptor};
-    use crate::render::paint_leaf;
     use quadraui::tui::testing::TuiDriver;
-    use quadraui::{AppLogic, FormEvent, PaletteItem, Reaction, UiEvent};
+    use quadraui::{AppLogic, FormEvent, Reaction, UiEvent};
     use std::cell::RefCell;
 
     /// Records every event an [`EventSink`] receives, in order, for a
@@ -2158,96 +2037,6 @@ mod tests {
             self.dispatched.push(event.clone());
             Reaction::Continue
         }
-    }
-
-    fn palette(create_label: Option<&str>) -> Palette {
-        Palette {
-            id: WidgetId::new("pal"),
-            title: "Commands".into(),
-            query: String::new(),
-            query_cursor: 0,
-            items: vec![PaletteItem {
-                text: quadraui::StyledText::plain("open file"),
-                detail: None,
-                icon: None,
-                match_positions: vec![],
-                depth: 0,
-                expandable: false,
-                expanded: false,
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            total_count: 0,
-            has_focus: true,
-            show_query: true,
-            create_label: create_label.map(|s| s.to_string()),
-            preview: None,
-            mode: Default::default(),
-        }
-    }
-
-    struct PaletteChromeApp {
-        palette: Palette,
-        hits: RefCell<Vec<PaintedHit>>,
-    }
-
-    impl AppLogic for PaletteChromeApp {
-        type AreaId = ();
-
-        fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let leaf = LayoutLeaf {
-                id: "pal-leaf".into(),
-                descriptor: LeafDescriptor::Extra(Rc::new(self.palette.clone())),
-                scroll_px: None,
-            };
-            let viewport = backend.viewport();
-            let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-            let mut hits = Vec::new();
-            let chrome = |_id| InteractionState::default();
-            paint_leaf(backend, area, &leaf, &mut hits, &chrome);
-            *self.hits.borrow_mut() = hits;
-        }
-
-        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-            Reaction::Continue
-        }
-    }
-
-    fn chrome_hits_for(create_label: Option<&str>) -> Vec<(Rect, WidgetId)> {
-        let app = PaletteChromeApp {
-            palette: palette(create_label),
-            hits: RefCell::new(Vec::new()),
-        };
-        let mut driver = TuiDriver::new(app, 40, 20);
-        driver.render();
-        let found = driver.app().hits.borrow().iter().find_map(|hit| match hit {
-            PaintedHit::Extra { chrome_hits, .. } => Some(chrome_hits.clone()),
-            _ => None,
-        });
-        found.expect("a Palette extra was painted")
-    }
-
-    /// With no pinned create row, there is nothing to register as a
-    /// chrome hit — `chrome_hover`/`chrome_pressed` (and so
-    /// `draw_palette_with_state`'s hover tint) never fire for a plain
-    /// palette.
-    #[test]
-    fn no_create_label_means_no_chrome_hits() {
-        assert_eq!(chrome_hits_for(None), Vec::new());
-    }
-
-    /// A pinned create row is recorded as one chrome hit keyed by
-    /// `palette.id` — the same id [`Backend::draw_palette_with_state`]
-    /// checks `interaction.is_hovered`/`is_pressed` against, so a
-    /// py/node app that sets `create_label` gets hover for free the
-    /// moment `InteractionEngine::handle`'s generic `chrome_hover_hit`
-    /// bookkeeping (keyed off this exact `chrome_hits` entry) sees a
-    /// `MouseMoved` land inside it.
-    #[test]
-    fn create_label_registers_one_chrome_hit_keyed_by_palette_id() {
-        let hits = chrome_hits_for(Some("Create 'foo'"));
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].1, WidgetId::new("pal"));
     }
 
     /// A `Switch` placed as a `LeafDescriptor::Widget` (not `Extra` —

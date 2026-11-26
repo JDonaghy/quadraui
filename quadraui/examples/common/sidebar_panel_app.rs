@@ -28,9 +28,9 @@
 use std::cell::Cell;
 
 use quadraui::{
-    AppLogic, Backend, Color, DrawsPrimitives, FrameTree, InteractionState, Key, NamedKey,
-    Reaction, Rect, SidebarPanel, SidebarPanelHit, SidebarPanelLayout, StatusBar, StatusBarSegment,
-    Toolbar, ToolbarButton, ToolbarEvent, UiEvent, WidgetId,
+    AppLogic, Backend, Color, DrawsPrimitives, FrameTree, Key, NamedKey, Reaction, Rect,
+    SidebarPanel, SidebarPanelHit, SidebarPanelLayout, StatusBar, StatusBarSegment, Toolbar,
+    ToolbarButton, ToolbarEvent, UiEvent, WidgetId,
 };
 
 const TOOLBAR_ROWS: f32 = 2.0;
@@ -206,7 +206,7 @@ impl AppLogic for SidebarPanelApp {
 
         // Title row.
         let title_rect = Rect::new(0.0, 0.0, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
+        let _ = backend.draw_dyn(
             title_rect,
             &StatusBar {
                 id: WidgetId::new("title"),
@@ -219,7 +219,7 @@ impl AppLogic for SidebarPanelApp {
                 }],
                 right_segments: vec![],
             },
-            &InteractionState::new(),
+            &(),
         );
 
         // The panel itself, painted through the widget contract.
@@ -241,7 +241,7 @@ impl AppLogic for SidebarPanelApp {
         } else {
             "  Tasks  "
         };
-        let _ = backend.draw_status_bar_interactive(
+        let _ = backend.draw_dyn(
             Rect::new(content.x, content.y, content.width, lh),
             &StatusBar {
                 id: WidgetId::new("content:header"),
@@ -254,7 +254,7 @@ impl AppLogic for SidebarPanelApp {
                 }],
                 right_segments: vec![],
             },
-            &InteractionState::new(),
+            &(),
         );
 
         // Row strip: each task as a single-row status bar with hover-
@@ -271,7 +271,7 @@ impl AppLogic for SidebarPanelApp {
             } else {
                 (Color::rgb(220, 220, 220), Color::rgb(20, 20, 20))
             };
-            let _ = backend.draw_status_bar_interactive(
+            let _ = backend.draw_dyn(
                 row_rect,
                 &StatusBar {
                     id: WidgetId::new(format!("row:{i}")),
@@ -284,17 +284,13 @@ impl AppLogic for SidebarPanelApp {
                     }],
                     right_segments: vec![],
                 },
-                &InteractionState::new(),
+                &(),
             );
         }
 
         // Status bar at the bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn frame_tree(&self, _area: ()) -> FrameTree {

@@ -9,11 +9,11 @@
 //! empty query with no matches.
 
 use quadraui::primitives::multi_section_view::{AuxHit, InlineInput};
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, Decoration, InteractionState, MultiSectionView,
-    MultiSectionViewHit, Reaction, Rect, Section, SectionAux, SectionBody, SectionHeader,
-    SectionSize, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText, TreeRow, TreeView,
-    TreeViewHit, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Decoration, MultiSectionView, MultiSectionViewHit, Reaction, Rect,
+    Section, SectionAux, SectionBody, SectionHeader, SectionSize, StatusBar, StatusBarSegment,
+    Style, StyledSpan, StyledText, TreeRow, TreeView, TreeViewHit, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -222,11 +222,7 @@ impl Demo for SearchPanelDemo {
         backend.draw_multi_section_view(panel_rect, &self.build_view(variant));
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
     }
 
     fn handle(

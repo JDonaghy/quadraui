@@ -21,6 +21,7 @@
 //! - `q` / `Esc` — quit.
 
 use quadraui::compose::Handled;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, MessageDialogButton, MessageDialogController, MessageDialogOptions,
     Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
@@ -97,8 +98,7 @@ impl AppLogic for MessageDialogApp {
         let bar_h = lh * 1.5;
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
         let bar = self.status_bar();
-        let _ =
-            backend.draw_status_bar_interactive(bar_rect, &bar, &quadraui::InteractionState::new());
+        let _ = backend.draw_dyn(bar_rect, &bar, &());
 
         if let Some(ref dialog) = self.dialog {
             dialog.render(backend);

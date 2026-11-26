@@ -285,9 +285,9 @@
 //!   `Button`/`TextInput` already draw their own ring through — rather
 //!   than growing `primitives/form.rs`'s painters with a bespoke
 //!   per-item indicator. [`Self::render`] resolves the focused item's
-//!   on-screen rect via [`Backend::form_layout`]'s `item_bounds` (the
+//!   on-screen rect via the form layout's `item_bounds` (the
 //!   same lookup [`Self::field_rect`] already does for a whole field)
-//!   and calls `draw_focus_ring` on it once, after `draw_form` paints the
+//!   and calls `draw_focus_ring` on it once, after the form paints the
 //!   row — a no-op while nothing is item-focused.
 //! - Mouse clicks on an item are unchanged: [`click_field`] still
 //!   resolves straight to the clicked item's `FormEvent` via
@@ -340,6 +340,12 @@ pub struct FormPrimitiveLayout {
     /// The resolved rows, item rects, hit regions and clamped scroll
     /// offset — form-local, exactly as [`Form::layout`] produced them.
     pub layout: FormLayout,
+    /// Each visible [`FieldKind::Toolbar`] field's embedded toolbar,
+    /// resolved at the form's shared control column in surface
+    /// coordinates, keyed by the field's index in [`Form::fields`].
+    /// Empty on a cell grid, where the cell painter draws the toolbar
+    /// row itself.
+    pub toolbars: Vec<(usize, crate::primitives::toolbar::ToolbarPrimitiveLayout)>,
 }
 
 impl FormPrimitiveLayout {
@@ -378,6 +384,46 @@ fn cell_area(rect: Rect) -> ratatui::layout::Rect {
     }
 }
 
+impl Form {
+    /// Resolve every visible [`FieldKind::Toolbar`] field's embedded
+    /// toolbar for a pixel paint: the toolbar starts at the form's shared
+    /// control column ([`FormLayout::toolbar_field_rect`], fed the label
+    /// measured in [`crate::FontRole::Chrome`]) and runs to the row's
+    /// right edge, laid out through the toolbar's own
+    /// [`Primitive::layout`].
+    fn toolbar_field_layouts(
+        &self,
+        ctx: &LayoutCtx,
+        rect: Rect,
+        layout: &FormLayout,
+    ) -> Vec<(usize, crate::primitives::toolbar::ToolbarPrimitiveLayout)> {
+        layout
+            .visible_fields
+            .iter()
+            .filter_map(|vf| {
+                let field = self.fields.get(vf.field_idx)?;
+                let FieldKind::Toolbar(toolbar) = &field.kind else {
+                    return None;
+                };
+                let label: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
+                let label_w = ctx.text_width(&label, crate::FontRole::Chrome);
+                let (x, w) = layout.toolbar_field_rect(
+                    (rect.x + vf.bounds.x) as f64,
+                    vf.bounds.width as f64,
+                    label_w as f64,
+                    label.is_empty(),
+                );
+                if w <= 0.0 {
+                    return None;
+                }
+                let bar_rect =
+                    Rect::new(x as f32, rect.y + vf.bounds.y, w as f32, vf.bounds.height);
+                Some((vf.field_idx, Primitive::layout(toolbar, ctx, bar_rect)))
+            })
+            .collect()
+    }
+}
+
 impl Primitive for Form {
     type Layout = FormPrimitiveLayout;
     type Event = FormEvent;
@@ -386,10 +432,9 @@ impl Primitive for Form {
         Some(&self.id)
     }
 
-    /// Round-trips through [`crate::frame::OwnedContent::Form`] — the
-    /// same owned snapshot [`crate::frame::Surface::Form`] captures
-    /// into, replayed through `Backend::draw_form`, which reaches this
-    /// module's own layout and painters.
+    /// Round-trips through [`crate::frame::OwnedContent::Form`], which a
+    /// captured frame replays through this widget's own layout and
+    /// painters and reports as [`crate::frame::FrameZone::Widget`].
     fn capture(&self) -> crate::frame::OwnedContent {
         crate::frame::OwnedContent::Form(self.clone())
     }
@@ -437,30 +482,43 @@ impl Primitive for Form {
                 return FormPrimitiveLayout {
                     area: rect,
                     layout: super::cell_layout::tui_form_layout(self, cell_area(rect)),
+                    toolbars: Vec::new(),
                 };
             }
         }
         // Labels, values and hints are chrome — painted in the backend's
         // UI font by `super::native_surface_paint` — so this measures
         // them through the calling backend's own `Backend::measure_text`
-        // for `FontRole::Chrome`, the exact measurer every pixel
-        // `form_layout` wrapper shares. Without a measurer in reach
+        // for `FontRole::Chrome`, the same measurer every pixel
+        // rasteriser paints the form's text with. Without a measurer in reach
         // (`LayoutCtx::new`) it degrades to the `ctx.char_width`
         // approximation.
         let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
             ctx,
             role: crate::FontRole::Chrome,
         };
-        let row_h = crate::primitives::layout_metrics::form_row_height(ctx.line_height as f64);
+        // Rows pitch off the backend's own line height
+        // (`Backend::line_height`), the metric every pixel painter of an
+        // embedded form body sizes its rows from, so a form painted here
+        // and one painted inside a `MultiSectionView` section share one
+        // row pitch.
+        let row_h =
+            crate::primitives::layout_metrics::form_row_height(ctx.editor_line_height() as f64);
         let layout = self.layout(rect.width, rect.height, |i| {
             crate::primitives::layout_metrics::form_field_measure(&self.fields[i], row_h, &measure)
         });
-        FormPrimitiveLayout { area: rect, layout }
+        let toolbars = self.toolbar_field_layouts(ctx, rect, &layout);
+        FormPrimitiveLayout {
+            area: rect,
+            layout,
+            toolbars,
+        }
     }
 
-    /// Runs the shared pixel painter every GUI `draw_form` wrapper
-    /// already paints through, at the already-resolved layout, with the
-    /// painted rect's origin as the form's local `(0, 0)`.
+    /// Runs the shared pixel painter at the already-resolved layout, with
+    /// the painted rect's origin as the form's local `(0, 0)`, then each
+    /// visible `Toolbar` field's embedded toolbar through the toolbar's
+    /// own painter.
     fn paint(
         &self,
         layout: &Self::Layout,
@@ -481,7 +539,16 @@ impl Primitive for Form {
                 theme,
                 crate::Point::new(layout.area.x, layout.area.y),
             );
-            let _ = style;
+            for (field_idx, toolbar_layout) in &layout.toolbars {
+                let Some(FieldKind::Toolbar(toolbar)) =
+                    self.fields.get(*field_idx).map(|f| &f.kind)
+                else {
+                    continue;
+                };
+                surface.surface_push_clip(toolbar_layout.area);
+                Primitive::paint(toolbar, toolbar_layout, surface, theme, style);
+                surface.surface_pop_clip();
+            }
         }
         #[cfg(not(any(
             feature = "gtk",
@@ -493,11 +560,8 @@ impl Primitive for Form {
         }
     }
 
-    /// Delegates to the same [`super::cell_paint::draw_form`] entry
-    /// point `TuiBackend::draw_form` itself calls — so painting a form
-    /// through this contract is byte-for-byte identical to painting it
-    /// through the legacy `Backend` pair by construction, not by
-    /// separately maintained parity.
+    /// Delegates to the widget's cell rasteriser,
+    /// [`super::cell_paint::draw_form`].
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1948,7 +2012,7 @@ pub(crate) fn overlay_state(form: &mut Form, state: &FormState) {
 impl WidgetAction for FormEvent {
     /// Every outcome rides [`crate::UiEvent::Form`] under the form's own
     /// id, carrying the field-level event unchanged — the same channel a
-    /// host already matches on after `Backend::draw_form`, so routing a
+    /// host already matches on after painting a `Form`, so routing a
     /// form through the widget contract needs no new event vocabulary.
     fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
         crate::UiEvent::Form(id, self)

@@ -36,6 +36,28 @@ use crate::backend::ImagePaintResult;
 use crate::paint_surface::PaintSurface;
 use crate::{Color, Image, Point, Rect, Viewport};
 
+/// Adapts a live `pango::Layout` (falling back to a `char_width`-based
+/// estimate when none is available, e.g. from a layout-only call between
+/// paint frames) to the shared
+/// [`crate::primitives::layout_metrics::TextMeasure`] trait, so a shared
+/// layout formula never has to name a Pango type and every GTK caller
+/// measures through the exact same adapter its paint uses.
+pub(crate) struct PangoMeasure<'a> {
+    pub(crate) pango_layout: Option<&'a pango::Layout>,
+    pub(crate) char_width: f64,
+}
+
+impl crate::primitives::layout_metrics::TextMeasure for PangoMeasure<'_> {
+    fn width_of(&self, text: &str) -> f32 {
+        if let Some(pl) = self.pango_layout {
+            pl.set_text(text);
+            pl.pixel_size().0.max(0) as f32
+        } else {
+            (text.chars().count() as f64 * self.char_width).ceil() as f32
+        }
+    }
+}
+
 /// See the module doc for the two fields that carry genuine
 /// per-call-site behaviour ([`Self::layout`], [`Self::translucent_fill`]);
 /// every other [`PaintSurface`] verb below is one shared implementation.
@@ -607,4 +629,391 @@ mod terminal_paint_tests {
     // The paint-level contract of repainting only the rows in `dirty_rows`
     // is covered by `primitives::terminal::native_surface_paint::tests::
     // dirty_rows_filter_skips_untouched_rows`, which runs on every backend.
+}
+
+#[cfg(test)]
+mod form_paint_tests {
+    use super::PangoMeasure;
+    use crate::primitives::form::{FieldKind, Form, FormField, LabelAlign, LabelPosition};
+    use crate::theme::Theme;
+    use crate::types::{StyledText, WidgetId};
+    use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    /// Paint `form` via the shared [`crate::primitives::form::paint`]
+    /// through a [`crate::gtk::surface::CairoSurface`] over a fresh in-memory
+    /// `ImageSurface` — the same adapter `gtk::multi_section_view`'s
+    /// embedded-`Form` body uses. Builds its own [`crate::FormLayout`]
+    /// with the shared `form_field_measure` (the same measurer
+    /// `Form`'s pixel `Primitive::layout` uses) so painted rows match what
+    /// hit-testing would resolve.
+    fn paint(form: &Form) {
+        let surface = ImageSurface::create(Format::ARgb32, 320, 160).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let pango_layout = pangocairo::functions::create_layout(&cr);
+        let theme = Theme::default();
+        let row_h = crate::primitives::layout_metrics::form_row_height(14.0);
+        let measure = PangoMeasure {
+            pango_layout: Some(&pango_layout),
+            char_width: 8.0,
+        };
+        let flayout = form.layout(320.0, 160.0, |i| {
+            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
+        });
+        let mut raw = crate::gtk::surface::CairoSurface {
+            cr: &cr,
+            layout: Some(&pango_layout),
+            translucent_fill: false,
+        };
+        crate::primitives::form::paint(
+            form,
+            &flayout,
+            &mut raw,
+            &theme,
+            crate::Point::new(0.0, 0.0),
+        );
+    }
+
+    /// Read an RGB triple from an ARgb32 surface at pixel (x, y).
+    /// Cairo's `ARgb32` stores each pixel as four bytes in native
+    /// (little-endian) byte order: [B, G, R, A] — mirrors
+    /// `gtk::activity_bar`'s test-local helper of the
+    /// same name.
+    fn pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
+        let off = y as usize * stride + x as usize * 4;
+        (data[off + 2], data[off + 1], data[off])
+    }
+
+    /// Regression test: `Form::layout` (the hit-test path) clamps
+    /// `scroll_offset` via `clamp_scroll_offset`, which affects which
+    /// field occupies row 0.
+    #[test]
+    fn draw_form_clamps_out_of_range_scroll_offset_like_form_layout() {
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![
+                FormField {
+                    id: WidgetId::new("hdr"),
+                    label: StyledText::plain("Header"),
+                    kind: FieldKind::Label,
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
+                    row_align: None,
+                },
+                FormField {
+                    id: WidgetId::new("enabled"),
+                    label: StyledText::plain("Enabled"),
+                    kind: FieldKind::Toggle { value: true },
+                    hint: StyledText::default(),
+                    disabled: false,
+                    validation: None,
+                    label_position: None,
+                    label_align: None,
+                    label_width: None,
+                    tab_index: None,
+                    control_width: None,
+                    min_control_width: None,
+                    row_align: None,
+                },
+            ],
+            // Focused so the resolved field paints `selected_bg` —
+            // distinct from both the plain background and the header's
+            // `header_bg`, so row 0's colour unambiguously identifies
+            // which field (if any) painted there.
+            focused_field: Some(WidgetId::new("enabled")),
+            scroll_offset: 50, // far past `fields.len()` == 2
+            has_focus: true,
+            label_position: LabelPosition::Left,
+            label_align: LabelAlign::Start,
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 320, 160).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let theme = Theme::default();
+            let row_h = crate::primitives::layout_metrics::form_row_height(14.0);
+            let measure = PangoMeasure {
+                pango_layout: Some(&pango_layout),
+                char_width: 8.0,
+            };
+            let flayout = form.layout(320.0, 160.0, |i| {
+                crate::primitives::layout_metrics::form_field_measure(
+                    &form.fields[i],
+                    row_h,
+                    &measure,
+                )
+            });
+            let mut raw = crate::gtk::surface::CairoSurface {
+                cr: &cr,
+                layout: Some(&pango_layout),
+                translucent_fill: false,
+            };
+            crate::primitives::form::paint(
+                &form,
+                &flayout,
+                &mut raw,
+                &theme,
+                crate::Point::new(0.0, 0.0),
+            );
+        }
+
+        let theme = Theme::default();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let (r, g, b) = pixel(&data, stride, 4, 4);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "row 0 should paint the focused 'enabled' field (the field \
+             `clamp_scroll_offset` resolves to), not leave the background \
+             untouched the way the pre-fix raw `.skip()` did",
+        );
+    }
+
+    /// `TextInput.cursor`/`selection_anchor` are host-supplied byte offsets
+    /// with no guarantee they land on a char boundary; slicing `&shown[lo..hi]`
+    /// must snap to char boundaries to avoid panicking on multibyte characters.
+    #[test]
+    fn text_input_with_multibyte_cursor_and_selection_does_not_panic() {
+        // "café🎉" — byte 4 sits inside 'é' (starts at byte 3); byte 7
+        // sits inside the emoji (starts at byte 6).
+        let value = "café🎉";
+        assert!(!value.is_char_boundary(4));
+        assert!(!value.is_char_boundary(7));
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("name"),
+                label: StyledText::plain("Name"),
+                kind: FieldKind::TextInput {
+                    value: value.into(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    selection_anchor: Some(7),
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: Some(WidgetId::new("name")),
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: LabelPosition::Left,
+            label_align: LabelAlign::Start,
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+
+        // Must not panic.
+        paint(&form);
+    }
+
+    /// `PasswordInput` byte-cursor-to-mask-char-position conversion must snap
+    /// to char boundaries to handle multibyte characters.
+    #[test]
+    fn password_input_with_multibyte_cursor_does_not_panic() {
+        let value = "café🎉";
+        assert!(!value.is_char_boundary(4));
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("pw"),
+                label: StyledText::plain("Password"),
+                kind: FieldKind::PasswordInput {
+                    value: value.into(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    mask_char: '*',
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: Some(WidgetId::new("pw")),
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: LabelPosition::Left,
+            label_align: LabelAlign::Start,
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+
+        // Must not panic.
+        paint(&form);
+    }
+
+    /// `TextArea` clamps `cursor` against `first_line.len()`, but slicing
+    /// `shown` (which may be `first_line` or a differently-lengthed placeholder)
+    /// must snap to char boundaries.
+    #[test]
+    fn text_area_with_multibyte_cursor_does_not_panic() {
+        let value = "café🎉\nsecond line";
+        assert!(!value.is_char_boundary(4));
+        let form = Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("notes"),
+                label: StyledText::plain("Notes"),
+                kind: FieldKind::TextArea {
+                    value: value.into(),
+                    placeholder: String::new(),
+                    cursor: Some(4),
+                    visible_rows: 3,
+                },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: Some(WidgetId::new("notes")),
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: LabelPosition::Left,
+            label_align: LabelAlign::Start,
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        };
+
+        // Must not panic.
+        paint(&form);
+    }
+
+    const CHROME_W: i32 = 200;
+    const CHROME_H: i32 = 60;
+    const LINE_HEIGHT: f64 = 18.0;
+    // Distinct from every colour `draw_settings_chrome` itself paints
+    // (header_bg/tab_bar_bg/selected_bg), so a search-row pixel that
+    // still reads this sentinel unambiguously means "nothing painted
+    // here", not "painted a colour that happens to match by chance."
+    const SENTINEL: (u8, u8, u8) = (1, 2, 3);
+
+    /// Paint `GtkBackend::draw_settings_chrome` into a `CHROME_W`x`CHROME_H` surface
+    /// pre-filled with [`SENTINEL`], at the given `height`, and return
+    /// the raw pixel buffer + stride for probing.
+    fn paint_chrome(height: f64) -> (Vec<u8>, usize) {
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, CHROME_W, CHROME_H).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (sr, sg, sb) = (
+                SENTINEL.0 as f64 / 255.0,
+                SENTINEL.1 as f64 / 255.0,
+                SENTINEL.2 as f64 / 255.0,
+            );
+            cr.set_source_rgb(sr, sg, sb);
+            cr.paint().ok();
+
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let mut backend = crate::gtk::GtkBackend::new();
+            backend.set_current_theme(Theme::default());
+            backend.set_current_line_height(LINE_HEIGHT);
+            crate::Backend::begin_frame(
+                &mut backend,
+                crate::Viewport::new(CHROME_W as f32, CHROME_H as f32, 1.0),
+            );
+            backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                crate::Backend::draw_settings_chrome(
+                    b,
+                    crate::Rect::new(0.0, 0.0, CHROME_W as f32, height as f32),
+                    "HEADER",
+                    "",
+                    "placeholder",
+                    false,
+                );
+            });
+        }
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
+    /// A 1-row-tall `height` (the shape
+    /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`]
+    /// reserves) must leave the would-be search row untouched, since
+    /// `draw_settings_chrome` only paints rows that fit within the given rect.
+    #[test]
+    fn draw_settings_chrome_one_row_height_paints_no_search_row() {
+        let (data, stride) = paint_chrome(LINE_HEIGHT);
+
+        // Probe x=150, clear of the left-aligned "HEADER" glyphs (same
+        // convention the Win settings-chrome tests use).
+        let probe_x = 150;
+
+        // Sample inside where row 1 (search) would have started —
+        // comfortably past the header row, comfortably before the
+        // surface's bottom edge.
+        let probe_y = (LINE_HEIGHT * 1.5) as i32;
+        assert_eq!(
+            pixel(&data, stride, probe_x, probe_y),
+            SENTINEL,
+            "a 1-row-tall chrome rect must not paint a search row past its own height"
+        );
+
+        // The header row itself must still have painted.
+        let theme = Theme::default();
+        assert_eq!(
+            pixel(&data, stride, probe_x, (LINE_HEIGHT / 2.0) as i32),
+            (theme.header_bg.r, theme.header_bg.g, theme.header_bg.b),
+            "the header row must still paint even when the search row doesn't"
+        );
+    }
+
+    /// A full 2-row-tall `height` (the shape
+    /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::HeaderAndSearch`]
+    /// reserves) must still paint the search row — the height-aware
+    /// fix must not regress the documented 2-row shape.
+    #[test]
+    fn draw_settings_chrome_two_row_height_paints_search_row() {
+        let (data, stride) = paint_chrome(LINE_HEIGHT * 2.0);
+
+        let theme = Theme::default();
+        let probe_y = (LINE_HEIGHT * 1.5) as i32;
+        assert_eq!(
+            pixel(&data, stride, 4, probe_y),
+            (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b),
+            "a 2-row-tall chrome rect must still paint the inactive search row"
+        );
+    }
 }

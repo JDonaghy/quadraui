@@ -14,6 +14,7 @@
 //! | `m`            | Toggle SideBySide ↔ Unified   |
 //! | `q` / Esc      | Quit                          |
 
+use quadraui::DrawsPrimitives;
 use std::cell::Cell;
 
 use quadraui::backend::Backend;
@@ -24,7 +25,7 @@ use quadraui::primitives::diff_view::{
 };
 use quadraui::runner::{AppLogic, Reaction};
 use quadraui::types::{Color, WidgetId};
-use quadraui::{InteractionState, StatusBar, StatusBarSegment};
+use quadraui::{StatusBar, StatusBarSegment};
 
 const LEFT: &str = "\
 fn add(a: i32, b: i32) -> i32 {
@@ -140,11 +141,7 @@ impl AppLogic for DiffViewApp {
         self.last_layout.set(layout);
 
         let status_rect = Rect::new(0.0, rect.height, vp.width, vp.height - rect.height);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

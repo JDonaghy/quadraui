@@ -31,20 +31,15 @@
 //! `tests::NON_TRAIT_DRAW_FNS`.
 
 use quadraui::{
-    compute_hunks, ActivityBar, ActivityBarStyle, ActivityItem, AppLogic, Backend, BadgeStatus,
-    BoardCard, BoardColumn, BoardModel, Canvas, CardBadge, Chart, ChartKind, Color, Column,
-    ColumnAlign, ColumnWidth, ContextMenu, ContextMenuItem, ContextMenuItemMeasure,
-    ContextMenuPlacement, DataRow, DataTable, Decoration, DiffEditability, DiffMode, DiffPane,
-    DiffView, DrawOp, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine,
-    EditorStyle, EditorStyledSpan, FieldKind, FindReplacePanel, Form, FormField, Image, ImageFit,
-    ImageSource, InteractionState, ListItem, ListView, MenuBar, MenuBarItem, MessageList,
-    MessageRow, Minimap, MinimapLine, MsvAxis, MultiSectionView, Palette, PaletteItem, PaletteMode,
-    PipelineStage, PipelineView, ProgressBar, Reaction, Rect, ScrollAxis, ScrollMode, Scrollbar,
-    Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series, Spinner, Split,
-    SplitDirection, SplitTree, StageStatus, StatusBar, StatusBarSegment, StyledText, Toolbar,
-    ToolbarButton, ToolbarLayoutOptions, ToolbarOverflow, ToolbarOverflowPriorities,
-    ToolbarPaintOptions, ToolbarVAlign, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView,
-    UiEvent, WidgetId,
+    compute_hunks, AppLogic, Backend, BadgeStatus, BoardCard, BoardColumn, BoardModel, Canvas,
+    CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable,
+    Decoration, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, Editor, EditorCursor,
+    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan,
+    FindReplacePanel, Image, ImageFit, ImageSource, ListItem, ListView, MessageList, MessageRow,
+    Minimap, MinimapLine, MsvAxis, MultiSectionView, PipelineStage, PipelineView, ProgressBar,
+    Reaction, Rect, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
+    SectionSize, SelectionMode, Series, Spinner, Split, SplitDirection, SplitTree, StageStatus,
+    StyledText, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -80,56 +75,6 @@ pub struct Case {
 /// ever stops being true in either direction. Adding a primitive to the
 /// trait is therefore one more entry here, not an optional one.
 pub const CASES: &[Case] = &[
-    Case {
-        method: "draw_status_bar_interactive",
-        needle: Some("c0stat"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = StatusBar {
-                id: id("status-bar"),
-                left_segments: vec![StatusBarSegment {
-                    text: " c0stat ".to_string(),
-                    fg: Color::rgb(220, 220, 220),
-                    bg: Color::rgb(37, 37, 38),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            let _ = b.draw_status_bar_interactive(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                &InteractionState::new(),
-            );
-        },
-    },
-    Case {
-        // Same content as `draw_status_bar_interactive` above, but
-        // through the scaled entry point to exercise the `font_scale`
-        // parameter reaching the backend.
-        method: "draw_status_bar_interactive_scaled",
-        needle: Some("c0statscaled"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = StatusBar {
-                id: id("status-bar-scaled"),
-                left_segments: vec![StatusBarSegment {
-                    text: " c0statscaled ".to_string(),
-                    fg: Color::rgb(220, 220, 220),
-                    bg: Color::rgb(37, 37, 38),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            let _ = b.draw_status_bar_interactive_scaled(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                &InteractionState::new(),
-                0.85,
-            );
-        },
-    },
     Case {
         method: "draw_message_list",
         needle: Some("c0msg"),
@@ -497,227 +442,10 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_form",
-        needle: Some("c0form"),
-        paint: |b, area| {
-            let form = Form {
-                id: id("form"),
-                fields: vec![FormField {
-                    id: id("form-field"),
-                    label: StyledText::plain("c0form"),
-                    kind: FieldKind::ReadOnly {
-                        value: StyledText::plain("value"),
-                    },
-                    hint: StyledText::default(),
-                    disabled: false,
-                    validation: None,
-                    label_position: None,
-                    label_align: None,
-                    label_width: None,
-                    tab_index: None,
-                    control_width: None,
-                    min_control_width: None,
-                    row_align: None,
-                }],
-                focused_field: None,
-                scroll_offset: 0,
-                has_focus: false,
-                label_position: Default::default(),
-                label_align: Default::default(),
-                label_width: None,
-                control_width: Default::default(),
-                min_control_width: None,
-                spacing: Default::default(),
-            };
-            b.draw_form(area, &form);
-        },
-    },
-    Case {
-        method: "draw_palette",
-        needle: Some("c0palt"),
-        paint: |b, area| {
-            let mut palette = Palette::default();
-            palette.id = id("palette");
-            palette.title = "Palette".to_string();
-            palette.items = vec![PaletteItem {
-                text: StyledText::plain("c0palt"),
-                detail: None,
-                icon: None,
-                match_positions: vec![],
-                depth: 0,
-                expandable: false,
-                expanded: false,
-            }];
-            palette.show_query = true;
-            palette.mode = PaletteMode::List;
-            b.draw_palette(area, &palette);
-        },
-    },
-    Case {
-        // `InteractionState`-carrying counterpart to `draw_palette`. The
-        // state names the palette's own id — the one stable id a
-        // `Palette` carries — as hovered, so a backend that honours the
-        // seam tints its pinned create-action row.
-        method: "draw_palette_with_state",
-        needle: Some("c0paltstate"),
-        paint: |b, area| {
-            let palette_id = id("palette-state");
-            let palette = Palette {
-                id: palette_id,
-                title: "Palette".to_string(),
-                items: vec![PaletteItem {
-                    text: StyledText::plain("c0paltstate"),
-                    detail: None,
-                    icon: None,
-                    match_positions: vec![],
-                    depth: 0,
-                    expandable: false,
-                    expanded: false,
-                }],
-                show_query: true,
-                mode: PaletteMode::List,
-                create_label: Some("Create".to_string()),
-                ..Default::default()
-            };
-            let interaction = InteractionState::from_parts(Some(palette_id), None);
-            b.draw_palette_with_state(area, &palette, &interaction);
-        },
-    },
-    Case {
         method: "draw_settings_chrome",
         needle: Some("c0sett"),
         paint: |b, area| {
             b.draw_settings_chrome(area, "c0sett", "", "search…", false);
-        },
-    },
-    // `draw_activity_bar` is `#[deprecated]` (use `draw_activity_bar_with_style`
-    // instead); kept as a required `Backend` method, so this row is the only
-    // automated proof the shim still reaches a rasteriser. `#[allow(deprecated)]`
-    // stays scoped to the one call in this closure.
-    Case {
-        method: "draw_activity_bar",
-        // TUI paints only the icon's *first* character while GTK paints the
-        // whole `icon` string — an inherent cross-backend asymmetry in this
-        // primitive's design, not a coverage gap, so no single needle matches
-        // both verbatim. Observability comes from the icon glyph itself: a
-        // backend that painted nothing would leave both `text_runs()` and
-        // `zones()` empty.
-        needle: None,
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = ActivityBar {
-                id: id("activity-bar"),
-                top_items: vec![ActivityItem {
-                    id: id("activity-item"),
-                    icon: "c0acty".into(),
-                    tooltip: String::new(),
-                    is_active: true,
-                    is_keyboard_selected: false,
-                }],
-                bottom_items: vec![],
-                active_accent: None,
-                selection_bg: None,
-                is_keyboard_focused: false,
-            };
-            #[allow(deprecated)]
-            let _ = b.draw_activity_bar(Rect::new(0.0, 0.0, lh * 3.0, area.height), &bar, None);
-        },
-    },
-    Case {
-        // The style-carrying entry point. Same content as
-        // `draw_activity_bar` above, but asking explicitly for an
-        // `ActivityBarStyle` row fill so C0 exercises a non-default
-        // request reaching the backend rather than only the delegating
-        // path (mirrors `draw_tooltip_with_chrome` above).
-        method: "draw_activity_bar_with_style",
-        needle: None,
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = ActivityBar {
-                id: id("activity-bar-style"),
-                top_items: vec![ActivityItem {
-                    id: id("activity-item-style"),
-                    icon: "c0actystyle".into(),
-                    tooltip: String::new(),
-                    is_active: true,
-                    is_keyboard_selected: false,
-                }],
-                bottom_items: vec![],
-                active_accent: None,
-                selection_bg: None,
-                is_keyboard_focused: false,
-            };
-            let style = ActivityBarStyle::new().with_active_bg(Color::rgb(49, 50, 51));
-            let _ = b.draw_activity_bar_with_style(
-                Rect::new(0.0, 0.0, lh * 3.0, area.height),
-                &bar,
-                None,
-                &style,
-            );
-        },
-    },
-    Case {
-        method: "draw_context_menu",
-        needle: Some("c0ctxm"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let menu = ContextMenu {
-                id: id("context-menu"),
-                items: vec![ContextMenuItem {
-                    id: Some(id("context-menu-item")),
-                    label: StyledText::plain("c0ctxm"),
-                    detail: None,
-                    disabled: false,
-                    key_equivalent: None,
-                    checked: None,
-                    icon: None,
-                    submenu: None,
-                }],
-                selected_idx: 0,
-                bg: None,
-                placement: ContextMenuPlacement::AnchorPoint,
-                glyphs: Default::default(),
-            };
-            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
-                ContextMenuItemMeasure::new(lh)
-            });
-            let _ = b.draw_context_menu(&menu, &layout);
-        },
-    },
-    Case {
-        // `InteractionState`-carrying counterpart to
-        // `draw_context_menu`. The state names the single item's id as
-        // hovered so a backend that honours the seam takes its tint
-        // branch; the item label must still reach the frame either way.
-        method: "draw_context_menu_with_state",
-        needle: Some("c0ctxmstate"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let item_id = id("context-menu-state-item");
-            let menu = ContextMenu {
-                id: id("context-menu-state"),
-                items: vec![ContextMenuItem {
-                    id: Some(item_id),
-                    label: StyledText::plain("c0ctxmstate"),
-                    detail: None,
-                    disabled: false,
-                    key_equivalent: None,
-                    checked: None,
-                    icon: None,
-                    submenu: None,
-                }],
-                selected_idx: 0,
-                bg: None,
-                placement: ContextMenuPlacement::AnchorPoint,
-                glyphs: Default::default(),
-            };
-            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
-                ContextMenuItemMeasure::new(lh)
-            });
-            let interaction = InteractionState::from_parts(Some(item_id), None);
-            let _ = b.draw_context_menu_with_state(&menu, &layout, &interaction);
         },
     },
     Case {
@@ -842,51 +570,6 @@ pub const CASES: &[Case] = &[
             b.draw_find_replace(area, &panel);
         },
     },
-    Case {
-        method: "draw_menu_bar",
-        needle: Some("c0menu"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = MenuBar {
-                id: id("menu-bar"),
-                items: vec![MenuBarItem {
-                    id: id("menu-bar-item"),
-                    label: "c0menu".to_string(),
-                    disabled: false,
-                    submenu: None,
-                }],
-                open_item: None,
-                focused_item: None,
-            };
-            let _ = b.draw_menu_bar(Rect::new(0.0, 0.0, area.width, lh), &bar);
-        },
-    },
-    Case {
-        // `InteractionState`-carrying counterpart to `draw_menu_bar`.
-        // The state names the single top-level item's id as hovered so a
-        // backend that honours the seam takes its tint branch; the item
-        // label must still reach the frame either way.
-        method: "draw_menu_bar_with_state",
-        needle: Some("c0menustate"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let item_id = id("menu-bar-state-item");
-            let bar = MenuBar {
-                id: id("menu-bar-state"),
-                items: vec![MenuBarItem {
-                    id: item_id,
-                    label: "c0menustate".to_string(),
-                    disabled: false,
-                    submenu: None,
-                }],
-                open_item: None,
-                focused_item: None,
-            };
-            let interaction = InteractionState::from_parts(Some(item_id), None);
-            let _ =
-                b.draw_menu_bar_with_state(Rect::new(0.0, 0.0, area.width, lh), &bar, &interaction);
-        },
-    },
     // ── More chrome-only primitives ────────────────────────────────────
     Case {
         method: "draw_split",
@@ -931,93 +614,6 @@ pub const CASES: &[Case] = &[
                 focusable: false,
             };
             let _ = b.draw_canvas(area, &canvas);
-        },
-    },
-    Case {
-        method: "draw_toolbar_interactive",
-        needle: Some("c0tbar"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = Toolbar::new(id("toolbar")).with_buttons(vec![ToolbarButton::Action {
-                spec: None,
-                id: id("toolbar-button"),
-                label: "c0tbar".to_string(),
-                icon: None,
-                key_hint: None,
-                enabled: true,
-                is_active: false,
-                tooltip: String::new(),
-            }]);
-            let _ = b.draw_toolbar_interactive(
-                Rect::new(0.0, 0.0, area.width, lh),
-                &bar,
-                &InteractionState::new(),
-            );
-        },
-    },
-    // The options-taking twin backends actually implement —
-    // `draw_toolbar_interactive` above is a forwarding default over it.
-    // A C0 row here is what proves each backend's rasteriser is reached
-    // through *this* entry point too, and it paints into a slot taller
-    // than one text row with a non-default `valign` so the arm that
-    // moves the text is the one exercised.
-    Case {
-        method: "draw_toolbar_with_options",
-        needle: Some("c0tbva"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar =
-                Toolbar::new(id("toolbar-valign")).with_buttons(vec![ToolbarButton::Action {
-                    spec: None,
-                    id: id("toolbar-valign-button"),
-                    label: "c0tbva".to_string(),
-                    icon: None,
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                }]);
-            let _ = b.draw_toolbar_with_options(
-                Rect::new(0.0, 0.0, area.width, lh * 3.0),
-                &bar,
-                &InteractionState::new(),
-                ToolbarPaintOptions {
-                    valign: ToolbarVAlign::Bottom,
-                },
-            );
-        },
-    },
-    // The overflow-aware entry point. More items than the viewport's main
-    // axis can hold, so the `ToolbarOverflow::Wrap` arm a backend with its
-    // own overflow rasteriser takes is the one reached; a backend still on
-    // the trait's forwarding default clips instead. Either way the leading
-    // item — the needle — paints, which is what C0 asserts: this entry
-    // point reaches a rasteriser at all.
-    Case {
-        method: "draw_toolbar_with_overflow",
-        needle: Some("c0tbov01"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let buttons: Vec<ToolbarButton> = (1..=12)
-                .map(|n| ToolbarButton::Action {
-                    spec: None,
-                    id: id(&format!("toolbar-overflow-{n}")),
-                    label: format!("c0tbov{n:02}"),
-                    icon: None,
-                    key_hint: None,
-                    enabled: true,
-                    is_active: false,
-                    tooltip: String::new(),
-                })
-                .collect();
-            let bar = Toolbar::new(id("toolbar-overflow")).with_buttons(buttons);
-            let _ = b.draw_toolbar_with_overflow(
-                Rect::new(0.0, 0.0, area.width, lh * 3.0),
-                &bar,
-                &InteractionState::new(),
-                ToolbarLayoutOptions::new().with_overflow(ToolbarOverflow::Wrap),
-                &ToolbarOverflowPriorities::new(),
-            );
         },
     },
     Case {
@@ -1123,34 +719,6 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_image(area, &image);
         },
     },
-    // ── Deprecated positional hover/pressed shim ──────────────────────
-    //
-    // `draw_status_bar` is a `#[deprecated]` trait *default* that rebuilds
-    // an `InteractionState` and forwards to `draw_status_bar_interactive`.
-    // This C0 row is the only automated proof that the shim reaches a
-    // rasteriser rather than silently painting nothing. `#[allow(deprecated)]`
-    // is scoped to the one call in this closure deliberately: elsewhere in
-    // this repo `-D warnings` must keep rejecting this name.
-    Case {
-        method: "draw_status_bar",
-        needle: Some("c0stsh"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let bar = StatusBar {
-                id: id("status-bar-shim"),
-                left_segments: vec![StatusBarSegment {
-                    text: " c0stsh ".to_string(),
-                    fg: Color::rgb(220, 220, 220),
-                    bg: Color::rgb(37, 37, 38),
-                    bold: false,
-                    action_id: None,
-                }],
-                right_segments: vec![],
-            };
-            #[allow(deprecated)]
-            let _ = b.draw_status_bar(Rect::new(0.0, 0.0, area.width, lh), &bar, None, None);
-        },
-    },
     Case {
         // Glyph-override counterpart to `draw_data_table`. `None`
         // overrides exercises the default-delegating path every
@@ -1181,37 +749,6 @@ pub const CASES: &[Case] = &[
                 bordered: false,
             };
             let _ = b.draw_data_table_with_glyphs(area, &table, None, None);
-        },
-    },
-    Case {
-        // Glyph-override counterpart to `draw_context_menu`, with `None`
-        // overrides exercising the default-delegating path.
-        method: "draw_context_menu_with_glyphs",
-        needle: Some("c0ctxmg"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let menu = ContextMenu {
-                id: id("context-menu-glyphs"),
-                items: vec![ContextMenuItem {
-                    id: Some(id("context-menu-glyphs-item")),
-                    label: StyledText::plain("c0ctxmg"),
-                    detail: None,
-                    disabled: false,
-                    key_equivalent: None,
-                    checked: None,
-                    icon: None,
-                    submenu: None,
-                }],
-                selected_idx: 0,
-                bg: None,
-                placement: ContextMenuPlacement::AnchorPoint,
-                glyphs: Default::default(),
-            };
-            let layout = menu.layout(0.0, 0.0, area, cw * 20.0, |_| {
-                ContextMenuItemMeasure::new(lh)
-            });
-            let _ = b.draw_context_menu_with_glyphs(&menu, &layout, None);
         },
     },
 ];
@@ -1383,7 +920,7 @@ mod tests {
     fn cases_cover_every_draw_method_on_the_trait() {
         let trait_methods: Vec<&str> = draw_fn_names(backend_trait_body());
         assert!(
-            trait_methods.len() >= 30,
+            trait_methods.len() >= 25,
             "sanity check failed: expected dozens of `fn draw_*` trait methods in backend.rs, \
              found only {} — the line-based parser above likely broke against a reformatted \
              file rather than the trait actually shrinking: {trait_methods:?}",

@@ -30,12 +30,11 @@
 //!   - [`SidebarPanelChrome::Search`] — a filter row with **no** header
 //!     above it. `draw_settings_chrome`'s row 0 is unconditionally
 //!     header-styled, so this can't reuse it — it paints a single
-//!     synthetic [`crate::StatusBar`] segment via
-//!     [`crate::Backend::draw_status_bar_interactive`] instead, the
-//!     same rasteriser every backend already implements.
+//!     synthetic [`crate::StatusBar`] segment through the widget
+//!     contract ([`crate::DrawsPrimitives::draw_dyn`]) instead.
 //!   - [`SidebarPanelChrome::StatusBars`] — one row per
 //!     [`crate::StatusBar`] (e.g. a title bar + an action bar), each
-//!     painted via [`crate::Backend::draw_status_bar_interactive`] with
+//!     painted via [`crate::DrawsPrimitives::draw_dyn`] with
 //!     its hit regions translated into panel-space and surfaced on
 //!     [`SidebarPanelBodyLayout::status_bar_hit_regions`], so the host
 //!     routes clicks against the same geometry that was painted.
@@ -100,9 +99,11 @@
 //! ```
 
 use crate::backend::BackendWidget;
+use crate::backend::DrawsPrimitives;
 use crate::event::Rect;
-use crate::interaction::InteractionState;
-use crate::primitives::status_bar::{StatusBar, StatusBarHit, StatusBarSegment};
+use crate::primitives::status_bar::{
+    StatusBar, StatusBarHit, StatusBarPrimitiveLayout, StatusBarSegment,
+};
 use crate::types::{Color, WidgetId};
 use crate::Backend;
 
@@ -146,7 +147,7 @@ pub enum SidebarPanelChrome {
     /// Reserves one row, the same as [`Self::Header`].
     ///
     /// Painted via a single synthetic [`crate::StatusBar`] segment
-    /// through [`crate::Backend::draw_status_bar_interactive`] rather
+    /// through [`crate::DrawsPrimitives::draw_dyn`] rather
     /// than `draw_settings_chrome` — that method's row 0 is
     /// unconditionally header-styled, so reusing it here would repaint
     /// a phantom header strip. [`crate::StatusBar`]/[`crate::StatusBarSegment`]
@@ -167,7 +168,7 @@ pub enum SidebarPanelChrome {
     },
     /// One row per [`crate::StatusBar`] — e.g. vimcode's Debug sidebar
     /// chrome (a title bar + a Run/Stop action bar). Each bar is
-    /// painted via [`crate::Backend::draw_status_bar_interactive`] in
+    /// painted via [`crate::DrawsPrimitives::draw_dyn`] in
     /// order, and its hit regions are translated into panel-space and
     /// appended to
     /// [`SidebarPanelBodyLayout::status_bar_hit_regions`] — the same
@@ -393,14 +394,9 @@ impl SidebarPanelBody {
                         }],
                         right_segments: Vec::new(),
                     };
-                    let _ = backend.draw_status_bar_interactive(
-                        chrome_rect,
-                        &search_bar,
-                        &InteractionState::new(),
-                    );
+                    let _ = backend.draw_dyn(chrome_rect, &search_bar, &());
                 }
                 SidebarPanelChrome::StatusBars(bars) => {
-                    let interaction = InteractionState::new();
                     let mut row_y = chrome_rect.y;
                     for bar in bars {
                         let remaining = (chrome_rect.y + chrome_rect.height - row_y).max(0.0);
@@ -409,9 +405,12 @@ impl SidebarPanelBody {
                             break;
                         }
                         let row_rect = Rect::new(chrome_rect.x, row_y, chrome_rect.width, row_h);
-                        let bar_layout =
-                            backend.draw_status_bar_interactive(row_rect, bar, &interaction);
-                        for (r, hit) in bar_layout.hit_regions {
+                        let painted = backend.draw_dyn(row_rect, bar, &());
+                        let hit_regions = painted
+                            .downcast_ref::<StatusBarPrimitiveLayout>()
+                            .map(|p| p.layout.hit_regions.clone())
+                            .unwrap_or_default();
+                        for (r, hit) in hit_regions {
                             layout.status_bar_hit_regions.push((
                                 Rect::new(row_rect.x + r.x, row_rect.y + r.y, r.width, r.height),
                                 hit,
@@ -426,6 +425,453 @@ impl SidebarPanelBody {
         body(backend, layout.body_rect);
 
         layout
+    }
+}
+
+// ── Settings chrome painters ─────────────────────────────────────────
+
+/// Caret width for the settings-chrome search row on a pixel surface.
+const SETTINGS_CURSOR_W: f32 = 1.5;
+/// Prefix painted before the settings-chrome search query on a pixel
+/// surface.
+const SETTINGS_SEARCH_PREFIX: &str = " /  ";
+
+/// Paint settings-panel chrome on a pixel surface: a header row and,
+/// when `rect.height` leaves room for it, a search input row beneath it,
+/// designed to sit immediately above a [`crate::Form`] body. Every pixel
+/// backend's [`crate::Backend::draw_settings_chrome`] forwards here with
+/// its own chrome-font surface, line height and theme.
+///
+/// The header row always paints at one `line_height` tall. The search
+/// row paints only when `rect.height >= line_height * 1.5`, so a caller
+/// reserving a single row (e.g. [`SidebarPanelChrome::Header`]) gets a
+/// header-only strip instead of an unrequested second row painted past
+/// its own rect. When the search row does paint, its full-width
+/// background is `theme.selected_bg` when `active`, otherwise
+/// `theme.tab_bar_bg`. Layout left to right: [`SETTINGS_SEARCH_PREFIX`]
+/// in `theme.muted_fg`, then either `query` (in `theme.foreground`) or
+/// `placeholder` (in `theme.muted_fg`, shown only when the query is
+/// empty *and* the row is inactive). A [`SETTINGS_CURSOR_W`]-wide
+/// `theme.accent_fg` caret follows the query when `active`. Text is
+/// centred vertically in its row and snapped to a whole pixel.
+///
+/// Chrome only: the form body and any scrollbar layered below are
+/// painted separately by the caller.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_settings_chrome(
+    surface: &mut dyn crate::PaintSurface,
+    theme: &crate::Theme,
+    rect: Rect,
+    line_height: f32,
+    header_text: &str,
+    query: &str,
+    placeholder: &str,
+    active: bool,
+) {
+    if rect.width <= 0.0 || line_height <= 0.0 {
+        return;
+    }
+    let paints_search_row = rect.height >= line_height * 1.5;
+    let rows_h = if paints_search_row {
+        line_height * 2.0
+    } else {
+        line_height
+    };
+    surface.surface_push_clip(Rect::new(rect.x, rect.y, rect.width, rows_h));
+
+    let text_y =
+        |row_y: f32, text_h: f32| (row_y + ((line_height - text_h) / 2.0).max(0.0)).round();
+
+    // Row 0: header bar.
+    surface.surface_fill_rect(
+        Rect::new(rect.x, rect.y, rect.width, line_height),
+        theme.header_bg,
+    );
+    let (header_w, header_h) = surface.surface_measure_text(header_text);
+    surface.surface_draw_text_run(
+        Rect::new(rect.x + 2.0, text_y(rect.y, header_h), header_w, header_h),
+        header_text,
+        theme.header_fg,
+    );
+
+    // Row 1: search input, only when the rect covers it.
+    if paints_search_row {
+        let search_y = rect.y + line_height;
+        let row_bg = if active {
+            theme.selected_bg
+        } else {
+            theme.tab_bar_bg
+        };
+        surface.surface_fill_rect(Rect::new(rect.x, search_y, rect.width, line_height), row_bg);
+
+        let (prefix_w, prefix_h) = surface.surface_measure_text(SETTINGS_SEARCH_PREFIX);
+        surface.surface_draw_text_run(
+            Rect::new(rect.x + 2.0, text_y(search_y, prefix_h), prefix_w, prefix_h),
+            SETTINGS_SEARCH_PREFIX,
+            theme.muted_fg,
+        );
+
+        let q_x = rect.x + 2.0 + prefix_w;
+        let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+        let (text, color) = if show_placeholder {
+            (placeholder, theme.muted_fg)
+        } else if query.is_empty() {
+            (query, theme.muted_fg)
+        } else {
+            (query, theme.foreground)
+        };
+        let (text_w, text_h) = surface.surface_measure_text(text);
+        surface.surface_draw_text_run(
+            Rect::new(q_x, text_y(search_y, text_h), text_w, text_h),
+            text,
+            color,
+        );
+
+        if active {
+            let (query_w, _) = surface.surface_measure_text(query);
+            let cur_x = q_x + if query.is_empty() { 0.0 } else { query_w };
+            surface.surface_fill_rect(
+                Rect::new(
+                    cur_x,
+                    search_y + 2.0,
+                    SETTINGS_CURSOR_W,
+                    (line_height - 4.0).max(0.0),
+                ),
+                theme.accent_fg,
+            );
+        }
+    }
+
+    surface.surface_pop_clip();
+}
+
+/// Paint settings-panel chrome on a cell grid: the cell counterpart of
+/// [`paint_settings_chrome`], which [`crate::Backend::draw_settings_chrome`]
+/// forwards to on TUI.
+///
+/// Row 0 is the header (`header_bg` / `header_fg`). Row 1, painted only
+/// when `rect` is at least two rows tall, is the search input:
+/// full-width `selected_bg` when `active`, otherwise `tab_bar_bg`, then
+/// ` / ` in `muted_fg` followed by either `query` (in `foreground`) or
+/// `placeholder` (in `muted_fg`, shown only when the query is empty and
+/// the row is inactive). A one-cell `█` caret in `accent_fg` follows the
+/// query when `active`.
+#[allow(clippy::too_many_arguments)]
+pub fn paint_settings_chrome_cells(
+    surface: &mut dyn crate::CellSurface,
+    theme: &crate::Theme,
+    rect: Rect,
+    header_text: &str,
+    query: &str,
+    placeholder: &str,
+    active: bool,
+) {
+    let x0 = rect.x.max(0.0) as u16;
+    let y0 = rect.y.max(0.0) as u16;
+    let width = rect.width.max(0.0) as u16;
+    let height = rect.height.max(0.0) as u16;
+    if width == 0 || height == 0 {
+        return;
+    }
+    let x_end = x0.saturating_add(width);
+    let style = |fg, bg| crate::cell_surface::CellStyle {
+        fg: Some(fg),
+        bg: Some(bg),
+        ..crate::cell_surface::CellStyle::default()
+    };
+
+    // Row 0: header.
+    let header_style = style(theme.header_fg, theme.header_bg);
+    for x in x0..x_end {
+        surface.put_char(x, y0, ' ', header_style);
+    }
+    for (x, ch) in (x0..x_end).zip(header_text.chars()) {
+        surface.put_char(x, y0, ch, header_style);
+    }
+
+    if height < 2 {
+        return;
+    }
+
+    // Row 1: search input.
+    let search_y = y0 + 1;
+    let row_bg = if active {
+        theme.selected_bg
+    } else {
+        theme.tab_bar_bg
+    };
+    for x in x0..x_end {
+        surface.put_char(x, search_y, ' ', style(theme.foreground, row_bg));
+    }
+
+    let mut x = x0;
+    for ch in [' ', '/', ' '] {
+        if x >= x_end {
+            break;
+        }
+        surface.put_char(x, search_y, ch, style(theme.muted_fg, row_bg));
+        x += 1;
+    }
+
+    let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
+    let (text, fg) = if show_placeholder {
+        (placeholder, theme.muted_fg)
+    } else {
+        (query, theme.foreground)
+    };
+    for ch in text.chars() {
+        if x >= x_end {
+            break;
+        }
+        surface.put_char(x, search_y, ch, style(fg, row_bg));
+        x += 1;
+    }
+
+    if active && x < x_end {
+        surface.put_char(x, search_y, '█', style(theme.accent_fg, row_bg));
+    }
+}
+
+#[cfg(test)]
+mod settings_chrome_tests {
+    use super::*;
+    use crate::backend::ImagePaintResult;
+    use crate::event::Viewport;
+    use crate::paint_surface::PaintSurface;
+    use crate::types::Color;
+    use crate::Image;
+    use crate::Theme;
+
+    /// Records every drawing verb `paint_settings_chrome` issues.
+    #[derive(Default)]
+    struct RecordingSurface {
+        fills: Vec<(Rect, Color)>,
+        text_runs: Vec<(Rect, String, Color)>,
+    }
+
+    impl PaintSurface for RecordingSurface {
+        fn surface_begin_frame(&mut self, _viewport: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(300.0, 60.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            16.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            8.0
+        }
+        fn surface_measure_text(&self, text: &str) -> (f32, f32) {
+            (text.chars().count() as f32 * 8.0, 14.0)
+        }
+        fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+            self.fills.push((rect, color));
+        }
+        fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
+            self.fills.push((rect, color));
+        }
+        fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
+        fn surface_stroke_rounded_rect(
+            &mut self,
+            _rect: Rect,
+            _radius: f32,
+            _color: Color,
+            _stroke_width: f32,
+        ) {
+        }
+        fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
+            self.text_runs.push((rect, text.to_string(), color));
+        }
+        fn surface_draw_line(
+            &mut self,
+            _from: crate::Point,
+            _to: crate::Point,
+            _color: Color,
+            _stroke_width: f32,
+        ) {
+        }
+        fn surface_push_clip(&mut self, _rect: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    fn paint_one_row(surface: &mut RecordingSurface, height: f32, active: bool) {
+        paint_settings_chrome(
+            surface,
+            &Theme::default(),
+            Rect::new(0.0, 0.0, 200.0, height),
+            16.0,
+            "Settings",
+            "",
+            "Search",
+            active,
+        );
+    }
+
+    /// A one-`line_height`-tall rect leaves no room for the search
+    /// row — only the header paints.
+    #[test]
+    fn one_row_height_paints_no_search_row() {
+        let mut surface = RecordingSurface::default();
+        paint_one_row(&mut surface, 16.0, false);
+        assert_eq!(surface.fills.len(), 1, "only the header bar should fill");
+        assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Settings"));
+        assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
+    }
+
+    /// A two-`line_height`-tall rect leaves room for the search
+    /// row, which shows the placeholder when `query` is empty and
+    /// the row is inactive.
+    #[test]
+    fn two_row_height_paints_search_row_with_placeholder() {
+        let mut surface = RecordingSurface::default();
+        paint_one_row(&mut surface, 32.0, false);
+        assert_eq!(
+            surface.fills.len(),
+            2,
+            "header bar + search row should fill"
+        );
+        assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
+        assert!(surface
+            .text_runs
+            .iter()
+            .any(|(_, t, _)| t == SETTINGS_SEARCH_PREFIX));
+    }
+
+    /// An active search row with a non-empty query paints the
+    /// query (not the placeholder) plus a cursor fill.
+    #[test]
+    fn active_row_paints_query_and_cursor() {
+        let mut surface = RecordingSurface::default();
+        paint_settings_chrome(
+            &mut surface,
+            &Theme::default(),
+            Rect::new(0.0, 0.0, 200.0, 32.0),
+            16.0,
+            "Settings",
+            "abc",
+            "Search",
+            true,
+        );
+        let theme = Theme::default();
+        assert!(surface.text_runs.iter().any(|(_, t, _)| t == "abc"));
+        assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
+        // Row bg + cursor are both fills distinct from the header fill.
+        assert!(surface.fills.iter().any(|(_, c)| *c == theme.selected_bg));
+        assert!(surface
+            .fills
+            .iter()
+            .any(|(r, c)| *c == theme.accent_fg && r.width == SETTINGS_CURSOR_W));
+    }
+
+    /// Inactive row background is `tab_bar_bg`, not `selected_bg`.
+    #[test]
+    fn inactive_row_uses_tab_bar_bg() {
+        let mut surface = RecordingSurface::default();
+        paint_one_row(&mut surface, 32.0, false);
+        let theme = Theme::default();
+        assert!(surface.fills.iter().any(|(_, c)| *c == theme.tab_bar_bg));
+        assert!(!surface.fills.iter().any(|(_, c)| *c == theme.selected_bg));
+    }
+
+    /// Zero-width rect is a no-op: nothing paints.
+    #[test]
+    fn zero_width_is_a_no_op() {
+        let mut surface = RecordingSurface::default();
+        paint_settings_chrome(
+            &mut surface,
+            &Theme::default(),
+            Rect::new(0.0, 0.0, 0.0, 32.0),
+            16.0,
+            "Settings",
+            "",
+            "Search",
+            false,
+        );
+        assert!(surface.fills.is_empty());
+        assert!(surface.text_runs.is_empty());
+    }
+
+    /// Chrome paints at a non-zero origin, not hardcoded to (0, 0).
+    #[test]
+    fn paints_at_a_nonzero_origin() {
+        let mut surface = RecordingSurface::default();
+        paint_settings_chrome(
+            &mut surface,
+            &Theme::default(),
+            Rect::new(7.0, 13.0, 200.0, 32.0),
+            16.0,
+            "Settings",
+            "",
+            "",
+            false,
+        );
+        assert!(surface.fills.iter().all(|(r, _)| r.x == 7.0 && r.y >= 13.0));
+    }
+
+    #[cfg(feature = "tui")]
+    mod cells {
+        use super::super::paint_settings_chrome_cells;
+        use crate::backend::ColorDepth;
+        use crate::event::Rect;
+        use crate::tui::cell_surface::TuiCellSurface;
+        use crate::tui::ratatui_color;
+        use crate::Theme;
+        use ratatui::buffer::Buffer;
+        use ratatui::layout::Rect as RRect;
+
+        fn paint(height: u16, query: &str, active: bool) -> Buffer {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 20, 3));
+            let mut cursor = None;
+            let mut surface = TuiCellSurface::new(&mut buf, ColorDepth::TrueColor, &mut cursor);
+            paint_settings_chrome_cells(
+                &mut surface,
+                &Theme::default(),
+                Rect::new(0.0, 0.0, 20.0, height as f32),
+                "SETTINGS",
+                query,
+                "Search",
+                active,
+            );
+            buf
+        }
+
+        fn row(buf: &Buffer, y: u16) -> String {
+            (0..20).map(|x| buf[(x, y)].symbol().to_string()).collect()
+        }
+
+        #[test]
+        fn one_row_paints_the_header_only() {
+            let buf = paint(1, "", false);
+            assert!(row(&buf, 0).starts_with("SETTINGS"));
+            assert_eq!(
+                buf[(0, 0)].bg,
+                ratatui_color(Theme::default().header_bg),
+                "the header row fills header_bg"
+            );
+            assert_eq!(row(&buf, 1).trim(), "", "no search row past a one-row rect");
+            assert_ne!(buf[(0, 1)].bg, ratatui_color(Theme::default().tab_bar_bg));
+        }
+
+        #[test]
+        fn two_rows_paint_the_placeholder_on_tab_bar_bg() {
+            let buf = paint(2, "", false);
+            assert!(row(&buf, 1).starts_with(" / Search"), "{:?}", row(&buf, 1));
+            assert_eq!(buf[(5, 1)].bg, ratatui_color(Theme::default().tab_bar_bg));
+            assert_eq!(buf[(5, 1)].fg, ratatui_color(Theme::default().muted_fg));
+        }
+
+        #[test]
+        fn active_row_paints_the_query_and_a_caret_on_selected_bg() {
+            let theme = Theme::default();
+            let buf = paint(2, "ab", true);
+            assert!(row(&buf, 1).starts_with(" / ab█"), "{:?}", row(&buf, 1));
+            assert_eq!(buf[(3, 1)].fg, ratatui_color(theme.foreground));
+            assert_eq!(buf[(5, 1)].fg, ratatui_color(theme.accent_fg));
+            assert_eq!(buf[(0, 1)].bg, ratatui_color(theme.selected_bg));
+        }
     }
 }
 
@@ -712,21 +1158,25 @@ mod tests {
     }
 
     #[test]
-    fn render_search_paints_background_then_one_status_bar_call_then_body() {
+    fn render_search_paints_background_then_one_status_bar_then_body() {
         let panel = SidebarPanelBody {
             background: Some(Color::rgb(10, 10, 10)),
             chrome: search_chrome("rust", "Search", true),
             ..Default::default()
         };
+        crate::primitive::clear_painted_widgets();
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
 
         // `draw_settings_chrome` must never fire for `Search` — its row 0
         // is unconditionally header-styled, which is exactly the
-        // phantom-header bug this variant exists to avoid.
+        // phantom-header bug this variant exists to avoid. The search row
+        // paints through the widget contract, so it shows up in the
+        // painted-widget record rather than as a backend call.
+        assert_eq!(backend.calls, vec!["draw_solid_fill", "draw_solid_fill"]);
         assert_eq!(
-            backend.calls,
-            vec!["draw_solid_fill", "draw_status_bar", "draw_solid_fill"]
+            painted_ids(),
+            vec![WidgetId::new("sidebar-panel-body:search")]
         );
     }
 
@@ -798,21 +1248,24 @@ mod tests {
             chrome: SidebarPanelChrome::StatusBars(bars),
             ..Default::default()
         };
+        crate::primitive::clear_painted_widgets();
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
+        assert_eq!(backend.calls, vec!["draw_solid_fill", "draw_solid_fill"]);
         assert_eq!(
-            backend.calls,
-            vec![
-                "draw_solid_fill",
-                "draw_status_bar",
-                "draw_status_bar",
-                "draw_solid_fill",
-            ]
+            painted_ids(),
+            vec![WidgetId::new("debug:title"), WidgetId::new("debug:actions")]
         );
     }
 
+    /// Ids of the widget-contract widgets painted since the record was
+    /// last cleared, in paint order.
+    fn painted_ids() -> Vec<WidgetId> {
+        crate::primitive::with_painted_widgets(|p| p.iter().map(|w| w.id).collect())
+    }
+
     /// The hit regions `render` surfaces on `SidebarPanelBodyLayout` must
-    /// be exactly what `draw_status_bar_interactive` returned for each
+    /// be exactly the hit regions each bar's widget layout resolved, for each
     /// bar, translated from that bar's own bar-local coordinates into
     /// panel-space by adding the row's origin — nothing recomputed, no
     /// drift from what was actually painted.
@@ -829,12 +1282,11 @@ mod tests {
 
         // The title bar has no clickable segment, so it contributes no
         // hit regions. The actions bar is the second row (y offset =
-        // 1 unit_h) — recompute the same char-cell layout
-        // `RecordingBackend::draw_status_bar_interactive` computes, and
+        // 1 unit_h) — resolve the same widget layout the paint used, and
         // translate by that row's origin, to get the expected entry.
-        let bar_layout = actions.layout(rect().width, 1.0, 2.0, |seg| {
-            crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32)
-        });
+        let bar_layout = backend
+            .layout_primitive(Rect::new(0.0, 1.0, rect().width, 1.0), &actions)
+            .layout;
         let (bar_local_rect, hit) = bar_layout.hit_regions[0].clone();
         let expected = (
             Rect::new(

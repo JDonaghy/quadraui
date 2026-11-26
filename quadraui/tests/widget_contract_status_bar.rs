@@ -11,6 +11,13 @@
 //!
 //! Never a direct call into `StatusBar::handle`/`Primitive::layout` that
 //! would skip the routing engine.
+//!
+//! This is the runtime leg of the event-parity check; the binding-host
+//! leg (`quadraui-binding-core`'s `InteractionEngine` painting a
+//! `"status_bar"` leaf) lives in that crate's engine tests, and both
+//! resolve a click on a clickable segment to the same
+//! `UiEvent::StatusBar(bar, SegmentClicked { .. })`. `StatusBar` declares
+//! no a11y actions, so there is no `a11y::route_widget_action` leg.
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
@@ -201,5 +208,29 @@ fn a_press_outside_the_bar_bubbles_to_the_app_unclaimed() {
         )),
         "the plain mouse-down must bubble to the app: {:?}",
         driver.app().events
+    );
+}
+
+/// The runtime leg of the event parity: a mouse click on a clickable
+/// segment resolves to exactly the event the binding-host leg asserts.
+#[test]
+fn a_mouse_click_on_a_segment_matches_the_parity_event() {
+    let mut driver = TuiDriver::new(StatusBarApp::new(), COLS, ROWS);
+
+    click_segment(&mut driver, MODE);
+
+    let bar_id = driver.app().bar.id;
+    let bar_events: Vec<&UiEvent> = driver
+        .app()
+        .events
+        .iter()
+        .filter(|e| matches!(e, UiEvent::StatusBar(..)))
+        .collect();
+    assert_eq!(
+        bar_events,
+        vec![&UiEvent::StatusBar(
+            bar_id,
+            StatusBarEvent::SegmentClicked { id: mode_id() }
+        )]
     );
 }

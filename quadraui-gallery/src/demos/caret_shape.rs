@@ -8,12 +8,13 @@
 //! *change*, mirroring that method's debouncing contract (never call it
 //! every frame).
 
+use quadraui::DrawsPrimitives;
 use std::cell::Cell;
 
 use quadraui::{
     Backend, BackendCaps, Color, Editor, EditorCursor, EditorCursorPos, EditorCursorShape,
-    EditorLine, EditorStyle, EditorStyledSpan, InteractionState, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, UiEvent, WidgetId,
+    EditorLine, EditorStyle, EditorStyledSpan, Reaction, Rect, StatusBar, StatusBarSegment, Style,
+    UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -183,11 +184,7 @@ impl Demo for CaretShapeDemo {
         backend.draw_editor(editor.rect, &editor);
 
         let bar_rect = Rect::new(area.x, area.y + editor_area.height, area.width, bar_h);
-        let _ = backend.draw_status_bar_interactive(
-            bar_rect,
-            &self.status_bar(shape),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(bar_rect, &self.status_bar(shape), &());
     }
 
     fn handle(

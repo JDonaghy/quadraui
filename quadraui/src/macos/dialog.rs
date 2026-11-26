@@ -6,9 +6,9 @@
 //! is unchanged by this — it was already the answer the shared `paint` adopted
 //! for every backend.
 //!
-//! `DialogInput::Toolbar` still renders through
-//! [`super::toolbar::draw_toolbar`] after the shared `paint` returns,
-//! using the same `font` (chrome) as before.
+//! `DialogInput::Toolbar` renders through
+//! `primitives::toolbar::native_surface_paint::paint_embedded` after the
+//! shared `paint` returns, on the same chrome-font surface.
 //!
 //! Returns the per-button bounds as `Vec<Rect>` so the caller's click
 //! handler can resolve button hits without re-running layout.
@@ -48,27 +48,16 @@ pub unsafe fn draw_dialog(
     );
 
     // DialogInput::Toolbar isn't painted by the shared `paint` — see
-    // that fn's module doc — so render it here, exactly as before this
-    // migration.
+    // that fn's module doc — so render it here.
     if let (Some(input_b), Some(DialogInput::Toolbar(toolbar))) =
         (dialog_layout.input_bounds, dialog.input.as_ref())
     {
-        // SAFETY: `ctx` validity is this function's own caller contract,
-        // forwarded unchanged.
-        unsafe {
-            super::toolbar::draw_toolbar(
-                ctx,
-                font,
-                input_b.x as f64,
-                input_b.y as f64,
-                input_b.width as f64,
-                input_b.height as f64,
-                toolbar,
-                theme,
-                None,
-                None,
-            );
-        }
+        crate::primitives::toolbar::native_surface_paint::paint_embedded(
+            toolbar,
+            input_b,
+            &mut surface,
+            theme,
+        );
     }
 
     button_rects

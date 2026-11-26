@@ -22,11 +22,10 @@
 //! running — including `Theme::light_default()`.
 
 use quadraui::{
-    AppShellEvent, AppShellLayout, Backend, Decoration, DrawsPrimitives, Icon, InteractionState,
-    Key, ListItem, ListView, ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect,
-    ShellApp, ShellConfig, ShellContext, StatusBar, StatusBarSegment, Style, StyledSpan,
-    StyledText, TabBar, TabBarHit, TabBarLayout, TabItem, TextDisplay, TextDisplayLine, UiEvent,
-    WidgetId,
+    AppShellEvent, AppShellLayout, Backend, Decoration, DrawsPrimitives, Icon, Key, ListItem,
+    ListView, ListViewHit, Modifiers, NamedKey, PanelDefinition, Reaction, Rect, ShellApp,
+    ShellConfig, ShellContext, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText, TabBar,
+    TabBarHit, TabBarLayout, TabItem, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
 };
 
 use crate::registry::registry;
@@ -544,11 +543,7 @@ impl ShellApp for GalleryApp {
                         }],
                         right_segments: vec![],
                     };
-                    backend.draw_status_bar_interactive(
-                        Rect::new(body.x, body.y, body.width, lh),
-                        &bar,
-                        &InteractionState::new(),
-                    );
+                    backend.draw_dyn(Rect::new(body.x, body.y, body.width, lh), &bar, &());
                 }
                 Some(idx) => match self.active_tab {
                     MainTab::Demo => {
@@ -573,10 +568,10 @@ impl ShellApp for GalleryApp {
                                 }],
                                 right_segments: vec![],
                             };
-                            backend.draw_status_bar_interactive(
+                            backend.draw_dyn(
                                 Rect::new(body.x, body.y + row as f32 * lh, body.width, lh),
                                 &note_bar,
-                                &InteractionState::new(),
+                                &(),
                             );
                         }
                         let demo_rect = self.demo_content_rect(idx, backend, body);
@@ -942,11 +937,7 @@ fn draw_text_block(backend: &mut dyn Backend, rect: Rect, prefix: &str, text: &s
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(
-            Rect::new(rect.x, y, rect.width, lh),
-            &bar,
-            &InteractionState::new(),
-        );
+        backend.draw_dyn(Rect::new(rect.x, y, rect.width, lh), &bar, &());
     }
 }
 
@@ -1022,7 +1013,7 @@ fn draw_variant_picker(backend: &mut dyn Backend, rect: Rect, variants: &[&str],
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(
+        backend.draw_dyn(
             Rect::new(
                 rect.x + i as f32 * col_width,
                 rect.y,
@@ -1030,7 +1021,7 @@ fn draw_variant_picker(backend: &mut dyn Backend, rect: Rect, variants: &[&str],
                 rect.height,
             ),
             &bar,
-            &InteractionState::new(),
+            &(),
         );
     }
 }
@@ -1173,19 +1164,26 @@ mod tests {
 
         // Must not panic, and must actually paint something for the
         // picker row (the two variant columns) plus the demo's own empty
-        // body — `draw_status_bar_interactive` (recorded as
-        // `"draw_status_bar"`, see `RecordingBackend`'s impl) is the one
-        // call both go through. At least 2 calls: one per variant column
-        // (`draw_variant_picker` loops `variants.len()` times).
+        // body — each is a `StatusBar` painted through the widget
+        // contract, so it lands in the frame's painted-widget record. At
+        // least 2: one per variant column (`draw_variant_picker` loops
+        // `variants.len()` times).
+        quadraui::primitive::clear_painted_widgets();
         app.render_content(&mut backend, &layout);
-        let status_bar_calls = backend
-            .calls
-            .iter()
-            .filter(|c| **c == "draw_status_bar")
-            .count();
+        let status_bars = quadraui::primitive::with_painted_widgets(|painted| {
+            painted
+                .iter()
+                .filter(|w| {
+                    w.layout
+                        .downcast_ref::<quadraui::primitives::status_bar::StatusBarPrimitiveLayout>(
+                        )
+                        .is_some()
+                })
+                .count()
+        });
         assert!(
-            status_bar_calls >= 2,
-            "expected at least 2 draw_status_bar calls (one per variant column), got {status_bar_calls}: {:?}",
+            status_bars >= 2,
+            "expected at least 2 painted status bars (one per variant column), got {status_bars}: {:?}",
             backend.calls
         );
     }

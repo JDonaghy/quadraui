@@ -31,9 +31,9 @@
 //! convention [`quadraui::focus::FocusTree::set_focus`] documents.
 
 use quadraui::{
-    AppLogic, Backend, Color, DrawsPrimitives, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, TabBar, TabBarEvent, TabBarHit, TabChrome, TabFrame, TabItem,
-    UiEvent, WidgetId,
+    AppLogic, Backend, Color, DrawsPrimitives, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, TabBar, TabBarEvent, TabBarHit, TabChrome, TabFrame, TabItem, UiEvent,
+    WidgetId,
 };
 
 /// Tab labels, index-stable across activation (only `is_active` /
@@ -134,10 +134,10 @@ impl AppLogic for TabChromeDemo {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         backend.draw_dyn(Rect::new(0.0, 0.0, viewport.width, lh), &self.bar(), &());
-        backend.draw_status_bar_interactive(
+        backend.draw_dyn(
             Rect::new(0.0, viewport.height - lh, viewport.width, lh),
             &self.hint_bar(),
-            &InteractionState::new(),
+            &(),
         );
     }
 

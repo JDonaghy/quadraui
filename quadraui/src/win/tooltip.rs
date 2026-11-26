@@ -9,8 +9,8 @@
 //!
 //! # Theme
 //!
-//! `WinBackend` does not yet carry a live [`Theme`] (see `win::status_bar`'s
-//! module doc) — callers without a per-tooltip override fall back to
+//! `WinBackend` does not yet carry a live [`Theme`] — callers without a
+//! per-tooltip override fall back to
 //! [`Theme::default`].
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;

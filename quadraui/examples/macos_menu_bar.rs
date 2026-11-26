@@ -4,8 +4,8 @@
 //!
 //! On TUI/GTK this paints the in-window `MenuBar` primitive at the top
 //! with a `StatusBar` at the bottom, same as ever. On macOS,
-//! `Backend::draw_menu_bar` installs the real system
-//! `NSMenu` instead — macOS has no Alt-mnemonic convention and a
+//! `MenuSystem::render` installs the real system `NSMenu` through
+//! `Backend::install_menu_bar` instead — macOS has no Alt-mnemonic convention and a
 //! painted `File Edit View` strip is the one that needs opting into
 //! there, not the other way round. `MenuSystem::handle` routes the
 //! resulting `UiEvent::MenuActivated` to the same `MenuEvent::Activated`

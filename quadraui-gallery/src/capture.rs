@@ -1799,7 +1799,7 @@ mod tests {
             backend: &mut dyn quadraui::Backend,
             area: quadraui::Rect,
         ) {
-            use quadraui::{Color, InteractionState, StatusBar, StatusBarSegment, WidgetId};
+            use quadraui::{Color, DrawsPrimitives, StatusBar, StatusBarSegment, WidgetId};
             let bar = StatusBar {
                 id: WidgetId::new("test:two-variant"),
                 left_segments: vec![StatusBarSegment {
@@ -1811,7 +1811,7 @@ mod tests {
                 }],
                 right_segments: vec![],
             };
-            let _ = backend.draw_status_bar_interactive(area, &bar, &InteractionState::new());
+            let _ = backend.draw_dyn(area, &bar, &());
         }
 
         fn handle(
@@ -2021,7 +2021,7 @@ mod tests {
             backend: &mut dyn quadraui::Backend,
             area: quadraui::Rect,
         ) {
-            use quadraui::{Color, InteractionState, StatusBar, StatusBarSegment, WidgetId};
+            use quadraui::{Color, DrawsPrimitives, StatusBar, StatusBarSegment, WidgetId};
             let bar = StatusBar {
                 id: WidgetId::new("test:named-demo"),
                 left_segments: vec![StatusBarSegment {
@@ -2033,7 +2033,7 @@ mod tests {
                 }],
                 right_segments: vec![],
             };
-            let _ = backend.draw_status_bar_interactive(area, &bar, &InteractionState::new());
+            let _ = backend.draw_dyn(area, &bar, &());
         }
 
         fn handle(

@@ -5,10 +5,10 @@
 //! uses real WinAPI calls gated on `cfg(target_os = "windows")` so `cargo
 //! check --features win` still type-checks `WinBackend`'s trait
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
-//! `win` feature comment). Chrome-strip rasterisers include
-//! `status_bar`/`activity_bar`/`menu_bar`; content-area
+//! `win` feature comment). Chrome strips (menu, status and
+//! activity bars) paint through their widget contracts; content-area
 //! rasterisers include `tree`/`list`/`form`/`data_table`/`editor`/`chart`;
-//! overlay/popup rasterisers include `tooltip`/`context_menu`/`dialog`/
+//! overlay/popup rasterisers include `tooltip`/`dialog`/
 //! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
 //! indicator rasterisers include `split`/`toast`/`progress`/
 //! `spinner`; text-heavy rasterisers include `text_display`/
@@ -27,10 +27,6 @@
 //! this page (`WinBackend`, `run`, …) are the stable, consumer-depended-on
 //! subset; everything else is `#[doc(hidden)]`.
 
-/// Direct2D / DirectWrite rasteriser for [`crate::ActivityBar`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod activity_bar;
 pub mod backend;
 /// Direct2D / DirectWrite rasteriser for
 /// [`crate::primitives::board::BoardModel`]. Windows-only in full —
@@ -55,10 +51,6 @@ mod command_line;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod completions;
-/// Direct2D / DirectWrite rasteriser for [`crate::ContextMenu`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod context_menu;
 /// Direct2D / DirectWrite rasteriser for [`crate::DataTable`]. Issue
 /// Only its paint fn is Windows-only — see its module docs.
 mod data_table;
@@ -86,10 +78,6 @@ mod editor;
 /// its module docs. `WM_SIZE`/`WM_DPICHANGED`/`WM_CLOSE` translation
 /// is handled in `msg` + `run` — see this module's docs.
 pub mod events;
-/// Direct2D / DirectWrite rasteriser for [`crate::Form`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod form;
 /// Direct2D + WIC rasteriser for [`crate::primitives::image::Image`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -99,9 +87,6 @@ mod image;
 /// everywhere; only [`list::draw_list`] is Windows-only — see that
 /// module's docs.
 mod list;
-/// Direct2D / DirectWrite rasteriser for [`crate::MenuBar`]. Issue
-/// Only its paint fn is Windows-only — see its module docs.
-mod menu_bar;
 /// Direct2D / DirectWrite rasteriser for [`crate::MessageList`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -125,10 +110,6 @@ mod multi_section_view;
 /// via [`crate::Backend::draw_number_input`], so this module carries no
 /// production code of its own — see its module docs.
 mod number_input;
-/// Direct2D / DirectWrite rasteriser for [`crate::Palette`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod palette;
 /// Direct2D / DirectWrite rasteriser for
 /// [`crate::primitives::pipeline_view::PipelineView`]. Windows-only
 /// in full — see its module docs.
@@ -179,10 +160,6 @@ mod split;
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
 mod split_tree;
-/// Direct2D / DirectWrite rasteriser for [`crate::StatusBar`]. Issue
-/// Only its deprecated paint shim is Windows-only — see its
-/// module docs.
-mod status_bar;
 /// Shared `PaintSurface` adapter over a bare `&ID2D1RenderTarget`.
 /// Windows-only — same gating as the per-primitive
 /// rasteriser modules above that consume it.
@@ -210,7 +187,7 @@ pub mod testing;
 /// line-by-line like `backend.rs`.
 ///
 /// `pub` rather than `pub(crate)`: the chrome rasterisers re-exported
-/// below (`draw_status_bar`, …) take a `&DWrite` measurer in
+/// below take a `&DWrite` measurer in
 /// their signatures, exactly as [`crate::macos`]'s take a `&CTFont` from its
 /// own `pub mod text`. A `pub` function whose parameter type is `pub(crate)`
 /// is a `private_interfaces` warning — and this repo's CI runs with
@@ -234,11 +211,6 @@ mod text_input;
 /// Only its deprecated paint shim is Windows-only — see its
 /// module docs.
 mod toast;
-/// Direct2D / DirectWrite rasteriser for
-/// [`crate::primitives::toolbar::Toolbar`]. Windows-only in full
-/// — see its module docs.
-#[cfg(target_os = "windows")]
-mod toolbar;
 /// Direct2D / DirectWrite rasteriser for [`crate::Tooltip`].
 /// Windows-only in full — see its module docs.
 #[cfg(target_os = "windows")]
@@ -263,9 +235,6 @@ mod tree;
 // zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use activity_bar::{draw_activity_bar, win_activity_bar_layout, ACTIVITY_ROW_DIP};
 pub use backend::WinBackend;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
@@ -281,9 +250,6 @@ pub use command_line::{draw_command_line, draw_command_line_selection, win_comma
 pub use completions::draw_completions;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
-pub use context_menu::draw_context_menu;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
 pub use data_table::draw_data_table;
 #[doc(hidden)]
 pub use data_table::win_data_table_layout;
@@ -295,20 +261,12 @@ pub use dialog::draw_dialog;
 pub use editor::draw_editor;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
-pub use form::{draw_settings_chrome, win_form_layout};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
 pub use image::draw_image;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use list::draw_list;
 #[doc(hidden)]
 pub use list::win_list_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use menu_bar::draw_menu_bar;
-#[doc(hidden)]
-pub use menu_bar::win_menu_bar_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use message_list::draw_message_list;
@@ -318,9 +276,6 @@ pub use minimap::{draw_minimap, win_minimap_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use multi_section_view::{draw_multi_section_view, win_msv_layout, win_msv_metrics};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use palette::{draw_palette, win_palette_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use pipeline_view::win_pipeline_view_layout;
@@ -347,8 +302,6 @@ pub use split::win_split_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use split_tree::win_split_tree_layout;
-#[doc(hidden)]
-pub use status_bar::{win_status_bar_layout, MIN_GAP_DIP};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use text_display::win_text_display_layout;
@@ -357,9 +310,6 @@ pub use text_display::win_text_display_layout;
 pub use text_input::win_text_input_layout;
 #[doc(hidden)]
 pub use toast::win_toast_stack_layout;
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use toolbar::{draw_toolbar, draw_toolbar_with_options, win_toolbar_layout};
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};

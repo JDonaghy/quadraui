@@ -48,7 +48,7 @@ use gtk4::glib;
 use gtk4::pango;
 use gtk4::prelude::*;
 
-use crate::backend::{activity_bar_hits, BackendError};
+use crate::backend::BackendError;
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, TextRegion};
 use crate::event::{Point, Rect};
@@ -56,10 +56,9 @@ use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Backend, DragState, FieldKind, FontRole, Form,
-    GenericFamily, ListView, MenuBar, ModalStack, Palette, PlatformServices, PointerShape,
-    Rect as QRect, ResizeEdge, Split, StatusBar, SystemTheme, TreeView, UiEvent, UserPayload,
-    Viewport,
+    Accelerator, AcceleratorId, Backend, DragState, FontRole, GenericFamily, ListView, ModalStack,
+    PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, SystemTheme, TreeView,
+    UiEvent, UserPayload, Viewport,
 };
 // `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
 // `#[cfg(test)]` code below — they're gated to avoid unused import
@@ -387,7 +386,7 @@ pub struct GtkBackend {
     painted_text_recording: bool,
     /// `WidgetId` of the `ActivityBar` that declared `is_keyboard_focused`
     /// during the most recent render pass. Cleared by `begin_frame` and
-    /// re-set by `draw_activity_bar`. The GTK runner reads this in the
+    /// re-set by `end_frame` from the painted-widget record. The GTK runner reads this in the
     /// window-level key handler to convert `KeyPressed` events into
     /// `UiEvent::ActivityBar(id, ActivityBarEvent::KeyPressed { … })` so
     /// consumers receive typed key events without fighting GTK widget focus.
@@ -422,25 +421,8 @@ pub struct GtkBackend {
     /// `gtk4::WindowHandle` behaviour. See [`WindowDragArm`]'s doc
     /// for the generalised rationale.
     armed_window_drag: WindowDragArm<(gdk::Device, i32, f64, f64, u32)>,
-    /// Clone of the Pango layout `draw_menu_bar` actually painted with,
-    /// stashed at the end of the frame's `enter_frame_scope` call.
-    /// `menu_bar_layout` is invoked from click-time hit-testing
-    /// (e.g. `MenuSystem::handle`), which runs *outside* any frame
-    /// scope — `current_frame_refs()` is always `None` there. Without
-    /// this cache the click-time measurement fell all the way back to
-    /// `pango_ctx`, which carries a different font (the default UI font,
-    /// set once at widget-init in `gtk::run::activate`) than the frame's
-    /// live layout (`"Monospace 11"`, set fresh every `set_draw_func`
-    /// call) — the two fonts have different glyph widths, so hit
-    /// regions silently drifted off the painted labels. Caching the
-    /// *exact* `pango::Layout` GObject used by the most recent paint
-    /// (refcounted clone — cheap, and always reflects the current
-    /// font/size) closes that gap: "cache at paint, hit-test at
-    /// click" (see `quadraui/docs/LESSONS.md`).
-    last_menu_bar_pango_layout: Option<pango::Layout>,
     /// Clone of the Pango layout `draw_editor` actually painted with,
-    /// stashed at the end of the frame's `draw_editor` call. Mirrors
-    /// [`Self::last_menu_bar_pango_layout`] for the same reason:
+    /// stashed at the end of the frame's `draw_editor` call.
     /// `editor_col_at_x` is invoked from click-time hit-testing,
     /// which runs *outside* any frame scope — `current_frame_refs()` is
     /// `None` there, so falling back to `pango_ctx` would resolve
@@ -535,11 +517,8 @@ impl Drop for GtkBackend {
 
 /// Adapts a live `pango::Layout` (falling back to `char_w` when no
 /// Pango context is available, e.g. in headless tests) to the shared
-/// [`crate::primitives::layout_metrics::TextMeasure`] trait so
-/// `form_field_measure` never has to name a Pango type — mirrors
-/// `macos::form::CtFontMeasure` / `win::form::DWriteMeasure`, which
-/// exist for exactly this reason. Same width formula as
-/// `GtkBackend::pango_str_width`.
+/// [`crate::primitives::layout_metrics::TextMeasure`] trait so shared
+/// layout code never has to name a Pango type.
 struct PangoTextMeasure<'a> {
     layout: &'a Option<pango::Layout>,
     char_w: f32,
@@ -627,7 +606,6 @@ impl GtkBackend {
             window: None,
             pending_window_press: None,
             armed_window_drag: WindowDragArm::new(),
-            last_menu_bar_pango_layout: None,
             last_editor_pango_layout: None,
             double_click: DoubleClickDetector::with_radius(GTK_DOUBLE_CLICK_RADIUS),
             double_click_folding: true,
@@ -1144,23 +1122,6 @@ impl GtkBackend {
         Some(pl)
     }
 
-    /// Measure a plain string width in pixels using Pango if
-    /// available, falling back to `chars().count() * char_w`.
-    fn pango_str_width(
-        &self,
-        pango_layout: &Option<pango::Layout>,
-        text: &str,
-        char_w: f32,
-    ) -> f32 {
-        if let Some(pl) = pango_layout {
-            pl.set_text(text);
-            let (w, _) = pl.pixel_size();
-            w as f32
-        } else {
-            (text.chars().count() as f32 * char_w).ceil() + 2.0
-        }
-    }
-
     /// Enter the frame-scope: stash the cairo context + pango layout
     /// pointers, run `f`, then clear them. **Must** be called from
     /// inside a `set_draw_func(...)` closure where `cr` is alive.
@@ -1374,8 +1335,7 @@ impl GtkBackend {
     ///
     /// Two kinds of caller:
     /// 1. Trait methods that already compute a label's rect for
-    ///    hit-testing ([`Backend::draw_status_bar`],
-    ///    [`Backend::draw_data_table`], [`Backend::draw_pipeline_view`]).
+    ///    hit-testing ([`Backend::draw_data_table`], [`Backend::draw_pipeline_view`]).
     ///    These record the *logical* label — whole segment, whole cell —
     ///    at the rect the primitive's own `hit_test` uses, which is what
     ///    a `find`-driven click wants.
@@ -1673,96 +1633,6 @@ impl GtkBackend {
     ) -> Option<AcceleratorId> {
         self.core.match_keypress(key, modifiers)
     }
-
-    /// Shared body of [`Backend::draw_status_bar_interactive`] /
-    /// [`Backend::draw_status_bar_interactive_scaled`]. `font_scale` multiplies
-    /// the chrome font's point size for this paint only — `1.0` is the unscaled case.
-    fn status_bar_paint_scaled(
-        &mut self,
-        rect: QRect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-        font_scale: f32,
-    ) -> crate::StatusBarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        // Status bar segments are chrome, painted in `ui_font` —
-        // `GtkBackend`'s own `PaintSurface` impl now resolves that font
-        // straight from `self.ui_font` on every text verb (see the
-        // cross-reference comment just above `impl PaintSurface for
-        // GtkBackend` below), so there is no shared-layout font to swap
-        // onto for the plain `font_scale == 1.0` case any more. A real
-        // `font_scale` still needs a scoped override: save `self.ui_font`,
-        // replace it with a size-scaled copy for the paint below, then
-        // restore it so later draws in this frame aren't left painting
-        // chrome text at the scaled size.
-        let saved_ui_font = if font_scale != 1.0 {
-            let mut scaled_desc = pango::FontDescription::from_string(&self.ui_font);
-            // Pango sizes are in `PANGO_SCALE`-ths of a point — scale the
-            // raw integer so a caller-friendly `f32` multiplier (e.g.
-            // `0.85`) survives the round-trip without losing precision to
-            // an intermediate point-size conversion. `.max(1)` guards
-            // against a degenerate `font_scale` (e.g. `0.0`) collapsing
-            // the description to Pango's own "unset" sentinel (`0`),
-            // which would fall back to some other ambient size instead of
-            // painting (nearly) nothing, the honest behaviour a caller
-            // asking for size `~0` should get.
-            let scaled = ((scaled_desc.size() as f32) * font_scale).round() as i32;
-            scaled_desc.set_size(scaled.max(1));
-            Some(std::mem::replace(
-                &mut self.ui_font,
-                scaled_desc.to_str().to_string(),
-            ))
-        } else {
-            None
-        };
-        let theme = self.current_theme;
-        // Use the rect's height for the background fill, matching other backends.
-        // This ensures the fill exactly matches the provided rect.
-        let line_height = rect.height;
-        let bar_layout = crate::primitives::status_bar::native_surface_paint::paint(
-            bar,
-            self,
-            &theme,
-            rect.x,
-            rect.y,
-            rect.width,
-            line_height,
-            hovered_id,
-            pressed_id,
-        );
-        if let Some(saved) = saved_ui_font {
-            self.ui_font = saved;
-        }
-        // Record each visible segment's label into the painted-text map
-        // that GtkDriver::find scans — resolve the text from `bar` via the
-        // segment's side + index, since `VisibleStatusSegment` carries the
-        // resolved bounds but not the label itself.
-        //
-        // `seg.bounds` (from `StatusBar::layout`) is bar-local:
-        // `x` relative to this bar's own left edge, `y` always `0` relative to
-        // its own top. Translate by `rect`'s origin to get absolute surface
-        // coordinates, matching `Self::draw_data_table`'s convention.
-        for seg in &bar_layout.visible_segments {
-            let text = match seg.side {
-                crate::primitives::status_bar::StatusSegmentSide::Left => {
-                    bar.left_segments.get(seg.segment_idx).map(|s| &s.text)
-                }
-                crate::primitives::status_bar::StatusSegmentSide::Right => {
-                    bar.right_segments.get(seg.segment_idx).map(|s| &s.text)
-                }
-            };
-            if let Some(text) = text {
-                let bounds = QRect::new(
-                    rect.x + seg.bounds.x,
-                    rect.y + seg.bounds.y,
-                    seg.bounds.width,
-                    seg.bounds.height,
-                );
-                self.record_painted_text(text, bounds);
-            }
-        }
-        bar_layout
-    }
 }
 
 /// Measure the true (fractional) monospace advance width for `layout`'s
@@ -2034,6 +1904,11 @@ fn role_font_description(b: &GtkBackend, role: FontRole) -> pango::FontDescripti
     let chrome = crate::gtk::chrome_font_description(&b.ui_font);
     match role {
         FontRole::Chrome => chrome,
+        FontRole::ChromeBold => {
+            let mut bold = chrome;
+            bold.set_weight(pango::Weight::Bold);
+            bold
+        }
         FontRole::Icon => crate::gtk::tab_icon_font(&chrome),
         FontRole::Editor => pango::FontDescription::from_string(&b.editor_font_pango_string()),
     }
@@ -2065,12 +1940,12 @@ impl Backend for GtkBackend {
         self.overlay_bounds_this_frame.clear();
         // Clear last frame's painted-text map — see `painted_text`'s docs.
         self.painted_text.clear();
-        // Clear the focused activity bar — re-set by draw_activity_bar
+        // Clear the focused activity bar — re-set by end_frame
         // during the render pass if still focused. Same lifecycle as
         // text_regions.
         self.focused_activity_bar = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_palette/draw_context_menu).
+        // to earn them again (via draw_primitive/draw_dyn).
         self.modal_stack.borrow_mut().reset_frame_paint();
     }
 
@@ -2087,6 +1962,9 @@ impl Backend for GtkBackend {
     }
 
     fn end_frame(&mut self) {
+        // The rail that holds keyboard focus is whichever activity bar this
+        // frame painted with `is_keyboard_focused` set.
+        self.focused_activity_bar = crate::primitives::activity_bar::painted_keyboard_focused_bar();
         // No-op flush-wise. GTK's `set_draw_func` closure flushes when it
         // returns; this method exists for parity with backends that need
         // an explicit flush.
@@ -3038,153 +2916,6 @@ impl Backend for GtkBackend {
         )
     }
 
-    /// Shared field-kind painting lives in
-    /// [`crate::primitives::form::paint`] now — see that fn's doc for why
-    /// `FieldKind::Toolbar` is the one variant painted here instead,
-    /// after `paint` releases its exclusive borrow of `self`.
-    fn draw_form(&mut self, rect: QRect, form: &Form) {
-        let theme = self.current_theme;
-        let flayout = self.form_layout(rect, form);
-        let origin = Point::new(rect.x, rect.y);
-        crate::primitives::form::paint(form, &flayout, self, &theme, origin);
-
-        for vf in &flayout.visible_fields {
-            let Some(field) = form.fields.get(vf.field_idx) else {
-                continue;
-            };
-            let FieldKind::Toolbar(toolbar) = &field.kind else {
-                continue;
-            };
-            let row_x = (origin.x + vf.bounds.x) as f64;
-            let row_y = (origin.y + vf.bounds.y) as f64;
-            let row_w = vf.bounds.width as f64;
-            let row_h = vf.bounds.height as f64;
-
-            let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-            let (cr, layout) = self
-                .current_frame_refs()
-                .expect("GtkBackend::draw_form called outside enter_frame_scope");
-            // A `Toolbar` field's label and embedded toolbar are
-            // chrome, like every other form field label `paint` above
-            // already paints in `ui_font` via `GtkBackend`'s own
-            // (chrome-defaulting) `PaintSurface` impl — save/swap/restore
-            // around this raw `(cr, layout)` measurement + paint too, the
-            // same shape `Self::draw_tree` uses, since neither this
-            // method nor `crate::gtk::toolbar::draw_toolbar` goes through
-            // `PaintSurface`.
-            let saved_font = layout.font_description();
-            layout.set_font_description(Some(&ui_font_desc));
-            let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-            let no_label = label_text.is_empty();
-            layout.set_text(&label_text);
-            let (label_w, _) = layout.pixel_size();
-            // Starts at the form's shared control column (`FormLayout::toolbar_field_rect`).
-            let (toolbar_x, toolbar_w) =
-                flayout.toolbar_field_rect(row_x, row_w, label_w as f64, no_label);
-            if toolbar_w > 0.0 {
-                crate::gtk::toolbar::draw_toolbar(
-                    cr, layout, toolbar_x, row_y, toolbar_w, row_h, toolbar, &theme, None, None,
-                );
-                layout.set_attributes(None);
-            }
-            layout.set_font_description(saved_font.as_ref());
-        }
-    }
-
-    fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
-        // See `modal_stack.rs`'s "Paint-consistency detection" docs —
-        // records that this palette's surface was actually painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        let line_height = self.current_line_height;
-        let style = self.style();
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        // The command palette is chrome, not editor content — same
-        // save/swap/restore as `Self::draw_tree`, since
-        // `crate::gtk::draw_palette` paints directly against whatever
-        // font `layout` carries in rather than going through
-        // `PaintSurface`. Calls the shared paint directly (rather than
-        // through `crate::gtk::draw_palette`, whose public signature
-        // stays additive-only and so cannot take a live `&Style`) so
-        // this live backend path honours `Self::set_style` overrides.
-        self.with_chrome_surface("draw_palette", |surface| {
-            if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
-                return;
-            }
-            let (palette_layout, rows_h) = crate::gtk::gtk_palette_layout(
-                rect.width as f64,
-                rect.height as f64,
-                palette,
-                line_height,
-            );
-            let area = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
-            crate::primitives::palette::native_surface_paint::paint(
-                palette,
-                area,
-                &palette_layout,
-                rows_h as f32,
-                line_height as f32,
-                nerd_fonts_enabled,
-                surface,
-                &theme,
-                &style,
-            );
-        });
-    }
-
-    /// [`Self::draw_palette`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_palette_with_state`]'s own
-    /// doc. Routes through
-    /// [`crate::primitives::palette::native_surface_paint::paint_interactive`],
-    /// the interactive twin of the plain `paint` [`Self::draw_palette`]
-    /// calls.
-    fn draw_palette_with_state(
-        &mut self,
-        rect: QRect,
-        palette: &Palette,
-        interaction: &crate::InteractionState,
-    ) {
-        self.modal_stack.borrow_mut().mark_painted(&palette.id);
-        let line_height = self.current_line_height;
-        let style = self.style();
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        self.with_chrome_surface("draw_palette_with_state", |surface| {
-            if rect.width < 20.0 || rect.height < line_height as f32 * 4.0 {
-                return;
-            }
-            let (palette_layout, rows_h) = crate::gtk::gtk_palette_layout(
-                rect.width as f64,
-                rect.height as f64,
-                palette,
-                line_height,
-            );
-            let area = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
-            crate::primitives::palette::native_surface_paint::paint_interactive(
-                palette,
-                area,
-                &palette_layout,
-                rows_h as f32,
-                line_height as f32,
-                nerd_fonts_enabled,
-                surface,
-                &theme,
-                &style,
-                interaction,
-            );
-        });
-    }
-
-    fn palette_layout(&self, rect: QRect, palette: &Palette) -> crate::PaletteLayout {
-        crate::gtk::gtk_palette_layout(
-            rect.width as f64,
-            rect.height as f64,
-            palette,
-            self.current_line_height,
-        )
-        .0
-    }
-
     fn draw_settings_chrome(
         &mut self,
         rect: QRect,
@@ -3193,163 +2924,28 @@ impl Backend for GtkBackend {
         placeholder: &str,
         active: bool,
     ) {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_settings_chrome called outside enter_frame_scope");
-        // The settings panel header/search box is chrome, not editor
-        // content — save the editor font on the shared layout, paint in
-        // `ui_font`, then restore, matching `Self::draw_tree`'s
-        // save/swap/restore.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_settings_chrome(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.current_line_height,
+        let theme = self.current_theme;
+        let line_height = self.current_line_height as f32;
+        crate::compose::sidebar_panel_body::paint_settings_chrome(
+            self,
+            &theme,
+            rect,
+            line_height,
             header_text,
             query,
             placeholder,
             active,
-            &self.current_theme,
         );
-        layout.set_font_description(saved_font.as_ref());
     }
 
     // ─── Layout-passthrough primitives ─────────────────────────────────────
     //
     // Phase B.5b Stage 9: trait extended with `&Layout` parameter per
     // `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §6.2. The current GTK rasterisers
-    // (`quadraui_gtk::draw_status_bar` etc.) recompute their own
+    // recompute their own
     // layout internally, so the `_layout` parameter is currently
     // ignored — kept for forward compatibility when the GTK
     // rasterisers are updated to consume it. Behaviour is unchanged.
-
-    // Trait extended with `&Layout` parameter. Three of the five
-    // primitives (status_bar, tab_bar, text_display) have quadraui-side
-    // rasterisers that accept `crate::Theme`; the trait impls route through
-    // them. The remaining two (activity_bar, terminal) have only in-tree
-    // `quadraui_gtk::*` shims that take the legacy `render::Theme`; until
-    // those are lifted into quadraui itself, the trait impls stay as stubs.
-    // The GTK call sites continue to use the legacy shims directly.
-
-    fn draw_status_bar_interactive(
-        &mut self,
-        rect: QRect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-    ) -> crate::StatusBarLayout {
-        self.status_bar_paint_scaled(rect, bar, interaction, 1.0)
-    }
-
-    /// Same paint as [`Self::draw_status_bar_interactive`],
-    /// scaling only this call's chrome font size. Both methods funnel
-    /// through [`Self::status_bar_paint_scaled`] so a fix to one applies to
-    /// both; `1.0` there is exactly this call with no scaling applied.
-    fn draw_status_bar_interactive_scaled(
-        &mut self,
-        rect: QRect,
-        bar: &StatusBar,
-        interaction: &crate::interaction::InteractionState,
-        font_scale: f32,
-    ) -> crate::StatusBarLayout {
-        self.status_bar_paint_scaled(rect, bar, interaction, font_scale)
-    }
-
-    // `status_bar_paint_scaled` — the shared body both methods above
-    // funnel through — is defined in the inherent `impl GtkBackend` block.
-    // A trait impl block may only contain that trait's own items.
-
-    /// Deprecated shim over [`Self::draw_activity_bar_with_style`] — see
-    /// that method for the real painting logic.
-    fn draw_activity_bar(
-        &mut self,
-        rect: QRect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-    ) -> Vec<crate::ActivityBarRowHit> {
-        self.draw_activity_bar_with_style(
-            rect,
-            bar,
-            hovered_idx,
-            &crate::ActivityBarStyle::default(),
-        )
-    }
-
-    fn draw_activity_bar_with_style(
-        &mut self,
-        rect: QRect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-        style: &crate::ActivityBarStyle,
-    ) -> Vec<crate::ActivityBarRowHit> {
-        // Track keyboard focus so the GTK runner's key handler can
-        // redirect KeyPressed events to this bar.
-        if bar.is_keyboard_focused {
-            self.focused_activity_bar = Some(bar.id);
-        }
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_activity_bar_with_style called outside enter_frame_scope");
-        cr.save().ok();
-        cr.translate(rect.x as f64, rect.y as f64);
-        let hits = crate::gtk::draw_activity_bar_with_style(
-            cr,
-            layout,
-            rect.width as f64,
-            rect.height as f64,
-            bar,
-            style,
-            &self.current_theme,
-            hovered_idx,
-            self.nerd_fonts_enabled,
-        );
-        cr.restore().ok();
-        hits
-    }
-
-    fn status_bar_layout(&self, rect: QRect, bar: &StatusBar) -> crate::StatusBarLayout {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let char_w = self.current_char_width as f32;
-        let lh = self.current_line_height as f32;
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        // Measure with `ui_font`, matching `draw_status_bar`'s paint
-        // font — a no-paint caller (hit-testing without repainting) must
-        // resolve the same segment widths the paint path produced.
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-        // `layout_padded` (not plain `layout`) so this no-paint
-        // twin agrees with the shared `native_surface_paint::paint`'s
-        // outer edge inset + per-segment padding — see that fn's doc.
-        let result = bar.layout_padded(
-            rect.width,
-            lh,
-            crate::gtk::MIN_GAP_PX,
-            crate::primitives::status_bar::PIXEL_EDGE_INSET,
-            crate::primitives::status_bar::PIXEL_SEGMENT_PADDING,
-            |seg| {
-                let text_w = self.pango_str_width(&pango_layout, &seg.text, char_w);
-                crate::StatusSegmentMeasure::new(text_w)
-            },
-        );
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-        result
-    }
-
-    fn activity_bar_layout(&self, rect: QRect, bar: &ActivityBar) -> Vec<crate::ActivityBarRowHit> {
-        activity_bar_hits(rect, bar, crate::gtk::ACTIVITY_ROW_PX as f32)
-    }
 
     /// A pixel backend can honor `rect` exactly, unlike the old
     /// per-row `StatusBar` hack this replaces — see
@@ -3360,105 +2956,6 @@ impl Backend for GtkBackend {
         // Chrome-only paint (no text of its own) — see
         // `TuiBackend::draw_solid_fill`'s identical registration for why.
         self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
-    }
-
-    fn draw_context_menu(
-        &mut self,
-        menu: &crate::ContextMenu,
-        layout_arg: &crate::ContextMenuLayout,
-    ) -> Vec<(QRect, crate::WidgetId)> {
-        // See draw_palette for why this happens before the frame borrow.
-        self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        // Dropdown items are chrome, not editor content — save/swap/restore like
-        // `Self::draw_menu_bar`, so the bar and dropdown agree within a single frame.
-        // Calls the shared paint directly (rather than through
-        // `crate::gtk::draw_context_menu`, whose public signature stays
-        // additive-only and so cannot take a live `&Style`) so this live
-        // backend path honours `Self::set_style` overrides.
-        let style = self.style();
-        let theme = self.current_theme;
-        // `None` keeps `paint_with_glyphs`'s check/arrow defaults; the
-        // flag resolves an item's own `ContextMenuItem::icon`.
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        self.with_chrome_surface("draw_context_menu", |surface| {
-            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
-                menu,
-                layout_arg,
-                crate::accelerator::Platform::Linux,
-                surface,
-                &theme,
-                &style,
-                None,
-                nerd_fonts_enabled,
-            )
-        })
-    }
-
-    /// [`Self::draw_context_menu`] plus an optional
-    /// [`crate::primitives::context_menu::ContextMenuGlyphs`] override for
-    /// the checked-item check mark and submenu pull-right arrow, honoured
-    /// in full here (unlike the trait default, which ignores `glyphs`).
-    fn draw_context_menu_with_glyphs(
-        &mut self,
-        menu: &crate::ContextMenu,
-        layout_arg: &crate::ContextMenuLayout,
-        glyphs: Option<&crate::primitives::context_menu::ContextMenuGlyphs>,
-    ) -> Vec<(QRect, crate::WidgetId)> {
-        // See draw_palette for why this happens before the frame borrow.
-        self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        // Calls the shared paint directly (rather than through
-        // `crate::gtk::draw_context_menu`, whose public signature stays
-        // additive-only and so cannot take a live `&Style`) so this live
-        // backend path honours `Self::set_style` overrides.
-        let style = self.style();
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        self.with_chrome_surface("draw_context_menu_with_glyphs", |surface| {
-            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs(
-                menu,
-                layout_arg,
-                crate::accelerator::Platform::Linux,
-                surface,
-                &theme,
-                &style,
-                glyphs,
-                nerd_fonts_enabled,
-            )
-        })
-    }
-
-    /// [`Self::draw_context_menu`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_context_menu_with_state`]'s
-    /// own doc. Routes through
-    /// [`crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive`]
-    /// (the same `paint_with_glyphs` pipeline as [`Self::draw_context_menu`],
-    /// plus the interactive hover/pressed tint), with `glyphs: None`
-    /// so this reproduces [`Self::draw_context_menu`]'s check-mark /
-    /// submenu-arrow glyphs exactly.
-    fn draw_context_menu_with_state(
-        &mut self,
-        menu: &crate::ContextMenu,
-        layout_arg: &crate::ContextMenuLayout,
-        interaction: &crate::InteractionState,
-    ) -> Vec<(QRect, crate::WidgetId)> {
-        // See draw_palette for why this happens before the frame borrow.
-        self.modal_stack.borrow_mut().mark_painted(&menu.id);
-        let style = self.style();
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        self.with_chrome_surface("draw_context_menu_with_state", |surface| {
-            crate::primitives::context_menu::native_surface_paint::paint_with_glyphs_interactive(
-                menu,
-                layout_arg,
-                crate::accelerator::Platform::Linux,
-                surface,
-                &theme,
-                &style,
-                None,
-                nerd_fonts_enabled,
-                interaction,
-            )
-        })
     }
 
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
@@ -3513,7 +3010,7 @@ impl Backend for GtkBackend {
         crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
     }
 
-    /// Mirrors [`Self::form_layout`]'s pattern: measures the chevron
+    /// Measures the chevron
     /// glyph actually configured on `tree.style` through a real Pango
     /// layout (via [`Self::chrome_measure_layout`]) instead of
     /// `gtk_tree_layout`'s `line_height * 0.65` estimate, so a caller
@@ -3556,24 +3053,6 @@ impl Backend for GtkBackend {
 
     fn tree_paints_own_scrollbar(&self) -> bool {
         true
-    }
-
-    /// Delegates to [`crate::primitives::layout_metrics::form_field_measure`]
-    /// — the shared measurer that `macos::form::mac_form_layout` and
-    /// `win::form::win_form_layout` already use. Measures one row per field,
-    /// matching what GTK paints.
-    fn form_layout(&self, rect: QRect, form: &Form) -> crate::primitives::form::FormLayout {
-        let row_h = crate::primitives::layout_metrics::form_row_height(self.current_line_height);
-        let char_w = self.current_char_width as f32;
-        let pango_layout = self.chrome_measure_layout();
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-
-        form.layout(rect.width, rect.height, |i| {
-            crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
-        })
     }
 
     fn draw_editor(
@@ -3707,122 +3186,6 @@ impl Backend for GtkBackend {
         // no-op default. Register the primitive's own id at its own
         // track bounds (not `_rect`, which the primitive ignores).
         self.register_zone(scrollbar.id, scrollbar.track);
-    }
-
-    fn draw_menu_bar(
-        &mut self,
-        rect: QRect,
-        bar: &MenuBar,
-    ) -> crate::primitives::menu_bar::MenuBarLayout {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_menu_bar called outside enter_frame_scope");
-        // Menu bar item labels are chrome — save the editor font on the shared
-        // layout, paint in `ui_font`, then restore. The `layout.clone()` stashed
-        // below no longer carries `ui_font` by the time it's read back out.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        let result = crate::gtk::draw_menu_bar(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            bar,
-            &self.current_theme,
-        );
-        layout.set_font_description(saved_font.as_ref());
-        // Stash the exact layout just painted with — see the field doc
-        // on `last_menu_bar_pango_layout` for why this is necessary
-        // rather than relying on `current_frame_refs()` alone.
-        let painted_layout = layout.clone();
-        self.last_menu_bar_pango_layout = Some(painted_layout);
-        result
-    }
-
-    /// [`Self::draw_menu_bar`], reading hover/pressed state from
-    /// `interaction` — see [`Backend::draw_menu_bar_with_state`]'s own
-    /// doc. Routes through
-    /// [`crate::primitives::menu_bar::native_surface_paint::paint_interactive`]
-    /// instead of that module's plain `paint`; every other step mirrors
-    /// [`Self::draw_menu_bar`] exactly.
-    fn draw_menu_bar_with_state(
-        &mut self,
-        rect: QRect,
-        bar: &MenuBar,
-        interaction: &crate::InteractionState,
-    ) -> crate::primitives::menu_bar::MenuBarLayout {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_menu_bar_with_state called outside enter_frame_scope");
-        // Menu bar item labels are chrome — save the editor font on the shared
-        // layout, paint in `ui_font`, then restore, matching `Self::draw_menu_bar`.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        let result = crate::gtk::draw_menu_bar_with_state(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            bar,
-            &self.current_theme,
-            interaction,
-        );
-        layout.set_font_description(saved_font.as_ref());
-        // Stash the exact layout just painted with — see the field doc
-        // on `last_menu_bar_pango_layout` for why this is necessary
-        // rather than relying on `current_frame_refs()` alone.
-        let painted_layout = layout.clone();
-        self.last_menu_bar_pango_layout = Some(painted_layout);
-        result
-    }
-
-    fn menu_bar_layout(
-        &self,
-        rect: QRect,
-        bar: &MenuBar,
-    ) -> crate::primitives::menu_bar::MenuBarLayout {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let bounds = crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height);
-        let char_w = self.current_char_width as f32;
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        // Click-time hit-testing (e.g. `MenuSystem::handle`) calls this
-        // outside any `enter_frame_scope`, so `frame_layout` is always
-        // `None` then. Prefer the layout `draw_menu_bar` last painted
-        // with (same font/size as what's on screen) over the
-        // widget-init `pango_ctx`, which can carry a different font —
-        // see `last_menu_bar_pango_layout`'s doc comment.
-        let pango_layout = frame_layout
-            .or_else(|| self.last_menu_bar_pango_layout.clone())
-            .or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        // Menu items are chrome, measured in `ui_font` to match
-        // `draw_menu_bar`'s paint font. Forced explicitly rather than
-        // trusted from whichever layout object was resolved above —
-        // `last_menu_bar_pango_layout` is a GObject alias of the shared
-        // frame layout, so by the time this runs (possibly a later frame,
-        // click-time-only) its *current* font state, not a snapshot from
-        // when it was cached, is whatever the most recent draw call left
-        // it as.
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-        let result = bar.layout(bounds, |i| {
-            let text: String = bar.items[i].label.chars().filter(|&c| c != '&').collect();
-            let text_w = self.pango_str_width(&pango_layout, &text, char_w);
-            crate::primitives::menu_bar::MenuBarItemMeasure::new(text_w + 16.0)
-        });
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-        result
     }
 
     fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
@@ -4020,151 +3383,6 @@ impl Backend for GtkBackend {
             self.current_line_height,
             self.current_char_width,
         )
-    }
-
-    fn draw_toolbar_with_options(
-        &mut self,
-        rect: QRect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        interaction: &crate::interaction::InteractionState,
-        options: crate::primitives::toolbar::ToolbarPaintOptions,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        let theme = self.current_theme;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_toolbar_with_options called outside enter_frame_scope");
-        // Action labels and `Toolbar::Action` icon glyphs are chrome,
-        // not editor content — mirrors `Self::draw_list`/`Self::draw_tree`'s
-        // save/swap/restore. Before this, the toolbar painted with
-        // whatever font the shared layout happened to carry into the frame
-        // (typically the editor font, set once at frame start in
-        // `gtk/run.rs`), which has no Nerd-Font fallback family, so an
-        // icon glyph in `ToolbarButton::Action.icon` could render as
-        // tofu/blank depending on what else is installed.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let layout = crate::gtk::draw_toolbar_with_options(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            bar,
-            &theme,
-            hovered_id,
-            pressed_id,
-            options,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        layout
-    }
-
-    fn toolbar_layout(
-        &self,
-        rect: QRect,
-        bar: &crate::primitives::toolbar::Toolbar,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let char_w = self.current_char_width;
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        // Measure with `ui_font`, matching `Self::draw_toolbar`'s paint font.
-        // Hit-testing without repainting must resolve the same button widths the
-        // paint path produced.
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-        let result = crate::gtk::gtk_toolbar_layout(
-            bar,
-            pango_layout.as_ref(),
-            char_w,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-        result
-    }
-
-    fn draw_toolbar_with_overflow(
-        &mut self,
-        rect: QRect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        interaction: &crate::interaction::InteractionState,
-        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
-        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        let (hovered_id, pressed_id) = (interaction.hovered(), interaction.pressed());
-        let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_toolbar_with_overflow called outside enter_frame_scope");
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        let layout = crate::gtk::draw_toolbar_with_overflow(
-            cr,
-            pango_layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            line_height,
-            bar,
-            &theme,
-            hovered_id,
-            pressed_id,
-            layout_options,
-            priorities,
-        );
-        pango_layout.set_font_description(saved_font.as_ref());
-        layout
-    }
-
-    fn toolbar_layout_with_overflow(
-        &self,
-        rect: QRect,
-        bar: &crate::primitives::toolbar::Toolbar,
-        layout_options: crate::primitives::toolbar::ToolbarLayoutOptions,
-        priorities: &crate::primitives::toolbar::ToolbarOverflowPriorities,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let char_w = self.current_char_width;
-        let line_height = self.current_line_height;
-        let frame_layout = self.current_frame_refs().map(|(_, l)| l.clone());
-        let pango_layout = frame_layout.or_else(|| self.pango_ctx.as_ref().map(pango::Layout::new));
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let saved_font = pango_layout.as_ref().and_then(|pl| pl.font_description());
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(Some(&ui_font_desc));
-        }
-        let result = crate::gtk::gtk_toolbar_layout_with_overflow(
-            bar,
-            pango_layout.as_ref(),
-            char_w,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            line_height,
-            layout_options,
-            priorities,
-        );
-        if let Some(pl) = &pango_layout {
-            pl.set_font_description(saved_font.as_ref());
-        }
-        result
     }
 
     /// Paint via the shared
@@ -4688,8 +3906,23 @@ impl PaintSurface for EditorSurface<'_> {
 
 // PaintSurface implementation: extracted from private helpers.
 // Every text verb forces `ui_font` (chrome) explicitly rather than trusting
-// the ambient per-frame layout font. `Self::status_bar_paint_scaled` relies
-// on this: every text verb resolves `self.ui_font` fresh on every call.
+// the ambient per-frame layout font: every text verb resolves `self.ui_font`
+// fresh on every call.
+/// The Pango description an icon glyph paints in at `size_px`
+/// device-independent pixels: the Nerd Font fallback family, then the
+/// bundled codicon family, then monospace. Pango sizes are points at the
+/// legacy 96/72 dpi ratio, so `size_px` is converted by `72 / 96`.
+fn icon_font_description(size_px: f32) -> pango::FontDescription {
+    let pt = size_px * 72.0 / 96.0;
+    let mut f = pango::FontDescription::from_string(&format!("monospace {pt}"));
+    f.set_family(&format!(
+        "{}, {}, monospace",
+        crate::gtk::current_nerd_font_fallback_family(),
+        crate::codicon::FONT_FAMILY
+    ));
+    f
+}
+
 impl PaintSurface for GtkBackend {
     /// Remembers the box so a later [`Backend::draw_focus_ring`] this
     /// frame keeps clear of it — see `overlay_bounds_this_frame`.
@@ -4704,6 +3937,29 @@ impl PaintSurface for GtkBackend {
     /// Paints through [`EditorSurface`], this backend's editor-font twin.
     fn surface_with_editor_font(&mut self, paint: &mut dyn FnMut(&mut dyn PaintSurface)) -> bool {
         paint(&mut EditorSurface { backend: self });
+        true
+    }
+
+    /// Paints through a [`super::surface::CairoSurface`] whose frame
+    /// layout carries [`icon_font_description`] at `size_px` for the
+    /// duration of `paint`, restoring the layout's own font afterwards.
+    fn surface_with_icon_font(
+        &mut self,
+        size_px: f32,
+        paint: &mut dyn FnMut(&mut dyn PaintSurface),
+    ) -> bool {
+        let Some((cr, layout)) = self.current_frame_refs() else {
+            return false;
+        };
+        let saved = layout.font_description();
+        layout.set_font_description(Some(&icon_font_description(size_px)));
+        layout.set_attributes(None);
+        paint(&mut super::surface::CairoSurface {
+            cr,
+            layout: Some(layout),
+            translucent_fill: true,
+        });
+        layout.set_font_description(saved.as_ref());
         true
     }
 
@@ -4755,9 +4011,9 @@ impl PaintSurface for GtkBackend {
     }
 
     /// Overrides the default (which drops `bold`) — a bold Pango
-    /// `AttrList` weight, matching what `gtk::status_bar::draw_status_bar`
-    /// measured before its paint moved to
-    /// `primitives::status_bar::native_surface_paint::paint`. Also
+    /// `AttrList` weight — the bold-aware width
+    /// `primitives::status_bar::native_surface_paint::paint` measures
+    /// segments with. Also
     /// forces `ui_font` now, matching [`Self::surface_measure_text`]'s
     /// doc above.
     fn surface_measure_text_styled(&self, text: &str, bold: bool) -> (f32, f32) {
@@ -5068,19 +4324,20 @@ mod tests {
     #![allow(deprecated)]
     use super::*;
     use crate::backend::DrawsPrimitives;
+    use crate::primitives::status_bar::{StatusBar, StatusBarPrimitiveLayout};
     use crate::{MenuBarItem, TerminalCell, TerminalCursorShape, WidgetId};
 
     /// Generic helper — minimal "app render code" that consumes
     /// `Backend` through `<B>`. Same shape as the one in
     /// `tui_main::backend::tests::paint_overlays`.
-    fn paint_overlays<B: Backend>(backend: &mut B, palette: &Palette, list: &ListView) {
-        backend.draw_palette(QRect::new(10.0, 5.0, 60.0, 14.0), palette);
+    fn paint_overlays<B: Backend>(backend: &mut B, palette: &crate::Palette, list: &ListView) {
+        crate::DrawsPrimitives::draw_dyn(backend, QRect::new(10.0, 5.0, 60.0, 14.0), palette, &());
         backend.draw_list(QRect::new(0.0, 20.0, 80.0, 4.0), list);
     }
 
     #[test]
     fn paint_overlays_compiles_against_gtk_backend() {
-        let _: fn(&mut GtkBackend, &Palette, &ListView) = paint_overlays::<GtkBackend>;
+        let _: fn(&mut GtkBackend, &crate::Palette, &ListView) = paint_overlays::<GtkBackend>;
     }
 
     // ── issue #1143: MinimapScale ────────────────────────────────────────
@@ -5965,12 +5222,12 @@ mod tests {
     }
 
     /// A `FieldKind::TextArea` must measure exactly one row — matching
-    /// what `gtk::form::draw_form` actually paints — so a click on the
+    /// what the shared `Form` painter actually paints — so a click on the
     /// field painted immediately below it hits that field, not the
     /// `TextArea`'s hit region. The layout measurer and painter must
-    /// track each other: before the fix, `GtkBackend::form_layout` sized
-    /// `TextArea` as `row_h * visible_rows`, while the painter only ever
-    /// advanced one `row_h` per field, causing a mismatch.
+    /// track each other: a layout that sized `TextArea` as
+    /// `row_h * visible_rows`, while the painter advances one `row_h` per
+    /// field, would misroute those clicks.
     #[test]
     fn gtk_form_layout_textarea_does_not_swallow_the_next_fields_row() {
         use crate::primitives::form::{FieldKind, Form, FormField, FormHit};
@@ -6032,7 +5289,7 @@ mod tests {
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 200.0);
-        let layout = backend.form_layout(rect, &form);
+        let layout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &form).layout;
 
         assert_eq!(
             layout.visible_fields.len(),
@@ -6045,7 +5302,7 @@ mod tests {
         let row_h = crate::primitives::layout_metrics::form_row_height(backend.current_line_height);
         assert_eq!(
             notes.bounds.height, row_h,
-            "TextArea must measure one row_h, matching gtk::form::draw_form's single-row paint"
+            "TextArea must measure one row_h, matching the form's single-row paint"
         );
 
         // A click at the centre of the field painted right below the
@@ -6131,7 +5388,7 @@ mod tests {
         };
 
         let rect = QRect::new(0.0, 0.0, 400.0, 80.0);
-        let layout = backend.form_layout(rect, &form);
+        let layout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &form).layout;
 
         // Must have exactly one visible field.
         assert_eq!(layout.visible_fields.len(), 1, "expected one visible field");
@@ -6537,9 +5794,9 @@ mod tests {
         (data[off + 2], data[off + 1], data[off])
     }
 
-    /// `menu_bar_layout` must force `ui_font` onto whichever layout it
-    /// resolves, so the resolved object's own font no longer reaches the
-    /// measurement. Outside vs. inside a frame scope with a
+    /// The menu bar's layout measures in `ui_font` whichever Pango layout
+    /// the backend resolves, so the resolved object's own font never
+    /// reaches the measurement. Outside vs. inside a frame scope with a
     /// wildly-different editor font (`"Sans 8"` vs. `"Sans 40"`) must
     /// measure *identically*, because both paths measure `ui_font`
     /// ([`DEFAULT_UI_FONT_SIZE_PT`] by default), not whatever the
@@ -6566,7 +5823,7 @@ mod tests {
         let mut backend = GtkBackend::new();
         backend.set_pango_context(small_ctx);
 
-        let bar = MenuBar {
+        let bar = crate::MenuBar {
             id: WidgetId::new("test:menu-bar"),
             items: vec![MenuBarItem {
                 id: WidgetId::new("test:menu-bar:file"),
@@ -6581,19 +5838,25 @@ mod tests {
 
         // Outside any frame scope: resolves to the small `pango_ctx`
         // object, but its font must be ignored in favour of `ui_font`.
-        let small_ctx_width = backend.menu_bar_layout(rect, &bar).visible_items[0]
+        let small_ctx_width = crate::DrawsPrimitives::layout_primitive(&backend, rect, &bar)
+            .layout
+            .visible_items[0]
             .bounds
             .width;
 
         // Inside a frame scope with a much larger live layout: its own
         // "Sans 40" font must likewise be ignored in favour of `ui_font`.
         let large_layout_width = backend.enter_frame_scope(&cr, &large_layout, |b| {
-            b.menu_bar_layout(rect, &bar).visible_items[0].bounds.width
+            crate::DrawsPrimitives::layout_primitive(b, rect, &bar)
+                .layout
+                .visible_items[0]
+                .bounds
+                .width
         });
 
         assert!(
             (large_layout_width - small_ctx_width).abs() < 0.5,
-            "menu_bar_layout must measure with `ui_font` regardless of \
+            "the menu bar's layout must measure with `ui_font` regardless of \
              which layout object it resolves to: small_ctx_width={small_ctx_width}, \
              large_layout_width={large_layout_width}"
         );
@@ -6741,10 +6004,10 @@ mod tests {
         }
     }
 
-    /// `menu_bar_layout` is called from `MenuSystem::handle` outside any
-    /// `enter_frame_scope`, so `current_frame_refs()` is always `None`
-    /// at click time. The invariant is: whatever `draw_menu_bar` actually
-    /// painted with, `menu_bar_layout` must measure identically at click
+    /// The menu bar's layout is resolved from `MenuSystem::handle` outside
+    /// any `enter_frame_scope`, so `current_frame_refs()` is always `None`
+    /// at click time. The invariant is: whatever the paint laid the strip
+    /// out with, the click-time layout must measure identically at click
     /// time, even with a wildly different *editor* font live in between
     /// (proving click-time measurement tracks `ui_font`, not the editor
     /// font at click time).
@@ -6762,7 +6025,7 @@ mod tests {
         let mut backend = GtkBackend::new();
         backend.set_pango_context(pangocairo::functions::create_context(&cr));
 
-        let bar = MenuBar {
+        let bar = crate::MenuBar {
             id: WidgetId::new("test:menu-bar"),
             items: vec![MenuBarItem {
                 id: WidgetId::new("test:menu-bar:file"),
@@ -6779,7 +6042,11 @@ mod tests {
         // like `gtk::run::activate`'s draw callback does — `ui_font`
         // stays at the default throughout.
         let painted_width = backend.enter_frame_scope(&cr, &large_layout, |b| {
-            b.draw_menu_bar(rect, &bar).visible_items[0].bounds.width
+            crate::DrawsPrimitives::draw_primitive(b, rect, &bar)
+                .layout
+                .visible_items[0]
+                .bounds
+                .width
         });
 
         // Click-time dispatch happens from `AppLogic::handle`, which runs
@@ -6788,21 +6055,25 @@ mod tests {
         // Simulate that here: no frame scope is active, and the live
         // editor font (had one been resolvable here) would still be the
         // huge one above — `ui_font` must be what's measured regardless.
-        let click_time_width = backend.menu_bar_layout(rect, &bar).visible_items[0]
+        let click_time_width = crate::DrawsPrimitives::layout_primitive(&backend, rect, &bar)
+            .layout
+            .visible_items[0]
             .bounds
             .width;
 
         assert!(
             (click_time_width - painted_width).abs() < 0.5,
-            "menu_bar_layout at click time must match what draw_menu_bar \
-             actually painted: painted={painted_width}, click_time={click_time_width}"
+            "the menu bar's layout at click time must match what its paint \
+             actually laid out: painted={painted_width}, click_time={click_time_width}"
         );
 
         // Positive control: `ui_font` is not inert — changing it alone must
         // visibly change the measured width, even though the giant editor
         // font above did not.
         Backend::set_ui_font(&mut backend, "Sans 40");
-        let ui_font_changed_width = backend.menu_bar_layout(rect, &bar).visible_items[0]
+        let ui_font_changed_width = crate::DrawsPrimitives::layout_primitive(&backend, rect, &bar)
+            .layout
+            .visible_items[0]
             .bounds
             .width;
         assert!(
@@ -7086,6 +6357,18 @@ mod tests {
     // control: the extent must visibly change, proving `ui_font` is
     // actually read, not just insulated from the editor font by accident.
 
+    /// Paint `bar` through the widget contract and return its first
+    /// visible segment's resolved width.
+    fn status_segment_width(b: &mut GtkBackend, rect: QRect, bar: &StatusBar) -> f32 {
+        crate::DrawsPrimitives::draw_dyn(b, rect, bar, &())
+            .downcast_ref::<StatusBarPrimitiveLayout>()
+            .expect("a StatusBar lays out as StatusBarPrimitiveLayout")
+            .layout
+            .visible_segments[0]
+            .bounds
+            .width
+    }
+
     fn ui_font_test_surface_and_contexts() -> (
         pangocairo::cairo::ImageSurface,
         pango::FontDescription,
@@ -7122,12 +6405,11 @@ mod tests {
             pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
-            backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
-                    .bounds
-                    .width
-            })
+            // The widget contract measures through `Backend::measure_text`,
+            // which resolves real Pango advances only against the stable
+            // context `gtk::run` installs at `DrawingArea` realize time.
+            backend.set_pango_context(pango_ctx.clone());
+            backend.enter_frame_scope(&cr, &layout, |b| status_segment_width(b, rect, &bar))
         };
 
         let small_editor_width = width_at(&small_editor_font);
@@ -7143,13 +6425,9 @@ mod tests {
             pango_ctx.set_font_description(&small_editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
+            backend.set_pango_context(pango_ctx.clone());
             Backend::set_ui_font(&mut backend, "Sans 40");
-            backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
-                    .bounds
-                    .width
-            })
+            backend.enter_frame_scope(&cr, &layout, |b| status_segment_width(b, rect, &bar))
         };
         assert!(
             ui_font_width > small_editor_width * 1.5,
@@ -7158,77 +6436,12 @@ mod tests {
         );
     }
 
-    /// `draw_status_bar_interactive_scaled` paints narrower text at a
-    /// smaller `font_scale`, and an unscaled paint immediately after a
-    /// scaled one must come back to exactly its own pre-scaled width —
-    /// proving the per-call scale doesn't leak into the backend's ambient
-    /// `ui_font` for later paints this frame.
-    #[test]
-    fn gtk_backend_draw_status_bar_interactive_scaled_shrinks_without_perturbing_later_unscaled_paints(
-    ) {
-        let (surface, font, _) = ui_font_test_surface_and_contexts();
-        let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
-        let pango_ctx = pangocairo::functions::create_context(&cr);
-        pango_ctx.set_font_description(&font);
-        let layout = pango::Layout::new(&pango_ctx);
-
-        let bar = StatusBar {
-            id: WidgetId::new("test:status-bar"),
-            left_segments: vec![crate::primitives::status_bar::StatusBarSegment {
-                text: "READY".to_string(),
-                fg: crate::types::Color::rgb(255, 255, 255),
-                bg: crate::types::Color::rgb(0, 0, 0),
-                bold: false,
-                action_id: None,
-            }],
-            right_segments: vec![],
-        };
-        let rect = QRect::new(0.0, 0.0, 400.0, 20.0);
-
-        let mut backend = GtkBackend::new();
-        Backend::set_ui_font(&mut backend, "Sans 40");
-        let (unscaled_w, scaled_w, unscaled_w_again) =
-            backend.enter_frame_scope(&cr, &layout, |b| {
-                let unscaled_w = b
-                    .draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
-                    .bounds
-                    .width;
-                let scaled_w = b
-                    .draw_status_bar_interactive_scaled(
-                        rect,
-                        &bar,
-                        &crate::InteractionState::new(),
-                        0.5,
-                    )
-                    .visible_segments[0]
-                    .bounds
-                    .width;
-                let unscaled_w_again = b
-                    .draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
-                    .bounds
-                    .width;
-                (unscaled_w, scaled_w, unscaled_w_again)
-            });
-
-        assert!(
-            scaled_w < unscaled_w * 0.75,
-            "font_scale=0.5 should paint noticeably narrower: {scaled_w} vs {unscaled_w}",
-        );
-        assert!(
-            (unscaled_w_again - unscaled_w).abs() < 0.5,
-            "an unscaled paint after a scaled one must match the original unscaled width \
-             — ui_font state must be restored, not left scaled: \
-             {unscaled_w_again} vs {unscaled_w}",
-        );
-    }
-
     /// Driver-tier proof that `GtkBackend::surface_measure_text_styled`'s
     /// bold override actually does something against a real `pango::Layout`.
-    /// Paints the same text through the real `Backend::draw_status_bar`
-    /// path once bold, once not, and asserts the bold segment's resolved
-    /// (painted) width is strictly wider. The chrome font is pinned to a
+    /// Paints the same text through the shared status-bar pixel painter
+    /// (which measures each segment with `surface_measure_text_styled`)
+    /// once bold, once not, and asserts the bold segment's painted width
+    /// is strictly wider. The chrome font is pinned to a
     /// large explicit size rather than the backend default: at the default
     /// 13px chrome size, macOS's Pango/CoreText rounds regular and bold
     /// "READY" to the same pixel width, which would test glyph hinting
@@ -7256,9 +6469,20 @@ mod tests {
                 }],
                 right_segments: vec![],
             };
+            let theme = crate::Theme::default();
             backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_status_bar_interactive(rect, &bar, &crate::InteractionState::new())
-                    .visible_segments[0]
+                crate::primitives::status_bar::native_surface_paint::paint(
+                    &bar,
+                    b,
+                    &theme,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                    None,
+                    None,
+                )
+                .visible_segments[0]
                     .bounds
                     .width
             })
@@ -7325,11 +6549,7 @@ mod tests {
                 // Negative width: `rect.x = 20` mirrors to a real
                 // [5, 20) x [10, 25) area on a positive-width backend, but
                 // must paint nothing at all once the guard short-circuits.
-                b.draw_status_bar_interactive(
-                    QRect::new(20.0, 10.0, -15.0, 15.0),
-                    &bar,
-                    &crate::InteractionState::new(),
-                );
+                crate::DrawsPrimitives::draw_dyn(b, QRect::new(20.0, 10.0, -15.0, 15.0), &bar, &());
             });
         }
         surface.flush();
@@ -7394,10 +6614,11 @@ mod tests {
             };
             let pango_layout = pangocairo::functions::create_layout(&cr);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_status_bar_interactive(
+                crate::DrawsPrimitives::draw_dyn(
+                    b,
                     QRect::new(0.0, 0.0, canvas_w as f32, canvas_h as f32),
                     &bar,
-                    &crate::InteractionState::new(),
+                    &(),
                 );
             });
         }
@@ -7416,6 +6637,103 @@ mod tests {
                  showing the sentinel colour",
             );
         }
+    }
+
+    /// The activity-bar icon font's default size (24px, the crate's
+    /// `DEFAULT_ACTIVITY_ICON_SIZE_PX`) is Pango's 18pt at the 96/72 dpi
+    /// ratio.
+    #[test]
+    fn icon_font_description_converts_pixels_to_points() {
+        let desc =
+            icon_font_description(crate::primitives::activity_bar::DEFAULT_ACTIVITY_ICON_SIZE_PX);
+        assert_eq!(desc.size(), 18 * pango::SCALE);
+    }
+
+    /// An activity bar's icon glyph ink height follows
+    /// `ActivityBarStyle::icon_size_px`, not the frame layout's font or
+    /// the backend's `ui_font` — `surface_with_icon_font` paints the
+    /// glyphs in their own icon font.
+    #[test]
+    fn gtk_backend_activity_bar_icon_ink_height_follows_style_not_the_frame_font() {
+        const ROW_W: i32 = 48;
+        let row_h = crate::primitives::activity_bar::PIXEL_ROW_HEIGHT as i32;
+        let bar = |style: crate::ActivityBarStyle| crate::ActivityBar {
+            id: WidgetId::new("test:activity"),
+            top_items: vec![crate::ActivityItem {
+                id: WidgetId::new("test:activity:explorer"),
+                icon: crate::types::Icon::new("E", "E"),
+                tooltip: String::new(),
+                is_active: false,
+                is_keyboard_selected: false,
+            }],
+            bottom_items: vec![],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+            style,
+            hovered: None,
+        };
+
+        let ink_height = |style: crate::ActivityBarStyle, frame_font_pt: f64| -> i32 {
+            let mut surface = pangocairo::cairo::ImageSurface::create(
+                pangocairo::cairo::Format::ARgb32,
+                ROW_W,
+                row_h,
+            )
+            .expect("create ImageSurface");
+            {
+                let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+                let layout = pangocairo::functions::create_layout(&cr);
+                layout.set_font_description(Some(&pango::FontDescription::from_string(&format!(
+                    "monospace {frame_font_pt}"
+                ))));
+                let mut backend = GtkBackend::new();
+                Backend::set_ui_font(&mut backend, &format!("Sans {frame_font_pt}"));
+                let bar = bar(style);
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    crate::DrawsPrimitives::draw_dyn(
+                        b,
+                        QRect::new(0.0, 0.0, ROW_W as f32, row_h as f32),
+                        &bar,
+                        &(),
+                    );
+                });
+            }
+            surface.flush();
+            let stride = surface.stride() as usize;
+            let data = surface.data().expect("surface data");
+            let theme = crate::Theme::default();
+            let bg = (theme.tab_bar_bg.r, theme.tab_bar_bg.g, theme.tab_bar_bg.b);
+            let (mut min_y, mut max_y) = (i32::MAX, i32::MIN);
+            for y in 0..row_h {
+                // The last column is the rail's own 1px separator.
+                for x in 0..ROW_W - 1 {
+                    if chart_pixel(&data, stride, x, y) != bg {
+                        min_y = min_y.min(y);
+                        max_y = max_y.max(y);
+                    }
+                }
+            }
+            if min_y > max_y {
+                0
+            } else {
+                max_y - min_y + 1
+            }
+        };
+
+        let default_small = ink_height(crate::ActivityBarStyle::default(), 6.0);
+        let default_huge = ink_height(crate::ActivityBarStyle::default(), 60.0);
+        assert!(default_small > 0, "sanity: the glyph paints some ink");
+        assert_eq!(
+            default_small, default_huge,
+            "default icon ink height must not track the frame font's size"
+        );
+        let small_icon = ink_height(crate::ActivityBarStyle::new().with_icon_size_px(10.0), 14.0);
+        assert!(
+            small_icon < default_huge,
+            "icon_size_px(10.0) ({small_icon}px ink) should paint smaller than \
+             the 24px default ({default_huge}px ink)"
+        );
     }
 
     #[test]
@@ -8391,7 +7709,7 @@ mod tests {
         );
     }
 
-    /// `draw_context_menu` paints dropdown item labels with `ui_font`, not
+    /// A painted context menu draws its item labels with `ui_font`, not
     /// the editor-content layout's font, so the bar and the dropdown under
     /// it visibly agree in the same frame. Paint a single-item dropdown
     /// under two wildly different "editor" font sizes with `ui_font` left
@@ -8399,7 +7717,7 @@ mod tests {
     /// change `ui_font` alone as a positive control and see the extent
     /// move.
     #[test]
-    fn gtk_backend_draw_context_menu_uses_ui_font_not_editor_font() {
+    fn gtk_backend_context_menu_uses_ui_font_not_editor_font() {
         let small_editor_font = pango::FontDescription::from_string("Sans 8");
         let large_editor_font = pango::FontDescription::from_string("Sans 40");
         const W: i32 = 1600;
@@ -8407,6 +7725,7 @@ mod tests {
         const ITEM_H: f32 = 40.0;
 
         let row_text_extent = |editor_font: &pango::FontDescription, ui_font: Option<&str>| {
+            let row;
             let mut surface =
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
@@ -8450,18 +7769,19 @@ mod tests {
                 if let Some(f) = ui_font {
                     Backend::set_ui_font(&mut backend, f);
                 }
-                backend.enter_frame_scope(&cr, &layout, |b| {
-                    b.draw_context_menu(&menu, &menu_layout);
+                let painted = backend.enter_frame_scope(&cr, &layout, |b| {
+                    crate::DrawsPrimitives::draw_primitive(b, menu_layout.bounds, &menu).layout
                 });
+                row = painted.visible_items[0].bounds;
             }
             surface.flush();
             let stride = surface.stride() as usize;
             let data = surface.data().expect("surface data");
-            // Rightmost non-white pixel within the first (only) item
-            // row's vertical span — proxy for the painted label's glyph
-            // extent. The row spans `[0, ITEM_H)` regardless of font.
-            let y = (ITEM_H / 2.0) as usize;
-            (0..W as usize)
+            // Rightmost non-white pixel on the first (only) item row's
+            // centre line, inside the popup's border — proxy for the
+            // painted label's glyph extent.
+            let y = (row.y + row.height / 2.0) as usize;
+            (0..(row.x + row.width - 3.0) as usize)
                 .rev()
                 .find(|&x| {
                     let off = y * stride + x * 4;
@@ -8486,13 +7806,13 @@ mod tests {
         );
     }
 
-    /// `draw_context_menu_with_glyphs`'s `ContextMenuGlyphs` override
-    /// replaces the checked-item check-mark glyph; `None` and an empty
-    /// override (no fields set) must paint byte-identical to each other,
-    /// and a populated `with_checked_glyph` override must visibly change
-    /// the painted ink.
+    /// The descriptor's `ContextMenuGlyphs` override replaces the
+    /// checked-item check-mark glyph; the default and an empty override
+    /// (no fields set) must paint byte-identical to each other, and a
+    /// populated `with_checked_glyph` override must visibly change the
+    /// painted ink.
     #[test]
-    fn gtk_backend_draw_context_menu_honors_checked_glyph_override() {
+    fn gtk_backend_context_menu_honors_checked_glyph_override() {
         const W: i32 = 300;
         const H: i32 = 40;
         const ITEM_H: f32 = 40.0;
@@ -8530,8 +7850,12 @@ mod tests {
                 pango_ctx.set_font_description(&pango::FontDescription::from_string("Sans 8"));
                 let layout = pango::Layout::new(&pango_ctx);
                 let mut backend = GtkBackend::new();
+                let menu = crate::ContextMenu {
+                    glyphs: glyphs.cloned().unwrap_or_default(),
+                    ..menu.clone()
+                };
                 backend.enter_frame_scope(&cr, &layout, |b| {
-                    b.draw_context_menu_with_glyphs(&menu, &menu_layout, glyphs);
+                    crate::DrawsPrimitives::draw_dyn(b, menu_layout.bounds, &menu, &());
                 });
             }
             surface.flush();
@@ -8634,7 +7958,7 @@ mod tests {
         }
     }
 
-    /// `draw_toolbar` paints `ToolbarButton::Action` text with the UI font,
+    /// A painted toolbar draws `ToolbarButton::Action` text with the UI font,
     /// not the editor font that may be live on the shared layout. Painted
     /// width must be independent of the editor font size, then move when
     /// `ui_font` itself changes. Same shape as
@@ -8651,11 +7975,15 @@ mod tests {
             pango_ctx.set_font_description(editor_font);
             let layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
+            // The widget contract measures through the backend's stable
+            // Pango context, which `gtk::run::activate` seeds on realize.
+            backend.set_pango_context(pangocairo::functions::create_context(&cr));
             if let Some(f) = ui_font {
                 Backend::set_ui_font(&mut backend, f);
             }
             backend.enter_frame_scope(&cr, &layout, |b| {
-                b.draw_toolbar_interactive(rect, &bar, &crate::InteractionState::new())
+                crate::DrawsPrimitives::draw_primitive(b, rect, &bar)
+                    .layout
                     .visible_items[0]
                     .bounds
                     .width
@@ -8678,15 +8006,14 @@ mod tests {
         );
     }
 
-    /// Regression test: `draw_toolbar` paints with `ui_font` but
-    /// `toolbar_layout` measures with the editor font outside frame scope.
-    /// These must resolve identical button bounds, since hit-testing calls
-    /// `Backend::toolbar_layout` between frames outside any
-    /// `enter_frame_scope`. Deliberately measured with the editor font on
+    /// A toolbar's paint measures in `ui_font`, and so must its layout
+    /// resolved outside any frame scope: hit-testing resolves the layout
+    /// between frames outside any `enter_frame_scope`, so the two must
+    /// produce identical button bounds. Deliberately measured with the editor font on
     /// both the frame layout and the stable `pango_ctx` so a regression
     /// that drops either swap shows up as a width mismatch.
     #[test]
-    fn gtk_backend_toolbar_layout_matches_draw_toolbar_bounds_outside_frame() {
+    fn gtk_backend_toolbar_layout_matches_painted_bounds_outside_frame() {
         let (surface, editor_font, _) = ui_font_test_surface_and_contexts();
         let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
         let bar = ui_font_test_toolbar();
@@ -8706,18 +8033,22 @@ mod tests {
         Backend::set_ui_font(&mut backend, "Sans 40");
 
         let painted = backend.enter_frame_scope(&cr, &layout, |b| {
-            b.draw_toolbar_interactive(rect, &bar, &crate::InteractionState::new())
+            crate::DrawsPrimitives::draw_primitive(b, rect, &bar)
+                .layout
                 .visible_items[0]
                 .bounds
         });
         // Outside the frame scope — the click-time path.
-        let hit_tested = Backend::toolbar_layout(&backend, rect, &bar).visible_items[0].bounds;
+        let hit_tested = crate::DrawsPrimitives::layout_primitive(&backend, rect, &bar)
+            .layout
+            .visible_items[0]
+            .bounds;
 
         assert!(
             (painted.width - hit_tested.width).abs() <= 1.0
                 && (painted.x - hit_tested.x).abs() <= 1.0,
-            "click-time toolbar_layout must resolve the same button bounds \
-             draw_toolbar painted: painted={painted:?}, hit_tested={hit_tested:?}"
+            "the click-time toolbar layout must resolve the same button bounds \
+             the paint laid out: painted={painted:?}, hit_tested={hit_tested:?}"
         );
     }
 
@@ -8902,8 +8233,18 @@ mod tests {
         };
 
         let backend = GtkBackend::new();
-        let at_origin = Backend::form_layout(&backend, QRect::new(0.0, 0.0, 100.0, 50.0), &form);
-        let shifted = Backend::form_layout(&backend, QRect::new(7.0, 13.0, 100.0, 50.0), &form);
+        let at_origin = crate::DrawsPrimitives::layout_primitive(
+            &backend,
+            QRect::new(0.0, 0.0, 100.0, 50.0),
+            &form,
+        )
+        .layout;
+        let shifted = crate::DrawsPrimitives::layout_primitive(
+            &backend,
+            QRect::new(7.0, 13.0, 100.0, 50.0),
+            &form,
+        )
+        .layout;
 
         assert_eq!(
             at_origin.hit_regions, shifted.hit_regions,
@@ -9442,17 +8783,17 @@ mod tests {
         );
     }
 
-    /// `draw_palette_with_state` must tint the pinned create-action
-    /// row — the one stable id a [`Palette`] carries (`palette.id`
-    /// itself) — toward `Theme::menu_item_hover_bg` when hovered and
-    /// `Theme::menu_item_pressed_bg` when pressed, exactly like
-    /// `Backend::draw_palette_with_state`'s own doc describes.
+    /// The shared palette painter's `paint_interactive`, run on
+    /// `GtkBackend`'s own surface, must tint the pinned create-action
+    /// row — the one stable id a [`crate::Palette`] carries
+    /// (`palette.id` itself) — toward `Theme::menu_item_hover_bg` when
+    /// hovered and `Theme::menu_item_pressed_bg` when pressed.
     #[test]
     fn gtk_backend_palette_create_row_hover_and_pressed_tints() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
         let palette_id = WidgetId::new("test:palette");
-        let mut palette = Palette {
+        let mut palette = crate::Palette {
             id: palette_id,
             title: "Commands".into(),
             create_label: Some("Create 'op'".into()),
@@ -9479,14 +8820,33 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             let mut backend = GtkBackend::new();
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_palette_with_state(rect, &palette, interaction);
+                let (layout, rows_h) = crate::primitives::palette::pixel_layout(
+                    rect.width,
+                    rect.height,
+                    &palette,
+                    16.0,
+                );
+                let theme = crate::Theme::default();
+                let style = Backend::style(b);
+                crate::primitives::palette::native_surface_paint::paint_interactive(
+                    &palette,
+                    rect,
+                    &layout,
+                    rows_h,
+                    16.0,
+                    false,
+                    b,
+                    &theme,
+                    &style,
+                    interaction,
+                );
             });
             surface.flush();
             surface
         };
 
         let (layout, _rows_h) =
-            crate::gtk::gtk_palette_layout(rect.width as f64, rect.height as f64, &palette, 16.0);
+            crate::primitives::palette::pixel_layout(rect.width, rect.height, &palette, 16.0);
         let create_bounds = layout
             .create_bounds
             .expect("palette with create_label must report create_bounds");
@@ -9522,158 +8882,6 @@ mod tests {
             pressed_px,
             (pressed_expected.r, pressed_expected.g, pressed_expected.b),
             "pressing the create row must tint it toward Theme::menu_item_pressed_bg"
-        );
-        assert_ne!(
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "pressed and hover tints must read as visibly different colours"
-        );
-    }
-
-    /// `draw_context_menu_with_state` must tint a hovered item's row
-    /// toward `Theme::menu_item_hover_bg` and a pressed item's row
-    /// toward `Theme::menu_item_pressed_bg`, matching
-    /// `Backend::draw_context_menu_with_state`'s own doc.
-    #[test]
-    fn gtk_backend_context_menu_item_hover_and_pressed_tints() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        const W: i32 = 300;
-        const H: i32 = 60;
-        const ITEM_H: f32 = 30.0;
-
-        let item_id = WidgetId::new("test:menu:item");
-        let menu = crate::ContextMenu {
-            id: WidgetId::new("test:menu"),
-            items: vec![crate::primitives::context_menu::ContextMenuItem {
-                id: Some(item_id),
-                label: crate::types::StyledText::plain("Copy".to_string()),
-                ..Default::default()
-            }],
-            // Out of range so no item ever paints as keyboard-selected —
-            // the selection highlight isn't what this test measures.
-            selected_idx: 99,
-            bg: None,
-            placement: crate::primitives::context_menu::ContextMenuPlacement::AnchorPoint,
-            glyphs: Default::default(),
-        };
-        let viewport = crate::event::Rect::new(0.0, 0.0, W as f32, H as f32);
-        let menu_layout = menu.layout_at(
-            crate::event::Rect::new(0.0, 0.0, 0.0, 0.0),
-            viewport,
-            200.0,
-            |_| crate::primitives::context_menu::ContextMenuItemMeasure::new(ITEM_H),
-        );
-        let row = menu_layout.visible_items[0].bounds;
-        let probe_x = (row.x + 4.0) as i32;
-        let probe_y = (row.y + row.height / 2.0) as i32;
-
-        let paint_with = |interaction: &crate::InteractionState| {
-            let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
-            let cr = Context::new(&surface).expect("Context::new");
-            let pango_ctx = pangocairo::functions::create_context(&cr);
-            let pango_layout = pango::Layout::new(&pango_ctx);
-            let mut backend = GtkBackend::new();
-            backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                let _ = b.draw_context_menu_with_state(&menu, &menu_layout, interaction);
-            });
-            surface.flush();
-            surface
-        };
-
-        let theme = crate::Theme::default();
-        let bg = menu.bg.unwrap_or(theme.hover_bg);
-
-        let hover_interaction = crate::InteractionState::from_parts(Some(item_id), None);
-        let mut hovered = paint_with(&hover_interaction);
-        let hovered_px = pixel_argb(&mut hovered, probe_x, probe_y);
-        let hover_expected = theme.menu_item_hover_bg(bg);
-        assert_eq!(
-            hovered_px,
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "hovering a context-menu item must tint its row toward Theme::menu_item_hover_bg"
-        );
-
-        let pressed_interaction = crate::InteractionState::from_parts(Some(item_id), Some(item_id));
-        let mut pressed = paint_with(&pressed_interaction);
-        let pressed_px = pixel_argb(&mut pressed, probe_x, probe_y);
-        let pressed_expected = theme.menu_item_pressed_bg(bg);
-        assert_eq!(
-            pressed_px,
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            "pressing a context-menu item must tint its row toward Theme::menu_item_pressed_bg"
-        );
-        assert_ne!(
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "pressed and hover tints must read as visibly different colours"
-        );
-    }
-
-    /// `draw_menu_bar_with_state` must tint a hovered top-level item
-    /// toward `Theme::menu_item_hover_bg` and a pressed one toward
-    /// `Theme::menu_item_pressed_bg`, matching
-    /// `Backend::draw_menu_bar_with_state`'s own doc.
-    #[test]
-    fn gtk_backend_menu_bar_item_hover_and_pressed_tints() {
-        use pangocairo::cairo::{Context, Format, ImageSurface};
-
-        const W: i32 = 300;
-        const H: i32 = 24;
-
-        let item_id = WidgetId::new("test:bar:file");
-        let bar = MenuBar {
-            id: WidgetId::new("test:bar"),
-            items: vec![MenuBarItem {
-                id: item_id,
-                label: "&File".into(),
-                disabled: false,
-                submenu: None,
-            }],
-            open_item: None,
-            focused_item: None,
-        };
-
-        let paint_with = |interaction: &crate::InteractionState| {
-            let surface = ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
-            let cr = Context::new(&surface).expect("Context::new");
-            let pango_ctx = pangocairo::functions::create_context(&cr);
-            let pango_layout = pango::Layout::new(&pango_ctx);
-            let mut backend = GtkBackend::new();
-            let layout = backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_menu_bar_with_state(
-                    QRect::new(0.0, 0.0, W as f32, H as f32),
-                    &bar,
-                    interaction,
-                )
-            });
-            surface.flush();
-            (surface, layout)
-        };
-
-        let theme = crate::Theme::default();
-
-        let hover_interaction = crate::InteractionState::from_parts(Some(item_id), None);
-        let (mut hovered, layout) = paint_with(&hover_interaction);
-        let row = layout.visible_items[0].bounds;
-        let probe_x = (row.x + 4.0) as i32;
-        let probe_y = (row.y + row.height / 2.0) as i32;
-        let hovered_px = pixel_argb(&mut hovered, probe_x, probe_y);
-        let hover_expected = theme.menu_item_hover_bg(theme.tab_bar_bg);
-        assert_eq!(
-            hovered_px,
-            (hover_expected.r, hover_expected.g, hover_expected.b),
-            "hovering a menu-bar item must tint its background toward Theme::menu_item_hover_bg"
-        );
-
-        let pressed_interaction = crate::InteractionState::from_parts(Some(item_id), Some(item_id));
-        let (mut pressed, _) = paint_with(&pressed_interaction);
-        let pressed_px = pixel_argb(&mut pressed, probe_x, probe_y);
-        let pressed_expected = theme.menu_item_pressed_bg(theme.tab_bar_bg);
-        assert_eq!(
-            pressed_px,
-            (pressed_expected.r, pressed_expected.g, pressed_expected.b),
-            "pressing a menu-bar item must tint its background toward Theme::menu_item_pressed_bg"
         );
         assert_ne!(
             (pressed_expected.r, pressed_expected.g, pressed_expected.b),
@@ -11373,5 +10581,97 @@ mod tests {
             "a tick during an active typing pause must not flip the phase"
         );
         assert!(backend.caret_visible());
+    }
+
+    /// Paints `paint` on a white 300x300 surface and returns the RGB of
+    /// each pixel in column `x` for the `n` rows below the bottom edge
+    /// `paint` reports.
+    fn column_below_after_paint(
+        x: i32,
+        n: i32,
+        paint: impl FnOnce(&mut GtkBackend) -> f32,
+    ) -> Vec<(u8, u8, u8)> {
+        const W: i32 = 300;
+        const H: i32 = 300;
+        let mut surface =
+            pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
+                .expect("create ImageSurface");
+        let mut bottom = 0.0;
+        {
+            let cr = pangocairo::cairo::Context::new(&surface).expect("Context::new");
+            cr.set_source_rgb(1.0, 1.0, 1.0);
+            cr.paint().ok();
+            let pango_ctx = pangocairo::functions::create_context(&cr);
+            pango_ctx.set_font_description(&pango::FontDescription::from_string("Sans 8"));
+            let layout = pango::Layout::new(&pango_ctx);
+            let mut backend = GtkBackend::new();
+            Backend::set_current_line_height(&mut backend, 20.0);
+            backend.enter_frame_scope(&cr, &layout, |b| bottom = paint(b));
+        }
+        surface.flush();
+        let stride = surface.stride() as usize;
+        let data = surface.data().expect("surface data");
+        let y0 = bottom.ceil() as i32 + 1;
+        (y0..y0 + n)
+            .map(|y| {
+                let i = y as usize * stride + x as usize * 4;
+                (data[i + 2], data[i + 1], data[i])
+            })
+            .collect()
+    }
+
+    /// A context menu painted through the widget contract keeps its drop
+    /// shadow below its box: the paint clip is widened by the menu's
+    /// `paint_bleed`, not cut at the box edge.
+    #[test]
+    fn context_menu_shadow_paints_below_its_box() {
+        let menu = crate::ContextMenu {
+            id: WidgetId::new("menu"),
+            items: vec![crate::ContextMenuItem {
+                id: Some(WidgetId::new("open")),
+                label: crate::StyledText::plain("Open"),
+                ..Default::default()
+            }],
+            selected_idx: 0,
+            bg: None,
+            placement: Default::default(),
+            glyphs: Default::default(),
+        };
+        let below = column_below_after_paint(100, 4, |b| {
+            // The box a host hands the menu is the popup's own placed
+            // bounds, so the menu's bottom edge is the box's.
+            let placed = crate::DrawsPrimitives::layout_primitive(
+                b,
+                QRect::new(50.0, 50.0, 100.0, 200.0),
+                &menu,
+            )
+            .layout
+            .bounds;
+            crate::DrawsPrimitives::draw_dyn(b, placed, &menu, &());
+            placed.y + placed.height
+        });
+        assert!(
+            below.iter().any(|&px| px != (255, 255, 255)),
+            "the context menu's shadow must paint below its box, got {below:?}"
+        );
+    }
+
+    /// A palette painted through the widget contract keeps its drop
+    /// shadow below its box.
+    #[test]
+    fn palette_shadow_paints_below_its_box() {
+        let palette = crate::Palette {
+            id: WidgetId::new("palette"),
+            ..Default::default()
+        };
+        let rect = QRect::new(50.0, 50.0, 100.0, 100.0);
+        let below = column_below_after_paint(100, 4, |b| {
+            crate::DrawsPrimitives::draw_primitive(b, rect, &palette);
+            rect.y + rect.height
+        });
+        assert!(
+            below.iter().any(|&px| px != (255, 255, 255)),
+            "the palette's shadow must paint below its box, got {below:?}"
+        );
     }
 }

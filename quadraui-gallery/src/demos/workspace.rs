@@ -11,11 +11,12 @@
 //! open. In both, `p` demonstrates the preview tier: each press replaces
 //! the previous preview tab in place rather than accumulating tabs.
 
+use quadraui::DrawsPrimitives;
 use std::cell::RefCell;
 
 use quadraui::{
-    Backend, BackendCaps, Color, Handled, InteractionState, Key, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, UiEvent, WidgetId, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
+    Backend, BackendCaps, Color, Handled, Key, Reaction, Rect, StatusBar, StatusBarSegment, Style,
+    UiEvent, WidgetId, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -199,20 +200,20 @@ impl Demo for WorkspaceDemo {
             Some(id) => format!(" viewing: {id} "),
             None => " viewing: (no documents open) ".to_string(),
         };
-        backend.draw_status_bar_interactive(
+        backend.draw_dyn(
             body_rect,
             &Self::label_bar("gallery:workspace:body", body, Color::rgb(220, 220, 220)),
-            &InteractionState::new(),
+            &(),
         );
         let hint_rect = Rect::new(area.x, area.y + strip_h + row_h, area.width, row_h);
-        backend.draw_status_bar_interactive(
+        backend.draw_dyn(
             hint_rect,
             &Self::label_bar(
                 "gallery:workspace:hint",
                 format!(" last: {} ", self.last_event),
                 Color::rgb(150, 200, 150),
             ),
-            &InteractionState::new(),
+            &(),
         );
     }
 

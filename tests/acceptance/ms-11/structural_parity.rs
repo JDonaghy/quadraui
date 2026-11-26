@@ -131,7 +131,7 @@ mod ms11_542_structural_parity {
                 }],
                 right_segments: vec![],
             };
-            let _ = backend.draw_status_bar(anchor, &bar, None, None);
+            let _ = backend.draw_dyn(anchor, &bar, &());
 
             let tooltip = Tooltip {
                 id: WidgetId::new(TOOLTIP_ID),

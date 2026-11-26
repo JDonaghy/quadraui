@@ -32,13 +32,14 @@
 //! both promote it — the six-trigger table lives on
 //! [`quadraui::compose::workspace`]'s module doc.
 
+use quadraui::DrawsPrimitives;
 use std::cell::RefCell;
 
 use quadraui::compose::app_shell::{AppShellLayout, PanelDefinition};
 use quadraui::{
-    Backend, Color, Handled, InteractionState, Key, NamedKey, Reaction, Rect, ShellApp,
-    ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId, WorkspaceController,
-    WorkspaceDoc, WorkspaceEvent,
+    Backend, Color, Handled, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId, WorkspaceController, WorkspaceDoc,
+    WorkspaceEvent,
 };
 
 /// The three documents the demo starts with, `(id, label)`. Labels are
@@ -220,19 +221,19 @@ impl ShellApp for WorkspaceDemo {
             Some(id) => format!(" viewing: {id} "),
             None => " viewing: (no documents open) ".to_string(),
         };
-        backend.draw_status_bar_interactive(
+        backend.draw_dyn(
             Rect::new(main.x, main.y, main.width, lh),
             &Self::label_bar("workspace-demo:body", body, Color::rgb(220, 220, 220)),
-            &InteractionState::new(),
+            &(),
         );
-        backend.draw_status_bar_interactive(
+        backend.draw_dyn(
             Rect::new(main.x, main.y + lh, main.width, lh),
             &Self::label_bar(
                 "workspace-demo:hint",
                 format!(" last: {} ", self.last_event),
                 Color::rgb(150, 200, 150),
             ),
-            &InteractionState::new(),
+            &(),
         );
     }
 

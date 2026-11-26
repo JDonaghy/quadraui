@@ -12,8 +12,6 @@
 //! [`crate::primitives::layout_metrics::TextMeasure`] — no Direct2D/
 //! DirectWrite type in its signature — so it compiles and runs
 //! everywhere. Only [`draw_data_table`] is `#[cfg(target_os = "windows")]`-gated.
-//! See `win::status_bar`'s module doc for why colours come from `Theme::default()`
-//! rather than a live `WinBackend` theme field.
 
 #[cfg(target_os = "windows")]
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;

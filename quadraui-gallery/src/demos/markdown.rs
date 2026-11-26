@@ -261,7 +261,9 @@ impl Demo for MarkdownDemo {
                     }
                     Key::Char('f') => {
                         self.popup.font_role = match self.popup.font_role {
-                            FontRole::Chrome | FontRole::Icon => FontRole::Editor,
+                            FontRole::Chrome | FontRole::ChromeBold | FontRole::Icon => {
+                                FontRole::Editor
+                            }
                             FontRole::Editor => FontRole::Chrome,
                         };
                         Reaction::Redraw
@@ -287,6 +289,7 @@ impl Demo for MarkdownDemo {
                 "scroll_top": self.popup.scroll_top,
                 "font_role": match self.popup.font_role {
                     FontRole::Chrome => "Chrome",
+                    FontRole::ChromeBold => "ChromeBold",
                     FontRole::Editor => "Editor",
                     FontRole::Icon => "Icon",
                 },

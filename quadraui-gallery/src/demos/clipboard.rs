@@ -14,8 +14,8 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, EditOp, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, Style, TextEditor, TextInput, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, EditOp, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, Style, TextEditor, TextInput, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -125,11 +125,7 @@ impl Demo for ClipboardDemo {
             area.width,
             status_h,
         );
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(variant), &());
 
         let input_rect = Rect::new(
             area.x + pad,

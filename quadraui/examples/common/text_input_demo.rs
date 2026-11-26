@@ -8,9 +8,9 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Color, EditOp,
-    InteractionState, Key, KeyBinding, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, TextEditor, TextInput, TextInputHit, UiEvent, WidgetId,
+    Accelerator, AcceleratorId, AcceleratorScope, AppLogic, Backend, Color, EditOp, Key,
+    KeyBinding, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, TextEditor,
+    TextInput, TextInputHit, UiEvent, WidgetId,
 };
 
 const UNDO_ACCEL: &str = "text_input_demo.undo";
@@ -108,7 +108,7 @@ impl AppLogic for TextInputDemo {
         let status_h = backend.line_height();
 
         let status_rect = Rect::new(0.0, viewport.height - status_h, viewport.width, status_h);
-        backend.draw_status_bar_interactive(status_rect, &self.status(), &InteractionState::new());
+        backend.draw_dyn(status_rect, &self.status(), &());
 
         let input_rect = Self::input_rect(backend);
         backend.draw_dyn(input_rect, &self.input.input, &());

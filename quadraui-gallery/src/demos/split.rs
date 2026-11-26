@@ -6,9 +6,10 @@
 //! with both dividers draggable through the shared
 //! `DragTarget::SplitDivider` dispatch path.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, DragState, DragTarget, InteractionState, Reaction, Rect, Split,
-    SplitDirection, SplitHit, SplitTree, StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, DragState, DragTarget, Reaction, Rect, Split, SplitDirection,
+    SplitHit, SplitTree, StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -90,7 +91,7 @@ impl SplitDemo {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(label_rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(label_rect, &bar, &());
     }
 }
 

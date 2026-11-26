@@ -199,11 +199,9 @@ impl CellGridDemo {
             rect,
             widget: Box::new(self.grid(backend)),
         });
-        frame.push(Surface::StatusBar {
+        frame.push(Surface::Widget {
             rect: status_rect,
-            bar: self.status(),
-            hovered: None,
-            pressed: None,
+            widget: Box::new(self.status()),
         });
         frame
     }

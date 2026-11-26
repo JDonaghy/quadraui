@@ -9,8 +9,8 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, EditOp, InteractionState, MouseButton, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, TextEditor, TextInput, TextInputHit, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, EditOp, MouseButton, Reaction, Rect, StatusBar, StatusBarSegment,
+    Style, TextEditor, TextInput, TextInputHit, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -126,11 +126,7 @@ impl Demo for TextInputDemo {
         backend.draw_dyn(input_rect, &self.editor(variant).input, &());
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
     }
 
     fn handle(

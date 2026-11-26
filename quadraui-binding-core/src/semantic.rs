@@ -5,10 +5,10 @@
 //! payload itself.
 
 use quadraui::{
-    ActivityBar, ActivityBarEvent, CanvasEvent, ComboBox, ComboBoxEvent, DataTableEvent,
-    DatePicker, DatePickerEvent, EditOp, FormEvent, Key, ListViewEvent, Modifiers, MouseButton,
-    NamedKey, NumberInput, NumberInputEvent, StatusBar, StatusBarEvent, TabBar, TabBarEvent,
-    TextDisplayEvent, TextInput, TreeEvent, TreeTable, TreeTableLayout, UiEvent, WidgetId,
+    CanvasEvent, ComboBox, ComboBoxEvent, DataTableEvent, DatePicker, DatePickerEvent, EditOp,
+    FormEvent, Key, ListViewEvent, Modifiers, MouseButton, NamedKey, NumberInput, NumberInputEvent,
+    TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, TreeTable, TreeTableLayout,
+    UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -621,17 +621,7 @@ pub fn semantic_event_for_hit(
             PaintedHit::Extra {
                 id: hit_id, extra, ..
             } if *hit_id == *bar => {
-                if extra_as::<StatusBar>(extra).is_some() {
-                    Some(UiEvent::StatusBar(
-                        *bar,
-                        StatusBarEvent::SegmentClicked { id },
-                    ))
-                } else if extra_as::<ActivityBar>(extra).is_some() {
-                    Some(UiEvent::ActivityBar(
-                        *bar,
-                        ActivityBarEvent::ItemClicked { id },
-                    ))
-                } else if let Some(markdown) = extra_as::<Markdown>(extra) {
+                if let Some(markdown) = extra_as::<Markdown>(extra) {
                     // `id` is the per-link chrome-hit id `Markdown::paint_chrome`
                     // pushed, not `bar` (the leaf's own id) — mirrors
                     // `Toolbar::click`'s own "look up the clicked child, not the

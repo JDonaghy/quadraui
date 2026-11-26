@@ -6,10 +6,10 @@
 //! — the same [`MessageList::hit_test`] click routing on both. `j`/`k`
 //! scroll; clicking a row reports its index and text.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Key, MessageList, MessageListHit,
-    MessageListMeasure, MessageRow, MouseButton, Reaction, Rect, StatusBar, StatusBarSegment,
-    Style, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Key, MessageList, MessageListHit, MessageListMeasure, MessageRow,
+    MouseButton, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -128,11 +128,7 @@ impl Demo for MessageListDemo {
         backend.draw_message_list(rect, &self.list(variant));
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
     }
 
     fn handle(

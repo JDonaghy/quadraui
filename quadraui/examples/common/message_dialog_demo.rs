@@ -28,10 +28,10 @@
 //! - `m` — show the "Discard unsaved changes?" message dialog
 //! - `Esc` / `q` — quit
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    native_dialog_options, AppLogic, Backend, Color, Dialog, DialogButton, DialogSeverity,
-    InteractionState, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText,
-    Theme, UiEvent, WidgetId,
+    native_dialog_options, AppLogic, Backend, Color, Dialog, DialogButton, DialogSeverity, Key,
+    NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, Theme, UiEvent, WidgetId,
 };
 
 pub struct MessageDialogDemo {
@@ -122,11 +122,7 @@ impl AppLogic for MessageDialogDemo {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

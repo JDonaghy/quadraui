@@ -278,8 +278,8 @@ fn paint_body(
             // `crate::primitives::chart::paint`; this raw
             // `(&Context, &pango::Layout)` call site (no live
             // `GtkBackend` on hand) uses the same shared
-            // `super::surface::CairoSurface` adapter
-            // `form::draw_form`'s deprecated shim uses.
+            // `super::surface::CairoSurface` adapter the embedded form
+            // body uses.
             layout.set_text("M");
             let char_width = layout.pixel_size().0 as f64;
             let chart_layout =
@@ -315,8 +315,8 @@ fn paint_body(
 /// goes through the shared [`crate::primitives::form::paint`] via
 /// [`super::surface::CairoSurface`] (this call site has only a raw
 /// `cr`/`layout`, not a live [`super::backend::GtkBackend`]) —
-/// `FieldKind::Toolbar` is painted separately below, same as
-/// `GtkBackend::draw_form`, for the same reason (see that fn's doc).
+/// `FieldKind::Toolbar` is painted separately below, because the shared
+/// form painter leaves it to the caller.
 #[allow(clippy::too_many_arguments)]
 fn draw_form_body(
     cr: &Context,
@@ -330,7 +330,7 @@ fn draw_form_body(
     line_height: f64,
 ) {
     let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
-    let measure = super::toolbar::PangoMeasure {
+    let measure = super::surface::PangoMeasure {
         pango_layout: Some(layout),
         char_width: 8.0,
     };
@@ -364,17 +364,23 @@ fn draw_form_body(
         let (toolbar_x, toolbar_w) =
             flayout.toolbar_field_rect(row_x, row_w, label_w as f64, no_label);
         if toolbar_w > 0.0 {
-            super::toolbar::draw_toolbar(
+            layout.set_width(-1);
+            layout.set_ellipsize(pango::EllipsizeMode::None);
+            let mut toolbar_surface = super::surface::CairoSurface {
                 cr,
-                layout,
-                toolbar_x,
-                row_y,
-                toolbar_w,
-                toolbar_row_h,
+                layout: Some(layout),
+                translucent_fill: true,
+            };
+            crate::primitives::toolbar::native_surface_paint::paint_embedded(
                 toolbar,
+                QRect::new(
+                    toolbar_x as f32,
+                    row_y as f32,
+                    toolbar_w as f32,
+                    toolbar_row_h as f32,
+                ),
+                &mut toolbar_surface,
                 theme,
-                None,
-                None,
             );
             layout.set_attributes(None);
         }

@@ -5,9 +5,10 @@
 //! colours, each with its own independently adjustable value
 //! (`+`/`-`/arrows, or click inside the gauge to jump to a position).
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Canvas, CanvasHit, Color, DrawOp, InteractionState, Key, MouseButton,
-    Point, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
+    Backend, BackendCaps, Canvas, CanvasHit, Color, DrawOp, Key, MouseButton, Point, Reaction,
+    Rect, StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -144,11 +145,7 @@ impl Demo for CanvasDemo {
         let _ = backend.draw_canvas(rect, &self.gauge_canvas(variant, rect));
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
     }
 
     fn handle(

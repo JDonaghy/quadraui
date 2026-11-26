@@ -6,9 +6,10 @@
 //! app-side mouse-drag bookkeeping. Two variants swap the content being
 //! selected.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment,
-    Style, TextRegion, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Reaction, Rect, StatusBar, StatusBarSegment, Style, TextRegion,
+    UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -116,11 +117,7 @@ impl Demo for TextSelectionDemo {
                 }],
                 right_segments: vec![],
             };
-            let _ = backend.draw_status_bar_interactive(
-                Rect::new(content.x, row_y, content.width, lh),
-                &bar,
-                &InteractionState::new(),
-            );
+            let _ = backend.draw_dyn(Rect::new(content.x, row_y, content.width, lh), &bar, &());
             rendered_rows = i + 1;
         }
         backend.register_text_region(TextRegion {
@@ -145,11 +142,7 @@ impl Demo for TextSelectionDemo {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(
-            Self::status_rect(area, backend),
-            &status_bar,
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(Self::status_rect(area, backend), &status_bar, &());
     }
 
     fn handle(

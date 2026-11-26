@@ -18,8 +18,8 @@
 
 use quadraui::compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeData};
 use quadraui::{
-    Backend, BackendCaps, Color, Column, ColumnAlign, ColumnWidth, InteractionState, Reaction,
-    Rect, StatusBar, StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Column, ColumnAlign, ColumnWidth, DrawsPrimitives, Reaction, Rect,
+    StatusBar, StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -245,11 +245,7 @@ impl Demo for TreeTableDemo {
             .render(backend, table_rect, columns_for(table_rect.width));
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(), &());
     }
 
     fn handle(

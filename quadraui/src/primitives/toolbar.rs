@@ -47,7 +47,7 @@
 //! - **TUI**: single row of `[ icon label (k) ]` cells with hit zones per
 //!   action, when [`ToolbarOrientation::Horizontal`] (the default).
 //!   [`ToolbarOrientation::Vertical`] degrades to one item per terminal
-//!   row — see [`crate::tui::toolbar::draw_toolbar_with_options`].
+//!   row — see [`cell_paint::draw_toolbar_with_overflow`].
 //!   Separators render as a dim `│ ` cell. Disabled buttons paint in a
 //!   muted foreground and don't dispatch clicks.
 //! - **GTK**: `Gtk.Box` of `Gtk.Button` (or buttons painted with Cairo);
@@ -1471,7 +1471,7 @@ pub fn action_text(label: &str, icon: Option<&str>, key_hint: Option<&str>) -> S
 /// per `valign`. Shared by every pixel-unit rasteriser via
 /// [`native_surface_paint::paint`] so GTK / macOS / Win-GUI agree
 /// exactly. TUI's cell-grid math is its own
-/// (`tui::toolbar::tui_text_row`) since a cell is already quantized —
+/// (`cell_paint`'s text-row math) since a cell is already quantized —
 /// folding it into this `f32` formula would just re-round it back.
 pub fn valign_offset_y(
     valign: ToolbarVAlign,
@@ -1491,8 +1491,9 @@ pub fn valign_offset_y(
 /// This is the shared button-measure formula for every pixel backend.
 /// Each backend supplies `measure` via a thin [`crate::primitives::layout_metrics::TextMeasure`]
 /// adapter over its own live font/context (a `pango::Layout`, a `CTFont`,
-/// DirectWrite metrics, …) — see e.g. `gtk::toolbar`'s `PangoMeasure`,
-/// `macos::toolbar`'s `CtFontMeasure`, `win::toolbar`'s `DWriteMeasure`.
+/// DirectWrite metrics, …) — see e.g. `gtk::surface`'s `PangoMeasure`
+/// or `layout_metrics::LayoutCtxMeasure`, which measures through a
+/// [`crate::primitive::LayoutCtx`].
 ///
 /// A cell grid does not call this: its `[ icon label (hint) ]` bracket
 /// format with icon-only compaction and double-width-glyph awareness
@@ -1850,8 +1851,8 @@ impl Toolbar {
     /// `buttons`) — kept as a separate, **unchanged** function (rather
     /// than growing this one's argument list) so every existing caller
     /// of this `pub fn` keeps compiling untouched, same rationale as
-    /// [`crate::tui::toolbar::draw_toolbar`]'s own split from
-    /// [`crate::tui::toolbar::draw_toolbar_with_options`].
+    /// [`cell_paint::draw_toolbar`]'s own split from
+    /// [`cell_paint::draw_toolbar_with_options`].
     pub fn layout<F>(
         &self,
         origin_x: f32,
@@ -2578,10 +2579,49 @@ pub(crate) mod native_surface_paint {
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
 
-    /// Corner radius for the hover/pressed/active highlight pill —
-    /// mirrors `gtk::toolbar`'s pre-migration `CORNER_RADIUS`, now
+    /// Corner radius for the hover/pressed/active highlight pill,
     /// shared by every backend (see module doc).
     const CORNER_RADIUS: f32 = 4.0;
+
+    /// Lay `bar` out in `rect`, measuring every item through `surface`'s
+    /// own text measurement, and paint it at rest, clipped to `rect` —
+    /// for a rasteriser that embeds a toolbar inside a larger widget (a
+    /// dialog's input row, a form's toolbar field, a section header) and
+    /// so paints it with the font that widget already set on `surface`.
+    pub(crate) fn paint_embedded(
+        bar: &Toolbar,
+        rect: Rect,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) -> ToolbarLayout {
+        struct SurfaceMeasure<'a>(&'a dyn PaintSurface);
+        impl crate::primitives::layout_metrics::TextMeasure for SurfaceMeasure<'_> {
+            fn width_of(&self, text: &str) -> f32 {
+                self.0.surface_measure_text(text).0
+            }
+        }
+        let layout = {
+            let measure = SurfaceMeasure(&*surface);
+            bar.layout(rect.x, rect.y, rect.width, rect.height, |btn| {
+                super::ToolbarItemMeasure::new(super::measure_button(&measure, btn))
+            })
+        };
+        if rect.width <= 0.0 || rect.height <= 0.0 {
+            return layout;
+        }
+        surface.surface_push_clip(rect);
+        paint(
+            bar,
+            &layout,
+            surface,
+            theme,
+            None,
+            None,
+            ToolbarPaintOptions::default(),
+        );
+        surface.surface_pop_clip();
+        layout
+    }
 
     /// Paint a [`Toolbar`] at its caller-resolved `layout` onto
     /// `surface`. `hovered_id`/`pressed_id` select the live interaction

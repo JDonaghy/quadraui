@@ -7,9 +7,9 @@
 //! [`ShellConfig`]. This module only wires the adapter into the macOS event
 //! loop, mirroring `tui::shell_runner` / `gtk::shell_runner`.
 //!
-//! `MacBackend` already implements every `Backend` trait method `AppShell`
-//! renders through (`draw_activity_bar`,
-//! `draw_status_bar`, `draw_menu_bar`, …), so no new rasteriser
+//! `MacBackend` already paints everything `AppShell` renders (its
+//! activity bar, status bars and menu bar through the widget contract),
+//! so no new rasteriser
 //! work is needed here — this is pure composition, same as the TUI/GTK
 //! runners.
 //!

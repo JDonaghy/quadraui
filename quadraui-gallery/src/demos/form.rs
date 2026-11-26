@@ -10,12 +10,12 @@
 //! `label_align` / `label_width` (an aligned `Left` label column shared by
 //! two fields, plus `Top`, `Inline` and `Hidden` variants on the rest).
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, BackendCaps, ButtonRowItem, CalendarDate, Color, DatePicker, FieldKind, FocusTree,
-    Form, FormController, FormControllerAction, FormEvent, FormField, FormHit, Handled,
-    InteractionState, Key, LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, Style, StyledText, ToggleGroupItem, Toolbar, ToolbarButton,
-    UiEvent, WidgetId,
+    Form, FormController, FormControllerAction, FormEvent, FormField, FormHit, Handled, Key,
+    LabelAlign, LabelPosition, MouseButton, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    Style, StyledText, ToggleGroupItem, Toolbar, ToolbarButton, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -755,18 +755,20 @@ impl Demo for FormDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let form_rect = Self::form_rect(area, backend);
         match variant {
-            0 => backend.draw_form(area, &build_all_fields_form()),
+            0 => {
+                quadraui::DrawsPrimitives::draw_primitive(backend, area, &build_all_fields_form());
+            }
             1 => {
-                backend.draw_form(form_rect, &self.search_replace.build_form());
+                quadraui::DrawsPrimitives::draw_primitive(
+                    backend,
+                    form_rect,
+                    &self.search_replace.build_form(),
+                );
                 let bar = Self::status_bar(
                     &format!("last: {}", self.search_replace.last_action),
                     "click / Tab / Shift+Tab",
                 );
-                let _ = backend.draw_status_bar_interactive(
-                    Self::status_rect(area, backend),
-                    &bar,
-                    &InteractionState::new(),
-                );
+                let _ = backend.draw_dyn(Self::status_rect(area, backend), &bar, &());
             }
             2 => {
                 self.scroll.fc.render(backend, form_rect);
@@ -778,18 +780,20 @@ impl Demo for FormDemo {
                     ),
                     "scroll / click / drag scrollbar",
                 );
-                let _ = backend.draw_status_bar_interactive(
-                    Self::status_rect(area, backend),
-                    &bar,
-                    &InteractionState::new(),
-                );
+                let _ = backend.draw_dyn(Self::status_rect(area, backend), &bar, &());
             }
             // `variants()` has exactly four entries, so this wildcard is
             // reached only by variant 3 ("Label placement") — `handle`'s
             // matching wildcard below is reached only by variant 2
             // ("Scrolling"); each comment names its own variant so the
             // two stay in sync.
-            _ => backend.draw_form(area, &build_label_placement_form()),
+            _ => {
+                quadraui::DrawsPrimitives::draw_primitive(
+                    backend,
+                    area,
+                    &build_label_placement_form(),
+                );
+            }
         }
     }
 
@@ -809,7 +813,12 @@ impl Demo for FormDemo {
                     ..
                 } => {
                     let form_rect = Self::form_rect(area, backend);
-                    let layout = backend.form_layout(form_rect, &self.search_replace.build_form());
+                    let layout = quadraui::DrawsPrimitives::layout_primitive(
+                        &*backend,
+                        form_rect,
+                        &self.search_replace.build_form(),
+                    )
+                    .layout;
                     // `FormLayout`'s hit regions are relative to
                     // `form_rect`'s own top-left corner, not the
                     // surface origin (`compose::FormController::click_inner`

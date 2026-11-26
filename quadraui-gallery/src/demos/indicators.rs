@@ -5,9 +5,10 @@
 //! a cancel button) and an indeterminate one with the spinner's frame
 //! auto-advancing on every [`Demo::tick`].
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Key, ProgressBar, ProgressBarHit, Reaction,
-    Rect, Spinner, StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Key, ProgressBar, ProgressBarHit, Reaction, Rect, Spinner,
+    StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -137,11 +138,7 @@ impl Demo for IndicatorsDemo {
         let _ = backend.draw_spinner(spinner_rect, &self.spinner());
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(), &());
     }
 
     fn handle(

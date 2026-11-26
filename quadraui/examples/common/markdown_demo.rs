@@ -132,7 +132,9 @@ impl AppLogic for MarkdownDemo {
                 }
                 Key::Char('f') => {
                     self.font_role = match self.font_role {
-                        FontRole::Chrome | FontRole::Icon => FontRole::Editor,
+                        FontRole::Chrome | FontRole::ChromeBold | FontRole::Icon => {
+                            FontRole::Editor
+                        }
                         FontRole::Editor => FontRole::Chrome,
                     };
                     Reaction::Redraw

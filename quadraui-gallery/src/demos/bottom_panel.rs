@@ -7,14 +7,15 @@
 //! controller is a stateful value with its own `render`/`handle_click_event`,
 //! so a host can mount it inside any rect, exactly as done here.
 
+use quadraui::DrawsPrimitives;
 use std::cell::RefCell;
 
 use quadraui::compose::bottom_panel::{
     BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelTab,
 };
 use quadraui::{
-    Backend, BackendCaps, Color, InteractionState, Reaction, Rect, StatusBar, StatusBarSegment,
-    Style, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent,
+    WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -63,11 +64,7 @@ impl BackendWidget for TerminalContent {
             }],
             right_segments: vec![],
         };
-        backend.draw_status_bar_interactive(
-            Rect::new(rect.x, rect.y, rect.width, row_h),
-            &bar,
-            &InteractionState::new(),
-        );
+        backend.draw_dyn(Rect::new(rect.x, rect.y, rect.width, row_h), &bar, &());
     }
 }
 
@@ -97,11 +94,7 @@ impl BackendWidget for ProblemsContent {
                 }],
                 right_segments: vec![],
             };
-            backend.draw_status_bar_interactive(
-                Rect::new(rect.x, y, rect.width, row_h),
-                &bar,
-                &InteractionState::new(),
-            );
+            backend.draw_dyn(Rect::new(rect.x, y, rect.width, row_h), &bar, &());
         }
     }
 }
@@ -203,7 +196,7 @@ impl Demo for BottomPanelDemo {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(hint_rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(hint_rect, &bar, &());
     }
 
     fn handle(

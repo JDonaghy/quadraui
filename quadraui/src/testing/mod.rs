@@ -655,8 +655,8 @@ impl Drop for TreePaintsOwnScrollbar {
 ///
 /// Every `draw_*` call appends its method name to [`Self::calls`] — the
 /// "recording" in the name — so a test can assert *what* got painted
-/// (`backend.calls.contains(&"draw_status_bar")`) without a real
-/// rasteriser. Layout getters (`tree_layout`, `status_bar_layout`, …)
+/// (`backend.calls.contains(&"draw_tree")`) without a real
+/// rasteriser. Layout getters (`tree_layout`, `list_layout`, …)
 /// are not recorded: they're queries, not paint events, and controllers
 /// call them freely (sometimes more than once a frame) as part of
 /// ordinary hit-testing.
@@ -696,9 +696,16 @@ pub struct RecordingBackend {
     /// `current_style` field is written.
     pub current_style: crate::Style,
     /// Backs [`Backend::focus_tree`] — unlike `drag_state_handle`, this
-    /// one *is* real state a headless mock can honestly fabricate, so
-    /// it's included rather than `unimplemented!()`.
+    /// one *is* real state a headless mock can honestly fabricate, so it's
+    /// included rather than `unimplemented!()`.
     pub focus_tree: crate::focus::FocusTree,
+    /// Backs [`Backend::modal_stack_handle`] — like
+    /// [`Self::focus_tree`], a real `ModalStack` is bookkeeping a
+    /// headless recorder can honestly own, so a controller that pushes a
+    /// modal (or a widget-contract paint that marks one painted) works
+    /// against this backend without a live event loop. Empty on a fresh
+    /// recorder.
+    pub modal_stack: std::rc::Rc<std::cell::RefCell<crate::ModalStack>>,
     /// Backs [`Backend::invalidate_rect`]/[`Backend::invalidation_log`] —
     /// pure bookkeeping, same shape every real backend's `BackendCore`
     /// delegates to.
@@ -739,13 +746,6 @@ pub struct RecordingBackend {
     /// without a real rasteriser, mirroring what [`Self::calls`] does for
     /// the method name alone.
     pub multi_section_view_calls: Vec<crate::MultiSectionView>,
-    /// Backs [`Backend::modal_stack_handle`] — like
-    /// [`Self::focus_tree`], a real `ModalStack` is bookkeeping a
-    /// headless recorder can honestly own, so a controller that pushes a
-    /// modal (or a widget-contract paint that marks one painted) works
-    /// against this backend without a live event loop. Empty on a fresh
-    /// recorder.
-    pub modal_stack: std::rc::Rc<std::cell::RefCell<crate::ModalStack>>,
 }
 
 impl Default for RecordingBackend {
@@ -762,13 +762,13 @@ impl Default for RecordingBackend {
             chrome_line_height: None,
             current_style: crate::Style::default(),
             focus_tree: crate::focus::FocusTree::new(),
+            modal_stack: std::rc::Rc::new(std::cell::RefCell::new(crate::ModalStack::new())),
             invalidation_log: crate::backend::InvalidationLog::new(),
             cursor_calls: Vec::new(),
             notifications_capable: false,
             notification_send_result: Ok(()),
             font_families: std::collections::HashSet::new(),
             multi_section_view_calls: Vec::new(),
-            modal_stack: std::rc::Rc::new(std::cell::RefCell::new(crate::ModalStack::default())),
         }
     }
 }
@@ -1053,7 +1053,7 @@ impl crate::Backend for RecordingBackend {
         &self.invalidation_log
     }
     fn modal_stack_handle(&self) -> std::rc::Rc<std::cell::RefCell<crate::ModalStack>> {
-        std::rc::Rc::clone(&self.modal_stack)
+        self.modal_stack.clone()
     }
     fn focus_tree(&self) -> &crate::focus::FocusTree {
         &self.focus_tree
@@ -1178,20 +1178,6 @@ impl crate::Backend for RecordingBackend {
             crate::primitives::list::ListItemMeasure::new(1.0)
         })
     }
-    fn draw_form(&mut self, _r: Rect, _f: &crate::Form) {
-        self.record("draw_form");
-    }
-    fn draw_palette(&mut self, _r: Rect, _p: &crate::Palette) {
-        self.record("draw_palette");
-    }
-    fn palette_layout(&self, r: Rect, p: &crate::Palette) -> crate::PaletteLayout {
-        let lh = self.line_height;
-        let title_h = lh;
-        let query_h = if p.show_query { lh } else { 0.0 };
-        p.layout(r.width, r.height, title_h, query_h, 0.0, 1.0, |_| {
-            crate::PaletteItemMeasure::new(lh)
-        })
-    }
     fn draw_settings_chrome(
         &mut self,
         _r: Rect,
@@ -1202,65 +1188,11 @@ impl crate::Backend for RecordingBackend {
     ) {
         self.record("draw_settings_chrome");
     }
-    /// Computes a real [`crate::StatusBarLayout`] via [`crate::StatusBar::layout`]
-    /// with a char-cell measurer (`self.char_width` per character,
-    /// mirroring `TuiBackend`'s own measurer) rather than a hardcoded
-    /// empty layout — `SidebarPanelBody`'s `StatusBars` chrome surfaces real
-    /// hit regions from it, and a recorder that always returns empty can
-    /// never exercise that translation.
-    fn draw_status_bar_interactive(
-        &mut self,
-        r: Rect,
-        b: &crate::primitives::status_bar::StatusBar,
-        _interaction: &crate::interaction::InteractionState,
-    ) -> crate::StatusBarLayout {
-        self.record("draw_status_bar");
-        let cw = self.char_width.max(0.0);
-        b.layout(r.width, r.height, 2.0 * cw, |seg| {
-            crate::StatusSegmentMeasure::new(seg.text.chars().count() as f32 * cw)
-        })
-    }
-    /// Union note: see `draw_status_bar` above — `app_shell::MockBackend`'s
-    /// real body (`Vec::new()`) wins for the same reason;
-    /// `AppShell::render` calls this for real.
-    fn draw_activity_bar(
-        &mut self,
-        _r: Rect,
-        _b: &crate::primitives::activity_bar::ActivityBar,
-        _h: Option<usize>,
-    ) -> Vec<crate::primitives::activity_bar::ActivityBarRowHit> {
-        self.record("draw_activity_bar");
-        Vec::new()
-    }
     fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {
         self.record("draw_solid_fill");
     }
-    fn status_bar_layout(&self, _r: Rect, _b: &crate::StatusBar) -> crate::StatusBarLayout {
-        crate::StatusBarLayout {
-            bar_width: 0.0,
-            bar_height: 0.0,
-            visible_segments: Vec::new(),
-            hit_regions: Vec::new(),
-            resolved_right_start: 0,
-        }
-    }
-    fn activity_bar_layout(
-        &self,
-        _r: Rect,
-        _b: &crate::primitives::activity_bar::ActivityBar,
-    ) -> Vec<crate::ActivityBarRowHit> {
-        Vec::new()
-    }
     /// Union note: `app_shell::MockBackend` was the only one with a real
     /// body (`Vec::new()`); the other two `unimplemented!()`d.
-    fn draw_context_menu(
-        &mut self,
-        _m: &crate::ContextMenu,
-        _l: &crate::ContextMenuLayout,
-    ) -> Vec<(Rect, WidgetId)> {
-        self.record("draw_context_menu");
-        Vec::new()
-    }
     fn draw_multi_section_view(&mut self, _r: Rect, v: &crate::MultiSectionView) {
         self.record("draw_multi_section_view");
         self.multi_section_view_calls.push(v.clone());
@@ -1324,9 +1256,6 @@ impl crate::Backend for RecordingBackend {
             false
         }
     }
-    fn form_layout(&self, _r: Rect, _f: &crate::Form) -> crate::primitives::form::FormLayout {
-        unimplemented!("RecordingBackend has no Form layout algorithm")
-    }
     fn draw_editor(
         &mut self,
         _r: Rect,
@@ -1347,13 +1276,6 @@ impl crate::Backend for RecordingBackend {
     }
     fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
         self.record("draw_scrollbar");
-    }
-    fn draw_menu_bar(&mut self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
-        self.record("draw_menu_bar");
-        unimplemented!("RecordingBackend has no MenuBar layout algorithm")
-    }
-    fn menu_bar_layout(&self, _r: Rect, _b: &crate::MenuBar) -> crate::MenuBarLayout {
-        unimplemented!("RecordingBackend has no MenuBar layout algorithm")
     }
     fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
         self.record("draw_split");
@@ -1422,23 +1344,6 @@ impl crate::Backend for RecordingBackend {
         _c: &crate::primitives::chart::Chart,
     ) -> crate::primitives::chart::ChartLayout {
         unimplemented!("RecordingBackend has no Chart layout algorithm")
-    }
-    fn draw_toolbar_with_options(
-        &mut self,
-        _r: Rect,
-        _b: &crate::primitives::toolbar::Toolbar,
-        _interaction: &crate::interaction::InteractionState,
-        _options: crate::primitives::toolbar::ToolbarPaintOptions,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        self.record("draw_toolbar");
-        unimplemented!("RecordingBackend has no Toolbar layout algorithm")
-    }
-    fn toolbar_layout(
-        &self,
-        _r: Rect,
-        _b: &crate::primitives::toolbar::Toolbar,
-    ) -> crate::primitives::toolbar::ToolbarLayout {
-        unimplemented!("RecordingBackend has no Toolbar layout algorithm")
     }
     fn draw_diff_view(
         &mut self,

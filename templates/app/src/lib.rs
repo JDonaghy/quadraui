@@ -63,11 +63,9 @@ impl ShellApp for App {
             }],
         };
         let mut frame = ScreenLayout::new();
-        frame.push(Surface::StatusBar {
+        frame.push(Surface::Widget {
             rect,
-            bar,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(bar),
         });
         frame.draw(backend);
     }

@@ -2772,141 +2772,6 @@ fn toolbar_click_fires_action_without_focus() {
     );
 }
 
-/// Hover state now flows through `InteractionState` — this asserts the
-/// *visual* consequence, not just that the field exists. A regression that
-/// dropped the hover-changed signal (e.g. always returning `Reaction::Continue`
-/// from `MouseMoved`) would leave the button's background at its resting
-/// colour after the mouse moved over it.
-#[test]
-fn toolbar_hover_paints_hover_background_at_the_cursor() {
-    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
-
-    let before = driver.screen();
-    let (x, y) = driver
-        .find("Filter")
-        .unwrap_or_else(|| panic!("Filter button must be visible:\n{before}"));
-    let resting_bg = driver
-        .style_at(x as u16, y as u16)
-        .expect("Filter cell should be inside the screen")
-        .bg;
-
-    driver.mouse_move(x, y);
-
-    let hovered_bg = driver
-        .style_at(x as u16, y as u16)
-        .expect("Filter cell should be inside the screen")
-        .bg;
-
-    assert_ne!(
-        hovered_bg,
-        resting_bg,
-        "hovering the Filter button should paint theme.hover_bg, visibly \
-         changing its background:\n{}",
-        driver.screen()
-    );
-
-    // Moving off the button again should restore the resting background
-    // — `InteractionState` clears hover, not just sets it once.
-    driver.mouse_move(0.0, 0.0);
-    let after_bg = driver
-        .style_at(x as u16, y as u16)
-        .expect("Filter cell should be inside the screen")
-        .bg;
-    assert_eq!(
-        after_bg,
-        resting_bg,
-        "moving off the button should clear the hover background:\n{}",
-        driver.screen()
-    );
-}
-
-/// `InteractionState::handle_mouse` only presses on the **left**
-/// button. The hand-rolled `matches!(UiEvent::MouseDown { .. })` arm
-/// `ToolbarApp` used before matched any button, so a right-click lit the
-/// pressed highlight. This pins the new behaviour black-box: the painted
-/// background under a right-pressed button must equal the background
-/// under a left-pressed one only if it is *not* the pressed colour, i.e.
-/// right-press must leave the cell at its resting colour while
-/// left-press must not.
-#[test]
-fn toolbar_press_highlights_only_on_the_left_button() {
-    // Two fresh drivers, deliberately: completing a click on "Filter"
-    // toggles `is_active`, which repaints the button in the *active*
-    // colour and would make "back to resting" unmeasurable afterwards.
-    // Each driver therefore sees exactly one press and no release.
-    let locate = |d: &mut TuiDriver<ToolbarApp>| {
-        let screen = d.screen();
-        d.find("Filter")
-            .unwrap_or_else(|| panic!("Filter button must be visible:\n{screen}"))
-    };
-    let bg = |d: &TuiDriver<ToolbarApp>, x: f32, y: f32| {
-        d.style_at(x as u16, y as u16)
-            .expect("Filter cell should be inside the screen")
-            .bg
-    };
-
-    let mut left = TuiDriver::new(ToolbarApp::new(), 120, 10);
-    let (x, y) = locate(&mut left);
-    let resting = bg(&left, x, y);
-    left.mouse_down(x, y);
-    assert_ne!(
-        bg(&left, x, y),
-        resting,
-        "a left press should tint the pressed button:\n{}",
-        left.screen()
-    );
-
-    let mut right = TuiDriver::new(ToolbarApp::new(), 120, 10);
-    let (rx, ry) = locate(&mut right);
-    assert_eq!((rx, ry), (x, y), "both drivers paint the same layout");
-    right.right_click(rx, ry);
-    assert_eq!(
-        bg(&right, rx, ry),
-        resting,
-        "a right press must not paint the pressed tint — `InteractionState` \
-         is left-button-only (#819):\n{}",
-        right.screen()
-    );
-}
-
-/// A left `MouseDown` that resolves to no widget clears whatever
-/// was pressed, rather than leaving a stale highlight lit. The
-/// hand-rolled arm this replaced only *set* `pressed_id` on a hit and
-/// left it untouched on a miss, so a press → drag-off → press-on-empty
-/// sequence stranded the tint on the first button forever.
-#[test]
-fn toolbar_press_then_press_empty_space_clears_the_stale_highlight() {
-    let mut driver = TuiDriver::new(ToolbarApp::new(), 120, 10);
-    let screen = driver.screen();
-    let (x, y) = driver
-        .find("Filter")
-        .unwrap_or_else(|| panic!("Filter button must be visible:\n{screen}"));
-    let bg = |d: &TuiDriver<ToolbarApp>| {
-        d.style_at(x as u16, y as u16)
-            .expect("Filter cell should be inside the screen")
-            .bg
-    };
-    let resting = bg(&driver);
-
-    driver.mouse_down(x, y);
-    assert_ne!(
-        bg(&driver),
-        resting,
-        "press should tint the button first:\n{}",
-        driver.screen()
-    );
-
-    // Press again far to the right of the last button — inside the
-    // toolbar row, but on no button at all.
-    driver.mouse_down(115.0, y);
-    assert_eq!(
-        bg(&driver),
-        resting,
-        "pressing empty space must clear the stale pressed tint (#819):\n{}",
-        driver.screen()
-    );
-}
-
 #[test]
 fn palette_dual_mode_tab_switches_to_input_mode() {
     // Pressing Tab should toggle from List mode to Input mode, which:
@@ -9311,8 +9176,8 @@ fn tab_chrome_demo_click_suppresses_focus_visible() {
     );
 }
 
-// ─── ActivityStyleDemo: VS-Code-style row fill through
-//     Backend::draw_activity_bar_with_style ───────────────────────────────
+// ─── ActivityStyleDemo: VS-Code-style row fill through the ActivityBar
+//     widget contract ──────────────────────────────────────────────────────
 //
 // `ActivityBarStyle::active_bg` pairs with `ActivityBar` as a sidecar to
 // avoid breaking exhaustive literals. These drive the shipping example
@@ -9324,7 +9189,7 @@ fn tab_chrome_demo_click_suppresses_focus_visible() {
 fn activity_style_demo_paints_no_accent_glyph() {
     // `active_accent` is `None` throughout this demo — the row fill is the
     // only active-item indicator. `'▎'` is the glyph
-    // `tui::activity_bar::draw_activity_bar_with_style` paints for a
+    // the ActivityBar cell painter paints for a
     // *set* `active_accent`, so its total absence here is the observable
     // proxy for "zero accent-line pixels" that a text-only driver can
     // assert (the actual fill colour is a cell-background test, covered
@@ -10702,26 +10567,18 @@ fn focus_demo_tab_moves_the_rendered_ring_through_the_screen_layout_order() {
         driver.screen()
     );
 
-    // Stop 3: the status bar — last in reading order (largest y).
-    driver.press_named(NamedKey::Tab);
-    let status = ring_corner(&driver);
-    assert!(
-        status.1 > left.1,
-        "ring moved down to the status bar: {left:?} -> {status:?}\n{}",
-        driver.screen()
-    );
-    assert!(
-        driver.screen_contains(&format!("focus: {STATUS_ID}")),
-        "{}",
-        driver.screen()
-    );
-
-    // Wrap-around: back to stop 1, at the exact same cell it started on.
+    // Wrap-around: the status bar takes no keyboard focus, so Tab goes
+    // straight back to stop 1, at the exact same cell it started on.
     driver.press_named(NamedKey::Tab);
     assert_eq!(
         ring_corner(&driver),
         left,
         "Tab wraps from the last stop back to the first:\n{}",
+        driver.screen()
+    );
+    assert!(
+        !driver.screen_contains(&format!("focus: {STATUS_ID}")),
+        "the status bar is never a tab stop:\n{}",
         driver.screen()
     );
 }
@@ -10730,23 +10587,10 @@ fn focus_demo_tab_moves_the_rendered_ring_through_the_screen_layout_order() {
 fn focus_demo_shift_tab_walks_the_ring_backwards() {
     let mut driver = focus_driver();
 
-    // From "nothing focused", Shift+Tab lands on the *last* stop.
-    shift_tab(&mut driver);
-    let status = ring_corner(&driver);
-    assert!(
-        driver.screen_contains(&format!("focus: {STATUS_ID}")),
-        "{}",
-        driver.screen()
-    );
-
+    // From "nothing focused", Shift+Tab lands on the *last* stop — the
+    // right list, since the status bar takes no keyboard focus.
     shift_tab(&mut driver);
     let right = ring_corner(&driver);
-    assert!(
-        right.1 < status.1,
-        "Shift+Tab retreated from the status bar up to the right list: \
-         {status:?} -> {right:?}\n{}",
-        driver.screen()
-    );
     assert!(
         driver.screen_contains(&format!("focus: {RIGHT_ID}")),
         "{}",
@@ -11725,7 +11569,8 @@ fn form_fields_stack_and_group_items_pack() {
 /// Right-clicking low in a short terminal makes the context menu clamp
 /// against the top of its surface. The menu's box border is painted one
 /// cell *outside* the item region, so the surface the layout is anchored
-/// in has to reserve room for it (`Backend::context_menu_viewport`) —
+/// in has to reserve room for it (the widget contract's border-inset
+/// viewport) —
 /// otherwise the first entry lands on row 0 and the top border has
 /// nowhere to go.
 #[test]

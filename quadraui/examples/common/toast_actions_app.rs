@@ -22,9 +22,8 @@
 use quadraui::compose::{Handled, ToastStackAction, ToastStackController};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, InteractionState, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, Toast, ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity,
-    UiEvent, WidgetId,
+    AppLogic, Backend, Color, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, Toast,
+    ToastButton, ToastCorner, ToastHit, ToastOverlay, ToastSeverity, UiEvent, WidgetId,
 };
 
 pub struct ToastActionsApp {
@@ -127,11 +126,7 @@ impl AppLogic for ToastActionsApp {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
         let overlay_rect = self.overlay_rect(backend);
         backend.draw_dyn(overlay_rect, &self.stack(), &());
     }

@@ -6,10 +6,11 @@
 //! its own `is_expanded` flips in response to
 //! [`SidebarEvent::RowToggleExpand`].
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, Decoration, InteractionState, Key, NavigationMode, Reaction, Rect,
-    ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, Style,
-    StyledText, TreeRow, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Decoration, Key, NavigationMode, Reaction, Rect, ScrollMode,
+    SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, Style, StyledText,
+    TreeRow, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -251,11 +252,7 @@ impl Demo for TreeDemo {
             self.file_sidebar.render(backend, content);
         }
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(variant),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
     }
 
     fn handle(

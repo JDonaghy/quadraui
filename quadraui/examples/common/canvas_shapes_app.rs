@@ -21,9 +21,10 @@
 //! - q / Esc   quit
 
 use quadraui::primitives::canvas::CanvasFontRole;
+use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Canvas, Color, DrawOp, InteractionState, Key, NamedKey, Point, Reaction,
-    Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Canvas, Color, DrawOp, Key, NamedKey, Point, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 const LABELS: [&str; 5] = ["Mon", "Tue", "Wed", "Thu", "Fri"];
@@ -213,11 +214,7 @@ impl AppLogic for CanvasShapesApp {
         let _ = backend.draw_canvas(rect, &self.chart_canvas(rect));
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status_bar(),
-            &InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

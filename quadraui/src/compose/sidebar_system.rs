@@ -455,7 +455,12 @@ impl SidebarSystem {
         for (msv_idx, s_layout) in layout.sections.iter().enumerate() {
             let sidebar_idx = map[msv_idx];
             if let SectionBody::Form(ref f) = view.sections[msv_idx].body {
-                let fl = backend.form_layout(s_layout.body_bounds, f);
+                let fl = crate::backend::DrawsPrimitives::layout_primitive(
+                    backend,
+                    s_layout.body_bounds,
+                    f,
+                )
+                .layout;
                 if sidebar_idx < self.cached_form_layouts.len() {
                     self.cached_form_layouts[sidebar_idx] = Some(fl);
                 }
@@ -1055,7 +1060,7 @@ impl SidebarSystem {
                     }
                     SectionBody::Form(f) => {
                         let form_layout = if let Some(be) = backend {
-                            be.form_layout(body_b, f)
+                            crate::backend::DrawsPrimitives::layout_primitive(be, body_b, f).layout
                         } else if let Some(cached) = self
                             .cached_form_layouts
                             .get(section)

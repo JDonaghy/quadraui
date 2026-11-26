@@ -174,11 +174,7 @@ impl Demo for IconGridDemo {
         backend.draw_primitive(rect, &grid);
 
         let status_rect = Self::status_rect(area, backend);
-        let _ = backend.draw_status_bar_interactive(
-            status_rect,
-            &self.status(),
-            &quadraui::InteractionState::new(),
-        );
+        let _ = backend.draw_dyn(status_rect, &self.status(), &());
     }
 
     fn handle(

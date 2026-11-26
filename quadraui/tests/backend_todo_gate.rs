@@ -127,33 +127,8 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_form",
-        "\"Direct2D form rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_palette",
-        "\"Direct2D palette rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_settings_chrome",
         "\"Direct2D settings chrome rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_status_bar_interactive",
-        "\"Direct2D status bar rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_activity_bar",
-        "\"Direct2D activity bar rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn status_bar_layout",
-        "\"DirectWrite status bar layout (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",
@@ -177,11 +152,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_context_menu",
-        "\"Direct2D context menu rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_dialog",
         "\"Direct2D dialog rasteriser (no surface attached yet)\"",
     ),
@@ -189,11 +159,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
         "src/win/backend.rs",
         "fn draw_multi_section_view",
         "\"Direct2D MSV rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn form_layout",
-        "\"DirectWrite form layout (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",
@@ -224,16 +189,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
         "src/win/backend.rs",
         "fn draw_scrollbar",
         "\"Direct2D scrollbar rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_menu_bar",
-        "\"Direct2D menu bar rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn menu_bar_layout",
-        "\"DirectWrite menu bar layout (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",
@@ -289,16 +244,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
         "src/win/backend.rs",
         "fn spinner_layout",
         "\"DirectWrite spinner layout (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_toolbar_with_options",
-        "\"Direct2D toolbar rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn toolbar_layout",
-        "\"DirectWrite toolbar layout (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",

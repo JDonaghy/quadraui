@@ -23,11 +23,12 @@
 //! - `s` — reopen in Save mode.
 //! - `q` / `Esc` — quit.
 
+use quadraui::DrawsPrimitives;
 use std::path::PathBuf;
 
 use quadraui::{
-    AppLogic, Backend, Color, FilePickerController, FilePickerMode, Handled, InteractionState, Key,
-    NamedKey, PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, FilePickerController, FilePickerMode, Handled, Key, NamedKey,
+    PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
     PALETTE_CHROME_ROWS,
 };
 
@@ -111,7 +112,7 @@ impl AppLogic for FilePickerApp {
         let bar_h = lh * 1.5;
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
         let bar = self.status_bar();
-        let _ = backend.draw_status_bar_interactive(bar_rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(bar_rect, &bar, &());
 
         if let Some(ref picker) = self.picker {
             let popup_rect = Self::popup_rect(backend);

@@ -2455,11 +2455,9 @@ mod tests {
     }
 
     fn toolbar_surface() -> Surface {
-        Surface::Toolbar {
+        Surface::Widget {
             rect: Rect::new(0.0, 10.0, 30.0, 2.0),
-            bar: toolbar("tools"),
-            hovered: None,
-            pressed: None,
+            widget: Box::new(toolbar("tools")),
         }
     }
 
@@ -2672,11 +2670,9 @@ mod tests {
         let first = frame_with(vec![list_surface(), toolbar_surface()]);
         // Same widgets, reordered and moved.
         let second = frame_with(vec![
-            Surface::Toolbar {
+            Surface::Widget {
                 rect: Rect::new(0.0, 0.0, 30.0, 2.0),
-                bar: toolbar("tools"),
-                hovered: None,
-                pressed: None,
+                widget: Box::new(toolbar("tools")),
             },
             Surface::List {
                 rect: Rect::new(0.0, 2.0, 30.0, 10.0),
@@ -2721,11 +2717,9 @@ mod tests {
     fn focus_lands_on_the_focused_toolbar_button() {
         let mut bar = toolbar("tools");
         bar.focused_index = Some(2);
-        let frame = frame_with(vec![Surface::Toolbar {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 2.0),
-            bar,
-            hovered: None,
-            pressed: None,
+            widget: Box::new(bar),
         }]);
         let mut fm = FocusTree::new();
         fm.set_focus(Some((WidgetId::new("tools"), None)));
@@ -3590,9 +3584,9 @@ mod tests {
             preview: None,
             mode: PaletteMode::default(),
         };
-        let frame = frame_with(vec![Surface::Palette {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            palette,
+            widget: Box::new(palette),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(

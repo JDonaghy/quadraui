@@ -691,13 +691,20 @@ test("inline tree leaf status_bar click emits StatusBar(SegmentClicked)", () => 
 
   const received: any[] = [];
   app.setHandler((event: unknown) => received.push(event));
+  // A status-bar segment activates on release over the segment it was
+  // pressed on, like every desktop button.
   app.pushEvent({
     MouseDown: { button: "Left", position: { x: 1.0, y: 0.0 }, modifiers: {} },
   });
   app.run(1);
+  app.pushEvent({
+    MouseUp: { widget: null, button: "Left", position: { x: 1.0, y: 0.0 } },
+  });
+  app.run(1);
 
-  assert.equal(received.length, 1, JSON.stringify(received));
-  const [widgetId, statusEvent] = received[0].StatusBar;
+  const statusEvents = received.filter((e) => e.StatusBar !== undefined);
+  assert.equal(statusEvents.length, 1, JSON.stringify(received));
+  const [widgetId, statusEvent] = statusEvents[0].StatusBar;
   assert.equal(widgetId, "status_bar:main");
   assert.deepStrictEqual(statusEvent, { SegmentClicked: { id: "status:branch" } });
 });
@@ -731,8 +738,11 @@ test("inline tree leaf activity_bar click emits ActivityBar(ItemClicked)", () =>
   });
   app.run(1);
 
-  assert.equal(received.length, 1, JSON.stringify(received));
-  const [widgetId, activityEvent] = received[0].ActivityBar;
+  // The rail is a focus stop, so the click may also report focus moving
+  // onto it; only the activation is checked here.
+  const activityEvents = received.filter((e) => e.ActivityBar !== undefined);
+  assert.equal(activityEvents.length, 1, JSON.stringify(received));
+  const [widgetId, activityEvent] = activityEvents[0].ActivityBar;
   assert.equal(widgetId, "activity_bar:main");
   assert.deepStrictEqual(activityEvent, { ItemClicked: { id: "activity:explorer" } });
 });

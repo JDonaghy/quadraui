@@ -41,7 +41,6 @@ use crate::drag::DragOutPayload;
 use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::focus::FocusTree;
 use crate::frame::{FrameCapture, OwnedFrame};
-use crate::interaction::InteractionState;
 use crate::login_item::LoginItemOptions;
 use crate::modal_stack::ModalStack;
 use crate::paths::AppPathKind;
@@ -50,11 +49,10 @@ use crate::primitive::{
     DynWidget, LayoutCtx, PaintEnv, PaintServices, PaintState, PaintTarget, Primitive,
     PrimitiveLayout, Units,
 };
-use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::context_menu::{ContextMenu, ContextMenuGlyphs, ContextMenuLayout};
+use crate::primitives::context_menu::ContextMenu;
 use crate::primitives::data_table::{
     DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
 };
@@ -62,10 +60,8 @@ use crate::primitives::dialog::DialogSeverity;
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::editor::{CursorShape as EditorCursorShape, Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
-use crate::primitives::form::FormLayout;
 use crate::primitives::image::{Image, ImageSource};
 use crate::primitives::list::{ListPaintState, ListViewLayout};
-use crate::primitives::menu_bar::{MenuBar, MenuBarLayout};
 use crate::primitives::message_list::MessageList;
 use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale};
 use crate::primitives::multi_section_view::{
@@ -77,19 +73,12 @@ use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
-use crate::primitives::status_bar::StatusBarLayout;
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
-use crate::primitives::toolbar::{
-    Toolbar, ToolbarLayout, ToolbarLayoutOptions, ToolbarOverflowPriorities, ToolbarPaintOptions,
-};
 use crate::primitives::tree::{TreePaintState, TreeViewLayout};
 use crate::primitives::tree_table::TreeTableLayout;
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
-use crate::{
-    Accelerator, AcceleratorId, ActivityBar, Form, GlobalShortcutId, ListView, Palette,
-    PaletteLayout, StatusBar, TabBar, TreeTable, TreeView,
-};
+use crate::{Accelerator, AcceleratorId, GlobalShortcutId, ListView, TabBar, TreeTable, TreeView};
 use serde::{Deserialize, Serialize};
 
 /// Which edge or corner of a window a resize gesture originates from.
@@ -982,8 +971,8 @@ pub enum ResolvedMenuStyle {
     /// ([`Backend::show_context_menu`] on macOS).
     Native,
     /// Paint in-window — [`crate::compose::ContextMenuController`] (or
-    /// an app's own state + [`Backend::draw_context_menu`]) owns this
-    /// path.
+    /// an app's own state painting the [`crate::ContextMenu`] widget)
+    /// owns this path.
     Custom,
 }
 
@@ -1248,7 +1237,7 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Sync the nerd-fonts flag so icon-bearing surfaces (`draw_tree`,
-    /// `draw_multi_section_view`, `draw_activity_bar`, etc.) render
+    /// `draw_multi_section_view`, the activity bar, etc.) render
     /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.
     ///
     /// `TuiBackend` starts at `false` (fallback): Nerd Font availability in
@@ -1337,7 +1326,7 @@ pub trait Backend: sealed::Sealed {
     /// daemon. Lets an app that wants icon glyphs to resolve on
     /// macOS/Win-GUI hand the backend its own font bytes (e.g. an
     /// `include_bytes!`-embedded subset) before [`Self::set_nerd_font_fallback`]
-    /// names a family for [`Self::draw_tree`]/[`Self::draw_activity_bar`]/etc.
+    /// names a family for [`Self::draw_tree`], the activity bar, etc.
     /// to resolve glyphs against.
     ///
     /// Returns the family name(s) the font registered under (read back
@@ -1665,13 +1654,14 @@ pub trait Backend: sealed::Sealed {
     /// event queue as [`UiEvent::MenuActivated`].
     ///
     /// TUI / GTK / Win-GUI: no-op default. Apps that want an in-window
-    /// menu keep calling `draw_menu_bar` from their render path; `WinBackend`
-    /// and `GtkBackend` both use the same drawn-menu-row + `draw_menu_bar`
-    /// approach, since a native menu bar would conflict with their custom
-    /// window chrome.
+    /// menu paint the [`crate::MenuBar`] widget from their render path;
+    /// `WinBackend` and `GtkBackend` both use that drawn menu row, since
+    /// a native menu bar would conflict with their custom window chrome.
     ///
-    /// Apps typically call this once during `AppLogic::setup`. Re-calling
-    /// replaces the previously-installed menu wholesale.
+    /// Apps typically call this once during `AppLogic::setup`;
+    /// [`crate::compose::MenuSystem::render`] calls it every frame under
+    /// the native menu style. Re-calling with a changed bar replaces the
+    /// previously-installed menu wholesale.
     fn install_menu_bar(&mut self, _bar: &crate::primitives::menu_bar::MenuBar) {}
 
     /// Show `menu` as a native right-click context menu at `anchor`
@@ -1685,9 +1675,9 @@ pub trait Backend: sealed::Sealed {
     /// [`UiEvent::ContextMenuDismissed`].
     ///
     /// TUI / GTK / Win-GUI: no-op default. Apps that want a painted
-    /// right-click menu on those backends continue to manage their
-    /// own `ContextMenu` state and call `draw_context_menu` from
-    /// their render path — or let
+    /// right-click menu on those backends manage their own
+    /// `ContextMenu` state and paint the widget from their render
+    /// path — or let
     /// [`crate::compose::ContextMenuController`] own that state for
     /// them (it calls this method for the `Native` half of the
     /// resolved style and manages painting/hit-testing itself for the
@@ -2381,62 +2371,6 @@ pub trait Backend: sealed::Sealed {
         0.0
     }
 
-    /// Space, in this backend's native units, that [`Self::draw_context_menu`]
-    /// needs reserved along every edge of a [`crate::ContextMenu`] before
-    /// the menu's own layout is computed — i.e. how far a caller building
-    /// the `viewport` rect passed to [`crate::ContextMenu::layout`] /
-    /// [`crate::ContextMenu::layout_at`] must inset that viewport on each
-    /// side so the resulting [`crate::ContextMenuLayout`] (its `bounds`,
-    /// `visible_items`, and `hit_regions`) already accounts for the chrome
-    /// this backend paints outside the item area.
-    ///
-    /// [`Self::context_menu_viewport`] builds that inset rect; prefer it
-    /// over applying this value by hand.
-    ///
-    /// Every pixel backend strokes the menu's border centred on
-    /// `bounds` (see `native_surface_paint::paint`'s `surface_stroke_rounded_rect`
-    /// call), so the default `0.0` is correct for GTK, Win-GUI, and
-    /// macOS. The TUI rasteriser instead paints the border on a whole
-    /// cell *outside* `bounds` on every side; when a menu is anchored or
-    /// clamped flush against a viewport edge there is no outside cell
-    /// left for that border to occupy without this inset, so
-    /// [`crate::tui::backend::TuiBackend`] overrides this to `1.0` (one
-    /// cell) and the caller shrinks the viewport it hands to layout
-    /// accordingly. Doing the inset here — in the geometry `hit_test`
-    /// reads — rather than only shifting where the TUI rasteriser paints
-    /// keeps painted rows and hit-tested rows in agreement.
-    fn context_menu_border_inset(&self) -> f32 {
-        0.0
-    }
-
-    /// The rect to pass as `viewport` to [`crate::ContextMenu::layout`] /
-    /// [`crate::ContextMenu::layout_at`]: this backend's full
-    /// [`Self::viewport`], inset on all four sides by
-    /// [`Self::context_menu_border_inset`] so the chrome
-    /// [`Self::draw_context_menu`] paints outside the item area has room
-    /// on every edge, however the menu ends up placed.
-    ///
-    /// Callers that own a `Backend` handle should use this instead of
-    /// building the rect themselves — it is the one place the inset is
-    /// applied, so a backend changing its chrome does not have to chase
-    /// every menu call site. On backends whose inset is `0.0` (every
-    /// pixel backend) the result is just the viewport as a rect.
-    ///
-    /// A caller working from some sub-region rather than the whole
-    /// surface (a split pane, a popup already offset inside the window)
-    /// insets that region the same way, by
-    /// [`Self::context_menu_border_inset`] on each side.
-    fn context_menu_viewport(&self) -> Rect {
-        let vp = self.viewport();
-        let inset = self.context_menu_border_inset();
-        Rect::new(
-            inset,
-            inset,
-            (vp.width - inset * 2.0).max(0.0),
-            (vp.height - inset * 2.0).max(0.0),
-        )
-    }
-
     /// Whether this backend can render individual text rows at a larger
     /// font size (per-line scale), so layouts should reserve taller
     /// vertical space for scaled rows.
@@ -2782,60 +2716,17 @@ pub trait Backend: sealed::Sealed {
         note = "use DrawsPrimitives::draw_primitive with ListView; removal tracked in #2609"
     )]
     fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
-    fn draw_form(&mut self, rect: Rect, form: &Form);
-    fn draw_palette(&mut self, rect: Rect, palette: &Palette);
-
-    /// [`Self::draw_palette`], reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`]: a backend that
-    /// implements this tints [`Palette`]'s pinned create-action row
-    /// (the one row in a `Palette` with a stable id — `palette.id`
-    /// itself, since [`crate::PaletteItem`] carries none; see
-    /// `primitives::palette::native_surface_paint`'s module doc) when
-    /// `interaction.is_hovered(&palette.id)` / `is_pressed(&palette.id)` —
-    /// see [`crate::Theme::menu_item_hover_bg`] /
-    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
-    /// colours.
-    ///
-    /// Additive over [`Self::draw_palette`], not a replacement — the
-    /// default forwards to it (ignoring `interaction`), so this method
-    /// is the one new backends/hosts adopt for hover feedback while
-    /// every existing call site and implementor keeps compiling
-    /// unchanged.
-    fn draw_palette_with_state(
-        &mut self,
-        rect: Rect,
-        palette: &Palette,
-        _interaction: &InteractionState,
-    ) {
-        self.draw_palette(rect, palette)
-    }
-
-    /// Compute the palette layout without painting — the no-paint twin
-    /// of [`Self::draw_palette`]. Every backend's `palette_layout` shares
-    /// its row/column arithmetic with its own `draw_palette`
-    /// (`tui_palette_layout`, `gtk_palette_layout`, `mac_palette_layout`,
-    /// `win_palette_layout`), so paint and no-paint can't drift apart —
-    /// see `docs/decisions/DECISIONS.md` D-007 "Palette: deferred, not
-    /// missed" for the rationale.
-    ///
-    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin, `(0, 0)`
-    /// at `rect`'s top-left, matching [`Palette::layout`]'s native
-    /// contract. Callers subtract `rect.x` / `rect.y` from an absolute
-    /// click coordinate before calling [`PaletteLayout::hit_test`]
-    /// (`PRIMITIVE_RULES.md`'s coordinate-frame convention).
-    ///
-    /// TUI's implementation never reports [`PaletteLayout::scrollbar`]
-    /// (always `None`) — see `tui::palette::tui_palette_layout`'s doc for
-    /// why reporting one would invent a second thumb-position formula
-    /// disagreeing with what TUI actually paints.
-    fn palette_layout(&self, rect: Rect, palette: &Palette) -> PaletteLayout;
 
     /// Draw settings-panel chrome: a header row and, when `rect.height`
     /// leaves room for it, a search input row beneath it, designed to
-    /// sit immediately above a [`Form`] body. See
-    /// `tui::draw_settings_chrome` / `gtk::draw_settings_chrome` for the
-    /// exact row layout, `" / "`-prefixed prompt construction, and
-    /// placeholder logic.
+    /// sit immediately above a [`crate::Form`] body. Every backend
+    /// forwards to the one shared painter in
+    /// [`crate::compose::sidebar_panel_body`] —
+    /// [`crate::compose::sidebar_panel_body::paint_settings_chrome`] on a
+    /// pixel surface,
+    /// [`crate::compose::sidebar_panel_body::paint_settings_chrome_cells`]
+    /// on a cell grid — which documents the exact row layout, prompt
+    /// construction and placeholder logic.
     ///
     /// **Height contract:** the header row always paints at one
     /// `line_height`. The search row paints only when `rect.height`
@@ -2869,200 +2760,6 @@ pub trait Backend: sealed::Sealed {
     // Methods that produce hit-region data (clickable segments,
     // close-button rects, link rects) return it directly so callers
     // route clicks against the same data the rasteriser paints with.
-    /// Draw a status bar, reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`].
-    ///
-    /// The rasteriser tints the background of the clickable segment
-    /// whose `action_id` matches `interaction.hovered()` /
-    /// `interaction.pressed()` — the primitive itself carries no mouse
-    /// state. Returns hit regions in **bar-local coordinates**
-    /// (relative to `rect.x` / `rect.y`) for each segment carrying an
-    /// `action_id`. Caller dispatches clicks against the returned list.
-    ///
-    /// This is the implemented method; the positional
-    /// [`Self::draw_status_bar`] is a deprecated shim over it.
-    fn draw_status_bar_interactive(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &InteractionState,
-    ) -> StatusBarLayout;
-
-    /// Like [`Self::draw_status_bar_interactive`], but scales the chrome
-    /// font this one call paints with, without touching the ambient
-    /// [`Self::set_ui_font`] state every *other* status bar (or any other
-    /// [`crate::font_role::ChromePrimitive::StatusBar`] paint) draws in
-    /// this frame.
-    ///
-    /// `font_scale` multiplies the backend's current UI font's point
-    /// size for this call only — `1.0` behaves identically to
-    /// [`Self::draw_status_bar_interactive`]; `0.85` paints ~15% smaller,
-    /// e.g. a breadcrumb strip that wants to sit visually subordinate to
-    /// a full-size status bar without either one needing its own
-    /// `set_ui_font` call (which would perturb every other chrome
-    /// primitive too — see [`Self::set_ui_font`]'s own doc).
-    ///
-    /// Default: ignores `font_scale` and forwards to
-    /// [`Self::draw_status_bar_interactive`] unscaled — the honest
-    /// default for TUI (a fixed-cell backend has no font size to scale)
-    /// and any future backend that hasn't wired real per-call scaling
-    /// yet. Additive over `draw_status_bar_interactive`, not a
-    /// replacement for it, so every existing in-tree and downstream call
-    /// site keeps compiling unchanged.
-    ///
-    /// `font_scale` is expected to be a small positive multiplier (e.g.
-    /// `0.5`–`2.0`); implementations clamp a degenerate value (`0.0` or
-    /// negative) to a small positive floor rather than handing it
-    /// unchecked to the native font API — see the GTK and macOS backends'
-    /// own `status_bar_paint_scaled` for the specific floor each uses.
-    fn draw_status_bar_interactive_scaled(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        interaction: &InteractionState,
-        _font_scale: f32,
-    ) -> StatusBarLayout {
-        self.draw_status_bar_interactive(rect, bar, interaction)
-    }
-
-    /// Draw a status bar with hover/pressed supplied positionally.
-    ///
-    /// # Deprecated
-    ///
-    /// Superseded by [`Self::draw_status_bar_interactive`], which reads
-    /// the same two values out of one [`InteractionState`] keyed by
-    /// [`WidgetId`] instead of two positional `Option<&WidgetId>` slots.
-    /// Kept because the sealed milestone acceptance slices
-    /// `tests/acceptance/ms-11/{structural_parity,c0_paint_smoke}.rs`
-    /// still call it positionally and this crate cannot edit anything
-    /// under `tests/acceptance/` (see `quadraui/tests/acceptance.rs`'s
-    /// module doc). Removal target: whichever Gate A pass migrates those
-    /// two slices off the positional call, not before v0.2.0.
-    #[deprecated(
-        since = "0.0.1",
-        note = "use `draw_status_bar_interactive` (hover/pressed come from an `InteractionState` keyed by `WidgetId`) — issue #819; removal target: once the sealed `tests/acceptance/ms-11` slices that still call this positionally migrate, not before v0.2.0"
-    )]
-    fn draw_status_bar(
-        &mut self,
-        rect: Rect,
-        bar: &StatusBar,
-        hovered_id: Option<&WidgetId>,
-        pressed_id: Option<&WidgetId>,
-    ) -> StatusBarLayout {
-        let interaction = InteractionState::from_parts(hovered_id.cloned(), pressed_id.cloned());
-        self.draw_status_bar_interactive(rect, bar, &interaction)
-    }
-
-    /// Draw an activity bar. `hovered_idx` carries per-frame hover
-    /// state so the rasteriser can paint a tint on the hovered row.
-    /// Returns per-row hit regions for click + tooltip dispatch.
-    ///
-    /// # Coordinate space — **relative to `rect`**
-    ///
-    /// Each [`ActivityBarRowHit`]'s `y_start` / `y_end` is measured from
-    /// the **top edge of `rect`**: the first row starts at `0.0` no
-    /// matter where the bar sits on the target surface. Implementors
-    /// must **not** fold `rect.y` into the returned spans, even though
-    /// they need the absolute value to paint. Callers add the bar origin
-    /// themselves (`hit.y_start + rect.y`).
-    ///
-    /// Note this is deliberately the *opposite* convention from
-    /// [`TabBarHits`], whose x spans are absolute. The split is
-    /// historical but now
-    /// pinned: the activity bar's space is what GTK, macOS, and the
-    /// shared [`activity_bar_hits`] helper already produced, and what
-    /// `AppShell` assumes in both its click and hover readers.
-    ///
-    /// [`Self::activity_bar_layout`] must return the same space. A
-    /// drifting backend fails
-    /// `tui::activity_bar::tests::hit_regions_are_bar_relative_not_absolute`
-    /// / `hit_regions_do_not_move_when_the_bar_does`, plus the
-    /// `activity_click_*_parity` / `activity_hover_*_parity` cross-backend
-    /// tests in `tests/cross_backend_parity.rs`.
-    ///
-    /// # Deprecated
-    ///
-    /// Superseded by [`Self::draw_activity_bar_with_style`], which takes
-    /// the same arguments plus an [`ActivityBarStyle`] request —
-    /// `&ActivityBarStyle::default()` reproduces this method's exact
-    /// behaviour. Kept as a required (non-default) method because every
-    /// in-tree backend still implements it directly; callers migrate by
-    /// passing a default style to the new method.
-    #[deprecated(
-        since = "0.11.0",
-        note = "use `draw_activity_bar_with_style` (pass `&ActivityBarStyle::default()` for identical behaviour)"
-    )]
-    fn draw_activity_bar(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-    ) -> Vec<ActivityBarRowHit>;
-
-    /// Draw an activity bar with an explicit [`ActivityBarStyle`] request —
-    /// currently just the active item's row-fill colour, VS Code style
-    /// (no line, a soft chip on the row itself).
-    ///
-    /// Added rather than folded into [`Self::draw_activity_bar`]'s
-    /// signature, and given a default body, so it breaks no existing
-    /// `Backend` implementor and no existing call site — mirrors
-    /// [`crate::TooltipChrome`] / [`Self::draw_tooltip_with_chrome`],
-    /// which solves the
-    /// identical "additive field would break exhaustive downstream
-    /// literals" problem for `Tooltip`. See
-    /// [`ActivityBarStyle`]'s doc for the full reasoning.
-    ///
-    /// The default body **ignores `style`** and delegates to
-    /// [`Self::draw_activity_bar`] — the correct fallback for a backend
-    /// with no fill vocabulary of its own. The TUI, GTK, and macOS
-    /// backends override it and honour `style.active_bg` in full; Win
-    /// takes the default for now (every `draw_*` method there is a
-    /// stub).
-    fn draw_activity_bar_with_style(
-        &mut self,
-        rect: Rect,
-        bar: &ActivityBar,
-        hovered_idx: Option<usize>,
-        style: &ActivityBarStyle,
-    ) -> Vec<ActivityBarRowHit> {
-        let _ = style;
-        // `draw_activity_bar` is `#[deprecated]`; this default is its own plumbing.
-        #[allow(deprecated)]
-        self.draw_activity_bar(rect, bar, hovered_idx)
-    }
-
-    /// Compute the status bar layout without painting. Same measurement
-    /// logic as `draw_status_bar` — call after `ScreenLayout::draw()` to
-    /// recover hit regions for click dispatch.
-    ///
-    /// Returns `hit_regions` in the same **bar-local** space as
-    /// [`Self::draw_status_bar`] (relative to `rect.x` / `rect.y`): every
-    /// backend returns the primitive's own unshifted `StatusBar::layout`
-    /// output, so paint and no-paint already agree and no backend folds
-    /// the origin in.
-    fn status_bar_layout(&self, rect: Rect, bar: &StatusBar) -> StatusBarLayout;
-
-    /// Compute activity bar row hit regions without painting. Returns
-    /// the same **bar-relative** spans as [`Self::draw_activity_bar`] —
-    /// `y_start` / `y_end` measured from `rect.y`, first row at `0.0`.
-    /// See that method for the full contract.
-    ///
-    /// # Deprecated
-    ///
-    /// [`ActivityBarStyle`] never changes row geometry (only paint
-    /// colour/icon size), so [`Self::draw_activity_bar_with_style`]'s
-    /// returned `Vec<ActivityBarRowHit>` already *is* this method's
-    /// result — a host that paints every frame (every in-tree caller
-    /// does) should cache that return value for click/hover dispatch
-    /// instead of querying this method separately. Kept as a required
-    /// (non-default) method for the "no live frame yet" fallback a few
-    /// backends still need before their first paint.
-    #[deprecated(
-        since = "0.11.0",
-        note = "cache the `Vec<ActivityBarRowHit>` `draw_activity_bar_with_style` already returns instead of querying layout separately"
-    )]
-    fn activity_bar_layout(&self, rect: Rect, bar: &ActivityBar) -> Vec<ActivityBarRowHit>;
-
     /// Fill `rect` edge-to-edge with a solid `color` — no text, no
     /// segments, no per-row seams. For chrome elements that are a plain
     /// color block (e.g. `AppShell`'s sidebar/editor resize divider),
@@ -3077,60 +2774,6 @@ pub trait Backend: sealed::Sealed {
     /// compile error and fills in a real rasteriser
     /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
     fn draw_solid_fill(&mut self, rect: Rect, color: Color);
-
-    /// Draw a [`ContextMenu`] popup at its caller-resolved layout.
-    /// Returns the per-clickable-item hit rectangles + their
-    /// `WidgetId`s so the caller's click handler can resolve mouse
-    /// events without re-running layout.
-    fn draw_context_menu(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-    ) -> Vec<(Rect, WidgetId)>;
-
-    /// [`Self::draw_context_menu`], reading hover/pressed state from a
-    /// single [`InteractionState`] keyed by [`WidgetId`]: a backend
-    /// that implements this tints the background of the item whose
-    /// [`ContextMenuItem::id`](crate::primitives::context_menu::ContextMenuItem::id)
-    /// matches `interaction.hovered()` / `interaction.pressed()` — see
-    /// [`crate::Theme::menu_item_hover_bg`] /
-    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
-    /// colours.
-    ///
-    /// Additive over [`Self::draw_context_menu`], not a replacement —
-    /// the default forwards to it (ignoring `interaction`), so every
-    /// existing implementor keeps compiling unchanged.
-    fn draw_context_menu_with_state(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-        _interaction: &InteractionState,
-    ) -> Vec<(Rect, WidgetId)> {
-        self.draw_context_menu(menu, layout)
-    }
-
-    /// Draw a [`ContextMenu`] popup with an optional [`ContextMenuGlyphs`]
-    /// override for the checked-item check mark and submenu pull-right
-    /// arrow.
-    ///
-    /// Added rather than folded into [`Self::draw_context_menu`]'s
-    /// signature, and given a default body, so it breaks no existing
-    /// `Backend` implementor and no existing call site.
-    ///
-    /// The default body **ignores `glyphs`** and delegates to
-    /// [`Self::draw_context_menu`], i.e. renders the default check mark
-    /// and submenu arrow. That is the correct fallback for a backend
-    /// that hasn't opted in to overrides yet. The TUI backend overrides
-    /// it and honours `glyphs` in full.
-    fn draw_context_menu_with_glyphs(
-        &mut self,
-        menu: &ContextMenu,
-        layout: &ContextMenuLayout,
-        glyphs: Option<&ContextMenuGlyphs>,
-    ) -> Vec<(Rect, WidgetId)> {
-        let _ = glyphs;
-        self.draw_context_menu(menu, layout)
-    }
 
     /// Draw a [`MultiSectionView`]. The backend computes the layout
     /// internally with native metrics (cells for TUI, pixels +
@@ -3208,15 +2851,6 @@ pub trait Backend: sealed::Sealed {
     fn tree_paints_own_scrollbar(&self) -> bool {
         false
     }
-
-    /// Compute the form layout the rasteriser would produce for `form`
-    /// in `rect`, using the backend's native metrics. Hosts call this
-    /// to drive hit-testing — especially for `ToggleGroup` and
-    /// `ButtonRow` fields where per-item hit regions depend on
-    /// backend-specific text measurement.
-    ///
-    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin.
-    fn form_layout(&self, rect: Rect, form: &Form) -> FormLayout;
 
     /// Draw an [`Editor`]. Returns paint-side data the host needs
     /// for chrome alignment (cursor pixel position for caret blink
@@ -3398,43 +3032,6 @@ pub trait Backend: sealed::Sealed {
     /// pulls cell/pixel background from its current theme.
     fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar);
 
-    /// Draw a [`MenuBar`]. The backend computes the layout internally
-    /// with native metrics (cells for TUI, Pango pixels for GTK) and
-    /// returns the [`MenuBarLayout`] so hosts can route clicks via
-    /// `layout.hit_test(x, y)` without re-deriving metrics. Same
-    /// coordinate frame as [`Self::menu_bar_layout`] (ABSOLUTE).
-    fn draw_menu_bar(&mut self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
-
-    /// [`Self::draw_menu_bar`], reading hover/pressed state from a
-    /// single [`InteractionState`] keyed by [`WidgetId`]: a backend
-    /// that implements this tints the background of the top-level item
-    /// whose [`MenuBarItem::id`](crate::primitives::menu_bar::MenuBarItem::id)
-    /// matches `interaction.hovered()` / `interaction.pressed()` — see
-    /// [`crate::Theme::menu_item_hover_bg`] /
-    /// [`crate::Theme::menu_item_pressed_bg`] for the derived tint
-    /// colours.
-    ///
-    /// Additive over [`Self::draw_menu_bar`], not a replacement — the
-    /// default forwards to it (ignoring `interaction`), so every
-    /// existing implementor keeps compiling unchanged.
-    fn draw_menu_bar_with_state(
-        &mut self,
-        rect: Rect,
-        bar: &MenuBar,
-        _interaction: &InteractionState,
-    ) -> MenuBarLayout {
-        self.draw_menu_bar(rect, bar)
-    }
-
-    /// Compute the menu-bar layout the rasteriser would produce for
-    /// `bar` in `rect`, using the backend's native metrics. Hosts
-    /// call this in click handlers to resolve hits against the same
-    /// layout that was painted — never re-derive with a hand-rolled
-    /// measurer.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn menu_bar_layout(&self, rect: Rect, bar: &MenuBar) -> MenuBarLayout;
-
     /// Draw a [`Split`] divider. The backend computes the layout with
     /// its native divider thickness (1 cell for TUI, ~4px for GTK)
     /// and returns the [`SplitLayout`] so hosts can route clicks and
@@ -3566,112 +3163,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
-
-    /// Draw a [`Toolbar`] (horizontal strip of action buttons above a
-    /// content area — distinct from `StatusBar` which is read-only),
-    /// reading hover/pressed state from a single [`InteractionState`]
-    /// keyed by [`WidgetId`].
-    ///
-    /// The rasteriser tints the background of the button whose id
-    /// matches `interaction.hovered()` / `interaction.pressed()`.
-    /// Returns the [`ToolbarLayout`] so hosts can route clicks via
-    /// `layout.hit_test(x, y)` without re-deriving metrics. Same
-    /// coordinate frame as [`Self::toolbar_layout`] (ABSOLUTE).
-    ///
-    /// Equivalent to [`Self::draw_toolbar_with_options`] with
-    /// [`ToolbarPaintOptions::default()`] — kept as a separate,
-    /// **unchanged** method (rather than growing this one's argument
-    /// list) so every existing caller keeps compiling untouched. Both
-    /// known downstream consumers call this method with exactly these
-    /// three arguments (`coord-tui`'s `app/render.rs` +
-    /// `app/dialogs.rs`), so adding a parameter here is an `E0061`
-    /// break for them — see [`ToolbarPaintOptions`]'s own doc and
-    /// `CLAUDE.md`'s *Downstream consumers* rule 2.
-    ///
-    /// Backends implement [`Self::draw_toolbar_with_options`]; this is
-    /// a forwarding default.
-    fn draw_toolbar_interactive(
-        &mut self,
-        rect: Rect,
-        bar: &Toolbar,
-        interaction: &InteractionState,
-    ) -> ToolbarLayout {
-        self.draw_toolbar_with_options(rect, bar, interaction, ToolbarPaintOptions::default())
-    }
-
-    /// [`Self::draw_toolbar_interactive`], plus [`ToolbarPaintOptions`]
-    /// a host can set to override otherwise-fixed paint decisions —
-    /// currently just `valign`, which resolves where button/label text
-    /// paints within a slot taller than one text row.
-    ///
-    /// `Toolbar` itself can't carry this: both known downstream
-    /// consumers build it with exhaustive struct literals — see
-    /// [`ToolbarPaintOptions`]'s own doc.
-    ///
-    /// This is the implemented method — every `Backend` writes its
-    /// rasteriser here, and [`Self::draw_toolbar_interactive`] forwards
-    /// into it with [`ToolbarPaintOptions::default()`] (`ToolbarVAlign::Top`,
-    /// byte-identical to the plain paint on a 1-row slot).
-    fn draw_toolbar_with_options(
-        &mut self,
-        rect: Rect,
-        bar: &Toolbar,
-        interaction: &InteractionState,
-        options: ToolbarPaintOptions,
-    ) -> ToolbarLayout;
-
-    /// [`Self::draw_toolbar_with_options`], plus [`ToolbarLayoutOptions`]
-    /// (orientation, `ToolbarOverflow`) and `priorities` (read only by
-    /// [`crate::primitives::toolbar::ToolbarOverflow::Menu`]).
-    ///
-    /// **Defaulted, not required.** The default ignores `layout_options`
-    /// and `priorities` entirely and forwards to
-    /// [`Self::draw_toolbar_with_options`] — today's single-row Clip
-    /// geometry, unchanged — so a backend with no `ToolbarOverflow`
-    /// rasteriser of its own keeps compiling and painting exactly as it
-    /// does today. TUI and macOS override this with a real
-    /// [`crate::primitives::toolbar::ToolbarOverflow::Wrap`] /
-    /// [`crate::primitives::toolbar::ToolbarOverflow::Menu`] rasteriser;
-    /// GTK / Win-GUI pick that up once a per-backend issue gives them one
-    /// (see `CLAUDE.md`'s "One backend per issue").
-    fn draw_toolbar_with_overflow(
-        &mut self,
-        rect: Rect,
-        bar: &Toolbar,
-        interaction: &InteractionState,
-        _layout_options: ToolbarLayoutOptions,
-        _priorities: &ToolbarOverflowPriorities,
-    ) -> ToolbarLayout {
-        self.draw_toolbar_with_options(rect, bar, interaction, ToolbarPaintOptions::default())
-    }
-
-    /// Compute toolbar layout without painting. Hosts call this after
-    /// `ScreenLayout::draw()` to recover hit regions for click dispatch.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn toolbar_layout(&self, rect: Rect, bar: &Toolbar) -> ToolbarLayout;
-
-    /// [`Self::toolbar_layout`], plus [`ToolbarLayoutOptions`]/`priorities`
-    /// — the layout-only twin of [`Self::draw_toolbar_with_overflow`], for
-    /// a host that wants to hit-test (or read
-    /// [`ToolbarLayout::cross_extent`]/[`ToolbarLayout::overflowed_items`])
-    /// without repainting.
-    ///
-    /// **Defaulted, not required** — same rationale as
-    /// [`Self::draw_toolbar_with_overflow`]: a backend with no
-    /// `ToolbarOverflow` rasteriser of its own gets today's Clip-only
-    /// [`Self::toolbar_layout`] geometry.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn toolbar_layout_with_overflow(
-        &self,
-        rect: Rect,
-        bar: &Toolbar,
-        _layout_options: ToolbarLayoutOptions,
-        _priorities: &ToolbarOverflowPriorities,
-    ) -> ToolbarLayout {
-        self.toolbar_layout(rect, bar)
-    }
 
     /// Draw a [`Chart`] (sparkline, line, or bar). `hovered_point`
     /// carries per-frame hover state (series_idx, data_idx) so the
@@ -3969,7 +3460,7 @@ pub trait DrawsPrimitives: Backend {
             painted_units = Some(Units::Cells);
         }
         if let Some(id) = primitive.id() {
-            self.modal_stack_handle().borrow_mut().mark_painted(id);
+            mark_modal_painted(self, id);
             if let Some(zone) = painted_units.and_then(|u| primitive.paint_zone(&layout, u)) {
                 self.register_zone(*id, zone);
             }
@@ -4078,9 +3569,8 @@ pub trait DrawsPrimitives: Backend {
             // A modal widget reached through the contract marks its own
             // `ModalStack` entry painted, so `unpainted_ids` still
             // catches a host that registers a modal for hit-testing and
-            // never paints it. `mark_painted` is a no-op for an id the
-            // stack does not hold, so a non-modal widget costs nothing.
-            self.modal_stack_handle().borrow_mut().mark_painted(id);
+            // never paints it.
+            mark_modal_painted(self, id);
             if let Some(zone) = painted_units.and_then(|u| w.paint_zone(layout.as_ref(), u)) {
                 self.register_zone(*id, zone);
             }
@@ -4173,6 +3663,16 @@ pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCt
 }
 
 impl<B: Backend + ?Sized> DrawsPrimitives for B {}
+
+/// Record that the widget `id` painted this frame on `backend`'s modal
+/// stack, so a modal widget (a palette, a menu) registered there is not
+/// reported as registered-but-unpainted. An id the stack does not hold
+/// is a no-op, and a stack already borrowed elsewhere is left alone.
+fn mark_modal_painted<B: Backend + ?Sized>(backend: &B, id: &WidgetId) {
+    if let Ok(mut stack) = backend.modal_stack_handle().try_borrow_mut() {
+        stack.mark_painted(id);
+    }
+}
 
 /// Paint-side data returned by [`Backend::draw_minimap`]. See
 /// [`EditorPaintResult`] for the sibling pattern this mirrors.
@@ -4288,37 +3788,6 @@ pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHi
         available_cols: layout.bar_width as usize,
         correct_scroll_offset: layout.resolved_scroll_offset,
     }
-}
-
-/// Compute activity bar hit regions from geometry (no paint).
-///
-/// Spans are **relative to `rect`** per the [`Backend::draw_activity_bar`]
-/// contract: the first top-pinned row starts at `0.0` and only `rect.height`
-/// is consulted (to pin the bottom group), never `rect.y`.
-pub fn activity_bar_hits(rect: Rect, bar: &ActivityBar, lh: f32) -> Vec<ActivityBarRowHit> {
-    let mut hits = Vec::new();
-    let mut y = 0.0_f32;
-    for item in &bar.top_items {
-        hits.push(ActivityBarRowHit {
-            id: item.id,
-            tooltip: item.tooltip.clone(),
-            y_start: y,
-            y_end: y + lh,
-        });
-        y += lh;
-    }
-    let bottom_start = rect.height - bar.bottom_items.len() as f32 * lh;
-    let mut by = bottom_start.max(y);
-    for item in &bar.bottom_items {
-        hits.push(ActivityBarRowHit {
-            id: item.id,
-            tooltip: item.tooltip.clone(),
-            y_start: by,
-            y_end: by + lh,
-        });
-        by += lh;
-    }
-    hits
 }
 
 /// Paint-side data returned by [`Backend::draw_editor`]. Carries

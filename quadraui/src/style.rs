@@ -42,8 +42,8 @@
 //!   their own docs for the exact rounding rule.
 //! - **Pre-blend** — a token whose pixel-backend refinement is alpha
 //!   compositing, which ratatui's `Buffer` has no primitive for.
-//!   [`Self::backdrop_opacity`] is this: `crate::tui::draw_palette`
-//!   (`#[doc(hidden)]`, so not linked here) pre-mixes the backdrop
+//!   [`Self::backdrop_opacity`] is this: the palette's cell painter
+//!   pre-mixes the backdrop
 //!   colour on the CPU via [`crate::Color::blend`]
 //!   before writing opaque cells, the same technique
 //!   [`crate::tui::draw_minimap`] already uses to simulate a translucent
@@ -271,7 +271,7 @@ pub struct Style {
     ///
     /// **TUI story: pre-blend.** See the module doc's *Where each token
     /// maps on TUI* section. Concretely,
-    /// [`crate::tui::palette::draw_palette_with_style`] blends
+    /// the palette's cell painter blends
     /// [`crate::Theme::background`] with [`crate::Theme::surface_bg`] at
     /// this opacity — a static theme token, not whatever content the
     /// ratatui `Buffer` already holds at those cells — since `Buffer` has

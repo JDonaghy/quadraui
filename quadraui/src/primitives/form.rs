@@ -90,7 +90,7 @@
 // The cell-grid layout resolver and rasteriser for this widget. They
 // live beside the descriptor, next to `Primitive::layout`/`paint_cells`,
 // which reach them — so a form painted through the widget contract and
-// one painted through `Backend::draw_form` are the same code.
+// one embedded in a `MultiSectionView` section are the same code.
 //
 // `pub` rather than `pub(crate)` so a consumer writing its own
 // cell-grid renderer can reach the same layout/painter pair the
@@ -110,6 +110,9 @@ pub mod cell_paint;
 // `crate::compose::FormController` drives the same behaviour functions
 // a `Surface::Widget` form does, rather than carrying a second copy.
 pub(crate) mod contract;
+
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_paint_tests;
 
 pub use contract::{DateCursor, FormPrimitiveLayout, FormState, ItemCursor, TextCursor};
 
@@ -531,7 +534,7 @@ pub enum FieldKind {
     /// Single-choice selection from a fixed list. `options` is the
     /// display list; `selected_idx` is the current choice. While the
     /// field is focused, backends show the full option list open below
-    /// the compact row (see e.g. `crate::tui::form::draw_form`); Up/Down
+    /// the compact row (see e.g. `form::cell_paint::draw_form`); Up/Down
     /// move the selection and commit it immediately, emitting
     /// `FormEvent::DropdownChanged` on every move — there's no separate
     /// open/confirm step.
@@ -1027,8 +1030,8 @@ pub struct FormLayout {
     /// paints a `Toolbar` field's embedded control itself, rather than
     /// through the shared `paint`, reads this field instead of
     /// re-measuring the field's own label to find the same start `x` —
-    /// see `MacBackend::draw_form`'s `FieldKind::Toolbar` arm for the
-    /// reference pattern.
+    /// see the form's widget-contract layout, which places each
+    /// `FieldKind::Toolbar` field's embedded toolbar this way.
     pub left_label_width: f32,
 }
 
@@ -1037,8 +1040,8 @@ impl FormLayout {
     /// painted strip, given the row's own absolute left edge `row_x`
     /// and width `row_w`.
     ///
-    /// Every pixel backend's `draw_form` (and `MultiSectionView`'s
-    /// embedded form body) rasterises `FieldKind::Toolbar` itself,
+    /// The form's widget contract (and every `MultiSectionView`
+    /// embedded form body) paints `FieldKind::Toolbar` itself,
     /// outside [`crate::primitives::form::paint`], so it needs the
     /// same start `x` [`Self::left_label_width`]'s doc describes
     /// [`Form::layout`] already widening `VisibleFormField::item_bounds`
@@ -1504,10 +1507,10 @@ fn item_x_positions(origin_x: f32, _row_height: f32, gap: f32, widths: &[f32]) -
 // `Slider`, `ColorPicker`, `Dropdown` and `TextArea`.
 //
 // `#[allow(dead_code)]`: `paint` and its private helpers are only called
-// when a real pixel backend is compiled in — `GtkBackend::draw_form`,
-// `MacBackend::draw_form`/`draw_form_body` and `WinBackend::draw_form`/
-// `draw_form_body` are the call sites, and the Win ones live behind a
-// further `target_os = "windows"` gate (see `win::form`'s module doc).
+// when a real pixel backend is compiled in — the widget contract's
+// `Primitive::paint` and each backend's `MultiSectionView` form body are
+// the call sites, and the Win one lives behind a further
+// `target_os = "windows"` gate.
 // `--features win` alone, on a non-Windows host compiles this module but
 // reaches none of those call sites, so nothing here is "dead" in the lint
 // sense; it's the same shape `paint_surface.rs`'s own `#[allow(dead_code)]`
@@ -1684,14 +1687,13 @@ mod native_surface_paint {
     /// Paint a laid-out [`Form`] using `surface`'s [`PaintSurface`] verbs.
     ///
     /// `flayout` must be the *same* [`FormLayout`] the caller uses for
-    /// hit-testing (typically `Backend::form_layout`'s return value for this
+    /// hit-testing (typically the form's widget-contract layout for this
     /// `form`) — `paint` reads geometry only from `flayout`, never recomputes
     /// it, so paint and hit-test never disagree.
     ///
     /// `origin` places the form's local `(0, 0)` at `origin` in `surface`'s
     /// coordinate space — mirrors every other `*_layout` primitive's
-    /// "local layout + host-supplied origin" contract (see `mac_form_layout`'s
-    /// doc for the same convention stated from the hit-test side).
+    /// "local layout + host-supplied origin" contract.
     ///
     /// # `FieldKind::Toolbar` is not painted here
     ///
@@ -1704,7 +1706,8 @@ mod native_surface_paint {
     /// `Toolbar` themselves *after* `paint` returns (so the two never fight
     /// over `surface`'s exclusive borrow), using their existing per-backend
     /// toolbar rasteriser at the field's `VisibleFormField::bounds` /
-    /// `item_bounds`. See `GtkBackend::draw_form` for the reference pattern.
+    /// `item_bounds`. The widget contract's `Primitive::paint` paints it
+    /// through the toolbar's own contract.
     ///
     /// # `label_position` doesn't reach item-based field kinds
     ///
@@ -2477,7 +2480,7 @@ mod native_surface_paint {
                     FieldKind::NumberInput(number) => {
                         // `vf.item_bounds`'s single entry (populated by the
                         // backend's `FieldKind::NumberInput` measure arm —
-                        // see e.g. `tui::form::tui_form_layout_with_label_width`'s
+                        // see e.g. `form::cell_layout::tui_form_layout_with_label_width`'s
                         // pixel-measurer twin in `layout_metrics.rs`) is the
                         // control's on-screen rect; reuse it rather than
                         // re-deriving `control_start` here, so paint and
@@ -2777,294 +2780,6 @@ mod native_surface_paint {
         }
     }
 
-    /// Cursor width for the settings-chrome search row — matches every
-    /// per-backend `draw_settings_chrome` twin's caret width
-    /// (`gtk::form`'s literal `1.5`, `macos::form::SETTINGS_CURSOR_W`,
-    /// `win::form::SETTINGS_CURSOR_W`).
-    const SETTINGS_CURSOR_W: f32 = 1.5;
-    /// Prefix rendered before the settings-chrome search query — the
-    /// same string every per-backend painter uses.
-    const SETTINGS_SEARCH_PREFIX: &str = " /  ";
-
-    /// Paint settings-panel chrome: a header row and, when
-    /// `rect.height` leaves room for it, a search input row beneath it
-    /// — designed to sit immediately above a [`Form`] body. Replaces
-    /// the three near-identical per-backend `draw_settings_chrome`
-    /// copies (`gtk::form`, `macos::form`, `win::form`); adopting it
-    /// from each backend is follow-on scope.
-    ///
-    /// The header row always paints at one `line_height` tall. The
-    /// search row paints only when `rect.height >= line_height * 1.5`
-    /// — a caller reserving a single row gets a header-only strip
-    /// instead of an unrequested second row painted past its own rect.
-    /// When the search row does paint, its full-width background is
-    /// `theme.selected_bg` when `active`, otherwise `theme.tab_bar_bg`.
-    /// Layout left to right: [`SETTINGS_SEARCH_PREFIX`] in
-    /// `theme.muted_fg`, then either `query` (in `theme.foreground`) or
-    /// `placeholder` (in `theme.muted_fg`, shown only when the query is
-    /// empty *and* the row is inactive). A [`SETTINGS_CURSOR_W`]-wide
-    /// `theme.accent_fg` cursor follows the query when `active`.
-    ///
-    /// Chrome only — the form body and any scrollbar layered below are
-    /// painted separately by the caller.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn paint_settings_chrome(
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        rect: Rect,
-        line_height: f32,
-        header_text: &str,
-        query: &str,
-        placeholder: &str,
-        active: bool,
-    ) {
-        if rect.width <= 0.0 || line_height <= 0.0 {
-            return;
-        }
-
-        // Row 0: header bar.
-        surface.surface_fill_rect(
-            Rect::new(rect.x, rect.y, rect.width, line_height),
-            theme.header_bg,
-        );
-        let (header_w, header_h) = surface.surface_measure_text(header_text);
-        let header_y = rect.y + ((line_height - header_h) / 2.0).max(0.0);
-        surface.surface_draw_text_run(
-            Rect::new(rect.x + 2.0, header_y, header_w, header_h),
-            header_text,
-            theme.header_fg,
-        );
-
-        // Row 1: search input — only when `rect.height` leaves room
-        // for it (see this fn's doc). Skipped for a header-only strip
-        // instead of overpainting whatever the caller placed directly
-        // beneath it.
-        if rect.height >= line_height * 1.5 {
-            let search_y = rect.y + line_height;
-            let row_bg = if active {
-                theme.selected_bg
-            } else {
-                theme.tab_bar_bg
-            };
-            surface.surface_fill_rect(Rect::new(rect.x, search_y, rect.width, line_height), row_bg);
-
-            let (prefix_w, prefix_h) = surface.surface_measure_text(SETTINGS_SEARCH_PREFIX);
-            let prefix_y = search_y + ((line_height - prefix_h) / 2.0).max(0.0);
-            surface.surface_draw_text_run(
-                Rect::new(rect.x + 2.0, prefix_y, prefix_w, prefix_h),
-                SETTINGS_SEARCH_PREFIX,
-                theme.muted_fg,
-            );
-
-            let q_x = rect.x + 2.0 + prefix_w;
-            let show_placeholder = query.is_empty() && !placeholder.is_empty() && !active;
-            let (text, color) = if show_placeholder {
-                (placeholder, theme.muted_fg)
-            } else if query.is_empty() {
-                (query, theme.muted_fg)
-            } else {
-                (query, theme.foreground)
-            };
-            let (text_w, text_h) = surface.surface_measure_text(text);
-            let text_y = search_y + ((line_height - text_h) / 2.0).max(0.0);
-            surface.surface_draw_text_run(Rect::new(q_x, text_y, text_w, text_h), text, color);
-
-            if active {
-                let (query_w, _) = surface.surface_measure_text(query);
-                let cur_x = q_x + if query.is_empty() { 0.0 } else { query_w };
-                surface.surface_fill_rect(
-                    Rect::new(
-                        cur_x,
-                        search_y + 2.0,
-                        SETTINGS_CURSOR_W,
-                        (line_height - 4.0).max(0.0),
-                    ),
-                    theme.accent_fg,
-                );
-            }
-        }
-    }
-
-    #[cfg(test)]
-    mod settings_chrome_tests {
-        use super::*;
-        use crate::backend::ImagePaintResult;
-        use crate::event::Viewport;
-        use crate::types::Color;
-        use crate::Image;
-
-        /// Records every drawing verb `paint_settings_chrome` issues —
-        /// mirrors `primitives::progress::native_surface_paint`'s own
-        /// `RecordingSurface`.
-        #[derive(Default)]
-        struct RecordingSurface {
-            fills: Vec<(Rect, Color)>,
-            text_runs: Vec<(Rect, String, Color)>,
-        }
-
-        impl PaintSurface for RecordingSurface {
-            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
-            fn surface_end_frame(&mut self) {}
-            fn surface_viewport(&self) -> Viewport {
-                Viewport::new(300.0, 60.0, 1.0)
-            }
-            fn surface_line_height(&self) -> f32 {
-                16.0
-            }
-            fn surface_char_width(&self) -> f32 {
-                8.0
-            }
-            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-                (text.chars().count() as f32 * 8.0, 14.0)
-            }
-            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
-                self.fills.push((rect, color));
-            }
-            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
-                self.fills.push((rect, color));
-            }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
-            fn surface_stroke_rounded_rect(
-                &mut self,
-                _rect: Rect,
-                _radius: f32,
-                _color: Color,
-                _stroke_width: f32,
-            ) {
-            }
-            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
-                self.text_runs.push((rect, text.to_string(), color));
-            }
-            fn surface_draw_line(
-                &mut self,
-                _from: crate::Point,
-                _to: crate::Point,
-                _color: Color,
-                _stroke_width: f32,
-            ) {
-            }
-            fn surface_push_clip(&mut self, _rect: Rect) {}
-            fn surface_pop_clip(&mut self) {}
-            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
-                ImagePaintResult::Unsupported
-            }
-        }
-
-        fn paint_one_row(surface: &mut RecordingSurface, height: f32, active: bool) {
-            paint_settings_chrome(
-                surface,
-                &Theme::default(),
-                Rect::new(0.0, 0.0, 200.0, height),
-                16.0,
-                "Settings",
-                "",
-                "Search",
-                active,
-            );
-        }
-
-        /// A one-`line_height`-tall rect leaves no room for the search
-        /// row — only the header paints.
-        #[test]
-        fn one_row_height_paints_no_search_row() {
-            let mut surface = RecordingSurface::default();
-            paint_one_row(&mut surface, 16.0, false);
-            assert_eq!(surface.fills.len(), 1, "only the header bar should fill");
-            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Settings"));
-            assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
-        }
-
-        /// A two-`line_height`-tall rect leaves room for the search
-        /// row, which shows the placeholder when `query` is empty and
-        /// the row is inactive.
-        #[test]
-        fn two_row_height_paints_search_row_with_placeholder() {
-            let mut surface = RecordingSurface::default();
-            paint_one_row(&mut surface, 32.0, false);
-            assert_eq!(
-                surface.fills.len(),
-                2,
-                "header bar + search row should fill"
-            );
-            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
-            assert!(surface
-                .text_runs
-                .iter()
-                .any(|(_, t, _)| t == SETTINGS_SEARCH_PREFIX));
-        }
-
-        /// An active search row with a non-empty query paints the
-        /// query (not the placeholder) plus a cursor fill.
-        #[test]
-        fn active_row_paints_query_and_cursor() {
-            let mut surface = RecordingSurface::default();
-            paint_settings_chrome(
-                &mut surface,
-                &Theme::default(),
-                Rect::new(0.0, 0.0, 200.0, 32.0),
-                16.0,
-                "Settings",
-                "abc",
-                "Search",
-                true,
-            );
-            let theme = Theme::default();
-            assert!(surface.text_runs.iter().any(|(_, t, _)| t == "abc"));
-            assert!(!surface.text_runs.iter().any(|(_, t, _)| t == "Search"));
-            // Row bg + cursor are both fills distinct from the header fill.
-            assert!(surface.fills.iter().any(|(_, c)| *c == theme.selected_bg));
-            assert!(surface
-                .fills
-                .iter()
-                .any(|(r, c)| *c == theme.accent_fg && r.width == SETTINGS_CURSOR_W));
-        }
-
-        /// Inactive row background is `tab_bar_bg`, not `selected_bg`.
-        #[test]
-        fn inactive_row_uses_tab_bar_bg() {
-            let mut surface = RecordingSurface::default();
-            paint_one_row(&mut surface, 32.0, false);
-            let theme = Theme::default();
-            assert!(surface.fills.iter().any(|(_, c)| *c == theme.tab_bar_bg));
-            assert!(!surface.fills.iter().any(|(_, c)| *c == theme.selected_bg));
-        }
-
-        /// Zero-width rect is a no-op: nothing paints.
-        #[test]
-        fn zero_width_is_a_no_op() {
-            let mut surface = RecordingSurface::default();
-            paint_settings_chrome(
-                &mut surface,
-                &Theme::default(),
-                Rect::new(0.0, 0.0, 0.0, 32.0),
-                16.0,
-                "Settings",
-                "",
-                "Search",
-                false,
-            );
-            assert!(surface.fills.is_empty());
-            assert!(surface.text_runs.is_empty());
-        }
-
-        /// Chrome paints at a non-zero origin, not hardcoded to (0, 0).
-        #[test]
-        fn paints_at_a_nonzero_origin() {
-            let mut surface = RecordingSurface::default();
-            paint_settings_chrome(
-                &mut surface,
-                &Theme::default(),
-                Rect::new(7.0, 13.0, 200.0, 32.0),
-                16.0,
-                "Settings",
-                "",
-                "",
-                false,
-            );
-            assert!(surface.fills.iter().all(|(r, _)| r.x == 7.0 && r.y >= 13.0));
-        }
-    }
-
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -3078,8 +2793,8 @@ mod native_surface_paint {
         /// Records every drawing verb `paint` issues, so a paint
         /// assertion can run on any host — no cairo, Core Graphics or
         /// Direct2D needed. The pixel backends' own probes
-        /// (`macos::form`'s `BitmapSurface`, `gtk::form`'s
-        /// `ImageSurface`) still cover "the verb reached real pixels";
+        /// (the macOS `BitmapSurface`, GTK `ImageSurface` and Win
+        /// headless-target tests) still cover "the verb reached real pixels";
         /// this covers "the shared painter emits the right verb at all",
         /// on every leg of the quality gate rather than only the macOS
         /// one.
@@ -3176,7 +2891,7 @@ mod native_surface_paint {
             }
         }
 
-        /// Lay `form` out the way every pixel backend's `form_layout`
+        /// Lay `form` out the way the widget contract's pixel layout
         /// does, paint it through the shared painter, and hand back the
         /// recorded fills alongside the layout.
         fn paint_recorded(form: &Form) -> (RecordingSurface, FormLayout) {
@@ -3667,8 +3382,8 @@ mod native_surface_paint {
         }
 
         /// [`FormLayout::toolbar_field_rect`] is the formula every
-        /// embedded-`Toolbar` rasteriser (`GtkBackend::draw_form`,
-        /// `MacBackend::draw_form`, both `MultiSectionView` form bodies)
+        /// embedded-`Toolbar` rasteriser (the widget contract's layout, the
+        /// `MultiSectionView` form bodies)
         /// calls to find where to paint its toolbar strip. It has to
         /// report the exact `x` [`Form::layout`] already widened this
         /// same field's own `VisibleFormField::item_bounds` to — a drift
@@ -3677,7 +3392,7 @@ mod native_surface_paint {
         ///
         /// Runs on every feature config this module compiles for
         /// (`gtk`, `win`, `macos`), unlike the pixel-backend-specific
-        /// `draw_form` tests each of those backends carries, so a Linux
+        /// form paint tests each of those backends carries, so a Linux
         /// `--features gtk,tui` CI job exercises this without a real
         /// macOS host.
         ///
@@ -5013,7 +4728,7 @@ mod native_surface_paint {
 ))]
 #[allow(unused_imports)]
 pub(crate) use native_surface_paint::{
-    left_control_column_start, paint, paint_settings_chrome, paint_text_run_with_caret,
+    left_control_column_start, paint, paint_text_run_with_caret,
 };
 
 /// Events a `Form` emits back to the app.
@@ -6011,5 +5726,73 @@ mod tests {
         };
 
         assert_eq!(item.resolved_button_spec(), explicit);
+    }
+}
+
+/// Event parity's assistive-technology leg for [`Form`]: an
+/// [`crate::a11y::A11yAction::Click`] on a form whose focused field is a
+/// toggle flips it with exactly the event a click on that row produces on
+/// the `TuiDriver` leg (`tests/palette_form_event_parity.rs`) and the
+/// binding-host leg (`quadraui-binding-core`'s engine tests).
+#[cfg(test)]
+mod event_parity_tests {
+    use super::*;
+    use crate::types::StyledText;
+
+    fn form() -> Form {
+        Form {
+            id: WidgetId::new("settings"),
+            fields: vec![FormField {
+                id: WidgetId::new("notify"),
+                label: StyledText::plain("Notify"),
+                kind: FieldKind::Toggle { value: false },
+                hint: StyledText::default(),
+                disabled: false,
+                validation: None,
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }],
+            focused_field: Some(WidgetId::new("notify")),
+            scroll_offset: 0,
+            has_focus: true,
+            label_position: Default::default(),
+            label_align: Default::default(),
+            label_width: None,
+            control_width: Default::default(),
+            min_control_width: None,
+            spacing: Default::default(),
+        }
+    }
+
+    #[test]
+    fn route_widget_action_click_matches_the_toggle_click_parity_event() {
+        let f = form();
+        let id = f.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, crate::Rect::new(2.0, 1.0, 30.0, 10.0), Box::new(f));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let ctx = crate::primitive::LayoutCtx::new(1.0, 1.0, false);
+        let events = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &ctx,
+            id,
+            crate::a11y::A11yAction::Click,
+        );
+        assert_eq!(
+            events,
+            vec![crate::UiEvent::Form(
+                id,
+                FormEvent::ToggleChanged {
+                    id: WidgetId::new("notify"),
+                    value: true
+                }
+            )]
+        );
     }
 }

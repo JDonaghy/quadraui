@@ -66,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 150;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 125;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -139,7 +139,7 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("TreeTable", "draw_tree_table"),
     ("TreeTable", "tree_table_layout"),
     ("TreeTable", "tree_layout"),
-    // Group-A ports, on the same terms as Group B: each now paints
+    // Group-A ports: each now paints
     // through `Primitive`/`Interactive`, and keeps its bespoke pair
     // until the group's cleanup deletes the methods, the per-backend
     // wrapper files and the `Surface` variants together. `draw_scrollbar`
@@ -152,38 +152,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Spinner", "draw_spinner"),
     ("Spinner", "spinner_layout"),
     ("Scrollbar", "draw_scrollbar"),
-    // Group-C ports keep these until the group's cleanup deletes them
-    // together with their wrapper files and `Surface` variants. Each of
-    // these widgets already paints and routes through
-    // `Primitive`/`Interactive`; the bespoke methods stay only for the
-    // per-backend wrapper files still calling them. The *native* menu
-    // entry points (`install_menu_bar`, `set_menu`, `show_context_menu`,
-    // `set_dock_menu`, the `menu_style` family) are platform services,
-    // not a widget's paint path, and stay on `Backend` permanently —
-    // this list only names the custom-drawn pairs.
-    ("StatusBar", "draw_status_bar"),
-    ("StatusBar", "draw_status_bar_interactive"),
-    ("StatusBar", "draw_status_bar_interactive_scaled"),
-    ("StatusBar", "status_bar_layout"),
-    ("ActivityBar", "draw_activity_bar"),
-    ("ActivityBar", "draw_activity_bar_with_style"),
-    ("ActivityBar", "activity_bar_layout"),
-    ("Toolbar", "draw_toolbar_interactive"),
-    ("Toolbar", "draw_toolbar_with_options"),
-    ("Toolbar", "draw_toolbar_with_overflow"),
-    ("Toolbar", "toolbar_layout"),
-    ("Toolbar", "toolbar_layout_with_overflow"),
-    ("Form", "draw_form"),
-    ("Form", "form_layout"),
-    ("MenuBar", "draw_menu_bar"),
-    ("MenuBar", "draw_menu_bar_with_state"),
-    ("MenuBar", "menu_bar_layout"),
-    ("ContextMenu", "draw_context_menu"),
-    ("ContextMenu", "draw_context_menu_with_state"),
-    ("ContextMenu", "draw_context_menu_with_glyphs"),
-    ("Palette", "draw_palette"),
-    ("Palette", "draw_palette_with_state"),
-    ("Palette", "palette_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

@@ -1178,6 +1178,11 @@ export interface ActivityItemDescriptor {
   is_keyboard_selected?: boolean;
 }
 
+export interface ActivityBarStyleDescriptor {
+  active_bg?: Color | null;
+  icon_size_px?: number | null;
+}
+
 export interface ActivityBarDescriptor {
   id: WidgetId;
   top_items: ActivityItemDescriptor[];
@@ -1185,6 +1190,8 @@ export interface ActivityBarDescriptor {
   active_accent?: Color | null;
   selection_bg?: Color | null;
   is_keyboard_focused?: boolean;
+  style?: ActivityBarStyleDescriptor;
+  hovered?: number | null;
 }
 
 export type PaletteMode = "List" | "Input";
@@ -1829,6 +1836,22 @@ export interface ContextMenuItem {
   submenu?: ContextMenuItem[] | null;
 }
 
+export type ContextMenuPlacement = "AnchorPoint" | "Below" | "Above";
+
+export interface ContextMenuGlyphs {
+  checked?: Icon | null;
+  submenu_arrow?: Icon | null;
+}
+
+export interface ContextMenuDescriptor {
+  id: WidgetId;
+  items: ContextMenuItem[];
+  selected_idx: number;
+  bg?: Color | null;
+  placement?: ContextMenuPlacement;
+  glyphs?: ContextMenuGlyphs;
+}
+
 export interface MenuBarItemDescriptor {
   id: WidgetId;
   label: string;
@@ -1877,7 +1900,7 @@ export interface DiffViewDescriptor {
   has_focus: boolean;
 }
 
-/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, `status_bar`, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed. */
+/** One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Every registered kind (the five core kinds, every `EXTRA_PRIMITIVE_KINDS` additive kind, and every `WIDGET_KINDS` generic-widget kind) is fully typed. */
 export interface LayoutLeafNode {
   id: string;
   wire_version?: number;
@@ -1887,7 +1910,6 @@ export interface LayoutLeafNode {
   data_table?: DataTableDescriptor;
   tab_bar?: TabBarDescriptor;
   scripted_widget?: ScriptedWidgetDescriptor;
-  status_bar?: StatusBarDescriptor;
   progress?: ProgressBarDescriptor;
   spinner?: SpinnerDescriptor;
   image?: ImageDescriptor;
@@ -1906,11 +1928,9 @@ export interface LayoutLeafNode {
   diff_view?: DiffViewDescriptor;
   tree_table?: TreeTableDescriptor;
   tree_table_controller?: TreeTableControllerDescriptor;
-  activity_bar?: ActivityBarDescriptor;
   toolbar?: ToolbarDescriptor;
   menu_bar?: MenuBarDescriptor;
   command_line?: CommandLineDescriptor;
-  palette?: PaletteDescriptor;
   scrollbar?: ScrollbarDescriptor;
   editor?: EditorDescriptor;
   canvas?: CanvasDescriptor;
@@ -1929,6 +1949,10 @@ export interface LayoutLeafNode {
   button?: ButtonDescriptor;
   command_center?: CommandCenterDescriptor;
   terminal?: TerminalDescriptor;
+  status_bar?: StatusBarDescriptor;
+  activity_bar?: ActivityBarDescriptor;
+  palette?: PaletteDescriptor;
+  context_menu?: ContextMenuDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -1947,7 +1971,6 @@ export interface RenderFrameDict {
   tree?: TreeViewDescriptor | null;
   data_table?: DataTableDescriptor | null;
   tab_bar?: TabBarDescriptor | null;
-  status_bar?: StatusBarDescriptor | null;
   progress?: ProgressBarDescriptor | null;
   spinner?: SpinnerDescriptor | null;
   image?: ImageDescriptor | null;
@@ -1966,11 +1989,9 @@ export interface RenderFrameDict {
   diff_view?: DiffViewDescriptor | null;
   tree_table?: TreeTableDescriptor | null;
   tree_table_controller?: TreeTableControllerDescriptor | null;
-  activity_bar?: ActivityBarDescriptor | null;
   toolbar?: ToolbarDescriptor | null;
   menu_bar?: MenuBarDescriptor | null;
   command_line?: CommandLineDescriptor | null;
-  palette?: PaletteDescriptor | null;
   scrollbar?: ScrollbarDescriptor | null;
   editor?: EditorDescriptor | null;
   canvas?: CanvasDescriptor | null;
@@ -1989,6 +2010,10 @@ export interface RenderFrameDict {
   button?: ButtonDescriptor | null;
   command_center?: CommandCenterDescriptor | null;
   terminal?: TerminalDescriptor | null;
+  status_bar?: StatusBarDescriptor | null;
+  activity_bar?: ActivityBarDescriptor | null;
+  palette?: PaletteDescriptor | null;
+  context_menu?: ContextMenuDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

@@ -12,10 +12,10 @@
 
 use quadraui::compose::sidebar_panel_body::{SidebarPanelBody, SidebarPanelChrome};
 use quadraui::{
-    Backend, BackendCaps, BackendWidget, Decoration, DrawsPrimitives, InteractionState,
-    NavigationMode, Reaction, Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit,
-    SidebarPanelLayout, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, Style,
-    StyledText, Toolbar, ToolbarButton, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    Backend, BackendCaps, BackendWidget, Decoration, DrawsPrimitives, NavigationMode, Reaction,
+    Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit, SidebarPanelLayout,
+    SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, Style, StyledText, Toolbar,
+    ToolbarButton, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -301,7 +301,7 @@ impl Demo for SidebarDemo {
                         action_id: None,
                     }],
                 };
-                let _ = backend.draw_status_bar_interactive(hint, &bar, &InteractionState::new());
+                let _ = backend.draw_dyn(hint, &bar, &());
             }
             1 => {
                 let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
@@ -323,7 +323,7 @@ impl Demo for SidebarDemo {
                 } else {
                     "  Tasks  "
                 };
-                let _ = backend.draw_status_bar_interactive(
+                let _ = backend.draw_dyn(
                     Rect::new(content.x, content.y, content.width, lh),
                     &StatusBar {
                         id: WidgetId::new("gallery:sidebar:tasks-header"),
@@ -336,7 +336,7 @@ impl Demo for SidebarDemo {
                         }],
                         right_segments: vec![],
                     },
-                    &InteractionState::new(),
+                    &(),
                 );
                 for (i, task) in self.tasks.iter().enumerate() {
                     let row_y = content.y + lh * (1.0 + i as f32);
@@ -348,7 +348,7 @@ impl Demo for SidebarDemo {
                     } else {
                         (theme.surface_fg, theme.surface_bg)
                     };
-                    let _ = backend.draw_status_bar_interactive(
+                    let _ = backend.draw_dyn(
                         Rect::new(content.x, row_y, content.width, lh),
                         &StatusBar {
                             id: WidgetId::new(format!("gallery:sidebar:task-row:{i}")),
@@ -361,7 +361,7 @@ impl Demo for SidebarDemo {
                             }],
                             right_segments: vec![],
                         },
-                        &InteractionState::new(),
+                        &(),
                     );
                 }
                 let hint = Rect::new(area.x, area.y + panel_rect.height, area.width, lh);
@@ -376,7 +376,7 @@ impl Demo for SidebarDemo {
                     }],
                     right_segments: vec![],
                 };
-                let _ = backend.draw_status_bar_interactive(hint, &bar, &InteractionState::new());
+                let _ = backend.draw_dyn(hint, &bar, &());
             }
             2 => {
                 let sidebar_rect =
@@ -394,7 +394,7 @@ impl Demo for SidebarDemo {
                     }],
                     right_segments: vec![],
                 };
-                let _ = backend.draw_status_bar_interactive(hint, &bar, &InteractionState::new());
+                let _ = backend.draw_dyn(hint, &bar, &());
             }
             _ => {
                 let panel_rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
@@ -444,7 +444,7 @@ impl Demo for SidebarDemo {
                         action_id: None,
                     }],
                 };
-                let _ = backend.draw_status_bar_interactive(hint, &bar, &InteractionState::new());
+                let _ = backend.draw_dyn(hint, &bar, &());
             }
         }
     }

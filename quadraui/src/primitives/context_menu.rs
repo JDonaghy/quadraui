@@ -5,11 +5,11 @@
 //! submenu parent (opens a nested pull-right popup).
 //!
 //! Items carry `submenu: Option<Vec<ContextMenuItem>>` for nested menus.
-//! The TUI rasteriser renders the `▶` affordance and the pull-right child
-//! popup; see `crate::tui::draw_context_menu` and
-//! `crate::tui::draw_context_menu_with_submenus` (both `#[doc(hidden)]`,
-//! so not linked here). The macOS backend wires this into native
-//! `NSMenu` nesting.
+//! Both painters render the `▶` affordance on a submenu parent; a host
+//! (`compose::ContextMenuController`, `compose::MenuSystem`) places and
+//! paints each open child popup beside its parent through
+//! [`ContextMenuLayout::submenu_anchor`]. The macOS backend wires this
+//! into native `NSMenu` nesting.
 //!
 //! # Backend contract
 //!
@@ -278,11 +278,10 @@ pub struct ContextMenuItem {
     #[serde(default)]
     pub icon: Option<Icon>,
     /// Nested submenu. When `Some`, activating the item opens the child
-    /// menu instead of firing an action. The TUI rasteriser renders a `▶`
-    /// affordance and a pull-right popup (see
-    /// `crate::tui::draw_context_menu_with_submenus`, `#[doc(hidden)]` so
-    /// not linked here). The macOS NSMenu installer wires this as a real
-    /// nested `NSMenu`. GTK is a follow-up.
+    /// menu instead of firing an action. The painters render a `▶`
+    /// affordance, and the host opens a pull-right popup (see
+    /// [`ContextMenuLayout::submenu_anchor`]). The macOS NSMenu installer
+    /// wires this as a real nested `NSMenu`.
     #[serde(default)]
     pub submenu: Option<Vec<ContextMenuItem>>,
 }
@@ -583,9 +582,8 @@ impl ContextMenu {
     ///
     /// Per item, counts: a 2-char prefix slot when `checked` is
     /// `Some(_)` or [`ContextMenuItem::icon`] is `Some(_)` (mirrors the
-    /// `"✓ "` / icon-glyph / `"  "` prefix both
-    /// `tui::context_menu::draw_context_menu` and this module's
-    /// `native_surface_paint::paint` reserve — the two share one slot,
+    /// `"✓ "` / icon-glyph / `"  "` prefix both this module's
+    /// `cell_paint::paint` and `native_surface_paint::paint` reserve — the two share one slot,
     /// so the reservation is never doubled when both are set); the label
     /// text; and,
     /// when present, a 1-char gap plus either a 1-char `▶` submenu
@@ -601,8 +599,8 @@ impl ContextMenu {
     /// room for a border the rasteriser draws *outside* the bounds this
     /// width feeds into [`Self::layout`]/[`Self::layout_at`] — see
     /// `Dialog::measure_generic`'s doc for the same parameter.
-    /// `tui::context_menu::draw_context_menu` is exactly this case: its
-    /// box-drawing border lives one char cell outside
+    /// The cell painter is exactly this case: its box-drawing border
+    /// lives one char cell outside
     /// [`ContextMenuLayout::bounds`] on every side, so a TUI caller
     /// should pass one `char_width` here.
     pub fn measure_generic_width(&self, char_width: f32, border_chrome_inset: f32) -> f32 {
@@ -688,8 +686,7 @@ pub fn item_heights(line_height: f32) -> (f32, f32) {
 
 /// The platform a shortcut hint renders for when the popup paints
 /// through [`Primitive::paint`], which carries no backend identity of its
-/// own: the host OS this build runs on. A backend's own
-/// `draw_context_menu` wrapper still passes its platform explicitly.
+/// own: the host OS this build runs on.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -1040,6 +1037,12 @@ impl Primitive for ContextMenu {
         crate::frame::OwnedContent::ContextMenu(self.clone())
     }
 
+    /// The popup's drop shadow and the border stroke centred on its edge
+    /// both paint outside its box on a pixel surface.
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        crate::paint_surface::shadow_extent(style.shadow_elevation) + style.border_width
+    }
+
     /// The widest row's own content ([`Self::measure_generic_width`]) and
     /// one [`item_heights`] row per item — plus, on a cell grid, the
     /// border ring both axes spend a cell on at each edge.
@@ -1097,10 +1100,9 @@ impl Primitive for ContextMenu {
         }
     }
 
-    /// The shared pixel painter — the same
-    /// `native_surface_paint::paint_with_glyphs` every pixel backend's
-    /// `draw_context_menu` wrapper reaches, rendering shortcut hints for
-    /// the host platform, [`Self::glyphs`]'s marks and each item's own
+    /// The shared pixel painter,
+    /// `native_surface_paint::paint_with_glyphs`, rendering shortcut hints
+    /// for the host platform, [`Self::glyphs`]'s marks and each item's own
     /// icon resolved at [`ContextMenuPrimitiveLayout::nerd_fonts_enabled`].
     fn paint(
         &self,
@@ -1134,10 +1136,7 @@ impl Primitive for ContextMenu {
         let _ = (layout, surface, theme, style);
     }
 
-    /// [`cell_paint::paint`] over `buf`, reached through
-    /// [`crate::tui::draw_context_menu_with_glyphs`] because the
-    /// `Buffer` → [`crate::CellSurface`] adapter is private to
-    /// `crate::tui`. [`Self::glyphs`] and
+    /// [`cell_paint::paint`] over `buf`. [`Self::glyphs`] and
     /// [`ContextMenuPrimitiveLayout::nerd_fonts_enabled`] are the two
     /// glyph inputs, so the cell path resolves the same marks the pixel
     /// path does.
@@ -1148,10 +1147,17 @@ impl Primitive for ContextMenu {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_context_menu_with_glyphs(
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
             buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(
             self,
             &layout.layout,
+            &mut surface,
             theme,
             Some(&self.glyphs),
             layout.nerd_fonts_enabled,
@@ -1335,8 +1341,7 @@ pub(crate) mod native_surface_paint {
     /// Paint a [`ContextMenu`] popup at its caller-resolved
     /// `menu_layout` onto `surface`. Returns the per-clickable-item hit
     /// rectangles + their [`WidgetId`]s so the caller's click handler
-    /// can resolve mouse events without re-running layout — mirrors
-    /// [`crate::Backend::draw_context_menu`]'s own return contract.
+    /// can resolve mouse events without re-running layout.
     ///
     /// `platform` selects the key-equivalent render form (`⌘S` vs.
     /// `Ctrl+S`) — see [`shortcut_text`]. `style` supplies
@@ -1370,8 +1375,7 @@ pub(crate) mod native_surface_paint {
     /// [`ContextMenuItem::id`] matches `interaction.hovered()` /
     /// `interaction.pressed()` paints with
     /// [`Theme::menu_item_hover_bg`] / [`Theme::menu_item_pressed_bg`]
-    /// instead of its plain selection/resting fill — see
-    /// [`crate::Backend::draw_context_menu_with_state`]'s own doc.
+    /// instead of its plain selection/resting fill.
     pub(crate) fn paint_interactive(
         menu: &ContextMenu,
         menu_layout: &ContextMenuLayout,
@@ -1640,9 +1644,8 @@ pub(crate) mod native_surface_paint {
             if item.submenu.is_some() {
                 // Submenu-parent: show a codicon chevron pull-right
                 // affordance at the far-right column instead of a
-                // keyboard-shortcut hint — mirrors the shape
-                // `crate::tui::draw_context_menu` paints with a
-                // plain `▶` glyph instead. Submenu parents open a child
+                // keyboard-shortcut hint — mirrors the shape the cell
+                // painter paints with a plain `▶` glyph instead. Submenu parents open a child
                 // menu rather than dispatching an action, so a shortcut
                 // hint would never fire anyway.
                 let (aw, ah) = surface.surface_measure_text(&submenu_arrow_glyph);
@@ -1930,18 +1933,103 @@ pub(crate) mod cell_paint {
 }
 
 /// The cell painter's own coverage, run against a real ratatui buffer
-/// through [`crate::tui::draw_context_menu`] and its glyph-override and
-/// submenu-stack siblings — the thin delegates that adapt a `Buffer`
-/// into the [`crate::CellSurface`] [`cell_paint::paint`] takes.
+/// through the test-local [`draw_context_menu`] and its glyph-override
+/// and submenu-stack siblings, which adapt a `Buffer` into the
+/// [`crate::CellSurface`] [`cell_paint::paint`] takes.
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
     use super::*;
     use crate::theme::Theme;
-    use crate::tui::draw_context_menu_with_submenus;
-    use crate::tui::{draw_context_menu, draw_context_menu_with_glyphs};
     use crate::types::{StyledSpan, StyledText, WidgetId};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+
+    /// Paints `menu` at `layout` with its own glyphs at the ASCII half of
+    /// each icon.
+    fn draw_context_menu(
+        buf: &mut Buffer,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        theme: &Theme,
+    ) {
+        draw_context_menu_with_glyphs(buf, menu, layout, theme, None, false);
+    }
+
+    /// [`draw_context_menu`] with an override glyph set and the Nerd Font
+    /// flag; `glyphs: None` falls back to the menu's own glyphs.
+    fn draw_context_menu_with_glyphs(
+        buf: &mut Buffer,
+        menu: &ContextMenu,
+        layout: &ContextMenuLayout,
+        theme: &Theme,
+        glyphs: Option<&ContextMenuGlyphs>,
+        nerd_fonts_enabled: bool,
+    ) {
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(
+            menu,
+            layout,
+            &mut surface,
+            theme,
+            glyphs,
+            nerd_fonts_enabled,
+        );
+    }
+
+    /// Paints `root_menu` and every submenu `submenu_path` opens inside
+    /// it, each child anchored through
+    /// [`ContextMenuLayout::submenu_anchor`] in `viewport` inset by the
+    /// border ring, and carrying the root's own glyphs.
+    /// `selected_at_depth[d]` is the selected row inside the submenu at
+    /// depth `d`.
+    fn draw_context_menu_with_submenus(
+        buf: &mut Buffer,
+        root_menu: &ContextMenu,
+        root_layout: &ContextMenuLayout,
+        submenu_path: &[usize],
+        selected_at_depth: &[usize],
+        viewport: crate::event::Rect,
+        theme: &Theme,
+    ) {
+        draw_context_menu(buf, root_menu, root_layout, theme);
+        let vp = crate::event::Rect::new(
+            viewport.x + CELL_BORDER_INSET,
+            viewport.y + CELL_BORDER_INSET,
+            (viewport.width - CELL_BORDER_INSET * 2.0).max(0.0),
+            (viewport.height - CELL_BORDER_INSET * 2.0).max(0.0),
+        );
+        let mut parent_items: Vec<ContextMenuItem> = root_menu.items.clone();
+        let mut parent_layout = root_layout.clone();
+        const MENU_WIDTH: f32 = 20.0;
+        for (depth, &path_idx) in submenu_path.iter().enumerate() {
+            let Some(sub_items) = parent_items
+                .get(path_idx)
+                .and_then(|item| item.submenu.clone())
+            else {
+                break;
+            };
+            let anchor = parent_layout.submenu_anchor(path_idx, MENU_WIDTH, vp);
+            let sub_menu = ContextMenu {
+                id: WidgetId::new("tui-submenu"),
+                items: sub_items.clone(),
+                selected_idx: selected_at_depth.get(depth).copied().unwrap_or(0),
+                bg: None,
+                placement: ContextMenuPlacement::AnchorPoint,
+                glyphs: root_menu.glyphs.clone(),
+            };
+            let sub_layout = sub_menu.layout(anchor.x, anchor.y, vp, MENU_WIDTH, |_| {
+                ContextMenuItemMeasure::new(1.0)
+            });
+            draw_context_menu(buf, &sub_menu, &sub_layout, theme);
+            parent_items = sub_items;
+            parent_layout = sub_layout;
+        }
+    }
 
     fn item(label: &str, clickable: bool) -> ContextMenuItem {
         ContextMenuItem {
@@ -2653,9 +2741,9 @@ mod cell_paint_tests {
     fn top_border_survives_when_menu_anchored_at_viewport_top_row() {
         // Anchored at y=0 (e.g. a right-click on a tab bar rendered at the
         // very top row of the viewport). Callers lay a menu out inside
-        // `Backend::context_menu_viewport` — the surface inset by one cell
-        // on every side on TUI, where the box border sits outside the item
-        // region. This test passes that inset surface directly, so
+        // the widget contract's `ContextMenuPrimitiveLayout::viewport` —
+        // the surface inset by one cell on every side on TUI, where the
+        // box border sits outside the item region. This test passes that inset surface directly, so
         // `layout_at`'s own clamping puts `bounds.y` on row 1 and leaves
         // row 0 free for the border.
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 10));
@@ -2717,7 +2805,7 @@ mod cell_paint_tests {
     #[test]
     fn clicks_land_on_painted_row_when_menu_anchored_at_viewport_corner() {
         // Paint↔click round-trip: a menu anchored flush against the
-        // top-left corner of `Backend::context_menu_viewport` must paint
+        // top-left corner of the border-inset viewport must paint
         // its first item on the exact row/column `hit_test` reports for
         // that item's `WidgetId`. The border occupies the row and column
         // outside `bounds`, so neither moves.
@@ -2771,7 +2859,7 @@ mod cell_paint_tests {
     #[test]
     fn zero_origin_layout_paints_without_overflow() {
         // A caller that lays the menu out in the raw viewport instead of
-        // `Backend::context_menu_viewport` gets an item region on column
+        // the border-inset one gets an item region on column
         // and row 0, so the near border has no cell inside the buffer to
         // occupy. That must stay a cosmetic degrade: the `u16` border
         // arithmetic may not underflow (a panic under `overflow-checks`,
@@ -4875,5 +4963,32 @@ mod widget_contract_tests {
         };
         assert_eq!(glyph_at(false), "F", "no Nerd Font face: ASCII fallback");
         assert_eq!(glyph_at(true), "G", "Nerd Font face registered: the glyph");
+    }
+
+    /// Event parity's in-crate leg: an [`A11yAction::Click`] routed
+    /// through [`crate::a11y::route_widget_action`] activates the
+    /// highlighted row — the same `UiEvent::ContextMenuItemActivated` a
+    /// pointer click on that row produces. The pointer legs (TuiDriver and
+    /// the binding host) assert the same event in
+    /// `tests/widget_contract_menus_event_parity.rs` and
+    /// `quadraui-binding-core`'s engine tests.
+    #[test]
+    fn route_widget_action_click_matches_the_parity_event() {
+        let menu = menu();
+        let id = menu.id;
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, AREA, Box::new(menu));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let events = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &cell_ctx(),
+            id,
+            A11yAction::Click,
+        );
+        assert_eq!(
+            events,
+            vec![UiEvent::ContextMenuItemActivated(WidgetId::new("copy"))]
+        );
     }
 }

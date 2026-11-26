@@ -11,6 +11,14 @@
 //!
 //! Never a direct call into `ActivityBar::handle`/`Primitive::layout`
 //! that would skip the routing engine.
+//!
+//! This is the runtime leg of the three-way event-parity check. The
+//! assistive-technology leg (`a11y::route_widget_action`) lives in
+//! `src/primitives/activity_bar.rs`'s own tests, and the binding-host leg
+//! (`quadraui-binding-core`'s `InteractionEngine` painting an
+//! `"activity_bar"` leaf) in that crate's engine tests; all three resolve
+//! activating the first row to the same
+//! `UiEvent::ActivityBar(bar, ItemClicked { .. })`.
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
@@ -64,6 +72,8 @@ impl ActivityBarApp {
                 active_accent: None,
                 selection_bg: None,
                 is_keyboard_focused: false,
+                style: Default::default(),
+                hovered: None,
             },
             activated: Vec::new(),
             events: Vec::new(),
@@ -209,5 +219,30 @@ fn an_unmapped_key_still_reaches_the_app() {
         ),
         "the raw keystroke must bubble to the app: {:?}",
         driver.app().events
+    );
+}
+
+/// The runtime leg of the three-way event parity: a mouse click on the
+/// first row resolves to exactly the event the a11y and binding-host legs
+/// assert.
+#[test]
+fn a_mouse_click_on_the_first_row_matches_the_parity_event() {
+    let mut driver = TuiDriver::new(ActivityBarApp::new(), COLS, ROWS);
+
+    driver.click(ICON_X, 0.0);
+
+    let bar_id = driver.app().bar.id;
+    let item_events: Vec<&UiEvent> = driver
+        .app()
+        .events
+        .iter()
+        .filter(|e| matches!(e, UiEvent::ActivityBar(..)))
+        .collect();
+    assert_eq!(
+        item_events,
+        vec![&UiEvent::ActivityBar(
+            bar_id,
+            ActivityBarEvent::ItemClicked { id: explorer_id() }
+        )]
     );
 }

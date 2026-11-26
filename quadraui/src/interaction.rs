@@ -21,36 +21,15 @@
 //!
 //! ## The `Backend` trait
 //!
-//! Every `Backend` method that took a `WidgetId`-keyed hover/pressed
-//! pair now has an `*_interactive` twin that takes one
-//! `&InteractionState` instead, and **the twin is the method each
-//! backend implements**:
-//!
-//! | positional (deprecated) | implemented |
-//! |---|---|
-//! | `draw_toolbar(rect, bar, hovered_id, pressed_id)` | [`crate::Backend::draw_toolbar_interactive`] |
-//! | `draw_status_bar(rect, bar, hovered_id, pressed_id)` | [`crate::Backend::draw_status_bar_interactive`] |
-//!
-//! The positional names survive as `#[deprecated]` trait defaults that
-//! rebuild an `InteractionState` via [`InteractionState::from_parts`]
-//! and forward.
-//!
-//! A second group of `Backend` methods never had a positional
-//! predecessor to deprecate — they add hover/pressed to a primitive
-//! that previously took none, so the `_with_state` name is purely
-//! additive (default forwards to the plain method, ignoring
-//! `interaction`), not a replacement:
-//!
-//! - [`crate::Backend::draw_context_menu_with_state`]
-//! - [`crate::Backend::draw_palette_with_state`]
-//! - [`crate::Backend::draw_menu_bar_with_state`]
+//! No `Backend` paint method takes an `InteractionState`: a widget painted
+//! through the widget contract ([`crate::DrawsPrimitives::draw_dyn`])
+//! carries any hover state it renders on its own descriptor.
 //!
 //! ## Methods that remain positional
 //!
 //! Several `Backend` methods take a positional hover argument, keyed
 //! by position within a collection rather than [`WidgetId`]:
 //!
-//! - `draw_activity_bar(.., hovered_idx: Option<usize>)`
 //! - `primitives::tab_bar::native_surface_paint::TabBarPaintState`'s
 //!   `hovered_close_tab`/`hovered_tab`/`pressed_tab: Option<usize>` —
 //!   `TabItem` carries no [`WidgetId`] of its own, only `TabBar::id`
@@ -65,8 +44,8 @@
 //!
 //! These would need stable ids for their items before moving into
 //! `InteractionState`. `ListView`/`TreeView` rows join this group rather
-//! than taking an `InteractionState` the way `draw_toolbar_interactive`
-//! does: a `ListItem`/`TreeRow` carries no [`WidgetId`] of its own, and
+//! than taking an `InteractionState` the way a toolbar button's
+//! hover does: a `ListItem`/`TreeRow` carries no [`WidgetId`] of its own, and
 //! minting one per row index on the fly would permanently intern a new
 //! string per distinct (list id, row index) pair ever shown — an
 //! unbounded leak for a growing log pane. [`crate::compose::ListHoverTracker`]
@@ -103,16 +82,12 @@
 //! }
 //!
 //! // At paint time, hand the whole state to the rasteriser — one
-//! // argument, not two positional slots:
-//! // backend.draw_toolbar_interactive(rect, &bar, &interaction);
+//! // argument, not two positional slots.
 //! assert_eq!(interaction.hovered(), Some(&WidgetId::new("demo:button")));
 //! ```
 //!
 //! `examples/common/toolbar_app.rs` demonstrates the whole loop
-//! end-to-end against a real backend, and
-//! `tests/tui_example_driver.rs`'s
-//! `toolbar_hover_paints_hover_background_at_the_cursor` asserts the
-//! *painted* consequence.
+//! end-to-end against a real backend.
 
 use crate::event::{MouseButton, UiEvent};
 use crate::types::WidgetId;

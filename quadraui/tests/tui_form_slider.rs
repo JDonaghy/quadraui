@@ -5,7 +5,8 @@
 //! which is the rect `FormController`'s click routing maps a pointer x
 //! across.
 
-use quadraui::tui::{draw_form, tui_form_layout};
+use quadraui::primitives::form::cell_layout::tui_form_layout;
+use quadraui::primitives::form::cell_paint::draw_form;
 use quadraui::{ControlWidth, FieldKind, Form, FormField, StyledText, Theme, WidgetId};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;

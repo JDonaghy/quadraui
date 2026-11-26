@@ -13,12 +13,13 @@
 //! [`BackendCaps::generic_font_families`] resolves it to whatever
 //! monospace face that platform actually ships.
 
+use quadraui::DrawsPrimitives;
 use std::cell::Cell;
 
 use quadraui::{
     Backend, BackendCaps, Color, Editor, EditorCursor, EditorCursorPos, EditorCursorShape,
-    EditorLine, EditorStyle, EditorStyledSpan, InteractionState, Key, NamedKey, Reaction, Rect,
-    StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
+    EditorLine, EditorStyle, EditorStyledSpan, Key, NamedKey, Reaction, Rect, StatusBar,
+    StatusBarSegment, Style, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -307,7 +308,7 @@ impl Demo for EditorDemo {
             }],
             right_segments: vec![],
         };
-        let _ = backend.draw_status_bar_interactive(bar_rect, &bar, &InteractionState::new());
+        let _ = backend.draw_dyn(bar_rect, &bar, &());
     }
 
     fn handle(

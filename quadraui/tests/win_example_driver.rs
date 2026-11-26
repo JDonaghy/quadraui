@@ -140,7 +140,8 @@ const SHELL_H: u32 = 480;
 /// `driver_with_shell` composes `AppShellDemo` through the exact same
 /// `build_shell_adapter` factory `win::shell_runner::run_with_shell` calls
 /// in production — and the first frame it paints reaches real Direct2D
-/// calls (`WinBackend::draw_activity_bar` / `draw_status_bar`) with no
+/// calls (the activity bar and status bar painted through the widget
+/// contract) with no
 /// `todo!()` panic, proving the whole `ShellApp → ShellAdapter →
 /// WinBackend` chain actually runs.
 ///

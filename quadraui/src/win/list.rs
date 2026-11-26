@@ -14,8 +14,7 @@
 //! `mac_list_layout` / `gtk_list_layout` — so only [`draw_list`] (the actual
 //! Direct2D paint entry point) is `#[cfg(target_os = "windows")]`-gated;
 //! `win_list_layout` compiles and runs everywhere. See `super::mod`'s `mod list;`
-//! and `backend.rs`'s module docs. See `win::status_bar`'s module doc for why
-//! colours come from `Theme::default()` rather than a live `WinBackend` theme field.
+//! and `backend.rs`'s module docs.
 //!
 //! # Scope for #26
 //!
