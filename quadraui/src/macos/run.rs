@@ -468,7 +468,6 @@ pub(crate) fn render_frame<A: AppLogic>(
         }
         let rendered = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             app.render(&mut *b, <A as AppLogic>::AreaId::default());
-            crate::popup::paint_open_popups(&mut *b);
         }));
         if let Err(payload) = rendered {
             crate::desktop::report_caught_panic_once(
@@ -496,6 +495,8 @@ pub(crate) fn render_frame<A: AppLogic>(
         // `MacBackend::current_cg` — which the highlight paint needs — is
         // only non-null inside `enter_frame_scope`.
         b.apply_selection_highlight();
+        // Open popups paint above the frame, the ring and the highlight.
+        crate::popup::paint_open_popups_caught(&mut *b);
     });
     backend.end_frame();
 }

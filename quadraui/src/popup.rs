@@ -17,9 +17,11 @@
 //!
 //! - **Paint.** [`crate::DrawsPrimitives::draw_dyn`] asks every
 //!   identified widget it paints for its popups and queues them; the
-//!   runner paints the queue through [`paint_open_popups`] after the app's
-//!   own `render`, so popups land above everything the frame painted,
-//!   lowest [`Popup::z`] first.
+//!   runner paints the queue through [`paint_open_popups`] at the end of
+//!   the frame, so popups land above everything the frame painted,
+//!   lowest [`Popup::z`] first. While a modal is open
+//!   ([`crate::ModalStack`]) no popup paints: the modal is the top
+//!   layer, and routing ignores popups until it closes.
 //! - **Hit-test.** The routing engine resolves the same popups into the
 //!   event's [`crate::frame_tree::FrameTree`]
 //!   ([`crate::frame_tree::FrameTree::push_popup`]), and
@@ -348,6 +350,9 @@ pub struct PaintedPopup {
 struct PopupFrame {
     pending: Vec<OpenPopup>,
     painted: Vec<PaintedPopup>,
+    /// Set while [`paint_open_popups`] paints popup content, whose own
+    /// popups [`with_nested_popups`] has already resolved.
+    painting: bool,
 }
 
 thread_local! {
@@ -362,7 +367,12 @@ pub fn clear_popup_frame() {
 
 /// Queue `popup` for [`paint_open_popups`].
 pub(crate) fn queue_popup(popup: OpenPopup) {
-    POPUP_FRAME.with(|f| insert_by_z(&mut f.borrow_mut().pending, popup));
+    POPUP_FRAME.with(|f| {
+        let mut frame = f.borrow_mut();
+        if !frame.painting {
+            insert_by_z(&mut frame.pending, popup);
+        }
+    });
 }
 
 /// Every popup [`paint_open_popups`] painted this frame, in paint order
@@ -371,35 +381,103 @@ pub fn painted_popups() -> Vec<PaintedPopup> {
     POPUP_FRAME.with(|f| f.borrow().painted.clone())
 }
 
-/// How many rounds of popups-opened-by-popups [`paint_open_popups`]
+/// How many levels of popups-opened-by-popups [`with_nested_popups`]
 /// follows before it stops — a bound on a content widget that keeps
 /// answering [`crate::interactive::Interactive::popups`] with itself.
 const MAX_POPUP_DEPTH: usize = 8;
 
-/// Paint every popup queued this frame above everything already painted,
-/// lowest [`Popup::z`] first.
+/// `roots` plus every popup their content opens, level by level, in
+/// paint order — the one answer both paint and hit-testing use.
 ///
-/// Each runner calls this once, right after the app's `render`, inside
-/// the frame scope. A popup's content can open popups of its own; those
-/// paint in a further round, above their parent.
+/// A popup opened by a popup's content (a submenu) belongs to the root
+/// popup's owner: the owner built that content, so it receives the
+/// nested popup's events and dismissals under the key the content chose,
+/// and picks content keys that do not collide with its own. A nested
+/// popup is placed against its parent's rect and never stacks below its
+/// parent: its z is raised to the parent's when lower.
+pub(crate) fn with_nested_popups<B: crate::Backend + ?Sized>(
+    backend: &B,
+    roots: Vec<OpenPopup>,
+) -> Vec<OpenPopup> {
+    let viewport = crate::backend::viewport_rect(backend.viewport());
+    let mut levels = vec![roots];
+    while levels.len() < MAX_POPUP_DEPTH {
+        let mut next = Vec::new();
+        for parent in levels.last().into_iter().flatten() {
+            let content = parent.content.as_ref();
+            if content.id().is_none() || !content.opens_popups() {
+                continue;
+            }
+            let layout = crate::backend::layout_like_paint(backend, content, parent.rect);
+            let popups = crate::widget_state::with_widget_state_ref(content.id(), |state| {
+                content.popups(state, layout.as_ref())
+            });
+            for popup in popups {
+                let mut open = OpenPopup::resolve(parent.owner, parent.rect, popup, viewport);
+                open.z = open.z.max(parent.z);
+                next.push(open);
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        levels.push(next);
+    }
+    let mut stack = Vec::new();
+    for popup in levels.into_iter().flatten() {
+        insert_by_z(&mut stack, popup);
+    }
+    stack
+}
+
+/// Paint every popup queued this frame, and every popup their content
+/// opens, above everything already painted, in [`with_nested_popups`]'s
+/// order.
+///
+/// Each runner calls this once per frame inside the frame scope, after
+/// the app's `render` and the runner's own focus ring and selection
+/// highlight. Nothing paints while the backend's
+/// [`crate::ModalStack`] holds an entry: a modal sits above every
+/// widget's popups, and routing ignores popups for as long as one is
+/// open, so the popups stay hidden until it closes.
 pub fn paint_open_popups(backend: &mut dyn crate::Backend) {
     use crate::DrawsPrimitives;
-    for _ in 0..MAX_POPUP_DEPTH {
-        let batch = POPUP_FRAME.with(|f| std::mem::take(&mut f.borrow_mut().pending));
-        if batch.is_empty() {
-            return;
-        }
-        for popup in batch {
-            let _ = backend.draw_dyn(popup.rect, popup.content.as_ref(), &());
-            POPUP_FRAME.with(|f| {
-                f.borrow_mut().painted.push(PaintedPopup {
-                    owner: popup.owner,
-                    key: popup.key,
-                    rect: popup.rect,
-                    z: popup.z,
-                })
-            });
-        }
+    let queued = POPUP_FRAME.with(|f| std::mem::take(&mut f.borrow_mut().pending));
+    let modal_open = backend
+        .modal_stack_handle()
+        .try_borrow()
+        .map_or(true, |stack| !stack.is_empty());
+    if queued.is_empty() || modal_open {
+        return;
+    }
+    let stack = with_nested_popups(&*backend, queued);
+    POPUP_FRAME.with(|f| f.borrow_mut().painting = true);
+    for popup in &stack {
+        let _ = backend.draw_dyn(popup.rect, popup.content.as_ref(), &());
+    }
+    POPUP_FRAME.with(|f| {
+        let mut frame = f.borrow_mut();
+        frame.painting = false;
+        frame.painted.extend(stack.iter().map(|popup| PaintedPopup {
+            owner: popup.owner,
+            key: popup.key,
+            rect: popup.rect,
+            z: popup.z,
+        }));
+    });
+}
+
+/// [`paint_open_popups`] for a runner that must not unwind out of its
+/// paint callback: a panic while painting popup content is reported once
+/// and the frame finishes without the remaining popups.
+#[cfg(any(all(feature = "macos", target_os = "macos"), feature = "win"))]
+pub(crate) fn paint_open_popups_caught(backend: &mut dyn crate::Backend) {
+    let painted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        paint_open_popups(backend);
+    }));
+    if let Err(payload) = painted {
+        POPUP_FRAME.with(|f| f.borrow_mut().painting = false);
+        crate::desktop::report_caught_panic_once("popup::paint_open_popups", payload.as_ref());
     }
 }
 

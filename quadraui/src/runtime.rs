@@ -817,45 +817,34 @@ impl WidgetRouteOutcome {
     }
 }
 
-/// Lay `widget` out at `rect` with the same ctx, measurer and style
-/// [`crate::backend::DrawsPrimitives::draw_dyn`] paints with, so routing
-/// resolves against the painted geometry.
-fn layout_like_paint<B>(
-    backend: &B,
-    widget: &dyn crate::primitive::DynWidget,
-    rect: crate::event::Rect,
-) -> Box<dyn crate::primitive::PrimitiveLayout>
-where
-    B: crate::Backend,
-{
-    let ctx = crate::backend::primitive_layout_ctx(backend);
-    let measurer = |text: &str, role: crate::FontRole| backend.measure_text(text, role).0;
-    let style = backend.style();
-    widget.layout(&ctx.with_measurer(&measurer).with_style(&style), rect)
-}
-
 /// Fill `tree`'s popups from each node's
 /// [`crate::interactive::Interactive::popups`], against its stored state
-/// and its layout at its rect — the same answer
-/// [`crate::backend::DrawsPrimitives::draw_dyn`] queues for paint.
+/// and its layout at its rect, plus every popup their content opens —
+/// the same answer [`crate::DrawsPrimitives::draw_dyn`] queues and
+/// [`crate::popup::paint_open_popups`] paints. Only nodes whose widget
+/// can open popups ([`crate::primitive::DynWidget::opens_popups`]) are
+/// laid out.
 fn resolve_tree_popups<B>(backend: &B, tree: &mut FrameTree)
 where
     B: crate::Backend,
 {
     let viewport = crate::backend::viewport_rect(backend.viewport());
-    let mut open = Vec::new();
-    for node in tree.nodes() {
-        let layout = layout_like_paint(backend, node.widget.as_ref(), node.rect);
+    let mut roots = Vec::new();
+    for node in tree.nodes().iter().filter(|n| n.widget.opens_popups()) {
+        let layout = crate::backend::layout_like_paint(backend, node.widget.as_ref(), node.rect);
         let popups = crate::widget_state::with_widget_state_ref(Some(&node.id), |state| {
             node.widget.popups(state, layout.as_ref())
         });
         for popup in popups {
-            open.push(crate::popup::OpenPopup::resolve(
+            roots.push(crate::popup::OpenPopup::resolve(
                 node.id, node.rect, popup, viewport,
             ));
         }
     }
-    for popup in open {
+    if roots.is_empty() {
+        return;
+    }
+    for popup in crate::popup::with_nested_popups(backend, roots) {
         tree.push_popup(popup);
     }
 }
@@ -1029,7 +1018,8 @@ where
     let Some(owner) = tree.find(&popup.owner) else {
         return EventOutcome::Continue;
     };
-    let content_layout = layout_like_paint(backend, popup.content.as_ref(), popup.rect);
+    let content_layout =
+        crate::backend::layout_like_paint(backend, popup.content.as_ref(), popup.rect);
     let local = local_point(position, popup.rect);
     let sub = popup
         .content
@@ -3530,6 +3520,7 @@ mod popup_routing_tests {
         open: bool,
         list_ch: char,
         z: i32,
+        submenu: bool,
     }
 
     #[derive(Default)]
@@ -3541,6 +3532,7 @@ mod popup_routing_tests {
     enum DropdownAction {
         Toggle,
         Picked(Option<SubTarget>),
+        SubPicked(Option<SubTarget>),
         Dismissed(DismissReason),
     }
 
@@ -3549,6 +3541,9 @@ mod popup_routing_tests {
             UiEvent::TextCopied(match self {
                 DropdownAction::Toggle => format!("{id}:toggle"),
                 DropdownAction::Picked(sub) => format!("{id}:picked:{:?}", sub.map(|s| s.0)),
+                DropdownAction::SubPicked(sub) => {
+                    format!("{id}:subpicked:{:?}", sub.map(|s| s.0))
+                }
                 DropdownAction::Dismissed(reason) => format!("{id}:dismissed:{reason:?}"),
             })
         }
@@ -3591,6 +3586,8 @@ mod popup_routing_tests {
         type State = DropdownState;
         type Action = DropdownAction;
 
+        const OPENS_POPUPS: bool = true;
+
         fn focus(&self) -> FocusSpec {
             FocusSpec::Stop
         }
@@ -3627,6 +3624,16 @@ mod popup_routing_tests {
                         _ => Handled::Ignored,
                     }
                 }
+                RoutedEvent::PopupEvent { popup, event } if *popup == SUBMENU_KEY => {
+                    match event.as_ref() {
+                        RoutedEvent::Pointer {
+                            kind: PointerKind::Down(_),
+                            sub,
+                            ..
+                        } => Handled::Event(DropdownAction::SubPicked(*sub)),
+                        _ => Handled::Consumed,
+                    }
+                }
                 RoutedEvent::PopupDismissed { reason, .. } => {
                     Handled::Event(DropdownAction::Dismissed(*reason))
                 }
@@ -3638,12 +3645,88 @@ mod popup_routing_tests {
             if !self.open {
                 return Vec::new();
             }
-            let list = Fill {
+            let fill = Fill {
                 id: WidgetId::new(format!("{}:list", self.id)),
                 ch: self.list_ch,
             };
             let anchor = Rect::new(0.0, 0.0, layout.width, 1.0);
-            vec![Popup::new(DROPDOWN_KEY, anchor, Size::new(layout.width, 3.0), list).z(self.z)]
+            let size = Size::new(layout.width, 3.0);
+            let popup = if self.submenu {
+                Popup::new(DROPDOWN_KEY, anchor, size, Menu { fill })
+            } else {
+                Popup::new(DROPDOWN_KEY, anchor, size, fill)
+            };
+            vec![popup.z(self.z)]
+        }
+    }
+
+    const SUBMENU_KEY: PopupKey = PopupKey(8);
+
+    /// A [`Fill`] list whose first row opens a six-wide `'S'` submenu
+    /// beside it, as a popup of its own.
+    struct Menu {
+        fill: Fill,
+    }
+
+    impl A11yPrimitive for Menu {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for Menu {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.fill.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _env: &crate::PaintEnv,
+        ) {
+        }
+
+        fn paint_cells(&self, layout: &Rect, cells: &mut dyn CellSurface, env: &crate::PaintEnv) {
+            self.fill.paint_cells(layout, cells, env);
+        }
+    }
+
+    impl Interactive for Menu {
+        type State = ();
+        type Action = crate::Never;
+
+        const OPENS_POPUPS: bool = true;
+
+        fn handle(
+            &self,
+            _state: &mut (),
+            _event: &RoutedEvent,
+            _layout: &Rect,
+            _cx: &mut EventCx,
+        ) -> Handled<crate::Never> {
+            Handled::Ignored
+        }
+
+        fn sub_regions(&self, layout: &Rect) -> Vec<(Rect, SubTarget)> {
+            self.fill.sub_regions(layout)
+        }
+
+        fn popups(&self, _state: &(), layout: &Rect) -> Vec<Popup> {
+            let sub = Fill {
+                id: WidgetId::new(format!("{}:sub", self.fill.id)),
+                ch: 'S',
+            };
+            let anchor = Rect::new(0.0, 0.0, layout.width, 1.0);
+            vec![Popup::new(SUBMENU_KEY, anchor, Size::new(6.0, 3.0), sub)
+                .side(crate::popup::PopupSide::After)]
         }
     }
 
@@ -3654,6 +3737,7 @@ mod popup_routing_tests {
         shown: bool,
         list_ch: char,
         z: i32,
+        submenu: bool,
     }
 
     /// Owns each dropdown's `open` flag and applies the events they emit;
@@ -3674,6 +3758,7 @@ mod popup_routing_tests {
                     shown: true,
                     list_ch: 'P',
                     z: 0,
+                    submenu: false,
                 }],
                 received: Vec::new(),
             }
@@ -3700,6 +3785,7 @@ mod popup_routing_tests {
                         open: d.open,
                         list_ch: d.list_ch,
                         z: d.z,
+                        submenu: d.submenu,
                     });
                     (d.id, d.rect, widget)
                 })
@@ -3883,6 +3969,7 @@ mod popup_routing_tests {
             shown: true,
             list_ch: 'Q',
             z: 0,
+            submenu: false,
         });
         let mut driver = TuiDriver::new(app, 30, 10);
         driver.render();
@@ -3895,6 +3982,35 @@ mod popup_routing_tests {
 
         driver.click(6.0, 2.0);
         assert_eq!(driver.app().texts(), vec!["dd:picked:Some(1)".to_string()]);
+    }
+
+    /// A popup opened by a popup's content paints above it, is
+    /// hit-tested like it, and its events reach the root owner.
+    #[test]
+    fn a_nested_popup_paints_and_routes_to_the_root_owner() {
+        let mut app = PopupApp::one(true);
+        app.dropdowns[0].submenu = true;
+        let mut driver = TuiDriver::new(app, 30, 10);
+        driver.render();
+
+        assert!(
+            row(&driver, 2).starts_with("PPPPPPPPPPSSSSSSBBBB"),
+            "the submenu sits beside the list, over the base node:\n{}",
+            driver.screen()
+        );
+        let painted = crate::popup::painted_popups();
+        assert_eq!(painted.len(), 2);
+        assert!(painted.iter().all(|p| p.owner == WidgetId::new("dd")));
+        assert_eq!(painted[1].key, SUBMENU_KEY);
+        assert_eq!(painted[1].rect, Rect::new(10.0, 1.0, 6.0, 3.0));
+
+        driver.click(12.0, 2.0);
+        assert_eq!(
+            driver.app().texts(),
+            vec!["dd:subpicked:Some(1)".to_string()],
+            "the press reaches the owner, dismisses nothing and never \
+             reaches the base node"
+        );
     }
 
     /// The dropdown's state outlives every per-event rebuild of the

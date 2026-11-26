@@ -412,8 +412,9 @@ impl ExtraPaint for ComboBox {
         self.id
     }
 
-    /// Whole-area bounds check: a press on a specific dropdown row is a
-    /// popup event, which this host does not route yet. Typing,
+    /// Whole-area bounds check. A press on the open list is a popup
+    /// event, which this host does not route yet: the engine swallows it
+    /// so it never reaches the leaf the list covers. Typing,
     /// `Up`/`Down`/`Enter`/`Escape` still work once focused via
     /// [`ExtraPaint::tab_stop`].
     fn hit_test(&self, area: Rect, point: Point) -> bool {

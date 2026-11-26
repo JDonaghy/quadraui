@@ -33,8 +33,14 @@ struct PopupApp {
     combo: ComboBox,
     under: Button,
     aside: Button,
+    /// While set, a modal registered on the backend's `ModalStack`
+    /// paints over the area the list drops into.
+    modal: bool,
     applied: Vec<String>,
 }
+
+/// The modal [`PopupApp::modal`] paints and registers.
+const MODAL: &str = "modal";
 
 impl PopupApp {
     fn new(geometry: Geometry) -> Self {
@@ -48,6 +54,7 @@ impl PopupApp {
             combo,
             under: Button::new(WidgetId::new("under"), "UNDERNEATH"),
             aside: Button::new(WidgetId::new("aside"), "ASIDE"),
+            modal: false,
             applied: Vec::new(),
         }
     }
@@ -61,6 +68,24 @@ impl AppLogic for PopupApp {
         let _ = backend.draw_dyn(g.combo, &self.combo, &());
         let _ = backend.draw_dyn(g.under, &self.under, &());
         let _ = backend.draw_dyn(g.aside, &self.aside, &());
+        let modal = WidgetId::new(MODAL);
+        let stack = backend.modal_stack_handle();
+        if self.modal {
+            let bounds = Rect::new(g.combo.x, g.under.y, g.combo.width, g.under.height * 3.0);
+            stack.borrow_mut().push(modal, bounds);
+            let _ = backend.draw_dyn(bounds, &Button::new(modal, "MODAL"), &());
+        } else {
+            stack.borrow_mut().pop(&modal);
+        }
+    }
+
+    fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+        let g = self.geometry;
+        vec![
+            (self.combo.id, g.combo),
+            (self.under.id, g.under),
+            (self.aside.id, g.aside),
+        ]
     }
 
     fn frame_tree(&self, _area: ()) -> FrameTree {
@@ -246,6 +271,73 @@ mod tui {
         assert!(!driver.app().combo.open);
         assert_eq!(driver.app().applied.last().unwrap(), "cancelled");
         assert!(!driver.screen_contains("Apricot"), "{}", driver.screen());
+    }
+
+    #[test]
+    fn an_outside_click_cancels_an_edit_that_matches_nothing() {
+        let mut driver = driver();
+        open_by_click(&mut driver);
+        driver.type_char('z');
+        assert_eq!(driver.app().combo.text, "z");
+
+        driver.click(GEOMETRY.aside.x + 1.0, GEOMETRY.aside.y);
+        assert!(!driver.app().combo.open);
+        assert_eq!(driver.app().combo.text, "", "the edit is cancelled");
+        let applied = &driver.app().applied;
+        assert!(applied.iter().any(|a| a == "cancelled"), "{applied:?}");
+        assert!(applied.iter().any(|a| a == "button(aside)"), "{applied:?}");
+    }
+
+    #[test]
+    fn a_modal_paints_above_an_open_list() {
+        let mut driver = driver();
+        open_by_click(&mut driver);
+        assert!(driver.screen_contains("Apricot"), "{}", driver.screen());
+
+        driver.app_mut().modal = true;
+        driver.render();
+        assert!(driver.screen_contains("MODAL"), "{}", driver.screen());
+        for option in OPTIONS {
+            assert!(!driver.screen_contains(option), "{}", driver.screen());
+        }
+        assert!(quadraui::popup::painted_popups().is_empty());
+
+        driver.app_mut().modal = false;
+        driver.render();
+        assert!(driver.app().combo.open, "the list was hidden, not closed");
+        assert!(driver.screen_contains("Apricot"), "{}", driver.screen());
+    }
+
+    /// Every cell the open list covers, with its style.
+    fn list_cells(driver: &TuiDriver<PopupApp>) -> Vec<String> {
+        let rect = quadraui::popup::painted_popups()[0].rect;
+        let screen = driver.screen();
+        let lines: Vec<&str> = screen.lines().collect();
+        let mut cells = Vec::new();
+        for y in rect.y as u16..(rect.y + rect.height) as u16 {
+            for x in rect.x as u16..(rect.x + rect.width) as u16 {
+                let ch = lines[y as usize].chars().nth(x as usize);
+                cells.push(format!("{ch:?} {:?}", driver.style_at(x, y)));
+            }
+        }
+        cells
+    }
+
+    #[test]
+    fn the_focus_ring_of_a_widget_under_the_list_stays_beneath_it() {
+        let mut driver = driver();
+        open_by_click(&mut driver);
+        let before = list_cells(&driver);
+
+        driver.press_named(NamedKey::Tab);
+        driver.render();
+        assert_eq!(
+            driver.backend().focus_tree().focused().map(|(id, _)| *id),
+            Some(driver.app().under.id),
+            "Tab moves focus to the widget under the list"
+        );
+        assert!(driver.app().combo.open);
+        assert_eq!(list_cells(&driver), before, "{}", driver.screen());
     }
 }
 

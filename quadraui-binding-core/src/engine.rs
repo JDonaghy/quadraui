@@ -3520,16 +3520,6 @@ impl InteractionEngine {
         self.dyn_widget_dispatch(id, &widget, area, routed, backend, sink)
     }
 
-    /// Runs `widget.handle` for one already-constructed [`RoutedEvent`]
-    /// against `area`, applying whatever [`EventCx`] intents it recorded
-    /// (focus/redraw/emit/pointer-capture) the same way regardless of
-    /// which caller (click, focused-key, or captured-drag routing)
-    /// resolved the event — and, whenever the call produced a real
-    /// outcome (not a bare [`Handled::Ignored`]), also checks
-    /// [`Self::dyn_widget_cells_requested`] and dispatches its own event
-    /// too, mirroring the deleted [`CellGridController`]-based
-    /// `dispatch_cell_grid_outcome`'s identical "whenever outcome wasn't
-    /// Ignored" doc.
     /// The focused leaf and its focused sub-part, for
     /// [`EventHost::is_focused`]: the backend's focus, with the sub-part
     /// from [`Self::dyn_widget_focus_sub`] when the backend names none and
@@ -3545,6 +3535,16 @@ impl InteractionEngine {
         Some((id, sub))
     }
 
+    /// Runs `widget.handle` for one already-constructed [`RoutedEvent`]
+    /// against `area`, applying whatever [`EventCx`] intents it recorded
+    /// (focus/redraw/emit/pointer-capture) the same way regardless of
+    /// which caller (click, focused-key, or captured-drag routing)
+    /// resolved the event — and, whenever the call produced a real
+    /// outcome (not a bare [`Handled::Ignored`]), also checks
+    /// [`Self::dyn_widget_cells_requested`] and dispatches its own event
+    /// too, mirroring the deleted [`CellGridController`]-based
+    /// `dispatch_cell_grid_outcome`'s identical "whenever outcome wasn't
+    /// Ignored" doc.
     fn dyn_widget_dispatch(
         &self,
         id: WidgetId,
@@ -3809,6 +3809,26 @@ impl InteractionEngine {
             if matches!(scroll_into_view_reaction, Reaction::Exit) {
                 return scroll_into_view_reaction;
             }
+        }
+
+        // A widget popup (an open `ComboBox` list) paints above every
+        // leaf and overlay, but this host does not route popup events to
+        // the popup's owner, so a press, release, double-click or wheel
+        // landing on one stops here instead of reaching what it covers.
+        let on_popup = |p: Point| {
+            quadraui::popup::painted_popups()
+                .iter()
+                .any(|popup| popup.rect.contains(p))
+        };
+        if matches!(
+            event,
+            UiEvent::MouseDown { .. }
+                | UiEvent::MouseUp { .. }
+                | UiEvent::DoubleClick { .. }
+                | UiEvent::Scroll { .. }
+        ) && event_position(&event).is_some_and(on_popup)
+        {
+            return continue_or_tooltip_redraw(tooltip_dismissed);
         }
 
         // One shared pass over `Self::overlays`, topmost (highest
@@ -13136,6 +13156,90 @@ mod tests {
             self.engine
                 .handle(event, backend, &mut *self.sink.borrow_mut())
         }
+    }
+
+    /// A column holding an open `ComboBox` with a button laid out right
+    /// under its field, where the open list drops.
+    struct ComboOverButtonLogic {
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ComboOverButtonLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let area = viewport_rect(backend);
+            let mut combo = quadraui::ComboBox::new(
+                WidgetId::new("combo"),
+                ["alpha", "beta", "gamma", "delta"]
+                    .map(String::from)
+                    .to_vec(),
+            );
+            combo.open = true;
+            let leaf = |id: &str, descriptor| {
+                LayoutNode::Leaf(LayoutLeaf {
+                    id: id.to_string(),
+                    descriptor,
+                    scroll_px: None,
+                })
+            };
+            let mut node = LayoutNode::Column(LayoutContainer::new(
+                vec![
+                    leaf("combo", LeafDescriptor::Extra(Rc::new(combo))),
+                    leaf(
+                        "under",
+                        LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new("under"), "under")),
+                        },
+                    ),
+                ],
+                Spacing::default(),
+            ));
+            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits);
+            self.engine.set_hits(hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// A press on an open `ComboBox` list never reaches the leaf the list
+    /// covers.
+    #[test]
+    fn a_press_on_a_widget_popup_does_not_reach_the_leaf_beneath_it() {
+        let logic = ComboOverButtonLogic {
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 30, 12);
+        driver.render();
+        let popup = quadraui::popup::painted_popups()
+            .into_iter()
+            .find(|p| p.owner == WidgetId::new("combo"))
+            .expect("the open list is painted");
+        let (x, y) = (popup.rect.x + 2.0, popup.rect.y + 1.0);
+        assert!(driver.screen_contains("beta"), "{}", driver.screen());
+
+        driver.click(x, y);
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            !dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::ButtonActivated { .. } | UiEvent::FocusChanged(Some(_))
+            )),
+            "{dispatched:?}"
+        );
     }
 
     /// A leaf that requested focus for one of its own sub-parts sees that

@@ -16,9 +16,9 @@
 //! # The dropdown is a popup
 //!
 //! The box itself is only ever its field row. While [`ComboBox::open`]
-//! is set and [`ComboBox::filtered_indices`] matches something,
-//! [`Interactive::popups`] answers one [`Popup`] anchored under the
-//! field, whose content lists the filtered options. The runtime paints
+//! is set, [`Interactive::popups`] answers one [`Popup`] anchored under
+//! the field, whose content lists the options
+//! [`ComboBox::filtered_indices`] matches (none, when nothing does). The runtime paints
 //! it above every other widget in the frame, hit-tests it before them,
 //! and routes a press on one of its rows back to the box as a
 //! [`RoutedEvent::PopupEvent`] naming that row's filtered index. A press
@@ -545,6 +545,8 @@ impl Interactive for ComboBox {
     type State = ComboBoxState;
     type Action = ComboBoxEvent;
 
+    const OPENS_POPUPS: bool = true;
+
     /// One focus stop as a whole — the box navigates its dropdown
     /// internally through [`Self::handle`]'s own key dispatch rather
     /// than declaring a stop per option. [`FocusSpec::None`] while
@@ -623,9 +625,10 @@ impl Interactive for ComboBox {
     }
 
     /// The filtered option list, under the field, while
-    /// [`ComboBox::open`] and something matches.
+    /// [`ComboBox::open`]. A filter that matches nothing leaves the list
+    /// open with no rows, so an outside press still dismisses it.
     fn popups(&self, _state: &ComboBoxState, layout: &ComboBoxPrimitiveLayout) -> Vec<Popup> {
-        if layout.dropdown_rows == 0 {
+        if !self.open {
             return Vec::new();
         }
         let field = layout.local_field();

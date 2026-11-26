@@ -3714,6 +3714,20 @@ pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCt
 
 impl<B: Backend + ?Sized> DrawsPrimitives for B {}
 
+/// Lay `widget` out at `rect` with the same ctx, measurer and style
+/// [`DrawsPrimitives::draw_dyn`] paints with, so routing and popup
+/// placement resolve against the painted geometry.
+pub(crate) fn layout_like_paint<B: Backend + ?Sized>(
+    backend: &B,
+    widget: &dyn DynWidget,
+    rect: Rect,
+) -> Box<dyn PrimitiveLayout> {
+    let ctx = primitive_layout_ctx(backend);
+    let measurer = |text: &str, role: crate::FontRole| backend.measure_text(text, role).0;
+    let style = backend.style();
+    widget.layout(&ctx.with_measurer(&measurer).with_style(&style), rect)
+}
+
 /// Record that the widget `id` painted this frame on `backend`'s modal
 /// stack, so a modal widget (a palette, a menu) registered there is not
 /// reported as registered-but-unpainted. An id the stack does not hold

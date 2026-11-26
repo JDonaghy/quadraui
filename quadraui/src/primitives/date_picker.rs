@@ -1075,6 +1075,8 @@ impl Interactive for DatePicker {
     type State = ();
     type Action = DatePickerEvent;
 
+    const OPENS_POPUPS: bool = true;
+
     /// One focus stop as a whole: the calendar moves its own cursor
     /// through [`Self::handle`]'s key dispatch rather than declaring a
     /// stop per day. [`DatePicker::has_focus`] is not consulted — it is

@@ -393,8 +393,17 @@ pub trait Interactive: Primitive {
         Vec::new()
     }
 
+    /// Whether this widget can ever answer [`Self::popups`] with anything.
+    /// The runtime asks [`Self::popups`] only of widgets that set this,
+    /// so routing an event never lays out a widget that has no popups to
+    /// offer. A widget that overrides [`Self::popups`] sets it to `true`;
+    /// one that leaves it `false` has its popups neither painted nor
+    /// routed.
+    const OPENS_POPUPS: bool = false;
+
     /// The popups this widget has open, given `state` and `layout` — a
-    /// dropdown list, a calendar grid, a submenu. Default: none.
+    /// dropdown list, a calendar grid, a submenu. Default: none. Only
+    /// asked when [`Self::OPENS_POPUPS`] is set.
     ///
     /// Open is whatever this answer says it is: the runtime keeps no
     /// popup state of its own. A widget in controlled mode reads a

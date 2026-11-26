@@ -527,6 +527,35 @@ def test_combo_box_leaf_renders_options_when_open():
     assert app.screen_contains("alpha")
 
 
+def test_a_press_on_an_open_combo_box_list_does_not_reach_the_button_it_covers():
+    options = ["alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"]
+    app = QuiApp(40, 12)
+    app.set_render(
+        lambda: {
+            "column": [
+                {"id": "cb", "combo_box": {"id": "cb", "options": options, "open": True}},
+                {"id": "b", "button": {"id": "b", "label": "btn:under"}},
+                {"id": "c", "button": {"id": "c", "label": "other"}},
+            ]
+        }
+    )
+    screen = app.screen()
+    assert "delta" in screen and "btn:under" not in screen, screen
+
+    received = []
+    app.set_handler(lambda event: received.append(event))
+    app.push_event(
+        {"MouseDown": {"button": "Left", "position": {"x": 3.0, "y": 4.0}, "modifiers": {}}}
+    )
+    app.push_event(
+        {"MouseUp": {"button": "Left", "position": {"x": 3.0, "y": 4.0}, "modifiers": {}}}
+    )
+    app.run(2)
+
+    assert not any("ButtonActivated" in event for event in received), received
+    assert {"FocusChanged": "b"} not in received, received
+
+
 def test_date_picker_leaf_renders_header():
     app = QuiApp(40, 20)
     app.set_render(

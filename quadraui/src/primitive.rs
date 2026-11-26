@@ -1176,6 +1176,10 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// [`Interactive::a11y_actions`].
     fn a11y_actions(&self, state: &dyn std::any::Any) -> Vec<A11yAction>;
 
+    /// [`Interactive::OPENS_POPUPS`]: whether [`Self::popups`] can ever
+    /// answer anything.
+    fn opens_popups(&self) -> bool;
+
     /// The popups this widget has open — see [`Interactive::popups`].
     /// `state` `None` (no stored state yet) or of the wrong type answers
     /// as `State::default()`; a `layout` of the wrong type answers no
@@ -1291,11 +1295,18 @@ where
         }
     }
 
+    fn opens_popups(&self) -> bool {
+        W::OPENS_POPUPS
+    }
+
     fn popups(
         &self,
         state: Option<&dyn std::any::Any>,
         layout: &dyn PrimitiveLayout,
     ) -> Vec<crate::popup::Popup> {
+        if !W::OPENS_POPUPS {
+            return Vec::new();
+        }
         let Some(layout) = layout.downcast_ref::<W::Layout>() else {
             return Vec::new();
         };
