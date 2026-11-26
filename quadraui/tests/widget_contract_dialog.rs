@@ -12,10 +12,12 @@
 //! Never a direct call into `Dialog::handle`/`Primitive::layout` that
 //! would skip the routing engine.
 
+use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, Dialog, DialogButton, FrameTree, NamedKey, Reaction, Rect, ScreenLayout,
-    StyledSpan, StyledText, Surface, UiEvent, WidgetId,
+    AppLogic, Backend, Dialog, DialogButton, DialogMeasure, DrawsPrimitives, FrameTree, LayoutCtx,
+    NamedKey, Placed, Primitive, Reaction, Rect, ScreenLayout, StyledSpan, StyledText, Surface,
+    ToolbarItemMeasure, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 60;
@@ -236,4 +238,142 @@ fn a_click_outside_the_modal_box_still_reaches_the_app_as_a_mouse_event() {
         "the plain mouse-down must bubble to the app: {:?}",
         driver.app().events
     );
+}
+
+/// One dialog painted straight through `draw_dyn` into `area` and routed
+/// through the app's `FrameTree` — at its own layout, or, once
+/// `host_box` is set, wrapped in `Placed` at a box the host resolved.
+struct DrawnDialogApp {
+    dialog: Dialog,
+    area: Rect,
+    host_box: Option<Rect>,
+    resolved: Vec<WidgetId>,
+}
+
+impl DrawnDialogApp {
+    fn new(body: &[&str], cols: u16, rows: u16) -> Self {
+        let mut dialog = DialogApp::new().dialog;
+        dialog.body = body
+            .iter()
+            .map(|line| StyledText {
+                spans: vec![StyledSpan::plain(*line)],
+            })
+            .collect();
+        Self {
+            dialog,
+            area: Rect::new(0.0, 0.0, cols as f32, rows as f32),
+            host_box: None,
+            resolved: Vec::new(),
+        }
+    }
+
+    /// The dialog as the app hands it to the frame: bare, or at the
+    /// host-resolved box — the dialog's own cell-grid layout for `area`
+    /// with its `DialogLayout` replaced by one centred in `host_box`.
+    fn widget(&self) -> Box<dyn DynWidget> {
+        let Some(host_box) = self.host_box else {
+            return Box::new(self.dialog.clone());
+        };
+        let mut layout =
+            Primitive::layout(&self.dialog, &LayoutCtx::new(1.0, 1.0, false), self.area);
+        let measure = DialogMeasure {
+            width: host_box.width,
+            title_height: 1.0,
+            body_height: self.dialog.body.len() as f32,
+            table_height: 0.0,
+            input_height: 0.0,
+            button_row_height: 1.0,
+            button_width: 8.0,
+            button_gap: 2.0,
+            padding: 1.0,
+        };
+        layout.layout = self
+            .dialog
+            .layout(host_box, measure, |_| ToolbarItemMeasure::new(0.0));
+        Box::new(Placed::new(self.dialog.clone(), layout))
+    }
+}
+
+impl AppLogic for DrawnDialogApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let _ = backend.draw_dyn(self.area, self.widget().as_ref(), &());
+    }
+
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(self.dialog.id, self.area, self.widget());
+        tree
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        if let UiEvent::MessageDialogResolved(id) = &event {
+            self.resolved.push(*id);
+        }
+        Reaction::Redraw
+    }
+}
+
+/// A confirm message 60 columns wide — wider than the dialog's
+/// 30…60-column default box leaves for body text.
+const LONG_BODY: &str = "Move 'main.rs' to '/Users/john/src/project/src/bin/tools/x'?";
+
+#[test]
+fn a_body_line_wider_than_the_default_box_paints_whole() {
+    assert_eq!(LONG_BODY.chars().count(), 60);
+    let driver = TuiDriver::new(DrawnDialogApp::new(&[LONG_BODY], 80, 24), 80, 24);
+
+    assert!(driver.screen_contains(LONG_BODY), "{}", driver.screen());
+}
+
+#[test]
+fn a_body_line_wider_than_the_viewport_is_clipped_inside_its_margin() {
+    let driver = TuiDriver::new(DrawnDialogApp::new(&[LONG_BODY], 40, 12), 40, 12);
+    let screen = driver.screen();
+
+    // The box stops two columns short of either edge.
+    for line in screen.lines() {
+        let chars: Vec<char> = line.chars().collect();
+        assert!(
+            chars[..2].iter().chain(&chars[38..]).all(|c| *c == ' '),
+            "{screen}"
+        );
+    }
+    assert!(driver.screen_contains("Move 'main.rs'"), "{screen}");
+}
+
+#[test]
+fn a_body_longer_than_ten_lines_paints_every_line() {
+    let lines: Vec<String> = (1..=12).map(|i| format!("body line {i:02}")).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let driver = TuiDriver::new(DrawnDialogApp::new(&refs, 80, 24), 80, 24);
+
+    for line in &lines {
+        assert!(driver.screen_contains(line), "{line}: {}", driver.screen());
+    }
+}
+
+#[test]
+fn a_placed_dialog_paints_and_hit_tests_at_the_host_box() {
+    let mut app = DrawnDialogApp::new(&[BODY], 80, 24);
+    let host_box = Rect::new(0.0, 0.0, 40.0, 5.0);
+    app.host_box = Some(host_box);
+    let mut driver = TuiDriver::new(app, 80, 24);
+
+    let title = driver.find_bounds(TITLE).expect("title on screen");
+    assert_eq!((title.x, title.y), (3.0, 0.0), "{}", driver.screen());
+    let body = driver.find_bounds(BODY).expect("body on screen");
+    assert_eq!((body.x, body.y), (1.0, 2.0), "{}", driver.screen());
+
+    click_label_in(&mut driver, "Cancel");
+    assert_eq!(driver.app().resolved, vec![cancel_id()]);
+}
+
+/// [`click_label`] for a [`DrawnDialogApp`].
+fn click_label_in(driver: &mut TuiDriver<DrawnDialogApp>, label: &str) {
+    let bounds = driver
+        .find_bounds(label)
+        .unwrap_or_else(|| panic!("{label} on screen"));
+    driver.click(bounds.x + 0.5, bounds.y);
 }

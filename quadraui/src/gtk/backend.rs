@@ -10397,4 +10397,63 @@ mod tests {
             "the palette's shadow must paint below its box, got {below:?}"
         );
     }
+
+    /// A fully-bordered tooltip painted through the widget contract keeps
+    /// its drop shadow below its box, pixel for pixel the shadow the same
+    /// tooltip paints with no clip at all.
+    #[test]
+    fn tooltip_shadow_paints_below_its_box() {
+        let tip = crate::Tooltip::new(WidgetId::new("tip"), "Hover hint");
+        let rect = QRect::new(50.0, 50.0, 120.0, 40.0);
+        let clipped = column_below_after_paint(100, 6, |b| {
+            crate::DrawsPrimitives::draw_dyn(b, rect, &tip, &crate::InteractionState::new());
+            rect.y + rect.height
+        });
+        let unclipped = column_below_after_paint(100, 6, |b| {
+            let layout = crate::DrawsPrimitives::layout_primitive(b, rect, &tip);
+            let placed = crate::Placed::new(tip.clone(), layout);
+            crate::DrawsPrimitives::draw_dyn(b, QRect::new(0.0, 0.0, 300.0, 300.0), &placed, &());
+            rect.y + rect.height
+        });
+        assert!(
+            unclipped.iter().any(|&px| px != (255, 255, 255)),
+            "the tooltip paints a shadow below its box, got {unclipped:?}"
+        );
+        assert_eq!(
+            clipped, unclipped,
+            "the tooltip's shadow must not be clipped"
+        );
+    }
+
+    /// A dialog whose box fills the rect it is drawn into keeps its drop
+    /// shadow below that rect.
+    #[test]
+    fn dialog_shadow_paints_below_its_box() {
+        let dialog = crate::Dialog {
+            id: WidgetId::new("dialog"),
+            title: crate::StyledText::plain("Confirm"),
+            body: vec![crate::StyledText::plain("Save changes?")],
+            buttons: Vec::new(),
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        };
+        let below = column_below_after_paint(150, 6, |b| {
+            let probe = QRect::new(0.0, 0.0, 300.0, 300.0);
+            let height = crate::DrawsPrimitives::layout_primitive(b, probe, &dialog)
+                .layout
+                .bounds
+                .height;
+            // A viewport exactly the box's height centres the box flush
+            // with its top and bottom edges.
+            let rect = QRect::new(0.0, 40.0, 300.0, height);
+            crate::DrawsPrimitives::draw_dyn(b, rect, &dialog, &());
+            rect.y + rect.height
+        });
+        assert!(
+            below.iter().any(|&px| px != (255, 255, 255)),
+            "the dialog's shadow must paint below its box, got {below:?}"
+        );
+    }
 }
