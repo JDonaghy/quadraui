@@ -732,6 +732,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_IdValueColorPayload`](#wire-_idvaluecolorpayload)
 - [`_IdSelectedIdxPayload`](#wire-_idselectedidxpayload)
 - [`_IdValueDatePayload`](#wire-_idvaluedatepayload)
+- [`_IdOpenPayload`](#wire-_idopenpayload)
 - [`_FormToolbarButtonClickedPayload`](#wire-_formtoolbarbuttonclickedpayload)
 - [`_IdValueF64Payload`](#wire-_idvaluef64payload)
 - [`_IdDraftPayload`](#wire-_iddraftpayload)
@@ -2347,6 +2348,8 @@ Alias for `"Iso8601" | "UsSlash" | "EuSlash"`.
 | `locale` | `DateLocale` | yes |  |
 | `time` | `TimeOfDay \| null` | no |  |
 | `has_focus` | `boolean` | no |  |
+| `dropdown` | `boolean` | no |  |
+| `open` | `boolean` | no |  |
 
 <a id="wire-chartkind"></a>
 #### `ChartKind`
@@ -4453,6 +4456,14 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `id` | `WidgetId` | yes |  |
 | `value` | `CalendarDate` | yes |  |
 
+<a id="wire-_idopenpayload"></a>
+#### `_IdOpenPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `open` | `boolean` | yes |  |
+
 <a id="wire-_formtoolbarbuttonclickedpayload"></a>
 #### `_FormToolbarButtonClickedPayload`
 
@@ -4511,6 +4522,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `SegmentedControlChanged` | `_IdSelectedIdxPayload` |  |
 | `DateChanged` | `_IdValueDatePayload` |  |
 | `DateFocusMoved` | `_IdValueDatePayload` |  |
+| `DateOpenChanged` | `_IdOpenPayload` |  |
 | `FocusChanged` | `_IdPayload` |  |
 | `ButtonClicked` | `_IdPayload` |  |
 | `ToolbarButtonClicked` | `_FormToolbarButtonClickedPayload` |  |

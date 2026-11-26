@@ -939,7 +939,9 @@ fn handle_date_picker_key(
                 value: date,
             })
         }
-        None => Handled::Ignored,
+        // `navigate` never opens a popup; only a dropdown picker's own
+        // `handle` does, and a form row has no popup of its own.
+        Some(DatePickerEvent::OpenChanged(_)) | None => Handled::Ignored,
     }
 }
 

@@ -241,7 +241,7 @@ fn date_picker_key_event(id: WidgetId, picker: &DatePicker, key: &str) -> Option
         DatePickerEvent::DateSelected(value) => {
             Some(UiEvent::Form(id, FormEvent::DateChanged { id, value }))
         }
-        DatePickerEvent::FocusMoved(_) => None,
+        DatePickerEvent::FocusMoved(_) | DatePickerEvent::OpenChanged(_) => None,
     }
 }
 

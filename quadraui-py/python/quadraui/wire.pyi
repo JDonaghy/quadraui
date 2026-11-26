@@ -1007,6 +1007,8 @@ class DatePickerDescriptor(TypedDict):
     locale: DateLocale
     time: NotRequired[Optional[TimeOfDay]]
     has_focus: NotRequired[bool]
+    dropdown: NotRequired[bool]
+    open: NotRequired[bool]
 
 ChartKind = Literal['Sparkline', 'Line', 'Bar', 'BarGrouped']
 
@@ -2246,6 +2248,10 @@ class _IdValueDatePayload(TypedDict):
     id: WidgetId
     value: CalendarDate
 
+class _IdOpenPayload(TypedDict):
+    id: WidgetId
+    open: bool
+
 class _FormToolbarButtonClickedPayload(TypedDict):
     field_id: WidgetId
     button_id: WidgetId
@@ -2277,6 +2283,7 @@ class FormEvent(TypedDict):
     SegmentedControlChanged: NotRequired[_IdSelectedIdxPayload]
     DateChanged: NotRequired[_IdValueDatePayload]
     DateFocusMoved: NotRequired[_IdValueDatePayload]
+    DateOpenChanged: NotRequired[_IdOpenPayload]
     FocusChanged: NotRequired[_IdPayload]
     ButtonClicked: NotRequired[_IdPayload]
     ToolbarButtonClicked: NotRequired[_FormToolbarButtonClickedPayload]
