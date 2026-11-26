@@ -292,6 +292,25 @@ pub(crate) trait PreprocessBackend {
     fn focus_tree_mut(&mut self) -> &mut FocusTree;
 }
 
+/// Feeds `event` into the ambient pointer state
+/// ([`crate::interaction::track_pointer`]) and asks for a redraw when hover
+/// or press changed. [`preprocess_event`] runs this for every event; a
+/// backend path that hands a pointer event to the app without going
+/// through [`preprocess_event`] calls it itself.
+#[cfg(any(
+    feature = "tui",
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn pointer_reaction(event: &UiEvent) -> Reaction {
+    if crate::interaction::track_pointer(event) {
+        Reaction::Redraw
+    } else {
+        Reaction::Continue
+    }
+}
+
 /// Dispatch one already-translated [`UiEvent`] through the app, applying
 /// the shared runner pre-processing pipeline first. This is the single
 /// function every backend's `dispatch_event` now funnels through for the
@@ -406,11 +425,7 @@ where
     // Resolved against the widgets painted in the frame on screen, so a
     // hover or press change repaints whether or not anything claims the
     // event below.
-    let pointer_reaction = if crate::interaction::track_pointer(&event) {
-        Reaction::Redraw
-    } else {
-        Reaction::Continue
-    };
+    let pointer_reaction = pointer_reaction(&event);
 
     // ── 2. Widget-contract routing ─────────────────────────────────────
     // A `Bubble` payload is a `Reaction` step 2 produced without claiming
