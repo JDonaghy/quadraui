@@ -799,7 +799,7 @@ enum Overlay {
     /// Shares [`Overlay::rank`] with [`Overlay::Dialog`] and
     /// [`Overlay::FormDialog`], so only one modal dialog of any kind is
     /// ever open at once.
-    LayoutDialog(LayoutDialog),
+    LayoutDialog(Box<LayoutDialog>),
     Tooltip(Tooltip, Rect),
     /// Unlike every other variant, more than one of these can be in the
     /// stack at once — a toast stack is itself a group, not a singleton
@@ -2138,7 +2138,7 @@ impl InteractionEngine {
         let id = embedded.dialog.id;
         let bounds = embedded.layout(backend).bounds;
         backend.modal_stack_handle().borrow_mut().push(id, bounds);
-        self.push_overlay(Overlay::LayoutDialog(embedded));
+        self.push_overlay(Overlay::LayoutDialog(Box::new(embedded)));
     }
 
     /// Closes the open layout dialog (if any), popping its
