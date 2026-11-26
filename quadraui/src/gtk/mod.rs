@@ -148,7 +148,7 @@ pub mod shell_runner;
 mod spinner;
 mod split;
 mod split_tree;
-mod surface;
+pub(crate) mod surface;
 pub mod testing;
 mod text_display;
 mod text_input;

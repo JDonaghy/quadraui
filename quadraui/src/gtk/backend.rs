@@ -246,13 +246,6 @@ pub struct GtkBackend {
     /// (unlike `zones`), since the whole point is skipping a re-decode on
     /// a later paint of the same source.
     image_cache: crate::image_cache::ImageCache<gtk4::gdk_pixbuf::Pixbuf>,
-    /// Cached glyph atlas for [`Backend::draw_minimap`]'s real-character
-    /// rendering — see [`crate::primitives::minimap::MinimapAtlasCache`]'s
-    /// module doc. Keyed on `(editor font family, dpi_scale)`; survives
-    /// across frames, same lifecycle as `image_cache` above and for the
-    /// same reason: the whole point is never re-shaping-and-downsampling
-    /// the atlas on a later paint at the same family/scale.
-    minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache,
     /// [`crate::backend::Backend::minimap_scale`]'s backing field
     /// — read by [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
     /// to resolve the row pitch (and, for the atlas, per-column width) a
@@ -576,7 +569,6 @@ impl GtkBackend {
             current_theme: crate::Theme::default(),
             current_style: crate::Style::default(),
             image_cache: crate::image_cache::ImageCache::default(),
-            minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache::default(),
             minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             current_line_height: 16.0,
             current_char_width: 8.0,
@@ -1912,6 +1904,23 @@ fn role_font_description(b: &GtkBackend, role: FontRole) -> pango::FontDescripti
         FontRole::Icon => crate::gtk::tab_icon_font(&chrome),
         FontRole::Editor => pango::FontDescription::from_string(&b.editor_font_pango_string()),
     }
+}
+
+/// Run `f` on the frame's Cairo context and Pango layout with the layout
+/// set to `role`'s font, restoring the layout's own font afterwards.
+fn with_role_layout<R>(
+    b: &GtkBackend,
+    role: FontRole,
+    f: impl FnOnce(&Context, &pango::Layout) -> R,
+) -> R {
+    let (cr, layout) = b
+        .current_frame_refs()
+        .expect("GtkBackend text-line verb called outside enter_frame_scope");
+    let saved = layout.font_description();
+    layout.set_font_description(Some(&role_font_description(b, role)));
+    let out = f(cr, layout);
+    layout.set_font_description(saved.as_ref());
+    out
 }
 
 impl Backend for GtkBackend {
@@ -3447,22 +3456,9 @@ impl Backend for GtkBackend {
         minimap: &crate::primitives::minimap::Minimap,
     ) -> crate::backend::MinimapPaintResult {
         let theme = self.current_theme;
-        let dpi_scale = self.dpi_scale as f64;
-        // Uses `super::minimap::draw_minimap_cached` for the glyph atlas cache.
-        // Reads raw pointers directly so `cr`/`pango_layout` don't collide with
-        // the `&mut self.minimap_atlas_cache` borrow this method also needs.
-        let cr_ptr = self.current_cr_ptr.get();
-        let layout_ptr = self.current_layout_ptr.get();
-        assert!(
-            !cr_ptr.is_null() && !layout_ptr.is_null(),
-            "GtkBackend::draw_minimap called outside enter_frame_scope"
-        );
-        // SAFETY: `enter_frame_scope` set both pointers from real, live
-        // `&Context`/`&pango::Layout` borrows and won't return until the
-        // scope ends -- the same invariant `current_frame_refs` relies
-        // on.
-        let cr = unsafe { &*(cr_ptr as *const Context) };
-        let pango_layout = unsafe { &*(layout_ptr as *const pango::Layout) };
+        let (cr, pango_layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::draw_minimap called outside enter_frame_scope");
         let layout = crate::gtk::minimap::draw_minimap_cached(
             cr,
             pango_layout,
@@ -3472,8 +3468,7 @@ impl Backend for GtkBackend {
             rect.height as f64,
             minimap,
             &theme,
-            &mut self.minimap_atlas_cache,
-            dpi_scale,
+            self.dpi_scale as f64,
             self.minimap_scale,
         );
         self.register_zone(minimap.id, rect);
@@ -3882,6 +3877,35 @@ impl PaintSurface for EditorSurface<'_> {
         layout.set_font_description(saved.as_ref());
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        _role: crate::FontRole,
+    ) {
+        with_role_layout(self.backend, FontRole::Editor, |cr, layout| {
+            super::surface::draw_text_line(cr, layout, origin, text, runs)
+        });
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        _role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        with_role_layout(self.backend, FontRole::Editor, |_, layout| {
+            super::surface::text_x_at_index(layout, text, byte_idx)
+        })
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
+        with_role_layout(self.backend, FontRole::Editor, |_, layout| {
+            super::surface::text_index_at_x(layout, text, x)
+        })
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         self.backend
             .surface_draw_line(from, to, color, stroke_width)
@@ -3893,6 +3917,28 @@ impl PaintSurface for EditorSurface<'_> {
 
     fn surface_pop_clip(&mut self) {
         self.backend.surface_pop_clip()
+    }
+
+    fn surface_blit_alpha(
+        &mut self,
+        dest: QRect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        self.backend
+            .surface_blit_alpha(dest, alpha, width, height, color)
+    }
+
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        _role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<crate::AlphaSheet> {
+        self.backend
+            .surface_glyph_alpha_sheet(chars, FontRole::Editor, cell)
     }
 
     fn surface_draw_image(
@@ -4265,6 +4311,35 @@ impl PaintSurface for GtkBackend {
         layout.set_font_description(saved.as_ref());
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        role: crate::FontRole,
+    ) {
+        with_role_layout(self, role, |cr, layout| {
+            super::surface::draw_text_line(cr, layout, origin, text, runs)
+        });
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        with_role_layout(self, role, |_, layout| {
+            super::surface::text_x_at_index(layout, text, byte_idx)
+        })
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+        with_role_layout(self, role, |_, layout| {
+            super::surface::text_index_at_x(layout, text, x)
+        })
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         let (cr, _layout) = self
             .current_frame_refs()
@@ -4295,6 +4370,30 @@ impl PaintSurface for GtkBackend {
             .current_frame_refs()
             .expect("GtkBackend::surface_pop_clip called outside enter_frame_scope");
         cr.restore().ok();
+    }
+
+    fn surface_blit_alpha(
+        &mut self,
+        dest: QRect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        let (cr, _) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_blit_alpha called outside enter_frame_scope");
+        super::surface::blit_alpha(cr, dest, alpha, width, height, color);
+    }
+
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<crate::AlphaSheet> {
+        let family = role_font_description(self, role).family()?;
+        super::surface::glyph_alpha_sheet(&family, chars, cell)
     }
 
     fn surface_draw_image(
@@ -4361,6 +4460,8 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 1,
             total_buffer_lines: 1,
+            scale: Default::default(),
+            sizing: None,
         };
         let rect = QRect::new(0.0, 0.0, 20.0, 100.0);
 
@@ -6319,6 +6420,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
         // No gutter, no scroll: `EditorLayout::text_bounds.x` is 0 and
         // `col_at_x`'s scroll term drops out, so `editor_layout` needn't
@@ -8630,6 +8732,7 @@ mod tests {
             tabstop: 4,
             cursorline: false,
             lightbulb_glyph: '!',
+            paint_options: Default::default(),
         };
 
         let layout = Backend::editor_layout(&backend, rect, &editor);

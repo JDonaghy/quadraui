@@ -1495,6 +1495,7 @@ mod tests {
                 tabstop: 4,
                 cursorline: false,
                 lightbulb_glyph: '\0',
+                paint_options: Default::default(),
             }
         }
     }

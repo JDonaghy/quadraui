@@ -23,7 +23,7 @@ use crate::types::{Color, Decoration, StyledText};
 
 pub mod backend;
 mod board;
-mod braille;
+pub(crate) mod braille;
 mod canvas;
 mod cell_grid;
 // `pub(crate)` rather than private: widget code outside `crate::tui` builds

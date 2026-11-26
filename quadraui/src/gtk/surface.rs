@@ -33,7 +33,7 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use crate::backend::ImagePaintResult;
-use crate::paint_surface::PaintSurface;
+use crate::paint_surface::{AlphaSheet, PaintSurface, TextRunStyle};
 use crate::{Color, Image, Point, Rect, Viewport};
 
 /// Adapts a live `pango::Layout` (falling back to a `char_width`-based
@@ -80,6 +80,202 @@ impl<'a> CairoSurface<'a> {
         self.layout
             .expect("CairoSurface: text verb called without a pango::Layout")
     }
+}
+
+/// `text` as one Pango line on `layout`, drawn with its top-left at
+/// `origin`. Each run sets its own colour, weight and style; the cairo
+/// source is cleared first, so bytes no run covers paint nothing.
+pub(crate) fn draw_text_line(
+    cr: &Context,
+    layout: &pango::Layout,
+    origin: Point,
+    text: &str,
+    runs: &[TextRunStyle],
+) {
+    let attrs = pango::AttrList::new();
+    for run in runs {
+        let Some(range) = run.byte_range_in(text) else {
+            continue;
+        };
+        let (start, end) = (range.start as u32, range.end as u32);
+        let c = run.fg;
+        let mut fg = pango::AttrColor::new_foreground(
+            u16::from(c.r) * 257,
+            u16::from(c.g) * 257,
+            u16::from(c.b) * 257,
+        );
+        fg.set_start_index(start);
+        fg.set_end_index(end);
+        attrs.insert(fg);
+        if run.bold {
+            let mut w = pango::AttrInt::new_weight(pango::Weight::Bold);
+            w.set_start_index(start);
+            w.set_end_index(end);
+            attrs.insert(w);
+        }
+        if run.italic {
+            let mut st = pango::AttrInt::new_style(pango::Style::Italic);
+            st.set_start_index(start);
+            st.set_end_index(end);
+            attrs.insert(st);
+        }
+    }
+    layout.set_text(text);
+    layout.set_attributes(Some(&attrs));
+    cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+    cr.move_to(origin.x as f64, origin.y as f64);
+    super::painted_text::show_layout(cr, layout);
+    layout.set_attributes(None);
+}
+
+/// Advance of `text[..byte_idx]` on `layout`, in pixels.
+pub(crate) fn text_x_at_index(layout: &pango::Layout, text: &str, byte_idx: usize) -> f32 {
+    layout.set_text(text);
+    layout.set_attributes(None);
+    let idx = crate::text_util::snap_to_char_boundary(text, byte_idx);
+    (layout.index_to_pos(idx as i32).x() as f64 / pango::SCALE as f64) as f32
+}
+
+/// The grapheme boundary of `text` on `layout` nearest to `x` pixels from
+/// the line start: Pango's hit index, moved past the cluster when `x`
+/// falls in its trailing half.
+pub(crate) fn text_index_at_x(layout: &pango::Layout, text: &str, x: f32) -> usize {
+    layout.set_text(text);
+    layout.set_attributes(None);
+    let x_pango = (f64::from(x.max(0.0)) * pango::SCALE as f64).round() as i32;
+    let (_inside, index, trailing) = layout.xy_to_index(x_pango, 0);
+    let mut idx = crate::text_util::snap_to_char_boundary(text, index.max(0) as usize);
+    for _ in 0..trailing.max(0) {
+        idx = crate::text_util::next_char_boundary(text, idx);
+    }
+    idx.min(text.len())
+}
+
+/// A rendered sheet with the `(family, chars, cell size)` it was rendered for.
+type CachedSheet = (String, String, (u32, u32), AlphaSheet);
+
+thread_local! {
+    /// The last sheet [`glyph_alpha_sheet`] rendered, so a repeated request
+    /// shapes nothing.
+    static GLYPH_SHEET: std::cell::RefCell<Option<CachedSheet>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`PaintSurface::surface_glyph_alpha_sheet`] for Pango: each char of
+/// `chars` shaped bold in `family`, sized to `cell`'s height, painted
+/// white onto a transparent `ARgb32` sheet whose alpha channel is the
+/// coverage.
+pub(crate) fn glyph_alpha_sheet(
+    family: &str,
+    chars: &str,
+    cell: crate::primitive::Size,
+) -> Option<AlphaSheet> {
+    let cell_px = (cell.width.round() as u32, cell.height.round() as u32);
+    let hit = GLYPH_SHEET.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(f, ch, sz, _)| f == family && ch == chars && *sz == cell_px)
+            .map(|(_, _, _, sheet)| sheet.clone())
+    });
+    if hit.is_some() {
+        return hit;
+    }
+    let sheet = render_glyph_sheet(family, chars, cell_px)?;
+    GLYPH_SHEET.with(|c| {
+        *c.borrow_mut() = Some((
+            family.to_string(),
+            chars.to_string(),
+            cell_px,
+            sheet.clone(),
+        ))
+    });
+    Some(sheet)
+}
+
+fn render_glyph_sheet(
+    family: &str,
+    chars: &str,
+    (cell_w, cell_h): (u32, u32),
+) -> Option<AlphaSheet> {
+    use gtk4::cairo::{Format, ImageSurface};
+    let count = chars.chars().count() as u32;
+    let (sheet_w, sheet_h) = (cell_w * count, cell_h);
+    if sheet_w == 0 || sheet_h == 0 {
+        return None;
+    }
+    let surface = ImageSurface::create(Format::ARgb32, sheet_w as i32, sheet_h as i32).ok()?;
+    let cr = Context::new(&surface).ok()?;
+    let pango_layout = pangocairo::functions::create_layout(&cr);
+    let mut font = pango::FontDescription::new();
+    font.set_family(family);
+    font.set_weight(pango::Weight::Bold);
+    font.set_absolute_size(f64::from(cell_h) * 0.85 * pango::SCALE as f64);
+    pango_layout.set_font_description(Some(&font));
+    cr.set_source_rgb(1.0, 1.0, 1.0);
+    for (i, ch) in chars.chars().enumerate() {
+        pango_layout.set_text(&ch.to_string());
+        cr.move_to(f64::from(i as u32 * cell_w), 0.0);
+        // The plain `show_layout`, not the recording wrapper: this paints
+        // a private offscreen sheet, which must not reach the frame's
+        // painted-text sink.
+        pangocairo::functions::show_layout(&cr, &pango_layout);
+    }
+    // `data()` needs the only reference to the surface.
+    drop(pango_layout);
+    drop(cr);
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let mut surface = surface;
+    let data = surface.data().ok()?;
+    let (w, h) = (sheet_w as usize, sheet_h as usize);
+    let mut alpha = vec![0u8; w * h];
+    for row in 0..h {
+        for col in 0..w {
+            // Cairo's `ARgb32` is [B, G, R, A] in memory.
+            alpha[row * w + col] = data[row * stride + col * 4 + 3];
+        }
+    }
+    Some(AlphaSheet::new(sheet_w, sheet_h, alpha))
+}
+
+/// [`PaintSurface::surface_blit_alpha`] for Cairo: `alpha` as an `A8`
+/// mask, scaled onto `dest`, painting `color` through it.
+pub(crate) fn blit_alpha(
+    cr: &Context,
+    dest: Rect,
+    alpha: &[u8],
+    width: u32,
+    height: u32,
+    color: Color,
+) {
+    use gtk4::cairo::{Format, ImageSurface};
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 || alpha.len() < w * h {
+        return;
+    }
+    let Ok(mut mask) = ImageSurface::create(Format::A8, width as i32, height as i32) else {
+        return;
+    };
+    {
+        let stride = mask.stride() as usize;
+        let Ok(mut data) = mask.data() else {
+            return;
+        };
+        for row in 0..h {
+            data[row * stride..row * stride + w].copy_from_slice(&alpha[row * w..(row + 1) * w]);
+        }
+    }
+    mask.flush();
+    let (r, g, b) = super::cairo_rgb(color);
+    cr.save().ok();
+    cr.translate(f64::from(dest.x), f64::from(dest.y));
+    cr.scale(
+        f64::from(dest.width) / f64::from(width),
+        f64::from(dest.height) / f64::from(height),
+    );
+    cr.set_source_rgb(r, g, b);
+    cr.mask_surface(&mask, 0.0, 0.0).ok();
+    cr.restore().ok();
 }
 
 impl PaintSurface for CairoSurface<'_> {
@@ -250,6 +446,29 @@ impl PaintSurface for CairoSurface<'_> {
         layout.set_attributes(None);
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[TextRunStyle],
+        _role: crate::FontRole,
+    ) {
+        draw_text_line(self.cr, self.layout_or_panic(), origin, text, runs);
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        _role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        text_x_at_index(self.layout_or_panic(), text, byte_idx)
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
+        text_index_at_x(self.layout_or_panic(), text, x)
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         super::set_source(self.cr, color);
         self.cr.set_line_width(stroke_width as f64);
@@ -273,6 +492,35 @@ impl PaintSurface for CairoSurface<'_> {
         self.cr.restore().ok();
     }
 
+    fn surface_blit_alpha(
+        &mut self,
+        dest: Rect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        blit_alpha(self.cr, dest, alpha, width, height, color);
+    }
+
+    /// Shapes in the adapter's own layout's font family (`Monospace` when
+    /// the layout names none); `role` is not consulted, as for every
+    /// other text verb here.
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        _role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<AlphaSheet> {
+        let family = self
+            .layout?
+            .font_description()
+            .and_then(|f| f.family())
+            .map(|g| g.to_string())
+            .unwrap_or_else(|| "Monospace".to_string());
+        glyph_alpha_sheet(&family, chars, cell)
+    }
+
     fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
         ImagePaintResult::Unsupported
     }
@@ -282,6 +530,154 @@ impl PaintSurface for CairoSurface<'_> {
 mod tests {
     use super::*;
     use pangocairo::cairo::{Context, Format, ImageSurface};
+
+    /// A line with a wide glyph, a combining mark and mixed bold/italic.
+    const LINE: &str = "a日e\u{301}bc";
+
+    fn text_layout(cr: &Context) -> pango::Layout {
+        let ctx = pangocairo::functions::create_context(cr);
+        ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
+        pango::Layout::new(&ctx)
+    }
+
+    fn line_runs() -> Vec<TextRunStyle> {
+        let fg = Color::rgb(230, 230, 230);
+        vec![
+            TextRunStyle::new(0..1, fg),
+            TextRunStyle::new(1..4, Color::rgb(220, 60, 60)).with_bold(true),
+            TextRunStyle::new(4..7, fg).with_italic(true),
+            TextRunStyle::new(7..9, fg),
+        ]
+    }
+
+    /// The same line drawn the way the editor's own Pango path draws it:
+    /// one layout, the default colour as the cairo source, and per-span
+    /// colour/weight/style attributes.
+    fn reference_line(cr: &Context, layout: &pango::Layout, runs: &[TextRunStyle]) {
+        let attrs = pango::AttrList::new();
+        for run in runs {
+            let c = run.fg;
+            let mut fg = pango::AttrColor::new_foreground(
+                u16::from(c.r) * 257,
+                u16::from(c.g) * 257,
+                u16::from(c.b) * 257,
+            );
+            fg.set_start_index(run.range.start as u32);
+            fg.set_end_index(run.range.end as u32);
+            attrs.insert(fg);
+            if run.bold {
+                let mut w = pango::AttrInt::new_weight(pango::Weight::Bold);
+                w.set_start_index(run.range.start as u32);
+                w.set_end_index(run.range.end as u32);
+                attrs.insert(w);
+            }
+            if run.italic {
+                let mut st = pango::AttrInt::new_style(pango::Style::Italic);
+                st.set_start_index(run.range.start as u32);
+                st.set_end_index(run.range.end as u32);
+                attrs.insert(st);
+            }
+        }
+        layout.set_text(LINE);
+        layout.set_attributes(Some(&attrs));
+        cr.set_source_rgb(0.9, 0.9, 0.9);
+        cr.move_to(4.0, 3.0);
+        pangocairo::functions::show_layout(cr, layout);
+    }
+
+    fn render(paint: impl FnOnce(&Context, &pango::Layout)) -> Vec<u8> {
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, 160, 30).expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let layout = text_layout(&cr);
+            paint(&cr, &layout);
+        }
+        surface.flush();
+        let bytes = surface.data().expect("surface data").to_vec();
+        bytes
+    }
+
+    #[test]
+    fn draw_text_line_matches_the_editors_single_layout_paint() {
+        let runs = line_runs();
+        let via_verb = render(|cr, layout| {
+            let mut s = CairoSurface {
+                cr,
+                layout: Some(layout),
+                translucent_fill: true,
+            };
+            s.surface_draw_text_line(Point::new(4.0, 3.0), LINE, &runs, crate::FontRole::Editor);
+        });
+        let reference = render(|cr, layout| reference_line(cr, layout, &runs));
+        assert!(via_verb.iter().any(|&b| b != 0), "the verb painted nothing");
+        assert_eq!(via_verb, reference);
+    }
+
+    #[test]
+    fn draw_text_line_leaves_uncovered_bytes_unpainted() {
+        let fg = Color::rgb(230, 230, 230);
+        let blank = render(|cr, layout| {
+            let mut s = CairoSurface {
+                cr,
+                layout: Some(layout),
+                translucent_fill: true,
+            };
+            s.surface_draw_text_line(Point::new(4.0, 3.0), "abc", &[], crate::FontRole::Editor);
+        });
+        assert!(blank.iter().all(|&b| b == 0));
+        let partial = render(|cr, layout| {
+            let mut s = CairoSurface {
+                cr,
+                layout: Some(layout),
+                translucent_fill: true,
+            };
+            s.surface_draw_text_line(
+                Point::new(4.0, 3.0),
+                "abc",
+                &[TextRunStyle::new(0..1, fg)],
+                crate::FontRole::Editor,
+            );
+        });
+        assert!(partial.iter().any(|&b| b != 0));
+    }
+
+    #[test]
+    fn text_x_and_index_agree_with_pango_glyph_positions() {
+        let surface = ImageSurface::create(Format::ARgb32, 10, 10).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let layout = text_layout(&cr);
+        let mut s = CairoSurface {
+            cr: &cr,
+            layout: Some(&layout),
+            translucent_fill: true,
+        };
+        let role = crate::FontRole::Editor;
+        // Cluster boundaries of "a日e\u{301}bc": after a, 日, é, b, c.
+        for idx in [0usize, 1, 4, 7, 8, 9] {
+            layout.set_text(LINE);
+            layout.set_attributes(None);
+            let expect = layout.index_to_pos(idx as i32).x() as f32 / pango::SCALE as f32;
+            let x = s.surface_text_x_at_index(LINE, role, idx);
+            assert_eq!(x, expect, "x at byte {idx}");
+            assert_eq!(
+                s.surface_text_index_at_x(LINE, role, x),
+                idx,
+                "index at x {x}"
+            );
+        }
+        // The wide glyph advances further than a narrow one.
+        let narrow = s.surface_text_x_at_index(LINE, role, 1);
+        let wide = s.surface_text_x_at_index(LINE, role, 4) - narrow;
+        assert!(wide > narrow * 1.5, "wide {wide} narrow {narrow}");
+        // Between `e` and its combining mark is not a boundary.
+        let e_x = s.surface_text_x_at_index(LINE, role, 4);
+        let next = s.surface_text_x_at_index(LINE, role, 7);
+        let mid = s.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.3);
+        assert_eq!(mid, 4);
+        let past = s.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.95);
+        assert_eq!(past, 7);
+    }
 
     fn probe_pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
         let off = y as usize * stride + x as usize * 4;

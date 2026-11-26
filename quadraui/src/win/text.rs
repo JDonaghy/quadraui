@@ -73,17 +73,6 @@ pub struct DWrite {
     /// Nerd-Font fallback this handle was constructed with, if any —
     /// same reuse rationale as `family`.
     fallback: Option<IDWriteFontFallback>,
-    /// Same-family [`IDWriteTextFormat`]s at minimap row-pitch sizes,
-    /// keyed by the rounded DIP size
-    /// [`crate::primitives::minimap::minimap_font_px`] resolved — not by
-    /// the raw `f64` it returns, since that's a continuous function of
-    /// row pitch and a bare-`f64` `HashMap` key would almost never hit on
-    /// a second lookup even when two rows share a pitch (float equality).
-    /// `win::minimap::paint_row_glyphs` is the only reader
-    /// ([`Self::minimap_text_format`]); in practice a surface's rows all
-    /// share one pitch, so this holds at most a couple of entries per
-    /// `DWrite`, not one per row.
-    minimap_formats: RefCell<HashMap<i32, IDWriteTextFormat>>,
     /// `text_format`'s own natural line height — `ascent + descent +
     /// lineGap` scaled to `size_dip`, the same quantity [`Self::new`]
     /// returns to seed `WinBackend::current_line_height` — kept on the
@@ -207,7 +196,6 @@ impl DWrite {
                 bold_text_format,
                 family: family.to_string(),
                 fallback: fallback.cloned(),
-                minimap_formats: RefCell::new(HashMap::new()),
                 natural_line_height: line_height,
             },
             line_height,
@@ -218,11 +206,8 @@ impl DWrite {
     /// `text_format`'s own natural line height in DIPs — `ascent +
     /// descent + lineGap` at this handle's font size, independent of
     /// whatever row pitch a host later sets via
-    /// `WinBackend::set_current_line_height`. `win::editor`'s
-    /// `text_v_offset` centres a row's text inside that (possibly
-    /// taller) pitch by comparing it against this value, the same way
-    /// [`crate::macos::editor::text_v_offset`] compares a host-set
-    /// pitch against `CTFont::ascent() + descent() + leading()`.
+    /// `WinBackend::set_current_line_height`. [`Self::draw_text_line`]
+    /// gives each run's text box at least this height.
     pub(crate) fn natural_line_height(&self) -> f32 {
         self.natural_line_height
     }
@@ -278,105 +263,52 @@ impl DWrite {
         draw_text(target, self.format_for(bold), text, rect, color)
     }
 
+    /// Paint `text` as one line with its top-left at `origin`: each run
+    /// is drawn at the advance of the prefix before it, in its own colour
+    /// and weight. Bytes no run covers are left unpainted; `italic` is not
+    /// applied.
+    pub(crate) fn draw_text_line(
+        &self,
+        target: &ID2D1RenderTarget,
+        origin: crate::Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+    ) {
+        for run in runs {
+            let Some(range) = run.byte_range_in(text) else {
+                continue;
+            };
+            let x = origin.x + self.text_x_at_index(text, range.start);
+            let slice = &text[range];
+            let (w, h) = self
+                .measure_text_styled(slice, run.bold)
+                .unwrap_or((0.0, 0.0));
+            // Wider than the run so the layout's clip never trims an
+            // overhanging glyph edge.
+            let rect = Rect::new(x, origin.y, w + h, h.max(self.natural_line_height()));
+            let _ = self.draw_text_styled(target, slice, rect, run.fg, run.bold);
+        }
+    }
+
+    /// Advance of `text[..byte_idx]` in this format, trailing whitespace
+    /// included, in DIPs.
+    pub(crate) fn text_x_at_index(&self, text: &str, byte_idx: usize) -> f32 {
+        let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
+        measure_advance(&self.factory, &self.text_format, &text[..end]).unwrap_or(0.0)
+    }
+
+    /// The cluster boundary of `text` nearest to `x` DIPs from the line
+    /// start.
+    pub(crate) fn text_index_at_x(&self, text: &str, x: f32) -> usize {
+        crate::paint_surface::nearest_text_boundary(text, x, &mut |i| self.text_x_at_index(text, i))
+    }
+
     fn format_for(&self, bold: bool) -> &IDWriteTextFormat {
         if bold {
             &self.bold_text_format
         } else {
             &self.text_format
         }
-    }
-
-    /// Same-family `IDWriteTextFormat` at `size_px` DIPs, cached by
-    /// rounded size — what
-    /// [`crate::win::minimap::paint_row_glyphs`]'s `Characters` branch
-    /// shapes through, so a minimap row paints at
-    /// [`crate::primitives::minimap::minimap_font_px`]'s resolved size
-    /// rather than this handle's own editor-size [`Self::text_format`].
-    /// `size_px` is rounded to the nearest DIP before the cache lookup —
-    /// row pitch is already a small, mostly-fixed set of values in
-    /// practice (one per `MinimapScale`), so this keeps the cache at a
-    /// couple of entries rather than growing one per float-distinct
-    /// `vline.bounds.height`, and side-steps `f64`-as-a-map-key float
-    /// equality entirely.
-    ///
-    /// No word-wrapping/fallback divergence from [`Self::text_format`]:
-    /// built the same way (`DWRITE_WORD_WRAPPING_NO_WRAP`, this handle's
-    /// own Nerd-Font fallback if any) via [`create_text_format`], just at
-    /// a different size.
-    pub(crate) fn minimap_text_format(&self, size_px: f64) -> WinResult<IDWriteTextFormat> {
-        let key = (size_px.round() as i32).max(1);
-        if let Some(format) = self.minimap_formats.borrow().get(&key) {
-            return Ok(format.clone());
-        }
-
-        let format = create_text_format(
-            &self.factory,
-            &self.family,
-            key as f32,
-            DWRITE_FONT_WEIGHT_NORMAL,
-        )?;
-        // SAFETY: `format` is the live interface just created above;
-        // `SetWordWrapping` takes a plain enum value, no pointers — same
-        // call `DWrite::new` makes on `text_format`/`bold_text_format`,
-        // for the same reason (see that call's own doc comment).
-        unsafe { format.SetWordWrapping(DWRITE_WORD_WRAPPING_NO_WRAP)? };
-        if let Some(fallback) = &self.fallback {
-            // Same "degrade, don't fail the paint" posture `DWrite::new`
-            // takes for the editor-size formats —
-            // see that call's doc comment.
-            if let Err(err) = apply_fallback_to_format(&format, fallback) {
-                crate::diagnostics::emit(format!(
-                    "quadraui: IDWriteTextFormat1::SetFontFallback failed for a minimap text \
-                     format at {key}px ({err:?}); continuing without a Nerd-Font fallback"
-                ));
-            }
-        }
-
-        self.minimap_formats
-            .borrow_mut()
-            .insert(key, format.clone());
-        Ok(format)
-    }
-
-    /// Paint `text` inside `rect` (DIPs, target-relative) in `color` at
-    /// `size_px` DIPs — [`Self::draw_text`]'s minimap-sized twin,
-    /// via [`Self::minimap_text_format`] rather than this
-    /// handle's editor-size format.
-    pub(crate) fn draw_text_minimap(
-        &self,
-        target: &ID2D1RenderTarget,
-        text: &str,
-        rect: Rect,
-        color: Color,
-        size_px: f64,
-    ) -> WinResult<()> {
-        let format = self.minimap_text_format(size_px)?;
-        draw_text(target, &format, text, rect, color)
-    }
-
-    /// Number of distinct sizes cached by [`Self::minimap_text_format`] so
-    /// far — `#[cfg(test)]` acceptance hook proving a
-    /// `Characters`-mode minimap paint actually requests a minimap-sized
-    /// format (and, together with a same-size/different-size pair of
-    /// calls, that the cache hits rather than reallocating per paint)
-    /// rather than silently falling back to the editor-size
-    /// [`Self::text_format`].
-    #[cfg(test)]
-    pub(crate) fn minimap_format_cache_len(&self) -> usize {
-        self.minimap_formats.borrow().len()
-    }
-
-    /// Is `size_px` (rounded the same way [`Self::minimap_text_format`]
-    /// rounds its cache key) present in the minimap-format cache?
-    /// `#[cfg(test)]` hook that lets a caller pin *which* size got
-    /// cached, not just how many — [`Self::minimap_format_cache_len`]
-    /// alone can't distinguish a paint that cached the resolved minimap
-    /// size from one that accidentally cached the (much larger)
-    /// editor-format size.
-    #[cfg(test)]
-    pub(crate) fn has_cached_minimap_px(&self, size_px: f64) -> bool {
-        let key = (size_px.round() as i32).max(1);
-        self.minimap_formats.borrow().contains_key(&key)
     }
 }
 
@@ -742,6 +674,26 @@ fn measure_text(
     // plain stack struct the call writes through.
     unsafe { layout.GetMetrics(&mut metrics)? };
     Ok((metrics.width, metrics.height))
+}
+
+/// `text`'s advance in `format`, trailing whitespace included — the
+/// x a following glyph starts at, which [`measure_text`]'s ink-oriented
+/// width stops short of after a space.
+fn measure_advance(
+    factory: &IDWriteFactory,
+    format: &IDWriteTextFormat,
+    text: &str,
+) -> WinResult<f32> {
+    if text.is_empty() {
+        return Ok(0.0);
+    }
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    // SAFETY: as in `measure_text`.
+    let layout = unsafe { factory.CreateTextLayout(&wide, format, f32::MAX, f32::MAX)? };
+    let mut metrics = Default::default();
+    // SAFETY: as in `measure_text`.
+    unsafe { layout.GetMetrics(&mut metrics)? };
+    Ok(metrics.widthIncludingTrailingWhitespace)
 }
 
 /// Paint `text` inside `rect` (DIPs, target-relative) in `color`, clipped
@@ -1463,35 +1415,5 @@ mod tests {
              prefix that fits (clipped at the right edge), not vanish entirely because \
              the first word reflowed onto a line this single-line-tall box can't show"
         );
-    }
-
-    /// [`DWrite::minimap_text_format`] must cache by rounded
-    /// px — a second call at the exact same size reuses the cached
-    /// `IDWriteTextFormat` (same underlying COM object, proven via
-    /// `Interface::as_raw` identity) rather than allocating a fresh one
-    /// every row/frame, and a different size still gets its own, distinct
-    /// format.
-    #[test]
-    fn minimap_text_format_caches_by_rounded_px() {
-        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
-
-        let a = dwrite.minimap_text_format(6.0).expect("format at 6px");
-        let b = dwrite
-            .minimap_text_format(6.0)
-            .expect("format at 6px again");
-        assert_eq!(
-            a.as_raw(),
-            b.as_raw(),
-            "the same rounded px must reuse the cached format"
-        );
-        assert_eq!(dwrite.minimap_format_cache_len(), 1);
-
-        let c = dwrite.minimap_text_format(12.0).expect("format at 12px");
-        assert_ne!(
-            a.as_raw(),
-            c.as_raw(),
-            "a different rounded px must create a new format"
-        );
-        assert_eq!(dwrite.minimap_format_cache_len(), 2);
     }
 }

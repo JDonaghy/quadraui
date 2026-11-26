@@ -961,6 +961,8 @@ fn minimap_is_hidden_presentation() {
         visible_row_start: 0,
         visible_row_count: 0,
         total_buffer_lines: 0,
+        scale: Default::default(),
+        sizing: None,
     };
 
     let mut scenario = A11yScenario::new();

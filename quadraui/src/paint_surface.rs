@@ -69,6 +69,103 @@
 use crate::backend::ImagePaintResult;
 use crate::{Color, Image, Point, Rect, Viewport};
 
+/// A row-major coverage bitmap, `0` transparent to `255` opaque: `width`
+/// by `height` bytes in `alpha`. [`PaintSurface::surface_glyph_alpha_sheet`]
+/// returns one, and [`PaintSurface::surface_blit_alpha`] paints one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AlphaSheet {
+    pub width: u32,
+    pub height: u32,
+    pub alpha: Vec<u8>,
+}
+
+impl AlphaSheet {
+    /// A `width` by `height` sheet over `alpha`, which must hold
+    /// `width * height` bytes.
+    pub fn new(width: u32, height: u32, alpha: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            alpha,
+        }
+    }
+}
+
+/// One styled byte range of a line of text, for
+/// [`PaintSurface::surface_draw_text_line`].
+///
+/// `range` is a byte range into the line's text; an end past the text or
+/// off a char boundary snaps back to the nearest boundary.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct TextRunStyle {
+    pub range: std::ops::Range<usize>,
+    pub fg: Color,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+impl TextRunStyle {
+    /// `range` painted in `fg`, regular weight and upright.
+    pub fn new(range: std::ops::Range<usize>, fg: Color) -> Self {
+        Self {
+            range,
+            fg,
+            bold: false,
+            italic: false,
+        }
+    }
+
+    /// This run in bold when `bold` is true.
+    #[must_use]
+    pub fn with_bold(mut self, bold: bool) -> Self {
+        self.bold = bold;
+        self
+    }
+
+    /// This run in italic when `italic` is true.
+    #[must_use]
+    pub fn with_italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
+        self
+    }
+
+    /// [`Self::range`] snapped onto `text`'s char boundaries, or `None`
+    /// when it covers no bytes.
+    pub(crate) fn byte_range_in(&self, text: &str) -> Option<std::ops::Range<usize>> {
+        let start = crate::text_util::snap_to_char_boundary(text, self.range.start);
+        let end = crate::text_util::snap_to_char_boundary(text, self.range.end);
+        (start < end).then_some(start..end)
+    }
+}
+
+/// The byte index in `text` of the cluster boundary whose advance
+/// `x_at` reports nearest to `x`. A boundary in front of a zero-width
+/// char (a combining mark) is skipped, so the result never splits a base
+/// character from its marks.
+pub(crate) fn nearest_text_boundary(
+    text: &str,
+    x: f32,
+    x_at: &mut dyn FnMut(usize) -> f32,
+) -> usize {
+    let mut best = (0usize, (x_at(0) - x).abs());
+    for (i, ch) in text.char_indices().skip(1) {
+        if crate::text_util::char_cell_width(ch) == 0 {
+            continue;
+        }
+        let d = (x_at(i) - x).abs();
+        if d < best.1 {
+            best = (i, d);
+        }
+    }
+    let d = (x_at(text.len()) - x).abs();
+    if !text.is_empty() && d < best.1 {
+        best = (text.len(), d);
+    }
+    best.0
+}
+
 /// A single segment of the open or closed polyline [`PaintSurface::surface_draw_path`]
 /// strokes.
 ///
@@ -422,6 +519,138 @@ pub trait PaintSurface {
     /// Stroke a line segment from `from` to `to` in `color` at
     /// `stroke_width`.
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32);
+
+    // ─── Shaped text lines ─────────────────────────────────────────────
+    /// Shape and draw `text` as one line at `origin` (the top-left of
+    /// the line box; the baseline sits the font's ascent below it), in
+    /// `role`'s font. Each [`TextRunStyle`] styles its byte range; bytes
+    /// no run covers are left unpainted, so a caller covers the gaps
+    /// with runs in its default colour.
+    ///
+    /// Defaults to one [`Self::surface_draw_text_run_styled`] per run,
+    /// placed at [`Self::surface_text_x_at_index`] — correct for a
+    /// surface with one monospace font. Every pixel backend overrides it
+    /// with its platform shaper.
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[TextRunStyle],
+        role: crate::FontRole,
+    ) {
+        for run in runs {
+            let Some(range) = run.byte_range_in(text) else {
+                continue;
+            };
+            let x = self.surface_text_x_at_index(text, role, range.start);
+            let slice = &text[range];
+            let (w, h) = self.surface_measure_text(slice);
+            self.surface_draw_text_run_styled(
+                Rect::new(origin.x + x, origin.y, w, h),
+                slice,
+                run.fg,
+                run.bold,
+                run.italic,
+                false,
+                1.0,
+            );
+        }
+    }
+
+    /// Advance width of `text[..byte_idx]` shaped in `role`; `byte_idx`
+    /// snaps back onto a char boundary.
+    ///
+    /// Defaults to monospace arithmetic: the prefix's display width in
+    /// cells times [`Self::surface_char_width`].
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        let _ = role;
+        let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
+        crate::text_util::display_width(&text[..end]) as f32 * self.surface_char_width()
+    }
+
+    /// Byte index of the grapheme boundary nearest to `x` in `text`
+    /// shaped in `role`, where `x` is measured from the start of the
+    /// line.
+    ///
+    /// Defaults to searching the boundaries
+    /// [`Self::surface_text_x_at_index`] reports.
+    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+        nearest_text_boundary(text, x, &mut |i| {
+            self.surface_text_x_at_index(text, role, i)
+        })
+    }
+
+    // ─── Alpha bitmaps ─────────────────────────────────────────────────
+    /// Paint the `width` by `height` coverage bitmap `alpha` stretched over
+    /// `dest`, tinted `color`: each byte is the opacity of `color` over
+    /// its share of `dest`.
+    ///
+    /// Defaults to one [`Self::surface_fill_rect_alpha`] per horizontal
+    /// run of equal, non-zero coverage. The GTK and macOS surfaces
+    /// override it with a native mask blit.
+    fn surface_blit_alpha(
+        &mut self,
+        dest: Rect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        let (w, h) = (width as usize, height as usize);
+        if w == 0 || h == 0 || alpha.len() < w * h {
+            return;
+        }
+        let px_w = dest.width / width as f32;
+        let px_h = dest.height / height as f32;
+        for row in 0..h {
+            let line = &alpha[row * w..(row + 1) * w];
+            let mut col = 0;
+            while col < w {
+                let a = line[col];
+                let start = col;
+                while col < w && line[col] == a {
+                    col += 1;
+                }
+                if a == 0 {
+                    continue;
+                }
+                self.surface_fill_rect_alpha(
+                    Rect::new(
+                        dest.x + start as f32 * px_w,
+                        dest.y + row as f32 * px_h,
+                        (col - start) as f32 * px_w,
+                        px_h,
+                    ),
+                    color,
+                    f32::from(a) / 255.0,
+                );
+            }
+        }
+    }
+
+    /// Shape each char of `chars` once, bold, in `role`'s font family, into
+    /// its own `cell`-sized slot of one sheet laid left to right, and
+    /// return the sheet's coverage: `cell.width * chars.chars().count()`
+    /// wide and `cell.height` tall. A glyph is sized to fit the cell
+    /// height, not at the role's own point size.
+    ///
+    /// Defaults to `None`: the surface cannot rasterise text offscreen,
+    /// and a caller falls back to painting without glyph shapes. The GTK
+    /// and macOS surfaces implement it.
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<AlphaSheet> {
+        let _ = (chars, role, cell);
+        None
+    }
 
     // ─── Shadow + path ─────────────────────────────────────────────────
     /// Record `rect` as a floating overlay (a tooltip or toast box)

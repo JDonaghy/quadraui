@@ -158,14 +158,6 @@ pub struct MacBackend {
     /// every paint size, unlike GTK's already-scaled `Pixbuf`). Survives
     /// across frames, mirroring `GtkBackend::image_cache`.
     image_cache: crate::image_cache::ImageCache<CGImage>,
-    /// Downsampled Core Text glyph atlas for [`Backend::draw_minimap`]'s
-    /// [`MinimapRenderMode::Characters`] branch — see
-    /// [`super::minimap`]'s "Glyph atlas" module doc section and
-    /// [`crate::primitives::minimap::MinimapAtlasCache`]'s doc. Survives
-    /// across frames, mirroring `GtkBackend::minimap_atlas_cache`.
-    ///
-    /// [`MinimapRenderMode::Characters`]: crate::primitives::minimap::MinimapRenderMode::Characters
-    minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache,
     /// Set once via [`Self::set_current_font`] during app setup.
     /// `draw_*` methods recover this for text rendering +
     /// measurement. Wrapped in `Option` so apps that don't paint
@@ -784,7 +776,6 @@ impl MacBackend {
             current_theme: Theme::default(),
             current_style: crate::Style::default(),
             image_cache: crate::image_cache::ImageCache::default(),
-            minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache::default(),
             current_font: None,
             current_line_height: 16.0,
             current_char_width: 8.0,
@@ -1206,6 +1197,20 @@ impl MacBackend {
     /// shape as `GtkBackend::current_cr`.
     pub(crate) fn current_cg(&self) -> CGContextRef {
         self.current_cg_ptr.get() as CGContextRef
+    }
+
+    /// A [`super::surface::CgSurface`] over the current frame painting in
+    /// `role`'s font: the chrome font for every chrome role, the editor
+    /// font (falling back to chrome before one is set) for `Editor`.
+    fn text_surface_for(&self, role: crate::FontRole) -> super::surface::CgSurface<'_> {
+        let font = match role {
+            crate::FontRole::Editor => self.current_font.as_ref().unwrap_or(&self.chrome_font),
+            _ => &self.chrome_font,
+        };
+        super::surface::CgSurface {
+            ctx: self.current_cg(),
+            font: Some(font),
+        }
     }
 
     /// Builds a [`super::surface::CgSurface`] over the current frame's
@@ -3111,14 +3116,9 @@ impl Backend for MacBackend {
         )
     }
 
-    /// Paints through [`super::minimap::draw_minimap_cached`] (Core
-    /// Graphics fills and `CTLine` glyph runs), using the shared
-    /// `crate::primitives::minimap` legibility and span helpers GTK and
-    /// Win-GUI also use. Only the cached, atlas-backed path shapes glyphs
-    /// small enough to fit their row band once
-    /// [`crate::primitives::minimap::MinimapScale::Two`] clears the
-    /// legibility floor; the plain `draw_minimap_scaled` would use the
-    /// full editor-size font.
+    /// Paints through [`super::minimap::draw_minimap_cached`]: the shared
+    /// minimap painter with glyph-atlas character shapes sampled from the
+    /// editor font.
     fn draw_minimap(
         &mut self,
         rect: Rect,
@@ -3142,7 +3142,6 @@ impl Backend for MacBackend {
                 minimap,
                 &theme,
                 self.minimap_scale,
-                &mut self.minimap_atlas_cache,
                 dpi_scale,
             )
         };
@@ -3623,6 +3622,35 @@ impl PaintSurface for EditorSurface<'_> {
         }
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        role: crate::FontRole,
+    ) {
+        self.backend
+            .text_surface_for(crate::FontRole::Editor)
+            .surface_draw_text_line(origin, text, runs, role);
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        self.backend
+            .text_surface_for(crate::FontRole::Editor)
+            .surface_text_x_at_index(text, role, byte_idx)
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+        self.backend
+            .text_surface_for(crate::FontRole::Editor)
+            .surface_text_index_at_x(text, role, x)
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         self.backend
             .surface_draw_line(from, to, color, stroke_width)
@@ -3634,6 +3662,28 @@ impl PaintSurface for EditorSurface<'_> {
 
     fn surface_pop_clip(&mut self) {
         self.backend.surface_pop_clip()
+    }
+
+    fn surface_blit_alpha(
+        &mut self,
+        dest: Rect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        self.backend
+            .surface_blit_alpha(dest, alpha, width, height, color);
+    }
+
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        _role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<crate::AlphaSheet> {
+        self.backend
+            .surface_glyph_alpha_sheet(chars, crate::FontRole::Editor, cell)
     }
 
     fn surface_draw_image(
@@ -3880,6 +3930,32 @@ impl PaintSurface for MacBackend {
         self.surface_draw_text_run(rect, text, color)
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        role: crate::FontRole,
+    ) {
+        self.text_surface_for(role)
+            .surface_draw_text_line(origin, text, runs, role);
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        self.text_surface_for(role)
+            .surface_text_x_at_index(text, role, byte_idx)
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+        self.text_surface_for(role)
+            .surface_text_index_at_x(text, role, x)
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -3919,6 +3995,28 @@ impl PaintSurface for MacBackend {
         );
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { CGContextRestoreGState(ctx) };
+    }
+
+    fn surface_blit_alpha(
+        &mut self,
+        dest: Rect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        self.chrome_surface("surface_blit_alpha")
+            .surface_blit_alpha(dest, alpha, width, height, color);
+    }
+
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<crate::AlphaSheet> {
+        self.text_surface_for(role)
+            .surface_glyph_alpha_sheet(chars, role, cell)
     }
 
     fn surface_draw_image(
@@ -3975,8 +4073,8 @@ pub(crate) unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
 /// [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]'s
 /// doc for why every implementation of that verb does this.
 ///
-/// A degenerate (zero or negative width/height) `rect` is a no-op,
-/// same guard as [`super::cg::fill_rect_alpha`] — unlike a plain
+/// A degenerate (zero or negative width/height) `rect` is a no-op —
+/// unlike a plain
 /// `CGContextFillRect`, which CoreGraphics itself no-ops harmlessly on
 /// such a rect, the `AddArcToPoint` path below would otherwise build a
 /// malformed path from a negative `r`.
@@ -5475,6 +5573,8 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 10,
             total_buffer_lines: 40,
+            scale: Default::default(),
+            sizing: None,
         }
     }
 

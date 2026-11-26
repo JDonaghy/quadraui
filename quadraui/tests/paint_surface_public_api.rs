@@ -86,3 +86,107 @@ fn win_backend_paint_surface_is_public_and_reachable() {
          WinBackend instance Backend's own viewport() reads from"
     );
 }
+
+/// An out-of-crate `PaintSurface` that implements only the required
+/// verbs, recording every styled text run it is asked to draw.
+mod out_of_crate_text_line {
+    use quadraui::backend::ImagePaintResult;
+    use quadraui::{Color, FontRole, Image, PaintSurface, Point, Rect, TextRunStyle, Viewport};
+
+    const CHAR_W: f32 = 8.0;
+
+    #[derive(Default)]
+    struct Recorder {
+        runs: Vec<(Rect, String, Color, bool, bool)>,
+    }
+
+    impl PaintSurface for Recorder {
+        fn surface_begin_frame(&mut self, _v: Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> Viewport {
+            Viewport::new(100.0, 100.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            16.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            CHAR_W
+        }
+        fn surface_measure_text(&self, t: &str) -> (f32, f32) {
+            (t.chars().count() as f32 * CHAR_W, 16.0)
+        }
+        fn surface_fill_rect(&mut self, _r: Rect, _c: Color) {}
+        fn surface_fill_rounded_rect(&mut self, _r: Rect, _radius: f32, _c: Color) {}
+        fn surface_stroke_rect(&mut self, _r: Rect, _c: Color, _w: f32) {}
+        fn surface_draw_text_run(&mut self, r: Rect, t: &str, c: Color) {
+            self.runs.push((r, t.to_string(), c, false, false));
+        }
+        #[allow(clippy::too_many_arguments)]
+        fn surface_draw_text_run_styled(
+            &mut self,
+            r: Rect,
+            t: &str,
+            c: Color,
+            bold: bool,
+            italic: bool,
+            _underline: bool,
+            _scale_x: f32,
+        ) {
+            self.runs.push((r, t.to_string(), c, bold, italic));
+        }
+        fn surface_draw_line(&mut self, _from: Point, _to: Point, _c: Color, _w: f32) {}
+        fn surface_push_clip(&mut self, _r: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(&mut self, _r: Rect, _i: &Image) -> ImagePaintResult {
+            ImagePaintResult::Unsupported
+        }
+    }
+
+    #[test]
+    fn the_text_line_defaults_place_runs_on_a_monospace_grid() {
+        let mut s = Recorder::default();
+        // "日" is two cells wide; "e\u{301}" is one cell.
+        let text = "a日e\u{301}b";
+        assert_eq!(s.surface_text_x_at_index(text, FontRole::Editor, 0), 0.0);
+        assert_eq!(s.surface_text_x_at_index(text, FontRole::Editor, 1), CHAR_W);
+        assert_eq!(
+            s.surface_text_x_at_index(text, FontRole::Editor, 4),
+            3.0 * CHAR_W
+        );
+        // An index inside the wide glyph snaps back to its start.
+        assert_eq!(s.surface_text_x_at_index(text, FontRole::Editor, 2), CHAR_W);
+
+        // Nearest boundary, never between `e` and its combining mark.
+        assert_eq!(s.surface_text_index_at_x(text, FontRole::Editor, 9.0), 1);
+        assert_eq!(s.surface_text_index_at_x(text, FontRole::Editor, 26.0), 4);
+        assert_eq!(s.surface_text_index_at_x(text, FontRole::Editor, 31.0), 7);
+        assert_eq!(s.surface_text_index_at_x(text, FontRole::Editor, 99.0), 8);
+
+        let red = Color::rgb(200, 0, 0);
+        let fg = Color::rgb(220, 220, 220);
+        s.surface_draw_text_line(
+            Point::new(10.0, 4.0),
+            text,
+            &[
+                TextRunStyle::new(0..1, fg),
+                TextRunStyle::new(1..4, red).with_bold(true),
+                TextRunStyle::new(7..8, fg).with_italic(true),
+            ],
+            FontRole::Editor,
+        );
+        let placed: Vec<(f32, &str, bool, bool)> = s
+            .runs
+            .iter()
+            .map(|(r, t, _, b, i)| (r.x, t.as_str(), *b, *i))
+            .collect();
+        assert_eq!(
+            placed,
+            vec![
+                (10.0, "a", false, false),
+                (10.0 + CHAR_W, "日", true, false),
+                (10.0 + 4.0 * CHAR_W, "b", false, true),
+            ],
+            "the uncovered combining cluster is left unpainted"
+        );
+    }
+}

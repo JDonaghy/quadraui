@@ -175,6 +175,8 @@ impl MinimapApp {
             visible_row_start,
             visible_row_count,
             total_buffer_lines: total_lines,
+            scale: backend.minimap_scale(),
+            sizing: backend.minimap_sizing(),
         };
 
         let minimap_rect = self.minimap_rect(backend);

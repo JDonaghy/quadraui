@@ -695,8 +695,11 @@ pub const CASES: &[Case] = &[
                 visible_row_start: 0,
                 visible_row_count: 2,
                 total_buffer_lines: 2,
+                scale: Default::default(),
+                sizing: None,
             };
             let _ = b.draw_minimap(area, &minimap);
+            b.register_zone(minimap.id, area);
         },
     },
     // GTK paints real pixels (no text run); TUI paints

@@ -1179,6 +1179,12 @@ pub enum UiEvent {
     /// from [`crate::CellGrid::cells_requested`] once per frame rather
     /// than from any particular `UiEvent` — see that method's doc.
     CellGrid(WidgetId, CellGridEvent),
+    /// A pointer or wheel gesture on a [`crate::Editor`], resolved against
+    /// its layout — see [`crate::EditorEvent`].
+    Editor(WidgetId, crate::primitives::editor::EditorEvent),
+    /// A click or drag on a [`crate::Minimap`] — see
+    /// [`crate::MinimapEvent`].
+    Minimap(WidgetId, crate::primitives::minimap::MinimapEvent),
     /// A [`crate::compose::HelpOverlay`] cheatsheet asked to open or
     /// close; the host writes it onto the overlay's `open`.
     HelpOverlay(WidgetId, crate::compose::HelpOverlayAction),

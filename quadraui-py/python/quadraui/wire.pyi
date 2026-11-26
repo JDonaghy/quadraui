@@ -1079,6 +1079,21 @@ class MinimapSpanDescriptor(TypedDict):
     end_col: int
     color: Color
 
+MinimapScale = Literal['One', 'Two']
+
+class _MinimapVsCodeParityPayload(TypedDict):
+    target_cols: float
+    fraction: float
+    min: float
+    max: float
+
+class _MinimapSizingDict(TypedDict):
+    FixedPitch: NotRequired[float]
+    RepeatToFill: NotRequired[float]
+    VsCodeParity: NotRequired[_MinimapVsCodeParityPayload]
+
+MinimapSizing = Union[Literal['Fill'], _MinimapSizingDict]
+
 class MinimapDescriptor(TypedDict):
     id: WidgetId
     lines: List[MinimapLineDescriptor]
@@ -1086,6 +1101,8 @@ class MinimapDescriptor(TypedDict):
     visible_row_start: int
     visible_row_count: int
     total_buffer_lines: int
+    scale: NotRequired[MinimapScale]
+    sizing: NotRequired[Optional[MinimapSizing]]
 
 class ActivityItemDescriptor(TypedDict):
     id: WidgetId
@@ -1364,6 +1381,11 @@ class EditorLine(TypedDict):
     indent_guides: NotRequired[List[int]]
     colorcolumns: NotRequired[List[int]]
 
+class EditorPaintOptions(TypedDict):
+    suppress_v_scrollbar: NotRequired[bool]
+    v_scrollbar_w: NotRequired[Optional[float]]
+    right_reserve_w: NotRequired[float]
+
 class EditorDescriptor(TypedDict):
     id: WidgetId
     rect: Rect
@@ -1389,6 +1411,7 @@ class EditorDescriptor(TypedDict):
     tabstop: int
     cursorline: bool
     lightbulb_glyph: NotRequired[str]
+    paint_options: NotRequired[EditorPaintOptions]
 
 class _FrClickFindInput(TypedDict):
     FindInput: int
@@ -2162,6 +2185,48 @@ class _TerminalEventDict(TypedDict):
 # Mouse release has no payload -- bare `"SelectEnd"`, unlike every other variant.
 TerminalEvent = Union[Literal['SelectEnd'], _TerminalEventDict]
 
+class _EditorBufferPosPayload(TypedDict):
+    line: int
+    col: int
+
+class _EditorGutterPayload(TypedDict):
+    line_idx: int
+    gutter_col: int
+
+class _EditorHitDict(TypedDict):
+    BufferPos: NotRequired[_EditorBufferPosPayload]
+    Gutter: NotRequired[_EditorGutterPayload]
+
+EditorHit = Union[Literal['VScrollbar', 'HScrollbar', 'Empty'], _EditorHitDict]
+
+class _PointerKindDict(TypedDict):
+    Down: NotRequired[MouseButton]
+    Up: NotRequired[MouseButton]
+    DoubleClick: NotRequired[MouseButton]
+
+PointerKind = Union[Literal['Move', 'Enter', 'Leave'], _PointerKindDict]
+
+class _EditorPointerPayload(TypedDict):
+    hit: EditorHit
+    col: int
+    kind: PointerKind
+    mods: Modifiers
+
+class _EditorWheelPayload(TypedDict):
+    dx: float
+    dy: float
+    mods: Modifiers
+
+class EditorEvent(TypedDict):
+    Pointer: NotRequired[_EditorPointerPayload]
+    Wheel: NotRequired[_EditorWheelPayload]
+
+class _MinimapSeekPayload(TypedDict):
+    fraction: float
+
+class MinimapEvent(TypedDict):
+    Seek: NotRequired[_MinimapSeekPayload]
+
 class _DataPointClickedPayload(TypedDict):
     id: WidgetId
     series_idx: int
@@ -2589,6 +2654,8 @@ class _UiEventDict(TypedDict):
     StatusBar: NotRequired[Tuple[WidgetId, StatusBarEvent]]
     ActivityBar: NotRequired[Tuple[WidgetId, ActivityBarEvent]]
     Terminal: NotRequired[Tuple[WidgetId, TerminalEvent]]
+    Editor: NotRequired[Tuple[WidgetId, EditorEvent]]
+    Minimap: NotRequired[Tuple[WidgetId, MinimapEvent]]
     TextDisplay: NotRequired[Tuple[WidgetId, TextDisplayEvent]]
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]

@@ -527,6 +527,10 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`BoardModelDescriptor`](#wire-boardmodeldescriptor)
 - [`MinimapLineDescriptor`](#wire-minimaplinedescriptor)
 - [`MinimapSpanDescriptor`](#wire-minimapspandescriptor)
+- [`MinimapScale`](#wire-minimapscale)
+- [`_MinimapVsCodeParityPayload`](#wire-_minimapvscodeparitypayload)
+- [`_MinimapSizingDict`](#wire-_minimapsizingdict)
+- [`MinimapSizing`](#wire-minimapsizing)
 - [`MinimapDescriptor`](#wire-minimapdescriptor)
 - [`ActivityItemDescriptor`](#wire-activityitemdescriptor)
 - [`ActivityBarStyleDescriptor`](#wire-activitybarstyledescriptor)
@@ -572,6 +576,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`DiagnosticMark`](#wire-diagnosticmark)
 - [`SpellMark`](#wire-spellmark)
 - [`EditorLine`](#wire-editorline)
+- [`EditorPaintOptions`](#wire-editorpaintoptions)
 - [`EditorDescriptor`](#wire-editordescriptor)
 - [`_FrClickFindInput`](#wire-_frclickfindinput)
 - [`_FrClickReplaceInput`](#wire-_frclickreplaceinput)
@@ -712,6 +717,17 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_IntDeltaPayload`](#wire-_intdeltapayload)
 - [`_TerminalEventDict`](#wire-_terminaleventdict)
 - [`TerminalEvent`](#wire-terminalevent)
+- [`_EditorBufferPosPayload`](#wire-_editorbufferpospayload)
+- [`_EditorGutterPayload`](#wire-_editorgutterpayload)
+- [`_EditorHitDict`](#wire-_editorhitdict)
+- [`EditorHit`](#wire-editorhit)
+- [`_PointerKindDict`](#wire-_pointerkinddict)
+- [`PointerKind`](#wire-pointerkind)
+- [`_EditorPointerPayload`](#wire-_editorpointerpayload)
+- [`_EditorWheelPayload`](#wire-_editorwheelpayload)
+- [`EditorEvent`](#wire-editorevent)
+- [`_MinimapSeekPayload`](#wire-_minimapseekpayload)
+- [`MinimapEvent`](#wire-minimapevent)
 - [`_DataPointClickedPayload`](#wire-_datapointclickedpayload)
 - [`_LegendClickedPayload`](#wire-_legendclickedpayload)
 - [`ChartEvent`](#wire-chartevent)
@@ -2471,6 +2487,37 @@ Alias for `"Pending" | "Running" | "Passed" | "Warning" | "Blocked"`.
 | `end_col` | `number` | yes |  |
 | `color` | `Color` | yes |  |
 
+<a id="wire-minimapscale"></a>
+#### `MinimapScale`
+
+Alias for `"One" | "Two"`.
+
+<a id="wire-_minimapvscodeparitypayload"></a>
+#### `_MinimapVsCodeParityPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target_cols` | `number` | yes |  |
+| `fraction` | `number` | yes |  |
+| `min` | `number` | yes |  |
+| `max` | `number` | yes |  |
+
+<a id="wire-_minimapsizingdict"></a>
+#### `_MinimapSizingDict`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `FixedPitch` | `number` |  |
+| `RepeatToFill` | `number` |  |
+| `VsCodeParity` | `_MinimapVsCodeParityPayload` |  |
+
+<a id="wire-minimapsizing"></a>
+#### `MinimapSizing`
+
+Alias for `"Fill" | _MinimapSizingDict`.
+
 <a id="wire-minimapdescriptor"></a>
 #### `MinimapDescriptor`
 
@@ -2482,6 +2529,8 @@ Alias for `"Pending" | "Running" | "Passed" | "Warning" | "Blocked"`.
 | `visible_row_start` | `number` | yes |  |
 | `visible_row_count` | `number` | yes |  |
 | `total_buffer_lines` | `number` | yes |  |
+| `scale` | `MinimapScale` | no |  |
+| `sizing` | `MinimapSizing \| null` | no |  |
 
 <a id="wire-activityitemdescriptor"></a>
 #### `ActivityItemDescriptor`
@@ -2917,6 +2966,15 @@ Alias for `"Char" | "Line" | "Block"`.
 | `indent_guides` | `number[]` | no |  |
 | `colorcolumns` | `number[]` | no |  |
 
+<a id="wire-editorpaintoptions"></a>
+#### `EditorPaintOptions`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `suppress_v_scrollbar` | `boolean` | no |  |
+| `v_scrollbar_w` | `number \| null` | no |  |
+| `right_reserve_w` | `number` | no |  |
+
 <a id="wire-editordescriptor"></a>
 #### `EditorDescriptor`
 
@@ -2946,6 +3004,7 @@ Alias for `"Char" | "Line" | "Block"`.
 | `tabstop` | `number` | yes |  |
 | `cursorline` | `boolean` | yes |  |
 | `lightbulb_glyph` | `string` | no |  |
+| `paint_options` | `EditorPaintOptions` | no |  |
 
 <a id="wire-_frclickfindinput"></a>
 #### `_FrClickFindInput`
@@ -4286,6 +4345,98 @@ Mouse release has no payload -- bare `"SelectEnd"`, unlike every other variant.
 
 Alias for `"SelectEnd" | _TerminalEventDict`.
 
+<a id="wire-_editorbufferpospayload"></a>
+#### `_EditorBufferPosPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `line` | `number` | yes |  |
+| `col` | `number` | yes |  |
+
+<a id="wire-_editorgutterpayload"></a>
+#### `_EditorGutterPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `line_idx` | `number` | yes |  |
+| `gutter_col` | `number` | yes |  |
+
+<a id="wire-_editorhitdict"></a>
+#### `_EditorHitDict`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `BufferPos` | `_EditorBufferPosPayload` |  |
+| `Gutter` | `_EditorGutterPayload` |  |
+
+<a id="wire-editorhit"></a>
+#### `EditorHit`
+
+Alias for `("VScrollbar" | "HScrollbar" | "Empty") | _EditorHitDict`.
+
+<a id="wire-_pointerkinddict"></a>
+#### `_PointerKindDict`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `Down` | `MouseButton` |  |
+| `Up` | `MouseButton` |  |
+| `DoubleClick` | `MouseButton` |  |
+
+<a id="wire-pointerkind"></a>
+#### `PointerKind`
+
+Alias for `("Move" | "Enter" | "Leave") | _PointerKindDict`.
+
+<a id="wire-_editorpointerpayload"></a>
+#### `_EditorPointerPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `hit` | `EditorHit` | yes |  |
+| `col` | `number` | yes |  |
+| `kind` | `PointerKind` | yes |  |
+| `mods` | `Modifiers` | yes |  |
+
+<a id="wire-_editorwheelpayload"></a>
+#### `_EditorWheelPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `dx` | `number` | yes |  |
+| `dy` | `number` | yes |  |
+| `mods` | `Modifiers` | yes |  |
+
+<a id="wire-editorevent"></a>
+#### `EditorEvent`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `Pointer` | `_EditorPointerPayload` |  |
+| `Wheel` | `_EditorWheelPayload` |  |
+
+<a id="wire-_minimapseekpayload"></a>
+#### `_MinimapSeekPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `fraction` | `number` | yes |  |
+
+<a id="wire-minimapevent"></a>
+#### `MinimapEvent`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `Seek` | `_MinimapSeekPayload` |  |
+
 <a id="wire-_datapointclickedpayload"></a>
 #### `_DataPointClickedPayload`
 
@@ -5096,6 +5247,8 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `StatusBar` | `[WidgetId, StatusBarEvent]` |  |
 | `ActivityBar` | `[WidgetId, ActivityBarEvent]` |  |
 | `Terminal` | `[WidgetId, TerminalEvent]` |  |
+| `Editor` | `[WidgetId, EditorEvent]` |  |
+| `Minimap` | `[WidgetId, MinimapEvent]` |  |
 | `TextDisplay` | `[WidgetId, TextDisplayEvent]` |  |
 | `Chart` | `[WidgetId, ChartEvent]` |  |
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |

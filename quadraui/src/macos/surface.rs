@@ -33,7 +33,7 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use crate::backend::ImagePaintResult;
-use crate::paint_surface::PaintSurface;
+use crate::paint_surface::{AlphaSheet, PaintSurface};
 use crate::{Color, Image, Point, Rect, Viewport};
 
 use super::text::{draw_text, measure_text};
@@ -56,6 +56,134 @@ impl<'a> CgSurface<'a> {
     fn font_or_panic(&self) -> &'a CTFont {
         self.font
             .expect("CgSurface: text verb called without a CTFont")
+    }
+}
+
+/// A rendered sheet with the `(family, chars, cell size)` it was rendered for.
+type CachedSheet = (String, String, (u32, u32), AlphaSheet);
+
+thread_local! {
+    /// The last sheet [`glyph_alpha_sheet`] rendered, so a repeated request
+    /// shapes nothing.
+    static GLYPH_SHEET: std::cell::RefCell<Option<CachedSheet>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`PaintSurface::surface_glyph_alpha_sheet`] for Core Text: each char of
+/// `chars` drawn bold in `family`, sized to `cell`'s height, white onto a
+/// zeroed offscreen bitmap whose red channel is then the coverage.
+pub(crate) fn glyph_alpha_sheet(
+    family: &str,
+    chars: &str,
+    cell: crate::primitive::Size,
+) -> Option<AlphaSheet> {
+    let cell_px = (cell.width.round() as u32, cell.height.round() as u32);
+    let hit = GLYPH_SHEET.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(f, ch, sz, _)| f == family && ch == chars && *sz == cell_px)
+            .map(|(_, _, _, sheet)| sheet.clone())
+    });
+    if hit.is_some() {
+        return hit;
+    }
+    let sheet = render_glyph_sheet(family, chars, cell_px)?;
+    GLYPH_SHEET.with(|c| {
+        *c.borrow_mut() = Some((
+            family.to_string(),
+            chars.to_string(),
+            cell_px,
+            sheet.clone(),
+        ))
+    });
+    Some(sheet)
+}
+
+fn render_glyph_sheet(
+    family: &str,
+    chars: &str,
+    (cell_w, cell_h): (u32, u32),
+) -> Option<AlphaSheet> {
+    use core_text::font_descriptor::kCTFontBoldTrait;
+    let count = chars.chars().count() as u32;
+    let (sheet_w, sheet_h) = (cell_w * count, cell_h);
+    if sheet_w == 0 || sheet_h == 0 {
+        return None;
+    }
+    let base_font = super::text::make_font(family, f64::from(cell_h) * 0.85)?;
+    // A family with no bold face keeps its regular weight.
+    let font = base_font
+        .clone_with_symbolic_traits(kCTFontBoldTrait, kCTFontBoldTrait)
+        .unwrap_or(base_font);
+    let surface = super::headless::BitmapSurface::new(sheet_w, sheet_h);
+    // `draw_text` records into the thread's painted-text sink; this sheet
+    // is offscreen, so record into a scratch sink and discard it.
+    let prev_sink = crate::testing::install_text_run_sink();
+    for (i, ch) in chars.chars().enumerate() {
+        // SAFETY: `surface.context_ptr()` is a live `CGContextRef` for the
+        // surface's lifetime, which outlives this loop.
+        unsafe {
+            draw_text(
+                surface.context_ptr(),
+                &font,
+                &ch.to_string(),
+                f64::from(i as u32 * cell_w),
+                0.0,
+                (1.0, 1.0, 1.0, 1.0),
+            );
+        }
+    }
+    let _ = crate::testing::take_text_run_sink(prev_sink);
+    let mut alpha = vec![0u8; (sheet_w * sheet_h) as usize];
+    for y in 0..sheet_h {
+        for x in 0..sheet_w {
+            // White over transparent, premultiplied: red equals coverage.
+            alpha[(y * sheet_w + x) as usize] = surface.pixel(x, y).0;
+        }
+    }
+    Some(AlphaSheet::new(sheet_w, sheet_h, alpha))
+}
+
+/// [`PaintSurface::surface_blit_alpha`] for Core Graphics: one
+/// `color`-at-coverage fill per non-zero pixel of `alpha`, each
+/// `dest.width / width` by `dest.height / height` points.
+///
+/// # Safety
+///
+/// `ctx` must be a valid, live `CGContextRef` for the duration of this call.
+pub(crate) unsafe fn blit_alpha(
+    ctx: CGContextRef,
+    dest: Rect,
+    alpha: &[u8],
+    width: u32,
+    height: u32,
+    color: Color,
+) {
+    use super::cg::{rect, CGContextFillRect, CGContextSetRGBFillColor};
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 || alpha.len() < w * h {
+        return;
+    }
+    let (r, g, b, _) = super::cg::color_to_cg(color);
+    let px_w = f64::from(dest.width) / f64::from(width);
+    let px_h = f64::from(dest.height) / f64::from(height);
+    for row in 0..h {
+        for col in 0..w {
+            let coverage = alpha[row * w + col];
+            if coverage == 0 {
+                continue;
+            }
+            CGContextSetRGBFillColor(ctx, r, g, b, f64::from(coverage) / 255.0);
+            CGContextFillRect(
+                ctx,
+                rect(
+                    f64::from(dest.x) + col as f64 * px_w,
+                    f64::from(dest.y) + row as f64 * px_h,
+                    px_w,
+                    px_h,
+                ),
+            );
+        }
     }
 }
 
@@ -142,6 +270,40 @@ impl PaintSurface for CgSurface<'_> {
         }
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        _role: crate::FontRole,
+    ) {
+        let font = self.font_or_panic();
+        // SAFETY: see `surface_fill_rect`.
+        unsafe {
+            super::text::draw_text_line(
+                self.ctx,
+                font,
+                origin.x as f64,
+                origin.y as f64,
+                text,
+                runs,
+            )
+        };
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        _role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        super::text::text_x_at_index(self.font_or_panic(), text, byte_idx)
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
+        super::text::text_index_at_x(self.font_or_panic(), text, x)
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         // SAFETY: see `surface_fill_rect`.
         unsafe {
@@ -165,6 +327,29 @@ impl PaintSurface for CgSurface<'_> {
     fn surface_pop_clip(&mut self) {
         // SAFETY: see `surface_fill_rect`.
         unsafe { super::backend::ns_pop_clip(self.ctx) };
+    }
+
+    fn surface_blit_alpha(
+        &mut self,
+        dest: Rect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        // SAFETY: see `surface_fill_rect`.
+        unsafe { blit_alpha(self.ctx, dest, alpha, width, height, color) };
+    }
+
+    /// Shapes in the adapter's own font's family; `role` is not
+    /// consulted, as for every other text verb here.
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        _role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<AlphaSheet> {
+        glyph_alpha_sheet(&self.font?.family_name(), chars, cell)
     }
 
     fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
@@ -195,6 +380,94 @@ mod tests {
 
     fn font() -> CTFont {
         make_font("Menlo", 14.0).expect("Menlo installed")
+    }
+
+    /// A line with a wide glyph, a combining mark and mixed bold/italic.
+    const LINE: &str = "a日e\u{301}bc";
+
+    fn line_runs() -> Vec<crate::TextRunStyle> {
+        let fg = Color::rgb(230, 230, 230);
+        vec![
+            crate::TextRunStyle::new(0..1, fg),
+            crate::TextRunStyle::new(1..4, Color::rgb(220, 60, 60)).with_bold(true),
+            crate::TextRunStyle::new(4..7, fg).with_italic(true),
+            crate::TextRunStyle::new(7..9, fg),
+        ]
+    }
+
+    /// `surface_draw_text_line` paints exactly what the editor's per-run
+    /// Core Text paint does: each run at its prefix's measured advance.
+    #[test]
+    fn draw_text_line_matches_the_editors_per_run_paint() {
+        use crate::paint_surface::PaintSurface;
+        let f = font();
+        let runs = line_runs();
+        let via_verb = BitmapSurface::new(W, 30);
+        via_verb.fill(0.0, 0.0, 0.0, 0.0);
+        let mut raw = super::CgSurface {
+            ctx: via_verb.context_ptr(),
+            font: Some(&f),
+        };
+        raw.surface_draw_text_line(
+            crate::Point::new(4.0, 3.0),
+            LINE,
+            &runs,
+            crate::FontRole::Editor,
+        );
+
+        let reference = BitmapSurface::new(W, 30);
+        reference.fill(0.0, 0.0, 0.0, 0.0);
+        for run in &runs {
+            let (prefix_w, _) = crate::macos::text::measure_text(&f, &LINE[..run.range.start]);
+            // SAFETY: the bitmap context lives for this whole test.
+            unsafe {
+                crate::macos::text::draw_text(
+                    reference.context_ptr(),
+                    &f,
+                    &LINE[run.range.clone()],
+                    4.0 + prefix_w,
+                    3.0,
+                    crate::macos::cg::color_to_cg(run.fg),
+                )
+            };
+        }
+        assert!(via_verb.bytes().iter().any(|&b| b != 0));
+        assert_eq!(via_verb.bytes(), reference.bytes());
+    }
+
+    #[test]
+    fn text_x_and_index_agree_with_core_text_advances() {
+        use crate::paint_surface::PaintSurface;
+        let f = font();
+        let mut raw = super::CgSurface {
+            ctx: std::ptr::null_mut(),
+            font: Some(&f),
+        };
+        let role = crate::FontRole::Editor;
+        for idx in [0usize, 1, 4, 7, 8, 9] {
+            let expect = crate::macos::text::measure_text(&f, &LINE[..idx]).0 as f32;
+            let x = raw.surface_text_x_at_index(LINE, role, idx);
+            assert_eq!(x, expect, "x at byte {idx}");
+            assert_eq!(
+                raw.surface_text_index_at_x(LINE, role, x),
+                idx,
+                "index at x {x}"
+            );
+        }
+        let narrow = raw.surface_text_x_at_index(LINE, role, 1);
+        let wide = raw.surface_text_x_at_index(LINE, role, 4) - narrow;
+        assert!(wide > narrow * 1.5, "wide {wide} narrow {narrow}");
+        // Between `e` and its combining mark is not a boundary.
+        let e_x = raw.surface_text_x_at_index(LINE, role, 4);
+        let next = raw.surface_text_x_at_index(LINE, role, 7);
+        assert_eq!(
+            raw.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.4),
+            4
+        );
+        assert_eq!(
+            raw.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.6),
+            7
+        );
     }
 
     fn cell(ch: char, fg: Color, bg: Color) -> TerminalCell {
