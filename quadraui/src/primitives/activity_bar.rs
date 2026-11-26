@@ -2344,7 +2344,11 @@ mod native_surface_paint_tests {
         };
         let env_hovered = fills(&bar, &on_row(1));
         assert_ne!(env_hovered, at_rest, "env hover must tint a row");
-        assert_ne!(env_hovered, fills(&bar, &on_row(2)), "hover tints the addressed row");
+        assert_ne!(
+            env_hovered,
+            fills(&bar, &on_row(2)),
+            "hover tints the addressed row"
+        );
         let elsewhere = crate::InteractionState::from_targets(
             Some((WidgetId::new("other"), Some(SubTarget(1)))),
             None,
