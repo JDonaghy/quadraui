@@ -1179,6 +1179,9 @@ pub enum UiEvent {
     /// from [`crate::CellGrid::cells_requested`] once per frame rather
     /// than from any particular `UiEvent` — see that method's doc.
     CellGrid(WidgetId, CellGridEvent),
+    /// A [`crate::compose::HelpOverlay`] cheatsheet asked to open or
+    /// close; the host writes it onto the overlay's `open`.
+    HelpOverlay(WidgetId, crate::compose::HelpOverlayAction),
     /// A [`crate::Toolbar`] button was clicked (mouse) or activated via
     /// Enter/Space while keyboard-focused — the id is the toolbar's own,
     /// matching every other chrome-bar variant above (`StatusBar`,
