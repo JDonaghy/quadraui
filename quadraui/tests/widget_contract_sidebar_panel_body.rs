@@ -69,6 +69,7 @@ fn header_and_search(active: bool) -> SidebarPanelBody {
     }
 }
 
+#[cfg(any(feature = "tui", all(feature = "macos", target_os = "macos")))]
 fn status_bars() -> SidebarPanelBody {
     let bar = |id: &str, text: &str| StatusBar {
         id: WidgetId::new(id),
