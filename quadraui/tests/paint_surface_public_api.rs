@@ -210,4 +210,40 @@ mod out_of_crate_text_line {
             "the uncovered combining cluster is left unpainted"
         );
     }
+
+    #[test]
+    fn the_text_line_defaults_widen_a_scaled_run_by_its_scale() {
+        let mut s = Recorder::default();
+        let fg = Color::rgb(220, 220, 220);
+        let runs = [
+            TextRunStyle::new(0..2, fg).with_scale(2.0),
+            TextRunStyle::new(2..4, fg),
+        ];
+        let role = FontRole::Editor;
+        assert_eq!(
+            s.surface_text_x_at_index("abcd", &runs, role, 2),
+            4.0 * CHAR_W
+        );
+        assert_eq!(
+            s.surface_text_x_at_index("abcd", &runs, role, 3),
+            5.0 * CHAR_W
+        );
+        assert_eq!(
+            s.surface_text_index_at_x("abcd", &runs, role, 4.0 * CHAR_W),
+            2
+        );
+        s.surface_draw_text_line(Point::new(0.0, 0.0), "abcd", &runs, role);
+        let placed: Vec<(f32, f32, &str)> = s
+            .runs
+            .iter()
+            .map(|(r, t, ..)| (r.x, r.width, t.as_str()))
+            .collect();
+        assert_eq!(
+            placed,
+            vec![
+                (0.0, 4.0 * CHAR_W, "ab"),
+                (4.0 * CHAR_W, 2.0 * CHAR_W, "cd")
+            ]
+        );
+    }
 }

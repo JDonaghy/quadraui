@@ -1463,6 +1463,76 @@ mod text_line_tests {
             .expect("paint");
     }
 
+    /// Caret x after a run at 2x is the run's scaled advance, and the
+    /// glyph after it advances at the unscaled width.
+    #[test]
+    fn text_x_after_a_scaled_run_is_the_scaled_advance() {
+        let dwrite = dwrite();
+        let surface = HeadlessSurface::new(10, 10).expect("create surface");
+        surface
+            .paint(|target| {
+                let mut raw = D2dSurface {
+                    target,
+                    dwrite: Some(&dwrite),
+                };
+                let fg = Color::rgb(250, 250, 250);
+                let text = "HHHHabc";
+                let runs = [
+                    TextRunStyle::new(0..4, fg).with_scale(2.0),
+                    TextRunStyle::new(4..7, fg),
+                ];
+                let role = FontRole::Editor;
+                let plain = raw.surface_text_x_at_index(text, &[], role, 4);
+                let scaled = raw.surface_text_x_at_index(text, &runs, role, 4);
+                assert!(
+                    (scaled - 2.0 * plain).abs() <= 0.5,
+                    "scaled advance {scaled} should be twice {plain}"
+                );
+                let next = raw.surface_text_x_at_index(text, &runs, role, 5) - scaled;
+                let plain_next = raw.surface_text_x_at_index(text, &[], role, 5) - plain;
+                assert!((next - plain_next).abs() <= 0.5, "{next} vs {plain_next}");
+                assert_eq!(raw.surface_text_index_at_x(text, &runs, role, scaled), 4);
+                assert_eq!(raw.surface_text_index_at_x(text, &runs, role, plain), 2);
+            })
+            .expect("paint");
+    }
+
+    /// A run at 2x paints glyphs about twice as tall as an unscaled run
+    /// on the same line.
+    #[test]
+    fn draw_text_line_scaled_run_paints_taller_glyphs() {
+        let dwrite = dwrite();
+        let fg = Color::rgb(250, 250, 250);
+        let text = "HH HH";
+        let runs = [
+            TextRunStyle::new(0..2, fg).with_scale(2.0),
+            TextRunStyle::new(2..5, fg),
+        ];
+        let surface = HeadlessSurface::new(160, 60).expect("create surface");
+        let mut split = 0u32;
+        surface
+            .paint(|target| {
+                let mut raw = D2dSurface {
+                    target,
+                    dwrite: Some(&dwrite),
+                };
+                raw.surface_draw_text_line(Point::new(0.0, 0.0), text, &runs, FontRole::Editor);
+                split = raw.surface_text_x_at_index(text, &runs, FontRole::Editor, 2) as u32;
+            })
+            .expect("paint");
+        let ink_h = |x0: u32, x1: u32| {
+            let rows: Vec<u32> = (0..60)
+                .filter(|&y| (x0..x1).any(|x| surface.pixel_at(x, y).r > 128))
+                .collect();
+            rows.last().expect("ink") - rows.first().expect("ink") + 1
+        };
+        let (scaled_h, plain_h) = (ink_h(1, split.saturating_sub(1)), ink_h(split + 1, 160));
+        assert!(
+            scaled_h as f32 >= plain_h as f32 * 1.7,
+            "scaled glyph {scaled_h}px vs plain {plain_h}px"
+        );
+    }
+
     #[test]
     fn draw_text_line_paints_only_its_runs() {
         let dwrite = dwrite();

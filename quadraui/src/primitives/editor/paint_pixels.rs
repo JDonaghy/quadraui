@@ -1480,4 +1480,173 @@ mod gtk_pixel_tests {
              gutter={gutter:?}, body={wide:?}"
         );
     }
+
+    // ── Font scale ──────────────────────────────────────────────────────
+
+    const SCALE_TEST_W: i32 = 240;
+    const SCALE_TEST_PITCH: f64 = 48.0;
+    const SCALE: f32 = 1.6;
+
+    /// `"HHHH HHHH"` with its first word at [`SCALE`] and its second at
+    /// 1.0, each span with background `bgs[i]`, painted one row tall at
+    /// [`SCALE_TEST_PITCH`], with `cursor` placed on the row.
+    fn scale_test_paint(
+        bgs: [Option<Color>; 2],
+        cursor: Option<crate::primitives::editor::EditorCursor>,
+    ) -> (Vec<u8>, i32) {
+        use crate::primitives::editor::{EditorStyledSpan, Style};
+        let theme = Theme::default();
+        let span = |start_byte, end_byte, bg, font_scale| EditorStyledSpan {
+            start_byte,
+            end_byte,
+            style: Style {
+                fg: theme.foreground,
+                bg,
+                bold: false,
+                italic: false,
+                font_scale,
+            },
+        };
+        let mut editor = scroll_test_editor(1, 9, 1);
+        editor.rect = Rect::new(0.0, 0.0, SCALE_TEST_W as f32, SCALE_TEST_PITCH as f32);
+        editor.lines[0].raw_text = "HHHH HHHH".into();
+        editor.lines[0].spans = vec![span(0, 4, bgs[0], SCALE), span(5, 9, bgs[1], 1.0)];
+        editor.cursor = cursor;
+        let (_, char_w) = centre_test_metrics();
+        let mut surface =
+            ImageSurface::create(Format::ARgb32, SCALE_TEST_W, SCALE_TEST_PITCH as i32)
+                .expect("create ImageSurface");
+        {
+            let cr = Context::new(&surface).expect("Context::new");
+            let (br, bg, bb) = cairo_rgb(theme.background);
+            cr.set_source_rgb(br, bg, bb);
+            cr.paint().ok();
+            let pango_layout = pangocairo::functions::create_layout(&cr);
+            let pango_ctx = pango_layout.context();
+            pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
+            let metrics = pango_ctx.metrics(None, None);
+            paint_editor(
+                &cr,
+                &pango_layout,
+                &metrics,
+                &editor,
+                &theme,
+                char_w,
+                SCALE_TEST_PITCH,
+            );
+        }
+        surface.flush();
+        let stride = surface.stride();
+        let data = surface.data().expect("surface data").to_vec();
+        (data, stride)
+    }
+
+    /// The x ranges, inset 2px, of the scaled first word and the
+    /// unscaled second word when the scale is honoured.
+    fn scale_test_word_ranges() -> ((i32, i32), (i32, i32)) {
+        let (_, cw) = centre_test_metrics();
+        let scaled_end = 4.0 * cw * f64::from(SCALE);
+        let second = scaled_end + cw;
+        (
+            (2, (scaled_end - 2.0) as i32),
+            ((second + 2.0) as i32, (second + 4.0 * cw - 2.0) as i32),
+        )
+    }
+
+    /// Rows holding at least one pixel of exactly `color` within
+    /// `[x0, x1)`.
+    fn rows_of_color(data: &[u8], stride: i32, (x0, x1): (i32, i32), color: Color) -> i32 {
+        (0..SCALE_TEST_PITCH as i32)
+            .filter(|&y| {
+                (x0..x1).any(|x| scroll_test_pixel(data, stride as usize, x, y) == rgb(color))
+            })
+            .count() as i32
+    }
+
+    /// A span with a font scale paints taller glyphs than an unscaled
+    /// span on the same line.
+    #[test]
+    fn scaled_span_paints_taller_glyphs_than_unscaled_span() {
+        let theme = Theme::default();
+        let (data, stride) = scale_test_paint([None, None], None);
+        let (scaled_x, plain_x) = scale_test_word_ranges();
+        let ink = |(x0, x1): (i32, i32)| {
+            let (top, bottom) = centre_test_ink_extent(
+                &data,
+                stride,
+                x0,
+                x1,
+                0,
+                SCALE_TEST_PITCH as i32,
+                theme.background,
+            )
+            .expect("word should paint ink");
+            bottom - top + 1
+        };
+        let (scaled_h, plain_h) = (ink(scaled_x), ink(plain_x));
+        assert!(
+            scaled_h as f32 >= plain_h as f32 * 1.4,
+            "a {SCALE}x span should paint glyphs ~{SCALE}x as tall as an unscaled one, got \
+             {scaled_h}px vs {plain_h}px"
+        );
+    }
+
+    /// A scaled span's background fills the line box grown to the scaled
+    /// font's height; an unscaled span's on the same line fills the
+    /// same box.
+    #[test]
+    fn scaled_span_grows_the_line_box() {
+        let red = Color::rgb(200, 30, 30);
+        let blue = Color::rgb(30, 30, 200);
+        let (data, stride) = scale_test_paint([Some(red), Some(blue)], None);
+        let (natural, _) = centre_test_metrics();
+        let (scaled_x, plain_x) = scale_test_word_ranges();
+        let scaled_rows = rows_of_color(&data, stride, scaled_x, red);
+        let plain_rows = rows_of_color(&data, stride, plain_x, blue);
+        let grown = natural * f64::from(SCALE);
+        assert!(
+            (f64::from(scaled_rows) - grown).abs() <= 2.0,
+            "the scaled span's background should cover the grown line box ({grown}px), got \
+             {scaled_rows} rows"
+        );
+        assert_eq!(
+            scaled_rows, plain_rows,
+            "every span on the line shares the grown line box"
+        );
+    }
+
+    /// A bar caret after a scaled span sits at the scaled advance.
+    #[test]
+    fn caret_after_scaled_span_sits_at_scaled_advance() {
+        use crate::primitives::editor::{CursorPos, CursorShape, EditorCursor};
+        let theme = Theme::default();
+        let cursor = EditorCursor {
+            pos: CursorPos {
+                view_line: 0,
+                col: 4,
+            },
+            shape: CursorShape::Bar,
+        };
+        let (data, stride) = scale_test_paint([None, None], Some(cursor));
+        let surface = ImageSurface::create(Format::ARgb32, 8, 8).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let layout = pangocairo::functions::create_layout(&cr);
+        layout.set_font_description(Some(&pango::FontDescription::from_string("Monospace 12")));
+        layout.set_text("HHHH");
+        let attrs = pango::AttrList::new();
+        attrs.insert(pango::AttrFloat::new_scale(f64::from(SCALE)));
+        layout.set_attributes(Some(&attrs));
+        let expected = f64::from(layout.size().0) / f64::from(pango::SCALE);
+        let caret_x = (0..SCALE_TEST_W)
+            .find(|&x| {
+                scroll_test_pixel(&data, stride as usize, x, SCALE_TEST_PITCH as i32 - 1)
+                    == rgb(theme.cursor)
+            })
+            .expect("bar caret should paint");
+        assert!(
+            (f64::from(caret_x) - expected).abs() <= 1.0,
+            "caret after a {SCALE}x four-glyph span should sit at its scaled advance \
+             {expected}px, got {caret_x}px"
+        );
+    }
 }

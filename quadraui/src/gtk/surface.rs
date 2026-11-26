@@ -850,6 +850,42 @@ mod tests {
         assert_eq!(past, 7);
     }
 
+    /// Caret x after a run at 2x is the run's scaled advance, and the
+    /// glyph after it advances at the unscaled width.
+    #[test]
+    fn text_x_after_a_scaled_run_is_the_scaled_advance() {
+        let surface = ImageSurface::create(Format::ARgb32, 10, 10).expect("create ImageSurface");
+        let cr = Context::new(&surface).expect("Context::new");
+        let layout = text_layout(&cr);
+        let mut s = CairoSurface {
+            cr: &cr,
+            layout: Some(&layout),
+            translucent_fill: true,
+        };
+        let role = crate::FontRole::Editor;
+        let fg = Color::rgb(230, 230, 230);
+        let text = "HHHHabc";
+        let runs = [
+            TextRunStyle::new(0..4, fg).with_scale(2.0),
+            TextRunStyle::new(4..7, fg),
+        ];
+        let plain = s.surface_text_x_at_index(text, &[], role, 4);
+        let scaled = s.surface_text_x_at_index(text, &runs, role, 4);
+        let double = pango::Layout::new(&layout.context());
+        double.set_font_description(Some(&pango::FontDescription::from_string("Monospace 24")));
+        double.set_text("HHHH");
+        let expect = double.index_to_pos(4).x() as f32 / pango::SCALE as f32;
+        assert!(
+            (scaled - expect).abs() <= 0.5,
+            "scaled advance {scaled} should match the 2x font's {expect} (unscaled {plain})"
+        );
+        let next = s.surface_text_x_at_index(text, &runs, role, 5) - scaled;
+        let plain_next = s.surface_text_x_at_index(text, &[], role, 5) - plain;
+        assert!((next - plain_next).abs() <= 0.5, "{next} vs {plain_next}");
+        assert_eq!(s.surface_text_index_at_x(text, &runs, role, scaled), 4);
+        assert_eq!(s.surface_text_index_at_x(text, &runs, role, plain), 2);
+    }
+
     fn probe_pixel(data: &[u8], stride: usize, x: i32, y: i32) -> (u8, u8, u8) {
         let off = y as usize * stride + x as usize * 4;
         (data[off + 2], data[off + 1], data[off])

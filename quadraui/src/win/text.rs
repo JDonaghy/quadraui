@@ -763,26 +763,6 @@ fn measure_text(
     Ok((metrics.width, metrics.height))
 }
 
-/// `text`'s advance in `format`, trailing whitespace included — the
-/// x a following glyph starts at, which [`measure_text`]'s ink-oriented
-/// width stops short of after a space.
-fn measure_advance(
-    factory: &IDWriteFactory,
-    format: &IDWriteTextFormat,
-    text: &str,
-) -> WinResult<f32> {
-    if text.is_empty() {
-        return Ok(0.0);
-    }
-    let wide: Vec<u16> = text.encode_utf16().collect();
-    // SAFETY: as in `measure_text`.
-    let layout = unsafe { factory.CreateTextLayout(&wide, format, f32::MAX, f32::MAX)? };
-    let mut metrics = Default::default();
-    // SAFETY: as in `measure_text`.
-    unsafe { layout.GetMetrics(&mut metrics)? };
-    Ok(metrics.widthIncludingTrailingWhitespace)
-}
-
 /// Paint `text` inside `rect` (DIPs, target-relative) in `color`, clipped
 /// to the rect. Brush creation goes through [`get_or_create_brush`], so
 /// repeated calls with the same `(target, color)` reuse one cached
