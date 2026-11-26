@@ -110,22 +110,42 @@ impl Ctx<'_> {
         }
     }
 
-    /// Absolute x of byte `byte` of `text` in this row's text.
-    fn x_at(&self, s: &mut dyn PaintSurface, text: &str, byte: usize) -> f32 {
-        self.text_x + s.surface_text_x_at_index(text, ROLE, byte)
+    /// Absolute x of byte `byte` of `text`, shaped with `runs`, in this
+    /// row's text.
+    fn x_at(
+        &self,
+        s: &mut dyn PaintSurface,
+        text: &str,
+        runs: &[TextRunStyle],
+        byte: usize,
+    ) -> f32 {
+        self.text_x + s.surface_text_x_at_index(text, runs, ROLE, byte)
     }
 
-    /// Absolute x of character column `col` of `text`.
-    fn x_at_col(&self, s: &mut dyn PaintSurface, text: &str, col: usize) -> f32 {
-        self.x_at(s, text, char_to_byte_idx(text, col))
+    /// Absolute x of character column `col` of `text`, shaped with `runs`.
+    fn x_at_col(
+        &self,
+        s: &mut dyn PaintSurface,
+        text: &str,
+        runs: &[TextRunStyle],
+        col: usize,
+    ) -> f32 {
+        self.x_at(s, text, runs, char_to_byte_idx(text, col))
     }
 
-    /// The advance of the glyph at `byte`, or one cell past the end.
-    fn glyph_w(&self, s: &mut dyn PaintSurface, text: &str, byte: usize) -> f32 {
+    /// The advance of the glyph at `byte` shaped with `runs`, or one cell
+    /// past the end.
+    fn glyph_w(
+        &self,
+        s: &mut dyn PaintSurface,
+        text: &str,
+        runs: &[TextRunStyle],
+        byte: usize,
+    ) -> f32 {
         let next = next_char_boundary(text, byte);
         let w = if next > byte {
-            s.surface_text_x_at_index(text, ROLE, next)
-                - s.surface_text_x_at_index(text, ROLE, byte)
+            s.surface_text_x_at_index(text, runs, ROLE, next)
+                - s.surface_text_x_at_index(text, runs, ROLE, byte)
         } else {
             0.0
         };
@@ -271,13 +291,14 @@ fn paint_selection(ctx: &Ctx, s: &mut dyn PaintSurface, sel: &EditorSelection, c
             continue;
         }
         let text = rl.raw_text.as_str();
-        let start_x = ctx.x_at_col(s, text, cols.start);
+        let runs = line_runs(rl, ctx.theme.foreground);
+        let start_x = ctx.x_at_col(s, text, &runs, cols.start);
         let end_x = if cols.extends_beyond {
             // The index form keeps trailing whitespace, which a measured
             // ink width drops on some surfaces.
-            ctx.x_at(s, text, text.len())
+            ctx.x_at(s, text, &runs, text.len())
         } else {
-            ctx.x_at_col(s, text, cols.end)
+            ctx.x_at_col(s, text, &runs, cols.end)
         };
         s.surface_fill_rect(
             Rect::new(start_x, y, (end_x - start_x).max(0.0), ctx.lh),
@@ -370,26 +391,30 @@ fn severity_color(severity: DiagnosticSeverity, theme: &Theme) -> Color {
 // ── Row text ────────────────────────────────────────────────────────────
 
 /// `rl.raw_text` partitioned into runs: each byte takes the last span
-/// covering it, gaps take `default_fg`.
+/// covering it (colour, weight, slant and font scale), gaps take
+/// `default_fg` unscaled.
 fn line_runs(rl: &EditorLine, default_fg: Color) -> Vec<TextRunStyle> {
     let text = rl.raw_text.as_str();
-    let mut byte_style: Vec<(Color, bool, bool)> = vec![(default_fg, false, false); text.len()];
+    let mut byte_style: Vec<(Color, bool, bool, f32)> =
+        vec![(default_fg, false, false, 1.0); text.len()];
     for span in &rl.spans {
         let start = snap_to_char_boundary(text, span.start_byte);
         let end = snap_to_char_boundary(text, span.end_byte);
-        for st in byte_style.iter_mut().take(end).skip(start) {
-            *st = (span.style.fg, span.style.bold, span.style.italic);
+        let st = &span.style;
+        for b in byte_style.iter_mut().take(end).skip(start) {
+            *b = (st.fg, st.bold, st.italic, st.font_scale);
         }
     }
     let mut runs: Vec<TextRunStyle> = Vec::new();
     let mut start = 0usize;
     for i in 1..=text.len() {
         if i == text.len() || (text.is_char_boundary(i) && byte_style[i] != byte_style[start]) {
-            let (fg, bold, italic) = byte_style[start];
+            let (fg, bold, italic, scale) = byte_style[start];
             runs.push(
                 TextRunStyle::new(start..i, fg)
                     .with_bold(bold)
-                    .with_italic(italic),
+                    .with_italic(italic)
+                    .with_scale(scale),
             );
             start = i;
         }
@@ -403,33 +428,34 @@ fn paint_line_text(ctx: &Ctx, s: &mut dyn PaintSurface, rl: &EditorLine, y: f32)
     let theme = ctx.theme;
     let text = rl.raw_text.as_str();
     let text_y = y + ctx.v_off;
+    let runs = line_runs(rl, theme.foreground);
+    let box_h = ctx.natural_h * runs.iter().map(|r| r.scale).fold(1.0, f32::max);
 
     for span in &rl.spans {
         let Some(bg) = span.style.bg else {
             continue;
         };
-        let x0 = ctx.x_at(s, text, span.start_byte);
-        let x1 = ctx.x_at(s, text, span.end_byte);
+        let x0 = ctx.x_at(s, text, &runs, span.start_byte);
+        let x1 = ctx.x_at(s, text, &runs, span.end_byte);
         if x1 > x0 {
-            s.surface_fill_rect(Rect::new(x0, text_y, x1 - x0, ctx.natural_h), bg);
+            s.surface_fill_rect(Rect::new(x0, text_y, x1 - x0, box_h), bg);
         }
     }
-    s.surface_draw_text_line(
-        Point::new(ctx.text_x, text_y),
-        text,
-        &line_runs(rl, theme.foreground),
-        ROLE,
-    );
+    s.surface_draw_text_line(Point::new(ctx.text_x, text_y), text, &runs, ROLE);
 
-    let mut last_text = text;
+    let mut ghost_w = None;
     if rl.is_ghost_continuation {
         if let Some(ghost) = &rl.ghost_suffix {
             draw_plain(s, ctx.text_x, text_y, ghost, theme.ghost_text_fg);
-            last_text = ghost;
+            ghost_w = Some(s.surface_measure_text(ghost).0);
         }
     }
     if let Some(ann) = &rl.annotation {
-        let ann_x = ctx.text_x + s.surface_measure_text(last_text).0 + ctx.cw * 2.0;
+        let text_end = match ghost_w {
+            Some(w) => ctx.text_x + w,
+            None => ctx.x_at(s, text, &runs, text.len()),
+        };
+        let ann_x = text_end + ctx.cw * 2.0;
         draw_plain(s, ann_x, text_y, ann, theme.annotation_fg);
     }
 }
@@ -467,17 +493,21 @@ fn paint_line_bracket_match(ctx: &Ctx, s: &mut dyn PaintSurface, view_idx: usize
 /// Wavy diagnostic underlines and dotted spell underlines, two pixels
 /// above the row's bottom edge.
 fn paint_line_underlines(ctx: &Ctx, s: &mut dyn PaintSurface, rl: &EditorLine, y: f32) {
+    if rl.diagnostics.is_empty() && rl.spell_errors.is_empty() {
+        return;
+    }
     let text = rl.raw_text.as_str();
+    let runs = line_runs(rl, ctx.theme.foreground);
     let underline_y = y + ctx.lh - 2.0;
     for dm in &rl.diagnostics {
-        let x0 = ctx.x_at_col(s, text, dm.start_col);
-        let x1 = ctx.x_at_col(s, text, dm.end_col);
+        let x0 = ctx.x_at_col(s, text, &runs, dm.start_col);
+        let x1 = ctx.x_at_col(s, text, &runs, dm.end_col);
         let verbs = wave_path(x0, x1, underline_y);
         s.surface_draw_path(&verbs, severity_color(dm.severity, ctx.theme), 1.0);
     }
     for sm in &rl.spell_errors {
-        let x0 = ctx.x_at_col(s, text, sm.start_col);
-        let x1 = ctx.x_at_col(s, text, sm.end_col);
+        let x0 = ctx.x_at_col(s, text, &runs, sm.start_col);
+        let x1 = ctx.x_at_col(s, text, &runs, sm.end_col);
         let mut dx = x0;
         while dx < x1 {
             s.surface_fill_rect(Rect::new(dx, underline_y, 1.0, 1.0), ctx.theme.spell_error);
@@ -581,9 +611,10 @@ fn paint_primary_cursor(ctx: &Ctx, s: &mut dyn PaintSurface) {
         cursor.pos.col
     };
     let text = rl.raw_text.as_str();
+    let runs = line_runs(rl, ctx.theme.foreground);
     let byte = char_to_byte_idx(text, col);
-    let x = ctx.x_at(s, text, byte);
-    let w = ctx.glyph_w(s, text, byte);
+    let x = ctx.x_at(s, text, &runs, byte);
+    let w = ctx.glyph_w(s, text, &runs, byte);
     paint_caret(ctx, s, cursor.shape, x, ctx.row_y(cursor.pos.view_line), w);
 }
 
@@ -599,7 +630,8 @@ fn paint_ai_ghost_text(ctx: &Ctx, s: &mut dyn PaintSurface) {
     let Some(ghost) = &rl.ghost_suffix else {
         return;
     };
-    let x = ctx.x_at_col(s, &rl.raw_text, cursor.pos.col);
+    let runs = line_runs(rl, ctx.theme.foreground);
+    let x = ctx.x_at_col(s, &rl.raw_text, &runs, cursor.pos.col);
     let y = ctx.row_y(cursor.pos.view_line) + ctx.v_off;
     draw_plain(s, x, y, ghost, ctx.theme.ghost_text_fg);
 }
@@ -624,9 +656,10 @@ fn paint_secondary_cursors(ctx: &Ctx, s: &mut dyn PaintSurface) {
             pos.col
         };
         let text = rl.raw_text.as_str();
+        let runs = line_runs(rl, ctx.theme.foreground);
         let byte = char_to_byte_idx(text, col);
-        let x = ctx.x_at(s, text, byte);
-        let w = ctx.glyph_w(s, text, byte);
+        let x = ctx.x_at(s, text, &runs, byte);
+        let w = ctx.glyph_w(s, text, &runs, byte);
         paint_caret(ctx, s, shape, x, ctx.row_y(pos.view_line), w);
     }
 }

@@ -82,9 +82,45 @@ impl<'a> CairoSurface<'a> {
     }
 }
 
+/// Pango attributes for `runs` over `text`: each run's colour, weight,
+/// style and size scale on its byte range.
+fn line_attrs(text: &str, runs: &[TextRunStyle]) -> pango::AttrList {
+    let attrs = pango::AttrList::new();
+    for run in runs {
+        let Some(range) = run.byte_range_in(text) else {
+            continue;
+        };
+        let (start, end) = (range.start as u32, range.end as u32);
+        let insert = |mut attr: pango::Attribute| {
+            attr.set_start_index(start);
+            attr.set_end_index(end);
+            attrs.insert(attr);
+        };
+        let c = run.fg;
+        insert(
+            pango::AttrColor::new_foreground(
+                u16::from(c.r) * 257,
+                u16::from(c.g) * 257,
+                u16::from(c.b) * 257,
+            )
+            .into(),
+        );
+        if run.bold {
+            insert(pango::AttrInt::new_weight(pango::Weight::Bold).into());
+        }
+        if run.italic {
+            insert(pango::AttrInt::new_style(pango::Style::Italic).into());
+        }
+        if run.is_scaled() {
+            insert(pango::AttrFloat::new_scale(f64::from(run.scale)).into());
+        }
+    }
+    attrs
+}
+
 /// `text` as one Pango line on `layout`, drawn with its top-left at
-/// `origin`. Each run sets its own colour, weight and style; the cairo
-/// source is cleared first, so bytes no run covers paint nothing.
+/// `origin`, with `runs`' attributes applied. The cairo source is cleared
+/// first, so bytes no run covers paint nothing.
 pub(crate) fn draw_text_line(
     cr: &Context,
     layout: &pango::Layout,
@@ -92,58 +128,44 @@ pub(crate) fn draw_text_line(
     text: &str,
     runs: &[TextRunStyle],
 ) {
-    let attrs = pango::AttrList::new();
-    for run in runs {
-        let Some(range) = run.byte_range_in(text) else {
-            continue;
-        };
-        let (start, end) = (range.start as u32, range.end as u32);
-        let c = run.fg;
-        let mut fg = pango::AttrColor::new_foreground(
-            u16::from(c.r) * 257,
-            u16::from(c.g) * 257,
-            u16::from(c.b) * 257,
-        );
-        fg.set_start_index(start);
-        fg.set_end_index(end);
-        attrs.insert(fg);
-        if run.bold {
-            let mut w = pango::AttrInt::new_weight(pango::Weight::Bold);
-            w.set_start_index(start);
-            w.set_end_index(end);
-            attrs.insert(w);
-        }
-        if run.italic {
-            let mut st = pango::AttrInt::new_style(pango::Style::Italic);
-            st.set_start_index(start);
-            st.set_end_index(end);
-            attrs.insert(st);
-        }
-    }
     layout.set_text(text);
-    layout.set_attributes(Some(&attrs));
+    layout.set_attributes(Some(&line_attrs(text, runs)));
     cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
     cr.move_to(origin.x as f64, origin.y as f64);
     super::painted_text::show_layout(cr, layout);
     layout.set_attributes(None);
 }
 
-/// Advance of `text[..byte_idx]` on `layout`, in pixels.
-pub(crate) fn text_x_at_index(layout: &pango::Layout, text: &str, byte_idx: usize) -> f32 {
+/// Advance of `text[..byte_idx]` on `layout` with `runs`' attributes
+/// applied, in pixels.
+pub(crate) fn text_x_at_index(
+    layout: &pango::Layout,
+    text: &str,
+    runs: &[TextRunStyle],
+    byte_idx: usize,
+) -> f32 {
     layout.set_text(text);
-    layout.set_attributes(None);
+    layout.set_attributes(Some(&line_attrs(text, runs)));
     let idx = crate::text_util::snap_to_char_boundary(text, byte_idx);
-    (layout.index_to_pos(idx as i32).x() as f64 / pango::SCALE as f64) as f32
+    let x = layout.index_to_pos(idx as i32).x();
+    layout.set_attributes(None);
+    (x as f64 / pango::SCALE as f64) as f32
 }
 
-/// The grapheme boundary of `text` on `layout` nearest to `x` pixels from
-/// the line start: Pango's hit index, moved past the cluster when `x`
-/// falls in its trailing half.
-pub(crate) fn text_index_at_x(layout: &pango::Layout, text: &str, x: f32) -> usize {
+/// The grapheme boundary of `text` on `layout`, with `runs`' attributes
+/// applied, nearest to `x` pixels from the line start: Pango's hit
+/// index, moved past the cluster when `x` falls in its trailing half.
+pub(crate) fn text_index_at_x(
+    layout: &pango::Layout,
+    text: &str,
+    runs: &[TextRunStyle],
+    x: f32,
+) -> usize {
     layout.set_text(text);
-    layout.set_attributes(None);
+    layout.set_attributes(Some(&line_attrs(text, runs)));
     let x_pango = (f64::from(x.max(0.0)) * pango::SCALE as f64).round() as i32;
     let (_inside, index, trailing) = layout.xy_to_index(x_pango, 0);
+    layout.set_attributes(None);
     let mut idx = crate::text_util::snap_to_char_boundary(text, index.max(0) as usize);
     for _ in 0..trailing.max(0) {
         idx = crate::text_util::next_char_boundary(text, idx);
@@ -459,14 +481,21 @@ impl PaintSurface for CairoSurface<'_> {
     fn surface_text_x_at_index(
         &mut self,
         text: &str,
+        runs: &[TextRunStyle],
         _role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
-        text_x_at_index(self.layout_or_panic(), text, byte_idx)
+        text_x_at_index(self.layout_or_panic(), text, runs, byte_idx)
     }
 
-    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
-        text_index_at_x(self.layout_or_panic(), text, x)
+    fn surface_text_index_at_x(
+        &mut self,
+        text: &str,
+        runs: &[TextRunStyle],
+        _role: crate::FontRole,
+        x: f32,
+    ) -> usize {
+        text_index_at_x(self.layout_or_panic(), text, runs, x)
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
@@ -800,24 +829,24 @@ mod tests {
             layout.set_text(LINE);
             layout.set_attributes(None);
             let expect = layout.index_to_pos(idx as i32).x() as f32 / pango::SCALE as f32;
-            let x = s.surface_text_x_at_index(LINE, role, idx);
+            let x = s.surface_text_x_at_index(LINE, &[], role, idx);
             assert_eq!(x, expect, "x at byte {idx}");
             assert_eq!(
-                s.surface_text_index_at_x(LINE, role, x),
+                s.surface_text_index_at_x(LINE, &[], role, x),
                 idx,
                 "index at x {x}"
             );
         }
         // The wide glyph advances further than a narrow one.
-        let narrow = s.surface_text_x_at_index(LINE, role, 1);
-        let wide = s.surface_text_x_at_index(LINE, role, 4) - narrow;
+        let narrow = s.surface_text_x_at_index(LINE, &[], role, 1);
+        let wide = s.surface_text_x_at_index(LINE, &[], role, 4) - narrow;
         assert!(wide > narrow * 1.5, "wide {wide} narrow {narrow}");
         // Between `e` and its combining mark is not a boundary.
-        let e_x = s.surface_text_x_at_index(LINE, role, 4);
-        let next = s.surface_text_x_at_index(LINE, role, 7);
-        let mid = s.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.3);
+        let e_x = s.surface_text_x_at_index(LINE, &[], role, 4);
+        let next = s.surface_text_x_at_index(LINE, &[], role, 7);
+        let mid = s.surface_text_index_at_x(LINE, &[], role, e_x + (next - e_x) * 0.3);
         assert_eq!(mid, 4);
-        let past = s.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.95);
+        let past = s.surface_text_index_at_x(LINE, &[], role, e_x + (next - e_x) * 0.95);
         assert_eq!(past, 7);
     }
 

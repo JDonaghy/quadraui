@@ -294,14 +294,21 @@ impl PaintSurface for CgSurface<'_> {
     fn surface_text_x_at_index(
         &mut self,
         text: &str,
+        runs: &[crate::TextRunStyle],
         _role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
-        super::text::text_x_at_index(self.font_or_panic(), text, byte_idx)
+        super::text::text_x_at_index(self.font_or_panic(), text, runs, byte_idx)
     }
 
-    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
-        super::text::text_index_at_x(self.font_or_panic(), text, x)
+    fn surface_text_index_at_x(
+        &mut self,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        _role: crate::FontRole,
+        x: f32,
+    ) -> usize {
+        super::text::text_index_at_x(self.font_or_panic(), text, runs, x)
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
@@ -707,26 +714,26 @@ mod tests {
         let role = crate::FontRole::Editor;
         for idx in [0usize, 1, 4, 7, 8, 9] {
             let expect = crate::macos::text::measure_text(&f, &LINE[..idx]).0 as f32;
-            let x = raw.surface_text_x_at_index(LINE, role, idx);
+            let x = raw.surface_text_x_at_index(LINE, &[], role, idx);
             assert_eq!(x, expect, "x at byte {idx}");
             assert_eq!(
-                raw.surface_text_index_at_x(LINE, role, x),
+                raw.surface_text_index_at_x(LINE, &[], role, x),
                 idx,
                 "index at x {x}"
             );
         }
-        let narrow = raw.surface_text_x_at_index(LINE, role, 1);
-        let wide = raw.surface_text_x_at_index(LINE, role, 4) - narrow;
+        let narrow = raw.surface_text_x_at_index(LINE, &[], role, 1);
+        let wide = raw.surface_text_x_at_index(LINE, &[], role, 4) - narrow;
         assert!(wide > narrow * 1.5, "wide {wide} narrow {narrow}");
         // Between `e` and its combining mark is not a boundary.
-        let e_x = raw.surface_text_x_at_index(LINE, role, 4);
-        let next = raw.surface_text_x_at_index(LINE, role, 7);
+        let e_x = raw.surface_text_x_at_index(LINE, &[], role, 4);
+        let next = raw.surface_text_x_at_index(LINE, &[], role, 7);
         assert_eq!(
-            raw.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.4),
+            raw.surface_text_index_at_x(LINE, &[], role, e_x + (next - e_x) * 0.4),
             4
         );
         assert_eq!(
-            raw.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.6),
+            raw.surface_text_index_at_x(LINE, &[], role, e_x + (next - e_x) * 0.6),
             7
         );
     }

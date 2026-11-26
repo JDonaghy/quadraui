@@ -3711,17 +3711,24 @@ impl PaintSurface for EditorSurface<'_> {
     fn surface_text_x_at_index(
         &mut self,
         text: &str,
+        runs: &[crate::TextRunStyle],
         _role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
         with_role_layout(self.backend, FontRole::Editor, |_, layout| {
-            super::surface::text_x_at_index(layout, text, byte_idx)
+            super::surface::text_x_at_index(layout, text, runs, byte_idx)
         })
     }
 
-    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
+    fn surface_text_index_at_x(
+        &mut self,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        _role: crate::FontRole,
+        x: f32,
+    ) -> usize {
         with_role_layout(self.backend, FontRole::Editor, |_, layout| {
-            super::surface::text_index_at_x(layout, text, x)
+            super::surface::text_index_at_x(layout, text, runs, x)
         })
     }
 
@@ -4145,17 +4152,24 @@ impl PaintSurface for GtkBackend {
     fn surface_text_x_at_index(
         &mut self,
         text: &str,
+        runs: &[crate::TextRunStyle],
         role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
         with_role_layout(self, role, |_, layout| {
-            super::surface::text_x_at_index(layout, text, byte_idx)
+            super::surface::text_x_at_index(layout, text, runs, byte_idx)
         })
     }
 
-    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+    fn surface_text_index_at_x(
+        &mut self,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        role: crate::FontRole,
+        x: f32,
+    ) -> usize {
         with_role_layout(self, role, |_, layout| {
-            super::surface::text_index_at_x(layout, text, x)
+            super::surface::text_index_at_x(layout, text, runs, x)
         })
     }
 

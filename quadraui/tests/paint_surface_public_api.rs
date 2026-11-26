@@ -147,20 +147,41 @@ mod out_of_crate_text_line {
         let mut s = Recorder::default();
         // "日" is two cells wide; "e\u{301}" is one cell.
         let text = "a日e\u{301}b";
-        assert_eq!(s.surface_text_x_at_index(text, FontRole::Editor, 0), 0.0);
-        assert_eq!(s.surface_text_x_at_index(text, FontRole::Editor, 1), CHAR_W);
         assert_eq!(
-            s.surface_text_x_at_index(text, FontRole::Editor, 4),
+            s.surface_text_x_at_index(text, &[], FontRole::Editor, 0),
+            0.0
+        );
+        assert_eq!(
+            s.surface_text_x_at_index(text, &[], FontRole::Editor, 1),
+            CHAR_W
+        );
+        assert_eq!(
+            s.surface_text_x_at_index(text, &[], FontRole::Editor, 4),
             3.0 * CHAR_W
         );
         // An index inside the wide glyph snaps back to its start.
-        assert_eq!(s.surface_text_x_at_index(text, FontRole::Editor, 2), CHAR_W);
+        assert_eq!(
+            s.surface_text_x_at_index(text, &[], FontRole::Editor, 2),
+            CHAR_W
+        );
 
         // Nearest boundary, never between `e` and its combining mark.
-        assert_eq!(s.surface_text_index_at_x(text, FontRole::Editor, 9.0), 1);
-        assert_eq!(s.surface_text_index_at_x(text, FontRole::Editor, 26.0), 4);
-        assert_eq!(s.surface_text_index_at_x(text, FontRole::Editor, 31.0), 7);
-        assert_eq!(s.surface_text_index_at_x(text, FontRole::Editor, 99.0), 8);
+        assert_eq!(
+            s.surface_text_index_at_x(text, &[], FontRole::Editor, 9.0),
+            1
+        );
+        assert_eq!(
+            s.surface_text_index_at_x(text, &[], FontRole::Editor, 26.0),
+            4
+        );
+        assert_eq!(
+            s.surface_text_index_at_x(text, &[], FontRole::Editor, 31.0),
+            7
+        );
+        assert_eq!(
+            s.surface_text_index_at_x(text, &[], FontRole::Editor, 99.0),
+            8
+        );
 
         let red = Color::rgb(200, 0, 0);
         let fg = Color::rgb(220, 220, 220);

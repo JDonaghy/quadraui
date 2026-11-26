@@ -4757,21 +4757,18 @@ impl PaintSurface for WinBackend {
     fn surface_text_x_at_index(
         &mut self,
         text: &str,
+        runs: &[crate::TextRunStyle],
         role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
         #[cfg(target_os = "windows")]
         if let Some(mut surface) = self.text_surface_for(role) {
-            return surface.surface_text_x_at_index(text, role, byte_idx);
+            return surface.surface_text_x_at_index(text, runs, role, byte_idx);
         }
         let _ = role;
-        let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
-        crate::text_util::display_width(&text[..end]) as f32 * Backend::char_width(self)
-    }
-
-    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
-        crate::paint_surface::nearest_text_boundary(text, x, &mut |i| {
-            self.surface_text_x_at_index(text, role, i)
+        let cw = Backend::char_width(self);
+        crate::paint_surface::styled_prefix_x(text, runs, byte_idx, &mut |seg, run| {
+            crate::text_util::display_width(seg) as f32 * cw * run.map_or(1.0, |r| r.scale)
         })
     }
 
@@ -5005,21 +5002,18 @@ impl PaintSurface for EditorSurface<'_> {
     fn surface_text_x_at_index(
         &mut self,
         text: &str,
+        runs: &[crate::TextRunStyle],
         role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
         #[cfg(target_os = "windows")]
         if let Some(mut surface) = self.backend.text_surface_for(crate::FontRole::Editor) {
-            return surface.surface_text_x_at_index(text, role, byte_idx);
+            return surface.surface_text_x_at_index(text, runs, role, byte_idx);
         }
         let _ = role;
-        let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
-        crate::text_util::display_width(&text[..end]) as f32 * Backend::char_width(&*self.backend)
-    }
-
-    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
-        crate::paint_surface::nearest_text_boundary(text, x, &mut |i| {
-            self.surface_text_x_at_index(text, role, i)
+        let cw = Backend::char_width(&*self.backend);
+        crate::paint_surface::styled_prefix_x(text, runs, byte_idx, &mut |seg, run| {
+            crate::text_util::display_width(seg) as f32 * cw * run.map_or(1.0, |r| r.scale)
         })
     }
 

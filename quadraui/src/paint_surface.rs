@@ -104,17 +104,39 @@ pub struct TextRunStyle {
     pub fg: Color,
     pub bold: bool,
     pub italic: bool,
+    /// Multiplier on the role font's size for this run (1.0 = the role
+    /// font as-is). The line box grows to fit the tallest run, and every
+    /// run shares one baseline.
+    pub scale: f32,
 }
 
 impl TextRunStyle {
-    /// `range` painted in `fg`, regular weight and upright.
+    /// `range` painted in `fg`, regular weight, upright and unscaled.
     pub fn new(range: std::ops::Range<usize>, fg: Color) -> Self {
         Self {
             range,
             fg,
             bold: false,
             italic: false,
+            scale: 1.0,
         }
+    }
+
+    /// This run at `scale` times the role font's size. A non-finite or
+    /// non-positive `scale` paints at 1.0.
+    #[must_use]
+    pub fn with_scale(mut self, scale: f32) -> Self {
+        self.scale = if scale.is_finite() && scale > 0.0 {
+            scale
+        } else {
+            1.0
+        };
+        self
+    }
+
+    /// Whether this run paints at a size other than the role font's.
+    pub(crate) fn is_scaled(&self) -> bool {
+        (self.scale - 1.0).abs() > f32::EPSILON
     }
 
     /// This run in bold when `bold` is true.
@@ -164,6 +186,42 @@ pub(crate) fn nearest_text_boundary(
         best = (text.len(), d);
     }
     best.0
+}
+
+/// Advance of `text[..byte_idx]` laid out segment by segment: each run's
+/// bytes are measured by `measure` with that run, bytes no run covers
+/// with `None`. Runs are taken in range order; bytes a later run shares
+/// with an earlier one count once, under the earlier run.
+pub(crate) fn styled_prefix_x(
+    text: &str,
+    runs: &[TextRunStyle],
+    byte_idx: usize,
+    measure: &mut dyn FnMut(&str, Option<&TextRunStyle>) -> f32,
+) -> f32 {
+    let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
+    let prefix = &text[..end];
+    let mut ordered: Vec<&TextRunStyle> = runs.iter().collect();
+    ordered.sort_by_key(|r| r.range.start);
+    let mut x = 0.0;
+    let mut cursor = 0usize;
+    for run in ordered {
+        let Some(range) = run.byte_range_in(prefix) else {
+            continue;
+        };
+        if range.end <= cursor {
+            continue;
+        }
+        let start = range.start.max(cursor);
+        if start > cursor {
+            x += measure(&prefix[cursor..start], None);
+        }
+        x += measure(&prefix[start..range.end], Some(run));
+        cursor = range.end;
+    }
+    if cursor < prefix.len() {
+        x += measure(&prefix[cursor..], None);
+    }
+    x
 }
 
 /// A single segment of the open or closed polyline [`PaintSurface::surface_draw_path`]
@@ -522,15 +580,16 @@ pub trait PaintSurface {
 
     // ─── Shaped text lines ─────────────────────────────────────────────
     /// Shape and draw `text` as one line at `origin` (the top-left of
-    /// the line box; the baseline sits the font's ascent below it), in
-    /// `role`'s font. Each [`TextRunStyle`] styles its byte range; bytes
-    /// no run covers are left unpainted, so a caller covers the gaps
-    /// with runs in its default colour.
+    /// the line box; the baseline sits the tallest run's ascent below
+    /// it), in `role`'s font. Each [`TextRunStyle`] styles its byte
+    /// range; bytes no run covers are left unpainted, so a caller covers
+    /// the gaps with runs in its default colour.
     ///
     /// Defaults to one [`Self::surface_draw_text_run_styled`] per run,
-    /// placed at [`Self::surface_text_x_at_index`] — correct for a
-    /// surface with one monospace font. Every pixel backend overrides it
-    /// with its platform shaper.
+    /// placed at [`Self::surface_text_x_at_index`], with a scaled run
+    /// stretched horizontally by its scale — correct for a surface with
+    /// one monospace font. Every pixel backend overrides it with its
+    /// platform shaper, which sizes a scaled run's glyphs in full.
     fn surface_draw_text_line(
         &mut self,
         origin: Point,
@@ -542,46 +601,57 @@ pub trait PaintSurface {
             let Some(range) = run.byte_range_in(text) else {
                 continue;
             };
-            let x = self.surface_text_x_at_index(text, role, range.start);
+            let x = self.surface_text_x_at_index(text, runs, role, range.start);
             let slice = &text[range];
             let (w, h) = self.surface_measure_text(slice);
             self.surface_draw_text_run_styled(
-                Rect::new(origin.x + x, origin.y, w, h),
+                Rect::new(origin.x + x, origin.y, w * run.scale, h),
                 slice,
                 run.fg,
                 run.bold,
                 run.italic,
                 false,
-                1.0,
+                run.scale,
             );
         }
     }
 
-    /// Advance width of `text[..byte_idx]` shaped in `role`; `byte_idx`
-    /// snaps back onto a char boundary.
+    /// Advance width of `text[..byte_idx]` shaped in `role` with `runs`
+    /// applied (weight, slant and [`TextRunStyle::scale`] all change a
+    /// glyph's advance); `byte_idx` snaps back onto a char boundary.
     ///
-    /// Defaults to monospace arithmetic: the prefix's display width in
-    /// cells times [`Self::surface_char_width`].
+    /// Defaults to monospace arithmetic: each byte range's display width
+    /// in cells times [`Self::surface_char_width`], times the covering
+    /// run's scale.
     fn surface_text_x_at_index(
         &mut self,
         text: &str,
+        runs: &[TextRunStyle],
         role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
         let _ = role;
-        let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
-        crate::text_util::display_width(&text[..end]) as f32 * self.surface_char_width()
+        let cw = self.surface_char_width();
+        styled_prefix_x(text, runs, byte_idx, &mut |seg, run| {
+            crate::text_util::display_width(seg) as f32 * cw * run.map_or(1.0, |r| r.scale)
+        })
     }
 
     /// Byte index of the grapheme boundary nearest to `x` in `text`
-    /// shaped in `role`, where `x` is measured from the start of the
-    /// line.
+    /// shaped in `role` with `runs` applied, where `x` is measured from
+    /// the start of the line.
     ///
     /// Defaults to searching the boundaries
     /// [`Self::surface_text_x_at_index`] reports.
-    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+    fn surface_text_index_at_x(
+        &mut self,
+        text: &str,
+        runs: &[TextRunStyle],
+        role: crate::FontRole,
+        x: f32,
+    ) -> usize {
         nearest_text_boundary(text, x, &mut |i| {
-            self.surface_text_x_at_index(text, role, i)
+            self.surface_text_x_at_index(text, runs, role, i)
         })
     }
 
