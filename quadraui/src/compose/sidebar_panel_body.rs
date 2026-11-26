@@ -14,27 +14,33 @@
 //! (`TreeController`, `FormController`, [`crate::SidebarSystem`], a raw
 //! `TreeView`, …).
 //!
+//! The panel is a widget-contract [`crate::primitive::Primitive`]
+//! (with no behaviour of its own, so `non_interactive!`):
+//! [`SidebarPanelBody::render`] paints the background and chrome through
+//! [`crate::DrawsPrimitives::draw_dyn`], then hands the body rect to the
+//! caller's body widget.
+//!
 //! - **Background** — an optional flat fill under the whole panel rect,
-//!   via [`crate::Backend::draw_solid_fill`]. `None` paints nothing (the
+//!   via `PaintSurface::surface_fill_rect` / `CellSurface::fill`. `None`
+//!   paints nothing (the
 //!   host's own background shows through, matching GTK's current
 //!   "just call the body widget, no chrome" panels).
 //! - **Chrome** — [`SidebarPanelChrome::None`] (no rows reserved),
 //!   [`SidebarPanelChrome::Header`] (one title row), or
 //!   [`SidebarPanelChrome::HeaderAndSearch`] (title row + filter-input
-//!   row) — the same two shapes every existing call site of
-//!   [`crate::Backend::draw_settings_chrome`] actually needs (Settings,
-//!   Extensions). Delegates straight to that method, so header/search
-//!   visuals don't get a second implementation here.
+//!   row) — the Settings/Extensions shapes, painted by
+//!   [`paint_settings_chrome`] / [`paint_settings_chrome_cells`], the
+//!   same painters [`crate::Backend::draw_settings_chrome`] forwards to.
 //!
-//!   Two more shapes cover chrome `draw_settings_chrome` can't express
+//!   Two more shapes cover chrome the settings painters can't express
 //!   - [`SidebarPanelChrome::Search`] — a filter row with **no** header
-//!     above it. `draw_settings_chrome`'s row 0 is unconditionally
-//!     header-styled, so this can't reuse it — it paints a single
-//!     synthetic [`crate::StatusBar`] segment through the widget
-//!     contract ([`crate::DrawsPrimitives::draw_dyn`]) instead.
+//!     above it. The settings painters' row 0 is unconditionally
+//!     header-styled, so this paints a single synthetic
+//!     [`crate::StatusBar`] segment through that bar's own `Primitive`
+//!     instead.
 //!   - [`SidebarPanelChrome::StatusBars`] — one row per
 //!     [`crate::StatusBar`] (e.g. a title bar + an action bar), each
-//!     painted via [`crate::DrawsPrimitives::draw_dyn`] with
+//!     painted through its own `Primitive` with
 //!     its hit regions translated into panel-space and surfaced on
 //!     [`SidebarPanelBodyLayout::status_bar_hit_regions`], so the host
 //!     routes clicks against the same geometry that was painted.
@@ -61,12 +67,11 @@
 //!   layout-then-paint split [`crate::compose::tree_controller::TreeController::render`]
 //!   already uses internally.
 //!
-//! `unit_h` (row height for chrome rows) comes from
-//! [`crate::Backend::line_height`] — `1.0` cell on TUI, real Pango/Core
-//! Text/DirectWrite line height elsewhere — the same metric
-//! `draw_settings_chrome` itself resolves rows against, so this
-//! composer's row-slicing can never drift from what
-//! `draw_settings_chrome` actually paints.
+//! `unit_h` (row height for chrome rows) is the
+//! [`crate::primitive::LayoutCtx`]'s chrome row height — `1.0` cell on
+//! TUI, the resolved chrome row pitch elsewhere — and the settings
+//! painters paint at that same height, so the row-slicing can never
+//! drift from what is painted.
 //!
 //! # Example
 //!
@@ -98,9 +103,12 @@
 //! assert!(layout.scrollbar_rect.is_some());
 //! ```
 
+use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive, A11yRole};
 use crate::backend::BackendWidget;
 use crate::backend::DrawsPrimitives;
 use crate::event::Rect;
+use crate::paint_surface::PaintSurface;
+use crate::primitive::{LayoutCtx, PaintEnv, Primitive};
 use crate::primitives::status_bar::{
     StatusBar, StatusBarHit, StatusBarPrimitiveLayout, StatusBarSegment,
 };
@@ -110,15 +118,13 @@ use crate::Backend;
 /// Optional header/search chrome painted above a [`SidebarPanelBody`]'s
 /// body rect.
 ///
-/// The two non-empty variants delegate straight to
-/// [`crate::Backend::draw_settings_chrome`] — see that method's doc for
-/// the exact row layout, `" / "`-prefixed prompt construction, and
-/// placeholder logic. [`Self::Header`] reserves (and passes) a 1-row
-/// `chrome_rect`; [`Self::HeaderAndSearch`] reserves 2 rows.
-/// `draw_settings_chrome` is height-aware on every backend — it only
-/// paints the search row when the rect it's given covers a second row —
-/// so a 1-row `Header` rect reliably paints header-only everywhere, not
-/// just on backends where that happened to fall out of paint ordering.
+/// [`Self::Header`] and [`Self::HeaderAndSearch`] paint through
+/// [`paint_settings_chrome`] / [`paint_settings_chrome_cells`] — see
+/// those painters' docs for the exact row layout, `" / "`-prefixed prompt
+/// construction, and placeholder logic. [`Self::Header`] reserves (and
+/// passes) a 1-row `chrome_rect`; [`Self::HeaderAndSearch`] reserves 2
+/// rows. The painters only paint the search row when the rect covers a
+/// second row, so a 1-row `Header` rect paints header-only everywhere.
 ///
 /// `#[non_exhaustive]` guards against downstream exhaustive matches
 /// breaking when new variants are added.
@@ -132,25 +138,23 @@ pub enum SidebarPanelChrome {
     /// One title row, no search input beneath it (e.g. a Debug sidebar
     /// section header with no filter).
     Header(String),
-    /// A title row followed by a search/filter input row — the exact
-    /// shape `draw_settings_chrome` was designed for (Settings,
-    /// Extensions).
+    /// A title row followed by a search/filter input row — the
+    /// Settings/Extensions shape.
     HeaderAndSearch {
         header: String,
         query: String,
         placeholder: String,
         /// Whether the search input has focus (drives caret + selected
-        /// row-background tint — see `draw_settings_chrome`).
+        /// row-background tint — see [`paint_settings_chrome`]).
         active: bool,
     },
     /// A single search/filter row with **no** header row above it.
     /// Reserves one row, the same as [`Self::Header`].
     ///
     /// Painted via a single synthetic [`crate::StatusBar`] segment
-    /// through [`crate::DrawsPrimitives::draw_dyn`] rather
-    /// than `draw_settings_chrome` — that method's row 0 is
-    /// unconditionally header-styled, so reusing it here would repaint
-    /// a phantom header strip. [`crate::StatusBar`]/[`crate::StatusBarSegment`]
+    /// through that bar's own `Primitive` rather than the settings
+    /// painters — their row 0 is unconditionally header-styled, so
+    /// reusing them here would repaint a phantom header strip. [`crate::StatusBar`]/[`crate::StatusBarSegment`]
     /// always take caller-resolved colours (this composer has no theme of
     /// its own to consult — `Backend` exposes `set_theme`, not a getter),
     /// so `fg`/`bg` are resolved by the caller the same way
@@ -168,8 +172,7 @@ pub enum SidebarPanelChrome {
     },
     /// One row per [`crate::StatusBar`] — e.g. vimcode's Debug sidebar
     /// chrome (a title bar + a Run/Stop action bar). Each bar is
-    /// painted via [`crate::DrawsPrimitives::draw_dyn`] in
-    /// order, and its hit regions are translated into panel-space and
+    /// painted through its own `Primitive` in order, and its hit regions are translated into panel-space and
     /// appended to
     /// [`SidebarPanelBodyLayout::status_bar_hit_regions`] — the same
     /// resolved geometry the paint used, so the host can route clicks
@@ -247,10 +250,9 @@ pub struct SidebarPanelBodyLayout {
 
 impl SidebarPanelBody {
     /// Compute this panel's layout in `rect` without painting anything.
-    /// `unit_h` is the chrome row height in native units — pass
-    /// [`crate::Backend::line_height`]. [`Self::render`] calls this
-    /// internally with the real backend's `line_height()`, so paint and
-    /// no-paint geometry can't drift apart.
+    /// `unit_h` is the chrome row height in native units. The panel's
+    /// own `Primitive::layout` calls this with its `LayoutCtx`'s chrome
+    /// row height, so paint and no-paint geometry can't drift apart.
     pub fn layout(&self, rect: Rect, unit_h: f32) -> SidebarPanelBodyLayout {
         let chrome_rows = self.chrome.rows();
         let chrome_h = (chrome_rows * unit_h.max(0.0)).min(rect.height.max(0.0));
@@ -348,85 +350,249 @@ impl SidebarPanelBody {
         rect: Rect,
         body: impl FnOnce(&mut dyn Backend, Rect),
     ) -> SidebarPanelBodyLayout {
-        let unit_h = backend.chrome_line_height();
-        let mut layout = self.layout(rect, unit_h);
-
-        if let Some(bg) = self.background {
-            backend.draw_solid_fill(rect, bg);
-        }
-
-        if let Some(chrome_rect) = layout.chrome_rect {
-            match &self.chrome {
-                SidebarPanelChrome::None => {}
-                SidebarPanelChrome::Header(text) => {
-                    backend.draw_settings_chrome(chrome_rect, text, "", "", false);
-                }
-                SidebarPanelChrome::HeaderAndSearch {
-                    header,
-                    query,
-                    placeholder,
-                    active,
-                } => {
-                    backend.draw_settings_chrome(chrome_rect, header, query, placeholder, *active);
-                }
-                SidebarPanelChrome::Search {
-                    query,
-                    placeholder,
-                    active,
-                    fg,
-                    bg,
-                } => {
-                    let show_placeholder = query.is_empty() && !placeholder.is_empty() && !*active;
-                    let text = if show_placeholder {
-                        format!(" / {placeholder}")
-                    } else {
-                        format!(" / {query}")
-                    };
-                    let row_bg = if *active { bg.lighten(0.08) } else { *bg };
-                    let search_bar = StatusBar {
-                        id: WidgetId::new("sidebar-panel-body:search"),
-                        left_segments: vec![StatusBarSegment {
-                            text,
-                            fg: *fg,
-                            bg: row_bg,
-                            bold: false,
-                            action_id: None,
-                        }],
-                        right_segments: Vec::new(),
-                    };
-                    let _ = backend.draw_dyn(chrome_rect, &search_bar, &());
-                }
-                SidebarPanelChrome::StatusBars(bars) => {
-                    let mut row_y = chrome_rect.y;
-                    for bar in bars {
-                        let remaining = (chrome_rect.y + chrome_rect.height - row_y).max(0.0);
-                        let row_h = unit_h.min(remaining);
-                        if row_h <= 0.0 {
-                            break;
-                        }
-                        let row_rect = Rect::new(chrome_rect.x, row_y, chrome_rect.width, row_h);
-                        let painted = backend.draw_dyn(row_rect, bar, &());
-                        let hit_regions = painted
-                            .downcast_ref::<StatusBarPrimitiveLayout>()
-                            .map(|p| p.layout.hit_regions.clone())
-                            .unwrap_or_default();
-                        for (r, hit) in hit_regions {
-                            layout.status_bar_hit_regions.push((
-                                Rect::new(row_rect.x + r.x, row_rect.y + r.y, r.width, r.height),
-                                hit,
-                            ));
-                        }
-                        row_y += row_h;
-                    }
-                }
-            }
-        }
+        let painted = backend.draw_dyn(rect, self, &());
+        let layout = painted
+            .downcast_ref::<SidebarPanelBodyPrimitiveLayout>()
+            .map(|p| p.panel.clone())
+            .unwrap_or_else(|| self.layout(rect, backend.chrome_line_height()));
 
         body(backend, layout.body_rect);
 
         layout
     }
+
+    /// The synthetic one-segment bar [`SidebarPanelChrome::Search`]
+    /// paints its filter row with, or `None` for every other chrome.
+    fn search_bar(&self) -> Option<StatusBar> {
+        let SidebarPanelChrome::Search {
+            query,
+            placeholder,
+            active,
+            fg,
+            bg,
+        } = &self.chrome
+        else {
+            return None;
+        };
+        let show_placeholder = query.is_empty() && !placeholder.is_empty() && !*active;
+        let text = if show_placeholder {
+            format!(" / {placeholder}")
+        } else {
+            format!(" / {query}")
+        };
+        let row_bg = if *active { bg.lighten(0.08) } else { *bg };
+        Some(StatusBar {
+            id: WidgetId::new("sidebar-panel-body:search"),
+            left_segments: vec![StatusBarSegment {
+                text,
+                fg: *fg,
+                bg: row_bg,
+                bold: false,
+                action_id: None,
+            }],
+            right_segments: Vec::new(),
+        })
+    }
+
+    /// The header text the settings-chrome painters draw, plus the search
+    /// row's query, placeholder and focus, for the two chrome shapes they
+    /// paint; `None` for every other chrome.
+    fn settings_chrome(&self) -> Option<(&str, &str, &str, bool)> {
+        match &self.chrome {
+            SidebarPanelChrome::Header(text) => Some((text, "", "", false)),
+            SidebarPanelChrome::HeaderAndSearch {
+                header,
+                query,
+                placeholder,
+                active,
+            } => Some((header, query, placeholder, *active)),
+            _ => None,
+        }
+    }
 }
+
+// ── Widget contract ──────────────────────────────────────────────────
+
+/// [`Primitive::Layout`] for [`SidebarPanelBody`]: the panel geometry
+/// plus every chrome status bar with its own resolved layout, so paint
+/// draws each bar through its own [`Primitive`].
+///
+/// `#[non_exhaustive]`: produced by [`Primitive::layout`], never built by
+/// a consumer via struct literal.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct SidebarPanelBodyPrimitiveLayout {
+    /// The rect the panel was laid out into.
+    pub area: Rect,
+    /// The panel geometry, including
+    /// [`SidebarPanelBodyLayout::status_bar_hit_regions`] for
+    /// [`SidebarPanelChrome::StatusBars`].
+    pub panel: SidebarPanelBodyLayout,
+    /// The chrome row height the panel was sliced with.
+    pub line_height: f32,
+    /// Every chrome status bar with its resolved layout, in paint order:
+    /// the synthetic filter row for [`SidebarPanelChrome::Search`], one
+    /// entry per bar for [`SidebarPanelChrome::StatusBars`], none
+    /// otherwise.
+    pub bars: Vec<(StatusBar, StatusBarPrimitiveLayout)>,
+}
+
+impl A11yPrimitive for SidebarPanelBody {
+    fn a11y_info(&self) -> A11yInfo {
+        let label = match &self.chrome {
+            SidebarPanelChrome::Header(text) => text.as_str(),
+            SidebarPanelChrome::HeaderAndSearch { header, .. } => header.as_str(),
+            _ => "Sidebar panel",
+        };
+        A11yInfo::new().with_role(A11yRole::Group).with_label(label)
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        match &self.chrome {
+            SidebarPanelChrome::HeaderAndSearch {
+                query, placeholder, ..
+            }
+            | SidebarPanelChrome::Search {
+                query, placeholder, ..
+            } => {
+                let label = if query.is_empty() {
+                    placeholder.as_str()
+                } else {
+                    query.as_str()
+                };
+                vec![A11yChild::new(
+                    "search",
+                    A11yInfo::new()
+                        .with_role(A11yRole::TextInput)
+                        .with_label(label),
+                )]
+            }
+            SidebarPanelChrome::StatusBars(bars) => bars
+                .iter()
+                .enumerate()
+                .map(|(i, bar)| {
+                    A11yChild::new(format!("bar.{i}"), bar.a11y_info())
+                        .with_children(bar.a11y_children())
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+impl Primitive for SidebarPanelBody {
+    type Layout = SidebarPanelBodyPrimitiveLayout;
+    type Event = crate::interactive::Never;
+
+    /// Slice the chrome rows off the top at the ctx's chrome row height,
+    /// then resolve each chrome status bar's own layout for its row.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout {
+        let unit_h = ctx.line_height;
+        let mut panel = SidebarPanelBody::layout(self, rect, unit_h);
+        let mut bars = Vec::new();
+        if let Some(chrome_rect) = panel.chrome_rect {
+            if let Some(bar) = self.search_bar() {
+                let bar_layout = Primitive::layout(&bar, ctx, chrome_rect);
+                bars.push((bar, bar_layout));
+            }
+            if let SidebarPanelChrome::StatusBars(list) = &self.chrome {
+                let mut row_y = chrome_rect.y;
+                for bar in list {
+                    let remaining = (chrome_rect.y + chrome_rect.height - row_y).max(0.0);
+                    let row_h = unit_h.min(remaining);
+                    if row_h <= 0.0 {
+                        break;
+                    }
+                    let row_rect = Rect::new(chrome_rect.x, row_y, chrome_rect.width, row_h);
+                    let bar_layout = Primitive::layout(bar, ctx, row_rect);
+                    // Bar-local hit regions, translated into panel space.
+                    for (r, hit) in &bar_layout.layout.hit_regions {
+                        panel.status_bar_hit_regions.push((
+                            Rect::new(row_rect.x + r.x, row_rect.y + r.y, r.width, r.height),
+                            hit.clone(),
+                        ));
+                    }
+                    bars.push((bar.clone(), bar_layout));
+                    row_y += row_h;
+                }
+            }
+        }
+        SidebarPanelBodyPrimitiveLayout {
+            area: rect,
+            panel,
+            line_height: unit_h,
+            bars,
+        }
+    }
+
+    /// Background, then the settings chrome through
+    /// [`paint_settings_chrome`], then each chrome status bar through its
+    /// own `Primitive`. The body is the caller's to paint into
+    /// [`SidebarPanelBodyLayout::body_rect`].
+    fn paint(&self, layout: &Self::Layout, surface: &mut dyn PaintSurface, env: &PaintEnv) {
+        if let Some(bg) = self.background {
+            surface.surface_fill_rect(layout.area, bg);
+        }
+        if let (Some(chrome_rect), Some((header, query, placeholder, active))) =
+            (layout.panel.chrome_rect, self.settings_chrome())
+        {
+            paint_settings_chrome(
+                surface,
+                env.theme(),
+                chrome_rect,
+                layout.line_height,
+                header,
+                query,
+                placeholder,
+                active,
+            );
+        }
+        for (bar, bar_layout) in &layout.bars {
+            Primitive::paint(bar, bar_layout, surface, env);
+        }
+    }
+
+    /// The cell-grid twin of [`Self::paint`]: the background through
+    /// [`crate::CellSurface::fill`], the settings chrome through
+    /// [`paint_settings_chrome_cells`], each status bar through its own
+    /// `Primitive`.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        cells: &mut dyn crate::CellSurface,
+        env: &PaintEnv,
+    ) {
+        if let Some(bg) = self.background {
+            cells.fill(
+                layout.area,
+                crate::cell_surface::CellStyle {
+                    fg: Some(bg),
+                    bg: Some(bg),
+                    ..crate::cell_surface::CellStyle::default()
+                },
+            );
+        }
+        if let (Some(chrome_rect), Some((header, query, placeholder, active))) =
+            (layout.panel.chrome_rect, self.settings_chrome())
+        {
+            paint_settings_chrome_cells(
+                cells,
+                env.theme(),
+                chrome_rect,
+                header,
+                query,
+                placeholder,
+                active,
+            );
+        }
+        for (bar, bar_layout) in &layout.bars {
+            Primitive::paint_cells(bar, bar_layout, cells, env);
+        }
+    }
+}
+
+crate::non_interactive!(SidebarPanelBody);
 
 // ── Settings chrome painters ─────────────────────────────────────────
 
@@ -695,6 +861,102 @@ mod settings_chrome_tests {
         fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
             ImagePaintResult::Unsupported
         }
+    }
+
+    /// Lay `panel` out at 16px chrome rows and paint it through its own
+    /// `Primitive` onto a recording surface.
+    fn paint_panel(panel: &SidebarPanelBody, rect: Rect) -> RecordingSurface {
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
+        let layout = Primitive::layout(panel, &ctx, rect);
+        let mut surface = RecordingSurface::default();
+        Primitive::paint(panel, &layout, &mut surface, &PaintEnv::new(&theme, &style));
+        surface
+    }
+
+    #[test]
+    fn primitive_paints_background_first_then_the_settings_chrome() {
+        let bg = Color::rgb(9, 9, 9);
+        let rect = Rect::new(0.0, 0.0, 200.0, 120.0);
+        let panel = SidebarPanelBody {
+            background: Some(bg),
+            chrome: SidebarPanelChrome::HeaderAndSearch {
+                header: "EXTENSIONS".into(),
+                query: String::new(),
+                placeholder: "Search extensions".into(),
+                active: false,
+            },
+            scrollbar_gutter: None,
+        };
+        let surface = paint_panel(&panel, rect);
+        assert_eq!(surface.fills.first(), Some(&(rect, bg)));
+        let texts: Vec<&str> = surface
+            .text_runs
+            .iter()
+            .map(|(_, t, _)| t.as_str())
+            .collect();
+        assert!(texts.contains(&"EXTENSIONS"), "header painted: {texts:?}");
+        assert!(
+            texts.contains(&"Search extensions"),
+            "placeholder painted: {texts:?}"
+        );
+    }
+
+    #[test]
+    fn primitive_paints_status_bar_chrome_through_each_bar() {
+        let bar = |id: &str, text: &str| StatusBar {
+            id: WidgetId::new(id),
+            left_segments: vec![StatusBarSegment {
+                text: text.into(),
+                fg: Color::rgb(255, 255, 255),
+                bg: Color::rgb(0, 0, 0),
+                bold: false,
+                action_id: Some(WidgetId::new(format!("{id}:act"))),
+            }],
+            right_segments: Vec::new(),
+        };
+        let panel = SidebarPanelBody {
+            chrome: SidebarPanelChrome::StatusBars(vec![bar("t", "TITLE"), bar("a", "RUN")]),
+            ..Default::default()
+        };
+        let rect = Rect::new(0.0, 0.0, 200.0, 120.0);
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
+        let layout = Primitive::layout(&panel, &ctx, rect);
+        assert_eq!(layout.bars.len(), 2);
+        assert_eq!(layout.panel.status_bar_hit_regions.len(), 2);
+        assert_eq!(layout.panel.status_bar_hit_regions[1].0.y, 16.0);
+
+        // `StatusBar`'s pixel painter exists only on a pixel-backend build.
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        {
+            let surface = paint_panel(&panel, rect);
+            let texts: Vec<&str> = surface
+                .text_runs
+                .iter()
+                .map(|(_, t, _)| t.as_str())
+                .collect();
+            let title = texts.iter().position(|t| t.contains("TITLE"));
+            let run = texts.iter().position(|t| t.contains("RUN"));
+            assert!(title.is_some() && run.is_some() && title < run, "{texts:?}");
+        }
+    }
+
+    #[test]
+    fn primitive_layout_matches_the_no_paint_geometry() {
+        let panel = SidebarPanelBody {
+            chrome: SidebarPanelChrome::Header("DEBUG".into()),
+            scrollbar_gutter: Some(8.0),
+            ..Default::default()
+        };
+        let rect = Rect::new(4.0, 2.0, 200.0, 120.0);
+        let ctx = LayoutCtx::new(16.0, 8.0, false);
+        let layout = Primitive::layout(&panel, &ctx, rect);
+        assert_eq!(layout.panel, panel.layout(rect, 16.0));
     }
 
     fn paint_one_row(surface: &mut RecordingSurface, height: f32, active: bool) {
@@ -1033,13 +1295,10 @@ mod tests {
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
 
-        // Background fill, then the settings-chrome row, then whatever
-        // the body widget paints (here: another solid fill) — in that
-        // order, with no scrollbar call since no gutter was requested.
-        assert_eq!(
-            backend.calls,
-            vec!["draw_solid_fill", "draw_settings_chrome", "draw_solid_fill"]
-        );
+        // The background and settings chrome paint through the panel's
+        // own `Primitive` (`draw_dyn`), so the only legacy call left is
+        // the body widget's own fill.
+        assert_eq!(backend.calls, vec!["draw_solid_fill"]);
     }
 
     #[test]
@@ -1058,14 +1317,7 @@ mod tests {
         };
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
-        assert_eq!(
-            backend
-                .calls
-                .iter()
-                .filter(|c| **c == "draw_settings_chrome")
-                .count(),
-            1
-        );
+        assert!(!backend.calls.contains(&"draw_settings_chrome"));
     }
 
     #[test]
@@ -1110,10 +1362,7 @@ mod tests {
         });
 
         assert_eq!(rows.borrow().len(), 3);
-        assert_eq!(
-            backend.calls,
-            vec!["draw_solid_fill", "draw_settings_chrome", "draw_solid_fill"]
-        );
+        assert_eq!(backend.calls, vec!["draw_solid_fill"]);
         assert_eq!(layout, panel.layout(rect(), 1.0));
     }
 
@@ -1164,20 +1413,15 @@ mod tests {
             chrome: search_chrome("rust", "Search", true),
             ..Default::default()
         };
-        crate::primitive::clear_painted_widgets();
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
 
         // `draw_settings_chrome` must never fire for `Search` — its row 0
         // is unconditionally header-styled, which is exactly the
-        // phantom-header bug this variant exists to avoid. The search row
-        // paints through the widget contract, so it shows up in the
-        // painted-widget record rather than as a backend call.
-        assert_eq!(backend.calls, vec!["draw_solid_fill", "draw_solid_fill"]);
-        assert_eq!(
-            painted_ids(),
-            vec![WidgetId::new("sidebar-panel-body:search")]
-        );
+        // phantom-header bug this variant exists to avoid. The background
+        // and search row paint through the panel's own `Primitive`, so
+        // the only legacy call left is the body widget's own fill.
+        assert_eq!(backend.calls, vec!["draw_solid_fill"]);
     }
 
     #[test]
@@ -1248,20 +1492,9 @@ mod tests {
             chrome: SidebarPanelChrome::StatusBars(bars),
             ..Default::default()
         };
-        crate::primitive::clear_painted_widgets();
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
-        assert_eq!(backend.calls, vec!["draw_solid_fill", "draw_solid_fill"]);
-        assert_eq!(
-            painted_ids(),
-            vec![WidgetId::new("debug:title"), WidgetId::new("debug:actions")]
-        );
-    }
-
-    /// Ids of the widget-contract widgets painted since the record was
-    /// last cleared, in paint order.
-    fn painted_ids() -> Vec<WidgetId> {
-        crate::primitive::with_painted_widgets(|p| p.iter().map(|w| w.id).collect())
+        assert_eq!(backend.calls, vec!["draw_solid_fill"]);
     }
 
     /// The hit regions `render` surfaces on `SidebarPanelBodyLayout` must
