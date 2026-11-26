@@ -295,7 +295,7 @@ fn qc(c: Color) -> RatatuiColor {
 /// for double-width glyphs) rather than one buffer column per `char`, so
 /// the painted extent agrees with [`StyledText::visible_width`].
 #[allow(clippy::too_many_arguments)]
-fn draw_styled_text(
+pub(crate) fn draw_styled_text(
     buf: &mut Buffer,
     area: Rect,
     y: u16,

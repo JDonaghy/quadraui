@@ -173,6 +173,8 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Toolbar", "draw_toolbar_with_overflow"),
     ("Toolbar", "toolbar_layout"),
     ("Toolbar", "toolbar_layout_with_overflow"),
+    ("Form", "draw_form"),
+    ("Form", "form_layout"),
     ("MenuBar", "draw_menu_bar"),
     ("MenuBar", "draw_menu_bar_with_state"),
     ("MenuBar", "menu_bar_layout"),

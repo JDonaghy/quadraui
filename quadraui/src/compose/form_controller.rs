@@ -17,263 +17,30 @@
 //!   Use when the event handler runs without a backend (e.g. vimcode's
 //!   TUI mouse handler).
 //!
-//! ## Keyboard editing
+//! ## Keyboard, focus and clicks live in the widget
 //!
-//! `KeyPressed` / `CharTyped` / `ClipboardPaste` route to the field named
-//! by `Form.focused_field`, and only while [`FormController::has_focus`]
-//! is true — a host is expected to forward every event in (see the two
-//! event-handling paths above), so without this gate a form that isn't
-//! even the active panel would still swallow `Tab` and every other key.
-//! Toggle it with [`FormController::set_has_focus`], the same shape
-//! `compose::sidebar_system` uses.
+//! `KeyPressed` / `CharTyped` / `ClipboardPaste` / `MouseDown` route to
+//! [`crate::primitives::form::contract`], the one place this widget's
+//! behaviour lives — per-`FieldKind` keys, Tab/Shift-Tab traversal with
+//! scroll-into-view, text editing, click routing and the slider drag.
+//! That module's own doc describes each field kind's contract; this
+//! controller adds only the three things around it:
 //!
-//! - `Tab` / `Shift+Tab` (or `BackTab`) move focus to the next/previous
-//!   non-`Label`, non-`ReadOnly`, non-disabled field, scroll it into
-//!   view, and emit [`FormEvent::FocusChanged`]. The app stores the new
-//!   id and feeds it back as `focused_field` on the next
-//!   [`FormController::set_form`] — same contract `primitives/form.rs`'s
-//!   module doc already describes.
-//! - While a `TextInput` / `TextArea` / `PasswordInput` field is
-//!   focused, every other key is decoded through
-//!   [`crate::EditOp::from_key`] and applied via [`crate::TextEditor::apply`]
-//!   against that field's `value`, emitting
-//!   [`FormEvent::TextInputChanged`] with the new value.
-//!   `Ctrl`/`Cmd`+`<character>` combos are rejected before
-//!   `EditOp::from_key` sees them — every backend delivers those as
-//!   `Key::Char` with the modifier set, so an unregistered accelerator
-//!   (Ctrl+C, Cmd+S, ...) doesn't get typed as a literal character.
-//!   `Enter` commits instead of inserting a newline, emitting
-//!   [`FormEvent::TextInputCommitted`] — except on a `TextArea`, where
-//!   `Enter` inserts a newline, since that is the one field kind meant
-//!   to hold them. `ClipboardPaste` inserts its text via
-//!   [`crate::EditOp::InsertText`].
-//! - The cursor/selection position is **owned by `FormController`**, not
-//!   the app — it survives across keystrokes internally (see
-//!   `text_edit` below) even though the app only ever has to persist the
-//!   `value` string from `TextInputChanged`/`TextInputCommitted`. This is
-//!   what makes "no app-side key plumbing" true: the app's model needs a
-//!   `String` per text field, nothing else. Each keystroke builds a
-//!   throwaway [`crate::TextEditor`] (see
-//!   `text_input::apply_flat_edit_op`), so
-//!   `EditOp::Undo`/`Redo` never have history to act on for a form
-//!   field — out of scope here, since nothing in `Form`'s per-frame data
-//!   carries edit history across keystrokes.
+//! - the [`FormController::has_focus`] gate. A host is expected to
+//!   forward every event in (see the two event-handling paths above), so
+//!   without it a form that isn't even the active panel would still
+//!   swallow `Tab` and every other key. Toggle it with
+//!   [`FormController::set_has_focus`], the same shape
+//!   `compose::sidebar_system` uses.
+//! - the scrollbar: its own thumb drag, track paging and wheel handling,
+//!   plus the [`crate::Scrollbar`] it paints beside the form body.
+//! - the declarative rules below, applied on every
+//!   [`FormController::set_form`].
 //!
-//! ## Date picker fields
-//!
-//! `FieldKind::DatePicker` splits ownership the same way text fields do
-//! (see "Keyboard editing" above): the app stays the source of truth for
-//! the *confirmed* value (`selected`, pushed back via
-//! [`FormEvent::DateChanged`] once `Enter` confirms a day), while
-//! `FormController` owns the live scrubbing position between keystrokes
-//! (see `DateEditState`) so `Left`/`Right`/`Up`/`Down`/`PageUp`/`PageDown`
-//! keep moving the calendar without an app round-trip on every key.
-//!
-//! - While the row is focused, the renderer shows the cached scrub
-//!   position (`focused`), not `selected` — otherwise a scrub past the
-//!   first confirmed date would be invisible. Once focus moves on, the
-//!   renderer falls back to `selected` (or `focused` before any date has
-//!   ever been confirmed).
-//! - `Tab`/`Shift+Tab`/`BackTab` are excluded from the picker's own key
-//!   set, so focus traversal off a `DatePicker` field still works
-//!   normally, and `Ctrl`/`Alt`/`Cmd` + any of the picker's keys fall
-//!   through to the generic dispatch (and from there to the host) rather
-//!   than being swallowed as navigation.
-//! - A disabled focused `DatePicker` does not intercept its navigation
-//!   keys at all — they fall through to the generic dispatch below,
-//!   which is a no-op for a non-text field, the same as any other
-//!   disabled field kind.
-//! - Clicking a `DatePicker` field only changes focus (`FieldKind` has no
-//!   click-driven navigation yet); the cached scrub position is only
-//!   ever overlaid onto the field that is still focused, so a click that
-//!   moves focus elsewhere can't leave a stale scrub position visible on
-//!   the field it left.
-//!
-//! ## ComboBox fields
-//!
-//! `FieldKind::ComboBox` needs no shadow-state struct the way
-//! `DatePicker` needs `DateEditState`: its `text`/`open`/`highlighted`
-//! fields are already the live state, supplied fresh by the app each
-//! frame, with no separate cursor/position concept to cache across
-//! keystrokes. `handle_combo_box_key` clones the focused field's
-//! `ComboBox`, forces its `focused` flag to match `Form::focused_field`
-//! (the app isn't expected to mirror that onto the embedded primitive
-//! itself), and calls its own `handle_key` directly.
-//!
-//! - Unlike `DatePicker`'s `date_picker_key_name` pre-filter,
-//!   `handle_combo_box_key` must see every key — digits/letters and
-//!   `Backspace` edit `text`, not just navigation — so it returns
-//!   `Option` instead of an unconditional event: a `None` (Tab/BackTab,
-//!   `Escape` while closed, `Up`/`Down` over an empty filtered list)
-//!   falls through to the generic dispatch below it. For Tab/BackTab that
-//!   dispatch has a dedicated arm (focus traversal keeps working off a
-//!   `ComboBox` field normally); for `Escape`/`Up`/`Down` there is no such
-//!   arm, so they fall all the way through to `EditOp::from_key`, which
-//!   doesn't recognize them either, and resolve to
-//!   `FormControllerEvent::Ignored` — the same outcome as a disabled
-//!   focused field's keys, not a second layer of dedicated handling.
-//! - The compact field row (live `text` plus a chevron) is the only
-//!   thing `Form`/`FormController` paint; the open dropdown is the app's
-//!   own popup overlay, mirroring `ColorPicker`'s contract — see
-//!   `FieldKind::ComboBox`'s doc.
-//! - A disabled focused `ComboBox` does not intercept its keys at all,
-//!   the same as a disabled `DatePicker`.
-//!
-//! ## Number input fields
-//!
-//! `FieldKind::NumberInput` needs no shadow-state struct, the same as
-//! `ComboBox` above: the embedded input's own `value`/`draft`/`focused`
-//! are already the live state the app feeds back each frame.
-//! `handle_number_input_key` clones the focused field's `NumberInput`,
-//! forces its `focused` flag to match `Form::focused_field`, and calls
-//! its own `handle_key` directly — `Up`/`Down` step the value, digits/
-//! `Backspace` edit the draft, `Enter` commits, `Escape` cancels.
-//!
-//! - Stepper clicks (the increment/decrement buttons `FieldKind::NumberInput`
-//!   paints through the real `NumberInput::layout`/backend rasteriser —
-//!   see `primitives/form.rs`'s doc) are resolved in [`Self::click_inner`]
-//!   via [`number_input_click_event`], which reads the clicked field's
-//!   single [`crate::primitives::form::VisibleFormField::item_bounds`]
-//!   entry for the control's exact on-screen rect — the same rect
-//!   `native_surface_paint::paint`/`tui::form::draw_field_number_input`
-//!   painted, so a click always lands where the stepper visually is.
-//! - A disabled focused `NumberInput` does not intercept its keys at
-//!   all, the same as a disabled `ComboBox`/`DatePicker`.
-//!
-//! ## Radio group fields
-//!
-//! `FieldKind::RadioGroup` also needs no shadow state: the embedded
-//! group's `selected`/`focused` are the live state. `handle_radio_group_key`
-//! mirrors `handle_number_input_key` — clone, force `focused`, call the
-//! embedded group's own `handle_key` (`Up`/`Left` previous option,
-//! `Down`/`Right` next, wrapping and skipping disabled options).
-//!
-//! - A click on one of the group's options resolves through the *generic*
-//!   per-item click path: each `RadioOption` gets its own
-//!   [`crate::primitives::form::VisibleFormField::item_bounds`] entry
-//!   (one per option, stacked vertically — see
-//!   [`crate::primitives::form::FormFieldMeasure::vertical`]'s doc), so
-//!   [`form_click_event`]'s `FieldKind::RadioGroup` arm resolves the
-//!   clicked option's own id directly, the same way a `ToggleGroup`
-//!   item's click already does — no extra geometry lookup needed, unlike
-//!   `NumberInput`'s stepper buttons above.
-//!
-//! ## Slider fields
-//!
-//! `FieldKind::Slider` needs no shadow state either: `value`/`min`/
-//! `max`/`step` are already the live state the app feeds back each
-//! frame. Unlike `NumberInput`/`RadioGroup`, there's no embedded
-//! primitive with its own `handle_key`/`click` to delegate to — the
-//! field's doc contract ("click-and-drag on the track updates value;
-//! arrow keys step by `step`; Home/End jump to bounds") is implemented
-//! directly against the raw fields, mirroring
-//! `quadraui-binding-core::semantic`'s `slider_click_event`/
-//! `slider_key_event`, which give the standalone leaf the same contract.
-//!
-//! - `handle_slider_key` steps `value` by `step` on Left/Down (down) and
-//!   Right/Up (up), and jumps straight to `min`/`max` on Home/End —
-//!   every other key returns `None` and falls through to the generic
-//!   dispatch exactly like an unclaimed number-input/radio-group key.
-//! - A click or drag on the track is resolved by [`slider_value_at`],
-//!   which maps the pointer's x position to a fraction of the track's
-//!   width rather than a fixed step — [`FormController::click_inner`]
-//!   calls it the same way it calls [`number_input_click_event`] for a
-//!   fresh `MouseDown`, and arms `self.slider_drag` with the clicked
-//!   field's id whenever the press landed on a non-disabled `Slider`'s
-//!   track, regardless of whether the value actually moved. Every
-//!   subsequent `MouseMoved` with the left button held re-resolves the
-//!   same way through [`FormController::slider_drag_to`], until
-//!   `MouseUp` clears `slider_drag`. A press that lands on the row but
-//!   off the track ([`TrackOverrun::Reject`]) only focuses the field;
-//!   a drag already captured by the track pins to its ends instead
-//!   ([`TrackOverrun::Clamp`]).
-//! - The track rect comes from the clicked field's own
-//!   [`crate::primitives::form::VisibleFormField::item_bounds`] entry,
-//!   the same lookup `NumberInput`'s stepper uses. Every layout path
-//!   populates it: the pixel backends'
-//!   `layout_metrics::form_field_measure`, `tui::form`'s cell-unit
-//!   measure, and this module's own backend-free
-//!   [`form_field_measure`] fallback each report the exact track rect
-//!   their painter fills, so a labeled field's track is as
-//!   click/drag-operable as an unlabeled one's and a click on the label
-//!   column lands outside the track rather than at `min`.
-//! - A layout from a measure closure that reports no items at all falls
-//!   back to the field's whole row (`vf.bounds`), but only if the field
-//!   has no label column to its left (an empty label, or a resolved
-//!   [`LabelPosition::Hidden`]); for every other resolved label position
-//!   [`slider_track_rect`] reports no track at all, so the click falls
-//!   through to `form_click_event`'s `FocusChanged` the same way a click
-//!   on any other field's label already does.
-//! - A disabled focused `Slider` does not intercept its keys at all, the
-//!   same as a disabled `NumberInput`/`RadioGroup`, and a click on a
-//!   disabled `Slider` falls through to `form_click_event`'s generic
-//!   `FocusChanged` rather than arming a drag.
-//!
-//! ## Toggle fields
-//!
-//! A plain `FieldKind::Toggle` (unlike the three item-bearing kinds the
-//! next section covers) has exactly one clickable target, so it needs no
-//! item-focus index — `handle_toggle_key` just flips `value` directly.
-//! `Enter`/Space while it's focused emit the same `FormEvent::ToggleChanged`
-//! [`form_click_event`]'s own `FieldKind::Toggle` arm does for a mouse
-//! click, keeping the two activation paths at parity. A
-//! `UiEvent::CharTyped(' ')` (some backends deliver Space this way instead
-//! of a `KeyPressed { key: Char(' '), .. }`) goes through
-//! [`Self::activate_focused_on_space`] first — the generic `CharTyped`
-//! arm otherwise never reaches `handle_key` at all, so this field (and
-//! the three item-bearing kinds above) would silently swallow the
-//! keystroke instead of activating.
-//!
-//! ## Item-level keyboard focus
-//!
-//! `FieldKind::ButtonRow` / `ToggleGroup` / `Toolbar` each pack more than
-//! one clickable item under a single field id — mouse clicks already
-//! resolve to the individual item via [`form_click_event`], but keyboard
-//! focus only ever named the *field*, with no way to reach any item past
-//! the first without a mouse. `self.item_focus` fixes that: an index into
-//! [`crate::primitives::form::focusable_items`]'s enumeration of the
-//! focused field's items, owned by the controller the same way
-//! `text_edit`/`date_edit` are — never by the app, and never written onto
-//! `Form` itself (see `primitives/form.rs`'s "Item-level keyboard focus"
-//! doc note for why: a per-item focus flag doesn't belong on the
-//! declarative descriptor any more than a text cursor does).
-//!
-//! - While the focused field is one of the three kinds above and isn't
-//!   disabled, `Left`/`Right` move `item_focus` by one, skipping any
-//!   disabled item, **without wrapping** — Left at the first enabled item
-//!   (or Right at the last) is a no-op, unlike [`Self::move_focus`]'s
-//!   field-to-field wrap. `Enter`/Space activate the item currently
-//!   named by `item_focus`, emitting the same event a mouse click on that
-//!   item already does (`FormEvent::ButtonClicked`/`ToggleChanged`/
-//!   `ToolbarButtonClicked` — see [`Self::activate_item_event`]).
-//! - [`Self::move_focus`] (Tab/Shift-Tab/BackTab) reseeds `item_focus` to
-//!   the newly-focused field's first enabled item (`None` if it has none,
-//!   or isn't one of the three kinds), and clears it when focus leaves —
-//!   mirroring how it already reseeds `text_edit`/`date_edit`. Tab/
-//!   BackTab never step *into* an item — they keep moving between fields
-//!   only, the same traversal every other field kind already gets.
-//! - [`Self::current_item_focus`] is the single reader both
-//!   [`Self::handle_item_row_key`] and [`Self::render`]'s focus-ring
-//!   overlay call: if `item_focus` is stale (a different field is
-//!   focused, or its index has run past a shorter item list — e.g. after
-//!   a `set_form` push that shrank it) it falls back to the first
-//!   enabled item rather than panicking or silently focusing nothing, so
-//!   a direct `focused_field` assignment that skips `move_focus`
-//!   entirely (an app-constructed `Form`, or a test) still gets a sane
-//!   starting item the first time a key/render touches it.
-//! - Painting reuses [`Backend::draw_focus_ring`] — the same chrome
-//!   `Button`/`TextInput` already draw their own ring through — rather
-//!   than growing `primitives/form.rs`'s painters with a bespoke
-//!   per-item indicator. [`Self::render`] resolves the focused item's
-//!   on-screen rect via [`Backend::form_layout`]'s `item_bounds` (the
-//!   same lookup [`Self::field_rect`] already does for a whole field)
-//!   and calls `draw_focus_ring` on it once, after `draw_form` paints the
-//!   row — a no-op while nothing is item-focused.
-//! - Mouse clicks on an item are unchanged: [`Self::click_inner`] still
-//!   resolves straight to the clicked item's `FormEvent` via
-//!   `form_click_event`, without touching `item_focus` at all. The next
-//!   keystroke still resolves a sane item through the fallback above
-//!   rather than one left stale from a previous keyboard session.
+//! The live caret, scrub position and item cursor are
+//! [`crate::primitives::form::FormState`], held here and handed to the
+//! widget on every event, so this controller and a
+//! `Surface::Widget` form resolve every key and click identically.
 //!
 //! ## Declarative validation
 //!
@@ -310,24 +77,21 @@
 
 use crate::behaviour::scroll::ensure_visible;
 use crate::compose::Handled;
-use crate::primitives::combo_box::ComboBoxEvent;
-use crate::primitives::date_picker::{CalendarDate, DatePickerEvent};
+use crate::primitives::form::contract as form_contract;
+// Re-exported under this module's own name: `compose::sidebar_system`
+// resolves a form-field click through the same function a `Form`
+// widget's own `Interactive` does.
+pub(crate) use crate::primitives::form::contract::form_click_event;
+use crate::primitives::form::contract::SLIDER_TRACK_CELLS;
 use crate::primitives::form::{
-    focusable_items, FieldKind, Form, FormEvent, FormFieldMeasure, FormHit, FormItemMeasure,
-    FormLayout, LabelPosition,
+    FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure, FormState,
 };
-use crate::primitives::number_input::NumberInputEvent;
-use crate::primitives::radio_group::RadioGroupEvent;
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
 use crate::primitives::text_input::EditOp;
-use crate::text_util::snap_to_char_boundary;
 use crate::types::StyledSpan;
 use crate::validation::{validate, FormRules, Validator};
 use crate::visibility::{apply_visibility, FormVisibility};
-use crate::{
-    Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar, Theme,
-    UiEvent, WidgetId,
-};
+use crate::{Backend, ButtonMask, MouseButton, Point, Rect, Scrollbar, Theme, UiEvent, WidgetId};
 
 /// Semantic payload of [`Handled::Event`] returned by
 /// [`FormController::handle_event`]/[`FormController::handle_cached_event`].
@@ -356,6 +120,17 @@ pub enum FormControllerEvent {
     Ignored,
 }
 
+/// Convert a [`Handled<FormEvent>`] from the widget's own behaviour
+/// (`primitives::form`) into this controller's internal result type.
+#[allow(deprecated)] // `FormControllerEvent` is `#[deprecated]`; this is its own adapter.
+fn handled_to_form_controller_event(handled: Handled<FormEvent>) -> FormControllerEvent {
+    match handled {
+        Handled::Event(e) => FormControllerEvent::FormAction(e),
+        Handled::Consumed => FormControllerEvent::Consumed,
+        Handled::Ignored => FormControllerEvent::Ignored,
+    }
+}
+
 /// Convert the internal [`FormControllerEvent`] result into
 /// [`Handled<FormControllerAction>`].
 #[allow(deprecated)] // `FormControllerEvent` is `#[deprecated]`; this is its own adapter.
@@ -368,68 +143,20 @@ fn handled_from_form_controller_event(event: FormControllerEvent) -> Handled<For
     }
 }
 
-/// Live cursor/selection for the field currently being typed into.
-/// `value` is **not** cached here — it is always read fresh from
-/// `FormController::form` (the app's own canonical string, pushed via
-/// `set_form`), so the app staying the single source of truth for field
-/// *content* still holds; only cursor placement is controller-owned.
-/// See this module's "Keyboard editing" doc section for why.
-struct TextEditState {
-    field_id: WidgetId,
-    cursor: usize,
-    selection_anchor: Option<usize>,
-}
-
-/// Live focused-day/visible-month for the `DatePicker` field currently
-/// being navigated. Mirrors `TextEditState`'s split: the app stays the
-/// source of truth for `selected` (pushed back via `FormEvent::DateChanged`
-/// once Enter confirms a day), while the controller owns the scrubbing
-/// position between keystrokes so Left/Right/Up/Down/PageUp/PageDown keep
-/// moving without an app round-trip on every key.
-struct DateEditState {
-    field_id: WidgetId,
-    focused: CalendarDate,
-    visible_month: CalendarDate,
-}
-
-/// Which item inside the focused `ButtonRow`/`ToggleGroup`/`Toolbar`
-/// field currently holds keyboard item-focus — see this module's
-/// "Item-level keyboard focus" doc section. `item_idx` indexes into
-/// [`crate::primitives::form::focusable_items`]'s enumeration of
-/// `field_id`'s items, not into the field's items directly (they're the
-/// same order, but going through that one shared enumeration keeps this
-/// state from drifting out of sync with [`FormController::current_item_focus`]'s
-/// own reading of it).
-struct ItemFocusState {
-    field_id: WidgetId,
-    item_idx: usize,
-}
-
-/// [`FormController::current_item_focus`]'s return shape: the focused
-/// field's id, the focused item's index into `focusable_items`'s
-/// enumeration, and that enumeration itself.
-type ItemFocusLookup = (WidgetId, usize, Vec<(WidgetId, bool)>);
-
 pub struct FormController {
     id: String,
     form: Option<Form>,
     scroll_offset: usize,
     has_focus: bool,
     scroll_drag: Option<ThumbDrag>,
-    /// The `FieldKind::Slider` field currently being dragged — set by a
-    /// `MouseDown` that lands on one's track (see this module's "Slider
-    /// fields" doc section), read by the next `MouseMoved` to keep
-    /// mapping the pointer's x position to a value, and cleared on
-    /// `MouseUp`. Mirrors `scroll_drag`'s own press/drag/release
-    /// lifecycle, but needs only the field's id — unlike `ThumbDrag`,
-    /// which caches geometry from the press, [`slider_track_rect`]
-    /// recomputes the track's rect fresh on every move the same way a
-    /// plain click does.
-    slider_drag: Option<WidgetId>,
+    /// The backend's line height, cached by `render` so
+    /// `handle_cached_event` can resolve geometry without a backend.
     cached_lh: Option<f32>,
-    text_edit: Option<TextEditState>,
-    date_edit: Option<DateEditState>,
-    item_focus: Option<ItemFocusState>,
+    /// Caret, scrub position, item cursor and in-flight slider drag —
+    /// the widget's own interaction state, so this controller and a
+    /// `Surface::Widget` form resolve every key and click through the
+    /// one implementation in `primitives::form`.
+    state: FormState,
     rules: FormRules,
     visibility: FormVisibility,
 }
@@ -449,11 +176,8 @@ impl FormController {
             scroll_offset: 0,
             has_focus: false,
             scroll_drag: None,
-            slider_drag: None,
             cached_lh: None,
-            text_edit: None,
-            date_edit: None,
-            item_focus: None,
+            state: FormState::default(),
             rules: FormRules::default(),
             visibility: FormVisibility::default(),
         }
@@ -704,6 +428,29 @@ impl FormController {
         })
     }
 
+    /// Run `f` against the stored form and this controller's live
+    /// [`FormState`] — the one seam every delegated keystroke goes
+    /// through, so the behaviour lives in `primitives::form` and this
+    /// controller only owns the scrollbar, the declarative rules and
+    /// the [`UiEvent`] adaptation around it.
+    ///
+    /// The widget's own scroll offset and this controller's public
+    /// [`Self::scroll_offset`] are synchronised around the call, so a
+    /// scroll-into-view inside `f` lands on both.
+    #[allow(deprecated)] // `FormControllerEvent` is `#[deprecated]`; this returns it internally.
+    fn delegate<F>(&mut self, f: F) -> FormControllerEvent
+    where
+        F: FnOnce(&Form, &mut FormState) -> Handled<FormEvent>,
+    {
+        let Some(form) = self.form.as_ref() else {
+            return FormControllerEvent::Ignored;
+        };
+        self.state.scroll_offset = Some(self.scroll_offset);
+        let result = f(form, &mut self.state);
+        self.scroll_offset = self.state.scroll_offset.unwrap_or(self.scroll_offset);
+        handled_to_form_controller_event(result)
+    }
+
     // ── Internal: shared handle dispatch ─────────────────────────────
 
     fn handle_inner(
@@ -735,7 +482,7 @@ impl FormController {
                         right: _,
                     },
             } => {
-                if self.slider_drag.is_some() {
+                if self.state.slider_drag.is_some() {
                     self.slider_drag_to(rect, position.x, lh, backend)
                 } else {
                     self.drag_to(position.y)
@@ -747,7 +494,7 @@ impl FormController {
                 ..
             } => {
                 self.scroll_drag = None;
-                self.slider_drag = None;
+                self.state.slider_drag = None;
                 FormControllerEvent::Ignored
             }
 
@@ -767,7 +514,9 @@ impl FormController {
             // exactly this (mirrors `compose/sidebar_system.rs`).
             UiEvent::KeyPressed { key, modifiers, .. } if self.has_focus => {
                 let vr = viewport_rows_lh(lh, rect);
-                self.handle_key(key, modifiers, vr)
+                self.delegate(|form, state| {
+                    form_contract::handle_key(form, state, key, modifiers, vr)
+                })
             }
 
             // A space is the one `CharTyped` character with activation
@@ -783,17 +532,19 @@ impl FormController {
             // `activate_focused_on_space` returns `None` for every other
             // field kind, so a text field's own space character still
             // inserts normally.
-            UiEvent::CharTyped(' ') if self.has_focus => self
-                .activate_focused_on_space()
-                .unwrap_or_else(|| self.handle_text_op(EditOp::InsertChar(' '))),
+            UiEvent::CharTyped(' ') if self.has_focus => self.delegate(|form, state| {
+                form_contract::activate_focused_on_space(form, state).unwrap_or_else(|| {
+                    form_contract::handle_text_op(form, state, EditOp::InsertChar(' '))
+                })
+            }),
 
-            UiEvent::CharTyped(ch) if self.has_focus => {
-                self.handle_text_op(EditOp::InsertChar(*ch))
-            }
+            UiEvent::CharTyped(ch) if self.has_focus => self.delegate(|form, state| {
+                form_contract::handle_text_op(form, state, EditOp::InsertChar(*ch))
+            }),
 
-            UiEvent::ClipboardPaste(text) if self.has_focus => {
-                self.handle_text_op(EditOp::InsertText(text.clone()))
-            }
+            UiEvent::ClipboardPaste(text) if self.has_focus => self.delegate(|form, state| {
+                form_contract::handle_text_op(form, state, EditOp::InsertText(text.clone()))
+            }),
 
             _ => FormControllerEvent::Ignored,
         }
@@ -812,27 +563,9 @@ impl FormController {
         match &self.form {
             Some(f) => {
                 let mut form = f.clone();
-                form.scroll_offset = self.scroll_offset;
                 form.has_focus = self.has_focus;
-                if let Some(e) = &self.text_edit {
-                    if let Some(field) = form.fields.iter_mut().find(|fld| fld.id == e.field_id) {
-                        overlay_text_cursor(&mut field.kind, e.cursor, e.selection_anchor);
-                    }
-                }
-                // Gated on the field still being focused (unlike the
-                // `text_edit` overlay above): a click that moves focus
-                // off a `DatePicker` field goes through `form_click_event`
-                // (not `move_focus`), which doesn't reseed/clear
-                // `date_edit`, so a stale cached scrub position could
-                // otherwise outlive the row it was scrubbed on.
-                if let Some(e) = &self.date_edit {
-                    if form.focused_field == Some(e.field_id) {
-                        if let Some(field) = form.fields.iter_mut().find(|fld| fld.id == e.field_id)
-                        {
-                            overlay_date_edit(&mut field.kind, e.focused, e.visible_month);
-                        }
-                    }
-                }
+                form_contract::overlay_state(&mut form, &self.state);
+                form.scroll_offset = self.scroll_offset;
                 overlay_required_marker(&mut form, &self.rules, theme);
                 form
             }
@@ -854,714 +587,13 @@ impl FormController {
 
     // ── Keyboard: focus traversal + text editing ──────────────────────
 
-    fn handle_key(
-        &mut self,
-        key: &Key,
-        modifiers: &Modifiers,
-        viewport_rows: usize,
-    ) -> FormControllerEvent {
-        // `DatePicker` claims Left/Right/Up/Down/PageUp/PageDown/Enter
-        // ahead of the generic dispatch below — those keys would
-        // otherwise fall through to `EditOp::from_key` (a no-op for a
-        // non-text field) or, for `Enter`, to `commit_focused_text`
-        // (also a no-op). `Tab`/`BackTab` aren't in this set, so focus
-        // traversal off a `DatePicker` field still works normally.
-        //
-        // Guarded the same way the `Tab` arm below is: without the
-        // modifier check, a host accelerator like Ctrl+Enter would be
-        // swallowed into `navigate` whenever a date field has focus
-        // instead of falling through to the app. A disabled focused
-        // field is excluded too, so its keys reach the generic dispatch
-        // below (which is a no-op for a non-text field) rather than
-        // being eaten outright.
-        if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd {
-            if let Some(key_name) = date_picker_key_name(key) {
-                if self.focused_field_is_enabled_date_picker() {
-                    return self.handle_date_picker_key(&key_name);
-                }
-            }
-            // `ComboBox` has no pre-filtered key set the way
-            // `date_picker_key_name` gives `DatePicker` above — it needs
-            // Char/Backspace too, not just navigation keys — so
-            // `handle_combo_box_key` returns `Option` instead and a
-            // `None` here (Tab/BackTab, Escape while closed, Up/Down
-            // over an empty filtered list) falls through to the match
-            // below rather than being swallowed outright. Tab/BackTab have
-            // a dedicated arm there; Escape and Up/Down don't, so those
-            // fall all the way to `EditOp::from_key` and resolve to
-            // `FormControllerEvent::Ignored`, not a second round of
-            // combo-box-specific handling.
-            if self.focused_field_is_enabled_combo_box() {
-                if let Some(result) = self.handle_combo_box_key(key, modifiers) {
-                    return result;
-                }
-            }
-            // `Dropdown` has no open/close step to track (unlike
-            // `ComboBox`'s `open`/`highlighted`) — Up/Down move and commit
-            // `selected_idx` in the same keystroke, so `handle_dropdown_key`
-            // only ever claims those two keys and returns `None` for
-            // everything else (Tab/BackTab, Enter), which falls through to
-            // the generic dispatch below exactly like an unclaimed
-            // combo-box key does.
-            if self.focused_field_is_enabled_dropdown() {
-                if let Some(result) = self.handle_dropdown_key(key) {
-                    return result;
-                }
-            }
-            // `ButtonRow`/`ToggleGroup`/`Toolbar` item focus — see this
-            // module's "Item-level keyboard focus" doc section.
-            // `handle_item_row_key` returns `None` for every key it
-            // doesn't claim (Tab/BackTab among them), which falls
-            // through to the match below exactly like an unclaimed
-            // combo-box/dropdown key does.
-            if self.focused_field_is_enabled_item_row() {
-                if let Some(result) = self.handle_item_row_key(key) {
-                    return result;
-                }
-            }
-            // `NumberInput`/`RadioGroup` — see this module's "Number
-            // input fields"/"Radio group fields" doc sections. Both
-            // return `Option` for the same reason `handle_combo_box_key`
-            // does: an unclaimed key (Tab/BackTab among them) must fall
-            // through to the generic dispatch below.
-            if self.focused_field_is_enabled_number_input() {
-                if let Some(result) = self.handle_number_input_key(key, modifiers) {
-                    return result;
-                }
-            }
-            if self.focused_field_is_enabled_radio_group() {
-                if let Some(result) = self.handle_radio_group_key(key, modifiers) {
-                    return result;
-                }
-            }
-            // `Slider` — see this module's "Slider fields" doc section.
-            // `handle_slider_key` returns `None` for every key it
-            // doesn't claim (Tab/BackTab among them), which falls through
-            // to the generic dispatch below exactly like an unclaimed
-            // number-input/radio-group key does.
-            if self.focused_field_is_enabled_slider() {
-                if let Some(result) = self.handle_slider_key(key) {
-                    return result;
-                }
-            }
-            // Plain `Toggle` — see this module's "Toggle fields" doc
-            // section. Mirrors `handle_item_row_key`'s Enter/Space arm:
-            // `handle_toggle_key` returns `None` for every other key,
-            // which falls through to the match below exactly like an
-            // unclaimed item-row/number-input/radio-group key does.
-            if self.focused_field_is_enabled_toggle() {
-                if let Some(result) = self.handle_toggle_key(key) {
-                    return result;
-                }
-            }
-        }
-        match key {
-            Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
-                self.move_focus(if modifiers.shift { -1 } else { 1 }, viewport_rows)
-            }
-            Key::Named(NamedKey::BackTab) => self.move_focus(-1, viewport_rows),
-            // `Enter` commits for `TextInput`/`PasswordInput` (a single
-            // commit boundary), but `TextArea` is the one field kind
-            // that is meant to hold newlines, so `Enter` inserts one
-            // there instead — same split VS Code makes between a
-            // single-line input and a multi-line text area.
-            Key::Named(NamedKey::Enter) if self.focused_field_is_text_area() => {
-                self.handle_text_op(EditOp::InsertChar('\n'))
-            }
-            Key::Named(NamedKey::Enter) => self.commit_focused_text(),
-            // Every backend delivers Ctrl/Cmd+<letter> as `Key::Char`
-            // with the modifier set (so an unregistered accelerator can
-            // still be recovered), not as a dedicated key variant — see
-            // `EditOp::from_key`'s callers in `examples/common/text_input_demo.rs`
-            // for the same guard. Without this, Ctrl+C/Ctrl+V/Ctrl+W (or
-            // Cmd+<letter> on macOS) would type a stray literal character
-            // into the focused field instead of falling through to an
-            // app-level accelerator.
-            Key::Char(_) if modifiers.ctrl || modifiers.cmd => FormControllerEvent::Ignored,
-            _ => match EditOp::from_key(key, *modifiers) {
-                Some(op) => self.handle_text_op(op),
-                None => FormControllerEvent::Ignored,
-            },
-        }
-    }
-
-    /// Whether the currently-focused field is a `TextArea` — gives
-    /// `Enter` its kind-specific meaning (insert a newline there, commit
-    /// everywhere else).
-    fn focused_field_is_text_area(&self) -> bool {
-        let Some(form) = &self.form else {
-            return false;
-        };
-        let Some(focused_id) = &form.focused_field else {
-            return false;
-        };
-        form.fields
-            .iter()
-            .find(|f| &f.id == focused_id)
-            .is_some_and(|f| matches!(f.kind, FieldKind::TextArea { .. }))
-    }
-
-    /// Whether the currently-focused field is a non-disabled
-    /// `DatePicker` — gates `handle_key`'s date-navigation interception.
-    /// Excluding the disabled case here (rather than inside
-    /// `handle_date_picker_key`) lets its keys fall through to the
-    /// generic dispatch below instead of being swallowed outright.
-    fn focused_field_is_enabled_date_picker(&self) -> bool {
-        let Some(form) = &self.form else {
-            return false;
-        };
-        let Some(focused_id) = &form.focused_field else {
-            return false;
-        };
-        form.fields
-            .iter()
-            .find(|f| &f.id == focused_id)
-            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::DatePicker(_)))
-    }
-
-    /// Route `key_name` into the focused `DatePicker`'s own
-    /// [`crate::primitives::date_picker::DatePicker::navigate`] and apply
-    /// the result: a `FocusMoved` updates the cached scrubbing position
-    /// (see `DateEditState`) without touching the app's `selected` value,
-    /// while a `DateSelected` (Enter) clears the cache and hands the app
-    /// [`FormEvent::DateChanged`] to persist.
-    fn handle_date_picker_key(&mut self, key_name: &str) -> FormControllerEvent {
-        let Some(form) = &self.form else {
-            return FormControllerEvent::Ignored;
-        };
-        let Some(focused_id) = form.focused_field else {
-            return FormControllerEvent::Ignored;
-        };
-        let Some(field) = form.fields.iter().find(|f| f.id == focused_id) else {
-            return FormControllerEvent::Ignored;
-        };
-        if field.disabled {
-            return FormControllerEvent::Ignored;
-        }
-        let FieldKind::DatePicker(picker) = &field.kind else {
-            return FormControllerEvent::Ignored;
-        };
-
-        // Overlay the cached scrubbing position before calling `navigate`
-        // so consecutive keystrokes compose on top of each other instead
-        // of resetting to the app-provided `focused`/`visible_month`
-        // every time (the app only ever sees the field again once a
-        // `DateChanged` round-trip persists a new `selected`).
-        let mut picker = picker.clone();
-        if let Some(e) = &self.date_edit {
-            if e.field_id == focused_id {
-                picker.focused = e.focused;
-                picker.visible_month = e.visible_month;
-            }
-        }
-
-        match picker.navigate(key_name) {
-            Some(DatePickerEvent::FocusMoved(date)) => {
-                picker.focused = date;
-                if !picker.is_in_visible_month(date) {
-                    picker.visible_month = date.first_of_month();
-                }
-                self.date_edit = Some(DateEditState {
-                    field_id: focused_id,
-                    focused: picker.focused,
-                    visible_month: picker.visible_month,
-                });
-                FormControllerEvent::Consumed
-            }
-            Some(DatePickerEvent::DateSelected(date)) => {
-                self.date_edit = None;
-                FormControllerEvent::FormAction(FormEvent::DateChanged {
-                    id: focused_id,
-                    value: date,
-                })
-            }
-            None => FormControllerEvent::Ignored,
-        }
-    }
-
-    /// Whether the currently-focused field is a non-disabled `ComboBox`
-    /// — gates `handle_key`'s combo-box-key interception. Mirrors
-    /// [`Self::focused_field_is_enabled_date_picker`].
-    fn focused_field_is_enabled_combo_box(&self) -> bool {
-        let Some(form) = &self.form else {
-            return false;
-        };
-        let Some(focused_id) = &form.focused_field else {
-            return false;
-        };
-        form.fields
-            .iter()
-            .find(|f| &f.id == focused_id)
-            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::ComboBox(_)))
-    }
-
-    /// Route `key`/`modifiers` into the focused `ComboBox`'s own
-    /// [`crate::primitives::combo_box::ComboBox::handle_key`] and
-    /// translate the result into a `FormEvent::ComboBox*` variant.
-    /// Unlike [`Self::handle_date_picker_key`], this returns `Option`
-    /// rather than an unconditional [`FormControllerEvent`]: there is no
-    /// `DateEditState`-style shadow cache to maintain here (the field's
-    /// own `text`/`open`/`highlighted` are already the live state, fed
-    /// back fresh by the app each frame), so a plain `None` is enough to
-    /// tell `handle_key` to fall through to its generic dispatch for any
-    /// key the combo box doesn't recognise.
-    fn handle_combo_box_key(
-        &mut self,
-        key: &Key,
-        modifiers: &Modifiers,
-    ) -> Option<FormControllerEvent> {
-        let form = self.form.as_ref()?;
-        let focused_id = form.focused_field?;
-        let field = form.fields.iter().find(|f| f.id == focused_id)?;
-        if field.disabled {
-            return None;
-        }
-        let FieldKind::ComboBox(combo) = &field.kind else {
-            return None;
-        };
-
-        // `ComboBox::focused` is documented as "set by the host's
-        // focus-traversal logic" — `Form::focused_field` already
-        // singled this field out above, so force it here rather than
-        // depending on the app to have mirrored that onto the embedded
-        // primitive itself.
-        let mut combo = combo.clone();
-        combo.focused = true;
-
-        // `FormEvent::ComboBox*` carries the *field's* id (`focused_id`),
-        // not the embedded `ComboBox`'s own id from `ComboBoxEvent` —
-        // mirroring `FormEvent::DateChanged`'s `id: focused_id` shape so
-        // a consumer can always resolve the event back to a `FormField`
-        // with `form.fields.iter().find(|f| f.id == id)`.
-        match combo.handle_key(key, modifiers)? {
-            ComboBoxEvent::TextChanged { text, .. } => Some(FormControllerEvent::FormAction(
-                FormEvent::ComboBoxTextChanged {
-                    id: focused_id,
-                    value: text,
-                },
-            )),
-            ComboBoxEvent::HighlightChanged { index, .. } => Some(FormControllerEvent::FormAction(
-                FormEvent::ComboBoxHighlightChanged {
-                    id: focused_id,
-                    index,
-                },
-            )),
-            ComboBoxEvent::Committed { value, .. } => Some(FormControllerEvent::FormAction(
-                FormEvent::ComboBoxCommitted {
-                    id: focused_id,
-                    value,
-                },
-            )),
-            ComboBoxEvent::Cancelled { .. } => Some(FormControllerEvent::FormAction(
-                FormEvent::ComboBoxCancelled { id: focused_id },
-            )),
-        }
-    }
-
-    /// Whether the currently-focused field is a non-disabled
-    /// `NumberInput` — gates `handle_key`'s number-input-key
-    /// interception. Mirrors [`Self::focused_field_is_enabled_combo_box`].
-    fn focused_field_is_enabled_number_input(&self) -> bool {
-        let Some(form) = &self.form else {
-            return false;
-        };
-        let Some(focused_id) = &form.focused_field else {
-            return false;
-        };
-        form.fields
-            .iter()
-            .find(|f| &f.id == focused_id)
-            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::NumberInput(_)))
-    }
-
-    /// Route `key`/`modifiers` into the focused `NumberInput`'s own
-    /// [`crate::primitives::number_input::NumberInput::handle_key`] and
-    /// translate the result into a `FormEvent::Number*` variant. Needs no
-    /// shadow-state struct — see this module's "Number input fields" doc
-    /// section.
-    fn handle_number_input_key(
-        &mut self,
-        key: &Key,
-        modifiers: &Modifiers,
-    ) -> Option<FormControllerEvent> {
-        let form = self.form.as_ref()?;
-        let focused_id = form.focused_field?;
-        let field = form.fields.iter().find(|f| f.id == focused_id)?;
-        if field.disabled {
-            return None;
-        }
-        let FieldKind::NumberInput(number) = &field.kind else {
-            return None;
-        };
-
-        // `NumberInput::focused` is documented as "set by the host's
-        // focus-traversal logic" — `Form::focused_field` already singled
-        // this field out above, so force it here rather than depending
-        // on the app to have mirrored that onto the embedded primitive
-        // itself (mirrors `handle_combo_box_key`'s identical override).
-        let mut number = number.clone();
-        number.focused = true;
-
-        match number.handle_key(key, modifiers)? {
-            NumberInputEvent::ValueChanged { value, .. } => {
-                Some(FormControllerEvent::FormAction(FormEvent::NumberChanged {
-                    id: focused_id,
-                    value,
-                }))
-            }
-            NumberInputEvent::DraftChanged { draft, .. } => Some(FormControllerEvent::FormAction(
-                FormEvent::NumberDraftChanged {
-                    id: focused_id,
-                    draft,
-                },
-            )),
-            NumberInputEvent::Committed { value, .. } => Some(FormControllerEvent::FormAction(
-                FormEvent::NumberCommitted {
-                    id: focused_id,
-                    value,
-                },
-            )),
-            NumberInputEvent::Cancelled { .. } => Some(FormControllerEvent::FormAction(
-                FormEvent::NumberCancelled { id: focused_id },
-            )),
-        }
-    }
-
-    /// Whether the currently-focused field is a non-disabled
-    /// `RadioGroup` — gates `handle_key`'s radio-group-key interception.
-    /// Mirrors [`Self::focused_field_is_enabled_number_input`].
-    fn focused_field_is_enabled_radio_group(&self) -> bool {
-        let Some(form) = &self.form else {
-            return false;
-        };
-        let Some(focused_id) = &form.focused_field else {
-            return false;
-        };
-        form.fields
-            .iter()
-            .find(|f| &f.id == focused_id)
-            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::RadioGroup(_)))
-    }
-
-    /// Route `key`/`modifiers` into the focused `RadioGroup`'s own
-    /// [`crate::primitives::radio_group::RadioGroup::handle_key`] and
-    /// translate the result into [`FormEvent::RadioChanged`]. Needs no
-    /// shadow-state struct — see this module's "Radio group fields" doc
-    /// section.
-    fn handle_radio_group_key(
-        &mut self,
-        key: &Key,
-        modifiers: &Modifiers,
-    ) -> Option<FormControllerEvent> {
-        let form = self.form.as_ref()?;
-        let focused_id = form.focused_field?;
-        let field = form.fields.iter().find(|f| f.id == focused_id)?;
-        if field.disabled {
-            return None;
-        }
-        let FieldKind::RadioGroup(group) = &field.kind else {
-            return None;
-        };
-
-        let mut group = group.clone();
-        group.focused = true;
-
-        let RadioGroupEvent::SelectionChanged { index } = group.handle_key(key, modifiers)?;
-        Some(FormControllerEvent::FormAction(FormEvent::RadioChanged {
-            id: focused_id,
-            selected: index,
-        }))
-    }
-
-    /// Whether the currently-focused field is a non-disabled `Slider` —
-    /// gates `handle_key`'s slider-key interception. Mirrors
-    /// [`Self::focused_field_is_enabled_number_input`].
-    fn focused_field_is_enabled_slider(&self) -> bool {
-        let Some(form) = &self.form else {
-            return false;
-        };
-        let Some(focused_id) = &form.focused_field else {
-            return false;
-        };
-        form.fields
-            .iter()
-            .find(|f| &f.id == focused_id)
-            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::Slider { .. }))
-    }
-
-    /// Left/Down steps the focused `Slider` field's value down by
-    /// `step`, Right/Up steps it up, Home/End jump straight to
-    /// `min`/`max` — the same keyboard contract `slider_key_event`
-    /// (`quadraui-binding-core`'s `semantic` module) gives the
-    /// standalone leaf, and `FieldKind::Slider`'s own doc promises
-    /// ("arrow keys step by `step`; Home/End jump to bounds").
-    /// `FieldKind::Slider`'s fields are already the live state (no
-    /// shadow-state struct needed, the same as `NumberInput`/`RadioGroup`
-    /// above), so there's no clone-and-force-focused step here. `None`
-    /// for every other key or a step/jump that doesn't move the clamped
-    /// value, which falls through to `handle_key`'s generic dispatch
-    /// exactly like an unclaimed number-input/radio-group key does.
-    fn handle_slider_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
-        let form = self.form.as_ref()?;
-        let focused_id = form.focused_field?;
-        let field = form.fields.iter().find(|f| f.id == focused_id)?;
-        if field.disabled {
-            return None;
-        }
-        let FieldKind::Slider {
-            value,
-            min,
-            max,
-            step,
-        } = &field.kind
-        else {
-            return None;
-        };
-        let (value, min, max, step) = (*value, *min, *max, *step);
-        let new_value = match key {
-            Key::Named(NamedKey::Left) | Key::Named(NamedKey::Down) => {
-                slider_clamp(value - step, min, max)
-            }
-            Key::Named(NamedKey::Right) | Key::Named(NamedKey::Up) => {
-                slider_clamp(value + step, min, max)
-            }
-            Key::Named(NamedKey::Home) => min,
-            Key::Named(NamedKey::End) => max,
-            _ => return None,
-        };
-        if new_value == value {
-            return None;
-        }
-        Some(FormControllerEvent::FormAction(FormEvent::SliderChanged {
-            id: focused_id,
-            value: new_value,
-        }))
-    }
-
-    /// Whether the currently-focused field is a non-disabled, non-empty
-    /// `Dropdown` — gates `handle_key`'s Up/Down interception. Mirrors
-    /// [`Self::focused_field_is_enabled_combo_box`]; an empty `options`
-    /// list excludes itself so Up/Down fall through to the generic
-    /// dispatch rather than being swallowed with nothing to move between.
-    fn focused_field_is_enabled_dropdown(&self) -> bool {
-        let Some(form) = &self.form else {
-            return false;
-        };
-        let Some(focused_id) = &form.focused_field else {
-            return false;
-        };
-        form.fields
-            .iter()
-            .find(|f| &f.id == focused_id)
-            .is_some_and(|f| {
-                !f.disabled
-                    && matches!(&f.kind, FieldKind::Dropdown { options, .. } if !options.is_empty())
-            })
-    }
-
-    /// Up/Down moves the focused `Dropdown`'s `selected_idx` by one,
-    /// clamped (not wrapping) to `[0, options.len() - 1]`, and emits
-    /// [`FormEvent::DropdownChanged`] immediately — there's no separate
-    /// open/highlight/commit sequence the way `ComboBox` has, so unlike
-    /// [`Self::handle_combo_box_key`] there's no `FormControllerEvent`
-    /// variant for an in-progress-but-uncommitted move. Any other key
-    /// (including Up/Down already at an end of the list) returns `None`,
-    /// which `handle_key` falls through to its generic dispatch — a
-    /// no-op there, since a `Dropdown` has no text to edit.
-    fn handle_dropdown_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
-        let form = self.form.as_ref()?;
-        let focused_id = form.focused_field?;
-        let field = form.fields.iter().find(|f| f.id == focused_id)?;
-        if field.disabled {
-            return None;
-        }
-        let FieldKind::Dropdown {
-            options,
-            selected_idx,
-        } = &field.kind
-        else {
-            return None;
-        };
-        let delta: i32 = match key {
-            Key::Named(NamedKey::Up) => -1,
-            Key::Named(NamedKey::Down) => 1,
-            _ => return None,
-        };
-        let max_idx = options.len().saturating_sub(1) as i32;
-        let new_idx = (*selected_idx as i32 + delta).clamp(0, max_idx) as usize;
-        if new_idx == *selected_idx {
-            return None;
-        }
-        Some(FormControllerEvent::FormAction(
-            FormEvent::DropdownChanged {
-                id: focused_id,
-                selected_idx: new_idx,
-            },
-        ))
-    }
-
-    /// Whether the currently-focused field is a non-disabled
-    /// `ButtonRow`/`ToggleGroup`/`Toolbar` with at least one *enabled*
-    /// item — gates `handle_key`'s Left/Right/Enter/Space interception.
-    /// Mirrors [`Self::focused_field_is_enabled_dropdown`]; an
-    /// all-disabled item list excludes itself the same way an empty
-    /// `options` list does there, so those keys fall through to the
-    /// generic dispatch rather than being swallowed with nothing
-    /// reachable to move to or activate.
-    fn focused_field_is_enabled_item_row(&self) -> bool {
-        let Some(form) = &self.form else {
-            return false;
-        };
-        let Some(focused_id) = &form.focused_field else {
-            return false;
-        };
-        form.fields
-            .iter()
-            .find(|f| &f.id == focused_id)
-            .is_some_and(|f| {
-                !f.disabled
-                    && focusable_items(&f.kind).is_some_and(|items| items.iter().any(|(_, en)| *en))
-            })
-    }
-
-    /// The focused field's current item-focus: its id, the index into
-    /// [`focusable_items`]'s enumeration, and that enumeration itself.
-    /// Reads `self.item_focus` when it still names this field at a
-    /// still-valid index, otherwise falls back to the first enabled item
-    /// — see this module's "Item-level keyboard focus" doc section for
-    /// why a stale/missing cache falls back instead of focusing nothing.
-    /// `None` when there's no focused field, it's disabled, it isn't one
-    /// of the three item-bearing kinds, or every one of its items is
-    /// disabled.
-    fn current_item_focus(&self, form: &Form) -> Option<ItemFocusLookup> {
-        let focused_id = form.focused_field?;
-        let field = form.fields.iter().find(|f| f.id == focused_id)?;
-        if field.disabled {
-            return None;
-        }
-        let items = focusable_items(&field.kind)?;
-        let idx = match &self.item_focus {
-            Some(s)
-                if s.field_id == focused_id && items.get(s.item_idx).is_some_and(|(_, en)| *en) =>
-            {
-                s.item_idx
-            }
-            _ => first_enabled_item_idx(&items)?,
-        };
-        Some((focused_id, idx, items))
-    }
-
-    /// Left/Right move the focused field's item-focus by one, skipping
-    /// any disabled item, without wrapping; Enter/Space activate the
-    /// item `self.item_focus` currently names. Any other key (including
-    /// Left at the first enabled item, or Right at the last) returns
-    /// `None`, which `handle_key` falls through to its generic dispatch
-    /// — a no-op there, since none of the three item-bearing kinds have
-    /// editable text.
-    fn handle_item_row_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
-        let form = self.form.as_ref()?;
-        let (focused_id, cur_idx, items) = self.current_item_focus(form)?;
-        let field = form.fields.iter().find(|f| f.id == focused_id)?;
-
-        match key {
-            Key::Named(NamedKey::Left) => {
-                let new_idx = prev_enabled_item_idx(&items, cur_idx)?;
-                self.item_focus = Some(ItemFocusState {
-                    field_id: focused_id,
-                    item_idx: new_idx,
-                });
-                Some(FormControllerEvent::Consumed)
-            }
-            Key::Named(NamedKey::Right) => {
-                let new_idx = next_enabled_item_idx(&items, cur_idx)?;
-                self.item_focus = Some(ItemFocusState {
-                    field_id: focused_id,
-                    item_idx: new_idx,
-                });
-                Some(FormControllerEvent::Consumed)
-            }
-            Key::Named(NamedKey::Enter) | Key::Char(' ') => {
-                self.item_focus = Some(ItemFocusState {
-                    field_id: focused_id,
-                    item_idx: cur_idx,
-                });
-                let (item_id, _) = items[cur_idx];
-                Some(FormControllerEvent::FormAction(activate_item_event(
-                    field, item_id,
-                )))
-            }
-            _ => None,
-        }
-    }
-
-    /// Whether the currently-focused field is a non-disabled plain
-    /// `Toggle` — gates `handle_key`'s Enter/Space interception. Mirrors
-    /// [`Self::focused_field_is_enabled_item_row`]; a `ToggleGroup`'s
-    /// individual toggles are covered by that item-row path instead (see
-    /// [`focusable_items`]), so this only ever matches the single-value
-    /// `FieldKind::Toggle`.
-    fn focused_field_is_enabled_toggle(&self) -> bool {
-        let Some(form) = &self.form else {
-            return false;
-        };
-        let Some(focused_id) = &form.focused_field else {
-            return false;
-        };
-        form.fields
-            .iter()
-            .find(|f| &f.id == focused_id)
-            .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::Toggle { .. }))
-    }
-
-    /// Enter/Space flip the focused `Toggle`'s value — the keyboard
-    /// equivalent of [`form_click_event`]'s own `FieldKind::Toggle` arm.
-    /// Any other key returns `None`, which `handle_key` falls through to
-    /// its generic dispatch, same as [`Self::handle_item_row_key`].
-    fn handle_toggle_key(&mut self, key: &Key) -> Option<FormControllerEvent> {
-        if !matches!(key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
-            return None;
-        }
-        let form = self.form.as_ref()?;
-        let focused_id = form.focused_field?;
-        let field = form.fields.iter().find(|f| f.id == focused_id)?;
-        let FieldKind::Toggle { value } = &field.kind else {
-            return None;
-        };
-        Some(FormControllerEvent::FormAction(FormEvent::ToggleChanged {
-            id: focused_id,
-            value: !value,
-        }))
-    }
-
-    /// Enter/Space equivalent of this module's Enter/Space activation for
-    /// an item-row field or a plain `Toggle`, invoked from
-    /// [`Self::handle_inner`]'s `CharTyped(' ')` arm before it falls back
-    /// to inserting a literal space — see that arm's own doc for why a
-    /// space delivered as `CharTyped` needs this at all (it bypasses
-    /// `handle_key` entirely, unlike a `KeyPressed` space). `None` when
-    /// the focused field is neither kind, leaving the caller to insert
-    /// the space as text.
-    fn activate_focused_on_space(&mut self) -> Option<FormControllerEvent> {
-        if self.focused_field_is_enabled_item_row() {
-            if let Some(result) = self.handle_item_row_key(&Key::Char(' ')) {
-                return Some(result);
-            }
-        }
-        if self.focused_field_is_enabled_toggle() {
-            if let Some(result) = self.handle_toggle_key(&Key::Char(' ')) {
-                return Some(result);
-            }
-        }
-        None
-    }
-
     /// Resolve the focused item's on-screen rect (if any — see
     /// [`Self::current_item_focus`]) via `backend.form_layout`'s
     /// `item_bounds`, the same per-item geometry
     /// [`crate::primitives::form::form_click_event`]'s caller already
     /// hit-tests against, and paint it through
-    /// [`Backend::draw_focus_ring`] — see this module's "Item-level
-    /// keyboard focus" doc section for why painting goes through that
+    /// [`Backend::draw_focus_ring`] — see `primitives::form::contract`'s
+    /// "Item-level keyboard focus" doc section for why painting goes through that
     /// shared chrome primitive instead of `primitives/form.rs`'s own
     /// painters. Called by [`Self::render`] right after `draw_form`; a
     /// no-op while `!self.has_focus` or nothing is item-focused.
@@ -1569,7 +601,8 @@ impl FormController {
         if !self.has_focus {
             return;
         }
-        let Some((focused_id, idx, items)) = self.current_item_focus(form) else {
+        let Some((focused_id, idx, items)) = form_contract::current_item_focus(form, &self.state)
+        else {
             return;
         };
         let Some((item_id, _)) = items.get(idx).copied() else {
@@ -1594,175 +627,6 @@ impl FormController {
         ));
     }
 
-    /// Move focus to the next/previous non-`Label`, non-`ReadOnly`,
-    /// non-disabled field, wrapping around, and scroll it into view.
-    /// Emits [`FormEvent::FocusChanged`] — the app persists the new
-    /// `focused_field` the same way it already persists a toggle flip
-    /// (see this module's "Keyboard editing" doc section).
-    fn move_focus(&mut self, delta: isize, viewport_rows: usize) -> FormControllerEvent {
-        let Some(form) = &self.form else {
-            return FormControllerEvent::Ignored;
-        };
-        let stops = focus_order(form);
-        if stops.is_empty() {
-            return FormControllerEvent::Ignored;
-        }
-        let n = stops.len();
-        let cur_idx = form
-            .focused_field
-            .and_then(|id| stops.iter().position(|fid| *fid == id));
-        let next_idx = match cur_idx {
-            Some(i) => crate::focus::cycle_index(i, delta, n),
-            None if delta >= 0 => 0,
-            None => n - 1,
-        };
-        let id = stops[next_idx];
-        // The stop's index among `stops` isn't necessarily its index in
-        // `form.fields` (non-focusable fields are filtered out above),
-        // so re-find its field index for scrolling and for seeding the
-        // new field's starting cursor below. Resolved up front (and
-        // `form`'s borrow dropped here) because both steps below need
-        // `&mut self`.
-        let field_idx = form.fields.iter().position(|f| f.id == id);
-        // Seed a starting cursor for the newly-focused field if it's
-        // text-editable, so `build_form` overlays a caret immediately
-        // instead of the field rendering as read-only (no cursor, per
-        // `primitives/form.rs`) until the first keystroke.
-        let new_text_edit = field_idx
-            .and_then(|i| form.fields.get(i))
-            .filter(|f| text_field_value(&f.kind).is_some())
-            .map(|f| {
-                let (cursor, selection_anchor) = default_text_cursor(&f.kind);
-                TextEditState {
-                    field_id: id,
-                    cursor,
-                    selection_anchor,
-                }
-            });
-        // Same seeding as `new_text_edit` above, but for a `DatePicker`:
-        // the newly-focused field's own `focused`/`visible_month` become
-        // the starting scrubbing position, so `build_form` overlays them
-        // immediately rather than waiting for the first keystroke.
-        let new_date_edit =
-            field_idx
-                .and_then(|i| form.fields.get(i))
-                .and_then(|f| match &f.kind {
-                    FieldKind::DatePicker(picker) => Some(DateEditState {
-                        field_id: id,
-                        focused: picker.focused,
-                        visible_month: picker.visible_month,
-                    }),
-                    _ => None,
-                });
-        // Reseed item-focus to the newly-focused field's first enabled
-        // item (see this module's "Item-level keyboard focus" doc
-        // section) — `None` both clears a stale index left over from
-        // the field being left, and leaves it cleared for a field that
-        // isn't one of the three item-bearing kinds.
-        let new_item_focus = field_idx
-            .and_then(|i| form.fields.get(i))
-            .and_then(|f| focusable_items(&f.kind))
-            .and_then(|items| first_enabled_item_idx(&items))
-            .map(|item_idx| ItemFocusState {
-                field_id: id,
-                item_idx,
-            });
-
-        if let Some(field_idx) = field_idx {
-            self.scroll_to_field(field_idx, viewport_rows);
-        }
-        self.text_edit = new_text_edit;
-        self.date_edit = new_date_edit;
-        self.item_focus = new_item_focus;
-        FormControllerEvent::FormAction(FormEvent::FocusChanged { id })
-    }
-
-    /// `Enter` on a focused `TextInput`/`PasswordInput` field commits
-    /// instead of inserting a newline — see this module's "Keyboard
-    /// editing" doc section. (`TextArea` is handled separately in
-    /// `handle_key`.)
-    fn commit_focused_text(&mut self) -> FormControllerEvent {
-        let Some(form) = &self.form else {
-            return FormControllerEvent::Ignored;
-        };
-        let Some(focused_id) = form.focused_field else {
-            return FormControllerEvent::Ignored;
-        };
-        let Some(field) = form.fields.iter().find(|f| f.id == focused_id) else {
-            return FormControllerEvent::Ignored;
-        };
-        if field.disabled {
-            return FormControllerEvent::Ignored;
-        }
-        let Some(value) = text_field_value(&field.kind) else {
-            return FormControllerEvent::Ignored;
-        };
-        let value = value.to_string();
-        self.text_edit = None;
-        FormControllerEvent::FormAction(FormEvent::TextInputCommitted {
-            id: focused_id,
-            value,
-        })
-    }
-
-    /// Apply `op` to the currently-focused text field (if any), emitting
-    /// [`FormEvent::TextInputChanged`] with the new value. The cursor
-    /// produced by `op` is cached on `self.text_edit` so the next
-    /// keystroke continues from it — see `TextEditState`'s doc.
-    fn handle_text_op(&mut self, op: EditOp) -> FormControllerEvent {
-        let Some(form) = &self.form else {
-            return FormControllerEvent::Ignored;
-        };
-        let Some(focused_id) = form.focused_field else {
-            return FormControllerEvent::Ignored;
-        };
-        let Some(field) = form.fields.iter().find(|f| f.id == focused_id) else {
-            return FormControllerEvent::Ignored;
-        };
-        if field.disabled {
-            return FormControllerEvent::Ignored;
-        }
-        let Some(value) = text_field_value(&field.kind) else {
-            return FormControllerEvent::Ignored;
-        };
-
-        let (cursor, anchor) = match &self.text_edit {
-            Some(e) if e.field_id == focused_id => (e.cursor, e.selection_anchor),
-            _ => default_text_cursor(&field.kind),
-        };
-        let cursor = snap_to_char_boundary(value, cursor.min(value.len()));
-
-        let value_before = value.to_string();
-        let (new_value, new_cursor, new_anchor) =
-            crate::primitives::text_input::apply_flat_edit_op(value, cursor, anchor, op);
-        let text_changed = new_value != value_before;
-        // `TextEditor::move_cursor_to` leaves a degenerate `anchor ==
-        // cursor` selection in place for a no-op extend (e.g. Shift+Left
-        // at offset 0). Left uncleared, the *next* keystroke would see a
-        // phantom one-character-wide selection and silently eat a
-        // character. Normalise it away here, where the controller caches
-        // the anchor across keystrokes (unlike a one-shot `TextEditor`
-        // call, which never notices).
-        let new_anchor = new_anchor.filter(|a| *a != new_cursor);
-        self.text_edit = Some(TextEditState {
-            field_id: focused_id,
-            cursor: new_cursor,
-            selection_anchor: new_anchor,
-        });
-        if text_changed {
-            FormControllerEvent::FormAction(FormEvent::TextInputChanged {
-                id: focused_id,
-                value: new_value,
-            })
-        } else {
-            // Cursor-only movement (or selection extend): the field's
-            // text content is unchanged, so there is nothing for the app
-            // to persist — but the cursor/selection did move, so the
-            // caller should still redraw to show it.
-            FormControllerEvent::Consumed
-        }
-    }
-
     fn click_inner(
         &mut self,
         rect: Rect,
@@ -1772,16 +636,15 @@ impl FormController {
         backend: Option<&mut dyn Backend>,
     ) -> FormControllerEvent {
         // Every fresh `MouseDown` starts at most one gesture, so clear
-        // whatever `self.slider_drag` a previous press left behind up
-        // front — not just when this press lands on a field (see the
-        // `FormHit::Field` arm below, which re-arms it) — so a dropped
+        // whatever slider drag a previous press left behind up front —
+        // not just when this press lands on the form body, which the
+        // widget's own `click_field` already does — so a dropped
         // `MouseUp` (the pointer leaving the window with the button
         // still held, common on GTK) can't leave a stale slider drag
-        // that later hijacks an unrelated scrollbar-thumb drag. See this
-        // module's "Slider fields" doc section and `handle_inner`'s
-        // `MouseMoved` arm, which checks `slider_drag` before falling
-        // back to the scrollbar's own `drag_to`.
-        self.slider_drag = None;
+        // that later hijacks an unrelated scrollbar-thumb drag. See
+        // `handle_inner`'s `MouseMoved` arm, which checks `slider_drag`
+        // before falling back to the scrollbar's own `drag_to`.
+        self.state.slider_drag = None;
         if !rect.contains(Point::new(x, y)) {
             return FormControllerEvent::Ignored;
         }
@@ -1810,41 +673,13 @@ impl FormController {
             };
             let local_x = x - form_rect.x;
             let local_y = y - form_rect.y;
-            match layout.hit_test(local_x, local_y) {
-                FormHit::Field(id) => {
-                    // Arms `slider_drag` whenever the press landed on a
-                    // non-disabled `Slider` field's painted track,
-                    // regardless of whether `slider_value_at` below
-                    // actually moves the value — a press that lands
-                    // exactly on the current value still starts a drag
-                    // the next `MouseMoved` should keep tracking. A press
-                    // elsewhere in the row (the label column, the value
-                    // text) only focuses the field, so it must not
-                    // capture the pointer. See this module's "Slider
-                    // fields" doc section.
-                    self.slider_drag =
-                        slider_press_is_on_track(&form, &layout, &id, local_x).then_some(id);
-                    // `NumberInput`'s stepper buttons are sub-regions of
-                    // its single `item_bounds` entry, not separate
-                    // `WidgetId`s the way a `RadioGroup` option or a
-                    // `ToggleGroup` item is — so unlike
-                    // `form_click_event`'s generic per-id dispatch, this
-                    // needs the clicked field's exact on-screen rect (see
-                    // this module's "Number input fields" doc section).
-                    // `None` (not a `NumberInput`, or the click landed
-                    // outside the stepper) falls through to the next
-                    // candidate, and ultimately to the generic path,
-                    // which still resolves a plain field click to
-                    // `FocusChanged`.
-                    let event = number_input_click_event(&form, &layout, &id, local_x, local_y)
-                        .or_else(|| {
-                            slider_value_at(&form, &layout, &id, local_x, TrackOverrun::Reject)
-                        })
-                        .unwrap_or_else(|| form_click_event(&form, &id));
-                    FormControllerEvent::FormAction(event)
-                }
-                FormHit::Empty => FormControllerEvent::Consumed,
-            }
+            handled_to_form_controller_event(form_contract::click_field(
+                &form,
+                &mut self.state,
+                &layout,
+                local_x,
+                local_y,
+            ))
         } else {
             FormControllerEvent::Ignored
         }
@@ -1909,7 +744,8 @@ impl FormController {
     }
 
     /// Continues an in-flight `Slider` drag (armed by [`Self::click_inner`]
-    /// — see this module's "Slider fields" doc section) as the pointer
+    /// — see `primitives::form::contract`'s
+    /// "Slider fields" doc section) as the pointer
     /// moves to `x` within `rect` — the `MouseMoved` counterpart of
     /// [`Self::drag_to`]'s scrollbar-thumb drag. Unlike `drag_to`, which
     /// reuses geometry `ThumbDrag::begin` cached at press time, this
@@ -1925,9 +761,9 @@ impl FormController {
         lh: f32,
         backend: Option<&mut dyn Backend>,
     ) -> FormControllerEvent {
-        let Some(dragging_id) = self.slider_drag else {
+        if self.state.slider_drag.is_none() {
             return FormControllerEvent::Ignored;
-        };
+        }
         let (form_rect, _sb_rect) = split_rect_lh(self.field_count(), lh, rect);
         let form = self.build_form(form_rect, None);
         let layout = if let Some(be) = backend {
@@ -1940,321 +776,16 @@ impl FormController {
             })
         };
         let local_x = x - form_rect.x;
-        match slider_value_at(&form, &layout, &dragging_id, local_x, TrackOverrun::Clamp) {
-            Some(event) => FormControllerEvent::FormAction(event),
-            None => FormControllerEvent::Ignored,
-        }
+        handled_to_form_controller_event(form_contract::slider_drag_to(
+            &form,
+            &self.state,
+            &layout,
+            local_x,
+        ))
     }
 }
 
 // ── Free functions (shared by FormController + SidebarSystem) ────────
-
-/// Determine the `FormEvent` for a click on a form field.
-///
-/// Used by `FormController::handle` and `SidebarSystem` click dispatch.
-pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent {
-    for field in &form.fields {
-        if &field.id == clicked_id {
-            return match &field.kind {
-                FieldKind::Toggle { value } => FormEvent::ToggleChanged {
-                    id: *clicked_id,
-                    value: !value,
-                },
-                FieldKind::Button => FormEvent::ButtonClicked { id: *clicked_id },
-                _ => FormEvent::FocusChanged { id: *clicked_id },
-            };
-        }
-        if let FieldKind::ToggleGroup { toggles } = &field.kind {
-            if let Some(t) = toggles.iter().find(|t| &t.id == clicked_id) {
-                return FormEvent::ToggleChanged {
-                    id: *clicked_id,
-                    value: !t.value,
-                };
-            }
-        }
-        if let FieldKind::ButtonRow { buttons } = &field.kind {
-            if buttons.iter().any(|b| &b.id == clicked_id) {
-                return FormEvent::ButtonClicked { id: *clicked_id };
-            }
-        }
-        if let FieldKind::SegmentedControl { .. } = &field.kind {
-            let prefix = format!("{}__seg_", field.id.as_str());
-            if clicked_id.as_str().starts_with(&prefix) {
-                if let Ok(idx) = clicked_id.as_str()[prefix.len()..].parse::<usize>() {
-                    return FormEvent::SegmentedControlChanged {
-                        id: field.id,
-                        selected_idx: idx,
-                    };
-                }
-            }
-        }
-        if let FieldKind::Toolbar(toolbar) = &field.kind {
-            if toolbar.buttons.iter().any(|btn| {
-                matches!(btn,
-                    crate::primitives::toolbar::ToolbarButton::Action { id, .. }
-                    if id == clicked_id
-                )
-            }) {
-                return FormEvent::ToolbarButtonClicked {
-                    field_id: field.id,
-                    button_id: *clicked_id,
-                };
-            }
-        }
-        // Each `RadioOption` carries its own `WidgetId` (one
-        // `item_bounds` entry per option — see this module's "Radio
-        // group fields" doc section), so a click resolves directly to
-        // the option's index, the same generic per-item path
-        // `ToggleGroup` above uses. `RadioGroup::select` already gates
-        // on the option's own `disabled` flag, so a disabled option's
-        // click falls through to focusing the field instead of
-        // selecting it.
-        if let FieldKind::RadioGroup(group) = &field.kind {
-            if let Some(idx) = group.options.iter().position(|o| &o.id == clicked_id) {
-                if let Some(RadioGroupEvent::SelectionChanged { index }) = group.select(idx) {
-                    return FormEvent::RadioChanged {
-                        id: field.id,
-                        selected: index,
-                    };
-                }
-                return FormEvent::FocusChanged { id: field.id };
-            }
-        }
-    }
-    FormEvent::FocusChanged { id: *clicked_id }
-}
-
-/// `FieldKind::NumberInput`'s stepper buttons are sub-regions of its
-/// single `item_bounds` entry rather than separate `WidgetId`s, so
-/// resolving a click needs the clicked field's exact on-screen rect —
-/// unlike [`form_click_event`]'s generic per-id dispatch, which only
-/// needs `clicked_id`. Returns `None` for every other `FieldKind`, or a
-/// `NumberInput` click that landed outside the stepper (text area, or no
-/// `item_bounds` entry at all) — [`FormController::click_inner`] falls
-/// through to [`form_click_event`] in both cases, which still resolves a
-/// plain click there to `FormEvent::FocusChanged`.
-fn number_input_click_event(
-    form: &Form,
-    layout: &FormLayout,
-    clicked_id: &WidgetId,
-    x: f32,
-    y: f32,
-) -> Option<FormEvent> {
-    let field = form.fields.iter().find(|f| &f.id == clicked_id)?;
-    if field.disabled {
-        return None;
-    }
-    let FieldKind::NumberInput(number) = &field.kind else {
-        return None;
-    };
-    let vf = layout
-        .visible_fields
-        .iter()
-        .find(|vf| &vf.id == clicked_id)?;
-    let (_, control_rect) = vf.item_bounds.first()?;
-    let hit = number.layout(*control_rect).hit_test(Point::new(x, y));
-    let NumberInputEvent::ValueChanged { value, .. } = number.click(hit)? else {
-        return None;
-    };
-    Some(FormEvent::NumberChanged {
-        id: *clicked_id,
-        value,
-    })
-}
-
-/// Clamps `raw` to `[min, max]` without [`f32::clamp`]'s panic on an
-/// inverted `min > max` — `FieldKind::Slider`'s `min`/`max` come from a
-/// wire payload, so a host typo inverting them degrades to a
-/// well-defined (if useless) clamp instead of a panic that would take
-/// the whole render down. Mirrors `quadraui-binding-core`'s
-/// `Slider::clamp`, which the standalone leaf already uses this same way.
-fn slider_clamp(raw: f32, min: f32, max: f32) -> f32 {
-    raw.max(min).min(max)
-}
-
-/// Cells of track [`form_field_measure`]'s backend-free fallback gives a
-/// [`FieldKind::Slider`] field — `tui::form`'s own natural track width,
-/// which is what `ControlWidth::Content` resolves to there. This
-/// fallback has no row width to resolve `ControlWidth::Fill` against, so
-/// it reports the natural track for every mode; a host with a live
-/// [`Backend`] gets that backend's own resolved track instead.
-const SLIDER_TRACK_CELLS: f32 = 12.0;
-
-/// The on-screen rect of a non-disabled `FieldKind::Slider` field's
-/// painted track, in the same form-local space as
-/// `number_input_click_event`'s `x`/`y`.
-///
-/// It is the field's own
-/// [`crate::primitives::form::VisibleFormField::item_bounds`] entry, the
-/// same lookup [`number_input_click_event`] uses for its stepper. Every
-/// layout path populates it for a `FieldKind::Slider` field — the pixel
-/// backends' `layout_metrics::form_field_measure`, `tui::form`'s
-/// cell-unit measure, and [`form_field_measure`]'s backend-free fallback
-/// — and each one reports the exact rect its own painter fills the track
-/// into, so the value under the cursor is the value a click produces
-/// regardless of label position or `ControlWidth`.
-///
-/// A layout from a measure closure that reports no items at all falls
-/// back to the field's whole row (`vf.bounds`), but only when that row
-/// and the painted track actually coincide — an empty label, or a
-/// resolved [`LabelPosition::Hidden`] — since only then does the row's
-/// left edge match the track's. For every other resolved label position
-/// the row also spans the label column, so this reports no track rather
-/// than one whose left edge is really the label's.
-///
-/// `None` for every other `FieldKind`, a disabled slider, a field with
-/// no visible rect at all, and a zero-width track.
-fn slider_track_rect(form: &Form, layout: &FormLayout, id: &WidgetId) -> Option<Rect> {
-    let field = form.fields.iter().find(|f| &f.id == id)?;
-    if field.disabled || !matches!(field.kind, FieldKind::Slider { .. }) {
-        return None;
-    }
-    let vf = layout.visible_fields.iter().find(|vf| &vf.id == id)?;
-    let track = match vf.item_bounds.first() {
-        Some((_, rect)) => *rect,
-        None => {
-            let has_label_column = field.label.visible_width() > 0
-                && form.resolved_label_position(field) != LabelPosition::Hidden;
-            if has_label_column {
-                return None;
-            }
-            vf.bounds
-        }
-    };
-    (track.width > 0.0).then_some(track)
-}
-
-/// Whether a press at form-local `x` landed on the field's painted
-/// track — what [`FormController::click_inner`] arms `slider_drag` on,
-/// so a press on a labeled slider's label column focuses the row without
-/// capturing the pointer for a drag that would then move the value.
-fn slider_press_is_on_track(form: &Form, layout: &FormLayout, id: &WidgetId, x: f32) -> bool {
-    slider_track_rect(form, layout, id).is_some_and(|t| x >= t.x && x < t.x + t.width)
-}
-
-/// Maps a pointer `x` (local to the form) across a `FieldKind::Slider`
-/// field's painted track to a value — mirrors `quadraui-binding-core`'s
-/// own `slider_click_event`, which gives the standalone leaf the same
-/// "the pointer lands at that fraction of the track" contract
-/// `FieldKind::Slider`'s doc promises, rather than a fixed one-`step`
-/// nudge regardless of position.
-///
-/// `overrun` decides what an `x` outside the track's own span means, so a
-/// press and the drag it starts can share one mapping without sharing
-/// that judgement: [`FormController::click_inner`] passes
-/// [`TrackOverrun::Reject`] (a fresh press has to land on the track to
-/// move the value — on the label column or the value text it falls
-/// through to [`form_click_event`]'s `FocusChanged`), while
-/// [`FormController::slider_drag_to`] passes [`TrackOverrun::Clamp`]
-/// (the pointer is already captured, so dragging past an end pins to
-/// that end instead of dropping the drag).
-///
-/// `None` whenever [`slider_track_rect`] reports no track, for a
-/// rejected overrun, and for an `x` that doesn't actually move the
-/// clamped value.
-fn slider_value_at(
-    form: &Form,
-    layout: &FormLayout,
-    clicked_id: &WidgetId,
-    x: f32,
-    overrun: TrackOverrun,
-) -> Option<FormEvent> {
-    let field = form.fields.iter().find(|f| &f.id == clicked_id)?;
-    let FieldKind::Slider {
-        value, min, max, ..
-    } = &field.kind
-    else {
-        return None;
-    };
-    let track = slider_track_rect(form, layout, clicked_id)?;
-    let raw = (x - track.x) / track.width;
-    if overrun == TrackOverrun::Reject && !(0.0..1.0).contains(&raw) {
-        return None;
-    }
-    let fraction = raw.clamp(0.0, 1.0);
-    let new_value = slider_clamp(min + fraction * (max - min), *min, *max);
-    if new_value == *value {
-        return None;
-    }
-    Some(FormEvent::SliderChanged {
-        id: *clicked_id,
-        value: new_value,
-    })
-}
-
-/// What a pointer x outside a slider's painted track means to
-/// [`slider_value_at`].
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum TrackOverrun {
-    /// A fresh press: an x off the track is not a track interaction at
-    /// all, so no value comes out of it.
-    Reject,
-    /// A drag the track already captured: an x off either end pins the
-    /// value to that end.
-    Clamp,
-}
-
-// ── Item-level keyboard focus helpers ─────────────────────────────────
-//
-// See `FormController`'s "Item-level keyboard focus" doc section.
-
-/// The first enabled item's index in `items` (as enumerated by
-/// [`focusable_items`]), or `None` if every item is disabled.
-fn first_enabled_item_idx(items: &[(WidgetId, bool)]) -> Option<usize> {
-    items.iter().position(|(_, enabled)| *enabled)
-}
-
-/// The nearest enabled item's index *before* `cur`, or `None` if `cur`
-/// is already the first enabled item — the "no wrap" half of Left's
-/// contract (see this module's "Item-level keyboard focus" doc section).
-fn prev_enabled_item_idx(items: &[(WidgetId, bool)], cur: usize) -> Option<usize> {
-    items[..cur]
-        .iter()
-        .enumerate()
-        .rev()
-        .find(|(_, (_, enabled))| *enabled)
-        .map(|(i, _)| i)
-}
-
-/// The nearest enabled item's index *after* `cur`, or `None` if `cur` is
-/// already the last enabled item — the "no wrap" half of Right's
-/// contract (see this module's "Item-level keyboard focus" doc section).
-fn next_enabled_item_idx(items: &[(WidgetId, bool)], cur: usize) -> Option<usize> {
-    items
-        .iter()
-        .enumerate()
-        .skip(cur + 1)
-        .find(|(_, (_, enabled))| *enabled)
-        .map(|(i, _)| i)
-}
-
-/// The `FormEvent` a mouse click on this item already emits via
-/// [`form_click_event`] — reused by [`FormController::handle_item_row_key`]
-/// so Enter/Space activates the keyboard-focused item identically to a
-/// click on it. `field.kind` must be one of the three kinds
-/// [`focusable_items`] recognizes (every caller already established that
-/// via [`FormController::current_item_focus`]/
-/// [`FormController::focused_field_is_enabled_item_row`]).
-fn activate_item_event(field: &crate::primitives::form::FormField, item_id: WidgetId) -> FormEvent {
-    match &field.kind {
-        FieldKind::ButtonRow { .. } => FormEvent::ButtonClicked { id: item_id },
-        FieldKind::ToggleGroup { toggles } => {
-            let value = toggles
-                .iter()
-                .find(|t| t.id == item_id)
-                .map(|t| !t.value)
-                .unwrap_or(true);
-            FormEvent::ToggleChanged { id: item_id, value }
-        }
-        FieldKind::Toolbar(_) => FormEvent::ToolbarButtonClicked {
-            field_id: field.id,
-            button_id: item_id,
-        },
-        _ => unreachable!(
-            "activate_item_event is only called for a field focusable_items recognized"
-        ),
-    }
-}
 
 // ── Keyboard editing helpers ──────────────────────────────────────────
 
@@ -2271,64 +802,6 @@ fn activate_item_event(field: &crate::primitives::form::FormField, item_id: Widg
 /// instead of a dialog's buttons.
 pub(crate) fn focus_order(form: &Form) -> Vec<WidgetId> {
     crate::primitives::form::focus_order(form)
-}
-
-/// The editable text of a `TextInput` / `TextArea` / `PasswordInput`
-/// field, or `None` for every other `FieldKind` (not text-editable).
-fn text_field_value(kind: &FieldKind) -> Option<&str> {
-    match kind {
-        FieldKind::TextInput { value, .. }
-        | FieldKind::TextArea { value, .. }
-        | FieldKind::PasswordInput { value, .. } => Some(value.as_str()),
-        _ => None,
-    }
-}
-
-/// Starting cursor/selection for a text field that has no cached
-/// [`TextEditState`] yet — the field's own `cursor` (defaulting to
-/// end-of-text) and `selection_anchor` where the kind carries one.
-fn default_text_cursor(kind: &FieldKind) -> (usize, Option<usize>) {
-    match kind {
-        FieldKind::TextInput {
-            value,
-            cursor,
-            selection_anchor,
-            ..
-        } => (cursor.unwrap_or(value.len()), *selection_anchor),
-        FieldKind::TextArea { value, cursor, .. } => (cursor.unwrap_or(value.len()), None),
-        FieldKind::PasswordInput { value, cursor, .. } => (cursor.unwrap_or(value.len()), None),
-        _ => (0, None),
-    }
-}
-
-/// Write `cursor`/`selection_anchor` back onto `kind` for rendering.
-/// No-op for `FieldKind` variants with no cursor (anything but the three
-/// text-editable kinds).
-fn overlay_text_cursor(kind: &mut FieldKind, cursor: usize, selection_anchor: Option<usize>) {
-    match kind {
-        FieldKind::TextInput {
-            cursor: c,
-            selection_anchor: a,
-            ..
-        } => {
-            *c = Some(cursor);
-            *a = selection_anchor;
-        }
-        FieldKind::TextArea { cursor: c, .. } | FieldKind::PasswordInput { cursor: c, .. } => {
-            *c = Some(cursor);
-        }
-        _ => {}
-    }
-}
-
-/// Write `focused`/`visible_month` back onto `kind` for rendering.
-/// No-op for every `FieldKind` other than `DatePicker` — mirrors
-/// `overlay_text_cursor`'s shape.
-fn overlay_date_edit(kind: &mut FieldKind, focused: CalendarDate, visible_month: CalendarDate) {
-    if let FieldKind::DatePicker(picker) = kind {
-        picker.focused = focused;
-        picker.visible_month = visible_month;
-    }
 }
 
 /// Append a trailing `" *"` span to the label of every field that carries
@@ -2356,28 +829,6 @@ fn overlay_required_marker(form: &mut Form, rules: &FormRules, theme: Option<&Th
             };
             field.label.spans.push(marker);
         }
-    }
-}
-
-/// Maps a key to the string name [`crate::primitives::date_picker::DatePicker::navigate`]
-/// recognises, or `None` for a key it doesn't act on (e.g. `Tab`, so focus
-/// traversal off a `DatePicker` field keeps working in `handle_key`).
-///
-/// The name itself comes from the shared [`NamedKey::name`] table — this
-/// function only narrows *which* keys `DatePicker` claims, not how they're
-/// spelled.
-fn date_picker_key_name(key: &Key) -> Option<std::borrow::Cow<'static, str>> {
-    match key {
-        Key::Named(
-            named @ (NamedKey::Left
-            | NamedKey::Right
-            | NamedKey::Up
-            | NamedKey::Down
-            | NamedKey::PageUp
-            | NamedKey::PageDown
-            | NamedKey::Enter),
-        ) => Some(named.name()),
-        _ => None,
     }
 }
 
@@ -2654,11 +1105,14 @@ impl crate::primitives::layout_metrics::TextMeasure for CharWidthMeasure {
 #[allow(deprecated)]
 mod tests {
     use super::*;
+    use crate::event::{Key, NamedKey};
     use crate::primitives::combo_box::ComboBox;
+    use crate::primitives::date_picker::CalendarDate;
+    use crate::primitives::form::contract::slider_track_rect;
     use crate::primitives::form::{FieldKind, FormField, ToggleGroupItem};
     use crate::primitives::number_input::NumberInput;
     use crate::primitives::radio_group::{RadioGroup, RadioOption};
-    use crate::types::StyledText;
+    use crate::types::{Modifiers, StyledText};
 
     fn make_fields(n: usize) -> Vec<FormField> {
         (0..n)
@@ -4179,7 +2633,7 @@ mod tests {
 
         // Realistic round-trip: the app persists `value` from the
         // emitted `TextInputChanged` (same as it already does for a
-        // toggle flip) but — per this module's "Keyboard editing" doc
+        // toggle flip) but — per `primitives::form::contract`'s "Keyboard editing" doc
         // section — never has to track `cursor` itself, so it stays
         // `None` here.
         fc.set_form(Form {
@@ -4264,8 +2718,8 @@ mod tests {
     #[test]
     fn ctrl_c_on_a_focused_text_field_is_ignored_not_typed() {
         // Every backend delivers Ctrl+C as `Key::Char('c')` with
-        // `modifiers.ctrl == true` (see this module's "Keyboard editing"
-        // doc section) — without the guard in `handle_key`, this would
+        // `modifiers.ctrl == true` (see `primitives::form::contract`'s
+        // "Keyboard editing" doc section) — without the guard in `handle_key`, this would
         // insert a literal 'c' into the field *and* report
         // `TextInputChanged`, i.e. the keystroke was "consumed" as text
         // instead of falling through to an app-level Copy accelerator.
@@ -5676,6 +4130,7 @@ mod tests {
     #[test]
     #[cfg(feature = "tui")]
     fn click_on_a_top_labelled_radio_groups_painted_row_selects_the_right_option() {
+        use crate::primitives::form::LabelPosition;
         use crate::tui::TuiBackend;
 
         let mut field = radio_group_field("g", radio_group(Some(0)), false);
@@ -5851,7 +4306,8 @@ mod tests {
 
     // ── Item-level keyboard focus ──────────────────────────────────────
     //
-    // See this module's "Item-level keyboard focus" doc section.
+    // See `primitives::form::contract`'s "Item-level keyboard focus"
+    // doc section.
 
     fn button_row_field(id: &str, buttons: &[(&str, bool)]) -> FormField {
         FormField {
@@ -6239,7 +4695,7 @@ mod tests {
             RECT,
         );
         // `move_focus` only emits `FocusChanged` — the app persists the new
-        // `focused_field` itself (this module's "Keyboard editing" doc
+        // `focused_field` itself (`primitives::form::contract`'s "Keyboard editing" doc
         // section) — so push it back before the next keystroke.
         fc.set_form(Form {
             focused_field: Some(WidgetId::new("row")),
