@@ -4165,6 +4165,7 @@ pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCt
         backend.nerd_fonts_enabled(),
     )
     .with_editor_line_height(backend.line_height())
+    .with_scaled_text_rows(backend.scales_text_rows())
 }
 
 impl<B: Backend + ?Sized> DrawsPrimitives for B {}

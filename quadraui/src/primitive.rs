@@ -189,6 +189,9 @@ pub struct LayoutCtx<'a> {
     /// The calling backend's editor-font row height — see
     /// [`Self::with_editor_line_height`] and [`Self::editor_line_height`].
     editor_line_height: Option<f32>,
+    /// Whether the calling backend paints per-row text scale — see
+    /// [`Self::with_scaled_text_rows`] and [`Self::scales_text_rows`].
+    scales_text_rows: bool,
 }
 
 /// Prints the three scalar metrics plus whether a text measurer is
@@ -237,6 +240,7 @@ impl LayoutCtx<'static> {
             measurer: None,
             style: None,
             editor_line_height: None,
+            scales_text_rows: false,
         }
     }
 }
@@ -291,6 +295,25 @@ impl<'a> LayoutCtx<'a> {
     /// [`Self::line_height`].
     pub fn editor_line_height(&self) -> f32 {
         self.editor_line_height.unwrap_or(self.line_height)
+    }
+
+    /// This ctx with `scales` as [`crate::Backend::scales_text_rows`], so
+    /// a layout that reserves taller rows for scaled text (a markdown
+    /// heading) agrees with a host that sized the same box from that
+    /// backend capability.
+    pub fn with_scaled_text_rows(self, scales: bool) -> Self {
+        Self {
+            scales_text_rows: scales,
+            ..self
+        }
+    }
+
+    /// The capability attached with [`Self::with_scaled_text_rows`] —
+    /// [`crate::Backend::scales_text_rows`] on a ctx
+    /// [`crate::DrawsPrimitives`] built — else `false`, every row one
+    /// [`Self::line_height`] tall.
+    pub fn scales_text_rows(&self) -> bool {
+        self.scales_text_rows
     }
 
     /// The style attached with [`Self::with_style`], else
