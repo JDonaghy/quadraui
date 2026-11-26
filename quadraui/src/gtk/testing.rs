@@ -926,6 +926,11 @@ mod tests {
             "click should have flipped the toggle state"
         );
 
+        // The pointer is still pressed on the segment; clear the ambient
+        // press and repaint so the probe reads the resting ON colour.
+        crate::interaction::reset_ambient_interaction();
+        driver.render();
+
         // Pixel assertion: same bounds (segment didn't move — the bar
         // layout is unchanged), different dominant colour.
         let pixel_after = dominant_pixel(&mut driver, bounds_before);

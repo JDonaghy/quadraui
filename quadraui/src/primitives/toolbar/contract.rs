@@ -270,7 +270,7 @@ impl Primitive for Toolbar {
 
     /// Runs the shared pixel painter every GUI wrapper already paints
     /// through, at the already-resolved layout translated into surface
-    /// coordinates.
+    /// coordinates, tinting the button `env` reports hovered or pressed.
     fn paint(
         &self,
         layout: &Self::Layout,
@@ -285,15 +285,10 @@ impl Primitive for Toolbar {
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            // `Primitive::paint`'s fixed signature carries no per-call
-            // interaction-state channel (see that trait's own doc), so
-            // the hover/press pair comes from the "no such state"
-            // defaults `PaintState` already falls back to — named
-            // through `ToolbarState` rather than a bare `None`/`None`
-            // literal pair. The descriptor's own `focused_index` is the
-            // one piece of paint state that is not pointer-derived, and
-            // the painter reads it off `self`.
-            let state = ToolbarState::default();
+            // The descriptor's own `focused_index` is the one piece of
+            // paint state that is not pointer-derived, and the painter
+            // reads it off `self`.
+            let (hovered, pressed) = self.interaction_ids(env);
             let translated =
                 translate_toolbar_layout(layout.layout.clone(), layout.area.x, layout.area.y);
             super::native_surface_paint::paint(
@@ -301,8 +296,8 @@ impl Primitive for Toolbar {
                 &translated,
                 surface,
                 theme,
-                state.hovered_id(self),
-                state.pressed_id(self),
+                hovered.as_ref(),
+                pressed.as_ref(),
                 super::ToolbarPaintOptions {
                     valign: layout.valign,
                 },
@@ -320,7 +315,7 @@ impl Primitive for Toolbar {
     }
 
     /// Delegates to the `super::cell_paint` entry point the descriptor
-    /// asks for. A plain `Clip`/`Horizontal` bar goes through
+    /// asks for, tinting the button `env` reports hovered or pressed. A plain `Clip`/`Horizontal` bar goes through
     /// [`super::cell_paint::draw_toolbar_with_options`], the only cell
     /// painter that honours [`Toolbar::valign`]; a wrapping, menu-overflow
     /// or vertical bar goes through
@@ -339,10 +334,9 @@ impl Primitive for Toolbar {
             .ratatui_buffer()
             .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-        let state = ToolbarState::default();
         let options = self.layout_options();
-        let hovered = state.hovered_id(self);
-        let pressed = state.pressed_id(self);
+        let (hovered, pressed) = self.interaction_ids(env);
+        let (hovered, pressed) = (hovered.as_ref(), pressed.as_ref());
         if options.overflow == super::ToolbarOverflow::Clip
             && options.orientation == super::ToolbarOrientation::Horizontal
         {
@@ -751,6 +745,65 @@ impl Interactive for Toolbar {
 }
 
 impl Toolbar {
+    /// The ids of the buttons `env` reports hovered and pressed — each
+    /// [`SubTarget`] decoded through [`ToolbarSubPart::from_sub_target`]
+    /// and [`Self::part_id`].
+    #[cfg_attr(
+        not(any(
+            feature = "tui",
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )),
+        allow(dead_code)
+    )]
+    pub(crate) fn interaction_ids(
+        &self,
+        env: &crate::PaintEnv,
+    ) -> (Option<WidgetId>, Option<WidgetId>) {
+        let id = |sub: Option<SubTarget>| self.part_id(ToolbarSubPart::from_sub_target(sub?)?);
+        (id(env.hovered_sub(&self.id)), id(env.pressed_sub(&self.id)))
+    }
+
+    /// The id the painters highlight for `part`: the button a slot or a
+    /// dropdown arrow belongs to, or a `Group` child's own id. `None` for
+    /// the `»` affordance, which paints at rest, and for a part that no
+    /// longer names a button in [`Self::buttons`].
+    #[cfg_attr(
+        not(any(
+            feature = "tui",
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )),
+        allow(dead_code)
+    )]
+    fn part_id(&self, part: ToolbarSubPart) -> Option<WidgetId> {
+        match (
+            part,
+            self.buttons.get(match part {
+                ToolbarSubPart::Button(i) | ToolbarSubPart::DropdownArrow(i) => i,
+                ToolbarSubPart::GroupChild { item, .. } => item,
+                ToolbarSubPart::OverflowChevron => return None,
+            })?,
+        ) {
+            (
+                ToolbarSubPart::Button(_),
+                ToolbarButton::Action { id, .. }
+                | ToolbarButton::Field { id, .. }
+                | ToolbarButton::MenuButton { id, .. },
+            )
+            | (ToolbarSubPart::DropdownArrow(_), ToolbarButton::MenuButton { id, .. }) => Some(*id),
+            (ToolbarSubPart::GroupChild { child, .. }, ToolbarButton::Group { items, .. }) => {
+                match items.get(child)? {
+                    ToolbarButton::Action { id, .. } => Some(*id),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+
     /// Indices into [`Self::buttons`] the keyboard cursor may land on:
     /// every enabled [`ToolbarButton::Action`], [`ToolbarButton::Field`]
     /// and [`ToolbarButton::MenuButton`], skipping separators, inline
@@ -1349,6 +1402,122 @@ mod tests {
         assert_eq!(Interactive::focus(&inert), FocusSpec::None);
         assert!(Interactive::a11y_actions(&inert, &ToolbarState::default()).is_empty());
         assert_eq!(Interactive::focus(&bar()), FocusSpec::Stop);
+    }
+
+    /// Every sub-part decodes to the id the painters highlight: a slot
+    /// and a dropdown arrow to their button, a `Group` child to its own
+    /// id, and the `»` affordance or a non-button slot to nothing.
+    #[test]
+    fn each_sub_part_decodes_to_the_id_its_painter_highlights() {
+        let bar = Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+            action("tb:a", "A", true),
+            ToolbarButton::Separator,
+            menu_button("tb:more", "More"),
+            ToolbarButton::Group {
+                id: WidgetId::new("tb:grp"),
+                items: vec![action("tb:g0", "G0", true), action("tb:g1", "G1", true)],
+                exclusive: false,
+                label: None,
+            },
+        ]);
+        let id = |part| bar.part_id(part);
+        assert_eq!(id(ToolbarSubPart::Button(0)), Some(WidgetId::new("tb:a")));
+        assert_eq!(id(ToolbarSubPart::Button(1)), None);
+        assert_eq!(
+            id(ToolbarSubPart::DropdownArrow(2)),
+            Some(WidgetId::new("tb:more"))
+        );
+        assert_eq!(id(ToolbarSubPart::DropdownArrow(0)), None);
+        assert_eq!(
+            id(ToolbarSubPart::GroupChild { item: 3, child: 1 }),
+            Some(WidgetId::new("tb:g1"))
+        );
+        assert_eq!(id(ToolbarSubPart::GroupChild { item: 3, child: 2 }), None);
+        assert_eq!(id(ToolbarSubPart::Button(9)), None);
+        assert_eq!(id(ToolbarSubPart::OverflowChevron), None);
+    }
+
+    /// [`Toolbar::interaction_ids`] reads this bar's own address out of
+    /// the env, and a press counts only while the pointer is still on it.
+    #[test]
+    fn interaction_ids_read_this_bars_hover_and_press_from_the_env() {
+        let bar = bar();
+        let theme = crate::Theme::default();
+        let style = crate::Style::default();
+        let a = Some((bar.id, Some(ToolbarSubPart::Button(0).sub_target())));
+        let more = Some((bar.id, Some(ToolbarSubPart::DropdownArrow(3).sub_target())));
+        let ids = |interaction: crate::InteractionState| {
+            bar.interaction_ids(
+                &crate::PaintEnv::new(&theme, &style).with_interaction(&interaction),
+            )
+        };
+        assert_eq!(
+            ids(crate::InteractionState::from_targets(a, a)),
+            (Some(WidgetId::new("tb:a")), Some(WidgetId::new("tb:a")))
+        );
+        assert_eq!(
+            ids(crate::InteractionState::from_targets(more, a)),
+            (Some(WidgetId::new("tb:more")), None)
+        );
+        let other = Some((
+            WidgetId::new("elsewhere"),
+            Some(ToolbarSubPart::Button(0).sub_target()),
+        ));
+        assert_eq!(
+            ids(crate::InteractionState::from_targets(other, other)),
+            (None, None)
+        );
+    }
+
+    /// [`Primitive::paint_cells`] paints the button its env hovers or
+    /// presses exactly as the cell painter does when handed that id.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn paint_cells_tints_the_button_its_env_names() {
+        use ratatui::buffer::Buffer;
+
+        let bar = bar();
+        let theme = crate::Theme::default();
+        let style = crate::Style::default();
+        let layout = cell_layout_of(&bar);
+        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        let blank = || Buffer::empty(ratatui::layout::Rect::new(0, 0, 50, 4));
+        let via_env = |interaction: crate::InteractionState| {
+            let mut buf = blank();
+            Primitive::paint_cells(
+                &bar,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&theme, &style).with_interaction(&interaction),
+            );
+            buf
+        };
+        let direct = |hovered: Option<&WidgetId>, pressed: Option<&WidgetId>| {
+            let mut buf = blank();
+            let _ = super::super::cell_paint::draw_toolbar_with_options(
+                &mut buf,
+                area,
+                &bar,
+                &theme,
+                hovered,
+                pressed,
+                super::super::ToolbarPaintOptions {
+                    valign: layout.valign,
+                },
+            );
+            buf
+        };
+        let a_id = WidgetId::new("tb:a");
+        let a = Some((bar.id, Some(ToolbarSubPart::Button(0).sub_target())));
+
+        let at_rest = via_env(crate::InteractionState::new());
+        assert_eq!(at_rest, direct(None, None));
+        let hovered = via_env(crate::InteractionState::from_targets(a, None));
+        assert_ne!(hovered, at_rest, "env hover must tint the button");
+        assert_eq!(hovered, direct(Some(&a_id), None));
+        let pressed = via_env(crate::InteractionState::from_targets(a, a));
+        assert_ne!(pressed, hovered, "a press must paint over the hover tint");
+        assert_eq!(pressed, direct(Some(&a_id), Some(&a_id)));
     }
 
     #[test]

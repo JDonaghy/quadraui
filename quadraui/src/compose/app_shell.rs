@@ -2219,6 +2219,7 @@ mod tests {
             bar,
             &theme,
             nerd_fonts_enabled,
+            bar.hovered,
         );
         (area.x..area.x + area.width)
             .map(|x| buf[(x, area.y)].symbol().to_string())

@@ -1350,6 +1350,53 @@ pub(crate) mod native_surface_paint {
             assert_eq!(pressed_surface.fills[1].1, base.darken(0.05));
         }
 
+        /// [`crate::primitive::Primitive::paint`] reads the hovered and
+        /// pressed segment from its [`crate::PaintEnv`], addressed by the
+        /// segment's index in `visible_segments`.
+        #[test]
+        fn primitive_paint_tints_the_segment_its_env_names() {
+            use crate::interactive::SubTarget;
+            use crate::primitive::{LayoutCtx, Primitive};
+
+            let bar = sample_bar();
+            let theme = Theme::default();
+            let style = crate::Style::default();
+            let base = bar.left_segments[0].bg;
+            let layout = Primitive::layout(
+                &bar,
+                &LayoutCtx::new(16.0, 8.0, false),
+                Rect::new(0.0, 0.0, 400.0, 20.0),
+            );
+            let mode = layout
+                .layout
+                .visible_segments
+                .iter()
+                .position(|vs| vs.side == StatusSegmentSide::Left && vs.segment_idx == 0)
+                .expect("the mode segment is visible");
+            let target = Some((bar.id, Some(SubTarget(mode as u64))));
+            let mode_fill = |interaction: &crate::InteractionState| {
+                let mut surface = RecordingSurface::default();
+                let env = crate::PaintEnv::new(&theme, &style).with_interaction(interaction);
+                Primitive::paint(&bar, &layout, &mut surface, &env);
+                surface.fills[1].1
+            };
+
+            assert_eq!(mode_fill(&crate::InteractionState::new()), base);
+            assert_eq!(
+                mode_fill(&crate::InteractionState::from_targets(target, None)),
+                base.lighten(0.05)
+            );
+            assert_eq!(
+                mode_fill(&crate::InteractionState::from_targets(target, target)),
+                base.darken(0.05)
+            );
+            // A press the pointer has dragged off paints at rest.
+            assert_eq!(
+                mode_fill(&crate::InteractionState::from_targets(None, target)),
+                base
+            );
+        }
+
         #[test]
         fn paint_and_click_round_trip() {
             let bar = sample_bar();
@@ -1723,15 +1770,8 @@ impl crate::primitive::Primitive for StatusBar {
         StatusBarPrimitiveLayout { area: rect, layout }
     }
 
-    /// The shared pixel painter, at the area [`Self::layout`] resolved.
-    ///
-    /// Hover and press tints are painted untinted here: the pointer state
-    /// that drives them lives in [`StatusBarState`], and the type-erased
-    /// [`crate::primitive::DynWidget::paint`] seam does not yet hand a
-    /// widget's own [`crate::primitive::PaintState`] to
-    /// [`Primitive::paint`](crate::primitive::Primitive::paint). Callers
-    /// that need the tint reach `native_surface_paint::paint` with their
-    /// own `hovered_id`/`pressed_id`.
+    /// The shared pixel painter, at the area [`Self::layout`] resolved,
+    /// tinting the clickable segment `env` reports hovered or pressed.
     fn paint(
         &self,
         layout: &StatusBarPrimitiveLayout,
@@ -1747,6 +1787,7 @@ impl crate::primitive::Primitive for StatusBar {
         ))]
         {
             let _ = style;
+            let (hovered, pressed) = self.interaction_ids(&layout.layout, env);
             native_surface_paint::paint(
                 self,
                 surface,
@@ -1755,8 +1796,8 @@ impl crate::primitive::Primitive for StatusBar {
                 layout.area.y,
                 layout.area.width,
                 layout.area.height,
-                None,
-                None,
+                hovered.as_ref(),
+                pressed.as_ref(),
             );
         }
         #[cfg(not(any(
@@ -1769,8 +1810,8 @@ impl crate::primitive::Primitive for StatusBar {
         }
     }
 
-    /// [`cell_paint::paint`] over `buf`, wrapped in the TUI
-    /// [`crate::CellSurface`].
+    /// [`cell_paint::paint`] over `cells`, tinting the clickable segment
+    /// `env` reports hovered or pressed.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1785,11 +1826,52 @@ impl crate::primitive::Primitive for StatusBar {
             layout.area.width.max(0.0).round(),
             layout.area.height.max(0.0).round(),
         );
-        cell_paint::paint(self, &layout.layout, area, cells, theme, None, None);
+        let (hovered, pressed) = self.interaction_ids(&layout.layout, env);
+        cell_paint::paint(
+            self,
+            &layout.layout,
+            area,
+            cells,
+            theme,
+            hovered.as_ref(),
+            pressed.as_ref(),
+        );
     }
 }
 
 impl StatusBar {
+    /// The `action_id`s of the segments `env` reports hovered and pressed,
+    /// decoding each [`crate::interactive::SubTarget`] as an index into
+    /// `layout.visible_segments` — the index space
+    /// [`crate::interactive::Interactive::sub_regions`] publishes.
+    #[cfg_attr(
+        not(any(
+            feature = "tui",
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )),
+        allow(dead_code)
+    )]
+    fn interaction_ids(
+        &self,
+        layout: &StatusBarLayout,
+        env: &crate::PaintEnv,
+    ) -> (Option<WidgetId>, Option<WidgetId>) {
+        let action = |sub: Option<crate::interactive::SubTarget>| {
+            let vs = layout.visible_segments.get(usize::try_from(sub?.0).ok()?)?;
+            let seg = match vs.side {
+                StatusSegmentSide::Left => self.left_segments.get(vs.segment_idx),
+                StatusSegmentSide::Right => self.right_segments.get(vs.segment_idx),
+            }?;
+            seg.action_id
+        };
+        (
+            action(env.hovered_sub(&self.id)),
+            action(env.pressed_sub(&self.id)),
+        )
+    }
+
     /// The clickable segment at bar-local `(x, y)`, or `None` for a
     /// non-clickable segment or the gap between the groups — the one
     /// pointer-to-segment resolution both this widget's
@@ -2802,6 +2884,55 @@ mod cell_paint_tests {
             buf[(0, 0)].bg,
             expected,
             "hovered segment bg should be lightened"
+        );
+    }
+
+    /// [`crate::primitive::Primitive::paint_cells`] reads the hovered and
+    /// pressed segment from its [`crate::PaintEnv`].
+    #[test]
+    fn primitive_paint_cells_tints_the_segment_its_env_names() {
+        use crate::interactive::SubTarget;
+        use crate::primitive::{LayoutCtx, Primitive};
+
+        let bar = make_clickable_bar();
+        let base_bg = bar.left_segments[0].bg;
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let layout = Primitive::layout(
+            &bar,
+            &LayoutCtx::new(1.0, 1.0, false),
+            crate::event::Rect::new(0.0, 0.0, 20.0, 1.0),
+        );
+        let target = Some((bar.id, Some(SubTarget(0))));
+        let first_cell_bg = |interaction: &crate::InteractionState| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
+            let env = crate::PaintEnv::new(&theme, &style).with_interaction(interaction);
+            Primitive::paint_cells(
+                &bar,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &env,
+            );
+            buf[(0, 0)].bg
+        };
+
+        assert_eq!(
+            first_cell_bg(&crate::InteractionState::new()),
+            ratatui_color(base_bg)
+        );
+        assert_eq!(
+            first_cell_bg(&crate::InteractionState::from_targets(target, None)),
+            ratatui_color(base_bg.lighten(0.05))
+        );
+        assert_eq!(
+            first_cell_bg(&crate::InteractionState::from_targets(target, target)),
+            ratatui_color(base_bg.darken(0.05))
+        );
+        // Hover on another widget leaves this bar at rest.
+        let elsewhere = Some((WidgetId::new("other"), Some(SubTarget(0))));
+        assert_eq!(
+            first_cell_bg(&crate::InteractionState::from_targets(elsewhere, None)),
+            ratatui_color(base_bg)
         );
     }
 

@@ -20,10 +20,11 @@
 //! `ActivityBarEvent::ItemClicked { id }`.
 //!
 //! The bar paints through the widget contract
-//! ([`crate::backend::DrawsPrimitives::draw_dyn`]). The hovered row and
-//! the paint-time [`ActivityBarStyle`] ride on the descriptor itself
-//! ([`ActivityBar::hovered`], [`ActivityBar::style`]), so every painter
-//! reads them from the one value it is handed.
+//! ([`crate::backend::DrawsPrimitives::draw_dyn`]). The paint-time
+//! [`ActivityBarStyle`] rides on the descriptor ([`ActivityBar::style`]).
+//! The hovered row is the descriptor's own [`ActivityBar::hovered`] when
+//! the host sets one, otherwise the row the pointer is over, read from
+//! the [`crate::PaintEnv`] every painter is handed.
 
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;
@@ -108,9 +109,10 @@ pub struct ActivityBar {
     /// the default icon size.
     #[serde(default)]
     pub style: ActivityBarStyle,
-    /// The [`ActivityBarLayout::visible_items`] row the pointer is over,
-    /// tinted by every painter. A host fills it from its own hover
-    /// tracking (for example [`ActivityBarState::hovered_idx`]).
+    /// The [`ActivityBarLayout::visible_items`] row to tint as hovered,
+    /// set by a host that tracks hover itself (for example from
+    /// [`ActivityBarState::hovered_idx`]). `None` tints the row the
+    /// pointer is over in the [`crate::PaintEnv`] the bar paints with.
     #[serde(default)]
     pub hovered: Option<usize>,
 }
@@ -1111,8 +1113,8 @@ impl crate::primitive::Primitive for ActivityBar {
     }
 
     /// The shared rail painter, through [`native_surface_paint::paint`],
-    /// with the descriptor's own [`ActivityBar::style`] and
-    /// [`ActivityBar::hovered`] row.
+    /// with the descriptor's own [`ActivityBar::style`] and the row
+    /// [`Self::painted_hover`] resolves.
     fn paint(
         &self,
         layout: &ActivityBarPrimitiveLayout,
@@ -1135,7 +1137,7 @@ impl crate::primitive::Primitive for ActivityBar {
                 &self.style,
                 surface,
                 theme,
-                self.hovered,
+                self.painted_hover(env),
                 layout.nerd_fonts,
             );
         }
@@ -1149,7 +1151,8 @@ impl crate::primitive::Primitive for ActivityBar {
         }
     }
 
-    /// The cell-grid rail painter, [`cell_paint::paint`].
+    /// The cell-grid rail painter, [`cell_paint::paint`], with the row
+    /// [`Self::painted_hover`] resolves.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1168,7 +1171,36 @@ impl crate::primitive::Primitive for ActivityBar {
             layout.area.width.max(0.0).round() as u16,
             layout.area.height.max(0.0).round() as u16,
         );
-        let _ = cell_paint::paint(buf, area, self, theme, layout.nerd_fonts);
+        let _ = cell_paint::paint(
+            buf,
+            area,
+            self,
+            theme,
+            layout.nerd_fonts,
+            self.painted_hover(env),
+        );
+    }
+}
+
+impl ActivityBar {
+    /// The [`ActivityBarLayout::visible_items`] row to tint: the
+    /// descriptor's own [`ActivityBar::hovered`] when the host sets one,
+    /// otherwise the row `env` reports the pointer over — its
+    /// [`crate::interactive::SubTarget`] is that same index.
+    #[cfg_attr(
+        not(any(
+            feature = "tui",
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )),
+        allow(dead_code)
+    )]
+    fn painted_hover(&self, env: &crate::PaintEnv) -> Option<usize> {
+        self.hovered.or_else(|| {
+            env.hovered_sub(&self.id)
+                .and_then(|sub| usize::try_from(sub.0).ok())
+        })
     }
 }
 
@@ -1189,9 +1221,9 @@ pub(crate) mod cell_paint {
     use ratatui::layout::Rect;
 
     /// Paint `bar` into `area` on `buf` with its own
-    /// [`ActivityBar::style`] and [`ActivityBar::hovered`] row, returning
-    /// the bar-relative row hits (bottom-pinned items first, then
-    /// top-pinned, the order [`ActivityBar::hovered`] indexes).
+    /// [`ActivityBar::style`], tinting row `hovered_idx`, and return the
+    /// bar-relative row hits (bottom-pinned items first, then
+    /// top-pinned, the order `hovered_idx` indexes).
     ///
     /// `nerd_fonts_enabled` picks which half of each item's
     /// [`crate::Icon`] paints: `glyph` when `true`, `fallback` when
@@ -1202,6 +1234,7 @@ pub(crate) mod cell_paint {
         bar: &ActivityBar,
         theme: &Theme,
         nerd_fonts_enabled: bool,
+        hovered_idx: Option<usize>,
     ) -> Vec<ActivityBarRowHit> {
         if area.width == 0 || area.height == 0 {
             return Vec::new();
@@ -1211,7 +1244,7 @@ pub(crate) mod cell_paint {
 
         // Row hits are built at origin (0, 0), the precondition of
         // `row_hits_from_toolbar_layout`, which also makes them the
-        // lookup table `bar.hovered` indexes into.
+        // lookup table `hovered_idx` indexes into.
         let zero_origin_layout = tui_toolbar_layout_with_options(
             &toolbar,
             Rect::new(0, 0, area.width, area.height),
@@ -1219,7 +1252,7 @@ pub(crate) mod cell_paint {
         );
         let row_hits = bar.row_hits_from_toolbar_layout(&zero_origin_layout);
 
-        let hovered_id = bar.hovered.and_then(|i| row_hits.get(i)).map(|h| h.id);
+        let hovered_id = hovered_idx.and_then(|i| row_hits.get(i)).map(|h| h.id);
 
         let _ = draw_toolbar_with_rail_style(
             buf,
@@ -2321,6 +2354,64 @@ mod native_surface_paint_tests {
             surface.fills,
         );
     }
+
+    /// [`crate::primitive::Primitive::paint`] tints the row its
+    /// [`crate::PaintEnv`] reports hovered exactly as it tints the row a
+    /// host sets in [`ActivityBar::hovered`].
+    #[test]
+    fn primitive_paint_tints_the_row_its_env_hovers() {
+        use crate::interactive::SubTarget;
+        use crate::primitive::{LayoutCtx, Primitive};
+
+        let item = |id: &str, icon: &str, tooltip: &str| ActivityItem {
+            id: WidgetId::new(id),
+            icon: Icon::new(icon, icon),
+            tooltip: tooltip.to_string(),
+            is_active: false,
+            is_keyboard_selected: false,
+        };
+        let bar = ActivityBar {
+            id: WidgetId::new("activity"),
+            top_items: vec![
+                item("activity:explorer", "E", "Explorer"),
+                item("activity:search", "S", "Search"),
+            ],
+            bottom_items: vec![item("activity:settings", "*", "Settings")],
+            active_accent: None,
+            selection_bg: None,
+            is_keyboard_focused: false,
+            style: Default::default(),
+            hovered: None,
+        };
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let layout = Primitive::layout(
+            &bar,
+            &LayoutCtx::new(16.0, 8.0, false),
+            Rect::new(0.0, 0.0, 48.0, 144.0),
+        );
+        let fills = |bar: &ActivityBar, interaction: &crate::InteractionState| {
+            let mut surface = RecordingSurface::default();
+            let env = crate::PaintEnv::new(&theme, &style).with_interaction(interaction);
+            Primitive::paint(bar, &layout, &mut surface, &env);
+            surface.fills
+        };
+
+        let at_rest = fills(&bar, &crate::InteractionState::new());
+        let env_hovered = fills(
+            &bar,
+            &crate::InteractionState::from_targets(Some((bar.id, Some(SubTarget(1)))), None),
+        );
+        let field_hovered = fills(
+            &ActivityBar {
+                hovered: Some(1),
+                ..bar.clone()
+            },
+            &crate::InteractionState::new(),
+        );
+        assert_ne!(env_hovered, at_rest, "env hover must tint a row");
+        assert_eq!(env_hovered, field_hovered);
+    }
 }
 
 /// The cell-grid rail's paint/hit-region coverage, driven through
@@ -2359,6 +2450,55 @@ mod cell_paint_tests {
         }
     }
 
+    /// [`crate::primitive::Primitive::paint_cells`] tints the row its
+    /// [`crate::PaintEnv`] reports hovered exactly as it tints the row a
+    /// host sets in [`ActivityBar::hovered`], and the host's row wins
+    /// when both name one.
+    #[test]
+    fn primitive_paint_cells_tints_the_row_its_env_hovers() {
+        use crate::interactive::SubTarget;
+        use crate::primitive::{LayoutCtx, Primitive};
+
+        let b = bar();
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let layout = Primitive::layout(
+            &b,
+            &LayoutCtx::new(1.0, 1.0, false),
+            crate::event::Rect::new(0.0, 0.0, 3.0, 10.0),
+        );
+        let paint = |bar: &ActivityBar, interaction: &crate::InteractionState| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 3, 10));
+            let env = crate::PaintEnv::new(&theme, &style).with_interaction(interaction);
+            Primitive::paint_cells(
+                bar,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &env,
+            );
+            buf
+        };
+        let hover = |row: u64| {
+            crate::InteractionState::from_targets(Some((b.id, Some(SubTarget(row)))), None)
+        };
+        let with_field = |row: usize| ActivityBar {
+            hovered: Some(row),
+            ..b.clone()
+        };
+
+        let at_rest = paint(&b, &crate::InteractionState::new());
+        let env_hovered = paint(&b, &hover(2));
+        assert_ne!(env_hovered, at_rest, "env hover must tint a row");
+        assert_eq!(
+            env_hovered,
+            paint(&with_field(2), &crate::InteractionState::new())
+        );
+        assert_eq!(
+            paint(&with_field(1), &hover(2)),
+            paint(&with_field(1), &crate::InteractionState::new())
+        );
+    }
+
     /// Hit regions are **bar-relative**, not absolute, so the top row
     /// starts at `0.0` no matter where the bar is painted.
     ///
@@ -2372,7 +2512,7 @@ mod cell_paint_tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 3, 10);
-        let hits = draw_activity_bar(&mut buf, area, &b, &theme, false);
+        let hits = draw_activity_bar(&mut buf, area, &b, &theme, false, b.hovered);
 
         let span = |id: &str| {
             let h = hits
@@ -2409,7 +2549,14 @@ mod cell_paint_tests {
 
         let spans = |y: u16| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 30));
-            let hits = draw_activity_bar(&mut buf, Rect::new(0, y, 3, 10), &b, &theme, false);
+            let hits = draw_activity_bar(
+                &mut buf,
+                Rect::new(0, y, 3, 10),
+                &b,
+                &theme,
+                false,
+                b.hovered,
+            );
             hits.iter()
                 .map(|h| (h.y_start, h.y_end))
                 .collect::<Vec<_>>()
@@ -2434,7 +2581,7 @@ mod cell_paint_tests {
         let theme = Theme::default();
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 4, 10);
-        draw_activity_bar(&mut buf, area, &b, &theme, false);
+        draw_activity_bar(&mut buf, area, &b, &theme, false, b.hovered);
 
         let row_text = |y: u16| {
             (area.x..area.x + area.width)
@@ -2465,7 +2612,7 @@ mod cell_paint_tests {
         let row_text = |nerd_fonts_enabled: bool| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
             let area = Rect::new(0, 0, 4, 10);
-            draw_activity_bar(&mut buf, area, &b, &theme, nerd_fonts_enabled);
+            draw_activity_bar(&mut buf, area, &b, &theme, nerd_fonts_enabled, b.hovered);
             (area.x..area.x + area.width)
                 .map(|x| buf[(x, area.y)].symbol().to_string())
                 .collect::<String>()
@@ -2496,7 +2643,7 @@ mod cell_paint_tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 0, 3, 10);
         b.style = style;
-        draw_activity_bar(&mut buf, area, &b, &theme, false);
+        draw_activity_bar(&mut buf, area, &b, &theme, false, b.hovered);
 
         let fill = ratatui_color(fill_color);
         assert_ne!(
@@ -2531,7 +2678,7 @@ mod cell_paint_tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 0, 3, 10);
         b.style = ActivityBarStyle::default();
-        draw_activity_bar(&mut buf, area, &b, &theme, false);
+        draw_activity_bar(&mut buf, area, &b, &theme, false, b.hovered);
 
         assert_eq!(
             buf[(area.x, area.y)].symbol(),
