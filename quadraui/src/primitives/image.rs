@@ -10,28 +10,30 @@
 //!   hand in — `Image` carries no asset registry, cache eviction policy,
 //!   or lifetime tied to anything but the value itself).
 //!
-//! # Decoding is a backend concern
+//! # Decoding is a surface concern
 //!
 //! [`Image`] only carries a source (bytes or a path) plus layout
-//! metadata; it never decodes pixels itself. Each backend's
-//! `Backend::draw_image` decodes through its native stack — GTK via
-//! `gdk_pixbuf`, macOS via `NSImage`/ImageIO, Win via WIC, and TUI
-//! (behind the `tui-images` Cargo feature) via `crate::tui::image_decode`
-//! — so the primitive stays free of image-format dependencies. TUI's own
-//! decode path has two tiers past plain [`Image::fallback_text`]: real
-//! pixels via the Kitty graphics protocol on a terminal that has
-//! confirmed support for it, or — on any other truecolor terminal — a
-//! `▀`-glyph half-block mosaic, a lower-fidelity but still recognisable
-//! thumbnail (`crate::tui::image::draw_image_halfblock`). There is no
-//! further ASCII-art decoder under the half-block tier; see that
-//! function's doc comment for the per-backend contract.
+//! metadata; it never decodes pixels itself. Its [`crate::Primitive`]
+//! impl hands the source to the surface it paints on: a pixel backend's
+//! [`crate::PaintSurface::surface_draw_image`] decodes through its native
+//! stack — GTK via `gdk_pixbuf`, macOS via ImageIO, Win via WIC — and a
+//! cell grid's [`crate::CellSurface::emit_graphics`] (TUI, behind the
+//! `tui-images` Cargo feature) decodes via `crate::tui::image_decode`, so
+//! the primitive stays free of image-format dependencies. TUI's graphics
+//! channel has two tiers past plain [`Image::fallback_text`]: real pixels
+//! via the Kitty graphics protocol on a terminal that has confirmed
+//! support for it, or — on any other truecolor terminal — a `▀`-glyph
+//! half-block mosaic, a lower-fidelity but still recognisable thumbnail.
+//! When the surface reports it painted nothing, the primitive paints
+//! [`Image::fallback_text`] itself.
 //!
-//! Each backend also maintains a small fixed-capacity LRU decode cache
+//! Each surface also keeps a small fixed-capacity LRU decode cache
 //! (`crate::image_cache::ImageCache`) keyed on a hash of `image.source`
 //! plus the resolved paint size/DPI scale, so repeated paints of the
 //! same source at the same size reuse the decoded bitmap instead of
 //! re-decoding.
 
+use crate::backend::ImagePaintResult;
 use crate::event::Rect;
 use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
@@ -125,6 +127,10 @@ pub struct Image {
 /// applying `fit` against a bounding rect. See [`Image::layout`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ImageLayout {
+    /// The rect the image was fitted within — the paint clip, and the
+    /// area a surface resolves its own placement against (a cell grid
+    /// fits in pixel space, since terminal cells are not square).
+    pub area: Rect,
     /// Where the image should actually be painted, in the same
     /// coordinate space as the `bounds` passed to [`Image::layout`].
     /// Always contained within `bounds` for [`ImageFit::Contain`] and
@@ -172,10 +178,16 @@ impl Image {
         let Some((iw, ih)) = self.intrinsic_size else {
             // No intrinsic size to preserve an aspect ratio against —
             // filling the rect is the only sensible default.
-            return ImageLayout { bounds };
+            return ImageLayout {
+                area: bounds,
+                bounds,
+            };
         };
         if iw == 0 || ih == 0 || bounds.width <= 0.0 || bounds.height <= 0.0 {
-            return ImageLayout { bounds };
+            return ImageLayout {
+                area: bounds,
+                bounds,
+            };
         }
         let iw = iw as f32;
         let ih = ih as f32;
@@ -185,9 +197,135 @@ impl Image {
             ImageFit::Contain => fit_within(bounds, iw, ih, true),
             ImageFit::Cover => fit_within(bounds, iw, ih, false),
         };
-        ImageLayout { bounds: target }
+        ImageLayout {
+            area: bounds,
+            bounds: target,
+        }
+    }
+
+    /// Paint through `surface`'s decoder into `layout`'s area, reporting
+    /// whether real pixels landed. [`crate::Primitive::paint`] discards
+    /// the report; a caller that needs it calls this directly.
+    pub(crate) fn paint_reporting(
+        &self,
+        layout: &ImageLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+    ) -> ImagePaintResult {
+        surface.surface_draw_image(layout.area, self)
+    }
+
+    /// Paint onto a cell grid: the surface's graphics channel when it has
+    /// one, else [`Self::fallback_text`] via [`Self::paint_fallback_cells`].
+    /// Reports [`ImagePaintResult::Painted`] only when the graphics
+    /// channel painted.
+    #[cfg(feature = "tui")]
+    pub(crate) fn paint_cells_reporting(
+        &self,
+        layout: &ImageLayout,
+        cells: &mut dyn crate::CellSurface,
+        theme: &crate::Theme,
+    ) -> ImagePaintResult {
+        if cells.emit_graphics(layout.area, self) {
+            return ImagePaintResult::Painted;
+        }
+        self.paint_fallback_cells(layout.area, cells, theme);
+        ImagePaintResult::Unsupported
+    }
+
+    /// Paint [`Self::fallback_text`] into `area`, centered horizontally
+    /// on the vertical middle row and clipped to `area`'s width. An empty
+    /// fallback or a zero-size `area` paints nothing.
+    #[cfg(feature = "tui")]
+    pub(crate) fn paint_fallback_cells(
+        &self,
+        area: Rect,
+        cells: &mut dyn crate::CellSurface,
+        theme: &crate::Theme,
+    ) {
+        let x = area.x.max(0.0).round() as u16;
+        let y = area.y.max(0.0).round() as u16;
+        let width = area.width.max(0.0).round() as u16;
+        let height = area.height.max(0.0).round() as u16;
+        if width == 0 || height == 0 || self.fallback_text.is_empty() {
+            return;
+        }
+        let visible = crate::text_util::display_width(&self.fallback_text);
+        let start_col = (width as usize).saturating_sub(visible) / 2;
+        let style = crate::cell_surface::solid_style(theme.foreground, theme.background);
+        cells.put_str_clipped(
+            x + start_col as u16,
+            y + height / 2,
+            &self.fallback_text,
+            width - start_col as u16,
+            style,
+        );
     }
 }
+
+impl crate::primitive::Primitive for Image {
+    type Layout = ImageLayout;
+    type Event = ImageHit;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Image(self.clone())
+    }
+
+    /// On a cell grid, [`Self::fallback_text`]'s measured width by one
+    /// row — the size that paints wherever the terminal cannot rasterise
+    /// the image, and the only one with a defined cell mapping; an empty
+    /// fallback reports no size. On a pixel surface, `intrinsic_size`
+    /// when known.
+    fn measure(
+        &self,
+        ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        if ctx.char_width <= 1.0 {
+            if self.fallback_text.is_empty() {
+                return crate::NaturalSize::NONE;
+            }
+            let width = ctx.text_width(&self.fallback_text, crate::FontRole::Chrome);
+            return crate::NaturalSize::new(Some(width), Some(ctx.editor_line_height()));
+        }
+        match self.intrinsic_size {
+            Some((w, h)) => crate::NaturalSize::new(Some(w as f32), Some(h as f32)),
+            None => crate::NaturalSize::NONE,
+        }
+    }
+
+    fn layout(&self, _ctx: &crate::primitive::LayoutCtx, rect: Rect) -> ImageLayout {
+        Image::layout(self, rect)
+    }
+
+    fn paint_zone(&self, layout: &ImageLayout, _units: crate::primitive::Units) -> Option<Rect> {
+        Some(layout.area)
+    }
+
+    fn paint(
+        &self,
+        layout: &ImageLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        _env: &crate::PaintEnv,
+    ) {
+        self.paint_reporting(layout, surface);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &ImageLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        self.paint_cells_reporting(layout, cells, env.theme());
+    }
+}
+
+crate::non_interactive!(Image);
 
 /// Scale `(iw, ih)` to fit `bounds` — `contain` picks the smaller of the
 /// two axis scales (never overflows `bounds`), `!contain` (cover) picks

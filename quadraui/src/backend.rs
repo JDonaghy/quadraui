@@ -3310,7 +3310,7 @@ pub trait Backend: sealed::Sealed {
     /// [`crate::tui::kitty_graphics`]'s Unicode placeholder content, and
     /// report [`ImagePaintResult::Painted`] — the terminal emulator
     /// itself composites the actual bitmap behind those cells. On any
-    /// other truecolor terminal, [`crate::tui::image::draw_image_halfblock`]
+    /// other truecolor terminal, `crate::tui::cell_surface::draw_image_halfblock`
     /// paints a lower-fidelity `▀`-glyph half-block mosaic instead,
     /// still reporting `Painted` — there is no further ASCII-art decoder
     /// under *that* tier. Short of both (a bare `tui` build, a
