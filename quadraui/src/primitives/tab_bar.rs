@@ -192,7 +192,7 @@ pub struct TabBar {
     pub glyphs: TabBarGlyphs,
 }
 
-fn default_true() -> bool {
+pub(crate) fn default_true() -> bool {
     true
 }
 
