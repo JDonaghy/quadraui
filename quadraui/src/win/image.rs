@@ -15,16 +15,13 @@
 //! pair `super::panel` uses for its own
 //! overflow-prone content).
 //!
-//! # No decode cache here yet
+//! # Decode cache
 //!
 //! An [`ID2D1Bitmap`] is bound to the [`ID2D1RenderTarget`]
-//! `CreateBitmapFromWicBitmap` built it from. `WinBackend::ensure_surface`'s
-//! device-lost recovery (`D2DERR_RECREATE_TARGET`, see `win::backend`'s
-//! module docs) can replace that target, so a cache would hand back a
-//! bitmap bound to a target that no longer exists post-recovery.
-//! Wiring this in correctly needs the cache to be invalidated in lockstep
-//! with `ensure_surface`'s rebuild, which needs verifying against a real
-//! Direct2D device-loss cycle — out of scope for now.
+//! `CreateBitmapFromWicBitmap` built it from, so [`draw_image_cached`]'s
+//! cache lives on the backend's surface beside that target and is dropped
+//! with it whenever device-lost recovery rebuilds the target. [`draw_image`]
+//! stays uncached, one decode per call.
 //!
 //! # Why WIC instead of `ID2D1RenderTarget::CreateBitmap` from raw pixels
 //!
@@ -65,6 +62,7 @@ use super::services::ensure_com_initialized;
 use super::text::{pop_clip, push_clip};
 use crate::backend::ImagePaintResult;
 use crate::event::Rect;
+use crate::image_cache::ImageCache;
 use crate::primitives::image::{Image, ImageSource};
 
 /// Decode `source`'s encoded bytes into an [`ID2D1Bitmap`] bound to
@@ -150,7 +148,37 @@ pub fn draw_image(target: &ID2D1RenderTarget, rect: Rect, image: &Image) -> Imag
     let Some(bitmap) = decode_bitmap(target, &image.source) else {
         return ImagePaintResult::Unsupported;
     };
+    paint_bitmap(target, rect, image, &bitmap)
+}
 
+/// [`draw_image`], decoding through `cache` — see the module docs'
+/// "Decode cache". The bitmap is decoded at its own size and stretched at
+/// paint time, so the cache key's size and scale stay constant.
+pub(crate) fn draw_image_cached(
+    target: &ID2D1RenderTarget,
+    rect: Rect,
+    image: &Image,
+    cache: &mut ImageCache<ID2D1Bitmap>,
+) -> ImagePaintResult {
+    if rect.width <= 0.0 || rect.height <= 0.0 {
+        return ImagePaintResult::Unsupported;
+    }
+    let source = &image.source;
+    let Some(bitmap) = cache.get_or_decode(source, 0, 0, 1.0, || decode_bitmap(target, source))
+    else {
+        return ImagePaintResult::Unsupported;
+    };
+    paint_bitmap(target, rect, image, bitmap)
+}
+
+/// Stretch `bitmap` into `image.layout(rect)`'s resolved rect, clipped to
+/// `rect`.
+fn paint_bitmap(
+    target: &ID2D1RenderTarget,
+    rect: Rect,
+    image: &Image,
+    bitmap: &ID2D1Bitmap,
+) -> ImagePaintResult {
     let dest = image.layout(rect).bounds;
     let dest_f = D2D_RECT_F {
         left: dest.x,
@@ -161,13 +189,13 @@ pub fn draw_image(target: &ID2D1RenderTarget, rect: Rect, image: &Image) -> Imag
 
     push_clip(target, rect);
     // SAFETY: `target` is the caller's live `ID2D1RenderTarget`; `bitmap`
-    // came from `decode_bitmap` above, bound to this same `target` (see
-    // the module doc's "No decode cache here yet" note on why a bitmap
-    // must stay bound to the target that created it). `dest_f` is a
+    // came from `decode_bitmap`, bound to this same `target` (see the
+    // module doc's "Decode cache" note on why a bitmap must stay bound to
+    // the target that created it). `dest_f` is a
     // plain stack struct borrowed for the duration of this call.
     unsafe {
         target.DrawBitmap(
-            &bitmap,
+            bitmap,
             Some(&dest_f),
             1.0,
             D2D1_BITMAP_INTERPOLATION_MODE_LINEAR,
