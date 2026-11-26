@@ -2,9 +2,10 @@
 //! highlighted text, cursor, selections, diagnostics, and overlays.
 //!
 //! The data shape mirrors `vimcode::render::RenderedWindow` /
-//! `RenderedLine` field-for-field. Two rasterisers consume the
-//! primitive: `quadraui::tui::draw_editor` and
-//! `quadraui::gtk::draw_editor`.
+//! `RenderedLine` field-for-field. `Editor` implements
+//! [`crate::Primitive`] and [`crate::Interactive`] (see `contract`): its
+//! layout lives in `layout`, its cell painter in `paint_cells` and its
+//! pixel painter, shared by every pixel backend, in `paint_pixels`.
 //!
 //! ## Module shape
 //!
