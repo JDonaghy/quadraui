@@ -3938,6 +3938,11 @@ pub fn schema() -> Vec<DefJson> {
             ("PathPicker", tup(vec![re("WidgetId"), any_()])),
             ("DualModePalette", tup(vec![re("WidgetId"), any_()])),
             ("AppMenu", tup(vec![re("WidgetId"), any_()])),
+            // A shell, bottom-panel or workspace intent rides as the
+            // event's own externally-tagged serde shape.
+            ("AppShell", tup(vec![re("WidgetId"), any_()])),
+            ("BottomPanel", tup(vec![re("WidgetId"), any_()])),
+            ("Workspace", tup(vec![re("WidgetId"), any_()])),
             ("Toolbar", tup(vec![re("WidgetId"), re("ToolbarEvent")])),
             ("Canvas", tup(vec![re("WidgetId"), re("CanvasEvent")])),
             ("BackendNative", backend_native_event),
@@ -6902,6 +6907,9 @@ mod coverage {
                 "PathPicker",
                 "DualModePalette",
                 "AppMenu",
+                "AppShell",
+                "BottomPanel",
+                "Workspace",
                 "Toolbar",
                 "Canvas",
                 "BackendNative",

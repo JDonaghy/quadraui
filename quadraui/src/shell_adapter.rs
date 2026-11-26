@@ -455,7 +455,9 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             AppShellEvent::BottomItemClicked { .. } => {
                 return self.notify_shell_event(backend, area, &shell_ev);
             }
-            AppShellEvent::Consumed => return Reaction::Redraw,
+            AppShellEvent::Consumed | AppShellEvent::ActivityCursorMoved { .. } => {
+                return Reaction::Redraw
+            }
             AppShellEvent::Ignored => {}
         }
 

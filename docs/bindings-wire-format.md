@@ -5104,6 +5104,9 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `PathPicker` | `[WidgetId, unknown]` |  |
 | `DualModePalette` | `[WidgetId, unknown]` |  |
 | `AppMenu` | `[WidgetId, unknown]` |  |
+| `AppShell` | `[WidgetId, unknown]` |  |
+| `BottomPanel` | `[WidgetId, unknown]` |  |
+| `Workspace` | `[WidgetId, unknown]` |  |
 | `Toolbar` | `[WidgetId, ToolbarEvent]` |  |
 | `Canvas` | `[WidgetId, CanvasEvent]` |  |
 | `BackendNative` | `BackendNativeEvent` |  |

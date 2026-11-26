@@ -1193,6 +1193,16 @@ pub enum UiEvent {
     /// A [`crate::compose::AppMenu`] opened, closed or moved within its
     /// cascade; the host applies the new view onto the menu.
     AppMenu(WidgetId, crate::compose::AppMenuEvent),
+    /// An app shell ([`crate::ShellView`]) resolved a gesture on its own
+    /// chrome — a panel switch, a sidebar or bottom-panel resize or hide,
+    /// a bottom activity item click. The id is the shell's own.
+    AppShell(WidgetId, crate::compose::app_shell::AppShellEvent),
+    /// A [`crate::BottomPanel`]'s tab strip activated or closed a tab, or
+    /// toggled the panel maximised. The id is the panel's own.
+    BottomPanel(WidgetId, crate::compose::bottom_panel::BottomPanelEvent),
+    /// A [`crate::Workspace`] strip asked to activate, close or promote a
+    /// document. The id is the workspace's own.
+    Workspace(WidgetId, crate::compose::workspace::WorkspaceEvent),
     /// A [`crate::Toolbar`] button was clicked (mouse) or activated via
     /// Enter/Space while keyboard-focused — the id is the toolbar's own,
     /// matching every other chrome-bar variant above (`StatusBar`,

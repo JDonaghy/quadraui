@@ -65,7 +65,6 @@
 //! composes [`crate::ScrollView`] the same way these compose their own
 //! primitive instead of duplicating offset/thumb math.
 
-mod activity_bar_controller;
 pub mod app_shell;
 pub mod bottom_panel;
 pub mod chat_controller;
@@ -101,10 +100,12 @@ mod widget_host;
 pub mod workspace;
 
 pub use app_shell::{
-    AppShell, AppShellEvent, AppShellLayout, BottomBand, PanelDefinition, ShellPosition,
+    AppShell, AppShellEvent, AppShellLayout, BottomBand, PanelDefinition, ShellDrag, ShellPosition,
+    ShellRegion, ShellView, ShellViewLayout, ShellViewState,
 };
 pub use bottom_panel::{
-    BackendWidget, BottomPanelConfig, BottomPanelController, BottomPanelEvent, BottomPanelLayout,
+    BackendWidget, BottomPanel, BottomPanelConfig, BottomPanelController, BottomPanelEvent,
+    BottomPanelItem, BottomPanelLayout, BottomPanelPrimitiveLayout, BottomPanelState,
     BottomPanelTab,
 };
 pub use chat_controller::{ChatController, ChatControllerAction, ChatRole, ChatTurn};
@@ -203,4 +204,7 @@ pub use tree_controller::{
 pub use tree_table_controller::{
     NodeId, TreeTableController, TreeTableControllerEvent, TreeTableNodeData,
 };
-pub use workspace::{WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout};
+pub use workspace::{
+    Workspace, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
+    WorkspacePrimitiveLayout, WorkspaceState,
+};
