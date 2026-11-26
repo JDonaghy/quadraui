@@ -188,9 +188,6 @@ impl PaintSurface for D2dSurface<'_> {
     }
 }
 
-/// The terminal's shared pixel painter through [`D2dSurface`] against a
-/// headless Direct2D target — cell backgrounds, wide glyphs, overlays,
-/// clipping and the split divider.
 pub(crate) mod image {
     //! Direct2D + WIC rasteriser for [`crate::primitives::image::Image`]
     //!
@@ -368,6 +365,9 @@ pub(crate) mod image {
     }
 }
 
+/// The terminal's shared pixel painter through [`D2dSurface`] against a
+/// headless Direct2D target — cell backgrounds, wide glyphs, overlays,
+/// clipping and the split divider.
 #[cfg(test)]
 mod tests {
     use crate::event::Rect;

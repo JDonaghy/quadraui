@@ -263,7 +263,9 @@ fn paint_selection(ctx: &Ctx, s: &mut dyn PaintSurface, sel: &EditorSelection, c
         let text = rl.raw_text.as_str();
         let start_x = ctx.x_at_col(s, text, cols.start);
         let end_x = if cols.extends_beyond {
-            ctx.text_x + s.surface_measure_text(text).0
+            // The index form keeps trailing whitespace, which a measured
+            // ink width drops on some surfaces.
+            ctx.x_at(s, text, text.len())
         } else {
             ctx.x_at_col(s, text, cols.end)
         };

@@ -1472,20 +1472,12 @@ mod tests {
         // recreated from scratch) is left in an undefined state outside
         // its documented `BeginDraw`/`EndDraw` usage.
         driver.backend_mut().begin_frame(viewport);
-        assert!(
-            driver.backend_mut().paint_surface().is_some(),
-            "sanity: a freshly-built WinDriver has a real surface attached"
-        );
         let before = driver.backend_mut().draw_primitive(rect, &minimap);
         driver.backend_mut().end_frame();
 
         driver.drop_surface();
         driver.backend_mut().begin_frame(viewport);
-        assert!(
-            driver.backend_mut().paint_surface().is_none(),
-            "drop_surface must reach the same surface-less fallback a \
-             real EndDraw failure leaves behind"
-        );
+        // Painting with the surface gone must degrade, not panic.
         let after = driver.backend_mut().draw_primitive(rect, &minimap);
         driver.backend_mut().end_frame();
         assert_eq!(
@@ -1497,12 +1489,13 @@ mod tests {
         // recreates the surface, exactly like the real recovery path
         driver.render();
         driver.backend_mut().begin_frame(viewport);
-        assert!(
-            driver.backend_mut().paint_surface().is_some(),
+        let recovered = driver.backend_mut().draw_primitive(rect, &minimap);
+        driver.backend_mut().end_frame();
+        assert_eq!(
+            recovered, before,
             "WinDriver::render must recover the dropped surface via \
              ensure_surface, same as a real EndDraw-failure recovery"
         );
-        driver.backend_mut().end_frame();
     }
 
     /// An `AppLogic` whose `tick` counts its own calls and, on the

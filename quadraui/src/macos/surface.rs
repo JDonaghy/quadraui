@@ -359,9 +359,6 @@ impl PaintSurface for CgSurface<'_> {
     }
 }
 
-/// The terminal's shared pixel painter against a CoreGraphics bitmap, both
-/// through `MacBackend`'s widget-contract paint and through [`CgSurface`]
-/// directly — cell backgrounds, wide glyphs, overlays and clipping.
 pub(crate) mod image {
     //! Core Graphics / ImageIO rasteriser for [`crate::primitives::image::Image`].
     //!
@@ -623,6 +620,9 @@ pub(crate) mod image {
     }
 }
 
+/// The terminal's shared pixel painter against a CoreGraphics bitmap, both
+/// through `MacBackend`'s widget-contract paint and through [`CgSurface`]
+/// directly — cell backgrounds, wide glyphs, overlays and clipping.
 #[cfg(test)]
 mod tests {
     use crate::event::{Rect as QRect, Viewport};
