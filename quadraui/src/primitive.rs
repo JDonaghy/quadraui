@@ -189,6 +189,10 @@ pub struct LayoutCtx<'a> {
     /// The calling backend's editor-font row height — see
     /// [`Self::with_editor_line_height`] and [`Self::editor_line_height`].
     editor_line_height: Option<f32>,
+    /// The calling backend's chrome-font text line height — see
+    /// [`Self::with_chrome_text_line_height`] and
+    /// [`Self::text_line_height`].
+    chrome_text_line_height: Option<f32>,
     /// Whether the calling backend paints per-row text scale — see
     /// [`Self::with_scaled_text_rows`] and [`Self::scales_text_rows`].
     scales_text_rows: bool,
@@ -240,6 +244,7 @@ impl LayoutCtx<'static> {
             measurer: None,
             style: None,
             editor_line_height: None,
+            chrome_text_line_height: None,
             scales_text_rows: false,
         }
     }
@@ -295,6 +300,35 @@ impl<'a> LayoutCtx<'a> {
     /// [`Self::line_height`].
     pub fn editor_line_height(&self) -> f32 {
         self.editor_line_height.unwrap_or(self.line_height)
+    }
+
+    /// This ctx with `line_height` as the chrome (UI) font's own text
+    /// line height — the pitch of one line of text painted in that font,
+    /// without the [`crate::Style::row_height`] floor [`Self::line_height`]
+    /// carries for chrome rows. [`crate::Backend::chrome_line_height`]
+    /// reports the editor font's height on a backend with no separate
+    /// chrome metric, so a ctx [`crate::DrawsPrimitives`] builds measures
+    /// this through [`crate::Backend::measure_text`] in
+    /// [`crate::FontRole::Chrome`] instead.
+    pub fn with_chrome_text_line_height(self, line_height: f32) -> Self {
+        Self {
+            chrome_text_line_height: Some(line_height),
+            ..self
+        }
+    }
+
+    /// The height of one line of text painted in `role`'s font:
+    /// [`Self::editor_line_height`] for [`crate::FontRole::Editor`], and
+    /// the height attached with [`Self::with_chrome_text_line_height`]
+    /// (else [`Self::line_height`]) for [`crate::FontRole::Chrome`] and
+    /// [`crate::FontRole::Icon`], which paint in the chrome font.
+    pub fn text_line_height(&self, role: crate::FontRole) -> f32 {
+        match role {
+            crate::FontRole::Editor => self.editor_line_height(),
+            crate::FontRole::Chrome | crate::FontRole::Icon => {
+                self.chrome_text_line_height.unwrap_or(self.line_height)
+            }
+        }
     }
 
     /// This ctx with `scales` as [`crate::Backend::scales_text_rows`], so

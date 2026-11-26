@@ -14,7 +14,7 @@ use quadraui::DrawsPrimitives;
 use quadraui::{
     render_markdown_to_styled, render_markdown_to_styled_wrapped, Backend, BackendCaps, Decoration,
     FontRole, Key, ListItem, ListView, NamedKey, PopupPlacement, Reaction, Rect, RichTextPopup,
-    RichTextPopupMeasure, StyledText, Theme, UiEvent, WidgetId,
+    StyledText, Theme, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -135,8 +135,9 @@ impl MarkdownDemo {
 
         let anchor_x = area.x + area.width * 0.05;
         let anchor_y = area.y + row_h;
-        let measure =
-            RichTextPopupMeasure::new(content_w, row_h).with_scale_rows(backend.scales_text_rows());
+        // Rows at the popup's own font-role line height, the measure the
+        // widget contract paints them with.
+        let measure = popup.measure_for(backend, content_w);
         let layout = popup.layout(anchor_x, anchor_y, area, measure, |_, start, end| {
             (end - start) as f32 * col_w
         });

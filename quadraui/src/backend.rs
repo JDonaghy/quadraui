@@ -4165,6 +4165,10 @@ pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCt
         backend.nerd_fonts_enabled(),
     )
     .with_editor_line_height(backend.line_height())
+    // One line's logical height in the real chrome font, which
+    // `chrome_line_height` reports as the editor's on a backend with no
+    // chrome metric of its own.
+    .with_chrome_text_line_height(backend.measure_text("M", crate::FontRole::Chrome).1)
     .with_scaled_text_rows(backend.scales_text_rows())
 }
 
