@@ -2415,7 +2415,6 @@ pub(crate) fn render_frame<A: AppLogic>(
     // tab stops before entering the frame scope.
     let focus_ring_rect = runtime::focused_stop_rect(backend, app, A::AreaId::default());
     backend.enter_frame_scope(cr, &layout, |b| {
-        // Single-area runner: pass the default `AreaId`.
         app.render(b, A::AreaId::default());
         crate::popup::paint_open_popups(b);
         // After app.render: paint the focus-ring convention.

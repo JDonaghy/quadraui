@@ -442,8 +442,7 @@ pub(crate) fn render_frame<A: AppLogic>(
     ctx: CGContextRef,
 ) {
     backend.begin_frame(viewport);
-    // Resolve the currently-focused widget's rect (if any)
-    // from this frame's tab stops before entering the frame scope.
+    // The focused widget's rect, resolved before the frame scope opens.
     let focus_ring_rect =
         runtime::focused_stop_rect(backend, app, <A as AppLogic>::AreaId::default());
     backend.enter_frame_scope(ctx, |b| {
