@@ -240,7 +240,7 @@ pub struct GtkBackend {
     /// [`crate::Style`]'s module doc for why this is a separate field
     /// rather than folded into `Theme`.
     current_style: crate::Style,
-    /// Decoded/scaled-`Pixbuf` cache for [`Backend::draw_image`]
+    /// Decoded/scaled-`Pixbuf` cache for [`PaintSurface::surface_draw_image`]
     /// — see [`crate::image_cache`]'s module doc. Keyed on
     /// `(image.source, target size, dpi_scale)`; survives across frames
     /// (unlike `zones`), since the whole point is skipping a re-decode on
@@ -3488,19 +3488,7 @@ impl Backend for GtkBackend {
         rect: QRect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        let cr_ptr = self.current_cr_ptr.get();
-        assert!(
-            !cr_ptr.is_null(),
-            "GtkBackend::draw_image called outside enter_frame_scope"
-        );
-        // SAFETY: `enter_frame_scope` set `current_cr_ptr` from a real, live `&Context`
-        // and won't return until the scope ends. Read the raw pointer directly to avoid
-        // colliding with the `&mut self.image_cache` borrow this method also needs.
-        let cr = unsafe { &*(cr_ptr as *const Context) };
-        let dpi_scale = self.dpi_scale;
-        // Uses `super::image::draw_image_cached` for the decode cache.
-        let result =
-            super::image::draw_image_cached(cr, rect, image, &mut self.image_cache, dpi_scale);
+        let result = image.paint_reporting(&image.layout(rect), self);
         self.register_zone(image.id, rect);
         result
     }
@@ -4302,7 +4290,17 @@ impl PaintSurface for GtkBackend {
         rect: QRect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        Backend::draw_image(self, rect, image)
+        let cr_ptr = self.current_cr_ptr.get();
+        assert!(
+            !cr_ptr.is_null(),
+            "GtkBackend::surface_draw_image called outside enter_frame_scope"
+        );
+        // SAFETY: `enter_frame_scope` set `current_cr_ptr` from a real, live `&Context`
+        // and won't return until the scope ends. Read the raw pointer directly to avoid
+        // colliding with the `&mut self.image_cache` borrow this method also needs.
+        let cr = unsafe { &*(cr_ptr as *const Context) };
+        let dpi_scale = self.dpi_scale;
+        super::image::draw_image_cached(cr, rect, image, &mut self.image_cache, dpi_scale)
     }
 }
 
