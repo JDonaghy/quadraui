@@ -962,6 +962,11 @@ pub use compose::{
     TreeHoverTracker, TreeTableController, TreeTableControllerEvent, TreeTableNodeData, ViewHelp,
     WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, PALETTE_CHROME_ROWS,
 };
+pub use compose::{
+    AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
+    FilePicker, FilePickerState, FolderPicker, FolderPickerState, FormDialog, FormDialogState,
+    HelpOverlay, HelpOverlayState, MessageDialog, MessageDialogState, PathPickerState,
+};
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.

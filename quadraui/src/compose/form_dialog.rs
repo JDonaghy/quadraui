@@ -280,10 +280,22 @@ impl FormDialog {
         cx.request_focus(Some(SubTarget(stop as u64)));
     }
 
+    /// Park keyboard focus on the form field `id`'s stop.
+    fn focus_field(&self, id: WidgetId, cx: &mut EventCx) {
+        if let Some(stop) = self.form_stops().iter().position(|s| *s == id) {
+            cx.request_focus(Some(SubTarget(stop as u64)));
+        }
+    }
+
     /// Move focus from the buttons onto the form's first (`delta > 0`) or
     /// last (`delta < 0`) field, reporting it as the
     /// [`FormEvent::FocusChanged`] the host applies.
-    fn enter_form(&self, state: &mut FormDialogState, delta: isize) -> Handled<FormDialogAction> {
+    fn enter_form(
+        &self,
+        state: &mut FormDialogState,
+        delta: isize,
+        cx: &mut EventCx,
+    ) -> Handled<FormDialogAction> {
         state.focused_button = None;
         let stops = self.form_stops();
         let target = if delta > 0 {
@@ -292,9 +304,12 @@ impl FormDialog {
             stops.last()
         };
         match target {
-            Some(id) => Handled::Event(FormDialogAction::FormAction(FormEvent::FocusChanged {
-                id: *id,
-            })),
+            Some(id) => {
+                self.focus_field(*id, cx);
+                Handled::Event(FormDialogAction::FormAction(FormEvent::FocusChanged {
+                    id: *id,
+                }))
+            }
             None => Handled::Consumed,
         }
     }
@@ -341,7 +356,7 @@ impl FormDialog {
                     return Handled::Ignored;
                 }
                 if (delta > 0 && i + 1 >= n) || (delta < 0 && i == 0) {
-                    return self.enter_form(state, delta);
+                    return self.enter_form(state, delta, cx);
                 }
                 self.focus_button(state, (i as isize + delta) as usize, cx);
                 Handled::Consumed
@@ -595,7 +610,19 @@ impl Interactive for FormDialog {
                             return Handled::Consumed;
                         }
                         state.focused_button = None;
-                        match self.forward_to_form(state, event, layout, cx) {
+                        let handled = self.forward_to_form(state, event, layout, cx);
+                        // The press lands focus on the clicked field's own
+                        // stop, which is how the host addresses it.
+                        let focused = match &handled {
+                            Handled::Event(FormDialogAction::FormAction(
+                                FormEvent::FocusChanged { id },
+                            )) => Some(*id),
+                            _ => self.form.as_ref().and_then(|f| f.focused_field),
+                        };
+                        if let Some(id) = focused {
+                            self.focus_field(id, cx);
+                        }
+                        match handled {
                             Handled::Ignored => Handled::Consumed,
                             other => other,
                         }

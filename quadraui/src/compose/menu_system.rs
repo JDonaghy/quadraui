@@ -1399,9 +1399,9 @@ impl MenuSystem {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Modifiers;
     use crate::primitives::context_menu::ContextMenuItem;
     use crate::types::StyledText;
+    use crate::Modifiers;
 
     // ── Minimal mock backend for handle()-level tests ─────────────────────────
 
