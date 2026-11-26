@@ -3628,13 +3628,31 @@ pub trait DrawsPrimitives: Backend {
             if let Some(zone) = painted_units.and_then(|u| w.paint_zone(layout.as_ref(), u)) {
                 self.register_zone(*id, zone);
             }
+            // Named sub-parts become frame-inventory zones of their own,
+            // `"<id>:<name>"`, so a composite that paints its children
+            // itself still reports each region it lays out.
+            if painted_units.is_some() {
+                for (r, sub) in &sub_regions {
+                    if let Some(name) = w.sub_region_name(*sub) {
+                        self.register_zone(WidgetId::new(format!("{id}:{name}")), *r);
+                    }
+                }
+            }
             let measurer = |text: &str, role: crate::FontRole| self.measure_text(text, role).0;
             let recorded = w.layout(&ctx.with_measurer(&measurer).with_style(&style), rect);
+            let hover_targets = w.hover_on_sub_regions_only().then(|| {
+                sub_regions
+                    .iter()
+                    .map(|(_, sub)| *sub)
+                    .filter(|sub| w.sub_region_name(*sub).is_none())
+                    .collect()
+            });
             crate::primitive::record_painted_widget(crate::primitive::PaintedWidget {
                 id: *id,
                 rect,
                 layout: recorded,
                 sub_regions,
+                hover_targets,
             });
         }
         layout
@@ -3705,6 +3723,7 @@ pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCt
         backend.nerd_fonts_enabled(),
     )
     .with_editor_line_height(backend.line_height())
+    .with_chrome_line_height(backend.chrome_line_height())
     // One line's logical height in the real chrome font, which
     // `chrome_line_height` reports as the editor's on a backend with no
     // chrome metric of its own.

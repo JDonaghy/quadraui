@@ -393,6 +393,33 @@ pub trait Interactive: Primitive {
         Vec::new()
     }
 
+    /// The name [`crate::DrawsPrimitives::draw_dyn`] publishes sub-part
+    /// `sub` under, as a frame-inventory zone (see
+    /// [`crate::Backend::register_zone`]) whose id is `"<widget id>:<name>"`.
+    ///
+    /// This is how a composite keeps its regions observable to drivers and
+    /// structural tests once it paints its children itself: an app shell
+    /// names its status bar `"status-bar"`, so a shell with id
+    /// `app-shell` publishes the zone `app-shell:status-bar`. A sub-part
+    /// answered with `None` is hit-testable through
+    /// [`Self::sub_regions`] but not published.
+    ///
+    /// Default: `None` for every sub-part, so nothing is published.
+    fn sub_region_name(&self, sub: SubTarget) -> Option<&'static str> {
+        let _ = sub;
+        None
+    }
+
+    /// Whether the pointer counts as on this widget only over the
+    /// sub-parts it does not publish as zones (those with no
+    /// [`Self::sub_region_name`]); everywhere else in its rect the pointer
+    /// passes through to whatever is painted beneath, so moving across it
+    /// changes no hover and repaints nothing. For a composite that lays
+    /// out the whole window but reacts to the pointer on a few parts of it
+    /// — an app shell, whose activity rows tint and whose chrome bands do
+    /// not. Default: `false`, the whole rect.
+    const HOVER_ON_SUB_REGIONS_ONLY: bool = false;
+
     /// Whether this widget can ever answer [`Self::popups`] with anything.
     /// The runtime asks [`Self::popups`] only of widgets that set this,
     /// so routing an event never lays out a widget that has no popups to

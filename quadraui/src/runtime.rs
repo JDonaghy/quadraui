@@ -2800,6 +2800,7 @@ mod widget_routing_tests {
             rect: Rect::new(40.0, 0.0, 10.0, 3.0),
             layout: Box::new(()),
             sub_regions: Vec::new(),
+            hover_targets: None,
         });
         let move_to = |x: f32| UiEvent::MouseMoved {
             position: Point::new(x, 1.0),

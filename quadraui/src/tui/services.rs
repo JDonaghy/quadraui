@@ -1909,7 +1909,7 @@ impl PlatformServices for TuiPlatformServices {
                         NestedDialogStep::Resolved(path)
                     }
                     Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
-                    Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
+                    _ => NestedDialogStep::Continue,
                 }
             },
         )
@@ -1945,7 +1945,7 @@ impl PlatformServices for TuiPlatformServices {
                         NestedDialogStep::Resolved(path)
                     }
                     Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
-                    Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
+                    _ => NestedDialogStep::Continue,
                 }
             },
         )
@@ -1983,7 +1983,7 @@ impl PlatformServices for TuiPlatformServices {
                         NestedDialogStep::Resolved(path)
                     }
                     Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
-                    Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
+                    _ => NestedDialogStep::Continue,
                 }
             },
         )

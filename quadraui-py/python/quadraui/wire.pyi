@@ -76,6 +76,7 @@ class TreeStyle(TypedDict):
     chevron_collapsed: str
     row_height: NotRequired[Optional[int]]
     bordered: NotRequired[bool]
+    vim_keys: NotRequired[bool]
 
 class Modifiers(TypedDict):
     shift: NotRequired[bool]
@@ -1981,6 +1982,13 @@ class _TreeRowRenameCommittedPayload(TypedDict):
     path: TreePath
     text: str
 
+class _TreeScrollChangedPayload(TypedDict):
+    scroll_offset: int
+
+class _TreeContextMenuRequestedPayload(TypedDict):
+    path: TreePath
+    position: Point
+
 class TreeEvent(TypedDict):
     RowClicked: NotRequired[_TreeRowClickedPayload]
     RowDoubleClicked: NotRequired[_TreePathPayload]
@@ -1991,6 +1999,9 @@ class TreeEvent(TypedDict):
     RowRenameChanged: NotRequired[_TreeRowRenameChangedPayload]
     RowRenameCommitted: NotRequired[_TreeRowRenameCommittedPayload]
     RowRenameCancelled: NotRequired[_TreePathPayload]
+    RowActivated: NotRequired[_TreePathPayload]
+    ScrollChanged: NotRequired[_TreeScrollChangedPayload]
+    ContextMenuRequested: NotRequired[_TreeContextMenuRequestedPayload]
 
 class _IdxPayload(TypedDict):
     idx: int
@@ -2583,6 +2594,13 @@ class _UiEventDict(TypedDict):
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]
     TreeTable: NotRequired[Tuple[WidgetId, TreeTableEvent]]
     CellGrid: NotRequired[Tuple[WidgetId, CellGridEvent]]
+    HelpOverlay: NotRequired[Tuple[WidgetId, Any]]
+    PathPicker: NotRequired[Tuple[WidgetId, Any]]
+    DualModePalette: NotRequired[Tuple[WidgetId, Any]]
+    AppMenu: NotRequired[Tuple[WidgetId, Any]]
+    AppShell: NotRequired[Tuple[WidgetId, Any]]
+    BottomPanel: NotRequired[Tuple[WidgetId, Any]]
+    Workspace: NotRequired[Tuple[WidgetId, Any]]
     Toolbar: NotRequired[Tuple[WidgetId, ToolbarEvent]]
     Canvas: NotRequired[Tuple[WidgetId, CanvasEvent]]
     BackendNative: NotRequired[BackendNativeEvent]

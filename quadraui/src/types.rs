@@ -783,6 +783,11 @@ pub struct TreeStyle {
     /// backends only shrinks the content area.
     #[serde(default)]
     pub bordered: bool,
+    /// Treat an unmodified `j` / `k` as Down / Up in the tree's own key
+    /// handling. Off by default, so those letters reach type-to-jump
+    /// like every other printable key.
+    #[serde(default)]
+    pub vim_keys: bool,
 }
 
 impl TreeStyle {
@@ -800,6 +805,7 @@ impl Default for TreeStyle {
             chevron_collapsed: "▸".into(),
             row_height: Self::default_row_height(),
             bordered: false,
+            vim_keys: false,
         }
     }
 }

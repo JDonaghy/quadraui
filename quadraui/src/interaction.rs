@@ -668,6 +668,7 @@ mod tests {
                 (crate::event::Rect::new(0.0, 0.0, 10.0, 1.0), SubTarget(0)),
                 (crate::event::Rect::new(10.0, 0.0, 10.0, 1.0), SubTarget(1)),
             ],
+            hover_targets: None,
         });
     }
 

@@ -792,21 +792,6 @@ impl FormController {
 
 // ── Keyboard editing helpers ──────────────────────────────────────────
 
-/// Focusable field ids of `form`, in Tab-order — shared by
-/// [`FormController::move_focus`] (which wraps within the form) and
-/// [`crate::compose::form_dialog::FormDialogController`] (which needs to
-/// detect stepping off either end *before* forwarding a Tab/Shift-Tab
-/// keypress into the form, so it can hand focus to its own button row
-/// instead — something `move_focus`'s own wrap-within-the-form traversal
-/// can't signal). Delegates to [`crate::primitives::form::focus_order`],
-/// the canonical implementation — also used by a `quadraui-py`/
-/// `quadraui-node` host's `InteractionEngine` for the identical "detect
-/// either end" check, to hand focus to the next app-level tab stop
-/// instead of a dialog's buttons.
-pub(crate) fn focus_order(form: &Form) -> Vec<WidgetId> {
-    crate::primitives::form::focus_order(form)
-}
-
 /// Append a trailing `" *"` span to the label of every field that carries
 /// a [`Validator::Required`] rule in `rules`, so the shared painter
 /// (`primitives::form`) and the TUI renderer (`tui::form`) both show a
@@ -856,7 +841,7 @@ fn viewport_rows_lh(lh: f32, rect: Rect) -> usize {
     (rect.height / rh).floor() as usize
 }
 
-fn split_rect_lh(field_count: usize, lh: f32, rect: Rect) -> (Rect, Option<Rect>) {
+pub(crate) fn split_rect_lh(field_count: usize, lh: f32, rect: Rect) -> (Rect, Option<Rect>) {
     let tw = track_width(lh);
     if rect.width <= tw {
         return (rect, None);
@@ -870,7 +855,7 @@ fn split_rect_lh(field_count: usize, lh: f32, rect: Rect) -> (Rect, Option<Rect>
     (form_rect, Some(sb_rect))
 }
 
-fn build_scrollbar_lh(
+pub(crate) fn build_scrollbar_lh(
     id: &str,
     field_count: usize,
     scroll_offset: usize,

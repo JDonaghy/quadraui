@@ -191,6 +191,9 @@ pub struct LayoutCtx<'a> {
     /// [`Self::with_chrome_text_line_height`] and
     /// [`Self::text_line_height`].
     chrome_text_line_height: Option<f32>,
+    /// The backend's chrome line height before the row-height floor — see
+    /// [`Self::with_chrome_line_height`].
+    chrome_line_height: Option<f32>,
     /// Whether the calling backend paints per-row text scale — see
     /// [`Self::with_scaled_text_rows`] and [`Self::scales_text_rows`].
     scales_text_rows: bool,
@@ -243,6 +246,7 @@ impl LayoutCtx<'static> {
             style: None,
             editor_line_height: None,
             chrome_text_line_height: None,
+            chrome_line_height: None,
             scales_text_rows: false,
         }
     }
@@ -298,6 +302,27 @@ impl<'a> LayoutCtx<'a> {
     /// [`Self::line_height`].
     pub fn editor_line_height(&self) -> f32 {
         self.editor_line_height.unwrap_or(self.line_height)
+    }
+
+    /// Attach the backend's own chrome line height
+    /// ([`crate::Backend::chrome_line_height`]) before
+    /// [`Self::resolve_row_height`]'s row-height floor is applied to
+    /// [`Self::line_height`] — the unit a widget sized in line-height
+    /// multiples (an app shell's sidebar width, its bottom-panel height)
+    /// scales by, so its geometry matches a caller that reads the metric
+    /// straight off the backend.
+    pub fn with_chrome_line_height(self, line_height: f32) -> Self {
+        Self {
+            chrome_line_height: Some(line_height),
+            ..self
+        }
+    }
+
+    /// The backend's chrome line height as attached by
+    /// [`Self::with_chrome_line_height`], without the row-height floor;
+    /// [`Self::line_height`] when none was attached.
+    pub fn chrome_line_height(&self) -> f32 {
+        self.chrome_line_height.unwrap_or(self.line_height)
     }
 
     /// This ctx with `line_height` as the chrome (UI) font's own text
@@ -1151,6 +1176,13 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
         layout: &dyn PrimitiveLayout,
     ) -> Vec<(Rect, crate::interactive::SubTarget)>;
 
+    /// [`Interactive::HOVER_ON_SUB_REGIONS_ONLY`].
+    fn hover_on_sub_regions_only(&self) -> bool;
+
+    /// The frame-inventory name of sub-part `sub` — see
+    /// [`Interactive::sub_region_name`].
+    fn sub_region_name(&self, sub: crate::interactive::SubTarget) -> Option<&'static str>;
+
     /// A fresh, default-valued interaction state for this widget — the
     /// type-erased counterpart of [`Interactive::State::default`].
     fn new_state(&self) -> Box<dyn std::any::Any>;
@@ -1267,6 +1299,14 @@ where
         }
     }
 
+    fn sub_region_name(&self, sub: crate::interactive::SubTarget) -> Option<&'static str> {
+        Interactive::sub_region_name(self, sub)
+    }
+
+    fn hover_on_sub_regions_only(&self) -> bool {
+        W::HOVER_ON_SUB_REGIONS_ONLY
+    }
+
     fn new_state(&self) -> Box<dyn std::any::Any> {
         Box::new(W::State::default())
     }
@@ -1359,6 +1399,12 @@ pub struct PaintedWidget {
     /// [`Interactive::sub_regions`], whose widget-local rects are
     /// translated into absolute space here.
     pub sub_regions: Vec<(Rect, crate::interactive::SubTarget)>,
+    /// The sub-parts the pointer counts as on this widget over, when the
+    /// widget hovers only on some of them (see
+    /// [`Interactive::HOVER_ON_SUB_REGIONS_ONLY`]); everywhere else the
+    /// pointer passes through to whatever is painted beneath. `None`: the
+    /// whole of [`Self::rect`].
+    pub hover_targets: Option<Vec<crate::interactive::SubTarget>>,
 }
 
 /// Every widget [`crate::DrawsPrimitives::draw_dyn`] painted in the
@@ -1441,13 +1487,20 @@ impl PaintedWidgets {
         x: f32,
         y: f32,
     ) -> Option<(WidgetId, Option<crate::interactive::SubTarget>)> {
-        let entry = self.entries.iter().rev().find(|e| contains(e.rect, x, y))?;
-        let sub = entry
-            .sub_regions
-            .iter()
-            .find(|(r, _)| contains(*r, x, y))
-            .map(|(_, sub)| *sub);
-        Some((entry.id, sub))
+        self.entries.iter().rev().find_map(|e| {
+            if !contains(e.rect, x, y) {
+                return None;
+            }
+            let sub = e
+                .sub_regions
+                .iter()
+                .find(|(r, _)| contains(*r, x, y))
+                .map(|(_, sub)| *sub);
+            match &e.hover_targets {
+                Some(targets) if !sub.is_some_and(|sub| targets.contains(&sub)) => None,
+                _ => Some((e.id, sub)),
+            }
+        })
     }
 
     /// The absolute rect of `id`'s `sub` sub-part, as painted this frame.
@@ -1905,12 +1958,14 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 20.0, 10.0),
             layout: Box::new(()),
             sub_regions: Vec::new(),
+            hover_targets: None,
         });
         painted.record(PaintedWidget {
             id: over,
             rect: Rect::new(5.0, 0.0, 20.0, 10.0),
             layout: Box::new(()),
             sub_regions: Vec::new(),
+            hover_targets: None,
         });
 
         assert_eq!(painted.painted_hit(6.0, 1.0), Some((over, None)));
@@ -1935,6 +1990,7 @@ mod tests {
                 (Rect::new(8.0, 0.0, 2.0, 2.0), specific),
                 (Rect::new(0.0, 0.0, 10.0, 2.0), broad),
             ],
+            hover_targets: None,
         });
 
         assert_eq!(painted.painted_hit(8.5, 1.0), Some((id, Some(specific))));
@@ -1962,6 +2018,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 4.0, 2.0),
             layout: Box::new(()),
             sub_regions: Vec::new(),
+            hover_targets: None,
         });
 
         assert_eq!(painted.painted_hit(0.0, 0.0), Some((id, None)));

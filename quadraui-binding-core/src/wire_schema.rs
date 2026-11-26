@@ -452,6 +452,7 @@ pub fn schema() -> Vec<DefJson> {
             field("chevron_collapsed", str_()),
             field_opt("row_height", nullable(int_())),
             field_opt("bordered", bool_()),
+            field_opt("vim_keys", bool_()),
         ],
     ));
     let modifiers = b.define(obj(
@@ -3156,6 +3157,17 @@ pub fn schema() -> Vec<DefJson> {
         "_TreeRowRenameCommittedPayload",
         vec![field("path", re("TreePath")), field("text", str_())],
     ));
+    let tree_scroll_changed_payload = b.define(obj(
+        "_TreeScrollChangedPayload",
+        vec![field("scroll_offset", int_())],
+    ));
+    let tree_context_menu_payload = b.define(obj(
+        "_TreeContextMenuRequestedPayload",
+        vec![
+            field("path", re("TreePath")),
+            field("position", re("Point")),
+        ],
+    ));
     b.define(flat(
         "TreeEvent",
         &[
@@ -3167,7 +3179,10 @@ pub fn schema() -> Vec<DefJson> {
             ("SelectionSet", tree_selection_set_payload),
             ("RowRenameChanged", tree_row_rename_changed_payload),
             ("RowRenameCommitted", tree_row_rename_committed_payload),
-            ("RowRenameCancelled", tree_path_payload),
+            ("RowRenameCancelled", tree_path_payload.clone()),
+            ("RowActivated", tree_path_payload),
+            ("ScrollChanged", tree_scroll_changed_payload),
+            ("ContextMenuRequested", tree_context_menu_payload),
         ],
         vec![],
     ));
@@ -3920,6 +3935,15 @@ pub fn schema() -> Vec<DefJson> {
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
             ("TreeTable", tup(vec![re("WidgetId"), re("TreeTableEvent")])),
             ("CellGrid", tup(vec![re("WidgetId"), re("CellGridEvent")])),
+            ("HelpOverlay", tup(vec![re("WidgetId"), any_()])),
+            ("PathPicker", tup(vec![re("WidgetId"), any_()])),
+            ("DualModePalette", tup(vec![re("WidgetId"), any_()])),
+            ("AppMenu", tup(vec![re("WidgetId"), any_()])),
+            // A shell, bottom-panel or workspace intent rides as the
+            // event's own externally-tagged serde shape.
+            ("AppShell", tup(vec![re("WidgetId"), any_()])),
+            ("BottomPanel", tup(vec![re("WidgetId"), any_()])),
+            ("Workspace", tup(vec![re("WidgetId"), any_()])),
             ("Toolbar", tup(vec![re("WidgetId"), re("ToolbarEvent")])),
             ("Canvas", tup(vec![re("WidgetId"), re("CanvasEvent")])),
             ("BackendNative", backend_native_event),
@@ -4221,6 +4245,12 @@ mod coverage {
             } => {}
             TreeEvent::RowRenameCommitted { path: _, text: _ } => {}
             TreeEvent::RowRenameCancelled { path: _ } => {}
+            TreeEvent::RowActivated { path: _ } => {}
+            TreeEvent::ScrollChanged { scroll_offset: _ } => {}
+            TreeEvent::ContextMenuRequested {
+                path: _,
+                position: _,
+            } => {}
         }
     }
 
@@ -4979,7 +5009,8 @@ mod coverage {
             chevron_expanded,
             chevron_collapsed,
             row_height,
-            bordered
+            bordered,
+            vim_keys
         }
     );
     assert_fields!(
@@ -6874,6 +6905,13 @@ mod coverage {
                 "DataTable",
                 "TreeTable",
                 "CellGrid",
+                "HelpOverlay",
+                "PathPicker",
+                "DualModePalette",
+                "AppMenu",
+                "AppShell",
+                "BottomPanel",
+                "Workspace",
                 "Toolbar",
                 "Canvas",
                 "BackendNative",

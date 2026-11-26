@@ -675,6 +675,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_TreeSelectionSetPayload`](#wire-_treeselectionsetpayload)
 - [`_TreeRowRenameChangedPayload`](#wire-_treerowrenamechangedpayload)
 - [`_TreeRowRenameCommittedPayload`](#wire-_treerowrenamecommittedpayload)
+- [`_TreeScrollChangedPayload`](#wire-_treescrollchangedpayload)
+- [`_TreeContextMenuRequestedPayload`](#wire-_treecontextmenurequestedpayload)
 - [`TreeEvent`](#wire-treeevent)
 - [`_IdxPayload`](#wire-_idxpayload)
 - [`_IndicesPayload`](#wire-_indicespayload)
@@ -920,6 +922,7 @@ Alias for `"None" | "Single" | "Multi"`.
 | `chevron_collapsed` | `string` | yes |  |
 | `row_height` | `number \| null` | no |  |
 | `bordered` | `boolean` | no |  |
+| `vim_keys` | `boolean` | no |  |
 
 <a id="wire-modifiers"></a>
 #### `Modifiers`
@@ -3935,6 +3938,21 @@ A `show_overlay("layout_dialog", ...)` descriptor: modal dialog chrome plus the 
 | `path` | `TreePath` | yes |  |
 | `text` | `string` | yes |  |
 
+<a id="wire-_treescrollchangedpayload"></a>
+#### `_TreeScrollChangedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scroll_offset` | `number` | yes |  |
+
+<a id="wire-_treecontextmenurequestedpayload"></a>
+#### `_TreeContextMenuRequestedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | `TreePath` | yes |  |
+| `position` | `Point` | yes |  |
+
 <a id="wire-treeevent"></a>
 #### `TreeEvent`
 
@@ -3951,6 +3969,9 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `RowRenameChanged` | `_TreeRowRenameChangedPayload` |  |
 | `RowRenameCommitted` | `_TreeRowRenameCommittedPayload` |  |
 | `RowRenameCancelled` | `_TreePathPayload` |  |
+| `RowActivated` | `_TreePathPayload` |  |
+| `ScrollChanged` | `_TreeScrollChangedPayload` |  |
+| `ContextMenuRequested` | `_TreeContextMenuRequestedPayload` |  |
 
 <a id="wire-_idxpayload"></a>
 #### `_IdxPayload`
@@ -5080,6 +5101,13 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |
 | `TreeTable` | `[WidgetId, TreeTableEvent]` |  |
 | `CellGrid` | `[WidgetId, CellGridEvent]` |  |
+| `HelpOverlay` | `[WidgetId, unknown]` |  |
+| `PathPicker` | `[WidgetId, unknown]` |  |
+| `DualModePalette` | `[WidgetId, unknown]` |  |
+| `AppMenu` | `[WidgetId, unknown]` |  |
+| `AppShell` | `[WidgetId, unknown]` |  |
+| `BottomPanel` | `[WidgetId, unknown]` |  |
+| `Workspace` | `[WidgetId, unknown]` |  |
 | `Toolbar` | `[WidgetId, ToolbarEvent]` |  |
 | `Canvas` | `[WidgetId, CanvasEvent]` |  |
 | `BackendNative` | `BackendNativeEvent` |  |
