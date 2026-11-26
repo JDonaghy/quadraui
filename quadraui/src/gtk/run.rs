@@ -2415,18 +2415,16 @@ pub(crate) fn render_frame<A: AppLogic>(
     // tab stops before entering the frame scope.
     let focus_ring_rect = runtime::focused_stop_rect(backend, app, A::AreaId::default());
     backend.enter_frame_scope(cr, &layout, |b| {
-        // Single-area runner: pass the default `AreaId`.
         app.render(b, A::AreaId::default());
         // After app.render: paint the focus-ring convention.
         if let Some(rect) = focus_ring_rect {
             b.draw_focus_ring(rect);
         }
+        // Then the selection highlight over the rendered content, and
+        // open popups above everything.
+        b.apply_selection_highlight(cr);
+        crate::popup::paint_open_popups(b);
     });
-
-    // After app.render: overlay selection highlight on top of the
-    // rendered content (mirrors TUI's apply_selection_highlight call in
-    // the terminal.draw closure).
-    backend.apply_selection_highlight(cr);
 
     backend.end_frame();
 }

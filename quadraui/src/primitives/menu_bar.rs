@@ -583,6 +583,17 @@ impl Primitive for MenuBar {
         Some(&self.id)
     }
 
+    /// Under [`ResolvedMenuStyle::Native`] the bar is installed as the
+    /// platform's own menu bar ([`Self::present`]) and nothing paints in
+    /// the window.
+    fn native_presentation(&self, backend: &mut dyn Backend, rect: Rect) -> bool {
+        if backend.effective_menu_style() != ResolvedMenuStyle::Native {
+            return false;
+        }
+        let _ = self.present(backend, rect);
+        true
+    }
+
     fn capture(&self) -> crate::frame::OwnedContent {
         crate::frame::OwnedContent::MenuBar(self.clone())
     }

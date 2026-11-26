@@ -1075,6 +1075,8 @@ export interface DatePickerDescriptor {
   locale: DateLocale;
   time?: TimeOfDay | null;
   has_focus?: boolean;
+  dropdown?: boolean;
+  open?: boolean;
 }
 
 export type ChartKind = "Sparkline" | "Line" | "Bar" | "BarGrouped";
@@ -2375,6 +2377,11 @@ export interface _IdValueDatePayload {
   value: CalendarDate;
 }
 
+export interface _IdOpenPayload {
+  id: WidgetId;
+  open: boolean;
+}
+
 export interface _FormToolbarButtonClickedPayload {
   field_id: WidgetId;
   button_id: WidgetId;
@@ -2401,7 +2408,7 @@ export interface _IdSelectedPayload {
 }
 
 /** Events a `Form` emits back to the app -- see `quadraui/src/primitives/form.rs`'s `FormEvent`. */
-export type FormEvent = { ToggleChanged: _IdValueBoolPayload; } | { TextInputChanged: _IdValueStrPayload; } | { TextInputCommitted: _IdValueStrPayload; } | { SliderChanged: _IdValueFloatPayload; } | { ColorChanged: _IdValueColorPayload; } | { DropdownChanged: _IdSelectedIdxPayload; } | { SegmentedControlChanged: _IdSelectedIdxPayload; } | { DateChanged: _IdValueDatePayload; } | { DateFocusMoved: _IdValueDatePayload; } | { FocusChanged: _IdPayload; } | { ButtonClicked: _IdPayload; } | { ToolbarButtonClicked: _FormToolbarButtonClickedPayload; } | { KeyPressed: _KeyPressedStrPayload; } | { ComboBoxTextChanged: _IdValueStrPayload; } | { ComboBoxHighlightChanged: _IdIndexPayload; } | { ComboBoxCommitted: _IdValueStrPayload; } | { ComboBoxCancelled: _IdPayload; } | { NumberChanged: _IdValueF64Payload; } | { NumberDraftChanged: _IdDraftPayload; } | { NumberCommitted: _IdValueF64Payload; } | { NumberCancelled: _IdPayload; } | { RadioChanged: _IdSelectedPayload; };
+export type FormEvent = { ToggleChanged: _IdValueBoolPayload; } | { TextInputChanged: _IdValueStrPayload; } | { TextInputCommitted: _IdValueStrPayload; } | { SliderChanged: _IdValueFloatPayload; } | { ColorChanged: _IdValueColorPayload; } | { DropdownChanged: _IdSelectedIdxPayload; } | { SegmentedControlChanged: _IdSelectedIdxPayload; } | { DateChanged: _IdValueDatePayload; } | { DateFocusMoved: _IdValueDatePayload; } | { DateOpenChanged: _IdOpenPayload; } | { FocusChanged: _IdPayload; } | { ButtonClicked: _IdPayload; } | { ToolbarButtonClicked: _FormToolbarButtonClickedPayload; } | { KeyPressed: _KeyPressedStrPayload; } | { ComboBoxTextChanged: _IdValueStrPayload; } | { ComboBoxHighlightChanged: _IdIndexPayload; } | { ComboBoxCommitted: _IdValueStrPayload; } | { ComboBoxCancelled: _IdPayload; } | { NumberChanged: _IdValueF64Payload; } | { NumberDraftChanged: _IdDraftPayload; } | { NumberCommitted: _IdValueF64Payload; } | { NumberCancelled: _IdPayload; } | { RadioChanged: _IdSelectedPayload; };
 
 export interface _QueryChangedPayload {
   value: string;

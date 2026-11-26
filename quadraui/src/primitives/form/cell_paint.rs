@@ -772,7 +772,7 @@ fn draw_field_dropdown(
 /// popup the TUI backend shows instead of the GUI backends' app-drawn
 /// one (`FieldKind::Dropdown`'s doc comment). Uses the same
 /// `completion_*` theme tokens as
-/// [`crate::tui::combo_box::draw_combo_box`]'s popup, since both are a
+/// a `ComboBox`'s dropdown popup, since both are a
 /// list of rows with one highlighted. There's no separate "open" or
 /// "highlighted-but-uncommitted" state: `selected_idx` itself is both
 /// what's shown and what Up/Down move (see

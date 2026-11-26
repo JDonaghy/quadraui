@@ -1,11 +1,11 @@
 //! GTK rasteriser for [`crate::ComboBox`].
 //!
-//! Painting is implemented in the shared
-//! [`crate::primitives::combo_box::native_surface_paint::paint`] — see
-//! that function's documentation for details. Callers reach the paint
-//! through [`crate::Backend::draw_combo_box`]. Filtering, highlight
-//! movement, commit and cancel semantics live on `ComboBox` itself; this
-//! module only turns a resolved [`crate::ComboBoxLayout`] into pixels.
+//! Painting is the shared
+//! [`crate::primitives::combo_box::native_surface_paint`], reached
+//! through [`crate::DrawsPrimitives::draw_dyn`]; the open dropdown is a
+//! widget-owned popup the runner paints above the frame. Filtering,
+//! highlight movement, commit and cancel semantics live on `ComboBox`
+//! itself.
 
 #[cfg(test)]
 mod tests {
@@ -13,35 +13,19 @@ mod tests {
     use crate::gtk::testing::GtkDriver;
     use crate::runner::{AppLogic, Reaction};
     use crate::{
-        Backend, ComboBox, ComboBoxEvent, ComboBoxHit, ComboBoxLayout, CompletionItemMeasure,
-        NamedKey, Rect, UiEvent, WidgetId,
+        Backend, ComboBox, ComboBoxEvent, FormEvent, FrameTree, NamedKey, Rect, UiEvent, WidgetId,
     };
 
     const FIELD_BOUNDS: Rect = Rect {
         x: 0.0,
         y: 3.0,
-        width: 20.0,
-        height: 1.0,
+        width: 200.0,
+        height: 24.0,
     };
-    const VIEWPORT: Rect = Rect {
-        x: 0.0,
-        y: 0.0,
-        width: 40.0,
-        height: 20.0,
-    };
-
-    fn item_measure(_index: usize) -> CompletionItemMeasure {
-        CompletionItemMeasure::new(1.0)
-    }
-
-    fn sample_layout(combo: &ComboBox) -> ComboBoxLayout {
-        combo.layout(FIELD_BOUNDS, VIEWPORT, 20.0, 10.0, item_measure)
-    }
 
     /// Minimal `AppLogic` wrapping a single focused `ComboBox`, painted
-    /// through the real `Backend::draw_combo_box` — used only by this
-    /// driver test, mirroring `tests/number_input_combo_box_driver.rs`'s
-    /// TUI-side wiring but routed through `GtkDriver`.
+    /// through the real `DrawsPrimitives::draw_dyn` — used only by this
+    /// driver test, routed through `GtkDriver`.
     struct ComboBoxApp {
         combo: ComboBox,
         events: Vec<String>,
@@ -96,15 +80,15 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            // The field sits on the first row of the rect, with the
-            // dropdown's room below it — see `ComboBoxPrimitiveLayout`.
-            let area = Rect::new(
-                FIELD_BOUNDS.x,
-                FIELD_BOUNDS.y,
-                FIELD_BOUNDS.width,
-                VIEWPORT.height - FIELD_BOUNDS.y,
-            );
-            backend.draw_dyn(area, &self.combo, &());
+            backend.draw_dyn(FIELD_BOUNDS, &self.combo, &());
+        }
+
+        /// The box is routed through the widget-contract engine, so a
+        /// press on its open dropdown reaches it as a popup event.
+        fn frame_tree(&self, _area: ()) -> FrameTree {
+            let mut tree = FrameTree::new();
+            tree.push(self.combo.id, FIELD_BOUNDS, Box::new(self.combo.clone()));
+            tree
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -115,13 +99,12 @@ mod tests {
                     }
                     Reaction::Redraw
                 }
-                UiEvent::MouseDown { position, .. } => {
-                    let hit = sample_layout(&self.combo).hit_test(position);
-                    if hit != ComboBoxHit::Outside {
-                        if let Some(e) = self.combo.click(hit) {
-                            self.apply(e);
-                        }
-                    }
+                UiEvent::Form(_, FormEvent::ComboBoxCommitted { id, value }) => {
+                    self.apply(ComboBoxEvent::Committed { id, value });
+                    Reaction::Redraw
+                }
+                UiEvent::Form(_, FormEvent::ComboBoxCancelled { id }) => {
+                    self.apply(ComboBoxEvent::Cancelled { id });
                     Reaction::Redraw
                 }
                 _ => Reaction::Continue,
@@ -196,14 +179,17 @@ mod tests {
 
     #[test]
     fn mouse_click_on_a_dropdown_item_commits_without_requiring_focus() {
-        let mut driver = GtkDriver::new(ComboBoxApp::new(), 80, 40);
+        let mut driver = GtkDriver::new(ComboBoxApp::new(), 400, 300);
         driver.type_char('a');
         driver.type_char('p');
         assert!(driver.app().combo.open);
 
-        // The dropdown is placed just below the field (field at y = 3,
-        // height 1), so its first item sits at y = 4.
-        driver.click(1.0, 4.0);
+        let dropdown = driver.app().combo.dropdown_id();
+        let (x, y) =
+            crate::primitive::painted_sub_center(&dropdown, crate::interactive::SubTarget(0))
+                .expect("the open dropdown paints its first row");
+        assert!(y > FIELD_BOUNDS.y, "the list hangs below the field");
+        driver.click(x, y);
         assert_eq!(driver.app().combo.committed, "Apple");
         assert_eq!(driver.app().combo.text, "Apple");
         assert!(!driver.app().combo.open);

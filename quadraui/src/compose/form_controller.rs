@@ -413,7 +413,7 @@ impl FormController {
     /// for hit-testing, then offsets the matching field's layout-relative
     /// `bounds` by `rect`'s origin (and the scrollbar-split form rect's,
     /// if a scrollbar is present) to hand back an on-screen rect the host
-    /// can pass straight to `Backend::draw_combo_box` or the equivalent.
+    /// can paint a field's own overlay at, such as an open `ComboBox`.
     pub fn field_rect(&self, id: WidgetId, backend: &dyn Backend, rect: Rect) -> Option<Rect> {
         let lh = backend.line_height();
         let (form_rect, _sb_rect) = split_rect_lh(self.field_count(), lh, rect);

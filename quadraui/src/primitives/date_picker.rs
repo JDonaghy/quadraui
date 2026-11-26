@@ -25,6 +25,17 @@
 //! [`DatePickerEvent`] to `focused` / `visible_month` / `selected` for the
 //! next frame, the same way apps update `ListView::selected_idx`.
 //!
+//! # Dropdown presentation
+//!
+//! With [`DatePicker::dropdown`] set, the picker is a one-row date field
+//! and the calendar is a widget-owned popup
+//! ([`Interactive::popups`]) shown while the app's [`DatePicker::open`]
+//! is set. The runtime paints it above the rest of the frame, hit-tests
+//! it first and dismisses it on an outside press or Escape; every
+//! outcome still arrives as a [`DatePickerEvent`] the app applies to the
+//! descriptor, with [`DatePickerEvent::OpenChanged`] for the popup
+//! itself.
+//!
 //! No `chrono`/`time` dependency: calendar math is the well-known
 //! proleptic-Gregorian day-count algorithm (Howard Hinnant's
 //! `days_from_civil` / `civil_from_days`), good for any date a `u8` month
@@ -35,6 +46,7 @@ use crate::event::{Key, Point, Rect};
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget, WidgetAction,
 };
+use crate::popup::{Popup, PopupKey};
 use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::types::WidgetId;
 use crate::Handled;
@@ -306,6 +318,16 @@ pub struct DatePicker {
     pub time: Option<TimeOfDay>,
     #[serde(default)]
     pub has_focus: bool,
+    /// Present the picker as a one-row date field whose calendar opens
+    /// in a popup below it, instead of as the calendar itself.
+    #[serde(default)]
+    pub dropdown: bool,
+    /// Whether a [`Self::dropdown`] picker's calendar popup is showing.
+    /// The app owns it: [`DatePickerEvent::OpenChanged`] asks for a
+    /// change, and [`DatePickerEvent::DateSelected`] closes it. Ignored
+    /// when `dropdown` is `false`.
+    #[serde(default)]
+    pub open: bool,
 }
 
 impl Default for DatePicker {
@@ -318,6 +340,8 @@ impl Default for DatePicker {
             locale: DateLocale::default(),
             time: None,
             has_focus: false,
+            dropdown: false,
+            open: false,
         }
     }
 }
@@ -565,16 +589,23 @@ pub enum DatePickerEvent {
     /// moved the focus cursor. If the target date falls outside
     /// `visible_month`, the app should also update `visible_month`.
     FocusMoved(CalendarDate),
-    /// `Enter` or a click on a day confirmed that date as `selected`.
+    /// `Enter` or a click on a day confirmed that date as `selected`. A
+    /// [`DatePicker::dropdown`] picker's calendar closes on it too: the
+    /// app also clears `open`.
     DateSelected(CalendarDate),
+    /// A [`DatePicker::dropdown`] picker asked for its calendar popup to
+    /// open (`true`) or close (`false`); the app writes it onto
+    /// [`DatePicker::open`].
+    OpenChanged(bool),
 }
 
 impl WidgetAction for DatePickerEvent {
-    /// Both outcomes ride [`crate::UiEvent::Form`] under the picker's own
-    /// id, on the two [`crate::FormEvent`] date channels that already
-    /// name them: [`crate::FormEvent::DateChanged`] for a confirmed date
-    /// and [`crate::FormEvent::DateFocusMoved`] for the arrow-key
-    /// scrubbing that precedes it. A standalone `DatePicker` therefore
+    /// Every outcome rides [`crate::UiEvent::Form`] under the picker's
+    /// own id, on the [`crate::FormEvent`] date channels that name them:
+    /// [`crate::FormEvent::DateChanged`] for a confirmed date,
+    /// [`crate::FormEvent::DateFocusMoved`] for the arrow-key scrubbing
+    /// that precedes it, and [`crate::FormEvent::DateOpenChanged`] for a
+    /// dropdown picker's calendar popup. A standalone `DatePicker` therefore
     /// reaches an app through the same event vocabulary an embedded one
     /// does, with the same "scrubbing fires every keystroke, confirming
     /// fires once" split, and each channel's apply contract spells out
@@ -583,6 +614,7 @@ impl WidgetAction for DatePickerEvent {
         let event = match self {
             DatePickerEvent::FocusMoved(value) => crate::FormEvent::DateFocusMoved { id, value },
             DatePickerEvent::DateSelected(value) => crate::FormEvent::DateChanged { id, value },
+            DatePickerEvent::OpenChanged(open) => crate::FormEvent::DateOpenChanged { id, open },
         };
         crate::UiEvent::Form(id, event)
     }
@@ -610,8 +642,15 @@ pub struct DatePickerPrimitiveLayout {
     /// One day cell's resolved size.
     pub cell_size: Size,
     /// The resolved calendar layout. Its rects are in the same absolute
-    /// space as [`Self::area`].
+    /// space as [`Self::area`]. Empty for a [`DatePicker::dropdown`]
+    /// picker, whose calendar lives in its popup.
     pub layout: DatePickerLayout,
+    /// A [`DatePicker::dropdown`] picker's date field, in the same
+    /// absolute space as [`Self::area`]; `None` for an inline calendar.
+    pub field: Option<Rect>,
+    /// The size a [`DatePicker::dropdown`] picker's calendar popup asks
+    /// for: the inline calendar's own measured size.
+    pub popup_size: Size,
 }
 
 impl DatePickerPrimitiveLayout {
@@ -634,8 +673,22 @@ impl Primitive for DatePicker {
     /// tall, plus the time field's own row when [`DatePicker::time`] is
     /// set — the grid is always six complete weeks (see
     /// [`DatePicker::month_grid`]), so this never depends on which month
-    /// is on screen.
+    /// is on screen. A [`DatePicker::dropdown`] picker measures its
+    /// one-row field instead.
     fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
+        if self.dropdown {
+            let width = match ctx.units() {
+                Units::Cells => {
+                    crate::text_util::display_width(&self.field_text()) as f32
+                        + FIELD_CHROME_COLUMNS
+                }
+                _ => {
+                    ctx.text_width(&self.field_text(), crate::FontRole::Chrome)
+                        + FIELD_CHROME_COLUMNS * ctx.char_width
+                }
+            };
+            return crate::NaturalSize::new(Some(width), Some(ctx.line_height));
+        }
         let cell_width = match ctx.units() {
             Units::Cells => CELL_COLUMNS,
             _ => ctx.text_width("00", crate::FontRole::Chrome) + 2.0 * ctx.char_width,
@@ -654,12 +707,36 @@ impl Primitive for DatePicker {
     /// rows (a terminal cannot paint a 3.5-column cell), with a
     /// one-cell floor so a box too small for the whole calendar still
     /// paints a readable, clipped one rather than nothing.
+    ///
+    /// A [`DatePicker::dropdown`] picker lays out only its field (the
+    /// top row of `rect`) and records the calendar's measured size for
+    /// its popup.
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> DatePickerPrimitiveLayout {
         let row_height = if ctx.line_height > 0.0 {
             ctx.line_height
         } else {
             1.0
         };
+        if self.dropdown {
+            let calendar = self
+                .calendar()
+                .measure(ctx, Size::new(rect.width, rect.height));
+            return DatePickerPrimitiveLayout {
+                area: rect,
+                cell_size: Size::new(0.0, 0.0),
+                layout: DatePickerLayout::default(),
+                field: Some(Rect::new(
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    row_height.min(rect.height),
+                )),
+                popup_size: Size::new(
+                    calendar.width.unwrap_or(rect.width),
+                    calendar.height.unwrap_or(row_height * 7.0),
+                ),
+            };
+        }
         let cells = matches!(ctx.units(), Units::Cells);
         let header_height = row_height.min(rect.height);
         let time_height = if self.time.is_some() {
@@ -688,6 +765,8 @@ impl Primitive for DatePicker {
                 header_height,
                 time_height,
             ),
+            field: None,
+            popup_size: Size::new(0.0, 0.0),
         }
     }
 
@@ -707,7 +786,16 @@ impl Primitive for DatePicker {
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            native_surface_paint::paint(self, &layout.layout, surface, theme);
+            match layout.field {
+                Some(field) => native_surface_paint::paint_field(self, field, surface, theme),
+                None => native_surface_paint::paint(
+                    self,
+                    &layout.layout,
+                    surface,
+                    theme,
+                    self.hovered_day(env),
+                ),
+            }
         }
         #[cfg(not(any(
             feature = "gtk",
@@ -730,7 +818,10 @@ impl Primitive for DatePicker {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        cell_paint::paint(self, &layout.layout, cells, theme);
+        match layout.field {
+            Some(field) => cell_paint::paint_field(self, field, cells, theme),
+            None => cell_paint::paint(self, &layout.layout, cells, theme, self.hovered_day(env)),
+        }
     }
 }
 
@@ -748,16 +839,243 @@ impl DatePicker {
             None => Handled::Ignored,
         }
     }
+
+    /// The date a [`Self::dropdown`] picker's field shows: the confirmed
+    /// date, or the cursor's before any date is confirmed.
+    fn field_text(&self) -> String {
+        self.selected
+            .unwrap_or(self.focused)
+            .format(self.locale.format)
+    }
+
+    /// The inline calendar a [`Self::dropdown`] picker shows in its
+    /// popup: this picker as a calendar, under the popup's own id so its
+    /// painted day cells and hover are told apart from the field's.
+    fn calendar(&self) -> DatePicker {
+        DatePicker {
+            id: WidgetId::new(format!("{}{CALENDAR_ID_SUFFIX}", self.id)),
+            dropdown: false,
+            open: false,
+            ..self.clone()
+        }
+    }
+
+    /// The index into [`DatePickerLayout::day_cells`] of the day the
+    /// pointer is over, read from `env`'s hover state.
+    #[cfg(any(
+        feature = "tui",
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    fn hovered_day(&self, env: &crate::PaintEnv) -> Option<usize> {
+        env.hovered_sub(&self.id)
+            .and_then(|sub| sub.0.checked_sub(SUB_DAY_BASE))
+            .map(|i| i as usize)
+            .filter(|i| *i < 42)
+    }
+
+    /// What a click on the calendar part named by `sub` means — the
+    /// day, header control or time field [`Interactive::sub_regions`]
+    /// tagged it with.
+    fn hit_for_sub(&self, sub: SubTarget) -> DatePickerHit {
+        match sub.0 {
+            SUB_PREV_MONTH => DatePickerHit::PrevMonth,
+            SUB_NEXT_MONTH => DatePickerHit::NextMonth,
+            SUB_TIME => DatePickerHit::Time,
+            n => n
+                .checked_sub(SUB_DAY_BASE)
+                .and_then(|i| self.month_grid().get(i as usize).copied())
+                .map_or(DatePickerHit::Empty, DatePickerHit::Day),
+        }
+    }
+
+    /// A press on the calendar part `hit`, inline or in the popup.
+    fn click(&self, hit: DatePickerHit, cx: &mut EventCx) -> Handled<DatePickerEvent> {
+        match hit {
+            // The two header controls page the month the same amount
+            // `PageUp`/`PageDown` do, so both affordances resolve
+            // through one calendar model.
+            DatePickerHit::PrevMonth => {
+                cx.request_focus(None);
+                Handled::Event(DatePickerEvent::FocusMoved(self.focused.add_months(-1)))
+            }
+            DatePickerHit::NextMonth => {
+                cx.request_focus(None);
+                Handled::Event(DatePickerEvent::FocusMoved(self.focused.add_months(1)))
+            }
+            DatePickerHit::Day(date) => {
+                cx.request_focus(None);
+                // A day in the month on screen is confirmed outright;
+                // one of the leading/trailing days that fill out the
+                // grid only moves the cursor (and, through
+                // `FocusMoved`'s apply contract, the month on screen)
+                // — the split [`DatePickerEvent::FocusMoved`]'s own
+                // doc describes.
+                if self.is_in_visible_month(date) {
+                    Handled::Event(DatePickerEvent::DateSelected(date))
+                } else {
+                    Handled::Event(DatePickerEvent::FocusMoved(date))
+                }
+            }
+            // The time field has no editing model of its own yet, but
+            // the calendar still owns the click rather than letting it
+            // fall through to whatever is painted behind it.
+            DatePickerHit::Time => {
+                cx.request_focus(None);
+                Handled::Consumed
+            }
+            DatePickerHit::Empty => Handled::Ignored,
+        }
+    }
+
+    /// A [`Self::dropdown`] picker's input: the field toggles the popup,
+    /// the popup's calendar answers like an inline one, and the keyboard
+    /// opens the popup before it navigates it.
+    fn handle_dropdown(&self, event: &RoutedEvent, cx: &mut EventCx) -> Handled<DatePickerEvent> {
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                ..
+            } => {
+                cx.request_focus(None);
+                Handled::Event(DatePickerEvent::OpenChanged(!self.open))
+            }
+            RoutedEvent::PopupEvent { popup, event } if *popup == CALENDAR_POPUP => {
+                match event.as_ref() {
+                    RoutedEvent::Pointer {
+                        kind: PointerKind::Down(crate::MouseButton::Left),
+                        sub: Some(sub),
+                        ..
+                    } => self.click(self.hit_for_sub(*sub), cx),
+                    // Hover inside the calendar is painted from the
+                    // pointer position; a move only needs a repaint.
+                    RoutedEvent::Pointer {
+                        kind: PointerKind::Move,
+                        ..
+                    } => Handled::Consumed,
+                    _ => Handled::Ignored,
+                }
+            }
+            RoutedEvent::PopupDismissed { popup, .. } if *popup == CALENDAR_POPUP => {
+                Handled::Event(DatePickerEvent::OpenChanged(false))
+            }
+            RoutedEvent::Key(key) if self.open => self.key(&key.key),
+            RoutedEvent::Key(key) => match &key.key {
+                Key::Named(crate::NamedKey::Enter | crate::NamedKey::Down) | Key::Char(' ') => {
+                    Handled::Event(DatePickerEvent::OpenChanged(true))
+                }
+                _ => Handled::Ignored,
+            },
+            RoutedEvent::Action(A11yAction::Click) if self.open => {
+                Handled::Event(DatePickerEvent::DateSelected(self.focused))
+            }
+            RoutedEvent::Action(A11yAction::Click) => {
+                Handled::Event(DatePickerEvent::OpenChanged(true))
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+/// [`Interactive::popups`]'s key for a [`DatePicker::dropdown`] picker's
+/// calendar.
+const CALENDAR_POPUP: PopupKey = PopupKey(0);
+
+/// Appended to a [`DatePicker::dropdown`] picker's id to name its
+/// calendar popup's content.
+const CALENDAR_ID_SUFFIX: &str = ":calendar";
+
+/// Columns a [`DatePicker::dropdown`] picker's field adds around its
+/// date: one pad either side and the trailing chevron.
+const FIELD_CHROME_COLUMNS: f32 = 3.0;
+
+/// A [`DatePicker::dropdown`] picker's popup content: the inline
+/// calendar over an opaque backdrop, so the popup hides whatever the
+/// frame painted beneath it. It only paints and names its day cells; the
+/// owning picker answers every event on it.
+struct CalendarPopup(DatePicker);
+
+impl crate::a11y::A11yPrimitive for CalendarPopup {
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        crate::a11y::A11yPrimitive::a11y_info(&self.0)
+    }
+}
+
+impl Primitive for CalendarPopup {
+    type Layout = DatePickerPrimitiveLayout;
+    type Event = DatePickerEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.0.id)
+    }
+
+    fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize {
+        self.0.measure(ctx, avail)
+    }
+
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> DatePickerPrimitiveLayout {
+        Primitive::layout(&self.0, ctx, rect)
+    }
+
+    fn paint(
+        &self,
+        layout: &DatePickerPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        surface.surface_fill_rect(layout.area, env.theme().surface_bg);
+        surface.surface_stroke_rect(layout.area, env.theme().border_fg, 1.0);
+        self.0.paint(layout, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &DatePickerPrimitiveLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        let theme = env.theme();
+        cells.fill(
+            layout.area,
+            crate::cell_surface::solid_style(theme.surface_fg, theme.surface_bg),
+        );
+        self.0.paint_cells(layout, cells, env);
+    }
+}
+
+impl Interactive for CalendarPopup {
+    type State = ();
+    type Action = DatePickerEvent;
+
+    fn handle(
+        &self,
+        _state: &mut (),
+        _event: &RoutedEvent,
+        _layout: &DatePickerPrimitiveLayout,
+        _cx: &mut EventCx,
+    ) -> Handled<DatePickerEvent> {
+        Handled::Ignored
+    }
+
+    fn sub_regions(&self, layout: &DatePickerPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        self.0.sub_regions(layout)
+    }
 }
 
 impl Interactive for DatePicker {
     /// Nothing: the cursor ([`DatePicker::focused`]), the month on screen
-    /// ([`DatePicker::visible_month`]) and the confirmed date
-    /// ([`DatePicker::selected`]) all live on the descriptor, which the
-    /// host updates from the two events above — so this widget has no
+    /// ([`DatePicker::visible_month`]), the confirmed date
+    /// ([`DatePicker::selected`]) and whether the popup is open
+    /// ([`DatePicker::open`]) all live on the descriptor, which the host
+    /// updates from [`DatePickerEvent`]; the day under the pointer is
+    /// painted from the frame's hover state. So this widget has no
     /// interaction state the descriptor doesn't already carry.
     type State = ();
     type Action = DatePickerEvent;
+
+    const OPENS_POPUPS: bool = true;
 
     /// One focus stop as a whole: the calendar moves its own cursor
     /// through [`Self::handle`]'s key dispatch rather than declaring a
@@ -776,46 +1094,15 @@ impl Interactive for DatePicker {
         layout: &DatePickerPrimitiveLayout,
         cx: &mut EventCx,
     ) -> Handled<DatePickerEvent> {
+        if self.dropdown {
+            return self.handle_dropdown(event, cx);
+        }
         match event {
             RoutedEvent::Pointer {
                 kind: PointerKind::Down(crate::MouseButton::Left),
                 local,
                 ..
-            } => match layout.hit_test_local(local.x, local.y) {
-                // The two header controls page the month the same amount
-                // `PageUp`/`PageDown` do, so both affordances resolve
-                // through one calendar model.
-                DatePickerHit::PrevMonth => {
-                    cx.request_focus(None);
-                    Handled::Event(DatePickerEvent::FocusMoved(self.focused.add_months(-1)))
-                }
-                DatePickerHit::NextMonth => {
-                    cx.request_focus(None);
-                    Handled::Event(DatePickerEvent::FocusMoved(self.focused.add_months(1)))
-                }
-                DatePickerHit::Day(date) => {
-                    cx.request_focus(None);
-                    // A day in the month on screen is confirmed outright;
-                    // one of the leading/trailing days that fill out the
-                    // grid only moves the cursor (and, through
-                    // `FocusMoved`'s apply contract, the month on screen)
-                    // — the split [`DatePickerEvent::FocusMoved`]'s own
-                    // doc describes.
-                    if self.is_in_visible_month(date) {
-                        Handled::Event(DatePickerEvent::DateSelected(date))
-                    } else {
-                        Handled::Event(DatePickerEvent::FocusMoved(date))
-                    }
-                }
-                // The time field has no editing model of its own yet, but
-                // the calendar still owns the click rather than letting it
-                // fall through to whatever is painted behind it.
-                DatePickerHit::Time => {
-                    cx.request_focus(None);
-                    Handled::Consumed
-                }
-                DatePickerHit::Empty => Handled::Ignored,
-            },
+            } => self.click(layout.hit_test_local(local.x, local.y), cx),
             RoutedEvent::Key(key) => self.key(&key.key),
             // `A11yAction` names no day through this generic seam, so
             // `Click` confirms whichever day the cursor is on — the same
@@ -826,6 +1113,28 @@ impl Interactive for DatePicker {
             }
             _ => Handled::Ignored,
         }
+    }
+
+    /// A [`DatePicker::dropdown`] picker's calendar, below its field,
+    /// while [`DatePicker::open`] is set. An outside press or Escape
+    /// dismisses it, which [`Self::handle`] reports as
+    /// [`DatePickerEvent::OpenChanged`]`(false)`.
+    fn popups(&self, _state: &(), layout: &DatePickerPrimitiveLayout) -> Vec<Popup> {
+        let (true, true, Some(field)) = (self.dropdown, self.open, layout.field) else {
+            return Vec::new();
+        };
+        let anchor = Rect::new(
+            field.x - layout.area.x,
+            field.y - layout.area.y,
+            field.width,
+            field.height,
+        );
+        vec![Popup::new(
+            CALENDAR_POPUP,
+            anchor,
+            layout.popup_size,
+            CalendarPopup(self.calendar()),
+        )]
     }
 
     fn a11y_actions(&self, _state: &()) -> Vec<A11yAction> {
@@ -839,6 +1148,9 @@ impl Interactive for DatePicker {
     fn sub_regions(&self, layout: &DatePickerPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
         let local =
             |r: Rect| Rect::new(r.x - layout.area.x, r.y - layout.area.y, r.width, r.height);
+        if let Some(field) = layout.field {
+            return vec![(local(field), SubTarget(SUB_FIELD))];
+        }
         let mut regions: Vec<(Rect, SubTarget)> = Vec::new();
         if let Some(prev) = layout.layout.prev_bounds {
             regions.push((local(prev), SubTarget(SUB_PREV_MONTH)));
@@ -872,6 +1184,9 @@ const SUB_TIME: u64 = 2;
 /// [`Interactive::sub_regions`]'s tag for day cell `n`, offset past the
 /// three fixed tags above.
 const SUB_DAY_BASE: u64 = 3;
+/// [`Interactive::sub_regions`]'s tag for a [`DatePicker::dropdown`]
+/// picker's field, past the 42 day-cell tags.
+const SUB_FIELD: u64 = SUB_DAY_BASE + 42;
 
 /// The cell-grid painter for [`DatePicker`], written against
 /// [`crate::CellSurface`].
@@ -1008,12 +1323,39 @@ pub(crate) mod cell_paint {
         }
     }
 
-    /// Paint `date_picker` at its resolved `layout` onto `surface`.
+    /// Paint a dropdown `date_picker`'s one-row `field`: its date, then
+    /// a chevron in the last column.
+    pub(crate) fn paint_field(
+        date_picker: &DatePicker,
+        field: Rect,
+        surface: &mut dyn CellSurface,
+        theme: &Theme,
+    ) {
+        let style = solid_style(theme.surface_fg, theme.input_bg);
+        surface.fill(field, style);
+        let x0 = field.x.round() as u16;
+        let y0 = field.y.round() as u16;
+        let w = field.width.round() as u16;
+        if w < 3 {
+            return;
+        }
+        surface.put_str_clipped(x0 + 1, y0, &date_picker.field_text(), w - 3, style);
+        surface.put_char(
+            x0 + w - 1,
+            y0,
+            '\u{25BE}',
+            solid_style(theme.muted_fg, theme.input_bg),
+        );
+    }
+
+    /// Paint `date_picker` at its resolved `layout` onto `surface`, with
+    /// the day cell at index `hovered` washed as hovered.
     pub(crate) fn paint(
         date_picker: &DatePicker,
         layout: &DatePickerLayout,
         surface: &mut dyn CellSurface,
         theme: &Theme,
+        hovered: Option<usize>,
     ) {
         let header_style = solid_style(theme.header_fg, theme.header_bg);
 
@@ -1034,15 +1376,17 @@ pub(crate) mod cell_paint {
             }
         }
 
-        for cell in &layout.day_cells {
+        for (i, cell) in layout.day_cells.iter().enumerate() {
             if cell.bounds.width <= 0.0 || cell.bounds.height <= 0.0 {
                 continue;
             }
-            // An unselected cell keeps the terminal's own background
-            // (`CellStyle`'s `None`), so the calendar sits on whatever
-            // the host painted behind it.
+            // An unselected, unhovered cell keeps the terminal's own
+            // background (`CellStyle`'s `None`), so the calendar sits on
+            // whatever the host painted behind it.
             let cell_bg = if cell.is_selected {
                 Some(theme.selected_bg)
+            } else if hovered == Some(i) {
+                Some(theme.inactive_selected_bg)
             } else {
                 None
             };
@@ -1096,6 +1440,37 @@ pub(crate) mod native_surface_paint {
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
 
+    /// Paint a dropdown [`DatePicker`]'s one-row `field`: a bordered input
+    /// box holding its date, with a chevron at the right edge.
+    pub(crate) fn paint_field(
+        date_picker: &DatePicker,
+        field: Rect,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+    ) {
+        surface.surface_fill_rect(field, theme.input_bg);
+        surface.surface_stroke_rect(field, theme.border_fg, 1.0);
+        let pad = surface.surface_char_width();
+        let chevron = "\u{25BE}";
+        let (chevron_w, _) = surface.surface_measure_text(chevron);
+        let text_w = (field.width - 3.0 * pad - chevron_w).max(0.0);
+        surface.surface_draw_text_run(
+            Rect::new(field.x + pad, field.y, text_w, field.height),
+            &date_picker.field_text(),
+            theme.surface_fg,
+        );
+        surface.surface_draw_text_run(
+            Rect::new(
+                field.x + field.width - pad - chevron_w,
+                field.y,
+                chevron_w,
+                field.height,
+            ),
+            chevron,
+            theme.muted_fg,
+        );
+    }
+
     /// Paint a [`DatePicker`] onto `surface`: the month/year header with
     /// prev/next controls, the 42-cell day grid (focus ring on
     /// `is_focused`, fill on `is_selected`, dimmed text for cells outside
@@ -1106,6 +1481,7 @@ pub(crate) mod native_surface_paint {
         layout: &DatePickerLayout,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        hovered: Option<usize>,
     ) {
         if let Some(header) = layout.header_bounds {
             if header.width > 0.0 && header.height > 0.0 {
@@ -1145,12 +1521,14 @@ pub(crate) mod native_surface_paint {
             }
         }
 
-        for cell in &layout.day_cells {
+        for (i, cell) in layout.day_cells.iter().enumerate() {
             if cell.bounds.width <= 0.0 || cell.bounds.height <= 0.0 {
                 continue;
             }
             if cell.is_selected {
                 surface.surface_fill_rect(cell.bounds, theme.selected_bg);
+            } else if hovered == Some(i) {
+                surface.surface_fill_rect(cell.bounds, theme.inactive_selected_bg);
             }
             if cell.is_focused {
                 surface.surface_stroke_rect(cell.bounds, theme.accent_fg, 1.0);
@@ -1256,7 +1634,7 @@ pub(crate) mod native_surface_paint {
             let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 0.0);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&picker, &layout, &mut surface, &theme);
+            paint(&picker, &layout, &mut surface, &theme, None);
 
             assert!(surface
                 .fills
@@ -1297,7 +1675,7 @@ pub(crate) mod native_surface_paint {
             let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 0.0);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&picker, &layout, &mut surface, &theme);
+            paint(&picker, &layout, &mut surface, &theme, None);
 
             let selected_bounds = layout
                 .day_cells
@@ -1324,7 +1702,7 @@ pub(crate) mod native_surface_paint {
             let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 0.0);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&picker, &layout, &mut surface, &theme);
+            paint(&picker, &layout, &mut surface, &theme, None);
 
             let leading_cell = layout.day_cells[0];
             assert!(!leading_cell.in_visible_month);
@@ -1342,7 +1720,7 @@ pub(crate) mod native_surface_paint {
             let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 2.0);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&picker, &layout, &mut surface, &theme);
+            paint(&picker, &layout, &mut surface, &theme, None);
 
             let time_bounds = layout.time_bounds.expect("time field reserved");
             assert!(surface.strokes.contains(&(time_bounds, theme.border_fg)));
@@ -1350,7 +1728,7 @@ pub(crate) mod native_surface_paint {
 
             let no_time_layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 0.0);
             let mut surface2 = RecordingSurface::default();
-            paint(&picker, &no_time_layout, &mut surface2, &theme);
+            paint(&picker, &no_time_layout, &mut surface2, &theme, None);
             assert!(no_time_layout.time_bounds.is_none());
         }
 
@@ -1360,7 +1738,7 @@ pub(crate) mod native_surface_paint {
             let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 0.0, 0.0);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&picker, &layout, &mut surface, &theme);
+            paint(&picker, &layout, &mut surface, &theme, None);
 
             assert!(layout.header_bounds.is_none());
             assert!(layout.time_bounds.is_none());
@@ -1441,6 +1819,7 @@ mod tests {
             },
             time: None,
             has_focus: true,
+            ..Default::default()
         };
         let grid = picker.month_grid();
         assert_eq!(grid.len(), 42);
@@ -1461,6 +1840,7 @@ mod tests {
             locale: DateLocale::default(),
             time: None,
             has_focus: true,
+            ..Default::default()
         };
         let grid = picker.month_grid();
         assert_eq!(grid[0].weekday(), Weekday::Sunday);
@@ -1476,6 +1856,7 @@ mod tests {
             locale: DateLocale::default(),
             time: None,
             has_focus: true,
+            ..Default::default()
         };
         assert_eq!(
             picker.navigate("Right"),
@@ -1506,6 +1887,7 @@ mod tests {
             locale: DateLocale::default(),
             time: None,
             has_focus: true,
+            ..Default::default()
         };
         assert_eq!(
             picker.navigate("PageDown"),
@@ -1527,6 +1909,7 @@ mod tests {
             locale: DateLocale::default(),
             time: None,
             has_focus: true,
+            ..Default::default()
         };
         assert_eq!(
             picker.navigate("Enter"),
@@ -1560,6 +1943,7 @@ mod tests {
             locale: DateLocale::default(),
             time: Some(TimeOfDay::new(10, 30)),
             has_focus: true,
+            ..Default::default()
         };
         let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 1.0, 2.0);
 
@@ -1591,6 +1975,7 @@ mod tests {
             locale: DateLocale::default(),
             time: None,
             has_focus: true,
+            ..Default::default()
         };
         let layout = picker.layout(0.0, 0.0, 10.0, 2.0, 0.0, 0.0);
         assert_eq!(layout.header_bounds, None);
@@ -1609,6 +1994,7 @@ mod tests {
             locale: DateLocale::default(),
             time: Some(TimeOfDay::new(10, 30)),
             has_focus: true,
+            ..Default::default()
         };
         let layout = picker.layout(5.0, 5.0, 10.0, 2.0, 1.0, 2.0);
 
@@ -2008,6 +2394,137 @@ mod interactive_tests {
         let size = Primitive::measure(&timed, &ctx, Size::new(80.0, 24.0));
         assert_eq!(size.height, Some(8.0), "the time field adds a row");
     }
+    fn dropdown(open: bool) -> DatePicker {
+        let mut p = picker();
+        p.dropdown = true;
+        p.open = open;
+        p
+    }
+
+    fn popup_press(sub: u64) -> RoutedEvent {
+        RoutedEvent::PopupEvent {
+            popup: CALENDAR_POPUP,
+            event: Box::new(RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                sub: Some(SubTarget(sub)),
+                local: Point::new(0.0, 0.0),
+                mods: Modifiers::default(),
+            }),
+        }
+    }
+
+    #[test]
+    fn a_dropdown_lays_out_one_field_row_and_names_it_as_its_only_part() {
+        let p = dropdown(false);
+        let layout = layout_for(&p);
+        assert_eq!(layout.field, Some(Rect::new(3.0, 2.0, 28.0, 1.0)));
+        assert!(layout.layout.day_cells.is_empty());
+        assert_eq!(
+            p.sub_regions(&layout),
+            vec![(Rect::new(0.0, 0.0, 28.0, 1.0), SubTarget(SUB_FIELD))]
+        );
+        // The popup asks for the inline calendar's own measured size.
+        assert_eq!(layout.popup_size, Size::new(28.0, 7.0));
+    }
+
+    #[test]
+    fn a_dropdown_owns_a_calendar_popup_only_while_open() {
+        let closed = dropdown(false);
+        assert!(closed.popups(&(), &layout_for(&closed)).is_empty());
+        let inline = picker();
+        assert!(inline.popups(&(), &layout_for(&inline)).is_empty());
+
+        let open = dropdown(true);
+        let popups = open.popups(&(), &layout_for(&open));
+        assert_eq!(popups.len(), 1);
+        assert_eq!(popups[0].key, CALENDAR_POPUP);
+        assert_eq!(popups[0].anchor, Rect::new(0.0, 0.0, 28.0, 1.0));
+        assert_eq!(
+            popups[0].content.id(),
+            Some(&WidgetId::new("due-date:calendar"))
+        );
+    }
+
+    #[test]
+    fn clicking_the_field_toggles_the_popup() {
+        let event = pointer_down(
+            Rect::new(3.0, 2.0, 28.0, 1.0),
+            &layout_for(&dropdown(false)),
+        );
+        assert_eq!(
+            dispatch(&dropdown(false), &event),
+            Handled::Event(DatePickerEvent::OpenChanged(true))
+        );
+        assert_eq!(
+            dispatch(&dropdown(true), &event),
+            Handled::Event(DatePickerEvent::OpenChanged(false))
+        );
+    }
+
+    #[test]
+    fn a_dismissed_popup_asks_the_app_to_close_it() {
+        for reason in [
+            crate::popup::DismissReason::Escape,
+            crate::popup::DismissReason::OutsideClick,
+        ] {
+            let event = RoutedEvent::PopupDismissed {
+                popup: CALENDAR_POPUP,
+                reason,
+            };
+            assert_eq!(
+                dispatch(&dropdown(true), &event),
+                Handled::Event(DatePickerEvent::OpenChanged(false))
+            );
+        }
+    }
+
+    #[test]
+    fn presses_on_the_popup_calendar_answer_like_the_inline_one() {
+        let p = dropdown(true);
+        assert_eq!(
+            dispatch(&p, &popup_press(SUB_NEXT_MONTH)),
+            Handled::Event(DatePickerEvent::FocusMoved(CalendarDate::new(2024, 4, 15)))
+        );
+        assert_eq!(
+            dispatch(&p, &popup_press(SUB_PREV_MONTH)),
+            Handled::Event(DatePickerEvent::FocusMoved(CalendarDate::new(2024, 2, 15)))
+        );
+        // March 2024 starts on a Friday; with Sunday first, the grid
+        // opens on Sunday 25 February, so 1 March is day cell 5.
+        assert_eq!(
+            dispatch(&p, &popup_press(SUB_DAY_BASE + 5)),
+            Handled::Event(DatePickerEvent::DateSelected(CalendarDate::new(2024, 3, 1)))
+        );
+        assert_eq!(
+            dispatch(&p, &popup_press(SUB_DAY_BASE)),
+            Handled::Event(DatePickerEvent::FocusMoved(CalendarDate::new(2024, 2, 25)))
+        );
+    }
+
+    #[test]
+    fn the_keyboard_opens_a_closed_dropdown_then_navigates_it() {
+        assert_eq!(
+            dispatch(&dropdown(false), &key(NamedKey::Down)),
+            Handled::Event(DatePickerEvent::OpenChanged(true))
+        );
+        assert_eq!(
+            dispatch(&dropdown(false), &key(NamedKey::Left)),
+            Handled::Ignored
+        );
+        assert_eq!(
+            dispatch(&dropdown(true), &key(NamedKey::Down)),
+            Handled::Event(DatePickerEvent::FocusMoved(CalendarDate::new(2024, 3, 22)))
+        );
+    }
+
+    #[test]
+    fn the_open_event_rides_the_date_open_channel() {
+        let id = WidgetId::new("due-date");
+        assert_eq!(
+            DatePickerEvent::OpenChanged(true).into_ui_event(id),
+            crate::UiEvent::Form(id, crate::FormEvent::DateOpenChanged { id, open: true })
+        );
+    }
 }
 
 /// Cell-painting entry points used by this module's own `#[cfg(test)]`
@@ -2039,6 +2556,12 @@ mod cell_test_paint {
         theme: &Theme,
     ) {
         let mut sink = None;
-        cell_paint::paint(date_picker, layout, &mut surface(buf, &mut sink), theme);
+        cell_paint::paint(
+            date_picker,
+            layout,
+            &mut surface(buf, &mut sink),
+            theme,
+            None,
+        );
     }
 }

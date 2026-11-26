@@ -789,6 +789,20 @@ impl<A: AppLogic> Drop for TuiRunner<A> {
     }
 }
 
+/// Every cell under a popup painted this frame, with its position.
+fn painted_popup_cells(buf: &ratatui::buffer::Buffer) -> Vec<((u16, u16), ratatui::buffer::Cell)> {
+    let mut cells = Vec::new();
+    for popup in crate::popup::painted_popups() {
+        let r = popup.rect;
+        let rect =
+            ratatui::layout::Rect::new(r.x as u16, r.y as u16, r.width as u16, r.height as u16);
+        for p in rect.intersection(buf.area).positions() {
+            cells.push(((p.x, p.y), buf[(p.x, p.y)].clone()));
+        }
+    }
+    cells
+}
+
 /// Render one frame.
 ///
 /// Runs `app.render` inside the backend's frame scope, overlays the active
@@ -833,10 +847,10 @@ where
                 1.0,
             ));
             backend.enter_frame_scope(frame, |b| {
-                // TUI is single-area; always pass the app's default
-                // `AreaId`. Multi-area runners (GTK) pass the AreaId for
-                // whichever surface is repainting.
+                // TUI is single-area; always pass the default `AreaId`,
+                // then paint open popups above the frame.
                 app.render(b, A::AreaId::default());
+                crate::popup::paint_open_popups(b);
             });
             // Clear any `underline_color` ConPTY would misparse as
             // blink/faint before any further
@@ -845,47 +859,31 @@ where
             // why this single per-frame sweep, not a parameter threaded
             // through each rasteriser, is the chosen choke point.
             backend.strip_unsupported_underline_colors(frame.buffer_mut());
-            // After app.render: overlay selection highlight on the rendered
-            // buffer, BEFORE the focus ring below. Done outside
-            // enter_frame_scope so the closure lifetime doesn't conflict
-            // with the frame borrow. Ordered ahead of the ring (not after,
-            // as the ring's own `AppLogic::render`-adjacent paint might
-            // suggest) because the focused widget's tab-stop rect and an
-            // active text selection's bounds are the same rect for a
-            // focused `TextDisplay` (its tab stop is its whole painted
-            // area); caching the selection's text after the ring had
-            // already overwritten those cells with border glyphs made
-            // Ctrl-C copy the ring's glyphs instead of the selected text.
-            // The ring still paints last, so what's on screen is unchanged
-            // either way — only `cached_selection_text`'s correctness
-            // depends on this order.
+            // Open popups stay above the selection highlight and focus
+            // ring painted below: their cells are put back afterwards.
+            let popup_cells = painted_popup_cells(frame.buffer_mut());
+            // Selection highlight before the focus ring: a focused
+            // `TextDisplay`'s tab-stop rect and its selection's bounds are
+            // the same rect, and caching the selection's text after the
+            // ring had overwritten those cells with border glyphs would
+            // make Ctrl-C copy the ring's glyphs. Both run after
+            // `enter_frame_scope`, so the frame borrow does not conflict.
             backend.apply_selection_highlight(frame.buffer_mut());
-            // Paint the focus-ring convention so it overlays on top of the
-            // widget's own content and the selection highlight above —
-            // via `draw_focus_ring_on_buffer` rather than the
-            // `enter_frame_scope`-bound `Backend::draw_focus_ring`, since
-            // this runs after that scope has already ended.
-            //
-            // Resolved here, from this frame's own just-updated tab
-            // stops, rather than before `app.render` ran above:
-            // `AppLogic::extra_tab_stops` is `&self`-only, but for an engine
-            // backing a `"form"` extra it isn't purely a cheap read of
-            // already-built layout — `InteractionEngine::tab_stops`
-            // excludes a `"form"` extra's own stop only once
-            // `InteractionEngine::sync_forms` (called from `app.render`
-            // above) has recorded that engine focus actually landed on
-            // it. Resolving the rect before `app.render` ran used
-            // whichever frame *last* updated that record — the frame
-            // engine focus actually moved onto the form, one frame too
-            // early — so this ring painted the form's own multi-row
-            // rect as a single-box border, overwriting its first and
-            // last visible field rows with border glyphs instead of
-            // leaving the paint only `FormController`'s own per-field
-            // focus visuals already handle.
+            // The ring overlays the widget's content and the highlight.
+            // Its rect is resolved from this frame's own tab stops, after
+            // `app.render`: an engine backing a `"form"` extra excludes
+            // the form's own stop only once `InteractionEngine::sync_forms`
+            // (run from `app.render`) has recorded that focus landed on
+            // it, so a rect resolved before `render` would ring the form's
+            // whole multi-row rect, one frame early, over its field rows.
             let focus_ring_rect =
                 crate::runtime::focused_stop_rect(backend, app, A::AreaId::default());
             if let Some(rect) = focus_ring_rect {
                 backend.draw_focus_ring_on_buffer(frame.buffer_mut(), rect);
+            }
+            let buf = frame.buffer_mut();
+            for (at, cell) in popup_cells {
+                buf[at] = cell;
             }
             // Apply the editor cursor position cached by `draw_editor`.
             // `Backend::draw_editor` only has the buffer,

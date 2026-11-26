@@ -155,6 +155,7 @@ pub struct KeyEvent {
 /// present) names which part of a composite widget the event landed on,
 /// when the runtime's hit-test could tell.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum RoutedEvent {
     /// A mouse/touch gesture.
     Pointer {
@@ -192,6 +193,35 @@ pub enum RoutedEvent {
     FocusIn(Option<SubTarget>),
     /// This widget lost keyboard focus.
     FocusOut,
+    /// An event that landed on one of this widget's open popups — see
+    /// [`Interactive::popups`].
+    ///
+    /// `event` is resolved against the popup, not the owner: a
+    /// [`Self::Pointer`]/[`Self::Wheel`]'s `local` is relative to the
+    /// popup's rect, and a `Pointer`'s `sub` is the sub-target the
+    /// popup's content names under the pointer
+    /// ([`Interactive::sub_regions`] on [`crate::popup::Popup::content`]).
+    /// A popup swallows the events that land on it, so answering
+    /// [`Handled::Ignored`] stops the event rather than passing it to
+    /// whatever is painted underneath.
+    PopupEvent {
+        /// Which of this widget's popups the event landed on.
+        popup: crate::popup::PopupKey,
+        /// The event, resolved against that popup.
+        event: Box<RoutedEvent>,
+    },
+    /// The runtime dismissed one of this widget's open popups — an
+    /// outside press or Escape, as that popup's
+    /// [`crate::popup::PopupDismiss`] allows. The widget closes it the
+    /// way it closes it for any other reason: emitting the event that
+    /// makes the app clear the field it reads in [`Interactive::popups`],
+    /// or clearing its own state.
+    PopupDismissed {
+        /// Which of this widget's popups was dismissed.
+        popup: crate::popup::PopupKey,
+        /// What dismissed it.
+        reason: crate::popup::DismissReason,
+    },
 }
 
 /// The runtime seam [`Interactive::handle`] reaches through [`EventCx`] to
@@ -360,6 +390,58 @@ pub trait Interactive: Primitive {
     /// one whole rect.
     fn sub_regions(&self, layout: &Self::Layout) -> Vec<(crate::Rect, SubTarget)> {
         let _ = layout;
+        Vec::new()
+    }
+
+    /// Whether this widget can ever answer [`Self::popups`] with anything.
+    /// The runtime asks [`Self::popups`] only of widgets that set this,
+    /// so routing an event never lays out a widget that has no popups to
+    /// offer. A widget that overrides [`Self::popups`] sets it to `true`;
+    /// one that leaves it `false` has its popups neither painted nor
+    /// routed.
+    const OPENS_POPUPS: bool = false;
+
+    /// The popups this widget has open, given `state` and `layout` — a
+    /// dropdown list, a calendar grid, a submenu. Default: none. Only
+    /// asked when [`Self::OPENS_POPUPS`] is set.
+    ///
+    /// Open is whatever this answer says it is: the runtime keeps no
+    /// popup state of its own. A widget in controlled mode reads a
+    /// descriptor field the app sets (`open`), and closes the popup by
+    /// emitting the event that makes the app clear it. Each popup is
+    /// painted above the whole frame, hit-tested before any widget, and
+    /// its events reach this widget's [`Self::handle`] as
+    /// [`RoutedEvent::PopupEvent`]; an outside press or Escape arrives as
+    /// [`RoutedEvent::PopupDismissed`]. See [`crate::popup`].
+    ///
+    /// A popup's [`crate::popup::Popup::anchor`] is in this widget's
+    /// local space, the same space as [`Self::sub_regions`].
+    ///
+    /// ```
+    /// use quadraui::popup::{Popup, PopupKey};
+    /// use quadraui::primitive::Size;
+    /// use quadraui::{Rect, StatusBar, WidgetId};
+    ///
+    /// /// What a dropdown's `popups` returns while its `open` field is
+    /// /// set: one list, anchored under the field's first row.
+    /// fn dropdown(open: bool, field: Rect, rows: usize) -> Vec<Popup> {
+    ///     if !open {
+    ///         return Vec::new();
+    ///     }
+    ///     let list = StatusBar {
+    ///         id: WidgetId::new("dropdown:list"),
+    ///         left_segments: Vec::new(),
+    ///         right_segments: Vec::new(),
+    ///     };
+    ///     let size = Size::new(field.width, rows as f32);
+    ///     vec![Popup::new(PopupKey(0), field, size, list)]
+    /// }
+    ///
+    /// assert!(dropdown(false, Rect::new(0.0, 0.0, 20.0, 1.0), 4).is_empty());
+    /// assert_eq!(dropdown(true, Rect::new(0.0, 0.0, 20.0, 1.0), 4).len(), 1);
+    /// ```
+    fn popups(&self, state: &Self::State, layout: &Self::Layout) -> Vec<crate::popup::Popup> {
+        let _ = (state, layout);
         Vec::new()
     }
 }

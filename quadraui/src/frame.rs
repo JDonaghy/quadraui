@@ -723,15 +723,10 @@ impl ScreenLayout {
                     backend.draw_data_table(*rect, table, *hovered);
                 }
                 Surface::Widget { rect, widget } => {
-                    // A menu bar may be the platform's own rather than a
-                    // painted strip; `MenuBar::present` makes that call.
-                    match widget.as_ref().downcast_ref::<crate::MenuBar>() {
-                        Some(bar) => {
-                            let _ = bar.present(backend, *rect);
-                        }
-                        None => {
-                            backend.draw_dyn(*rect, widget.as_ref(), &());
-                        }
+                    // A widget the platform presents itself (a native menu
+                    // bar) is not painted in the window.
+                    if !widget.native_presentation(backend, *rect) {
+                        backend.draw_dyn(*rect, widget.as_ref(), &());
                     }
                 }
                 Surface::Chart {

@@ -4,10 +4,9 @@
 //! `Form`/`FormController` paint only the compact one-row field (live
 //! text + a chevron); the open, filtered dropdown is this app's own
 //! popup overlay, mirroring `FieldKind::ColorPicker`'s contract. This
-//! demo's `render` is the reference implementation for that overlay:
-//! it recomputes `ComboBox::layout` itself and calls
-//! `Backend::draw_combo_box` to paint the dropdown on top of the field
-//! `FormController` already rendered.
+//! demo's `render` is the reference implementation for that overlay: it
+//! paints the `ComboBox` itself over the field `FormController` already
+//! rendered, and the box's own dropdown popup lands above the frame.
 //!
 //! `FormController` forwards every key straight into the embedded
 //! combo box and translates the result into one of the four
@@ -149,20 +148,10 @@ impl AppLogic for FormComboBoxApp {
         self.fc.render(backend, form_rect);
 
         if self.combo.open {
+            // The box paints its field over the form's own row; its open
+            // list is a popup the runner paints above the whole frame.
             let field_bounds = self.field_bounds(backend);
-            // `ComboBox` lays the field out on the first row of the rect
-            // it is given and drops its open list into the room below,
-            // so reserve eight rows of dropdown under the field, clipped
-            // to whatever the viewport actually has left.
-            let vp = backend.viewport();
-            let room_below = (vp.height - field_bounds.y).max(field_bounds.height);
-            let area = Rect::new(
-                field_bounds.x,
-                field_bounds.y,
-                field_bounds.width,
-                (field_bounds.height + backend.line_height() * 8.0).min(room_below),
-            );
-            backend.draw_dyn(area, &self.combo, &());
+            backend.draw_dyn(field_bounds, &self.combo, &());
         }
 
         let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());

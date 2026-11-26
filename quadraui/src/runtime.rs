@@ -710,10 +710,15 @@ where
     if !backend.modal_stack_handle().borrow().is_empty() {
         return WidgetRouteOutcome::Bubble(Reaction::Continue);
     }
-    let tree = app.frame_tree(A::AreaId::default());
+    let mut tree = app.frame_tree(A::AreaId::default());
     if tree.is_empty() {
         return WidgetRouteOutcome::Bubble(Reaction::Continue);
     }
+    // A widget this frame does not name loses its persistent state, so
+    // one that comes back later starts from `State::default()`.
+    crate::widget_state::with_widget_states(|states| {
+        states.retain(|id| tree.find(id).is_some());
+    });
     // Keep the sub-target-aware `FocusTree` seam fresh for this event —
     // `route_widget_key`/`WidgetEventHost` read it below. Cheap to
     // rebuild every routed event, same tradeoff `app.frame_tree` above
@@ -721,31 +726,61 @@ where
     // can't be cached across the frame).
     backend.focus_tree_mut().sync(&tree);
 
+    // Open popups sit above every node: they see the event first.
+    resolve_tree_popups(backend, &mut tree);
+    let popup_side_reaction = if tree.popups().is_empty() {
+        Reaction::Continue
+    } else {
+        match route_popup_event(event, backend, app, &tree) {
+            PopupRoute::Claimed(outcome) => return WidgetRouteOutcome::Claimed(outcome),
+            PopupRoute::Continue(side_effect) => side_effect,
+        }
+    };
+
+    let outcome = route_widget_node_event(event, backend, app, &tree);
+    match outcome {
+        WidgetRouteOutcome::Claimed(o) => WidgetRouteOutcome::Claimed(popup_side_reaction.merge(o)),
+        WidgetRouteOutcome::Bubble(r) => WidgetRouteOutcome::Bubble(popup_side_reaction.merge(r)),
+    }
+}
+
+/// The node half of [`route_widget_event`]: deliver `event` to the node
+/// it targets, once no popup has claimed it.
+fn route_widget_node_event<B, A>(
+    event: &UiEvent,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> WidgetRouteOutcome
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
     match event {
         UiEvent::MouseDown {
             position,
             button,
             modifiers,
             ..
-        } => route_widget_pointer_down(*position, *button, *modifiers, backend, app, &tree),
+        } => route_widget_pointer_down(*position, *button, *modifiers, backend, app, tree),
         UiEvent::MouseMoved { position, .. } => {
-            let side_effect = route_widget_move(*position, backend, app, &tree);
+            let side_effect = route_widget_move(*position, backend, app, tree);
             WidgetRouteOutcome::Bubble(side_effect)
         }
         UiEvent::MouseUp {
             position, button, ..
-        } => route_widget_pointer_up(*position, *button, backend, app, &tree),
+        } => route_widget_pointer_up(*position, *button, backend, app, tree),
         UiEvent::KeyPressed {
             key,
             modifiers,
             repeat,
-        } => route_widget_key(key.clone(), *modifiers, *repeat, backend, app, &tree),
+        } => route_widget_key(key.clone(), *modifiers, *repeat, backend, app, tree),
         UiEvent::DoubleClick { position, .. } => {
-            route_widget_double_click(*position, backend, app, &tree)
+            route_widget_double_click(*position, backend, app, tree)
         }
         UiEvent::Scroll {
             position, delta, ..
-        } => route_widget_wheel(*position, *delta, backend, app, &tree),
+        } => route_widget_wheel(*position, *delta, backend, app, tree),
         _ => WidgetRouteOutcome::Bubble(Reaction::Continue),
     }
 }
@@ -780,6 +815,280 @@ impl WidgetRouteOutcome {
             Self::Bubble(reaction) => reaction,
         }
     }
+}
+
+/// Fill `tree`'s popups from each node's
+/// [`crate::interactive::Interactive::popups`], against its stored state
+/// and its layout at its rect, plus every popup their content opens —
+/// the same answer [`crate::DrawsPrimitives::draw_dyn`] queues and
+/// [`crate::popup::paint_open_popups`] paints. Only nodes whose widget
+/// can open popups ([`crate::primitive::DynWidget::opens_popups`]) are
+/// laid out.
+fn resolve_tree_popups<B>(backend: &B, tree: &mut FrameTree)
+where
+    B: crate::Backend,
+{
+    let viewport = crate::backend::viewport_rect(backend.viewport());
+    let mut roots = Vec::new();
+    for node in tree.nodes().iter().filter(|n| n.widget.opens_popups()) {
+        let layout = crate::backend::layout_like_paint(backend, node.widget.as_ref(), node.rect);
+        let popups = crate::widget_state::with_widget_state_ref(Some(&node.id), |state| {
+            node.widget.popups(state, layout.as_ref())
+        });
+        for popup in popups {
+            roots.push(crate::popup::OpenPopup::resolve(
+                node.id, node.rect, popup, viewport,
+            ));
+        }
+    }
+    if roots.is_empty() {
+        return;
+    }
+    for popup in crate::popup::with_nested_popups(backend, roots) {
+        tree.push_popup(popup);
+    }
+}
+
+/// [`route_popup_event`]'s result.
+enum PopupRoute {
+    /// A popup claimed the event: it landed on one, or dismissed one by
+    /// Escape.
+    Claimed(EventOutcome),
+    /// No popup claimed it; route it to the nodes as usual, folding in
+    /// this side effect (the owners' answers to an outside-press
+    /// dismissal).
+    Continue(Reaction),
+}
+
+/// Route `event` against `tree`'s open popups, before any node sees it.
+///
+/// - A press, release, double-click or wheel over a popup reaches the
+///   popup's owner as [`RoutedEvent::PopupEvent`] and is claimed whatever
+///   the owner answers: nothing under a popup receives an event that
+///   landed on it.
+/// - A press outside every popup dismisses each popup that allows it
+///   ([`crate::popup::PopupDismiss::outside_click`]) and whose owner the
+///   press also missed — the owner's own press handling covers a click on
+///   itself. The owners receive [`RoutedEvent::PopupDismissed`], and the
+///   press then routes on as usual.
+/// - Escape dismisses the topmost popup that allows it
+///   ([`crate::popup::PopupDismiss::escape`]) and is claimed.
+/// - A move over a popup reaches its owner as a `PopupEvent` and is never
+///   claimed, like every move; [`route_widget_hover`] treats the pointer
+///   as over no node.
+///
+/// While a widget holds the pointer capture, pointer events skip popups
+/// entirely and go to the captured widget.
+fn route_popup_event<B, A>(
+    event: &UiEvent,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> PopupRoute
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let captured = backend.widget_routing_mut().and_then(|r| r.captured);
+    let pointer = |kind: PointerKind, position: Point, mods: Modifiers| {
+        move |popup: &crate::popup::OpenPopup, sub: Option<crate::interactive::SubTarget>| {
+            RoutedEvent::Pointer {
+                kind,
+                sub,
+                local: local_point(position, popup.rect),
+                mods,
+            }
+        }
+    };
+    match event {
+        UiEvent::MouseDown {
+            position,
+            button,
+            modifiers,
+            ..
+        } if captured.is_none() => match tree.popup_at(*position) {
+            Some(popup) => PopupRoute::Claimed(deliver_to_popup(
+                popup,
+                *position,
+                pointer(PointerKind::Down(*button), *position, *modifiers),
+                backend,
+                app,
+                tree,
+            )),
+            None => PopupRoute::Continue(dismiss_outside(*position, backend, app, tree)),
+        },
+        UiEvent::MouseUp {
+            position, button, ..
+        } if captured.is_none() => match tree.popup_at(*position) {
+            Some(popup) => PopupRoute::Claimed(deliver_to_popup(
+                popup,
+                *position,
+                pointer(PointerKind::Up(*button), *position, Modifiers::default()),
+                backend,
+                app,
+                tree,
+            )),
+            None => PopupRoute::Continue(Reaction::Continue),
+        },
+        UiEvent::DoubleClick { position, .. } if captured.is_none() => {
+            match tree.popup_at(*position) {
+                Some(popup) => PopupRoute::Claimed(deliver_to_popup(
+                    popup,
+                    *position,
+                    pointer(
+                        PointerKind::DoubleClick(MouseButton::Left),
+                        *position,
+                        Modifiers::default(),
+                    ),
+                    backend,
+                    app,
+                    tree,
+                )),
+                None => PopupRoute::Continue(Reaction::Continue),
+            }
+        }
+        UiEvent::MouseMoved { position, .. } if captured.is_none() => {
+            match tree.popup_at(*position) {
+                Some(popup) => PopupRoute::Continue(deliver_to_popup(
+                    popup,
+                    *position,
+                    pointer(PointerKind::Move, *position, Modifiers::default()),
+                    backend,
+                    app,
+                    tree,
+                )),
+                None => PopupRoute::Continue(Reaction::Continue),
+            }
+        }
+        UiEvent::Scroll {
+            position, delta, ..
+        } => match tree.popup_at(*position) {
+            Some(popup) => {
+                let (dx, dy, at) = (delta.x, delta.y, *position);
+                PopupRoute::Claimed(deliver_to_popup(
+                    popup,
+                    at,
+                    move |popup: &crate::popup::OpenPopup, _sub| RoutedEvent::Wheel {
+                        dx,
+                        dy,
+                        local: local_point(at, popup.rect),
+                        mods: Modifiers::default(),
+                    },
+                    backend,
+                    app,
+                    tree,
+                ))
+            }
+            None => PopupRoute::Continue(Reaction::Continue),
+        },
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            ..
+        } => match tree.popups().iter().rev().find(|p| p.dismiss.escape) {
+            Some(popup) => PopupRoute::Claimed(dismiss_popup(
+                popup,
+                crate::popup::DismissReason::Escape,
+                backend,
+                app,
+                tree,
+            )),
+            None => PopupRoute::Continue(Reaction::Continue),
+        },
+        _ => PopupRoute::Continue(Reaction::Continue),
+    }
+}
+
+/// Deliver an event that landed on `popup` at `position` to the popup's
+/// owner as [`RoutedEvent::PopupEvent`], built by `make` from the popup
+/// and the sub-target its content names under `position`. A popup
+/// swallows what lands on it, so an owner's `Ignored` still claims the
+/// event; the answer's `Reaction` is kept either way.
+fn deliver_to_popup<B, A>(
+    popup: &crate::popup::OpenPopup,
+    position: Point,
+    make: impl FnOnce(&crate::popup::OpenPopup, Option<crate::interactive::SubTarget>) -> RoutedEvent,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> EventOutcome
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let Some(owner) = tree.find(&popup.owner) else {
+        return EventOutcome::Continue;
+    };
+    let content_layout =
+        crate::backend::layout_like_paint(backend, popup.content.as_ref(), popup.rect);
+    let local = local_point(position, popup.rect);
+    let sub = popup
+        .content
+        .sub_regions(content_layout.as_ref())
+        .into_iter()
+        .find(|(r, _)| r.contains(local))
+        .map(|(_, sub)| sub);
+    let routed = RoutedEvent::PopupEvent {
+        popup: popup.key,
+        event: Box::new(make(popup, sub)),
+    };
+    dispatch_widget_routed_event(popup.owner, owner, &routed, backend, app).reaction()
+}
+
+/// Tell `popup`'s owner the runtime dismissed it, for `reason`.
+fn dismiss_popup<B, A>(
+    popup: &crate::popup::OpenPopup,
+    reason: crate::popup::DismissReason,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> EventOutcome
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let Some(owner) = tree.find(&popup.owner) else {
+        return EventOutcome::Continue;
+    };
+    let routed = RoutedEvent::PopupDismissed {
+        popup: popup.key,
+        reason,
+    };
+    dispatch_widget_routed_event(popup.owner, owner, &routed, backend, app).reaction()
+}
+
+/// A press at `position` landed on no popup: dismiss, topmost first,
+/// every popup that allows an outside-press dismissal and whose owner the
+/// press also missed.
+fn dismiss_outside<B, A>(
+    position: Point,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> Reaction
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let mut reaction = Reaction::Continue;
+    for popup in tree.popups().iter().rev() {
+        if !popup.dismiss.outside_click {
+            continue;
+        }
+        let on_owner = tree
+            .find(&popup.owner)
+            .is_some_and(|owner| owner.rect.contains(position));
+        if on_owner {
+            continue;
+        }
+        reaction = reaction.merge(dismiss_popup(
+            popup,
+            crate::popup::DismissReason::OutsideClick,
+            backend,
+            app,
+            tree,
+        ));
+    }
+    reaction
 }
 
 /// `MouseDown` arm of [`route_widget_event`]: hit-test, click-to-focus,
@@ -1004,7 +1313,10 @@ where
     B: PreprocessBackend + crate::Backend,
     A: AppLogic,
 {
-    let hit_id = tree.hit_test(position).map(|node| node.id);
+    let hit_id = match tree.hit(position) {
+        Some(crate::frame_tree::FrameHit::Node(node)) => Some(node.id),
+        _ => None,
+    };
     let Some(routing) = backend.widget_routing_mut() else {
         return Reaction::Continue;
     };
@@ -1189,11 +1501,8 @@ where
     let units = ctx.units();
 
     let mut intents = WidgetHostIntents::default();
-    let outcome = {
-        let Some(routing) = backend.widget_routing_mut() else {
-            return WidgetRouteOutcome::Bubble(Reaction::Continue);
-        };
-        let state = routing.states.state_for(id, node.widget.as_ref());
+    let outcome = crate::widget_state::with_widget_states(|states| {
+        let state = states.state_for(id, node.widget.as_ref());
         let mut host = WidgetEventHost {
             currently_focused,
             units,
@@ -1201,7 +1510,7 @@ where
         };
         let mut cx = EventCx::new(id, &mut host);
         node.widget.handle(state, routed, &*layout, &mut cx)
-    };
+    });
 
     if let Some((focus_id, sub)) = intents.focus_request {
         // Set the tree directly with the widget's own `sub` — letting a
@@ -2395,15 +2704,13 @@ mod widget_routing_tests {
         let outcome = preprocess_event(key(crate::event::NamedKey::Up), &mut backend, &mut app);
         assert_eq!(outcome, Reaction::Redraw);
 
-        let count = {
-            let routing = backend.widget_routing_mut().unwrap();
-            let state = routing
-                .states
+        let count = crate::widget_state::with_widget_states(|states| {
+            states
                 .state_for(app.id, &Counter { id: app.id })
                 .downcast_mut::<CounterState>()
-                .unwrap();
-            state.count
-        };
+                .unwrap()
+                .count
+        });
         assert_eq!(count, 1);
 
         preprocess_event(key(crate::event::NamedKey::Enter), &mut backend, &mut app);
@@ -2432,15 +2739,14 @@ mod widget_routing_tests {
             &mut backend,
             &mut app,
         );
-        let hovered = |backend: &mut TuiBackend, app: &CounterApp| {
-            backend
-                .widget_routing_mut()
-                .unwrap()
-                .states
-                .state_for(app.id, &Counter { id: app.id })
-                .downcast_mut::<CounterState>()
-                .unwrap()
-                .hovered
+        let hovered = |_backend: &mut TuiBackend, app: &CounterApp| {
+            crate::widget_state::with_widget_states(|states| {
+                states
+                    .state_for(app.id, &Counter { id: app.id })
+                    .downcast_mut::<CounterState>()
+                    .unwrap()
+                    .hovered
+            })
         };
         assert!(hovered(&mut backend, &app));
         assert!(app
@@ -2781,14 +3087,13 @@ mod widget_routing_tests {
             &mut backend,
             &mut app,
         );
-        let moves = backend
-            .widget_routing_mut()
-            .unwrap()
-            .states
-            .state_for(id, &CaptureWidget { id })
-            .downcast_mut::<CaptureState>()
-            .unwrap()
-            .moves_while_captured;
+        let moves = crate::widget_state::with_widget_states(|states| {
+            states
+                .state_for(id, &CaptureWidget { id })
+                .downcast_mut::<CaptureState>()
+                .unwrap()
+                .moves_while_captured
+        });
         assert_eq!(
             moves, 0,
             "a move after release must never reach the widget as PointerKind::Move again"
@@ -2933,15 +3238,13 @@ mod widget_routing_tests {
 
         preprocess_event(key(crate::event::NamedKey::Up), &mut backend, &mut app);
 
-        let count = {
-            let routing = backend.widget_routing_mut().unwrap();
-            let state = routing
-                .states
+        let count = crate::widget_state::with_widget_states(|states| {
+            states
                 .state_for(id, &Counter { id })
                 .downcast_mut::<CounterState>()
-                .unwrap();
-            state.count
-        };
+                .unwrap()
+                .count
+        });
         assert_eq!(
             count, 1,
             "Up must reach the Tab-cycled widget through FocusTree"
@@ -3068,14 +3371,14 @@ mod widget_routing_tests {
             .set_focus(Some((id, Some(crate::interactive::SubTarget(0)))));
         preprocess_event(key(crate::event::NamedKey::Up), &mut backend, &mut app);
 
-        let hits = |backend: &mut TuiBackend| {
-            let routing = backend.widget_routing_mut().unwrap();
-            let state = routing
-                .states
-                .state_for(id, &TwoCellTable { id })
-                .downcast_mut::<TwoCellState>()
-                .unwrap();
-            (state.zero_hits, state.one_hits)
+        let hits = |_backend: &mut TuiBackend| {
+            crate::widget_state::with_widget_states(|states| {
+                let state = states
+                    .state_for(id, &TwoCellTable { id })
+                    .downcast_mut::<TwoCellState>()
+                    .unwrap();
+                (state.zero_hits, state.one_hits)
+            })
         };
         assert_eq!(
             hits(&mut backend),
@@ -3093,5 +3396,657 @@ mod widget_routing_tests {
             (1, 1),
             "sub-target 1's own key must not also register for 0"
         );
+    }
+}
+
+/// Widget-owned popups through the real runtime: painted above the frame
+/// by the runner, hit-tested before every node, dismissed by an outside
+/// press or Escape — plus the per-widget state those popups lean on,
+/// which persists across frames, reaches paint, and resets when its
+/// widget leaves the frame.
+#[cfg(all(test, feature = "tui"))]
+mod popup_routing_tests {
+    use super::*;
+    use crate::a11y::{A11yInfo, A11yPrimitive};
+    use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::event::Rect;
+    use crate::interactive::{Interactive, SubTarget, WidgetAction};
+    use crate::popup::{DismissReason, Popup, PopupKey};
+    use crate::primitive::{LayoutCtx, Primitive, Size};
+    use crate::runner::Reaction;
+    use crate::tui::testing::TuiDriver;
+    use crate::DrawsPrimitives;
+    use std::cell::Cell;
+
+    const DROPDOWN_KEY: PopupKey = PopupKey(7);
+
+    thread_local! {
+        /// The `presses` the last painted [`Dropdown`] read from
+        /// [`crate::PaintEnv::widget_state`], or `None` when it had no state.
+        static PAINTED_PRESSES: Cell<Option<Option<u32>>> = const { Cell::new(None) };
+    }
+
+    fn fill_cells(cells: &mut dyn CellSurface, rect: Rect, ch: char) {
+        for y in rect.y as u16..(rect.y + rect.height) as u16 {
+            for x in rect.x as u16..(rect.x + rect.width) as u16 {
+                cells.put_char(x, y, ch, CellStyle::default());
+            }
+        }
+    }
+
+    /// Fills its rect with `ch` and names one sub-part per row. A press
+    /// on it emits `"<id>:pressed"`.
+    struct Fill {
+        id: WidgetId,
+        ch: char,
+    }
+
+    impl A11yPrimitive for Fill {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for Fill {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _env: &crate::PaintEnv,
+        ) {
+        }
+
+        fn paint_cells(&self, layout: &Rect, cells: &mut dyn CellSurface, _env: &crate::PaintEnv) {
+            fill_cells(cells, *layout, self.ch);
+        }
+    }
+
+    struct Pressed;
+
+    impl WidgetAction for Pressed {
+        fn into_ui_event(self, id: WidgetId) -> UiEvent {
+            UiEvent::TextCopied(format!("{id}:pressed"))
+        }
+    }
+
+    impl Interactive for Fill {
+        type State = ();
+        type Action = Pressed;
+
+        fn handle(
+            &self,
+            _state: &mut (),
+            event: &RoutedEvent,
+            _layout: &Rect,
+            _cx: &mut EventCx,
+        ) -> Handled<Pressed> {
+            match event {
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Down(_),
+                    ..
+                } => Handled::Event(Pressed),
+                _ => Handled::Ignored,
+            }
+        }
+
+        fn sub_regions(&self, layout: &Rect) -> Vec<(Rect, SubTarget)> {
+            (0..layout.height as u64)
+                .map(|row| {
+                    (
+                        Rect::new(0.0, row as f32, layout.width, 1.0),
+                        SubTarget(row),
+                    )
+                })
+                .collect()
+        }
+    }
+
+    /// A one-row field whose three-row list drops below it while the
+    /// app's `open` is set — controlled mode, the shape a `ComboBox`
+    /// takes.
+    struct Dropdown {
+        id: WidgetId,
+        open: bool,
+        list_ch: char,
+        z: i32,
+        submenu: bool,
+    }
+
+    #[derive(Default)]
+    struct DropdownState {
+        presses: u32,
+        popup_moves: u32,
+    }
+
+    enum DropdownAction {
+        Toggle,
+        Picked(Option<SubTarget>),
+        SubPicked(Option<SubTarget>),
+        Dismissed(DismissReason),
+    }
+
+    impl WidgetAction for DropdownAction {
+        fn into_ui_event(self, id: WidgetId) -> UiEvent {
+            UiEvent::TextCopied(match self {
+                DropdownAction::Toggle => format!("{id}:toggle"),
+                DropdownAction::Picked(sub) => format!("{id}:picked:{:?}", sub.map(|s| s.0)),
+                DropdownAction::SubPicked(sub) => {
+                    format!("{id}:subpicked:{:?}", sub.map(|s| s.0))
+                }
+                DropdownAction::Dismissed(reason) => format!("{id}:dismissed:{reason:?}"),
+            })
+        }
+    }
+
+    impl A11yPrimitive for Dropdown {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for Dropdown {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _env: &crate::PaintEnv,
+        ) {
+        }
+
+        fn paint_cells(&self, layout: &Rect, cells: &mut dyn CellSurface, env: &crate::PaintEnv) {
+            fill_cells(cells, *layout, 'D');
+            let presses = env.widget_state_as::<DropdownState>().map(|s| s.presses);
+            PAINTED_PRESSES.with(|p| p.set(Some(presses)));
+        }
+    }
+
+    impl Interactive for Dropdown {
+        type State = DropdownState;
+        type Action = DropdownAction;
+
+        const OPENS_POPUPS: bool = true;
+
+        fn focus(&self) -> FocusSpec {
+            FocusSpec::Stop
+        }
+
+        fn handle(
+            &self,
+            state: &mut DropdownState,
+            event: &RoutedEvent,
+            _layout: &Rect,
+            _cx: &mut EventCx,
+        ) -> Handled<DropdownAction> {
+            match event {
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Down(_) | PointerKind::DoubleClick(_),
+                    ..
+                } => {
+                    state.presses += 1;
+                    Handled::Event(DropdownAction::Toggle)
+                }
+                RoutedEvent::PopupEvent { popup, event } if *popup == DROPDOWN_KEY => {
+                    match event.as_ref() {
+                        RoutedEvent::Pointer {
+                            kind: PointerKind::Down(_),
+                            sub,
+                            ..
+                        } => Handled::Event(DropdownAction::Picked(*sub)),
+                        RoutedEvent::Pointer {
+                            kind: PointerKind::Move,
+                            ..
+                        } => {
+                            state.popup_moves += 1;
+                            Handled::Consumed
+                        }
+                        _ => Handled::Ignored,
+                    }
+                }
+                RoutedEvent::PopupEvent { popup, event } if *popup == SUBMENU_KEY => {
+                    match event.as_ref() {
+                        RoutedEvent::Pointer {
+                            kind: PointerKind::Down(_),
+                            sub,
+                            ..
+                        } => Handled::Event(DropdownAction::SubPicked(*sub)),
+                        _ => Handled::Consumed,
+                    }
+                }
+                RoutedEvent::PopupDismissed { reason, .. } => {
+                    Handled::Event(DropdownAction::Dismissed(*reason))
+                }
+                _ => Handled::Ignored,
+            }
+        }
+
+        fn popups(&self, _state: &DropdownState, layout: &Rect) -> Vec<Popup> {
+            if !self.open {
+                return Vec::new();
+            }
+            let fill = Fill {
+                id: WidgetId::new(format!("{}:list", self.id)),
+                ch: self.list_ch,
+            };
+            let anchor = Rect::new(0.0, 0.0, layout.width, 1.0);
+            let size = Size::new(layout.width, 3.0);
+            let popup = if self.submenu {
+                Popup::new(DROPDOWN_KEY, anchor, size, Menu { fill })
+            } else {
+                Popup::new(DROPDOWN_KEY, anchor, size, fill)
+            };
+            vec![popup.z(self.z)]
+        }
+    }
+
+    const SUBMENU_KEY: PopupKey = PopupKey(8);
+
+    /// A [`Fill`] list whose first row opens a six-wide `'S'` submenu
+    /// beside it, as a popup of its own.
+    struct Menu {
+        fill: Fill,
+    }
+
+    impl A11yPrimitive for Menu {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl Primitive for Menu {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.fill.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _env: &crate::PaintEnv,
+        ) {
+        }
+
+        fn paint_cells(&self, layout: &Rect, cells: &mut dyn CellSurface, env: &crate::PaintEnv) {
+            self.fill.paint_cells(layout, cells, env);
+        }
+    }
+
+    impl Interactive for Menu {
+        type State = ();
+        type Action = crate::Never;
+
+        const OPENS_POPUPS: bool = true;
+
+        fn handle(
+            &self,
+            _state: &mut (),
+            _event: &RoutedEvent,
+            _layout: &Rect,
+            _cx: &mut EventCx,
+        ) -> Handled<crate::Never> {
+            Handled::Ignored
+        }
+
+        fn sub_regions(&self, layout: &Rect) -> Vec<(Rect, SubTarget)> {
+            self.fill.sub_regions(layout)
+        }
+
+        fn popups(&self, _state: &(), layout: &Rect) -> Vec<Popup> {
+            let sub = Fill {
+                id: WidgetId::new(format!("{}:sub", self.fill.id)),
+                ch: 'S',
+            };
+            let anchor = Rect::new(0.0, 0.0, layout.width, 1.0);
+            vec![Popup::new(SUBMENU_KEY, anchor, Size::new(6.0, 3.0), sub)
+                .side(crate::popup::PopupSide::After)]
+        }
+    }
+
+    struct DropdownSpec {
+        id: WidgetId,
+        rect: Rect,
+        open: bool,
+        shown: bool,
+        list_ch: char,
+        z: i32,
+        submenu: bool,
+    }
+
+    /// Owns each dropdown's `open` flag and applies the events they emit;
+    /// paints and routes the same nodes: every dropdown, then a `Fill`
+    /// node over the area their lists drop into.
+    struct PopupApp {
+        dropdowns: Vec<DropdownSpec>,
+        received: Vec<UiEvent>,
+    }
+
+    impl PopupApp {
+        fn one(open: bool) -> Self {
+            Self {
+                dropdowns: vec![DropdownSpec {
+                    id: WidgetId::new("dd"),
+                    rect: Rect::new(0.0, 0.0, 10.0, 1.0),
+                    open,
+                    shown: true,
+                    list_ch: 'P',
+                    z: 0,
+                    submenu: false,
+                }],
+                received: Vec::new(),
+            }
+        }
+
+        fn texts(&self) -> Vec<String> {
+            self.received
+                .iter()
+                .filter_map(|e| match e {
+                    UiEvent::TextCopied(t) => Some(t.clone()),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        fn nodes(&self) -> Vec<(WidgetId, Rect, Box<dyn crate::primitive::DynWidget>)> {
+            let mut nodes: Vec<(WidgetId, Rect, Box<dyn crate::primitive::DynWidget>)> = self
+                .dropdowns
+                .iter()
+                .filter(|d| d.shown)
+                .map(|d| {
+                    let widget: Box<dyn crate::primitive::DynWidget> = Box::new(Dropdown {
+                        id: d.id,
+                        open: d.open,
+                        list_ch: d.list_ch,
+                        z: d.z,
+                        submenu: d.submenu,
+                    });
+                    (d.id, d.rect, widget)
+                })
+                .collect();
+            let base = WidgetId::new("base");
+            nodes.push((
+                base,
+                Rect::new(0.0, 1.0, 20.0, 5.0),
+                Box::new(Fill { id: base, ch: 'B' }),
+            ));
+            nodes
+        }
+    }
+
+    impl AppLogic for PopupApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn crate::Backend, _area: ()) {
+            for (_, rect, widget) in self.nodes() {
+                let _ = backend.draw_dyn(rect, widget.as_ref(), &());
+            }
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
+            if let UiEvent::TextCopied(text) = &event {
+                for d in &mut self.dropdowns {
+                    let prefix = format!("{}:", d.id);
+                    match text.strip_prefix(&prefix) {
+                        Some("toggle") => d.open = !d.open,
+                        Some(rest) if rest.starts_with("dismissed") => d.open = false,
+                        _ => {}
+                    }
+                }
+            }
+            self.received.push(event);
+            Reaction::Redraw
+        }
+
+        fn frame_tree(&self, _area: ()) -> FrameTree {
+            let mut tree = FrameTree::new();
+            for (id, rect, widget) in self.nodes() {
+                tree.push(id, rect, widget);
+            }
+            tree
+        }
+    }
+
+    fn row(driver: &TuiDriver<PopupApp>, y: usize) -> String {
+        driver
+            .screen()
+            .lines()
+            .nth(y)
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    fn escape() -> UiEvent {
+        UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Escape),
+            modifiers: Modifiers::default(),
+            repeat: false,
+        }
+    }
+
+    #[test]
+    fn an_open_popup_paints_above_a_node_painted_after_its_owner() {
+        let mut driver = TuiDriver::new(PopupApp::one(true), 30, 10);
+        driver.render();
+
+        assert!(
+            row(&driver, 1).starts_with("PPPPPPPPPPBBBBBBBBBB"),
+            "the list covers the base node it overlaps:\n{}",
+            driver.screen()
+        );
+        assert!(row(&driver, 4).starts_with("BBBBBBBBBBBBBBBBBBBB"));
+        let painted = crate::popup::painted_popups();
+        assert_eq!(painted.len(), 1);
+        assert_eq!(painted[0].owner, WidgetId::new("dd"));
+        assert_eq!(painted[0].rect, Rect::new(0.0, 1.0, 10.0, 3.0));
+    }
+
+    #[test]
+    fn a_closed_popup_paints_and_routes_nothing() {
+        let mut driver = TuiDriver::new(PopupApp::one(false), 30, 10);
+        driver.render();
+        assert!(row(&driver, 1).starts_with("BBBBBBBBBBBBBBBBBBBB"));
+
+        driver.click(2.0, 2.0);
+        assert_eq!(driver.app().texts(), vec!["base:pressed".to_string()]);
+    }
+
+    #[test]
+    fn a_press_on_a_popup_reaches_its_owner_and_not_the_node_below() {
+        let mut driver = TuiDriver::new(PopupApp::one(true), 30, 10);
+        driver.render();
+
+        driver.click(2.0, 2.0);
+
+        assert_eq!(
+            driver.app().texts(),
+            vec!["dd:picked:Some(1)".to_string()],
+            "row 2 is the list's second row, sub-target 1"
+        );
+    }
+
+    #[test]
+    fn an_outside_press_dismisses_the_popup_and_still_reaches_its_target() {
+        let mut driver = TuiDriver::new(PopupApp::one(true), 30, 10);
+        driver.render();
+
+        driver.click(15.0, 3.0);
+
+        assert_eq!(
+            driver.app().texts(),
+            vec![
+                "dd:dismissed:OutsideClick".to_string(),
+                "base:pressed".to_string()
+            ]
+        );
+        assert!(!driver.app().dropdowns[0].open);
+        assert!(row(&driver, 1).starts_with("BBBBBBBBBBBBBBBBBBBB"));
+    }
+
+    #[test]
+    fn a_press_on_the_owner_itself_does_not_dismiss() {
+        let mut driver = TuiDriver::new(PopupApp::one(true), 30, 10);
+        driver.render();
+
+        driver.click(2.0, 0.0);
+
+        assert_eq!(driver.app().texts(), vec!["dd:toggle".to_string()]);
+    }
+
+    #[test]
+    fn escape_dismisses_the_popup_and_is_claimed() {
+        let mut driver = TuiDriver::new(PopupApp::one(true), 30, 10);
+        driver.render();
+
+        driver.dispatch(escape());
+
+        assert_eq!(
+            driver.app().received.len(),
+            1,
+            "{:?}",
+            driver.app().received
+        );
+        assert_eq!(
+            driver.app().texts(),
+            vec!["dd:dismissed:Escape".to_string()]
+        );
+    }
+
+    #[test]
+    fn a_move_over_a_popup_reaches_its_owner() {
+        let mut driver = TuiDriver::new(PopupApp::one(true), 30, 10);
+        driver.render();
+
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(3.0, 2.0),
+            buttons: Default::default(),
+        });
+
+        let moves = crate::widget_state::with_widget_states(|s| {
+            s.get(&WidgetId::new("dd"))
+                .and_then(|s| s.downcast_ref::<DropdownState>())
+                .map(|s| s.popup_moves)
+        });
+        assert_eq!(moves, Some(1));
+    }
+
+    /// Two open lists overlap; the higher `z` paints on top and takes the
+    /// press, though its owner is the earlier node.
+    #[test]
+    fn the_higher_z_popup_paints_on_top_and_wins_the_hit() {
+        let mut app = PopupApp::one(true);
+        app.dropdowns[0].z = 1;
+        app.dropdowns.push(DropdownSpec {
+            id: WidgetId::new("dd2"),
+            rect: Rect::new(4.0, 0.0, 10.0, 1.0),
+            open: true,
+            shown: true,
+            list_ch: 'Q',
+            z: 0,
+            submenu: false,
+        });
+        let mut driver = TuiDriver::new(app, 30, 10);
+        driver.render();
+
+        assert!(
+            row(&driver, 2).starts_with("PPPPPPPPPPQQQQBBBBBB"),
+            "dd's z=1 list covers dd2's z=0 list where they overlap:\n{}",
+            driver.screen()
+        );
+
+        driver.click(6.0, 2.0);
+        assert_eq!(driver.app().texts(), vec!["dd:picked:Some(1)".to_string()]);
+    }
+
+    /// A popup opened by a popup's content paints above it, is
+    /// hit-tested like it, and its events reach the root owner.
+    #[test]
+    fn a_nested_popup_paints_and_routes_to_the_root_owner() {
+        let mut app = PopupApp::one(true);
+        app.dropdowns[0].submenu = true;
+        let mut driver = TuiDriver::new(app, 30, 10);
+        driver.render();
+
+        assert!(
+            row(&driver, 2).starts_with("PPPPPPPPPPSSSSSSBBBB"),
+            "the submenu sits beside the list, over the base node:\n{}",
+            driver.screen()
+        );
+        let painted = crate::popup::painted_popups();
+        assert_eq!(painted.len(), 2);
+        assert!(painted.iter().all(|p| p.owner == WidgetId::new("dd")));
+        assert_eq!(painted[1].key, SUBMENU_KEY);
+        assert_eq!(painted[1].rect, Rect::new(10.0, 1.0, 6.0, 3.0));
+
+        driver.click(12.0, 2.0);
+        assert_eq!(
+            driver.app().texts(),
+            vec!["dd:subpicked:Some(1)".to_string()],
+            "the press reaches the owner, dismisses nothing and never \
+             reaches the base node"
+        );
+    }
+
+    /// The dropdown's state outlives every per-event rebuild of the
+    /// widget, reaches its paint, and starts over once it leaves the
+    /// frame and comes back.
+    #[test]
+    fn widget_state_persists_across_frames_reaches_paint_and_resets_on_removal() {
+        let mut driver = TuiDriver::new(PopupApp::one(false), 30, 10);
+        driver.render();
+        assert_eq!(
+            PAINTED_PRESSES.with(Cell::get),
+            Some(None),
+            "no state before the first event"
+        );
+
+        driver.click(2.0, 0.0);
+        driver.render();
+        driver.click(2.0, 0.0);
+        driver.render();
+        assert_eq!(PAINTED_PRESSES.with(Cell::get), Some(Some(2)));
+
+        driver.app_mut().dropdowns[0].shown = false;
+        driver.dispatch(UiEvent::MouseMoved {
+            position: Point::new(25.0, 9.0),
+            buttons: Default::default(),
+        });
+        assert!(
+            !crate::widget_state::with_widget_states(|s| s.contains(&WidgetId::new("dd"))),
+            "a widget missing from the frame loses its state"
+        );
+
+        driver.app_mut().dropdowns[0].shown = true;
+        driver.render();
+        assert_eq!(PAINTED_PRESSES.with(Cell::get), Some(None));
+        driver.click(2.0, 0.0);
+        driver.render();
+        assert_eq!(PAINTED_PRESSES.with(Cell::get), Some(Some(1)));
     }
 }

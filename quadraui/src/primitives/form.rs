@@ -636,9 +636,9 @@ pub enum FieldKind {
     /// `ComboBoxHighlightChanged`, `ComboBoxCommitted`, or
     /// `ComboBoxCancelled`. Painting and hit-testing the open dropdown
     /// itself is, like [`FieldKind::ColorPicker`]'s popup, the *app*'s job
-    /// — `Form` doesn't render it — using the combo box's own
-    /// [`crate::primitives::combo_box::ComboBox::layout`] and
-    /// [`crate::primitives::combo_box::ComboBox::click`].
+    /// — `Form` doesn't render it. Painting the embedded box over its
+    /// field shows the dropdown as the box's own popup, and
+    /// [`crate::primitives::combo_box::ComboBox::pick`] commits a row.
     ///
     /// Use for anything picked from a long, fixed-but-searchable list:
     /// language-server choice, font family, git branch, command palette
@@ -4779,6 +4779,11 @@ pub enum FormEvent {
         id: WidgetId,
         value: crate::primitives::date_picker::CalendarDate,
     },
+    /// A dropdown `DatePicker` asked for its calendar popup to open or
+    /// close — [`crate::primitives::date_picker::DatePickerEvent::OpenChanged`].
+    /// Applying it means writing `open` onto the picker's `open`. Only a
+    /// standalone picker reports it, under its own id.
+    DateOpenChanged { id: WidgetId, open: bool },
     /// Keyboard focus moved to a different field.
     FocusChanged { id: WidgetId },
     /// A `Button` was clicked or activated with Enter / Space.
@@ -4819,7 +4824,7 @@ pub enum FormEvent {
     /// `Form`/`FormController` route this only from a key press
     /// (`form_click_event` has no `ComboBox` arm); an app that wants a
     /// click on a dropdown item to also commit must call
-    /// [`crate::primitives::combo_box::ComboBox::click`] itself and
+    /// [`crate::primitives::combo_box::ComboBox::pick`] itself and
     /// apply the resulting event the same way.
     ComboBoxCommitted { id: WidgetId, value: String },
     /// A `ComboBox` field's in-progress edit was cancelled (Escape),

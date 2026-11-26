@@ -1781,6 +1781,8 @@ pub fn schema() -> Vec<DefJson> {
             field("locale", date_locale),
             field_opt("time", nullable(time_of_day)),
             field_opt("has_focus", bool_()),
+            field_opt("dropdown", bool_()),
+            field_opt("open", bool_()),
         ],
     ));
     let chart_kind = b.define(alias(
@@ -3518,6 +3520,10 @@ pub fn schema() -> Vec<DefJson> {
         "_IdValueDatePayload",
         vec![field("id", re("WidgetId")), field("value", calendar_date)],
     ));
+    let id_open = b.define(obj(
+        "_IdOpenPayload",
+        vec![field("id", re("WidgetId")), field("open", bool_())],
+    ));
     let toolbar_button_clicked_form_payload = b.define(obj(
         "_FormToolbarButtonClickedPayload",
         vec![
@@ -3553,6 +3559,7 @@ pub fn schema() -> Vec<DefJson> {
             ("SegmentedControlChanged", id_selected_idx),
             ("DateChanged", id_value_date.clone()),
             ("DateFocusMoved", id_value_date),
+            ("DateOpenChanged", id_open),
             ("FocusChanged", id_payload.clone()),
             ("ButtonClicked", id_payload.clone()),
             ("ToolbarButtonClicked", toolbar_button_clicked_form_payload),
@@ -4145,6 +4152,7 @@ mod coverage {
             } => {}
             FormEvent::DateChanged { id: _, value: _ } => {}
             FormEvent::DateFocusMoved { id: _, value: _ } => {}
+            FormEvent::DateOpenChanged { id: _, open: _ } => {}
             FormEvent::FocusChanged { id: _ } => {}
             FormEvent::ButtonClicked { id: _ } => {}
             FormEvent::ToolbarButtonClicked {
@@ -5289,7 +5297,9 @@ mod coverage {
             focused,
             locale,
             time,
-            has_focus
+            has_focus,
+            dropdown,
+            open
         }
     );
     fn assert_chart_kind(k: ChartKind) {
@@ -6477,6 +6487,8 @@ mod coverage {
                 "locale",
                 "time",
                 "has_focus",
+                "dropdown",
+                "open",
             ]
         );
 
@@ -6900,6 +6912,7 @@ mod coverage {
                 "SegmentedControlChanged",
                 "DateChanged",
                 "DateFocusMoved",
+                "DateOpenChanged",
                 "FocusChanged",
                 "ButtonClicked",
                 "ToolbarButtonClicked",

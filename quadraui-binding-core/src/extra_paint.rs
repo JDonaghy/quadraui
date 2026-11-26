@@ -13,10 +13,10 @@ use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
     render_markdown_to_styled, Backend, BoardModel, Canvas, Chart, Column, ComboBox, CommandLine,
-    CompletionItemMeasure, DatePicker, Decoration, DiffView, Editor, FieldKind, FindReplacePanel,
-    FontRole, Form, FormField, Icon, Image, LabelPosition, MenuBar, MessageList, Minimap,
-    MultiSectionView, NaturalSize, NumberInput, NumberInputHit, PipelineView, Point, ProgressBar,
-    Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StyledText, TextDisplay,
+    DatePicker, Decoration, DiffView, Editor, FieldKind, FindReplacePanel, FontRole, Form,
+    FormField, Icon, Image, LabelPosition, MenuBar, MessageList, Minimap, MultiSectionView,
+    NaturalSize, NumberInput, NumberInputHit, PipelineView, Point, ProgressBar, Rect,
+    RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StyledText, TextDisplay,
     TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton, TreeTable,
     TreeTableController, TreeTableNodeData, WidgetId,
 };
@@ -402,30 +402,9 @@ impl ExtraPaint for NumberInput {
 
 impl ExtraPaint for ComboBox {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        // Standalone (non-`Form`-embedded) display: the field itself only
-        // ever needs its own row, so `field_bounds` is the top row of
-        // `area` while the full `area` is passed as the dropdown's
-        // viewport -- otherwise `Completions::layout`'s placement math has
-        // no room above or below the field to open the dropdown into and
-        // always clips it to zero height. A single-row item height is
-        // assumed since no measurement pass runs outside a real UI loop.
-        // The dropdown itself only paints when `self.open` is true with a
-        // non-empty filtered list, so a closed/default combo box renders
-        // just its field regardless of these choices. "Row" is one line
-        // scaled by `line_height`, the backend-native unit (cells on TUI,
-        // pixels on native), so the field and its popup rows size correctly
-        // on every backend instead of collapsing to one pixel on native.
-        let line_height = backend.line_height();
-        let field_bounds = Rect::new(area.x, area.y, area.width.max(line_height), line_height);
-        let max_popup_height = (area.height - line_height).max(line_height);
-        let layout = self.layout(
-            field_bounds,
-            area,
-            area.width.max(line_height),
-            max_popup_height,
-            |_| CompletionItemMeasure::new(line_height),
-        );
-        let _ = layout;
+        // The field takes the first row of `area`; while `self.open` with a
+        // non-empty filter, the dropdown is the box's own popup, painted
+        // above the frame by the runner.
         backend.draw_dyn(area, self, &());
     }
 
@@ -433,15 +412,11 @@ impl ExtraPaint for ComboBox {
         self.id
     }
 
-    /// Whole-area bounds check: resolving a click to the field or a
-    /// specific filtered dropdown item needs the backend's `line_height`
-    /// [`ExtraPaint::paint`] uses to build
-    /// [`quadraui::ComboBox::layout`]'s `field_bounds`/`measure_item`,
-    /// which this trait's `hit_test` has no parameter for —
-    /// `InteractionEngine::handle` has that `backend` in hand at the
-    /// click site, same as it does for `TextInput`, so this is not wired
-    /// yet rather than impossible. Typing, `Up`/`Down`/`Enter`/`Escape`
-    /// still work once focused via [`ExtraPaint::tab_stop`].
+    /// Whole-area bounds check. A press on the open list is a popup
+    /// event, which this host does not route yet: the engine swallows it
+    /// so it never reaches the leaf the list covers. Typing,
+    /// `Up`/`Down`/`Enter`/`Escape` still work once focused via
+    /// [`ExtraPaint::tab_stop`].
     fn hit_test(&self, area: Rect, point: Point) -> bool {
         area.contains(point)
     }
@@ -450,10 +425,8 @@ impl ExtraPaint for ComboBox {
         true
     }
 
-    /// Closed state only — [`ExtraPaint::paint`]'s own `field_bounds`
-    /// is one row regardless of `area`'s height, and that closed field
-    /// is the shape worth reporting here: the open dropdown is a
-    /// transient overlay, not this leaf's own steady-state size. No
+    /// One row, the field: the open dropdown is a popup painted above
+    /// the frame, not part of this leaf's size. No
     /// natural width: the field always fills `area.width`, same as a
     /// bare [`TextInput`].
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {

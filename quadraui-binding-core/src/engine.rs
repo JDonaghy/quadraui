@@ -1287,6 +1287,12 @@ pub struct InteractionEngine {
     /// every `MouseUp` — mirroring those four fields' own "`MouseUp`
     /// always ends it" reset.
     dyn_widget_capture: RefCell<Option<WidgetId>>,
+    /// The sub-target a `DynWidget` leaf last asked focus for through
+    /// [`quadraui::interactive::EventHost::request_focus`], with the leaf's
+    /// id. `Backend::set_focus` addresses a whole widget, so the sub-part
+    /// lives here; it answers [`EventHost::is_focused`] only while the
+    /// backend's focus is still on that same leaf.
+    dyn_widget_focus_sub: RefCell<Option<quadraui::FocusAddress>>,
 }
 
 /// What [`InteractionEngine::dispatch_dyn_widget_click`] resolved —
@@ -1344,7 +1350,7 @@ impl Default for DynWidgetClickOutcome {
 /// [`InteractionEngine::dyn_widget_state`].
 #[derive(Default)]
 struct DynWidgetIntents {
-    focus_request: Option<WidgetId>,
+    focus_request: Option<quadraui::FocusAddress>,
     redraw: bool,
     emitted: Vec<UiEvent>,
     /// Set by [`EventHost::capture_pointer`] — [`InteractionEngine::dyn_widget_dispatch`]
@@ -1367,21 +1373,19 @@ struct DynWidgetIntents {
 /// reach either.
 struct DynWidgetEventHost<'a> {
     units: quadraui::primitive::Units,
+    /// The focused leaf and sub-part when this call began — see
+    /// [`InteractionEngine::dyn_widget_focus`].
+    focused: Option<quadraui::FocusAddress>,
     intents: &'a mut DynWidgetIntents,
 }
 
 impl EventHost for DynWidgetEventHost<'_> {
-    fn is_focused(&self, _id: &WidgetId, _sub: Option<quadraui::interactive::SubTarget>) -> bool {
-        // Click-to-focus for the leaf as a whole already ran before this
-        // arm is reached (`InteractionEngine::handle`'s own generic
-        // `tab_stops`-based focus move) -- a composite widget's own
-        // sub-target focus tracking is a further extension this host
-        // doesn't support yet, same as `request_focus`'s own doc.
-        false
+    fn is_focused(&self, id: &WidgetId, sub: Option<quadraui::interactive::SubTarget>) -> bool {
+        self.focused == Some((*id, sub))
     }
 
-    fn request_focus(&mut self, id: &WidgetId, _sub: Option<quadraui::interactive::SubTarget>) {
-        self.intents.focus_request = Some(*id);
+    fn request_focus(&mut self, id: &WidgetId, sub: Option<quadraui::interactive::SubTarget>) {
+        self.intents.focus_request = Some((*id, sub));
     }
 
     fn capture_pointer(&mut self, _id: &WidgetId) {
@@ -3516,6 +3520,21 @@ impl InteractionEngine {
         self.dyn_widget_dispatch(id, &widget, area, routed, backend, sink)
     }
 
+    /// The focused leaf and its focused sub-part, for
+    /// [`EventHost::is_focused`]: the backend's focus, with the sub-part
+    /// from [`Self::dyn_widget_focus_sub`] when the backend names none and
+    /// the recorded request is for the same leaf. A recorded sub-part for
+    /// a leaf that has since lost focus is dropped.
+    fn dyn_widget_focus(&self, backend: &dyn Backend) -> Option<quadraui::FocusAddress> {
+        let (id, sub) = *backend.focus_tree().focused()?;
+        let mut recorded = self.dyn_widget_focus_sub.borrow_mut();
+        if recorded.is_some_and(|(rid, _)| rid != id) {
+            *recorded = None;
+        }
+        let sub = sub.or_else(|| recorded.and_then(|(_, s)| s));
+        Some((id, sub))
+    }
+
     /// Runs `widget.handle` for one already-constructed [`RoutedEvent`]
     /// against `area`, applying whatever [`EventCx`] intents it recorded
     /// (focus/redraw/emit/pointer-capture) the same way regardless of
@@ -3563,6 +3582,7 @@ impl InteractionEngine {
             let state = states.state_for(id, widget.as_ref());
             let mut host = DynWidgetEventHost {
                 units,
+                focused: self.dyn_widget_focus(backend),
                 intents: &mut intents,
             };
             let mut cx = EventCx::new(id, &mut host);
@@ -3570,7 +3590,8 @@ impl InteractionEngine {
         };
 
         let mut outcome = DynWidgetClickOutcome::default();
-        if let Some(focus_id) = intents.focus_request {
+        if let Some((focus_id, sub)) = intents.focus_request {
+            *self.dyn_widget_focus_sub.borrow_mut() = Some((focus_id, sub));
             if backend.set_focus(Some(focus_id)) {
                 let focus_reaction = sink.dispatch(&UiEvent::FocusChanged(Some(focus_id)), None);
                 outcome.reaction = outcome.reaction.merge(focus_reaction);
@@ -3788,6 +3809,26 @@ impl InteractionEngine {
             if matches!(scroll_into_view_reaction, Reaction::Exit) {
                 return scroll_into_view_reaction;
             }
+        }
+
+        // A widget popup (an open `ComboBox` list) paints above every
+        // leaf and overlay, but this host does not route popup events to
+        // the popup's owner, so a press, release, double-click or wheel
+        // landing on one stops here instead of reaching what it covers.
+        let on_popup = |p: Point| {
+            quadraui::popup::painted_popups()
+                .iter()
+                .any(|popup| popup.rect.contains(p))
+        };
+        if matches!(
+            event,
+            UiEvent::MouseDown { .. }
+                | UiEvent::MouseUp { .. }
+                | UiEvent::DoubleClick { .. }
+                | UiEvent::Scroll { .. }
+        ) && event_position(&event).is_some_and(on_popup)
+        {
+            return continue_or_tooltip_redraw(tooltip_dismissed);
         }
 
         // One shared pass over `Self::overlays`, topmost (highest
@@ -12994,6 +13035,238 @@ mod tests {
                 drop_target: false,
             }),
             "set_hits must not clear drag_roles -- a binding sets each independently"
+        );
+    }
+
+    /// A `DynWidget` leaf with two focusable sub-parts. Every press asks
+    /// [`EventHost::is_focused`] about sub-part 1 and about the leaf as a
+    /// whole, logs both answers, then requests focus for sub-part 1.
+    struct SubFocusProbe {
+        id: WidgetId,
+        log: Rc<RefCell<Vec<(bool, bool)>>>,
+    }
+
+    impl quadraui::A11yPrimitive for SubFocusProbe {
+        fn a11y_info(&self) -> quadraui::A11yInfo {
+            quadraui::A11yInfo::default()
+        }
+    }
+
+    impl quadraui::Primitive for SubFocusProbe {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &quadraui::LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn quadraui::paint_surface::PaintSurface,
+            _env: &quadraui::PaintEnv,
+        ) {
+        }
+
+        fn paint_cells(
+            &self,
+            _layout: &Rect,
+            _cells: &mut dyn quadraui::cell_surface::CellSurface,
+            _env: &quadraui::PaintEnv,
+        ) {
+        }
+    }
+
+    impl quadraui::Interactive for SubFocusProbe {
+        type State = ();
+        type Action = quadraui::Never;
+
+        fn focus(&self) -> quadraui::FocusSpec {
+            quadraui::FocusSpec::Children(vec![
+                quadraui::FocusStop {
+                    sub: quadraui::interactive::SubTarget(0),
+                },
+                quadraui::FocusStop {
+                    sub: quadraui::interactive::SubTarget(1),
+                },
+            ])
+        }
+
+        fn handle(
+            &self,
+            _state: &mut (),
+            event: &quadraui::RoutedEvent,
+            _layout: &Rect,
+            cx: &mut quadraui::EventCx,
+        ) -> quadraui::Handled<quadraui::Never> {
+            if !matches!(
+                event,
+                quadraui::RoutedEvent::Pointer {
+                    kind: quadraui::PointerKind::Down(_) | quadraui::PointerKind::DoubleClick(_),
+                    ..
+                }
+            ) {
+                return quadraui::Handled::Ignored;
+            }
+            let sub = quadraui::interactive::SubTarget(1);
+            self.log
+                .borrow_mut()
+                .push((cx.is_focused(Some(sub)), cx.is_focused(None)));
+            cx.request_focus(Some(sub));
+            quadraui::Handled::Consumed
+        }
+    }
+
+    struct SubFocusLogic {
+        log: Rc<RefCell<Vec<(bool, bool)>>>,
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for SubFocusLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let area = viewport_rect(backend);
+            let content = LayoutNode::Leaf(LayoutLeaf {
+                id: "probe".to_string(),
+                descriptor: LeafDescriptor::Widget {
+                    kind: "sub_focus_probe",
+                    widget: Rc::new(SubFocusProbe {
+                        id: WidgetId::new("probe"),
+                        log: self.log.clone(),
+                    }),
+                },
+                scroll_px: None,
+            });
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &content, &mut hits);
+            render_overlays(&self.engine, backend, hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// A column holding an open `ComboBox` with a button laid out right
+    /// under its field, where the open list drops.
+    struct ComboOverButtonLogic {
+        engine: InteractionEngine,
+        sink: RefCell<RecordingSink>,
+    }
+
+    impl AppLogic for ComboOverButtonLogic {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let area = viewport_rect(backend);
+            let mut combo = quadraui::ComboBox::new(
+                WidgetId::new("combo"),
+                ["alpha", "beta", "gamma", "delta"]
+                    .map(String::from)
+                    .to_vec(),
+            );
+            combo.open = true;
+            let leaf = |id: &str, descriptor| {
+                LayoutNode::Leaf(LayoutLeaf {
+                    id: id.to_string(),
+                    descriptor,
+                    scroll_px: None,
+                })
+            };
+            let mut node = LayoutNode::Column(LayoutContainer::new(
+                vec![
+                    leaf("combo", LeafDescriptor::Extra(Rc::new(combo))),
+                    leaf(
+                        "under",
+                        LeafDescriptor::Widget {
+                            kind: "button",
+                            widget: Rc::new(Button::new(WidgetId::new("under"), "under")),
+                        },
+                    ),
+                ],
+                Spacing::default(),
+            ));
+            resolve_layout_node(self.engine.widget_state(), backend, area, &mut node);
+            let mut hits = Vec::new();
+            paint_layout(backend, area, &node, &mut hits);
+            self.engine.set_hits(hits);
+        }
+
+        fn extra_tab_stops(&self, _area: ()) -> Vec<(WidgetId, Rect)> {
+            self.engine.tab_stops()
+        }
+
+        fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+            self.engine
+                .handle(event, backend, &mut *self.sink.borrow_mut())
+        }
+    }
+
+    /// A press on an open `ComboBox` list never reaches the leaf the list
+    /// covers.
+    #[test]
+    fn a_press_on_a_widget_popup_does_not_reach_the_leaf_beneath_it() {
+        let logic = ComboOverButtonLogic {
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 30, 12);
+        driver.render();
+        let popup = quadraui::popup::painted_popups()
+            .into_iter()
+            .find(|p| p.owner == WidgetId::new("combo"))
+            .expect("the open list is painted");
+        let (x, y) = (popup.rect.x + 2.0, popup.rect.y + 1.0);
+        assert!(driver.screen_contains("beta"), "{}", driver.screen());
+
+        driver.click(x, y);
+
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            !dispatched.iter().any(|(event, _)| matches!(
+                event,
+                UiEvent::ButtonActivated { .. } | UiEvent::FocusChanged(Some(_))
+            )),
+            "{dispatched:?}"
+        );
+    }
+
+    /// A leaf that requested focus for one of its own sub-parts sees that
+    /// sub-part, and not the leaf as a whole, reported focused on its
+    /// next event. The second press lands inside the double-click window,
+    /// so it arrives as a `DoubleClick`.
+    #[test]
+    fn dyn_widget_host_reports_sub_target_focus() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let logic = SubFocusLogic {
+            log: log.clone(),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+
+        driver.click(5.0, 5.0);
+        driver.render();
+        driver.click(5.0, 5.0);
+        driver.render();
+
+        assert_eq!(
+            *log.borrow(),
+            vec![(false, false), (true, false)],
+            "nothing is focused before the request; after requesting \
+             sub-part 1 that sub-part, not the leaf as a whole, is focused"
         );
     }
 }

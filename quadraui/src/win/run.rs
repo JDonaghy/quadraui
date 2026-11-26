@@ -488,9 +488,8 @@ pub(crate) fn route_mouse_up<A: AppLogic>(
 /// `drawRect:`). A caught panic skips the rest of this frame — no focus
 /// ring, no selection highlight, both of which read state a panicking
 /// `render` may have left inconsistent — but `backend.end_frame()` below
-/// still always runs, so the `BeginDraw`/`EndDraw` bracket
-/// `backend.begin_frame` opened above stays balanced for the next
-/// `WM_PAINT` regardless of whether this one panicked.
+/// still always runs, so the `BeginDraw`/`EndDraw` bracket stays
+/// balanced for the next `WM_PAINT` whether or not this one panicked.
 #[allow(dead_code)]
 pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewport: Viewport) {
     backend.begin_frame(viewport);
@@ -520,6 +519,8 @@ pub(crate) fn render_frame<A: AppLogic>(backend: &mut WinBackend, app: &A, viewp
     // `apply_selection_highlight(buf)` call, both made at this same point
     // in the frame.
     backend.apply_selection_highlight();
+    // Open popups paint above the frame, the ring and the highlight.
+    crate::popup::paint_open_popups_caught(&mut *backend);
     backend.end_frame();
 }
 

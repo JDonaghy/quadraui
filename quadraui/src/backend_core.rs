@@ -238,7 +238,8 @@ impl BackendCore {
     // `Backend`/`PreprocessBackend` impl reads as a one-line delegation
     // to `self.core.foo()`, matching the accelerator methods above.
 
-    /// Clear the per-frame region registry and the painted-layout record.
+    /// Clear the per-frame region registry, the painted-layout record and
+    /// the popup queue.
     /// Call at the start of every frame (same lifecycle as a backend's
     /// other per-frame caches).
     ///
@@ -251,6 +252,7 @@ impl BackendCore {
     pub(crate) fn begin_frame(&mut self) {
         self.text_selection.begin_frame();
         crate::primitive::clear_painted_widgets();
+        crate::popup::clear_popup_frame();
     }
 
     /// Register `region` for the current frame.
