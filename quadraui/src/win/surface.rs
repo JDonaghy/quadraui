@@ -147,6 +147,30 @@ impl PaintSurface for D2dSurface<'_> {
         }
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        _role: crate::FontRole,
+    ) {
+        self.dwrite_or_panic()
+            .draw_text_line(self.target, origin, text, runs);
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        _role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        self.dwrite_or_panic().text_x_at_index(text, byte_idx)
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
+        self.dwrite_or_panic().text_index_at_x(text, x)
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         let _ = draw_line(self.target, from.x, from.y, to.x, to.y, color, stroke_width);
     }
@@ -1203,5 +1227,81 @@ mod palette_paint_tests {
             (first_item.y + 1.0) as u32,
         );
         assert_eq!((px.r, px.g, px.b), (sel.r, sel.g, sel.b));
+    }
+}
+
+#[cfg(test)]
+mod text_line_tests {
+    use super::D2dSurface;
+    use crate::paint_surface::PaintSurface;
+    use crate::types::Color;
+    use crate::win::testing::HeadlessSurface;
+    use crate::win::text::DWrite;
+    use crate::{FontRole, Point, TextRunStyle};
+
+    /// A line with a wide glyph, a combining mark and mixed bold/italic.
+    const LINE: &str = "a日e\u{301}bc";
+
+    fn dwrite() -> DWrite {
+        DWrite::new("Consolas", 12.0, None)
+            .expect("create DWrite")
+            .0
+    }
+
+    #[test]
+    fn text_x_and_index_agree_with_directwrite_advances() {
+        let dwrite = dwrite();
+        let surface = HeadlessSurface::new(10, 10).expect("create surface");
+        surface
+            .paint(|target| {
+                let mut raw = D2dSurface {
+                    target,
+                    dwrite: Some(&dwrite),
+                };
+                for idx in [0usize, 1, 4, 7, 8, 9] {
+                    let expect = dwrite.measure_text(&LINE[..idx]).unwrap().0;
+                    let x = raw.surface_text_x_at_index(LINE, FontRole::Editor, idx);
+                    assert!(
+                        (x - expect).abs() < 0.01,
+                        "x at byte {idx}: {x} vs {expect}"
+                    );
+                    assert_eq!(raw.surface_text_index_at_x(LINE, FontRole::Editor, x), idx);
+                }
+                // A trailing space still advances the next glyph.
+                let one = raw.surface_text_x_at_index("a  b", FontRole::Editor, 1);
+                let three = raw.surface_text_x_at_index("a  b", FontRole::Editor, 3);
+                assert!(three > one, "{three} vs {one}");
+            })
+            .expect("paint");
+    }
+
+    #[test]
+    fn draw_text_line_paints_only_its_runs() {
+        let dwrite = dwrite();
+        let fg = Color::rgb(250, 250, 250);
+        let runs = [
+            TextRunStyle::new(0..1, fg),
+            TextRunStyle::new(1..4, Color::rgb(220, 60, 60)).with_bold(true),
+            TextRunStyle::new(4..7, fg).with_italic(true),
+            TextRunStyle::new(7..9, fg),
+        ];
+        let lit = |runs: &[TextRunStyle]| {
+            let surface = HeadlessSurface::new(120, 30).expect("create surface");
+            surface
+                .paint(|target| {
+                    let mut raw = D2dSurface {
+                        target,
+                        dwrite: Some(&dwrite),
+                    };
+                    raw.surface_draw_text_line(Point::new(2.0, 2.0), LINE, runs, FontRole::Editor);
+                })
+                .expect("paint");
+            (0..120)
+                .flat_map(|x| (0..30).map(move |y| (x, y)))
+                .filter(|&(x, y)| surface.pixel_at(x, y).r > 128)
+                .count()
+        };
+        assert!(lit(&runs) > 0);
+        assert_eq!(lit(&[]), 0);
     }
 }

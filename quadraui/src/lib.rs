@@ -892,7 +892,7 @@ pub use frame::{
     FrameOrderViolation, FramePresence, FrameRung, FrameZone, OwnedContent, OwnedFrame, OwnedNode,
     ScreenLayout, Surface,
 };
-pub use paint_surface::{PaintSurface, PathVerb};
+pub use paint_surface::{PaintSurface, PathVerb, TextRunStyle};
 // `PaintSurface`'s cell-grid counterpart — see `cell_surface`'s module doc.
 // `CellStyle` is aliased the same way `primitives::editor`'s own
 // `CursorShape`/`CursorPos` are above (`EditorCursorShape`,

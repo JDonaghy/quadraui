@@ -69,6 +69,80 @@
 use crate::backend::ImagePaintResult;
 use crate::{Color, Image, Point, Rect, Viewport};
 
+/// One styled byte range of a line of text, for
+/// [`PaintSurface::surface_draw_text_line`].
+///
+/// `range` is a byte range into the line's text; an end past the text or
+/// off a char boundary snaps back to the nearest boundary.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct TextRunStyle {
+    pub range: std::ops::Range<usize>,
+    pub fg: Color,
+    pub bold: bool,
+    pub italic: bool,
+}
+
+impl TextRunStyle {
+    /// `range` painted in `fg`, regular weight and upright.
+    pub fn new(range: std::ops::Range<usize>, fg: Color) -> Self {
+        Self {
+            range,
+            fg,
+            bold: false,
+            italic: false,
+        }
+    }
+
+    /// This run in bold when `bold` is true.
+    #[must_use]
+    pub fn with_bold(mut self, bold: bool) -> Self {
+        self.bold = bold;
+        self
+    }
+
+    /// This run in italic when `italic` is true.
+    #[must_use]
+    pub fn with_italic(mut self, italic: bool) -> Self {
+        self.italic = italic;
+        self
+    }
+
+    /// [`Self::range`] snapped onto `text`'s char boundaries, or `None`
+    /// when it covers no bytes.
+    pub(crate) fn byte_range_in(&self, text: &str) -> Option<std::ops::Range<usize>> {
+        let start = crate::text_util::snap_to_char_boundary(text, self.range.start);
+        let end = crate::text_util::snap_to_char_boundary(text, self.range.end);
+        (start < end).then_some(start..end)
+    }
+}
+
+/// The byte index in `text` of the cluster boundary whose advance
+/// `x_at` reports nearest to `x`. A boundary in front of a zero-width
+/// char (a combining mark) is skipped, so the result never splits a base
+/// character from its marks.
+pub(crate) fn nearest_text_boundary(
+    text: &str,
+    x: f32,
+    x_at: &mut dyn FnMut(usize) -> f32,
+) -> usize {
+    let mut best = (0usize, (x_at(0) - x).abs());
+    for (i, ch) in text.char_indices().skip(1) {
+        if crate::text_util::char_cell_width(ch) == 0 {
+            continue;
+        }
+        let d = (x_at(i) - x).abs();
+        if d < best.1 {
+            best = (i, d);
+        }
+    }
+    let d = (x_at(text.len()) - x).abs();
+    if !text.is_empty() && d < best.1 {
+        best = (text.len(), d);
+    }
+    best.0
+}
+
 /// A single segment of the open or closed polyline [`PaintSurface::surface_draw_path`]
 /// strokes.
 ///
@@ -422,6 +496,71 @@ pub trait PaintSurface {
     /// Stroke a line segment from `from` to `to` in `color` at
     /// `stroke_width`.
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32);
+
+    // ─── Shaped text lines ─────────────────────────────────────────────
+    /// Shape and draw `text` as one line at `origin` (the top-left of
+    /// the line box; the baseline sits the font's ascent below it), in
+    /// `role`'s font. Each [`TextRunStyle`] styles its byte range; bytes
+    /// no run covers are left unpainted, so a caller covers the gaps
+    /// with runs in its default colour.
+    ///
+    /// Defaults to one [`Self::surface_draw_text_run_styled`] per run,
+    /// placed at [`Self::surface_text_x_at_index`] — correct for a
+    /// surface with one monospace font. Every pixel backend overrides it
+    /// with its platform shaper.
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[TextRunStyle],
+        role: crate::FontRole,
+    ) {
+        for run in runs {
+            let Some(range) = run.byte_range_in(text) else {
+                continue;
+            };
+            let x = self.surface_text_x_at_index(text, role, range.start);
+            let slice = &text[range];
+            let (w, h) = self.surface_measure_text(slice);
+            self.surface_draw_text_run_styled(
+                Rect::new(origin.x + x, origin.y, w, h),
+                slice,
+                run.fg,
+                run.bold,
+                run.italic,
+                false,
+                1.0,
+            );
+        }
+    }
+
+    /// Advance width of `text[..byte_idx]` shaped in `role`; `byte_idx`
+    /// snaps back onto a char boundary.
+    ///
+    /// Defaults to monospace arithmetic: the prefix's display width in
+    /// cells times [`Self::surface_char_width`].
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        let _ = role;
+        let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
+        crate::text_util::display_width(&text[..end]) as f32 * self.surface_char_width()
+    }
+
+    /// Byte index of the grapheme boundary nearest to `x` in `text`
+    /// shaped in `role`, where `x` is measured from the start of the
+    /// line.
+    ///
+    /// Defaults to searching the boundaries
+    /// [`Self::surface_text_x_at_index`] reports.
+    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+        nearest_text_boundary(text, x, &mut |i| {
+            self.surface_text_x_at_index(text, role, i)
+        })
+    }
 
     // ─── Shadow + path ─────────────────────────────────────────────────
     /// Record `rect` as a floating overlay (a tooltip or toast box)

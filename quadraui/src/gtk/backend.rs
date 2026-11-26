@@ -1914,6 +1914,23 @@ fn role_font_description(b: &GtkBackend, role: FontRole) -> pango::FontDescripti
     }
 }
 
+/// Run `f` on the frame's Cairo context and Pango layout with the layout
+/// set to `role`'s font, restoring the layout's own font afterwards.
+fn with_role_layout<R>(
+    b: &GtkBackend,
+    role: FontRole,
+    f: impl FnOnce(&Context, &pango::Layout) -> R,
+) -> R {
+    let (cr, layout) = b
+        .current_frame_refs()
+        .expect("GtkBackend text-line verb called outside enter_frame_scope");
+    let saved = layout.font_description();
+    layout.set_font_description(Some(&role_font_description(b, role)));
+    let out = f(cr, layout);
+    layout.set_font_description(saved.as_ref());
+    out
+}
+
 impl Backend for GtkBackend {
     fn viewport(&self) -> Viewport {
         self.viewport
@@ -3882,6 +3899,35 @@ impl PaintSurface for EditorSurface<'_> {
         layout.set_font_description(saved.as_ref());
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        _role: crate::FontRole,
+    ) {
+        with_role_layout(self.backend, FontRole::Editor, |cr, layout| {
+            super::surface::draw_text_line(cr, layout, origin, text, runs)
+        });
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        _role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        with_role_layout(self.backend, FontRole::Editor, |_, layout| {
+            super::surface::text_x_at_index(layout, text, byte_idx)
+        })
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
+        with_role_layout(self.backend, FontRole::Editor, |_, layout| {
+            super::surface::text_index_at_x(layout, text, x)
+        })
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         self.backend
             .surface_draw_line(from, to, color, stroke_width)
@@ -4263,6 +4309,35 @@ impl PaintSurface for GtkBackend {
         cr.move_to(rect.x as f64, rect.y as f64);
         super::painted_text::show_layout(cr, layout);
         layout.set_font_description(saved.as_ref());
+    }
+
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        role: crate::FontRole,
+    ) {
+        with_role_layout(self, role, |cr, layout| {
+            super::surface::draw_text_line(cr, layout, origin, text, runs)
+        });
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        with_role_layout(self, role, |_, layout| {
+            super::surface::text_x_at_index(layout, text, byte_idx)
+        })
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+        with_role_layout(self, role, |_, layout| {
+            super::surface::text_index_at_x(layout, text, x)
+        })
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {

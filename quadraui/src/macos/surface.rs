@@ -142,6 +142,40 @@ impl PaintSurface for CgSurface<'_> {
         }
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        _role: crate::FontRole,
+    ) {
+        let font = self.font_or_panic();
+        // SAFETY: see `surface_fill_rect`.
+        unsafe {
+            super::text::draw_text_line(
+                self.ctx,
+                font,
+                origin.x as f64,
+                origin.y as f64,
+                text,
+                runs,
+            )
+        };
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        _role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        super::text::text_x_at_index(self.font_or_panic(), text, byte_idx)
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, _role: crate::FontRole, x: f32) -> usize {
+        super::text::text_index_at_x(self.font_or_panic(), text, x)
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         // SAFETY: see `surface_fill_rect`.
         unsafe {
@@ -195,6 +229,94 @@ mod tests {
 
     fn font() -> CTFont {
         make_font("Menlo", 14.0).expect("Menlo installed")
+    }
+
+    /// A line with a wide glyph, a combining mark and mixed bold/italic.
+    const LINE: &str = "a日e\u{301}bc";
+
+    fn line_runs() -> Vec<crate::TextRunStyle> {
+        let fg = Color::rgb(230, 230, 230);
+        vec![
+            crate::TextRunStyle::new(0..1, fg),
+            crate::TextRunStyle::new(1..4, Color::rgb(220, 60, 60)).with_bold(true),
+            crate::TextRunStyle::new(4..7, fg).with_italic(true),
+            crate::TextRunStyle::new(7..9, fg),
+        ]
+    }
+
+    /// `surface_draw_text_line` paints exactly what the editor's per-run
+    /// Core Text paint does: each run at its prefix's measured advance.
+    #[test]
+    fn draw_text_line_matches_the_editors_per_run_paint() {
+        use crate::paint_surface::PaintSurface;
+        let f = font();
+        let runs = line_runs();
+        let via_verb = BitmapSurface::new(W, 30);
+        via_verb.fill(0.0, 0.0, 0.0, 0.0);
+        let mut raw = super::CgSurface {
+            ctx: via_verb.context_ptr(),
+            font: Some(&f),
+        };
+        raw.surface_draw_text_line(
+            crate::Point::new(4.0, 3.0),
+            LINE,
+            &runs,
+            crate::FontRole::Editor,
+        );
+
+        let reference = BitmapSurface::new(W, 30);
+        reference.fill(0.0, 0.0, 0.0, 0.0);
+        for run in &runs {
+            let (prefix_w, _) = crate::macos::text::measure_text(&f, &LINE[..run.range.start]);
+            // SAFETY: the bitmap context lives for this whole test.
+            unsafe {
+                crate::macos::text::draw_text(
+                    reference.context_ptr(),
+                    &f,
+                    &LINE[run.range.clone()],
+                    4.0 + prefix_w,
+                    3.0,
+                    crate::macos::cg::color_to_cg(run.fg),
+                )
+            };
+        }
+        assert!(via_verb.bytes().iter().any(|&b| b != 0));
+        assert_eq!(via_verb.bytes(), reference.bytes());
+    }
+
+    #[test]
+    fn text_x_and_index_agree_with_core_text_advances() {
+        use crate::paint_surface::PaintSurface;
+        let f = font();
+        let mut raw = super::CgSurface {
+            ctx: std::ptr::null_mut(),
+            font: Some(&f),
+        };
+        let role = crate::FontRole::Editor;
+        for idx in [0usize, 1, 4, 7, 8, 9] {
+            let expect = crate::macos::text::measure_text(&f, &LINE[..idx]).0 as f32;
+            let x = raw.surface_text_x_at_index(LINE, role, idx);
+            assert_eq!(x, expect, "x at byte {idx}");
+            assert_eq!(
+                raw.surface_text_index_at_x(LINE, role, x),
+                idx,
+                "index at x {x}"
+            );
+        }
+        let narrow = raw.surface_text_x_at_index(LINE, role, 1);
+        let wide = raw.surface_text_x_at_index(LINE, role, 4) - narrow;
+        assert!(wide > narrow * 1.5, "wide {wide} narrow {narrow}");
+        // Between `e` and its combining mark is not a boundary.
+        let e_x = raw.surface_text_x_at_index(LINE, role, 4);
+        let next = raw.surface_text_x_at_index(LINE, role, 7);
+        assert_eq!(
+            raw.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.4),
+            4
+        );
+        assert_eq!(
+            raw.surface_text_index_at_x(LINE, role, e_x + (next - e_x) * 0.6),
+            7
+        );
     }
 
     fn cell(ch: char, fg: Color, bg: Color) -> TerminalCell {

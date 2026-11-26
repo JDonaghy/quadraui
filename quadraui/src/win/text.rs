@@ -278,6 +278,46 @@ impl DWrite {
         draw_text(target, self.format_for(bold), text, rect, color)
     }
 
+    /// Paint `text` as one line with its top-left at `origin`: each run
+    /// is drawn at the advance of the prefix before it, in its own colour
+    /// and weight. Bytes no run covers are left unpainted; `italic` is not
+    /// applied.
+    pub(crate) fn draw_text_line(
+        &self,
+        target: &ID2D1RenderTarget,
+        origin: crate::Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+    ) {
+        for run in runs {
+            let Some(range) = run.byte_range_in(text) else {
+                continue;
+            };
+            let x = origin.x + self.text_x_at_index(text, range.start);
+            let slice = &text[range];
+            let (w, h) = self
+                .measure_text_styled(slice, run.bold)
+                .unwrap_or((0.0, 0.0));
+            // Wider than the run so the layout's clip never trims an
+            // overhanging glyph edge.
+            let rect = Rect::new(x, origin.y, w + h, h.max(self.natural_line_height));
+            let _ = self.draw_text_styled(target, slice, rect, run.fg, run.bold);
+        }
+    }
+
+    /// Advance of `text[..byte_idx]` in this format, trailing whitespace
+    /// included, in DIPs.
+    pub(crate) fn text_x_at_index(&self, text: &str, byte_idx: usize) -> f32 {
+        let end = crate::text_util::snap_to_char_boundary(text, byte_idx);
+        measure_advance(&self.factory, &self.text_format, &text[..end]).unwrap_or(0.0)
+    }
+
+    /// The cluster boundary of `text` nearest to `x` DIPs from the line
+    /// start.
+    pub(crate) fn text_index_at_x(&self, text: &str, x: f32) -> usize {
+        crate::paint_surface::nearest_text_boundary(text, x, &mut |i| self.text_x_at_index(text, i))
+    }
+
     fn format_for(&self, bold: bool) -> &IDWriteTextFormat {
         if bold {
             &self.bold_text_format
@@ -742,6 +782,26 @@ fn measure_text(
     // plain stack struct the call writes through.
     unsafe { layout.GetMetrics(&mut metrics)? };
     Ok((metrics.width, metrics.height))
+}
+
+/// `text`'s advance in `format`, trailing whitespace included — the
+/// x a following glyph starts at, which [`measure_text`]'s ink-oriented
+/// width stops short of after a space.
+fn measure_advance(
+    factory: &IDWriteFactory,
+    format: &IDWriteTextFormat,
+    text: &str,
+) -> WinResult<f32> {
+    if text.is_empty() {
+        return Ok(0.0);
+    }
+    let wide: Vec<u16> = text.encode_utf16().collect();
+    // SAFETY: as in `measure_text`.
+    let layout = unsafe { factory.CreateTextLayout(&wide, format, f32::MAX, f32::MAX)? };
+    let mut metrics = Default::default();
+    // SAFETY: as in `measure_text`.
+    unsafe { layout.GetMetrics(&mut metrics)? };
+    Ok(metrics.widthIncludingTrailingWhitespace)
 }
 
 /// Paint `text` inside `rect` (DIPs, target-relative) in `color`, clipped

@@ -1208,6 +1208,20 @@ impl MacBackend {
         self.current_cg_ptr.get() as CGContextRef
     }
 
+    /// A [`super::surface::CgSurface`] over the current frame painting in
+    /// `role`'s font: the chrome font for every chrome role, the editor
+    /// font (falling back to chrome before one is set) for `Editor`.
+    fn text_surface_for(&self, role: crate::FontRole) -> super::surface::CgSurface<'_> {
+        let font = match role {
+            crate::FontRole::Editor => self.current_font.as_ref().unwrap_or(&self.chrome_font),
+            _ => &self.chrome_font,
+        };
+        super::surface::CgSurface {
+            ctx: self.current_cg(),
+            font: Some(font),
+        }
+    }
+
     /// Builds a [`super::surface::CgSurface`] over the current frame's
     /// `CGContextRef`, painting through [`Self::chrome_font`] — the
     /// null-context debug assert every chrome-surface painter in this
@@ -3623,6 +3637,35 @@ impl PaintSurface for EditorSurface<'_> {
         }
     }
 
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        role: crate::FontRole,
+    ) {
+        self.backend
+            .text_surface_for(crate::FontRole::Editor)
+            .surface_draw_text_line(origin, text, runs, role);
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        self.backend
+            .text_surface_for(crate::FontRole::Editor)
+            .surface_text_x_at_index(text, role, byte_idx)
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+        self.backend
+            .text_surface_for(crate::FontRole::Editor)
+            .surface_text_index_at_x(text, role, x)
+    }
+
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
         self.backend
             .surface_draw_line(from, to, color, stroke_width)
@@ -3878,6 +3921,32 @@ impl PaintSurface for MacBackend {
     /// glyph the same way this verb would.
     fn surface_draw_icon_glyph(&mut self, rect: Rect, text: &str, color: Color) {
         self.surface_draw_text_run(rect, text, color)
+    }
+
+    fn surface_draw_text_line(
+        &mut self,
+        origin: Point,
+        text: &str,
+        runs: &[crate::TextRunStyle],
+        role: crate::FontRole,
+    ) {
+        self.text_surface_for(role)
+            .surface_draw_text_line(origin, text, runs, role);
+    }
+
+    fn surface_text_x_at_index(
+        &mut self,
+        text: &str,
+        role: crate::FontRole,
+        byte_idx: usize,
+    ) -> f32 {
+        self.text_surface_for(role)
+            .surface_text_x_at_index(text, role, byte_idx)
+    }
+
+    fn surface_text_index_at_x(&mut self, text: &str, role: crate::FontRole, x: f32) -> usize {
+        self.text_surface_for(role)
+            .surface_text_index_at_x(text, role, x)
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
