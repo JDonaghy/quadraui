@@ -1981,6 +1981,13 @@ class _TreeRowRenameCommittedPayload(TypedDict):
     path: TreePath
     text: str
 
+class _TreeScrollChangedPayload(TypedDict):
+    scroll_offset: int
+
+class _TreeContextMenuRequestedPayload(TypedDict):
+    path: TreePath
+    position: Point
+
 class TreeEvent(TypedDict):
     RowClicked: NotRequired[_TreeRowClickedPayload]
     RowDoubleClicked: NotRequired[_TreePathPayload]
@@ -1991,6 +1998,9 @@ class TreeEvent(TypedDict):
     RowRenameChanged: NotRequired[_TreeRowRenameChangedPayload]
     RowRenameCommitted: NotRequired[_TreeRowRenameCommittedPayload]
     RowRenameCancelled: NotRequired[_TreePathPayload]
+    RowActivated: NotRequired[_TreePathPayload]
+    ScrollChanged: NotRequired[_TreeScrollChangedPayload]
+    ContextMenuRequested: NotRequired[_TreeContextMenuRequestedPayload]
 
 class _IdxPayload(TypedDict):
     idx: int

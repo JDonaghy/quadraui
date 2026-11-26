@@ -2134,7 +2134,16 @@ export interface _TreeRowRenameCommittedPayload {
   text: string;
 }
 
-export type TreeEvent = { RowClicked: _TreeRowClickedPayload; } | { RowDoubleClicked: _TreePathPayload; } | { RowToggleExpand: _TreePathPayload; } | { SelectionChanged: _TreePathPayload; } | { KeyPressed: _KeyPressedStrPayload; } | { SelectionSet: _TreeSelectionSetPayload; } | { RowRenameChanged: _TreeRowRenameChangedPayload; } | { RowRenameCommitted: _TreeRowRenameCommittedPayload; } | { RowRenameCancelled: _TreePathPayload; };
+export interface _TreeScrollChangedPayload {
+  scroll_offset: number;
+}
+
+export interface _TreeContextMenuRequestedPayload {
+  path: TreePath;
+  position: Point;
+}
+
+export type TreeEvent = { RowClicked: _TreeRowClickedPayload; } | { RowDoubleClicked: _TreePathPayload; } | { RowToggleExpand: _TreePathPayload; } | { SelectionChanged: _TreePathPayload; } | { KeyPressed: _KeyPressedStrPayload; } | { SelectionSet: _TreeSelectionSetPayload; } | { RowRenameChanged: _TreeRowRenameChangedPayload; } | { RowRenameCommitted: _TreeRowRenameCommittedPayload; } | { RowRenameCancelled: _TreePathPayload; } | { RowActivated: _TreePathPayload; } | { ScrollChanged: _TreeScrollChangedPayload; } | { ContextMenuRequested: _TreeContextMenuRequestedPayload; };
 
 export interface _IdxPayload {
   idx: number;
