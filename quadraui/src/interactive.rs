@@ -155,6 +155,7 @@ pub struct KeyEvent {
 /// present) names which part of a composite widget the event landed on,
 /// when the runtime's hit-test could tell.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum RoutedEvent {
     /// A mouse/touch gesture.
     Pointer {
