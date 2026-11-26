@@ -2532,8 +2532,9 @@ impl crate::primitive::Primitive for Palette {
             if layout.area.width < 20.0 || layout.area.height < layout.line_height * 4.0 {
                 return;
             }
+            let painted = self.with_painted_caret(env.widget_state_as::<PaletteState>());
             native_surface_paint::paint(
-                self,
+                &painted,
                 layout.area,
                 &layout.layout,
                 layout.rows_h,
@@ -2569,8 +2570,9 @@ impl crate::primitive::Primitive for Palette {
         // Snapped to whole cells the way every TUI rect is, so a
         // fractional popup rect paints where its hit test resolves.
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+        let painted = self.with_painted_caret(env.widget_state_as::<PaletteState>());
         cell_paint::paint(
-            self,
+            &painted,
             Rect::new(
                 area.x as f32,
                 area.y as f32,
@@ -2597,15 +2599,7 @@ impl crate::primitive::Primitive for Palette {
 /// [`PaletteEvent::QueryChanged`] has no reason to also track where the
 /// caret landed. [`Palette::query_cursor`] still seeds it, so a host that
 /// *does* drive the caret keeps control.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct PaletteState {
-    /// The caret byte offset this widget's own editing has moved to, or
-    /// `None` while it still follows [`Palette::query_cursor`].
-    pub cursor: Option<usize>,
-    /// The query selection's fixed end, as a byte offset.
-    pub anchor: Option<usize>,
-}
+pub type PaletteState = crate::behaviour::text_edit::FlatEditState;
 
 impl crate::interactive::WidgetAction for PaletteEvent {
     /// Every palette outcome already has a home in the crate's one
@@ -2627,60 +2621,44 @@ impl Palette {
         }
     }
 
-    /// The caret one `handle` call starts from: whatever this widget's own
-    /// state has walked to, else [`Self::query_cursor`] — snapped to a
-    /// char boundary either way.
-    fn effective_cursor(&self, state: &PaletteState) -> usize {
-        crate::behaviour::text_edit::effective_flat_cursor(
-            &self.query,
-            state.cursor,
-            Some(self.query_cursor),
-        )
-    }
-
-    /// Apply one [`crate::EditOp`] against the query and the caret/anchor
-    /// in `state`, writing the resulting caret back. Returns the new query
-    /// when it changed, `None` when the op only moved the caret or the
-    /// selection.
-    fn apply_query_op(&self, state: &mut PaletteState, op: crate::EditOp) -> Option<String> {
-        let (query, cursor, anchor) = crate::behaviour::text_edit::apply_flat_edit_op(
-            &self.query,
-            self.effective_cursor(state),
-            state.anchor,
-            op,
-        );
-        state.cursor = Some(cursor);
-        state.anchor = anchor;
-        (query != self.query).then_some(query)
-    }
-
-    /// Apply `op` and report it: a query change as
-    /// [`PaletteEvent::QueryChanged`], a caret-only move as
-    /// [`Handled::Consumed`] plus a redraw request.
-    fn commit_query(
-        &self,
-        state: &mut PaletteState,
-        op: crate::EditOp,
-        cx: &mut crate::interactive::EventCx,
-    ) -> Handled<PaletteEvent> {
-        match self.apply_query_op(state, op) {
-            Some(value) => Handled::Event(PaletteEvent::QueryChanged { value }),
-            None => {
-                cx.request_redraw();
-                Handled::Consumed
+    /// This palette with the query caret its own editing has walked to,
+    /// for a painter — the descriptor's own when `state` has not moved
+    /// it.
+    fn with_painted_caret(&self, state: Option<&PaletteState>) -> std::borrow::Cow<'_, Self> {
+        match state.and_then(|s| s.cursor) {
+            Some(cursor) if cursor != self.query_cursor => {
+                let mut painted = self.clone();
+                painted.query_cursor = cursor.min(painted.query.len());
+                std::borrow::Cow::Owned(painted)
             }
+            _ => std::borrow::Cow::Borrowed(self),
         }
     }
 
-    /// The query text currently selected, as the shared flat-value
-    /// selection span resolves it — what Ctrl-C reads before emitting
-    /// [`crate::UiEvent::TextCopied`].
-    fn query_selection(&self, state: &PaletteState) -> Option<String> {
-        crate::behaviour::text_edit::flat_selected_text(
+    /// Route one query-editing event — a key the list did not claim,
+    /// committed text, a focus change — through the shared flat-value
+    /// editing handler, reporting a query change as
+    /// [`PaletteEvent::QueryChanged`].
+    fn edit_query(
+        &self,
+        state: &mut PaletteState,
+        event: &crate::interactive::RoutedEvent,
+        cx: &mut crate::interactive::EventCx,
+    ) -> Handled<PaletteEvent> {
+        use crate::behaviour::text_edit::{handle_flat_edit_event, FlatEditOutcome};
+        match handle_flat_edit_event(
             &self.query,
-            self.effective_cursor(state),
-            state.anchor,
-        )
+            Some(self.query_cursor),
+            None,
+            state,
+            event,
+            &|_| None,
+            cx,
+        ) {
+            FlatEditOutcome::Changed(value) => Handled::Event(PaletteEvent::QueryChanged { value }),
+            FlatEditOutcome::Consumed => Handled::Consumed,
+            FlatEditOutcome::Ignored => Handled::Ignored,
+        }
     }
 
     /// Which [`NavKey`] a keystroke means for the *item list*.
@@ -2743,9 +2721,7 @@ impl Palette {
         layout: &PalettePrimitiveLayout,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<PaletteEvent> {
-        use crate::behaviour::text_edit::EditIntent;
         use crate::event::{Key, NamedKey};
-        use crate::EditOp;
 
         match key.key {
             Key::Named(NamedKey::Escape) => return Handled::Event(PaletteEvent::Closed),
@@ -2773,29 +2749,11 @@ impl Palette {
             return Handled::Ignored;
         }
 
-        match EditIntent::from_key(&key.key, key.modifiers) {
-            Some(EditIntent::SelectAll) => self.commit_query(state, EditOp::SelectAll, cx),
-            Some(EditIntent::Copy) => match self.query_selection(state) {
-                Some(text) => {
-                    cx.emit(crate::UiEvent::TextCopied(text));
-                    Handled::Consumed
-                }
-                None => Handled::Consumed,
-            },
-            Some(EditIntent::Cut) => match self.query_selection(state) {
-                Some(text) => {
-                    cx.emit(crate::UiEvent::TextCopied(text));
-                    self.commit_query(state, EditOp::DeleteSelection, cx)
-                }
-                None => Handled::Consumed,
-            },
-            // Paste is the host's: the clipboard text arrives as
-            // `UiEvent::ClipboardPaste`, which a host feeds back in as
-            // `RoutedEvent::Text`.
-            Some(EditIntent::Paste) => Handled::Ignored,
-            Some(EditIntent::Op(op)) => self.commit_query(state, op, cx),
-            None => Handled::Ignored,
-        }
+        self.edit_query(
+            state,
+            &crate::interactive::RoutedEvent::Key(key.clone()),
+            cx,
+        )
     }
 }
 
@@ -2849,8 +2807,8 @@ impl crate::interactive::Interactive for Palette {
 
         match event {
             RoutedEvent::Key(key) => self.handle_key(state, key, layout, cx),
-            RoutedEvent::Text(text) => {
-                self.commit_query(state, crate::EditOp::InsertText(text.clone()), cx)
+            RoutedEvent::Text(_) | RoutedEvent::FocusIn(_) | RoutedEvent::FocusOut => {
+                self.edit_query(state, event, cx)
             }
             RoutedEvent::Pointer {
                 kind: PointerKind::Down(MouseButton::Left),
@@ -2891,18 +2849,6 @@ impl crate::interactive::Interactive for Palette {
             },
             RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
                 cx.request_focus(None);
-                Handled::Consumed
-            }
-            RoutedEvent::FocusIn(_) => {
-                // Re-seed from the descriptor: the host may have moved the
-                // caret while this popup was unfocused.
-                state.cursor = Some(self.query_cursor.min(self.query.len()));
-                state.anchor = None;
-                Handled::Consumed
-            }
-            RoutedEvent::FocusOut => {
-                state.cursor = None;
-                state.anchor = None;
                 Handled::Consumed
             }
             _ => Handled::Ignored,
@@ -3135,6 +3081,7 @@ mod interactive_tests {
         let mut state = PaletteState {
             cursor: Some(1),
             anchor: Some(0),
+            ..PaletteState::default()
         };
         let mut cx = EventCx::new(p.id, &mut host);
 

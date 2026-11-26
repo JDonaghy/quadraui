@@ -68,7 +68,6 @@ use crate::interactive::{
     EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, WidgetAction,
 };
 use crate::primitives::data_table::ColumnAlign;
-use crate::primitives::text_input::{apply_flat_edit_op, EditOp};
 use crate::types::{Color, Modifiers, WidgetId};
 use crate::Handled;
 use serde::{Deserialize, Serialize};
@@ -2063,24 +2062,45 @@ impl CellGrid {
         }
     }
 
-    /// Apply one [`EditOp`] to `edit`'s text buffer via the same flat
-    /// byte-offset bridge [`crate::TextField::apply_edit_op`] uses,
-    /// reporting the result as [`CellGridEvent::CellEditChanged`].
-    fn apply_edit(&self, edit: &CellEditState, op: EditOp) -> Handled<CellGridEvent> {
-        let (new_text, new_cursor, new_anchor) = apply_flat_edit_op(
+    /// Route one editing event — a key the grid did not claim, or
+    /// committed text — to `edit`'s buffer through the shared flat-value
+    /// editing handler (the one [`crate::TextField`] and `Form`'s text
+    /// row use), reporting a changed buffer, caret or selection as
+    /// [`CellGridEvent::CellEditChanged`]. Ctrl/Cmd+C and Ctrl/Cmd+X copy
+    /// the selection out through `cx`.
+    fn edit_event(
+        &self,
+        edit: &CellEditState,
+        event: &RoutedEvent,
+        cx: &mut EventCx,
+    ) -> Handled<CellGridEvent> {
+        use crate::behaviour::text_edit::{handle_flat_edit_event, FlatEditOutcome, FlatEditState};
+        let mut flat = FlatEditState::default();
+        flat.cursor = Some(edit.cursor.min(edit.text.len()));
+        flat.anchor = edit.selection_anchor;
+        let before = flat;
+        let text = match handle_flat_edit_event(
             &edit.text,
-            edit.cursor.min(edit.text.len()),
+            Some(edit.cursor),
             edit.selection_anchor,
-            op,
-        );
+            &mut flat,
+            event,
+            &|_| None,
+            cx,
+        ) {
+            FlatEditOutcome::Changed(text) => text,
+            FlatEditOutcome::Consumed if flat != before => edit.text.clone(),
+            FlatEditOutcome::Consumed => return Handled::Consumed,
+            FlatEditOutcome::Ignored => return Handled::Ignored,
+        };
         let (row, col) = self.cursor;
         Handled::Event(CellGridEvent::CellEditChanged {
             row,
             col,
             edit: CellEditState {
-                text: new_text,
-                cursor: new_cursor,
-                selection_anchor: new_anchor,
+                text,
+                cursor: flat.cursor.unwrap_or(0),
+                selection_anchor: flat.anchor,
                 placeholder: edit.placeholder.clone(),
             },
         })
@@ -2132,35 +2152,25 @@ impl CellGrid {
             Key::Named(NamedKey::Left) => commit_and(self.navigate_by(0, -1, false, layout)),
             Key::Named(NamedKey::Right) => commit_and(self.navigate_by(0, 1, false, layout)),
 
-            Key::Named(NamedKey::Backspace) => self.apply_edit(edit, EditOp::DeleteBackward),
-            Key::Named(NamedKey::Delete) => self.apply_edit(edit, EditOp::DeleteForward),
-            Key::Named(NamedKey::Home) => {
-                self.apply_edit(edit, EditOp::MoveLineStart { extend: false })
-            }
-            Key::Named(NamedKey::End) => {
-                self.apply_edit(edit, EditOp::MoveLineEnd { extend: false })
-            }
-
-            Key::Char('a') if modifiers.ctrl || modifiers.cmd => {
-                self.apply_edit(edit, EditOp::SelectAll)
-            }
-            // Guarded the same way the idle path's `Key::Char(c) if !jump`
-            // arm is: an unmodified character edits the buffer, but a
-            // Ctrl/Cmd/Alt chord (clipboard shortcuts, accelerators) must
-            // answer `Ignored` and bubble rather than insert the bare
-            // letter and swallow the keypress.
-            Key::Char(c) if !modifiers.ctrl && !modifiers.cmd && !modifiers.alt => {
-                self.apply_edit(edit, EditOp::InsertChar(*c))
-            }
-            // A Ctrl/Cmd/Alt chord that isn't `Ctrl/Cmd+A` above (e.g.
-            // Ctrl+C/Ctrl+V, an `<C-s>`/`<C-z>`/`<C-q>` accelerator) is not
-            // this widget's to claim — bubble so `preprocess_event`'s
-            // later clipboard/accelerator steps still see it, rather than
-            // falling into the catch-all `Consumed` below and silently
-            // swallowing the keypress.
-            Key::Char(_) => Handled::Ignored,
-
-            _ => Handled::Consumed,
+            // An Alt chord (a menu accelerator) is not this widget's to
+            // claim; AltGr arrives as Ctrl+Alt and still types.
+            Key::Char(_) if modifiers.alt && !modifiers.ctrl => Handled::Ignored,
+            _ => match self.edit_event(
+                edit,
+                &RoutedEvent::Key(KeyEvent {
+                    key: key.clone(),
+                    modifiers: *modifiers,
+                    repeat: false,
+                }),
+                cx,
+            ) {
+                // A key the editor does not interpret (F-keys, a bare
+                // Ctrl/Cmd chord) bubbles when chorded so the app's
+                // accelerators still see it; any other key stays inside
+                // the edit.
+                Handled::Ignored if !(modifiers.ctrl || modifiers.cmd) => Handled::Consumed,
+                other => other,
+            },
         }
     }
 
@@ -2282,9 +2292,7 @@ impl Interactive for CellGrid {
                 RoutedEvent::Key(KeyEvent { key, modifiers, .. }) => {
                     self.handle_key_editing(edit, key, modifiers, &layout.layout, cx)
                 }
-                RoutedEvent::Text(text) if !text.is_empty() => {
-                    self.apply_edit(edit, EditOp::InsertText(text.clone()))
-                }
+                RoutedEvent::Text(text) if !text.is_empty() => self.edit_event(edit, event, cx),
                 // A drag started before this edit began (press → type →
                 // release, with no commit/cancel in between) still owns
                 // the capture and `state.drag_anchor` — releasing both
@@ -3447,6 +3455,36 @@ mod interactive_tests {
                 },
             })
         );
+    }
+
+    #[test]
+    fn ctrl_c_while_editing_copies_the_selected_text() {
+        let mut g = grid(5, 5);
+        g.editing = Some(CellEditState {
+            text: "hello".to_string(),
+            cursor: 4,
+            selection_anchor: Some(1),
+            placeholder: None,
+        });
+        let layout = layout_for(&g);
+        let mut state = CellGridState::default();
+        let mut host = MockHost::default();
+        let mut cx = EventCx::new(g.id, &mut host);
+        let outcome = g.handle(
+            &mut state,
+            &RoutedEvent::Key(KeyEvent {
+                key: Key::Char('c'),
+                modifiers: Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+                repeat: false,
+            }),
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(outcome, Handled::Consumed);
+        assert_eq!(host.emitted, vec![crate::UiEvent::TextCopied("ell".into())]);
     }
 
     #[test]

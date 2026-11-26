@@ -359,7 +359,6 @@ pub(crate) fn handle_picker_event(
                     None => Handled::Consumed,
                 };
             }
-            _ if is_chorded_typing(key) => return Handled::Ignored,
             _ => {}
         }
     }
@@ -373,15 +372,6 @@ pub(crate) fn handle_picker_event(
         Handled::Event(_) | Handled::Consumed => Handled::Consumed,
         Handled::Ignored => Handled::Ignored,
     }
-}
-
-/// Whether `key` is a Ctrl/Cmd-chorded character. Every backend delivers
-/// a chorded letter as a plain `Key::Char` with the modifier set (the
-/// macOS accelerator convention for Cmd), so a picker's query leaves it
-/// to the app's accelerators rather than typing a literal or claiming it
-/// as a clipboard chord.
-pub(crate) fn is_chorded_typing(key: &crate::interactive::KeyEvent) -> bool {
-    (key.modifiers.ctrl || key.modifiers.cmd) && matches!(key.key, Key::Char(_))
 }
 
 /// Report a move of the highlight to `idx`, or nothing when it is
