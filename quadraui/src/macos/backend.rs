@@ -151,7 +151,7 @@ pub struct MacBackend {
     /// [`crate::Style`]'s module doc for why this is a separate field
     /// rather than folded into `Theme`.
     current_style: crate::Style,
-    /// Decoded-`CGImage` cache for [`Backend::draw_image`]
+    /// Decoded-`CGImage` cache for [`PaintSurface::surface_draw_image`]
     /// — see [`crate::image_cache`]'s module doc and
     /// [`super::image::draw_image`]'s "Decode cache" section for why
     /// this backend keys on source only (a `CGImage` decode is reused at
@@ -3171,27 +3171,13 @@ impl Backend for MacBackend {
         self.minimap_scale = scale;
     }
 
-    /// The macOS `Image` rasteriser uses Core Graphics/ImageIO to
-    /// decode and paint images, the same shape of backend-specific work
-    /// that Win-GUI does. This backend also maintains a decode cache.
     fn draw_image(
         &mut self,
         rect: Rect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
         self.register_zone(image.id, rect);
-        let ctx = self.current_cg();
-        let scale = self.viewport.scale;
-        // Unlike `draw_minimap`, `draw_image` can legitimately return
-        // `Unsupported` (a decode failure, or a zero-size `rect`) without
-        // ever touching `ctx` — so the null-context guard lives inside
-        // `super::image::draw_image_cached` itself, right before the
-        // CoreGraphics calls that actually need it, rather than an
-        // unconditional upfront `debug_assert!` here.
-        //
-        // SAFETY: `super::image::draw_image_cached` only dereferences
-        // `ctx` after confirming it's non-null.
-        unsafe { super::image::draw_image_cached(ctx, rect, image, &mut self.image_cache, scale) }
+        image.paint_reporting(&image.layout(rect), self)
     }
 
     // ─── Clipping ────────────────────────────────────────────────────────
@@ -3921,12 +3907,25 @@ impl PaintSurface for MacBackend {
         unsafe { CGContextRestoreGState(ctx) };
     }
 
+    /// Decodes through Core Graphics/ImageIO, keeping the decoded image
+    /// in this backend's cache.
     fn surface_draw_image(
         &mut self,
         rect: Rect,
         image: &crate::primitives::image::Image,
     ) -> crate::backend::ImagePaintResult {
-        Backend::draw_image(self, rect, image)
+        let ctx = self.current_cg();
+        let scale = self.viewport.scale;
+        // Unlike `draw_minimap`, an image paint can legitimately return
+        // `Unsupported` (a decode failure, or a zero-size `rect`) without
+        // ever touching `ctx` — so the null-context guard lives inside
+        // `super::image::draw_image_cached` itself, right before the
+        // CoreGraphics calls that actually need it, rather than an
+        // unconditional upfront `debug_assert!` here.
+        //
+        // SAFETY: `super::image::draw_image_cached` only dereferences
+        // `ctx` after confirming it's non-null.
+        unsafe { super::image::draw_image_cached(ctx, rect, image, &mut self.image_cache, scale) }
     }
 }
 
