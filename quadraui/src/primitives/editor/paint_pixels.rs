@@ -150,7 +150,10 @@ fn paint_body(
     let cw = geom.cell_width;
     let lh = geom.line_height;
     let gutter_w = editor.gutter_char_width as f32 * cw;
-    let natural_h = surface.surface_measure_text("").1;
+    let natural_h = match surface.surface_measure_text("").1 {
+        h if h > 0.0 => h,
+        _ => surface.surface_measure_text("M").1,
+    };
     let ctx = Ctx {
         editor,
         theme,

@@ -1,78 +1,37 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::primitives::editor::Editor`]
-//!
-//! Positions come from [`Editor::layout`] (viewport / gutter / text
-//! bounds, all in the caller's `cell_width`/`line_height` — uniform
-//! monospace, same convention as TUI). Text and every other paint
-//! category are done in this module via [`DWrite`] + [`fill_rect`] /
-//! [`crate::types::Color::blend`].
+//! Win-GUI entry points for [`crate::primitives::editor::Editor`] — thin
+//! delegates onto the widget's own pixel painter,
+//! `crate::primitives::editor::paint_pixels`, which documents every paint
+//! pass. These functions only adapt a raw `ID2D1RenderTarget` and the
+//! editor [`DWrite`] handle into the [`super::surface::D2dSurface`] that
+//! painter takes, laying the editor out at [`Editor::rect`].
 //!
 //! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod editor;` and `backend.rs`'s
-//! module docs.
+//! `#[cfg(target_os = "windows")] mod editor;`.
 //!
-//! Takes the live theme as a `&Theme` parameter, matching every other
-//! Win-GUI rasteriser's convention — the caller
-//! ([`crate::win::WinBackend::draw_editor`]) passes `&self.current_theme`,
-//! the same field `Backend::set_theme` writes.
-//!
-//! Implements line numbers, syntax-highlighted text, cursor, selections,
-//! and diagnostics. Not yet painted (pre-existing GTK/TUI features out of
-//! scope): git-diff gutter column, breakpoint gutter column,
-//! DAP-current-line background, fold headers, AI ghost text, inline
-//! annotations, bracket-match highlight, indent guides, colorcolumns,
-//! spell-check underlines, and the code-action lightbulb glyph.
-//! `EditorPaintResult::cursor_position_native` is always `None` — this
-//! backend paints its own caret directly (via [`fill_rect`]), the same
-//! posture `GtkBackend::draw_editor`'s doc documents for GTK.
+//! `EditorPaintResult::cursor_position_native` is always `None`: this
+//! backend paints its own caret.
 //!
 //! ## Scrollbar
 //!
-//! This rasteriser paints no vertical scrollbar itself — it takes a raw
-//! `ID2D1RenderTarget`, not a `PaintSurface`.
-//! [`draw_editor_with_options_and_v_scrollbar_w`] reserves the column:
-//! it lays out through [`Editor::layout_with_options_and_v_scrollbar_w`]
-//! and clips text and selections to the resulting `text_bounds`, so no
-//! glyph paints under the column. `WinBackend::draw_editor` then paints
-//! the column through `Backend::draw_scrollbar` (the shared
-//! `scrollbar::native_surface_paint`), using the same layout, with the
-//! width set through [`crate::Backend::set_editor_v_scrollbar_width`].
+//! [`draw_editor_with_options_and_v_scrollbar_w`] reserves the vertical
+//! scrollbar column (the text clip stops short of it) but leaves it
+//! unpainted: `WinBackend::draw_editor` paints that column itself, from
+//! the same layout, through `Backend::draw_scrollbar`. The horizontal
+//! scrollbar is painted here.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, pop_clip, push_clip, DWrite};
+use super::surface::D2dSurface;
+use super::text::DWrite;
 use crate::backend::EditorPaintResult;
-use crate::event::Rect;
-use crate::primitives::editor::{
-    CursorShape, DiagnosticSeverity, Editor, EditorLine, EditorPaintOptions, EditorSelection,
-};
+use crate::primitives::editor::{paint_pixels, Editor, EditorPaintOptions};
 use crate::theme::Theme;
-use crate::types::Color;
 
-/// Draw an [`Editor`] viewport (`editor.rect`) on `target`, at uniform
+/// Draw an [`Editor`] viewport (`editor.rect`) on `target`, at
 /// `cell_width` / `line_height` (DIPs).
 ///
 /// Equivalent to [`draw_editor_with_options_and_v_scrollbar_w`] with
 /// `EditorPaintOptions::default()` and no scrollbar-width override.
-///
-/// # Visual contract
-///
-/// - **Background:** `Theme::editor_active_background` when
-///   `editor.show_active_bg`, else `Theme::background`.
-/// - **Cursorline:** `Theme::cursorline_bg` on `is_current_line` rows
-///   when `editor.is_active && editor.cursorline`.
-/// - **Selections** (primary + extra + yank highlight): `Theme::selection`
-///   blended over the row background at `Theme::selection_alpha` (yank
-///   uses `yank_highlight_bg` / `yank_highlight_alpha`). Painted before
-///   text, same ordering as `gtk::editor`.
-/// - **Gutter:** right-aligned `gutter_text`, `Theme::line_number_active_fg`
-///   on the current line, else `Theme::line_number_fg`.
-/// - **Text:** per-[`crate::primitives::editor::EditorStyledSpan`] colour
-///   (`Theme::foreground` where unset), honouring `bold`.
-/// - **Diagnostics:** a 2-DIP underline under `[start_col, end_col)` in
-///   `Theme::diagnostic_error` / `_warning` / `_info` / `_hint`.
-/// - **Cursor:** `Theme::cursor` blended at `Theme::cursor_normal_alpha`
-///   for `Block`; a solid 2-DIP bar for `Bar`; a solid 2-DIP underline
-///   for `Underline`.
 pub fn draw_editor(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -95,9 +54,8 @@ pub fn draw_editor(
 
 /// [`draw_editor`], plus [`EditorPaintOptions`] and a host-settable
 /// vertical scrollbar width in DIPs (`None` = one `cell_width`). Both
-/// feed [`Editor::layout_with_options_and_v_scrollbar_w`], so the text
-/// clip stops short of the reserved column; see the module doc's
-/// "Scrollbar" section for who paints the column itself.
+/// feed [`Editor::layout_with_options_and_v_scrollbar_w`]; see the module
+/// doc's "Scrollbar" section for who paints the vertical column.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_editor_with_options_and_v_scrollbar_w(
     target: &ID2D1RenderTarget,
@@ -109,342 +67,23 @@ pub fn draw_editor_with_options_and_v_scrollbar_w(
     options: EditorPaintOptions,
     v_scrollbar_w: Option<f32>,
 ) -> EditorPaintResult {
-    let rect = editor.rect;
-    let layout = editor.layout_with_options_and_v_scrollbar_w(
-        rect,
+    let geom = editor.layout_with_options_and_v_scrollbar_w(
+        editor.rect,
         cell_width,
         line_height,
         options,
         v_scrollbar_w,
     );
-
-    let bg = if editor.show_active_bg {
-        theme.editor_active_background
-    } else {
-        theme.background
+    let mut surface = D2dSurface {
+        target,
+        dwrite: Some(dwrite),
     };
-    let _ = fill_rect(target, rect, bg);
-
-    // Shared by the gutter, body-text, and block-cursor-glyph paints
-    // below; see [`text_v_offset`]'s doc.
-    let text_v_offset = text_v_offset(dwrite, line_height);
-
-    // ── Cursorline (spans the gutter + text columns, including the
-    //    gutter — same as `gtk::editor` — but stops short of the
-    //    reserved vertical scrollbar column, so it's painted before any
-    //    clip is pushed but still narrowed to `text_bounds`) ──────────
-    let cursorline_w = (layout.text_bounds.x + layout.text_bounds.width - rect.x).max(0.0);
-    for (view_idx, line) in editor.lines.iter().enumerate() {
-        if line.is_current_line && editor.is_active && editor.cursorline {
-            let y = rect.y + view_idx as f32 * line_height;
-            let _ = fill_rect(
-                target,
-                Rect::new(rect.x, y, cursorline_w, line_height),
-                theme.cursorline_bg,
-            );
-        }
-    }
-
-    // ── Selections (painted before text) ────────────────────────────
-    // Clipped to `text_bounds`: a `SelectionKind::Line` row (or any
-    // selection reaching the buffer line's raw length) can be wider
-    // than the visible viewport, and must not bleed past its right
-    // edge — the gutter is never touched since every selection rect's
-    // left edge already starts at `text_bounds.x`.
-    push_clip(target, layout.text_bounds);
-    if let Some(sel) = &editor.selection {
-        paint_selection(
-            target,
-            sel,
-            &editor.lines,
-            rect,
-            line_height,
-            layout.text_bounds.x,
-            cell_width,
-            theme.selection,
-            theme.selection_alpha,
-            theme.background,
-        );
-    }
-    for sel in &editor.extra_selections {
-        paint_selection(
-            target,
-            sel,
-            &editor.lines,
-            rect,
-            line_height,
-            layout.text_bounds.x,
-            cell_width,
-            theme.selection,
-            theme.selection_alpha,
-            theme.background,
-        );
-    }
-    if let Some(sel) = &editor.yank_highlight {
-        paint_selection(
-            target,
-            sel,
-            &editor.lines,
-            rect,
-            line_height,
-            layout.text_bounds.x,
-            cell_width,
-            theme.yank_highlight_bg,
-            theme.yank_highlight_alpha,
-            theme.background,
-        );
-    }
-    pop_clip(target);
-
-    // ── Gutter + text + diagnostics ──────────────────────────────────
-    // The gutter number paints *outside* the `text_bounds` clip below
-    // (it lives at `x < text_bounds.x`); text and diagnostics paint
-    // *inside* it per line, so a long line's text can't bleed into the
-    // gutter or past the viewport's right edge.
-    for (view_idx, line) in editor.lines.iter().enumerate() {
-        let y = rect.y + view_idx as f32 * line_height;
-
-        if editor.gutter_char_width > 0 {
-            let gutter_fg = if line.is_current_line {
-                theme.line_number_active_fg
-            } else {
-                theme.line_number_fg
-            };
-            let gutter_w = editor.gutter_char_width as f32 * cell_width;
-            let (gw, _) = dwrite.measure_text(&line.gutter_text).unwrap_or((0.0, 0.0));
-            let gx = rect.x + (gutter_w - gw).max(0.0);
-            let _ = dwrite.draw_text(
-                target,
-                &line.gutter_text,
-                Rect::new(gx, y + text_v_offset, gw, line_height),
-                gutter_fg,
-            );
-        }
-
-        push_clip(target, layout.text_bounds);
-
-        paint_line_text(
-            target,
-            dwrite,
-            line,
-            layout.text_bounds.x,
-            y,
-            line_height,
-            text_v_offset,
-            cell_width,
-            editor.scroll_left,
-            layout.visible_cols,
-            theme.foreground,
-        );
-
-        for diag in &line.diagnostics {
-            let start = diag.start_col.saturating_sub(editor.scroll_left);
-            let end = diag.end_col.saturating_sub(editor.scroll_left);
-            if end <= start {
-                continue;
-            }
-            let color = match diag.severity {
-                DiagnosticSeverity::Error => theme.diagnostic_error,
-                DiagnosticSeverity::Warning => theme.diagnostic_warning,
-                DiagnosticSeverity::Information => theme.diagnostic_info,
-                DiagnosticSeverity::Hint => theme.diagnostic_hint,
-            };
-            let ux = layout.text_bounds.x + start as f32 * cell_width;
-            let uw = (end - start) as f32 * cell_width;
-            let _ = fill_rect(target, Rect::new(ux, y + line_height - 2.0, uw, 2.0), color);
-        }
-
-        pop_clip(target);
-    }
-
-    // ── Cursor ───────────────────────────────────────────────────────
-    if let Some(cursor) = &editor.cursor {
-        let y = rect.y + cursor.pos.view_line as f32 * line_height;
-        let col = cursor.pos.col.saturating_sub(editor.scroll_left);
-        let x = layout.text_bounds.x + col as f32 * cell_width;
-        match cursor.shape {
-            CursorShape::Block => {
-                let color = bg.blend(theme.cursor, theme.cursor_normal_alpha as f64);
-                let _ = fill_rect(target, Rect::new(x, y, cell_width, line_height), color);
-                // Re-paint the glyph under the cursor in background
-                // colour so it reads against the cursor fill — mirrors
-                // `macos::editor::draw_editor`'s `CursorShape::Block` arm.
-                // `cursor.pos.col` indexes the raw
-                // (unscrolled) buffer line, matching `CursorPos::col`'s
-                // doc; the glyph is painted back at the same scrolled
-                // screen `(x, y)` the block fill just used.
-                if let Some(line) = editor.lines.get(cursor.pos.view_line) {
-                    let raw = line.raw_text.trim_end_matches('\n');
-                    if let Some(ch) = raw.chars().nth(cursor.pos.col) {
-                        let ch = ch.to_string();
-                        // Text, not a row-sized fill — shares the row's
-                        // `text_v_offset` like the gutter and body-text
-                        // paints above, so the repainted glyph still
-                        // lines up with its own un-cursored baseline.
-                        let _ = dwrite.draw_text(
-                            target,
-                            &ch,
-                            Rect::new(x, y + text_v_offset, cell_width, line_height),
-                            theme.background,
-                        );
-                    }
-                }
-            }
-            CursorShape::Bar => {
-                let _ = fill_rect(target, Rect::new(x, y, 2.0, line_height), theme.cursor);
-            }
-            CursorShape::Underline => {
-                let _ = fill_rect(
-                    target,
-                    Rect::new(x, y + line_height - 2.0, cell_width, 2.0),
-                    theme.cursor,
-                );
-            }
-        }
-    }
-
-    // GTK-style posture: this backend paints its own caret directly
-    // (above), so there's no terminal-cursor position for the host to
-    // reposition — see this module's doc.
+    let paint_options = EditorPaintOptions {
+        suppress_v_scrollbar: true,
+        ..options
+    };
+    paint_pixels::paint_with_options(editor, &geom, &mut surface, theme, paint_options);
     EditorPaintResult::default()
-}
-
-/// Vertical distance from a row's top edge to the top of the glyph box
-/// that centres `dwrite`'s own natural line height inside `line_height`
-/// — Win-GUI's counterpart to [`crate::macos::editor::text_v_offset`].
-///
-/// A host sets the editor's row pitch (`line_height`) independently of
-/// the font's natural height (`DWrite::natural_line_height`, `ascent +
-/// descent + lineGap` at this handle's size); DirectWrite's default
-/// paragraph alignment is top (`DWRITE_PARAGRAPH_ALIGNMENT_NEAR`), so a
-/// glyph box positioned straight at a row's top edge sits high in its
-/// row, with all the slack below it. Every text paint inside one
-/// row — gutter line number, body text, the glyph repainted under a
-/// block cursor — adds this offset, so they share a baseline and the
-/// row reads centred, matching VS Code.
-///
-/// Negative when `line_height` is *tighter* than the font's natural
-/// height, which lifts the glyph by the overflow's half so the row
-/// still reads centred rather than clipping only its bottom — same
-/// unclamped posture as the macOS twin.
-fn text_v_offset(dwrite: &DWrite, line_height: f32) -> f32 {
-    (line_height - dwrite.natural_line_height()) / 2.0
-}
-
-/// Paint one selection range as a translucent overlay across the
-/// visible `lines`, before text is painted. Column math — including
-/// `SelectionKind::Block` vs `Char` distinctness, wrapped-segment
-/// offsetting, and ghost-continuation / diff-padding row skipping —
-/// comes from [`EditorSelection::cols_on`]; this function only
-/// converts the returned segment-local columns to a fixed-cell-width
-/// pixel rectangle (mirrors `tui::editor::render_selection`'s per-cell
-/// approach rather than GTK/macOS's proportional text measurement,
-/// since Win paints a uniform monospace grid same as TUI).
-#[allow(clippy::too_many_arguments)]
-fn paint_selection(
-    target: &ID2D1RenderTarget,
-    sel: &EditorSelection,
-    lines: &[EditorLine],
-    rect: Rect,
-    line_height: f32,
-    text_x: f32,
-    cell_width: f32,
-    color: Color,
-    alpha: f32,
-    bg: Color,
-) {
-    for (view_idx, line) in lines.iter().enumerate() {
-        let Some(cols) = sel.cols_on(line) else {
-            continue;
-        };
-        let y = rect.y + view_idx as f32 * line_height;
-        let x = text_x + cols.start as f32 * cell_width;
-        let w = (cols.end - cols.start) as f32 * cell_width;
-        let blended = bg.blend(color, alpha as f64);
-        let _ = fill_rect(target, Rect::new(x, y, w, line_height), blended);
-    }
-}
-
-/// Paint `line`'s visible text window (`[scroll_left, scroll_left +
-/// visible_cols)` characters) at `y`, splitting into contiguous runs by
-/// [`crate::primitives::editor::EditorStyledSpan`] colour.
-///
-/// `text_v_offset` ([`text_v_offset`]) nudges every run's glyph box down
-/// from `y` so it centres in `line_height` rather than sitting at the
-/// row's raw top edge.
-#[allow(clippy::too_many_arguments)]
-fn paint_line_text(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    line: &EditorLine,
-    text_x: f32,
-    y: f32,
-    line_height: f32,
-    text_v_offset: f32,
-    cell_width: f32,
-    scroll_left: usize,
-    visible_cols: usize,
-    default_fg: Color,
-) {
-    let raw = line.raw_text.trim_end_matches('\n');
-    let chars: Vec<(usize, char)> = raw.char_indices().collect();
-    if chars.len() <= scroll_left {
-        return;
-    }
-    let end = (scroll_left + visible_cols).min(chars.len());
-    if end <= scroll_left {
-        return;
-    }
-
-    // Resolve a colour + bold flag per visible character from
-    // byte-range spans, then coalesce into runs so each DirectWrite
-    // call paints a contiguous same-style substring.
-    let style_at = |byte_off: usize| -> (Color, bool) {
-        for span in &line.spans {
-            if byte_off >= span.start_byte && byte_off < span.end_byte {
-                return (span.style.fg, span.style.bold);
-            }
-        }
-        (default_fg, false)
-    };
-
-    let mut run_start = scroll_left;
-    let mut run_style = style_at(chars[scroll_left].0);
-    let mut cursor_x = text_x;
-
-    let flush = |from: usize, to: usize, style: (Color, bool), cursor_x: &mut f32| {
-        if to <= from {
-            return;
-        }
-        let start_byte = chars[from].0;
-        let end_byte = chars.get(to).map(|(b, _)| *b).unwrap_or(raw.len());
-        let text = &raw[start_byte..end_byte];
-        let w = (to - from) as f32 * cell_width;
-        let (_, h) = dwrite.measure_text(text).unwrap_or((0.0, line_height));
-        let _ = dwrite.draw_text_styled(
-            target,
-            text,
-            Rect::new(*cursor_x, y + text_v_offset, w, h.max(line_height)),
-            style.0,
-            style.1,
-        );
-        *cursor_x += w;
-    };
-
-    // Iterate the slice rather than the index range (`clippy::
-    // needless_range_loop`, an error under CI's `-D warnings` and only
-    // visible on the windows-latest leg): `skip`/`take` reproduce the
-    // half-open `(scroll_left + 1)..end` window, and `enumerate` still
-    // yields the absolute index the run bookkeeping needs.
-    for (i, (byte_off, _)) in chars.iter().enumerate().take(end).skip(scroll_left + 1) {
-        let s = style_at(*byte_off);
-        if s != run_style {
-            flush(run_start, i, run_style, &mut cursor_x);
-            run_start = i;
-            run_style = s;
-        }
-    }
-    flush(run_start, end, run_style, &mut cursor_x);
 }
 
 #[cfg(test)]
@@ -452,13 +91,23 @@ mod tests {
     use super::*;
     use crate::event::Rect as QRect;
     use crate::primitives::editor::{
-        CursorPos, DiagnosticMark, DiffLine, EditorCursor, EditorStyledSpan, SelectionKind, Style,
+        CursorPos, CursorShape, DiagnosticMark, DiagnosticSeverity, DiffLine, EditorCursor,
+        EditorLine, EditorSelection, EditorStyledSpan, SelectionKind, Style,
     };
+    use crate::types::Color;
     use crate::types::WidgetId;
     use crate::win::testing::HeadlessSurface;
 
     const CELL_W: f32 = 8.0;
     const LINE_H: f32 = 16.0;
+
+    /// Whether `px` is within 2 of `c` on every channel — a translucent
+    /// fill's alpha is quantised to 8 bits before Direct2D blends it.
+    fn near(px: Color, c: Color) -> bool {
+        [(px.r, c.r), (px.g, c.g), (px.b, c.b)]
+            .iter()
+            .all(|&(a, b)| (a as i32 - b as i32).abs() <= 2)
+    }
 
     fn plain_line(idx: usize, text: &str) -> EditorLine {
         EditorLine {
@@ -663,7 +312,7 @@ mod tests {
         let expected = theme
             .background
             .blend(theme.selection, theme.selection_alpha as f64);
-        assert_eq!((px.r, px.g, px.b), (expected.r, expected.g, expected.b));
+        assert!(near(px, expected), "{px:?} vs {expected:?}");
     }
 
     /// `EditorSelection::cols_on` (shared with every other backend) correctly
@@ -694,7 +343,8 @@ mod tests {
             // `line_idx` as row 1, but virtual, must never be selected.
             EditorLine {
                 is_ghost_continuation: true,
-                ghost_suffix: Some("ai suggestion".into()),
+                // Two glyphs, so the sample column stays inkless.
+                ghost_suffix: Some("ai".into()),
                 ..plain_line(1, "")
             },
             // Row 3: buffer line 2 (the selection's own end line), but a
@@ -731,16 +381,14 @@ mod tests {
         let row_y = |row: i32| (row as f32 * LINE_H + LINE_H / 2.0) as u32;
 
         let row0 = surface.pixel_at(sample_x, row_y(0));
-        assert_eq!(
-            (row0.r, row0.g, row0.b),
-            (blended.r, blended.g, blended.b),
-            "row 0 (plain, selection's start line) should be tinted"
+        assert!(
+            near(row0, blended),
+            "row 0 (plain, selection's start line) should be tinted: {row0:?}"
         );
         let row1 = surface.pixel_at(sample_x, row_y(1));
-        assert_eq!(
-            (row1.r, row1.g, row1.b),
-            (blended.r, blended.g, blended.b),
-            "row 1 (wrapped segment of a fully-selected line) should be tinted"
+        assert!(
+            near(row1, blended),
+            "row 1 (wrapped segment of a fully-selected line) should be tinted: {row1:?}"
         );
         let row2 = surface.pixel_at(sample_x, row_y(2));
         assert_eq!(
@@ -748,24 +396,24 @@ mod tests {
             (theme.background.r, theme.background.g, theme.background.b),
             "row 2 (ghost continuation) must never be tinted by a selection"
         );
+        // The diff-padding row shows its own diff background, untinted.
         let row3 = surface.pixel_at(sample_x, row_y(3));
         assert_eq!(
             (row3.r, row3.g, row3.b),
-            (theme.background.r, theme.background.g, theme.background.b),
+            (
+                theme.diff_padding_bg.r,
+                theme.diff_padding_bg.g,
+                theme.diff_padding_bg.b
+            ),
             "row 3 (diff padding) must never be tinted by a selection"
         );
     }
 
-    /// `CursorShape::Block` opaquely covers the character with a filled rect,
-    /// so the arm must re-paint the glyph on top in `theme.background`,
-    /// mirroring `macos::editor::draw_editor`'s own `CursorShape::Block` arm.
-    /// This test scans the cursor cell for any pixel that reads
-    /// `theme.background` rather than guessing exact glyph ink placement —
-    /// real DirectWrite glyph positioning isn't predictable off a live Windows
-    /// font pass. Before the fix, `CursorShape::Block` fills the whole cell
-    /// with a single opaque `theme.cursor`-blended colour.
+    /// A block caret is a translucent `theme.cursor` cell over the glyph:
+    /// the cell's inkless pixels carry the tint, and the glyph's ink still
+    /// shows through it.
     #[test]
-    fn block_cursor_repaints_glyph_in_background_colour() {
+    fn block_cursor_tints_its_cell_and_keeps_the_glyph_visible() {
         let surface = HeadlessSurface::new(200, 100).expect("create surface");
         let (dwrite, _, _) = DWrite::new("Consolas", 10.0, None).expect("create DWrite");
         let lines = vec![plain_line(0, "1789518172522")];
@@ -785,26 +433,28 @@ mod tests {
             .expect("paint editor");
 
         let theme = Theme::default();
+        let tint = theme
+            .background
+            .blend(theme.cursor, theme.cursor_normal_alpha as f64);
         let text_x = (e.gutter_char_width as f32 * CELL_W) as u32;
-        let found = (text_x..text_x + CELL_W as u32).any(|x| {
-            (0..LINE_H as u32).any(|y| {
-                let px = surface.pixel_at(x, y);
-                (px.r, px.g, px.b) == (theme.background.r, theme.background.g, theme.background.b)
-            })
-        });
+        let cell: Vec<Color> = (text_x + 1..text_x + 6)
+            .flat_map(|x| (1..LINE_H as u32 - 1).map(move |y| (x, y)))
+            .map(|(x, y)| surface.pixel_at(x, y))
+            .collect();
         assert!(
-            found,
-            "block cursor should re-paint the covered glyph in \
-             theme.background somewhere inside the cursor cell (col 0, \
-             row 0) — got no such pixel, cursor fill likely still hides \
-             the glyph entirely"
+            cell.iter().any(|&px| near(px, tint)),
+            "the caret cell should carry the translucent cursor tint {tint:?}"
+        );
+        assert!(
+            cell.iter().any(|&px| !near(px, tint)),
+            "the glyph's ink should still show through the caret"
         );
     }
 
     /// The editor's row pitch is a host decision independent of
     /// `dwrite`'s own natural line height — mirrors
     /// `macos::editor::tests::body_text_centred_in_row_and_shares_baseline_with_gutter`
-    /// and `gtk::editor::tests::draw_editor_body_text_centred_in_row_and_shares_baseline_with_gutter`:
+    /// and `primitives::editor::paint_pixels`'s GTK `draw_editor_body_text_centred_in_row_and_shares_baseline_with_gutter`:
     /// widening the pitch from the font's natural height to a VS
     /// Code-style wider row should move the body glyph's ink down by
     /// half the added slack, and the gutter number (same glyph, `"7"`)

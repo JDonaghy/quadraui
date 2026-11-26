@@ -4044,8 +4044,8 @@ pub(crate) unsafe fn ns_fill_rect(ctx: CGContextRef, rect: Rect, c: Color) {
 /// [`crate::paint_surface::PaintSurface::surface_fill_rounded_rect`]'s
 /// doc for why every implementation of that verb does this.
 ///
-/// A degenerate (zero or negative width/height) `rect` is a no-op,
-/// same guard as [`super::cg::fill_rect_alpha`] — unlike a plain
+/// A degenerate (zero or negative width/height) `rect` is a no-op —
+/// unlike a plain
 /// `CGContextFillRect`, which CoreGraphics itself no-ops harmlessly on
 /// such a rect, the `AddArcToPoint` path below would otherwise build a
 /// malformed path from a negative `r`.

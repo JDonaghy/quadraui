@@ -1,60 +1,19 @@
-//! macOS rasteriser for [`crate::primitives::editor::Editor`].
-//!
-//! Port of `crate::gtk::editor::draw_editor`: background (incl. DAP
-//! stopped-line / diff / cursorline priority), per-line text via Core
-//! Text, selection overlays (`selection`, `extra_selections`,
-//! `yank_highlight`), line-number gutter, vertical scrollbar, and the
-//! primary cursor (Block / Bar / Underline). Returns a default
-//! [`EditorPaintResult`] — macOS, like GTK, paints its own caret rather
-//! than delegating to a terminal cursor.
-//!
-//! ## Scrollbar
-//!
-//! `Editor::layout`'s `v_scrollbar_bounds` reserves the column (so
-//! `EditorLayout::hit_test` and the content clip below already know
-//! about it) and [`draw_editor_with_options_and_v_scrollbar_w`] paints
-//! into it, mirroring `gtk::editor::draw_editor_with_options`'s "Scrollbars"
-//! section: geometry comes from
-//! [`Editor::layout_with_options_and_v_scrollbar_w`] (the same layout
-//! hit-testing uses), the text clip is narrowed to
-//! `text_bounds` so no glyph paints under the reserved column, and the
-//! column itself is painted afterwards through the shared
-//! [`crate::primitives::scrollbar::native_surface_paint::paint`] via the
-//! [`super::surface::CgSurface`] adapter — the same pattern
-//! `macos::data_table` uses to paint an embedded scrollbar from a bare
-//! `ctx: CGContextRef`. The `v_scrollbar_w` argument lets a host
-//! override the column's width (e.g. VS Code's fixed 14px, set via
-//! [`crate::Backend::set_editor_v_scrollbar_width`]) instead of the
-//! `cell_width` default; [`EditorPaintOptions::suppress_v_scrollbar`]
-//! continues to opt out entirely for a `Minimap`-as-scrollbar host, same
-//! as GTK.
-//!
-//! ## Scope omissions (follow-up)
-//!
-//! Deferred to subsequent tickets; each ships when a
-//! kubeui-class consumer exercises it on macOS:
-//!
-//! - **Diagnostics + spell underlines** — wavy/dotted underlines via
-//!   `kCTUnderlineStyleAttributeName` (deferred with attrs).
-//! - **Indent guides, color columns, bracket-match alpha rects**.
-//! - **AI ghost text + multi-cursor secondary carets**.
-//! - **Gutter chrome** beyond line numbers — breakpoint glyph, git
-//!   column, diagnostic dot, lightbulb glyph.
+//! macOS entry points for [`crate::primitives::editor::Editor`] — thin
+//! delegates onto the widget's own pixel painter,
+//! `crate::primitives::editor::paint_pixels`, which documents every paint
+//! pass. These functions only adapt a bare `CGContextRef` and the editor
+//! `CTFont` into the [`super::surface::CgSurface`] that painter takes,
+//! laying the editor out at [`Editor::rect`] and clipping to it. They
+//! return a default [`EditorPaintResult`]: macOS paints its own caret.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
 use super::surface::CgSurface;
-use super::text::{draw_text, measure_text};
 use crate::backend::EditorPaintResult;
-use crate::primitives::editor::{
-    CursorShape, DiffLine, Editor, EditorLine, EditorPaintOptions, EditorSelection, SelectionKind,
-};
-use crate::primitives::scrollbar::{native_surface_paint, Scrollbar};
-use crate::text_util::snap_to_char_boundary;
+use crate::paint_surface::PaintSurface;
+use crate::primitives::editor::{paint_pixels, Editor, EditorPaintOptions};
 use crate::theme::Theme;
-use crate::types::Color;
 
 /// Paint `editor` onto `ctx`. Returns the default
 /// [`EditorPaintResult`] — macOS paints its own caret.
@@ -121,11 +80,8 @@ pub unsafe fn draw_editor_with_options(
 }
 
 /// [`draw_editor_with_options`], plus a host-settable vertical scrollbar
-/// width in points — see
-/// [`Editor::layout_with_options_and_v_scrollbar_w`] for the geometry
-/// and the module doc's "Scrollbar" section for the paint. `None` sizes
-/// the column at `char_width`. `MacBackend::draw_editor` calls this with
-/// the width set through [`crate::Backend::set_editor_v_scrollbar_width`].
+/// width in points — see [`Editor::layout_with_options_and_v_scrollbar_w`]
+/// for the geometry. `None` sizes the column at `char_width`.
 ///
 /// # Safety
 ///
@@ -142,436 +98,25 @@ pub unsafe fn draw_editor_with_options_and_v_scrollbar_w(
     options: EditorPaintOptions,
     v_scrollbar_w: Option<f32>,
 ) -> EditorPaintResult {
-    let rect = &editor.rect;
+    let rect = editor.rect;
     if rect.width <= 0.0 || rect.height <= 0.0 {
         return EditorPaintResult::default();
     }
-
-    let x = rect.x as f64;
-    let y = rect.y as f64;
-    let w = rect.width as f64;
-    let h = rect.height as f64;
-
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, super::cg::rect(x, y, w, h));
-
-    let bg = if editor.show_active_bg {
-        theme.editor_active_background
-    } else {
-        theme.background
-    };
-    fill_rect(ctx, x, y, w, h, bg);
-
-    let gutter_width = editor.gutter_char_width as f64 * char_width;
-    let h_scroll_offset = editor.scroll_left as f64 * char_width;
-    let text_x_offset = x + gutter_width - h_scroll_offset;
-
-    // Shared by the gutter, body-text, and block-cursor glyph paints
-    // below — computed once here and threaded into `paint_line_text`
-    // rather than re-derived per call, so all three read the same value.
-    let v_offset = text_v_offset(font, line_height);
-
-    // Computed once up front, before any text paints, so the content
-    // clip below can be narrowed by the same reserved scrollbar column
-    // the scrollbar paint and `EditorLayout::hit_test` already agree on
-    // — see the module doc's "Scrollbar" section.
-    let editor_geom = editor.layout_with_options_and_v_scrollbar_w(
-        *rect,
+    let geom = editor.layout_with_options_and_v_scrollbar_w(
+        rect,
         char_width as f32,
         line_height as f32,
         options,
         v_scrollbar_w,
     );
-
-    // Cursorline / diff / DAP stopped-line backgrounds — painted before
-    // text. Priority mirrors GTK: DAP-stopped > diff status >
-    // cursorline (crate::gtk::editor::draw_editor).
-    //
-    // Stops short of the reserved vertical scrollbar column, mirroring
-    // the text clip below — `text_bounds.x + text_bounds.width` already
-    // excludes `v_scrollbar_bounds` when present.
-    let row_bg_w =
-        (editor_geom.text_bounds.x as f64 + editor_geom.text_bounds.width as f64 - x).max(0.0);
-    for (view_idx, line) in editor.lines.iter().enumerate() {
-        let row_bg = if line.is_dap_current {
-            Some(theme.dap_stopped_bg)
-        } else if let Some(diff_status) = line.diff_status {
-            match diff_status {
-                DiffLine::Added => Some(theme.diff_added_bg),
-                DiffLine::Removed => Some(theme.diff_removed_bg),
-                DiffLine::Padding => Some(theme.diff_padding_bg),
-                DiffLine::Same => None,
-            }
-        } else if line.is_current_line && editor.is_active && editor.cursorline {
-            Some(theme.cursorline_bg)
-        } else {
-            None
-        };
-        if let Some(color) = row_bg {
-            let line_y = y + view_idx as f64 * line_height;
-            fill_rect(ctx, x, line_y, row_bg_w, line_height, color);
-        }
-    }
-
-    // Selection overlays — painted before text so text reads on top,
-    // matching GTK's ordering (see module doc on crate::gtk::editor).
-    if let Some(sel) = &editor.selection {
-        draw_visual_selection(
-            ctx,
-            font,
-            sel,
-            &editor.lines,
-            x,
-            y,
-            w,
-            line_height,
-            text_x_offset,
-            theme.selection,
-            theme.selection_alpha as f64,
-        );
-    }
-    for esel in &editor.extra_selections {
-        draw_visual_selection(
-            ctx,
-            font,
-            esel,
-            &editor.lines,
-            x,
-            y,
-            w,
-            line_height,
-            text_x_offset,
-            theme.selection,
-            theme.selection_alpha as f64,
-        );
-    }
-    if let Some(yh) = &editor.yank_highlight {
-        draw_visual_selection(
-            ctx,
-            font,
-            yh,
-            &editor.lines,
-            x,
-            y,
-            w,
-            line_height,
-            text_x_offset,
-            theme.yank_highlight_bg,
-            theme.yank_highlight_alpha as f64,
-        );
-    }
-
-    // Gutter — right-aligned line number text. Painted unclipped (it
-    // sits entirely left of the text-area clip established below, so a
-    // scrollbar-column clip there would never touch it anyway).
-    for (view_idx, line) in editor.lines.iter().enumerate() {
-        let line_y = y + view_idx as f64 * line_height;
-        if line_y >= y + h {
-            break;
-        }
-        if gutter_width > 0.0 && !line.gutter_text.is_empty() {
-            let (gtw, _) = measure_text(font, &line.gutter_text);
-            let gx = x + gutter_width - gtw - 4.0;
-            draw_text(
-                ctx,
-                font,
-                &line.gutter_text,
-                gx.max(x + 2.0),
-                line_y + v_offset,
-                color_to_cg(theme.line_number_fg),
-            );
-        }
-    }
-
-    // ── Clip to text area (excludes gutter AND the reserved vertical
-    // scrollbar column, when present) ───────────────────────────────────
-    //
-    // Narrowed to `editor_geom.text_bounds.width` rather than the full
-    // `w - gutter_width`, mirroring `gtk::editor::draw_editor_with_options`
-    // — text stops short of the scrollbar column instead of painting
-    // glyphs the scrollbar then overlays.
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(
+    let mut surface = CgSurface {
         ctx,
-        super::cg::rect(x + gutter_width, y, editor_geom.text_bounds.width as f64, h),
-    );
-    for (view_idx, line) in editor.lines.iter().enumerate() {
-        let line_y = y + view_idx as f64 * line_height;
-        if line_y >= y + h {
-            break;
-        }
-
-        // Lay the line out as contiguous, non-overlapping runs (gaps in
-        // `theme.foreground`, spans in their own colour) so every glyph
-        // is painted exactly once — see `paint_line_text`'s doc for the
-        // invariant this maintains.
-        let raw_x = text_x_offset;
-        paint_line_text(
-            ctx,
-            font,
-            line,
-            raw_x,
-            line_y,
-            v_offset,
-            line_height,
-            theme.foreground,
-        );
-    }
-    CGContextRestoreGState(ctx);
-
-    // Vertical scrollbar — painted after text (into the reserved column
-    // the clip above left untouched), before the cursor, mirroring
-    // `gtk::editor::draw_editor_with_options`'s z-order (see module
-    // doc's "Scrollbar" section).
-    if let Some(v_track) = editor_geom.v_scrollbar_bounds {
-        let sb = Scrollbar::vertical(
-            "macos:editor:v_scrollbar",
-            v_track,
-            editor.scroll_top as f32,
-            editor.total_lines as f32,
-            editor_geom.visible_lines as f32,
-            line_height as f32,
-        );
-        let mut surface = CgSurface {
-            ctx,
-            font: Some(font),
-        };
-        native_surface_paint::paint(&sb, &mut surface, theme);
-    }
-
-    // Primary cursor.
-    if let Some(cursor) = editor.cursor {
-        if cursor.pos.view_line < editor.lines.len() {
-            let line = &editor.lines[cursor.pos.view_line];
-            let prefix_end = char_byte_offset(&line.raw_text, cursor.pos.col);
-            let prefix = &line.raw_text[..prefix_end];
-            let (prefix_w, _) = measure_text(font, prefix);
-            let cur_x = text_x_offset + prefix_w;
-            let cur_y = y + cursor.pos.view_line as f64 * line_height;
-            match cursor.shape {
-                CursorShape::Block => {
-                    // The cursor rect itself stays full-row (unchanged);
-                    // only the glyph repainted on top of it is
-                    // text-relative, so it gets the same `v_offset` the
-                    // body-text paint above uses, to stay aligned.
-                    fill_rect(ctx, cur_x, cur_y, char_width, line_height, theme.cursor);
-                    // Re-paint the glyph under the cursor in background
-                    // colour so it reads against the cursor fill.
-                    let ch = line.raw_text[prefix_end..]
-                        .chars()
-                        .next()
-                        .map(|c| c.to_string())
-                        .unwrap_or_default();
-                    if !ch.is_empty() {
-                        draw_text(
-                            ctx,
-                            font,
-                            &ch,
-                            cur_x,
-                            cur_y + v_offset,
-                            color_to_cg(theme.background),
-                        );
-                    }
-                }
-                CursorShape::Bar => {
-                    fill_rect(ctx, cur_x, cur_y, 2.0, line_height, theme.cursor);
-                }
-                CursorShape::Underline => {
-                    let underline_h = (line_height * 0.12).max(1.0);
-                    fill_rect(
-                        ctx,
-                        cur_x,
-                        cur_y + line_height - underline_h,
-                        char_width,
-                        underline_h,
-                        theme.cursor,
-                    );
-                }
-            }
-        }
-    }
-
-    CGContextRestoreGState(ctx);
-    EditorPaintResult::default()
-}
-
-/// Vertical distance from a row's top edge to the top of the glyph cell
-/// that centres `font`'s own natural line height inside `line_height`.
-///
-/// A host sets the editor's row pitch (`line_height`) independently of
-/// the font's natural height — vimcode's VS Code-style 18px rows over a
-/// 12pt Menlo whose ascent + descent + leading is ~14px — so a glyph
-/// drawn straight at the row's top edge (`draw_text`'s `y` is the cell's
-/// top, per that fn's doc) sits high in its row, with all the slack
-/// below it. Every text paint inside one row — gutter line number, body
-/// text, the glyph repainted under a block cursor — adds this offset, so
-/// they share a baseline and the row reads centred.
-///
-/// Negative when `line_height` is *tighter* than the font's natural
-/// height, which lifts the glyph by the overflow's half so the row still
-/// reads centred rather than clipping only its bottom.
-fn text_v_offset(font: &CTFont, line_height: f64) -> f64 {
-    (line_height - (font.ascent() + font.descent() + font.leading())) / 2.0
-}
-
-/// Paint `line.raw_text` as a sequence of contiguous, non-overlapping
-/// runs: gaps between (and around) `line.spans` in `default_fg`, each
-/// span in its own `style.fg` (with `style.bg` filled first, if set).
-///
-/// Every glyph in the line is painted by exactly one [`draw_text`] call,
-/// because the runs partition `text` with no overlapping coverage. Core
-/// Text anti-aliases glyph edges with partial coverage; compositing two
-/// glyph draws at the same position would turn edge alpha `a` into
-/// `1-(1-a)²`, saturating the soft edge pixels and making strokes look
-/// thicker and stair-stepped. Mirrors [`crate::win::editor`]'s
-/// `paint_line_text`, which coalesces spans into non-overlapping runs
-/// for the same reason; GTK's rasteriser holds the invariant by painting
-/// the whole line in one pass via a single Pango layout with a
-/// `PangoAttrList`.
-///
-/// Spans are expected to be sorted by `start_byte` and non-overlapping
-/// (the shape every span producer — syntax highlighting, search
-/// matches — emits in practice, mirroring `crate::win::editor`'s same
-/// assumption). An out-of-order or overlapping span is tolerated
-/// defensively: any portion already covered by an earlier run is
-/// skipped rather than re-painted.
-///
-/// Only the glyph draw is nudged down from `line_y` by `v_offset`
-/// ([`text_v_offset`], computed once by the caller so every text paint
-/// in the row agrees), so it sits centred in `line_height`; the
-/// span-background fill stays anchored at `line_y`/`line_height` so it
-/// still covers the full row.
-#[allow(clippy::too_many_arguments)]
-unsafe fn paint_line_text(
-    ctx: CGContextRef,
-    font: &CTFont,
-    line: &EditorLine,
-    raw_x: f64,
-    line_y: f64,
-    v_offset: f64,
-    line_height: f64,
-    default_fg: Color,
-) {
-    let text = &line.raw_text;
-    if text.is_empty() {
-        return;
-    }
-
-    let mut ordered_spans: Vec<(usize, usize, Color, Option<Color>)> = line
-        .spans
-        .iter()
-        .filter_map(|span| {
-            let start = snap_to_char_boundary(text, span.start_byte);
-            let end = snap_to_char_boundary(text, span.end_byte);
-            (start < end).then_some((start, end, span.style.fg, span.style.bg))
-        })
-        .collect();
-    ordered_spans.sort_by_key(|&(start, _, _, _)| start);
-
-    // Paint the run `text[from..to]` at its own x position (derived
-    // from measuring the prefix `text[..from]`, same baseline the
-    // original per-span code used) in `fg`, filling `bg` first when
-    // present.
-    let paint_run = |from: usize, to: usize, fg: Color, bg: Option<Color>| {
-        if from >= to {
-            return;
-        }
-        let (prefix_w, _) = measure_text(font, &text[..from]);
-        let run_x = raw_x + prefix_w;
-        let slice = &text[from..to];
-        if let Some(bg) = bg {
-            let (run_w, _) = measure_text(font, slice);
-            fill_rect(ctx, run_x, line_y, run_w, line_height, bg);
-        }
-        draw_text(ctx, font, slice, run_x, line_y + v_offset, color_to_cg(fg));
+        font: Some(font),
     };
-
-    let mut cursor = 0usize;
-    for (start, end, fg, bg) in ordered_spans {
-        let start = start.max(cursor);
-        if start >= end {
-            // Fully consumed by an earlier (overlapping) run.
-            continue;
-        }
-        if start > cursor {
-            paint_run(cursor, start, default_fg, None);
-        }
-        paint_run(start, end, fg, bg);
-        cursor = end;
-    }
-    if cursor < text.len() {
-        paint_run(cursor, text.len(), default_fg, None);
-    }
-}
-
-/// Byte offset corresponding to the `col`-th character of `s`. Saturates
-/// at `s.len()` for out-of-range columns.
-fn char_byte_offset(s: &str, col: usize) -> usize {
-    s.char_indices().nth(col).map(|(b, _)| b).unwrap_or(s.len())
-}
-
-/// Paint one visual-selection overlay (`editor.selection`,
-/// `extra_selections`, or `yank_highlight` — they share a shape) across
-/// `lines`. Port of `crate::gtk::editor::draw_visual_selection`, using
-/// Core Text glyph-run measurement in place of Pango's
-/// `index_to_pos`/`pixel_size`. Column math — including
-/// ghost-continuation / diff-padding row skipping and wrapped-segment
-/// offsetting — comes from [`EditorSelection::cols_on`]; this
-/// function only converts the returned columns to pixel positions.
-#[allow(clippy::too_many_arguments)]
-unsafe fn draw_visual_selection(
-    ctx: CGContextRef,
-    font: &CTFont,
-    sel: &EditorSelection,
-    lines: &[EditorLine],
-    x: f64,
-    y: f64,
-    w: f64,
-    line_height: f64,
-    text_x_offset: f64,
-    color: Color,
-    alpha: f64,
-) {
-    for (view_idx, rl) in lines.iter().enumerate() {
-        let Some(cols) = sel.cols_on(rl) else {
-            continue;
-        };
-        let line_y = y + view_idx as f64 * line_height;
-
-        if sel.kind == SelectionKind::Line {
-            let highlight_width = w - (text_x_offset - x);
-            fill_rect_alpha(
-                ctx,
-                text_x_offset,
-                line_y,
-                highlight_width,
-                line_height,
-                color,
-                alpha,
-            );
-            continue;
-        }
-
-        let start_byte = char_byte_offset(&rl.raw_text, cols.start);
-        let (prefix_w, _) = measure_text(font, &rl.raw_text[..start_byte]);
-        let start_x = text_x_offset + prefix_w;
-
-        let width = if cols.extends_beyond {
-            // Selection runs past this visual segment's text — extend
-            // the highlight to the end of the rendered line content
-            // (matches GTK's use of the Pango layout's full pixel
-            // width in this branch).
-            let (line_w, _) = measure_text(font, &rl.raw_text);
-            (text_x_offset + line_w - start_x).max(0.0)
-        } else {
-            let end_byte = char_byte_offset(&rl.raw_text, cols.end);
-            let (end_w, _) = measure_text(font, &rl.raw_text[..end_byte]);
-            (text_x_offset + end_w - start_x).max(0.0)
-        };
-        if width > 0.0 {
-            fill_rect_alpha(ctx, start_x, line_y, width, line_height, color, alpha);
-        }
-    }
+    surface.surface_push_clip(rect);
+    paint_pixels::paint_with_options(editor, &geom, &mut surface, theme, options);
+    surface.surface_pop_clip();
+    EditorPaintResult::default()
 }
 
 #[cfg(test)]
@@ -584,7 +129,9 @@ mod tests {
     use crate::primitives::editor::{
         CursorPos, EditorCursor, EditorLine, EditorStyledSpan as ESpan, Style,
     };
+    use crate::primitives::editor::{CursorShape, DiffLine, EditorSelection, SelectionKind};
     use crate::theme::Theme;
+    use crate::types::Color;
     use crate::Backend;
     use std::collections::{HashMap, HashSet};
 
@@ -667,24 +214,59 @@ mod tests {
         surface
     }
 
+    /// The block caret is a translucent `theme.cursor` cell at
+    /// `cursor_normal_alpha` over the glyph — probed on a space so no ink
+    /// shifts the colour.
     #[test]
-    fn block_cursor_paints_theme_cursor_color() {
-        let editor = editor_with_cursor("let x = 1;", CursorShape::Block, 0);
+    fn block_cursor_paints_translucent_theme_cursor_cell() {
+        let editor = editor_with_cursor("let x = 1;", CursorShape::Block, 3);
         let surface = paint_via_backend(&editor);
         let theme = Theme::default();
         let metrics = font_metrics(&font());
-        // Cursor lands at column 0 in gutter-offset coords. Gutter is
-        // 3 char_widths, so cursor starts at 3*char_width on x.
-        let cx = (3.0 * metrics.char_width) as u32 + 1;
+        // Gutter is 3 char widths; column 3 is the space after "let".
+        let cx = (6.0 * metrics.char_width) as u32 + 1;
         let cy = (metrics.line_height / 2.0) as u32;
         let (r, g, b, _) = surface.pixel(cx, cy);
+        let expect = theme
+            .background
+            .blend(theme.cursor, theme.cursor_normal_alpha as f64);
+        assert!(
+            approx(r, expect.r, 3) && approx(g, expect.g, 3) && approx(b, expect.b, 3),
+            "block cursor pixel at ({cx}, {cy}) should be theme.cursor at cursor_normal_alpha \
+             over the background: got {:?}, expected {:?}",
+            (r, g, b),
+            (expect.r, expect.g, expect.b)
+        );
+    }
+
+    /// The shared painter brings the GTK-only features to macOS: a
+    /// secondary caret and an indent guide now paint.
+    #[test]
+    fn secondary_caret_and_indent_guide_paint() {
+        let mut editor = editor_with_cursor("let x = 1;", CursorShape::Bar, 0);
+        editor.extra_cursors = vec![CursorPos {
+            view_line: 0,
+            col: 3,
+        }];
+        editor.lines[0].indent_guides = vec![8];
+        let surface = paint_via_backend(&editor);
+        let theme = Theme::default();
+        let metrics = font_metrics(&font());
+        let cy = (metrics.line_height / 2.0) as u32;
+        // One pixel in, so the 2px bar fully covers the probe.
+        let caret_x = (6.0 * metrics.char_width) as u32 + 1;
+        let (r, g, b, _) = surface.pixel(caret_x, cy);
         assert_eq!(
             (r, g, b),
             (theme.cursor.r, theme.cursor.g, theme.cursor.b),
-            "block cursor pixel at ({}, {}) should be theme.cursor",
-            cx,
-            cy,
+            "secondary bar caret at column 3"
         );
+        let guide_x = ((3.0 + 8.0) * metrics.char_width) as u32;
+        let painted = (guide_x.saturating_sub(1)..=guide_x + 1).any(|x| {
+            let (r, g, b, _) = surface.pixel(x, cy);
+            (r, g, b) != (theme.background.r, theme.background.g, theme.background.b)
+        });
+        assert!(painted, "indent guide at column 8");
     }
 
     #[test]

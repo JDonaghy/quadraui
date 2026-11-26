@@ -19,8 +19,7 @@
 //!
 //! `macos/minimap.rs`'s `fill_rect` early-returns on `w <= 0.0 || h <=
 //! 0.0`, which the other implementations did not. This module's
-//! [`fill_rect`] matches the majority shape (unguarded). [`fill_rect_alpha`]
-//! does carry that guard because both of its source copies agreed on it.
+//! [`fill_rect`] matches the majority shape (unguarded).
 
 use core_graphics::geometry::{CGPoint, CGRect, CGSize};
 use core_graphics::sys::CGContextRef;
@@ -68,31 +67,5 @@ pub(crate) fn color_to_cg(c: Color) -> (f64, f64, f64, f64) {
 pub(crate) unsafe fn fill_rect(ctx: CGContextRef, x: f64, y: f64, w: f64, h: f64, c: Color) {
     let (r, g, b, a) = color_to_cg(c);
     CGContextSetRGBFillColor(ctx, r, g, b, a);
-    CGContextFillRect(ctx, rect(x, y, w, h));
-}
-
-/// Like [`fill_rect`], but the alpha channel is `alpha` instead of the
-/// colour's own — mirrors GTK's `cr.set_source_rgba(r, g, b, alpha)`
-/// for selection/overlay tints, where the opacity is carried separately
-/// from the colour's own (always-opaque) `a` channel.
-///
-/// # Safety
-///
-/// `ctx` must be a valid `CGContextRef` borrowed for the duration of
-/// the call.
-pub(crate) unsafe fn fill_rect_alpha(
-    ctx: CGContextRef,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    c: Color,
-    alpha: f64,
-) {
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let (r, g, b, _) = color_to_cg(c);
-    CGContextSetRGBFillColor(ctx, r, g, b, alpha);
     CGContextFillRect(ctx, rect(x, y, w, h));
 }

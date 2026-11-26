@@ -218,11 +218,8 @@ impl DWrite {
     /// `text_format`'s own natural line height in DIPs — `ascent +
     /// descent + lineGap` at this handle's font size, independent of
     /// whatever row pitch a host later sets via
-    /// `WinBackend::set_current_line_height`. `win::editor`'s
-    /// `text_v_offset` centres a row's text inside that (possibly
-    /// taller) pitch by comparing it against this value, the same way
-    /// [`crate::macos::editor::text_v_offset`] compares a host-set
-    /// pitch against `CTFont::ascent() + descent() + leading()`.
+    /// `WinBackend::set_current_line_height`. [`Self::draw_text_line`]
+    /// gives each run's text box at least this height.
     pub(crate) fn natural_line_height(&self) -> f32 {
         self.natural_line_height
     }
@@ -300,7 +297,7 @@ impl DWrite {
                 .unwrap_or((0.0, 0.0));
             // Wider than the run so the layout's clip never trims an
             // overhanging glyph edge.
-            let rect = Rect::new(x, origin.y, w + h, h.max(self.natural_line_height));
+            let rect = Rect::new(x, origin.y, w + h, h.max(self.natural_line_height()));
             let _ = self.draw_text_styled(target, slice, rect, run.fg, run.bold);
         }
     }
