@@ -10526,6 +10526,8 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 10,
             total_buffer_lines: 40,
+            scale: Default::default(),
+            sizing: None,
         }
     }
 

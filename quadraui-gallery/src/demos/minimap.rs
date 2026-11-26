@@ -86,6 +86,8 @@ impl MinimapDemo {
             visible_row_start,
             visible_row_count: visible_row_end.saturating_sub(visible_row_start).max(1),
             total_buffer_lines: self.buffer.len(),
+            scale: backend.minimap_scale(),
+            sizing: backend.minimap_sizing(),
         };
 
         let minimap_rect = Self::minimap_rect(area, backend);

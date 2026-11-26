@@ -527,6 +527,10 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`BoardModelDescriptor`](#wire-boardmodeldescriptor)
 - [`MinimapLineDescriptor`](#wire-minimaplinedescriptor)
 - [`MinimapSpanDescriptor`](#wire-minimapspandescriptor)
+- [`MinimapScale`](#wire-minimapscale)
+- [`_MinimapVsCodeParityPayload`](#wire-_minimapvscodeparitypayload)
+- [`_MinimapSizingDict`](#wire-_minimapsizingdict)
+- [`MinimapSizing`](#wire-minimapsizing)
 - [`MinimapDescriptor`](#wire-minimapdescriptor)
 - [`ActivityItemDescriptor`](#wire-activityitemdescriptor)
 - [`ActivityBarStyleDescriptor`](#wire-activitybarstyledescriptor)
@@ -722,6 +726,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_EditorPointerPayload`](#wire-_editorpointerpayload)
 - [`_EditorWheelPayload`](#wire-_editorwheelpayload)
 - [`EditorEvent`](#wire-editorevent)
+- [`_MinimapSeekPayload`](#wire-_minimapseekpayload)
+- [`MinimapEvent`](#wire-minimapevent)
 - [`_DataPointClickedPayload`](#wire-_datapointclickedpayload)
 - [`_LegendClickedPayload`](#wire-_legendclickedpayload)
 - [`ChartEvent`](#wire-chartevent)
@@ -2481,6 +2487,37 @@ Alias for `"Pending" | "Running" | "Passed" | "Warning" | "Blocked"`.
 | `end_col` | `number` | yes |  |
 | `color` | `Color` | yes |  |
 
+<a id="wire-minimapscale"></a>
+#### `MinimapScale`
+
+Alias for `"One" | "Two"`.
+
+<a id="wire-_minimapvscodeparitypayload"></a>
+#### `_MinimapVsCodeParityPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `target_cols` | `number` | yes |  |
+| `fraction` | `number` | yes |  |
+| `min` | `number` | yes |  |
+| `max` | `number` | yes |  |
+
+<a id="wire-_minimapsizingdict"></a>
+#### `_MinimapSizingDict`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `FixedPitch` | `number` |  |
+| `RepeatToFill` | `number` |  |
+| `VsCodeParity` | `_MinimapVsCodeParityPayload` |  |
+
+<a id="wire-minimapsizing"></a>
+#### `MinimapSizing`
+
+Alias for `"Fill" | _MinimapSizingDict`.
+
 <a id="wire-minimapdescriptor"></a>
 #### `MinimapDescriptor`
 
@@ -2492,6 +2529,8 @@ Alias for `"Pending" | "Running" | "Passed" | "Warning" | "Blocked"`.
 | `visible_row_start` | `number` | yes |  |
 | `visible_row_count` | `number` | yes |  |
 | `total_buffer_lines` | `number` | yes |  |
+| `scale` | `MinimapScale` | no |  |
+| `sizing` | `MinimapSizing \| null` | no |  |
 
 <a id="wire-activityitemdescriptor"></a>
 #### `ActivityItemDescriptor`
@@ -4382,6 +4421,22 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `Pointer` | `_EditorPointerPayload` |  |
 | `Wheel` | `_EditorWheelPayload` |  |
 
+<a id="wire-_minimapseekpayload"></a>
+#### `_MinimapSeekPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `fraction` | `number` | yes |  |
+
+<a id="wire-minimapevent"></a>
+#### `MinimapEvent`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `Seek` | `_MinimapSeekPayload` |  |
+
 <a id="wire-_datapointclickedpayload"></a>
 #### `_DataPointClickedPayload`
 
@@ -5193,6 +5248,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `ActivityBar` | `[WidgetId, ActivityBarEvent]` |  |
 | `Terminal` | `[WidgetId, TerminalEvent]` |  |
 | `Editor` | `[WidgetId, EditorEvent]` |  |
+| `Minimap` | `[WidgetId, MinimapEvent]` |  |
 | `TextDisplay` | `[WidgetId, TextDisplayEvent]` |  |
 | `Chart` | `[WidgetId, ChartEvent]` |  |
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |

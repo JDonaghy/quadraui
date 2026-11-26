@@ -1884,6 +1884,29 @@ pub fn schema() -> Vec<DefJson> {
             field("color", color.clone()),
         ],
     ));
+    let minimap_scale = b.define(alias("MinimapScale", lit(&["One", "Two"])));
+    let minimap_vscode_parity_payload = b.define(obj(
+        "_MinimapVsCodeParityPayload",
+        vec![
+            field("target_cols", float_()),
+            field("fraction", float_()),
+            field("min", float_()),
+            field("max", float_()),
+        ],
+    ));
+    let minimap_sizing_dict = b.define(flat(
+        "_MinimapSizingDict",
+        &[
+            ("FixedPitch", float_()),
+            ("RepeatToFill", float_()),
+            ("VsCodeParity", minimap_vscode_parity_payload),
+        ],
+        vec![],
+    ));
+    let minimap_sizing = b.define(alias(
+        "MinimapSizing",
+        uniont(vec![lit(&["Fill"]), minimap_sizing_dict]),
+    ));
     let minimap_descriptor = b.define(obj(
         "MinimapDescriptor",
         vec![
@@ -1893,6 +1916,8 @@ pub fn schema() -> Vec<DefJson> {
             field("visible_row_start", int_()),
             field("visible_row_count", int_()),
             field("total_buffer_lines", int_()),
+            field_opt("scale", minimap_scale),
+            field_opt("sizing", nullable(minimap_sizing)),
         ],
     ));
     let activity_item_descriptor = b.define(obj(
@@ -3476,6 +3501,15 @@ pub fn schema() -> Vec<DefJson> {
         ],
         vec![],
     ));
+    let minimap_seek_payload = b.define(obj(
+        "_MinimapSeekPayload",
+        vec![field("fraction", float_())],
+    ));
+    b.define(flat(
+        "MinimapEvent",
+        &[("Seek", minimap_seek_payload)],
+        vec![],
+    ));
 
     let data_point_clicked_payload = b.define(obj(
         "_DataPointClickedPayload",
@@ -4002,6 +4036,7 @@ pub fn schema() -> Vec<DefJson> {
             ("ActivityBar", tup(vec![re("WidgetId"), re("ActivityBarEvent")])),
             ("Terminal", tup(vec![re("WidgetId"), re("TerminalEvent")])),
             ("Editor", tup(vec![re("WidgetId"), re("EditorEvent")])),
+            ("Minimap", tup(vec![re("WidgetId"), re("MinimapEvent")])),
             ("TextDisplay", tup(vec![re("WidgetId"), re("TextDisplayEvent")])),
             ("Chart", tup(vec![re("WidgetId"), re("ChartEvent")])),
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
@@ -5534,7 +5569,9 @@ mod coverage {
             syntax_spans,
             visible_row_start,
             visible_row_count,
-            total_buffer_lines
+            total_buffer_lines,
+            scale,
+            sizing
         }
     );
     assert_fields!(
@@ -6983,6 +7020,7 @@ mod coverage {
                 "ActivityBar",
                 "Terminal",
                 "Editor",
+                "Minimap",
                 "TextDisplay",
                 "Chart",
                 "DataTable",

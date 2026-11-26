@@ -69,6 +69,29 @@
 use crate::backend::ImagePaintResult;
 use crate::{Color, Image, Point, Rect, Viewport};
 
+/// A row-major coverage bitmap, `0` transparent to `255` opaque: `width`
+/// by `height` bytes in `alpha`. [`PaintSurface::surface_glyph_alpha_sheet`]
+/// returns one, and [`PaintSurface::surface_blit_alpha`] paints one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct AlphaSheet {
+    pub width: u32,
+    pub height: u32,
+    pub alpha: Vec<u8>,
+}
+
+impl AlphaSheet {
+    /// A `width` by `height` sheet over `alpha`, which must hold
+    /// `width * height` bytes.
+    pub fn new(width: u32, height: u32, alpha: Vec<u8>) -> Self {
+        Self {
+            width,
+            height,
+            alpha,
+        }
+    }
+}
+
 /// One styled byte range of a line of text, for
 /// [`PaintSurface::surface_draw_text_line`].
 ///
@@ -560,6 +583,73 @@ pub trait PaintSurface {
         nearest_text_boundary(text, x, &mut |i| {
             self.surface_text_x_at_index(text, role, i)
         })
+    }
+
+    // ─── Alpha bitmaps ─────────────────────────────────────────────────
+    /// Paint the `width` by `height` coverage bitmap `alpha` stretched over
+    /// `dest`, tinted `color`: each byte is the opacity of `color` over
+    /// its share of `dest`.
+    ///
+    /// Defaults to one [`Self::surface_fill_rect_alpha`] per horizontal
+    /// run of equal, non-zero coverage. The GTK and macOS surfaces
+    /// override it with a native mask blit.
+    fn surface_blit_alpha(
+        &mut self,
+        dest: Rect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        let (w, h) = (width as usize, height as usize);
+        if w == 0 || h == 0 || alpha.len() < w * h {
+            return;
+        }
+        let px_w = dest.width / width as f32;
+        let px_h = dest.height / height as f32;
+        for row in 0..h {
+            let line = &alpha[row * w..(row + 1) * w];
+            let mut col = 0;
+            while col < w {
+                let a = line[col];
+                let start = col;
+                while col < w && line[col] == a {
+                    col += 1;
+                }
+                if a == 0 {
+                    continue;
+                }
+                self.surface_fill_rect_alpha(
+                    Rect::new(
+                        dest.x + start as f32 * px_w,
+                        dest.y + row as f32 * px_h,
+                        (col - start) as f32 * px_w,
+                        px_h,
+                    ),
+                    color,
+                    f32::from(a) / 255.0,
+                );
+            }
+        }
+    }
+
+    /// Shape each char of `chars` once, bold, in `role`'s font family, into
+    /// its own `cell`-sized slot of one sheet laid left to right, and
+    /// return the sheet's coverage: `cell.width * chars.chars().count()`
+    /// wide and `cell.height` tall. A glyph is sized to fit the cell
+    /// height, not at the role's own point size.
+    ///
+    /// Defaults to `None`: the surface cannot rasterise text offscreen,
+    /// and a caller falls back to painting without glyph shapes. The GTK
+    /// and macOS surfaces implement it.
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<AlphaSheet> {
+        let _ = (chars, role, cell);
+        None
     }
 
     // ─── Shadow + path ─────────────────────────────────────────────────

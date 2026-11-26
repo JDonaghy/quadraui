@@ -1079,6 +1079,21 @@ class MinimapSpanDescriptor(TypedDict):
     end_col: int
     color: Color
 
+MinimapScale = Literal['One', 'Two']
+
+class _MinimapVsCodeParityPayload(TypedDict):
+    target_cols: float
+    fraction: float
+    min: float
+    max: float
+
+class _MinimapSizingDict(TypedDict):
+    FixedPitch: NotRequired[float]
+    RepeatToFill: NotRequired[float]
+    VsCodeParity: NotRequired[_MinimapVsCodeParityPayload]
+
+MinimapSizing = Union[Literal['Fill'], _MinimapSizingDict]
+
 class MinimapDescriptor(TypedDict):
     id: WidgetId
     lines: List[MinimapLineDescriptor]
@@ -1086,6 +1101,8 @@ class MinimapDescriptor(TypedDict):
     visible_row_start: int
     visible_row_count: int
     total_buffer_lines: int
+    scale: NotRequired[MinimapScale]
+    sizing: NotRequired[Optional[MinimapSizing]]
 
 class ActivityItemDescriptor(TypedDict):
     id: WidgetId
@@ -2204,6 +2221,12 @@ class EditorEvent(TypedDict):
     Pointer: NotRequired[_EditorPointerPayload]
     Wheel: NotRequired[_EditorWheelPayload]
 
+class _MinimapSeekPayload(TypedDict):
+    fraction: float
+
+class MinimapEvent(TypedDict):
+    Seek: NotRequired[_MinimapSeekPayload]
+
 class _DataPointClickedPayload(TypedDict):
     id: WidgetId
     series_idx: int
@@ -2632,6 +2655,7 @@ class _UiEventDict(TypedDict):
     ActivityBar: NotRequired[Tuple[WidgetId, ActivityBarEvent]]
     Terminal: NotRequired[Tuple[WidgetId, TerminalEvent]]
     Editor: NotRequired[Tuple[WidgetId, EditorEvent]]
+    Minimap: NotRequired[Tuple[WidgetId, MinimapEvent]]
     TextDisplay: NotRequired[Tuple[WidgetId, TextDisplayEvent]]
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]

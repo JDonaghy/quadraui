@@ -158,14 +158,6 @@ pub struct MacBackend {
     /// every paint size, unlike GTK's already-scaled `Pixbuf`). Survives
     /// across frames, mirroring `GtkBackend::image_cache`.
     image_cache: crate::image_cache::ImageCache<CGImage>,
-    /// Downsampled Core Text glyph atlas for [`Backend::draw_minimap`]'s
-    /// [`MinimapRenderMode::Characters`] branch — see
-    /// [`super::minimap`]'s "Glyph atlas" module doc section and
-    /// [`crate::primitives::minimap::MinimapAtlasCache`]'s doc. Survives
-    /// across frames, mirroring `GtkBackend::minimap_atlas_cache`.
-    ///
-    /// [`MinimapRenderMode::Characters`]: crate::primitives::minimap::MinimapRenderMode::Characters
-    minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache,
     /// Set once via [`Self::set_current_font`] during app setup.
     /// `draw_*` methods recover this for text rendering +
     /// measurement. Wrapped in `Option` so apps that don't paint
@@ -784,7 +776,6 @@ impl MacBackend {
             current_theme: Theme::default(),
             current_style: crate::Style::default(),
             image_cache: crate::image_cache::ImageCache::default(),
-            minimap_atlas_cache: crate::primitives::minimap::MinimapAtlasCache::default(),
             current_font: None,
             current_line_height: 16.0,
             current_char_width: 8.0,
@@ -3125,14 +3116,9 @@ impl Backend for MacBackend {
         )
     }
 
-    /// Paints through [`super::minimap::draw_minimap_cached`] (Core
-    /// Graphics fills and `CTLine` glyph runs), using the shared
-    /// `crate::primitives::minimap` legibility and span helpers GTK and
-    /// Win-GUI also use. Only the cached, atlas-backed path shapes glyphs
-    /// small enough to fit their row band once
-    /// [`crate::primitives::minimap::MinimapScale::Two`] clears the
-    /// legibility floor; the plain `draw_minimap_scaled` would use the
-    /// full editor-size font.
+    /// Paints through [`super::minimap::draw_minimap_cached`]: the shared
+    /// minimap painter with glyph-atlas character shapes sampled from the
+    /// editor font.
     fn draw_minimap(
         &mut self,
         rect: Rect,
@@ -3156,7 +3142,6 @@ impl Backend for MacBackend {
                 minimap,
                 &theme,
                 self.minimap_scale,
-                &mut self.minimap_atlas_cache,
                 dpi_scale,
             )
         };
@@ -3679,6 +3664,28 @@ impl PaintSurface for EditorSurface<'_> {
         self.backend.surface_pop_clip()
     }
 
+    fn surface_blit_alpha(
+        &mut self,
+        dest: Rect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        self.backend
+            .surface_blit_alpha(dest, alpha, width, height, color);
+    }
+
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        _role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<crate::AlphaSheet> {
+        self.backend
+            .surface_glyph_alpha_sheet(chars, crate::FontRole::Editor, cell)
+    }
+
     fn surface_draw_image(
         &mut self,
         rect: Rect,
@@ -3988,6 +3995,28 @@ impl PaintSurface for MacBackend {
         );
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { CGContextRestoreGState(ctx) };
+    }
+
+    fn surface_blit_alpha(
+        &mut self,
+        dest: Rect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        self.chrome_surface("surface_blit_alpha")
+            .surface_blit_alpha(dest, alpha, width, height, color);
+    }
+
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<crate::AlphaSheet> {
+        self.text_surface_for(role)
+            .surface_glyph_alpha_sheet(chars, role, cell)
     }
 
     fn surface_draw_image(
@@ -5544,6 +5573,8 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 10,
             total_buffer_lines: 40,
+            scale: Default::default(),
+            sizing: None,
         }
     }
 

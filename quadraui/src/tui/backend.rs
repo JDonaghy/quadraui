@@ -7360,6 +7360,8 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 0,
             total_buffer_lines: 0,
+            scale: Default::default(),
+            sizing: None,
         };
         let rect = QRect::new(0.0, 0.0, 10.0, 20.0);
 

@@ -2284,6 +2284,8 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 0,
             total_buffer_lines: 0,
+            scale: Default::default(),
+            sizing: None,
         };
         let pipeline = PipelineView {
             id: "pv".into(),

@@ -727,8 +727,8 @@ pub use primitives::message_list::{
 };
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_blocks, sample_window, window_start_line, Minimap,
-    MinimapGrid, MinimapHit, MinimapLayout, MinimapLine, MinimapScale, MinimapSizing, MinimapSpan,
-    VisibleMinimapLine,
+    MinimapEvent, MinimapGrid, MinimapHit, MinimapLayout, MinimapLine, MinimapScale, MinimapSizing,
+    MinimapSpan, MinimapState, VisibleMinimapLine,
 };
 pub use primitives::multi_section_view::{
     ActionId as MsvActionId, AuxHit, Axis as MsvAxis, DividerBounds, EmptyBody, HeaderAction,
@@ -892,7 +892,7 @@ pub use frame::{
     FrameOrderViolation, FramePresence, FrameRung, FrameZone, OwnedContent, OwnedFrame, OwnedNode,
     ScreenLayout, Surface,
 };
-pub use paint_surface::{PaintSurface, PathVerb, TextRunStyle};
+pub use paint_surface::{AlphaSheet, PaintSurface, PathVerb, TextRunStyle};
 // `PaintSurface`'s cell-grid counterpart — see `cell_surface`'s module doc.
 // `CellStyle` is aliased the same way `primitives::editor`'s own
 // `CursorShape`/`CursorPos` are above (`EditorCursorShape`,

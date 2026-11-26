@@ -1456,6 +1456,8 @@ mod tests {
             visible_row_start: 0,
             visible_row_count: 5,
             total_buffer_lines: 10,
+            scale: Default::default(),
+            sizing: None,
         };
         let rect = Rect::new(0.0, 0.0, 20.0, 64.0);
 

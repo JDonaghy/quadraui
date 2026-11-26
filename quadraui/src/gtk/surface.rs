@@ -33,7 +33,7 @@ use gtk4::cairo::Context;
 use gtk4::pango;
 
 use crate::backend::ImagePaintResult;
-use crate::paint_surface::{PaintSurface, TextRunStyle};
+use crate::paint_surface::{AlphaSheet, PaintSurface, TextRunStyle};
 use crate::{Color, Image, Point, Rect, Viewport};
 
 /// Adapts a live `pango::Layout` (falling back to a `char_width`-based
@@ -149,6 +149,130 @@ pub(crate) fn text_index_at_x(layout: &pango::Layout, text: &str, x: f32) -> usi
         idx = crate::text_util::next_char_boundary(text, idx);
     }
     idx.min(text.len())
+}
+
+thread_local! {
+    /// The last sheet [`glyph_alpha_sheet`] rendered, keyed on its family,
+    /// characters and cell size, so a repeated request shapes nothing.
+    static GLYPH_SHEET: std::cell::RefCell<Option<(String, String, (u32, u32), AlphaSheet)>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// [`PaintSurface::surface_glyph_alpha_sheet`] for Pango: each char of
+/// `chars` shaped bold in `family`, sized to `cell`'s height, painted
+/// white onto a transparent `ARgb32` sheet whose alpha channel is the
+/// coverage.
+pub(crate) fn glyph_alpha_sheet(
+    family: &str,
+    chars: &str,
+    cell: crate::primitive::Size,
+) -> Option<AlphaSheet> {
+    let cell_px = (cell.width.round() as u32, cell.height.round() as u32);
+    let hit = GLYPH_SHEET.with(|c| {
+        c.borrow()
+            .as_ref()
+            .filter(|(f, ch, sz, _)| f == family && ch == chars && *sz == cell_px)
+            .map(|(_, _, _, sheet)| sheet.clone())
+    });
+    if hit.is_some() {
+        return hit;
+    }
+    let sheet = render_glyph_sheet(family, chars, cell_px)?;
+    GLYPH_SHEET.with(|c| {
+        *c.borrow_mut() = Some((
+            family.to_string(),
+            chars.to_string(),
+            cell_px,
+            sheet.clone(),
+        ))
+    });
+    Some(sheet)
+}
+
+fn render_glyph_sheet(
+    family: &str,
+    chars: &str,
+    (cell_w, cell_h): (u32, u32),
+) -> Option<AlphaSheet> {
+    use gtk4::cairo::{Format, ImageSurface};
+    let count = chars.chars().count() as u32;
+    let (sheet_w, sheet_h) = (cell_w * count, cell_h);
+    if sheet_w == 0 || sheet_h == 0 {
+        return None;
+    }
+    let surface = ImageSurface::create(Format::ARgb32, sheet_w as i32, sheet_h as i32).ok()?;
+    let cr = Context::new(&surface).ok()?;
+    let pango_layout = pangocairo::functions::create_layout(&cr);
+    let mut font = pango::FontDescription::new();
+    font.set_family(family);
+    font.set_weight(pango::Weight::Bold);
+    font.set_absolute_size(f64::from(cell_h) * 0.85 * pango::SCALE as f64);
+    pango_layout.set_font_description(Some(&font));
+    cr.set_source_rgb(1.0, 1.0, 1.0);
+    for (i, ch) in chars.chars().enumerate() {
+        pango_layout.set_text(&ch.to_string());
+        cr.move_to(f64::from(i as u32 * cell_w), 0.0);
+        // The plain `show_layout`, not the recording wrapper: this paints
+        // a private offscreen sheet, which must not reach the frame's
+        // painted-text sink.
+        pangocairo::functions::show_layout(&cr, &pango_layout);
+    }
+    // `data()` needs the only reference to the surface.
+    drop(pango_layout);
+    drop(cr);
+    surface.flush();
+    let stride = surface.stride() as usize;
+    let mut surface = surface;
+    let data = surface.data().ok()?;
+    let (w, h) = (sheet_w as usize, sheet_h as usize);
+    let mut alpha = vec![0u8; w * h];
+    for row in 0..h {
+        for col in 0..w {
+            // Cairo's `ARgb32` is [B, G, R, A] in memory.
+            alpha[row * w + col] = data[row * stride + col * 4 + 3];
+        }
+    }
+    Some(AlphaSheet::new(sheet_w, sheet_h, alpha))
+}
+
+/// [`PaintSurface::surface_blit_alpha`] for Cairo: `alpha` as an `A8`
+/// mask, scaled onto `dest`, painting `color` through it.
+pub(crate) fn blit_alpha(
+    cr: &Context,
+    dest: Rect,
+    alpha: &[u8],
+    width: u32,
+    height: u32,
+    color: Color,
+) {
+    use gtk4::cairo::{Format, ImageSurface};
+    let (w, h) = (width as usize, height as usize);
+    if w == 0 || h == 0 || alpha.len() < w * h {
+        return;
+    }
+    let Ok(mut mask) = ImageSurface::create(Format::A8, width as i32, height as i32) else {
+        return;
+    };
+    {
+        let stride = mask.stride() as usize;
+        let Ok(mut data) = mask.data() else {
+            return;
+        };
+        for row in 0..h {
+            data[row * stride..row * stride + w].copy_from_slice(&alpha[row * w..(row + 1) * w]);
+        }
+    }
+    mask.flush();
+    let (r, g, b) = super::cairo_rgb(color);
+    cr.save().ok();
+    cr.translate(f64::from(dest.x), f64::from(dest.y));
+    cr.scale(
+        f64::from(dest.width) / f64::from(width),
+        f64::from(dest.height) / f64::from(height),
+    );
+    cr.set_source_rgb(r, g, b);
+    cr.mask_surface(&mask, 0.0, 0.0).ok();
+    cr.restore().ok();
 }
 
 impl PaintSurface for CairoSurface<'_> {
@@ -363,6 +487,35 @@ impl PaintSurface for CairoSurface<'_> {
 
     fn surface_pop_clip(&mut self) {
         self.cr.restore().ok();
+    }
+
+    fn surface_blit_alpha(
+        &mut self,
+        dest: Rect,
+        alpha: &[u8],
+        width: u32,
+        height: u32,
+        color: Color,
+    ) {
+        blit_alpha(self.cr, dest, alpha, width, height, color);
+    }
+
+    /// Shapes in the adapter's own layout's font family (`Monospace` when
+    /// the layout names none); `role` is not consulted, as for every
+    /// other text verb here.
+    fn surface_glyph_alpha_sheet(
+        &mut self,
+        chars: &str,
+        _role: crate::FontRole,
+        cell: crate::primitive::Size,
+    ) -> Option<AlphaSheet> {
+        let family = self
+            .layout?
+            .font_description()
+            .and_then(|f| f.family())
+            .map(|g| g.to_string())
+            .unwrap_or_else(|| "Monospace".to_string());
+        glyph_alpha_sheet(&family, chars, cell)
     }
 
     fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {

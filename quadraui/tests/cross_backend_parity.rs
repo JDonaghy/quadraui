@@ -1427,6 +1427,8 @@ fn minimap_viewport_slider_is_a_blended_tint_not_opaque_accent_bg_on_tui_and_gtk
             visible_row_start: 0,
             visible_row_count: 4,
             total_buffer_lines: total_lines,
+            scale: Default::default(),
+            sizing: None,
         }
     }
 

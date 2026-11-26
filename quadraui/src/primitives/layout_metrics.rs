@@ -31,7 +31,6 @@ use crate::primitives::form::{
     FieldKind, FormField, FormFieldMeasure, FormItemMeasure, ValidationState,
 };
 use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
-use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale, MinimapSizing};
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux, SectionBody,
     SectionMeasure,
@@ -1163,25 +1162,6 @@ pub fn pixel_tree_table_layout(
         |col| ColumnMeasure::new(measure.width_of(&col.title)),
         |node| tree_table_chevron_measure(measure, &style, indent_px, line_height, node),
         floor,
-    )
-}
-
-// ── Minimap ──────────────────────────────────────────────────────────
-
-/// Compute a [`Minimap`]'s layout at an explicit [`MinimapScale`].
-/// Every pixel backend shows one buffer line per painted row
-/// ([`pixel::MINIMAP_LINES_PER_ROW`]) — no cross-line colour reduction
-/// (see [`crate::MinimapGrid`]'s doc for why TUI's braille packing
-/// differs).
-pub fn pixel_minimap_layout_scaled(
-    minimap: &Minimap,
-    bounds: QRect,
-    scale: MinimapScale,
-) -> MinimapLayout {
-    minimap.layout_with_sizing(
-        bounds,
-        pixel::MINIMAP_LINES_PER_ROW,
-        MinimapSizing::FixedPitch(scale.row_pitch_px() as f32),
     )
 }
 
