@@ -105,9 +105,9 @@ fn palette_paints_surface_bg() {
     );
 }
 
-/// Like [`paint_via_backend`], but through the shared painter's
-/// `paint_interactive` on the backend's own surface, so a test can
-/// probe the pinned create row's hover/pressed tinting.
+/// Like [`paint_via_backend`], but with the pointer pinned to
+/// `interaction` through `draw_dyn`'s per-call state, so a test can probe
+/// the pinned create row's hover/pressed tinting on the real backend.
 fn paint_via_backend_with_state(
     palette: &Palette,
     interaction: &crate::InteractionState,
@@ -119,25 +119,20 @@ fn paint_via_backend_with_state(
     backend.set_current_line_height(16.0);
     backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
     backend.enter_frame_scope(surface.context_ptr(), |b| {
-        let rect = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let (layout, rows_h) = pixel_layout(rect.width, rect.height, palette, 16.0);
-        let theme = Theme::default();
-        let style = crate::Backend::style(b);
-        crate::primitives::palette::native_surface_paint::paint_interactive(
-            palette,
-            rect,
-            &layout,
-            rows_h,
-            16.0,
-            false,
+        crate::DrawsPrimitives::draw_dyn(
             b,
-            &theme,
-            &style,
+            QRect::new(0.0, 0.0, W as f32, H as f32),
+            palette,
             interaction,
         );
     });
     backend.end_frame();
     surface
+}
+
+/// The create row's own sub-part address on `palette`.
+fn create_row(palette: &Palette) -> Option<crate::FocusAddress> {
+    Some((palette.id, Some(Palette::CREATE_ROW)))
 }
 
 #[test]
@@ -150,7 +145,7 @@ fn hovered_create_row_paints_hover_tint() {
     let px = (create.x + 4.0) as u32;
     let py = (create.y + create.height / 2.0) as u32;
 
-    let interaction = crate::InteractionState::from_parts(Some(p.id), None);
+    let interaction = crate::InteractionState::from_targets(create_row(&p), None);
     let surface = paint_via_backend_with_state(&p, &interaction);
     let (r, g, b, _) = surface.pixel(px, py);
     let expected = theme.menu_item_hover_bg(theme.hover_bg);
@@ -171,7 +166,7 @@ fn pressed_create_row_paints_pressed_tint() {
     let px = (create.x + 4.0) as u32;
     let py = (create.y + create.height / 2.0) as u32;
 
-    let interaction = crate::InteractionState::from_parts(Some(p.id), Some(p.id));
+    let interaction = crate::InteractionState::from_targets(create_row(&p), create_row(&p));
     let surface = paint_via_backend_with_state(&p, &interaction);
     let (r, g, b, _) = surface.pixel(px, py);
     let expected = theme.menu_item_pressed_bg(theme.hover_bg);

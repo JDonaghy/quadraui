@@ -910,6 +910,7 @@ mod palette_paint_tests {
             &mut surface,
             &Theme::default(),
             &crate::style::Style::default(),
+            crate::primitives::context_menu::PointerTint::default(),
         );
     }
 

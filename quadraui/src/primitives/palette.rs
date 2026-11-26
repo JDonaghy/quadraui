@@ -331,6 +331,12 @@ impl PaletteLayout {
 }
 
 impl Palette {
+    /// The sub-part address of the pinned create-action row, beside each
+    /// item row's own `SubTarget(item_idx)`. It sits past any index an
+    /// item can have, so the pointer on the create row never reads as
+    /// the pointer on an item.
+    pub const CREATE_ROW: crate::interactive::SubTarget = crate::interactive::SubTarget(u64::MAX);
+
     /// Resolve `scroll_offset` against a viewport that can show
     /// `visible_rows` items at once, keeping `selected_idx` inside the
     /// visible window: scrolls forward when the selection runs past the
@@ -702,8 +708,9 @@ pub(crate) fn cell_layout(palette: &Palette, w: f32, h: f32) -> PaletteLayout {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::{Palette, PaletteLayout, PaletteMode};
-    use crate::interaction::InteractionState;
+    use crate::interactive::SubTarget;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::context_menu::PointerTint;
     use crate::primitives::row_stack;
     use crate::style::Style;
     use crate::text_util::safe_prefix;
@@ -791,6 +798,13 @@ pub(crate) mod native_surface_paint {
     /// selects `Icon::glyph` vs. `Icon::fallback`. `style` supplies the
     /// corner radius/border width/shadow elevation the
     /// popup box paints with — callers pass `&self.style()`.
+    ///
+    /// `pointer` names the item row (by item index) or the pinned create
+    /// row ([`Palette::CREATE_ROW`]) the pointer hovers and presses.
+    /// Each tints under [`PointerTint::row_bg`]'s rule: the selected row
+    /// keeps [`Theme::selected_bg`] under hover, a pressed row takes
+    /// [`Theme::menu_item_pressed_bg`], and any other hovered row takes
+    /// [`Theme::menu_item_hover_bg`].
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         palette: &Palette,
@@ -802,81 +816,7 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         style: &Style,
-    ) {
-        paint_impl(
-            palette,
-            area,
-            palette_layout,
-            rows_h,
-            line_height,
-            nerd_fonts_enabled,
-            surface,
-            theme,
-            style,
-            None,
-        );
-    }
-
-    /// [`paint`], reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`]. [`PaletteItem`]
-    /// carries no `WidgetId` of its own (an unbounded, app-filtered
-    /// list — see `interaction.rs`'s module doc for why `ListView`/
-    /// `TreeView` rows stay out of `InteractionState` for the same
-    /// reason), so the one row this actually tints is the pinned
-    /// create-action row, keyed by `palette.id` itself (the one stable
-    /// id already on this popup): `interaction.is_hovered(&palette.id)`
-    /// / `is_pressed(&palette.id)` swaps its resting
-    /// [`Theme::hover_bg`] fill for [`Theme::menu_item_hover_bg`] /
-    /// [`Theme::menu_item_pressed_bg`].
-    ///
-    /// Keying on `palette.id` conflates "the palette is hovered" with
-    /// "the create row is hovered" for a caller that resolves its hit
-    /// test coarsely: `quadraui-binding-core` avoids this because its
-    /// hover resolver only ever maps to `palette.id` when the hit is
-    /// inside `PaletteLayout::create_bounds` specifically — but a direct
-    /// `AppLogic` that keeps one frame-wide `InteractionState` and
-    /// resolves any point inside the palette body to `palette.id` will
-    /// tint the create row while the cursor is over an item row instead.
-    /// Resolve `palette.id` only for hits inside `create_bounds`.
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn paint_interactive(
-        palette: &Palette,
-        area: Rect,
-        palette_layout: &PaletteLayout,
-        rows_h: f32,
-        line_height: f32,
-        nerd_fonts_enabled: bool,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        style: &Style,
-        interaction: &InteractionState,
-    ) {
-        paint_impl(
-            palette,
-            area,
-            palette_layout,
-            rows_h,
-            line_height,
-            nerd_fonts_enabled,
-            surface,
-            theme,
-            style,
-            Some(interaction),
-        );
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    fn paint_impl(
-        palette: &Palette,
-        area: Rect,
-        palette_layout: &PaletteLayout,
-        rows_h: f32,
-        line_height: f32,
-        nerd_fonts_enabled: bool,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        style: &Style,
-        interaction: Option<&InteractionState>,
+        pointer: PointerTint,
     ) {
         if area.width < 20.0 || area.height < line_height * 4.0 {
             return;
@@ -1044,9 +984,15 @@ pub(crate) mod native_surface_paint {
             let row_w = vis.bounds.width;
             let row_h = vis.bounds.height;
             let is_selected = vis.item_idx == palette.selected_idx && palette.has_focus;
-
-            if is_selected {
-                surface.surface_fill_rect(Rect::new(row_x, row_y, row_w, row_h), theme.selected_bg);
+            let row_bg = pointer.row_bg(
+                SubTarget(vis.item_idx as u64),
+                true,
+                is_selected.then_some(theme.selected_bg),
+                theme.surface_bg,
+                theme,
+            );
+            if let Some(row_bg) = row_bg {
+                surface.surface_fill_rect(Rect::new(row_x, row_y, row_w, row_h), row_bg);
             }
 
             let mut cursor_x = row_x + style.row_padding_x;
@@ -1115,15 +1061,9 @@ pub(crate) mod native_surface_paint {
         if let Some(ref label) = palette.create_label {
             let create_y = rows_y + rows_h;
             let create_h = item_row_height(line_height);
-            let is_pressed = interaction.is_some_and(|i| i.is_pressed(&palette.id));
-            let is_hovered = interaction.is_some_and(|i| i.is_hovered(&palette.id));
-            let create_bg = if is_pressed {
-                theme.menu_item_pressed_bg(theme.hover_bg)
-            } else if is_hovered {
-                theme.menu_item_hover_bg(theme.hover_bg)
-            } else {
-                theme.hover_bg
-            };
+            let create_bg = pointer
+                .row_bg(Palette::CREATE_ROW, true, None, theme.hover_bg, theme)
+                .unwrap_or(theme.hover_bg);
             surface.surface_fill_rect(
                 Rect::new(area.x, create_y, palette_layout.item_list_width, create_h),
                 create_bg,
@@ -1360,6 +1300,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &Theme::default(),
                 &Style::default(),
+                PointerTint::default(),
             );
             (surface, palette_layout)
         }
@@ -1513,6 +1454,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &theme,
                 &style,
+                PointerTint::default(),
             );
 
             let expected = theme.surface_bg.with_alpha(0.4);
@@ -1558,6 +1500,7 @@ pub(crate) mod native_surface_paint {
                 &mut surface,
                 &Theme::default(),
                 &style,
+                PointerTint::default(),
             );
 
             let (label_rect, _, _) = surface
@@ -1602,9 +1545,6 @@ pub(crate) mod native_surface_paint {
             );
         }
 
-        /// `PaletteItem` carries no `WidgetId` (see `paint_interactive`'s
-        /// own doc), so the one row `InteractionState` can tint is the
-        /// pinned create-action row, keyed by `palette.id` itself.
         fn with_create_row() -> Palette {
             let mut p = sample();
             p.create_label = Some("Create 'op'".into());
@@ -1622,13 +1562,22 @@ pub(crate) mod native_surface_paint {
             assert_eq!(create_bounds.height, 22.0);
         }
 
-        fn paint_sample_interactive(
+        /// Paints `palette` with the pointer on sub-part `hovered` and
+        /// pressing sub-part `pressed`, read back through a
+        /// [`crate::PaintEnv`] the way the widget's own paint reads it.
+        fn paint_with_pointer(
             palette: &Palette,
-            interaction: &InteractionState,
+            hovered: Option<SubTarget>,
+            pressed: Option<SubTarget>,
         ) -> RecordingSurface {
             let (palette_layout, rows_h) = layout(AREA.width, AREA.height, palette, LINE_HEIGHT);
+            let theme = Theme::default();
+            let style = Style::default();
+            let at = |sub: Option<SubTarget>| sub.map(|sub| (palette.id, Some(sub)));
+            let interaction = crate::InteractionState::from_targets(at(hovered), at(pressed));
+            let env = crate::PaintEnv::new(&theme, &style).with_interaction(&interaction);
             let mut surface = RecordingSurface::default();
-            paint_interactive(
+            paint(
                 palette,
                 AREA,
                 &palette_layout,
@@ -1636,9 +1585,9 @@ pub(crate) mod native_surface_paint {
                 LINE_HEIGHT,
                 false,
                 &mut surface,
-                &Theme::default(),
-                &Style::default(),
-                interaction,
+                &theme,
+                &style,
+                PointerTint::from_env(&palette.id, &env),
             );
             surface
         }
@@ -1647,9 +1596,7 @@ pub(crate) mod native_surface_paint {
         fn hovered_create_row_paints_menu_item_hover_bg() {
             let p = with_create_row();
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(p.id));
-            let surface = paint_sample_interactive(&p, &interaction);
+            let surface = paint_with_pointer(&p, Some(Palette::CREATE_ROW), None);
 
             let expected = theme.menu_item_hover_bg(theme.hover_bg);
             assert!(
@@ -1659,12 +1606,58 @@ pub(crate) mod native_surface_paint {
             );
         }
 
+        /// The pointer on an item row tints that row, not the create
+        /// row: each has its own sub-part address.
+        #[test]
+        fn hovering_an_item_row_tints_that_row_not_the_create_row() {
+            let p = with_create_row();
+            let theme = Theme::default();
+            let surface = paint_with_pointer(&p, Some(SubTarget(1)), None);
+
+            assert!(
+                surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.menu_item_hover_bg(theme.surface_bg)),
+                "the hovered item row must paint the hover tint: {:?}",
+                surface.fills
+            );
+            assert!(
+                !surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.menu_item_hover_bg(theme.hover_bg)),
+                "the create row is not hovered and must stay at rest: {:?}",
+                surface.fills
+            );
+        }
+
+        #[test]
+        fn hovering_the_selected_row_keeps_selected_bg() {
+            let p = with_create_row();
+            let theme = Theme::default();
+            let surface = paint_with_pointer(&p, Some(SubTarget(p.selected_idx as u64)), None);
+
+            assert!(
+                surface.fills.iter().any(|(_, c)| *c == theme.selected_bg),
+                "the selected row keeps theme.selected_bg under hover: {:?}",
+                surface.fills
+            );
+            assert!(
+                !surface
+                    .fills
+                    .iter()
+                    .any(|(_, c)| *c == theme.menu_item_hover_bg(theme.surface_bg)),
+                "hover must not weaken the selection: {:?}",
+                surface.fills
+            );
+        }
+
         #[test]
         fn leaving_the_create_row_clears_the_hover_fill() {
             let p = with_create_row();
             let theme = Theme::default();
-            let interaction = InteractionState::new(); // nothing hovered
-            let surface = paint_sample_interactive(&p, &interaction);
+            let surface = paint_with_pointer(&p, None, None);
 
             let hover_bg = theme.menu_item_hover_bg(theme.hover_bg);
             assert!(
@@ -1678,10 +1671,8 @@ pub(crate) mod native_surface_paint {
         fn pressed_create_row_paints_menu_item_pressed_bg_not_hover_bg() {
             let p = with_create_row();
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(p.id));
-            interaction.set_pressed(Some(p.id));
-            let surface = paint_sample_interactive(&p, &interaction);
+            let surface =
+                paint_with_pointer(&p, Some(Palette::CREATE_ROW), Some(Palette::CREATE_ROW));
 
             let pressed = theme.menu_item_pressed_bg(theme.hover_bg);
             let hover = theme.menu_item_hover_bg(theme.hover_bg);
@@ -1760,6 +1751,8 @@ pub enum PaletteEvent {
 pub(crate) mod cell_paint {
     use super::{Palette, PaletteMode};
     use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::interactive::SubTarget;
+    use crate::primitives::context_menu::PointerTint;
     use crate::theme::Theme;
     use crate::types::Color;
     use crate::Rect;
@@ -1784,7 +1777,10 @@ pub(crate) mod cell_paint {
     /// true read-back-and-composite over live screen content.
     ///
     /// `nerd_fonts_enabled` selects between item icons'
-    /// [`crate::Icon::glyph`] and [`crate::Icon::fallback`].
+    /// [`crate::Icon::glyph`] and [`crate::Icon::fallback`]. `pointer`
+    /// tints the hovered or pressed item row and create row under
+    /// [`PointerTint::row_bg`]'s rule, the same one the pixel painter
+    /// follows.
     pub(crate) fn paint(
         palette: &Palette,
         area: Rect,
@@ -1792,6 +1788,7 @@ pub(crate) mod cell_paint {
         theme: &Theme,
         backdrop_opacity: f32,
         nerd_fonts_enabled: bool,
+        pointer: PointerTint,
     ) {
         if area.width < 4.0 || area.height < 4.0 {
             return;
@@ -2001,7 +1998,15 @@ pub(crate) mod cell_paint {
                 break;
             }
             let is_selected = vis_i == palette.selected_idx && palette.has_focus;
-            let row_bg = if is_selected { sel_bg } else { bg };
+            let row_bg = pointer
+                .row_bg(
+                    SubTarget(vis_i as u64),
+                    true,
+                    is_selected.then_some(sel_bg),
+                    bg,
+                    theme,
+                )
+                .unwrap_or(bg);
 
             surface.put_char(x0, row, '│', style(border_fg, bg));
             if !has_preview && w >= 2 {
@@ -2105,14 +2110,17 @@ pub(crate) mod cell_paint {
                     surface.put_char(x0 + w - 1, create_row, '│', style(border_fg, bg));
                 }
                 let end_col = if has_preview { list_w } else { w - 1 };
+                let create_bg = pointer
+                    .row_bg(Palette::CREATE_ROW, true, None, bg, theme)
+                    .unwrap_or(bg);
                 for col in 1..end_col {
-                    surface.put_char(x0 + col, create_row, ' ', style(fg, bg));
+                    surface.put_char(x0 + col, create_row, ' ', style(fg, create_bg));
                 }
                 for (col, ch) in (1u16..).zip("+ ".chars().chain(label.chars())) {
                     if col >= end_col {
                         break;
                     }
-                    surface.put_char(x0 + col, create_row, ch, style(accent_fg, bg));
+                    surface.put_char(x0 + col, create_row, ch, style(accent_fg, create_bg));
                 }
             }
         }
@@ -2504,7 +2512,8 @@ impl crate::primitive::Primitive for Palette {
         }
     }
 
-    /// The shared pixel painter, [`native_surface_paint::paint`].
+    /// The shared pixel painter, [`native_surface_paint::paint`], with
+    /// the pointer's tint from `env`.
     fn paint(
         &self,
         layout: &PalettePrimitiveLayout,
@@ -2533,6 +2542,7 @@ impl crate::primitive::Primitive for Palette {
                 surface,
                 theme,
                 style,
+                crate::primitives::context_menu::PointerTint::from_env(&self.id, env),
             );
         }
         #[cfg(not(any(
@@ -2541,13 +2551,13 @@ impl crate::primitive::Primitive for Palette {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme, style);
+            let _ = (layout, surface, theme, style, env);
         }
     }
 
-    /// [`cell_paint::paint`] over `buf`. The backdrop opacity rides on
-    /// the layout, since this method receives no [`crate::Style`] of its
-    /// own.
+    /// [`cell_paint::paint`] over `cells`, with the pointer's tint from
+    /// `env`. The backdrop opacity rides on the layout, which resolves it
+    /// from the layout context's [`crate::Style`].
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -2571,6 +2581,7 @@ impl crate::primitive::Primitive for Palette {
             theme,
             layout.backdrop_opacity,
             layout.nerd_fonts_enabled,
+            crate::primitives::context_menu::PointerTint::from_env(&self.id, env),
         );
     }
 }
@@ -2909,7 +2920,9 @@ impl crate::interactive::Interactive for Palette {
     }
 
     /// One sub-part per visible item row, addressed by its index into
-    /// [`Palette::items`]. [`PalettePrimitiveLayout::layout`] is already
+    /// [`Palette::items`], plus the pinned create row at
+    /// [`Palette::CREATE_ROW`] when it is shown.
+    /// [`PalettePrimitiveLayout::layout`] is already
     /// in this widget's own local space, so the bounds pass through
     /// untranslated.
     fn sub_regions(
@@ -2926,6 +2939,12 @@ impl crate::interactive::Interactive for Palette {
                     crate::interactive::SubTarget(vis.item_idx as u64),
                 )
             })
+            .chain(
+                layout
+                    .layout
+                    .create_bounds
+                    .map(|bounds| (bounds, Palette::CREATE_ROW)),
+            )
             .collect()
     }
 }
@@ -3788,10 +3807,13 @@ mod tests {
     #[cfg(feature = "tui")]
     mod cells {
         use super::*;
+        use crate::primitive::Primitive;
+        use crate::primitives::context_menu::PointerTint;
         use crate::style::Style;
         use crate::theme::Theme;
         use crate::tui::ratatui_color;
         use crate::types::{Color, StyledSpan};
+        use crate::Interactive;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect as RRect;
 
@@ -3856,6 +3878,7 @@ mod tests {
                 theme,
                 backdrop_opacity,
                 false,
+                PointerTint::default(),
             );
         }
 
@@ -4029,6 +4052,107 @@ mod tests {
             assert!(
                 row_text.contains("+ Create"),
                 "expected create label at pinned row, got: {row_text:?}"
+            );
+        }
+
+        /// Paints `p` at `(0, 0, 30, 10)` through [`Primitive::paint_cells`]
+        /// with the pointer on sub-part `hovered` and pressing sub-part
+        /// `pressed`, and returns the resolved layout.
+        fn paint_with_pointer(
+            buf: &mut Buffer,
+            p: &Palette,
+            theme: &Theme,
+            hovered: Option<crate::interactive::SubTarget>,
+            pressed: Option<crate::interactive::SubTarget>,
+        ) -> PalettePrimitiveLayout {
+            let ctx = crate::primitive::LayoutCtx::new(1.0, 1.0, false);
+            let layout = Primitive::layout(p, &ctx, Rect::new(0.0, 0.0, 30.0, 10.0));
+            let at = |sub: Option<crate::interactive::SubTarget>| sub.map(|sub| (p.id, Some(sub)));
+            let interaction = crate::InteractionState::from_targets(at(hovered), at(pressed));
+            let style = Style::default();
+            let env = crate::PaintEnv::new(theme, &style).with_interaction(&interaction);
+            Primitive::paint_cells(
+                p,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(buf),
+                &env,
+            );
+            layout
+        }
+
+        /// The background one column inside the popup's left border on
+        /// the row `sub` names in `layout`'s own sub-regions.
+        fn sub_row_bg(
+            buf: &Buffer,
+            p: &Palette,
+            layout: &PalettePrimitiveLayout,
+            sub: crate::interactive::SubTarget,
+        ) -> ratatui::style::Color {
+            let (rect, _) = Interactive::sub_regions(p, layout)
+                .into_iter()
+                .find(|(_, s)| *s == sub)
+                .expect("sub-part painted");
+            buf[(1, rect.y.round() as u16)].bg
+        }
+
+        #[test]
+        fn hovered_item_row_takes_the_menu_hover_tint_on_cells() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 30, 10));
+            let p = make_palette();
+            let theme = Theme::default();
+            let hovered = crate::interactive::SubTarget(1);
+            let layout = paint_with_pointer(&mut buf, &p, &theme, Some(hovered), None);
+            assert_eq!(
+                sub_row_bg(&buf, &p, &layout, hovered),
+                ratatui_color(theme.menu_item_hover_bg(theme.surface_bg))
+            );
+            assert_eq!(
+                sub_row_bg(&buf, &p, &layout, crate::interactive::SubTarget(2)),
+                ratatui_color(theme.surface_bg),
+                "a row the pointer is not on stays at rest"
+            );
+        }
+
+        #[test]
+        fn hovering_the_selected_row_keeps_selected_bg_on_cells() {
+            let mut buf = Buffer::empty(RRect::new(0, 0, 30, 10));
+            let p = make_palette(); // selected_idx = 0
+            let theme = Theme::default();
+            let selected = crate::interactive::SubTarget(0);
+            let layout = paint_with_pointer(&mut buf, &p, &theme, Some(selected), None);
+            assert_eq!(
+                sub_row_bg(&buf, &p, &layout, selected),
+                ratatui_color(theme.selected_bg)
+            );
+        }
+
+        /// The create row's sub-region lands on the row the cell painter
+        /// pins it to, and the pointer there tints it — hover, then press.
+        #[test]
+        fn create_row_takes_the_pointer_tint_on_cells() {
+            let mut p = make_palette();
+            p.create_label = Some("Create 'foo'".into());
+            let theme = Theme::default();
+
+            let mut buf = Buffer::empty(RRect::new(0, 0, 30, 10));
+            let layout = paint_with_pointer(&mut buf, &p, &theme, Some(Palette::CREATE_ROW), None);
+            assert_eq!(
+                sub_row_bg(&buf, &p, &layout, Palette::CREATE_ROW),
+                ratatui_color(theme.menu_item_hover_bg(theme.surface_bg))
+            );
+            assert_eq!(cell_char(&buf, 1, 8), '+', "the create row is row 8");
+
+            let mut buf = Buffer::empty(RRect::new(0, 0, 30, 10));
+            let layout = paint_with_pointer(
+                &mut buf,
+                &p,
+                &theme,
+                Some(Palette::CREATE_ROW),
+                Some(Palette::CREATE_ROW),
+            );
+            assert_eq!(
+                sub_row_bg(&buf, &p, &layout, Palette::CREATE_ROW),
+                ratatui_color(theme.menu_item_pressed_bg(theme.surface_bg))
             );
         }
 

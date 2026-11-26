@@ -91,11 +91,10 @@
 use crate::backend::{Backend, DrawsPrimitives, ResolvedMenuStyle};
 use crate::compose::Handled;
 use crate::event::{Point, Rect, UiEvent};
-use crate::interaction::InteractionState;
 use crate::interactive::KeyEvent;
 use crate::primitives::context_menu::{
-    ContextMenu, ContextMenuClick, ContextMenuEvent, ContextMenuHit, ContextMenuItem,
-    ContextMenuItemMeasure, ContextMenuLayout, ContextMenuPlacement, ContextMenuState,
+    ContextMenu, ContextMenuClick, ContextMenuEvent, ContextMenuItem, ContextMenuItemMeasure,
+    ContextMenuLayout, ContextMenuPlacement, ContextMenuState,
 };
 use crate::types::WidgetId;
 
@@ -123,10 +122,6 @@ pub enum ContextMenuOutcome {
 #[derive(Debug, Default)]
 pub struct ContextMenuController {
     open: Option<OpenMenu>,
-    /// Hover/pressed state for the `Custom`-painted popup's own items,
-    /// fed from mouse events in [`Self::handle`], so no caller writes any
-    /// hover-tracking code of its own.
-    interaction: InteractionState,
     /// The open popup's own widget state — the debounced typeahead buffer
     /// [`ContextMenu::handle_key`] extends, which is the only thing a
     /// keystroke needs to remember between events.
@@ -215,7 +210,6 @@ impl ContextMenuController {
     pub fn new() -> Self {
         Self {
             open: None,
-            interaction: InteractionState::new(),
             typeahead: ContextMenuState::default(),
         }
     }
@@ -264,7 +258,6 @@ impl ContextMenuController {
         if let Some(open) = self.open.take() {
             backend.modal_stack_handle().borrow_mut().pop(&open.menu.id);
         }
-        self.interaction.clear();
     }
 
     /// Process one event against the currently open painted menu.
@@ -275,33 +268,6 @@ impl ContextMenuController {
         let Some(open) = self.open.clone() else {
             return ContextMenuOutcome::Ignored;
         };
-
-        // Feed hover/pressed before the event-shape match below: a
-        // `MouseMoved`/`MouseDown`/`MouseUp` that also changes
-        // navigation/selection state still needs its hover/pressed
-        // side effect recorded. Gated on the same three event shapes
-        // `handle_mouse` itself matches (see `interaction.rs`'s doc) so
-        // every other shape (`KeyPressed`, etc) skips the stack-layout
-        // work below rather than paying for it and then hitting
-        // `handle_mouse`'s own no-op match arm.
-        if matches!(
-            event,
-            UiEvent::MouseMoved { .. } | UiEvent::MouseDown { .. } | UiEvent::MouseUp { .. }
-        ) {
-            let stack = self.menu_stack(&open, backend);
-            self.interaction.handle_mouse(event, |x, y| {
-                // Deepest level first — a submenu painted on top of its
-                // parent should win a hover/press hit over whatever the
-                // parent's own (now-covered) row underneath it reports.
-                stack
-                    .iter()
-                    .rev()
-                    .find_map(|(_, layout)| match layout.hit_test(x, y) {
-                        ContextMenuHit::Item(id) => Some(id),
-                        ContextMenuHit::Inert | ContextMenuHit::Empty => None,
-                    })
-            });
-        }
 
         match event {
             // Every keystroke's meaning comes from the widget's own
@@ -673,48 +639,34 @@ mod tests {
         assert!(!ctl.is_open());
     }
 
+    /// The painted popup is recorded under its own id with one
+    /// sub-part per row, so a pointer move over a row names that row in
+    /// the ambient hover state every painter reads — no controller-side
+    /// tracking needed.
     #[test]
-    fn mouse_moved_over_an_item_sets_hovered() {
+    fn a_pointer_over_a_painted_row_names_that_row_in_ambient_hover() {
         let mut backend = TuiBackend::new();
+        crate::interaction::reset_ambient_interaction();
+        crate::primitive::clear_painted_widgets();
         let mut ctl = ContextMenuController::new();
         ctl.open(menu(), Point::new(0.0, 0.0), &mut backend);
-        assert_eq!(ctl.interaction.hovered(), None);
+        ctl.render(&mut backend);
 
-        // Same anchored-at-origin geometry `click_on_item_activates_and_closes`
-        // documents: the first item ("copy") lands at (1.0, 1.0).
-        ctl.handle(
-            &UiEvent::MouseMoved {
-                position: Point::new(1.0, 1.0),
-                buttons: Default::default(),
-            },
-            &mut backend,
+        // Anchored flush at the origin: the border ring keeps row 0, so
+        // "copy" is row 1 and "paste" row 2.
+        let move_to = |y: f32| UiEvent::MouseMoved {
+            position: Point::new(1.0, y),
+            buttons: Default::default(),
+        };
+        assert!(crate::interaction::track_pointer(&move_to(2.0)));
+        assert_eq!(
+            crate::interaction::ambient_interaction().hovered_target(),
+            Some((WidgetId::new("ctx"), Some(crate::interactive::SubTarget(1))))
         );
-        assert_eq!(ctl.interaction.hovered(), Some(&WidgetId::new("copy")));
-    }
 
-    #[test]
-    fn moving_off_every_item_clears_hovered() {
-        let mut backend = TuiBackend::new();
-        let mut ctl = ContextMenuController::new();
-        ctl.open(menu(), Point::new(0.0, 0.0), &mut backend);
-        ctl.handle(
-            &UiEvent::MouseMoved {
-                position: Point::new(1.0, 1.0),
-                buttons: Default::default(),
-            },
-            &mut backend,
-        );
-        assert_eq!(ctl.interaction.hovered(), Some(&WidgetId::new("copy")));
-
-        // Moving to a point outside the menu's bounds entirely.
-        ctl.handle(
-            &UiEvent::MouseMoved {
-                position: Point::new(500.0, 500.0),
-                buttons: Default::default(),
-            },
-            &mut backend,
-        );
-        assert_eq!(ctl.interaction.hovered(), None);
+        assert!(crate::interaction::track_pointer(&move_to(500.0)));
+        assert_eq!(crate::interaction::ambient_interaction().hovered(), None);
+        crate::primitive::clear_painted_widgets();
     }
 
     #[test]

@@ -642,7 +642,8 @@ impl Primitive for MenuBar {
     /// The shared pixel painter, `native_surface_paint::paint`, in its
     /// no-mnemonic form on macOS
     /// (that platform has no Alt-mnemonic convention, so underlining a
-    /// character nothing responds to would be a visual lie).
+    /// character nothing responds to would be a visual lie), tinting the
+    /// item the pointer hovers or presses from `env`.
     fn paint(
         &self,
         layout: &MenuBarPrimitiveLayout,
@@ -650,18 +651,23 @@ impl Primitive for MenuBar {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        let style = env.style();
-        let _ = style;
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
+            let pointer = crate::primitives::context_menu::PointerTint::from_env(&self.id, env);
             if cfg!(target_os = "macos") {
-                native_surface_paint::paint_without_mnemonics(self, &layout.layout, surface, theme);
+                native_surface_paint::paint_without_mnemonics(
+                    self,
+                    &layout.layout,
+                    surface,
+                    theme,
+                    pointer,
+                );
             } else {
-                native_surface_paint::paint(self, &layout.layout, surface, theme);
+                native_surface_paint::paint(self, &layout.layout, surface, theme, pointer);
             }
         }
         #[cfg(not(any(
@@ -669,10 +675,11 @@ impl Primitive for MenuBar {
             feature = "win",
             all(feature = "macos", target_os = "macos")
         )))]
-        let _ = (layout, surface, theme);
+        let _ = (layout, surface, theme, env);
     }
 
-    /// [`cell_paint::paint`] over `buf`.
+    /// [`cell_paint::paint`] over `cells`, with the pointer's tint from
+    /// `env`.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -681,7 +688,8 @@ impl Primitive for MenuBar {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        cell_paint::paint(self, &layout.layout, cells, theme);
+        let pointer = crate::primitives::context_menu::PointerTint::from_env(&self.id, env);
+        cell_paint::paint(self, &layout.layout, cells, theme, pointer);
     }
 }
 
@@ -812,8 +820,9 @@ impl Interactive for MenuBar {
 pub(crate) mod native_surface_paint {
     use super::{alt_char_index, display_text, MenuBar, MenuBarLayout};
     use crate::event::Rect;
-    use crate::interaction::InteractionState;
+    use crate::interactive::SubTarget;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::context_menu::PointerTint;
     use crate::theme::Theme;
 
     /// Thickness (surface-native units) of the Alt-key underline
@@ -837,57 +846,39 @@ pub(crate) mod native_surface_paint {
     /// the one every call site but macOS's own wants — see
     /// [`paint_without_mnemonics`] for the macOS twin, which paints
     /// everything here except the underline.
+    ///
+    /// `pointer` names the items the pointer hovers and presses, by item
+    /// index, and tints them under [`PointerTint::row_bg`]'s rule: an
+    /// open or focused item keeps [`Theme::tab_active_bg`] under hover,
+    /// a pressed item takes [`Theme::menu_item_pressed_bg`], and any
+    /// other hovered item takes [`Theme::menu_item_hover_bg`]. A disabled
+    /// item never tints.
     pub(crate) fn paint(
         bar: &MenuBar,
         layout: &MenuBarLayout,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        pointer: PointerTint,
     ) {
-        paint_with_mnemonics(bar, layout, surface, theme, true, None);
-    }
-
-    /// [`paint`], reading hover/pressed state from a single
-    /// [`InteractionState`] keyed by [`WidgetId`]: the top-level item
-    /// whose [`MenuBarItem::id`](super::MenuBarItem::id) matches
-    /// `interaction.hovered()` / `interaction.pressed()` paints with
-    /// [`Theme::menu_item_hover_bg`] / [`Theme::menu_item_pressed_bg`]
-    /// instead of its plain resting fill.
-    pub(crate) fn paint_interactive(
-        bar: &MenuBar,
-        layout: &MenuBarLayout,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        interaction: &InteractionState,
-    ) {
-        paint_with_mnemonics(bar, layout, surface, theme, true, Some(interaction));
+        paint_with_mnemonics(bar, layout, surface, theme, true, pointer);
     }
 
     /// [`paint`]'s macOS twin: identical in every respect — background,
-    /// active/disabled colouring, centred label text — except it never
-    /// paints the Alt-underline. macOS has no Alt-mnemonic keyboard
-    /// convention (⌘-based shortcuts are the platform idiom instead,
-    /// wired through [`crate::accelerator::Accelerator`] /
-    /// `NSMenuItem.keyEquivalent`, not a label prefix), so underlining a
-    /// character nothing responds to would be a visual lie.
+    /// active/disabled colouring, pointer tint, centred label text —
+    /// except it never paints the Alt-underline. macOS has no
+    /// Alt-mnemonic keyboard convention (⌘-based shortcuts are the
+    /// platform idiom instead, wired through
+    /// [`crate::accelerator::Accelerator`] / `NSMenuItem.keyEquivalent`,
+    /// not a label prefix), so underlining a character nothing responds
+    /// to would be a visual lie.
     pub(crate) fn paint_without_mnemonics(
         bar: &MenuBar,
         layout: &MenuBarLayout,
         surface: &mut dyn PaintSurface,
         theme: &Theme,
+        pointer: PointerTint,
     ) {
-        paint_with_mnemonics(bar, layout, surface, theme, false, None);
-    }
-
-    /// [`paint_without_mnemonics`] + [`paint_interactive`]'s hover/
-    /// pressed treatment combined — the macOS twin of [`paint_interactive`].
-    pub(crate) fn paint_without_mnemonics_interactive(
-        bar: &MenuBar,
-        layout: &MenuBarLayout,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        interaction: &InteractionState,
-    ) {
-        paint_with_mnemonics(bar, layout, surface, theme, false, Some(interaction));
+        paint_with_mnemonics(bar, layout, surface, theme, false, pointer);
     }
 
     fn paint_with_mnemonics(
@@ -896,7 +887,7 @@ pub(crate) mod native_surface_paint {
         surface: &mut dyn PaintSurface,
         theme: &Theme,
         show_mnemonics: bool,
-        interaction: Option<&InteractionState>,
+        pointer: PointerTint,
     ) {
         surface.surface_fill_rect(layout.bounds, theme.tab_bar_bg);
 
@@ -904,15 +895,6 @@ pub(crate) mod native_surface_paint {
             let item = &bar.items[vi.item_idx];
             let is_active =
                 bar.open_item == Some(vi.item_idx) || bar.focused_item == Some(vi.item_idx);
-            // Gated on `!item.disabled`, mirroring `vis.clickable`'s gate
-            // in `primitives::context_menu`'s equivalent: `MenuSystem`
-            // happens to exclude disabled items from `focused_item`
-            // already, but a host feeding its own `InteractionState`
-            // through this seam directly must not get a tint on an item
-            // that can't be clicked.
-            let is_pressed = !item.disabled && interaction.is_some_and(|i| i.is_pressed(&item.id));
-            let is_hovered = !item.disabled && interaction.is_some_and(|i| i.is_hovered(&item.id));
-
             let (fg, bg) = if is_active {
                 (theme.tab_active_fg, theme.tab_active_bg)
             } else if item.disabled {
@@ -920,23 +902,17 @@ pub(crate) mod native_surface_paint {
             } else {
                 (theme.tab_inactive_fg, theme.tab_bar_bg)
             };
-            // `is_active` (open or keyboard-focused) outranks `is_hovered`
-            // here: `focused_item` is also how the closed bar represents
-            // "mouse is over this item" (see `MenuSystem::bar_interaction`),
-            // so the two flags are frequently true for the same item. Were
-            // hover checked first, that item would downgrade from
-            // `tab_active_bg` to the fainter `menu_item_hover_bg` the moment
-            // it is hovered — a weaker highlight than before hovering,
-            // which is backwards. Pressed still wins over both.
-            let row_bg = if is_pressed {
-                Some(theme.menu_item_pressed_bg(theme.tab_bar_bg))
-            } else if is_active {
-                Some(bg)
-            } else if is_hovered {
-                Some(theme.menu_item_hover_bg(theme.tab_bar_bg))
-            } else {
-                None
-            };
+            // `is_active` (open or keyboard-focused) is the emphasis
+            // hover must not weaken: `focused_item` is also how the
+            // closed bar follows the mouse, so the focused item is often
+            // the hovered one too.
+            let row_bg = pointer.row_bg(
+                SubTarget(vi.item_idx as u64),
+                !item.disabled,
+                is_active.then_some(bg),
+                theme.tab_bar_bg,
+                theme,
+            );
 
             if let Some(row_bg) = row_bg {
                 surface.surface_fill_rect(vi.bounds, row_bg);
@@ -1075,7 +1051,7 @@ pub(crate) mod native_surface_paint {
             let layout = drift_layout(&bar);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
-            paint(&bar, &layout, &mut surface, &theme);
+            paint(&bar, &layout, &mut surface, &theme, PointerTint::default());
 
             let (label_rect, _, _) = surface
                 .texts
@@ -1119,7 +1095,7 @@ pub(crate) mod native_surface_paint {
             let layout = drift_layout(&bar);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
-            paint_without_mnemonics(&bar, &layout, &mut surface, &theme);
+            paint_without_mnemonics(&bar, &layout, &mut surface, &theme, PointerTint::default());
 
             let (label_rect, _, _) = surface
                 .texts
@@ -1161,9 +1137,9 @@ pub(crate) mod native_surface_paint {
             let theme = Theme::default();
 
             let mut with = RecordingSurface::default();
-            paint(&bar, &layout, &mut with, &theme);
+            paint(&bar, &layout, &mut with, &theme, PointerTint::default());
             let mut without = RecordingSurface::default();
-            paint_without_mnemonics(&bar, &layout, &mut without, &theme);
+            paint_without_mnemonics(&bar, &layout, &mut without, &theme, PointerTint::default());
 
             assert_eq!(
                 with.texts, without.texts,
@@ -1204,7 +1180,13 @@ pub(crate) mod native_surface_paint {
             let bar = drift_bar();
             let layout = drift_layout(&bar);
             let mut surface = RecordingSurface::default();
-            paint(&bar, &layout, &mut surface, &Theme::default());
+            paint(
+                &bar,
+                &layout,
+                &mut surface,
+                &Theme::default(),
+                PointerTint::default(),
+            );
 
             let help_item = layout
                 .visible_items
@@ -1226,6 +1208,18 @@ pub(crate) mod native_surface_paint {
             );
         }
 
+        /// The tint `bar`'s painter receives with the pointer on item
+        /// `hovered` and pressing item `pressed`, read back through a
+        /// [`crate::PaintEnv`] the way the widget's own paint reads it.
+        fn tint(bar: &MenuBar, (hovered, pressed): (Option<usize>, Option<usize>)) -> PointerTint {
+            let theme = Theme::default();
+            let style = crate::Style::default();
+            let at = |idx: Option<usize>| idx.map(|i| (bar.id, Some(SubTarget(i as u64))));
+            let interaction = crate::InteractionState::from_targets(at(hovered), at(pressed));
+            let env = crate::PaintEnv::new(&theme, &style).with_interaction(&interaction);
+            PointerTint::from_env(&bar.id, &env)
+        }
+
         fn idle_bar() -> MenuBar {
             let mut bar = drift_bar();
             bar.open_item = None;
@@ -1238,10 +1232,9 @@ pub(crate) mod native_surface_paint {
             let bar = idle_bar();
             let layout = drift_layout(&bar);
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(WidgetId::new("file")));
+            let interaction = (Some(0), None);
             let mut surface = RecordingSurface::default();
-            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+            paint(&bar, &layout, &mut surface, &theme, tint(&bar, interaction));
 
             let expected = theme.menu_item_hover_bg(theme.tab_bar_bg);
             assert!(
@@ -1253,21 +1246,18 @@ pub(crate) mod native_surface_paint {
 
         #[test]
         fn hovering_the_closed_bars_focused_item_keeps_active_bg_not_hover_bg() {
-            // Mirrors `MenuSystem::bar_interaction`'s own production
-            // feed on a closed bar: `handle_mouse_moved` sets
-            // `focused_item = Some(i)` for the hovered item, so `i` is
-            // both `is_active` (via `focused_item`) and `is_hovered`
-            // (via the fed `InteractionState`) at once. The stronger
-            // `tab_active_bg` must win, not the fainter hover tint.
+            // On a closed bar a pointer move sets `focused_item` to the
+            // hovered item, so that item is both active and hovered at
+            // once. The stronger `tab_active_bg` must win, not the
+            // fainter hover tint.
             let mut bar = drift_bar();
             bar.open_item = None;
             bar.focused_item = Some(0);
             let layout = drift_layout(&bar);
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(WidgetId::new("file")));
+            let interaction = (Some(0), None);
             let mut surface = RecordingSurface::default();
-            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+            paint(&bar, &layout, &mut surface, &theme, tint(&bar, interaction));
 
             let hover_bg = theme.menu_item_hover_bg(theme.tab_bar_bg);
             assert!(
@@ -1287,9 +1277,9 @@ pub(crate) mod native_surface_paint {
             let bar = idle_bar();
             let layout = drift_layout(&bar);
             let theme = Theme::default();
-            let interaction = InteractionState::new(); // nothing hovered
+            let interaction = (None, None); // nothing hovered
             let mut surface = RecordingSurface::default();
-            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+            paint(&bar, &layout, &mut surface, &theme, tint(&bar, interaction));
 
             let hover_bg = theme.menu_item_hover_bg(theme.tab_bar_bg);
             assert!(
@@ -1301,19 +1291,15 @@ pub(crate) mod native_surface_paint {
 
         #[test]
         fn disabled_item_is_never_tinted_even_when_fed_as_hovered() {
-            // `MenuSystem` happens to exclude disabled items from
-            // `focused_item` already, but a host that feeds its own
-            // `InteractionState` through this seam directly must not
-            // get a tint on an item that can't be clicked.
+            // The pointer can rest on a disabled item, which must not
+            // tint as though it could be clicked.
             let mut bar = idle_bar();
             bar.items[0].disabled = true;
             let layout = drift_layout(&bar);
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(WidgetId::new("file")));
-            interaction.set_pressed(Some(WidgetId::new("file")));
+            let interaction = (Some(0), Some(0));
             let mut surface = RecordingSurface::default();
-            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+            paint(&bar, &layout, &mut surface, &theme, tint(&bar, interaction));
 
             let hover_bg = theme.menu_item_hover_bg(theme.tab_bar_bg);
             let pressed_bg = theme.menu_item_pressed_bg(theme.tab_bar_bg);
@@ -1332,11 +1318,9 @@ pub(crate) mod native_surface_paint {
             let bar = idle_bar();
             let layout = drift_layout(&bar);
             let theme = Theme::default();
-            let mut interaction = InteractionState::new();
-            interaction.set_hovered(Some(WidgetId::new("file")));
-            interaction.set_pressed(Some(WidgetId::new("file")));
+            let interaction = (Some(0), Some(0));
             let mut surface = RecordingSurface::default();
-            paint_interactive(&bar, &layout, &mut surface, &theme, &interaction);
+            paint(&bar, &layout, &mut surface, &theme, tint(&bar, interaction));
 
             let pressed = theme.menu_item_pressed_bg(theme.tab_bar_bg);
             let hover = theme.menu_item_hover_bg(theme.tab_bar_bg);
@@ -1375,6 +1359,8 @@ pub(crate) mod native_surface_paint {
 pub(crate) mod cell_paint {
     use super::{alt_char_index, MenuBar, MenuBarLayout};
     use crate::cell_surface::{CellStyle, CellSurface};
+    use crate::interactive::SubTarget;
+    use crate::primitives::context_menu::PointerTint;
     use crate::theme::Theme;
     use crate::types::Color;
 
@@ -1390,12 +1376,15 @@ pub(crate) mod cell_paint {
     /// Paint `bar` at its caller-resolved `layout`. `layout.bounds` is
     /// the strip's own row in the surface's absolute cell space, so the
     /// painted glyph columns and the columns
-    /// [`MenuBarLayout::hit_test`] reports are the same.
+    /// [`MenuBarLayout::hit_test`] reports are the same. `pointer` tints
+    /// the hovered or pressed item under [`PointerTint::row_bg`]'s rule,
+    /// the same one the pixel painter follows.
     pub(crate) fn paint(
         bar: &MenuBar,
         layout: &MenuBarLayout,
         surface: &mut dyn CellSurface,
         theme: &Theme,
+        pointer: PointerTint,
     ) {
         let bounds = layout.bounds;
         let width = bounds.width.round() as u16;
@@ -1424,6 +1413,14 @@ pub(crate) mod cell_paint {
             } else {
                 (theme.tab_inactive_fg, bar_bg)
             };
+            let tint = pointer.row_bg(
+                SubTarget(vi.item_idx as u64),
+                !item.disabled,
+                is_active.then_some(bg),
+                bar_bg,
+                theme,
+            );
+            let bg = tint.unwrap_or(bg);
 
             // `vi.bounds.x` is absolute — `MenuBar::layout` starts its
             // cursor at the bounds' own origin — so the painted glyph
@@ -1431,7 +1428,7 @@ pub(crate) mod cell_paint {
             let start_x = vi.bounds.x.round() as u16;
             let end_x = start_x + vi.bounds.width.round() as u16;
 
-            if is_active {
+            if tint.is_some() {
                 for col in start_x..end_x.min(right) {
                     surface.put_char(col, y, ' ', solid(fg, bg));
                 }
@@ -1724,6 +1721,7 @@ mod tests {
 #[cfg(all(test, feature = "tui"))]
 mod cell_paint_tests {
     use super::*;
+    use crate::primitives::context_menu::PointerTint;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect as TuiRect;
     use ratatui::style::Modifier;
@@ -1751,7 +1749,7 @@ mod cell_paint_tests {
             crate::backend::ColorDepth::TrueColor,
             &mut cursor_sink,
         );
-        cell_paint::paint(bar, &layout, &mut surface, theme);
+        cell_paint::paint(bar, &layout, &mut surface, theme, PointerTint::default());
         layout
     }
 
@@ -1818,6 +1816,79 @@ mod cell_paint_tests {
     /// Non-zero-origin guard: same round trip at a shifted `area`
     /// origin, proving `hit_test` resolves against the absolute (not
     /// local) bounds the painter wrote into.
+    /// Paints `bar` through [`Primitive::paint_cells`] with the pointer
+    /// on item `hovered` and pressing item `pressed`, and returns the
+    /// background of each visible item's first cell, by item index.
+    fn item_bgs_with_pointer(
+        bar: &MenuBar,
+        theme: &Theme,
+        hovered: Option<usize>,
+        pressed: Option<usize>,
+    ) -> Vec<ratatui::style::Color> {
+        let mut buf = Buffer::empty(TuiRect::new(0, 0, 40, 1));
+        let ctx = crate::primitive::LayoutCtx::new(1.0, 1.0, false);
+        let layout = Primitive::layout(bar, &ctx, Rect::new(0.0, 0.0, 40.0, 1.0));
+        let at = |idx: Option<usize>| idx.map(|i| (bar.id, Some(SubTarget(i as u64))));
+        let interaction = crate::InteractionState::from_targets(at(hovered), at(pressed));
+        let style = crate::Style::default();
+        let env = crate::PaintEnv::new(theme, &style).with_interaction(&interaction);
+        Primitive::paint_cells(
+            bar,
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            &env,
+        );
+        layout
+            .layout
+            .visible_items
+            .iter()
+            .map(|vi| buf[(vi.bounds.x.round() as u16, 0)].bg)
+            .collect()
+    }
+
+    #[test]
+    fn hovered_item_takes_the_menu_hover_tint_on_cells() {
+        let theme = Theme::default();
+        let bgs = item_bgs_with_pointer(&make_bar(), &theme, Some(1), None);
+        let rest = ratatui_color(theme.tab_bar_bg);
+        assert_eq!(
+            bgs,
+            vec![
+                rest,
+                ratatui_color(theme.menu_item_hover_bg(theme.tab_bar_bg)),
+                rest
+            ]
+        );
+    }
+
+    #[test]
+    fn pressed_item_takes_the_menu_pressed_tint_on_cells() {
+        let theme = Theme::default();
+        let bgs = item_bgs_with_pointer(&make_bar(), &theme, Some(2), Some(2));
+        assert_eq!(
+            bgs[2],
+            ratatui_color(theme.menu_item_pressed_bg(theme.tab_bar_bg))
+        );
+    }
+
+    #[test]
+    fn hovering_the_open_item_keeps_the_active_fill_on_cells() {
+        let theme = Theme::default();
+        let mut bar = make_bar();
+        bar.open_item = Some(0);
+        let bgs = item_bgs_with_pointer(&bar, &theme, Some(0), None);
+        assert_eq!(bgs[0], ratatui_color(theme.tab_active_bg));
+    }
+
+    #[test]
+    fn a_disabled_item_never_tints_on_cells() {
+        let theme = Theme::default();
+        let mut bar = make_bar();
+        bar.items[1].disabled = true;
+        let bgs = item_bgs_with_pointer(&bar, &theme, Some(1), Some(1));
+        assert_eq!(bgs[1], ratatui_color(theme.tab_bar_bg));
+    }
+
     #[test]
     fn paint_and_click_round_trip_at_nonzero_origin() {
         paint_and_click_round_trip_at(7, 13);
