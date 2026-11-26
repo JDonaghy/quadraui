@@ -20,10 +20,12 @@
 //! `ActivityBarEvent::ItemClicked { id }`.
 //!
 //! The bar paints through the widget contract
-//! ([`crate::backend::DrawsPrimitives::draw_dyn`]). The hovered row and
-//! the paint-time [`ActivityBarStyle`] ride on the descriptor itself
-//! ([`ActivityBar::hovered`], [`ActivityBar::style`]), so every painter
-//! reads them from the one value it is handed.
+//! ([`crate::backend::DrawsPrimitives::draw_dyn`]). The paint-time
+//! [`ActivityBarStyle`] rides on the descriptor itself
+//! ([`ActivityBar::style`]); the hovered row comes from the paint's
+//! [`crate::PaintEnv`], addressed by the row's
+//! [`crate::interactive::SubTarget`] (its index into
+//! [`ActivityBarLayout::visible_items`]).
 
 use crate::behaviour::nav::{FlatNav, NavKey};
 use crate::compose::Handled;
@@ -57,7 +59,6 @@ use serde::{Deserialize, Serialize};
 ///     selection_bg: None,
 ///     is_keyboard_focused: false,
 ///     style: Default::default(),
-///     hovered: None,
 /// };
 ///
 /// let layout = bar.layout(2.0, 10.0, 1.0);
@@ -108,11 +109,6 @@ pub struct ActivityBar {
     /// the default icon size.
     #[serde(default)]
     pub style: ActivityBarStyle,
-    /// The [`ActivityBarLayout::visible_items`] row the pointer is over,
-    /// tinted by every painter. A host fills it from its own hover
-    /// tracking (for example [`ActivityBarState::hovered_idx`]).
-    #[serde(default)]
-    pub hovered: Option<usize>,
 }
 
 /// One icon entry in an `ActivityBar`.
@@ -1111,8 +1107,8 @@ impl crate::primitive::Primitive for ActivityBar {
     }
 
     /// The shared rail painter, through [`native_surface_paint::paint`],
-    /// with the descriptor's own [`ActivityBar::style`] and
-    /// [`ActivityBar::hovered`] row.
+    /// with the descriptor's own [`ActivityBar::style`] and the row `env`
+    /// reports hovered.
     fn paint(
         &self,
         layout: &ActivityBarPrimitiveLayout,
@@ -1135,7 +1131,7 @@ impl crate::primitive::Primitive for ActivityBar {
                 &self.style,
                 surface,
                 theme,
-                self.hovered,
+                env.hovered_sub(&self.id).map(|sub| sub.0 as usize),
                 layout.nerd_fonts,
             );
         }
@@ -1168,7 +1164,8 @@ impl crate::primitive::Primitive for ActivityBar {
             layout.area.width.max(0.0).round() as u16,
             layout.area.height.max(0.0).round() as u16,
         );
-        let _ = cell_paint::paint(buf, area, self, theme, layout.nerd_fonts);
+        let hovered = env.hovered_sub(&self.id).map(|sub| sub.0 as usize);
+        let _ = cell_paint::paint(buf, area, self, theme, hovered, layout.nerd_fonts);
     }
 }
 
@@ -1189,9 +1186,9 @@ pub(crate) mod cell_paint {
     use ratatui::layout::Rect;
 
     /// Paint `bar` into `area` on `buf` with its own
-    /// [`ActivityBar::style`] and [`ActivityBar::hovered`] row, returning
+    /// [`ActivityBar::style`] and the `hovered` row tinted, returning
     /// the bar-relative row hits (bottom-pinned items first, then
-    /// top-pinned, the order [`ActivityBar::hovered`] indexes).
+    /// top-pinned, the order `hovered` indexes).
     ///
     /// `nerd_fonts_enabled` picks which half of each item's
     /// [`crate::Icon`] paints: `glyph` when `true`, `fallback` when
@@ -1201,6 +1198,7 @@ pub(crate) mod cell_paint {
         area: Rect,
         bar: &ActivityBar,
         theme: &Theme,
+        hovered: Option<usize>,
         nerd_fonts_enabled: bool,
     ) -> Vec<ActivityBarRowHit> {
         if area.width == 0 || area.height == 0 {
@@ -1211,7 +1209,7 @@ pub(crate) mod cell_paint {
 
         // Row hits are built at origin (0, 0), the precondition of
         // `row_hits_from_toolbar_layout`, which also makes them the
-        // lookup table `bar.hovered` indexes into.
+        // lookup table `hovered` indexes into.
         let zero_origin_layout = tui_toolbar_layout_with_options(
             &toolbar,
             Rect::new(0, 0, area.width, area.height),
@@ -1219,7 +1217,7 @@ pub(crate) mod cell_paint {
         );
         let row_hits = bar.row_hits_from_toolbar_layout(&zero_origin_layout);
 
-        let hovered_id = bar.hovered.and_then(|i| row_hits.get(i)).map(|h| h.id);
+        let hovered_id = hovered.and_then(|i| row_hits.get(i)).map(|h| h.id);
 
         let _ = draw_toolbar_with_rail_style(
             buf,
@@ -1424,7 +1422,6 @@ mod tests {
             selection_bg: Some(Color::rgb(80, 80, 80)),
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let json = serde_json::to_string(&bar).unwrap();
         let back: ActivityBar = serde_json::from_str(&json).unwrap();
@@ -1510,7 +1507,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let layout = bar.layout(3.0, 20.0, 1.0);
         assert_eq!(layout.visible_items.len(), 0);
@@ -1535,7 +1531,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: true,
             style: Default::default(),
-            hovered: None,
         };
 
         let toolbar: Toolbar = (&bar).into();
@@ -1576,7 +1571,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let toolbar: Toolbar = (&bar).into();
         assert_eq!(toolbar.focused_index, None);
@@ -1604,7 +1598,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new().with_active_bg(Color::rgb(1, 2, 3));
         let theme = Theme::default();
@@ -1622,7 +1615,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1640,7 +1632,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1658,7 +1649,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1676,7 +1666,6 @@ mod tests {
             selection_bg: Some(Color::rgb(7, 8, 9)),
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1694,7 +1683,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1712,7 +1700,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1731,7 +1718,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1754,7 +1740,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new();
         let theme = Theme::default();
@@ -1834,7 +1819,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let layout = bar.layout(3.0, 10.0, 1.0);
         assert_eq!(
@@ -1861,7 +1845,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let layout = bar.layout(3.0, 2.0, 1.0);
         let expected = expected_row_hits(&bar, &layout);
@@ -1889,7 +1872,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let layout = bar.layout(3.0, 6.0, 1.0);
 
@@ -1960,7 +1942,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let layout = bar.layout(3.0, 2.0, 1.0);
 
@@ -1998,7 +1979,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let layout = bar.layout(3.0, 10.0, 1.0);
         assert_eq!(layout.visible_items.len(), 2);
@@ -2021,7 +2001,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         // Viewport 10, items 1 each. Top at y=0, bottom at y=9.
         let layout = bar.layout(3.0, 10.0, 1.0);
@@ -2065,7 +2044,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let layout = bar.layout(3.0, 6.0, 1.0);
         let top_count = layout
@@ -2105,7 +2083,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let layout = bar.layout(48.0, 100.0, 48.0);
 
@@ -2146,7 +2123,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let layout = bar.layout(48.0, 200.0, 48.0);
         // Top items at y = 0, 48, 96. Settings at y = 200 - 48 = 152.
@@ -2263,7 +2239,6 @@ mod native_surface_paint_tests {
             selection_bg: Some(selection_bg),
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let style = ActivityBarStyle::new().with_active_bg(active_bg);
         let theme = Theme::default();
@@ -2355,8 +2330,50 @@ mod cell_paint_tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         }
+    }
+
+    /// The contract painter tints the row whose sub-target its
+    /// [`crate::PaintEnv`] reports hovered on the bar — the same cells
+    /// [`draw_activity_bar`] paints for that row index.
+    #[test]
+    fn contract_paint_tints_the_env_hovered_row() {
+        use crate::interaction::InteractionState;
+        use crate::interactive::SubTarget;
+        use crate::primitive::{LayoutCtx, PaintEnv, Primitive};
+
+        let b = bar();
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let canvas = Rect::new(0, 0, 40, 20);
+        let via_contract = |interaction: &InteractionState| {
+            let mut buf = Buffer::empty(canvas);
+            let layout = Primitive::layout(
+                &b,
+                &LayoutCtx::new(1.0, 1.0, false),
+                crate::event::Rect::new(0.0, 0.0, 3.0, 10.0),
+            );
+            let env = PaintEnv::new(&theme, &style).with_interaction(interaction);
+            Primitive::paint_cells(
+                &b,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &env,
+            );
+            buf
+        };
+        let direct = |hovered: Option<usize>| {
+            let mut buf = Buffer::empty(canvas);
+            draw_activity_bar(&mut buf, Rect::new(0, 0, 3, 10), &b, &theme, hovered, false);
+            buf
+        };
+        let on_row =
+            |row: u64| InteractionState::from_targets(Some((b.id, Some(SubTarget(row)))), None);
+
+        assert_ne!(direct(Some(1)), direct(None), "sanity: hover tints a row");
+        assert_eq!(via_contract(&InteractionState::new()), direct(None));
+        assert_eq!(via_contract(&on_row(1)), direct(Some(1)));
+        assert_eq!(via_contract(&on_row(2)), direct(Some(2)));
     }
 
     /// Hit regions are **bar-relative**, not absolute, so the top row
@@ -2372,7 +2389,7 @@ mod cell_paint_tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 3, 10);
-        let hits = draw_activity_bar(&mut buf, area, &b, &theme, false);
+        let hits = draw_activity_bar(&mut buf, area, &b, &theme, None, false);
 
         let span = |id: &str| {
             let h = hits
@@ -2409,7 +2426,7 @@ mod cell_paint_tests {
 
         let spans = |y: u16| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 30));
-            let hits = draw_activity_bar(&mut buf, Rect::new(0, y, 3, 10), &b, &theme, false);
+            let hits = draw_activity_bar(&mut buf, Rect::new(0, y, 3, 10), &b, &theme, None, false);
             hits.iter()
                 .map(|h| (h.y_start, h.y_end))
                 .collect::<Vec<_>>()
@@ -2434,7 +2451,7 @@ mod cell_paint_tests {
         let theme = Theme::default();
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 4, 10);
-        draw_activity_bar(&mut buf, area, &b, &theme, false);
+        draw_activity_bar(&mut buf, area, &b, &theme, None, false);
 
         let row_text = |y: u16| {
             (area.x..area.x + area.width)
@@ -2465,7 +2482,7 @@ mod cell_paint_tests {
         let row_text = |nerd_fonts_enabled: bool| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
             let area = Rect::new(0, 0, 4, 10);
-            draw_activity_bar(&mut buf, area, &b, &theme, nerd_fonts_enabled);
+            draw_activity_bar(&mut buf, area, &b, &theme, None, nerd_fonts_enabled);
             (area.x..area.x + area.width)
                 .map(|x| buf[(x, area.y)].symbol().to_string())
                 .collect::<String>()
@@ -2496,7 +2513,7 @@ mod cell_paint_tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 0, 3, 10);
         b.style = style;
-        draw_activity_bar(&mut buf, area, &b, &theme, false);
+        draw_activity_bar(&mut buf, area, &b, &theme, None, false);
 
         let fill = ratatui_color(fill_color);
         assert_ne!(
@@ -2531,7 +2548,7 @@ mod cell_paint_tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 0, 3, 10);
         b.style = ActivityBarStyle::default();
-        draw_activity_bar(&mut buf, area, &b, &theme, false);
+        draw_activity_bar(&mut buf, area, &b, &theme, None, false);
 
         assert_eq!(
             buf[(area.x, area.y)].symbol(),
@@ -2607,7 +2624,6 @@ mod widget_contract_tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         }
     }
 
@@ -3045,11 +3061,10 @@ mod mac_paint_tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         }
     }
 
-    /// Paint `bar` (with `hovered` set on it) through the widget contract
+    /// Paint `bar` (with the `hovered` row pinned) through the widget contract
     /// at `(x, y)` on a `canvas_w` × `canvas_h` bitmap, returning the
     /// bitmap and the painted rail's bar-relative row hits.
     fn paint_bar_at(
@@ -3063,16 +3078,18 @@ mod mac_paint_tests {
         let surface = BitmapSurface::new(canvas_w, canvas_h);
         surface.fill(0.0, 0.0, 0.0, 0.0);
 
-        let mut bar = bar.clone();
-        bar.hovered = hovered;
+        let interaction = crate::interaction::InteractionState::from_targets(
+            hovered.map(|i| (bar.id, Some(crate::interactive::SubTarget(i as u64)))),
+            None,
+        );
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(canvas_w as f32, canvas_h as f32, 1.0));
         let regions = backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_dyn(QRect::new(x, y, W as f32, H as f32), &bar, &())
+            b.draw_dyn(QRect::new(x, y, W as f32, H as f32), bar, &interaction)
                 .downcast_ref::<ActivityBarPrimitiveLayout>()
                 .expect("an ActivityBar lays out as ActivityBarPrimitiveLayout")
-                .row_hits(&bar)
+                .row_hits(bar)
         });
         backend.end_frame();
         (surface, regions)

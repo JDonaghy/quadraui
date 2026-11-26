@@ -6187,7 +6187,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: true,
             style: Default::default(),
-            hovered: None,
         };
         // The frame's painted-widget record is what `end_frame` reads the
         // focused rail from, so paint the bar through the widget contract
@@ -6872,7 +6871,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
@@ -10587,7 +10585,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let _ = crate::DrawsPrimitives::draw_dyn(&mut backend, rect, &activity_bar, &());
 

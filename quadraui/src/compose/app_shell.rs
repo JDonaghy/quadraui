@@ -1139,7 +1139,6 @@ impl AppShell {
             selection_bg: self.selection_bg,
             is_keyboard_focused: focused,
             style: Default::default(),
-            hovered: None,
         }
     }
 
@@ -1197,13 +1196,24 @@ impl AppShell {
         let layout = self.compute_layout(area, lh, &style, &|h: f32| backend.snap_height(h));
         Self::register_chrome_zones(backend, &layout);
 
-        let mut bar = self.build_activity_bar();
-        bar.hovered = self.activity_keyboard.hovered_idx();
+        let bar = self.build_activity_bar();
+        // The shell's own hover tracking pins the tinted row when it has
+        // one; otherwise the bar paints with the ambient pointer state.
+        let pinned = self.activity_keyboard.hovered_idx().map(|idx| {
+            crate::interaction::InteractionState::from_targets(
+                Some((bar.id, Some(crate::interactive::SubTarget(idx as u64)))),
+                None,
+            )
+        });
+        let paint_state: &dyn crate::primitive::PaintState = match &pinned {
+            Some(state) => state,
+            None => &(),
+        };
         let hits = crate::backend::DrawsPrimitives::draw_dyn(
             backend,
             layout.activity_bar_bounds,
             &bar,
-            &(),
+            paint_state,
         )
         .downcast_ref::<crate::primitives::activity_bar::ActivityBarPrimitiveLayout>()
         .map(|painted| painted.row_hits(&bar))
@@ -2218,6 +2228,7 @@ mod tests {
             area,
             bar,
             &theme,
+            None,
             nerd_fonts_enabled,
         );
         (area.x..area.x + area.width)

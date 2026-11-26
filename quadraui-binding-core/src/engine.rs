@@ -7641,7 +7641,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style: Default::default(),
-            hovered: None,
         };
         let mut driver = TuiDriver::new(WidgetLeafLogic::new("activity_bar", Rc::new(bar)), 40, 5);
 

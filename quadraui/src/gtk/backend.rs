@@ -6671,7 +6671,6 @@ mod tests {
             selection_bg: None,
             is_keyboard_focused: false,
             style,
-            hovered: None,
         };
 
         let ink_height = |style: crate::ActivityBarStyle, frame_font_pt: f64| -> i32 {
