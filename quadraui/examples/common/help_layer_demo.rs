@@ -224,6 +224,7 @@ impl ShellApp for HelpLayerDemo {
                 }
                 Handled::Event(DualModePaletteAction::TextConfirmed { .. })
                 | Handled::Event(DualModePaletteAction::ModeToggled { .. })
+                | Handled::Event(_)
                 | Handled::Consumed => {
                     self.palette = Some(palette);
                     return Reaction::Redraw;

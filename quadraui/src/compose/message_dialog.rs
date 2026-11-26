@@ -1,17 +1,21 @@
-//! `MessageDialogController` — engine-level message/alert box driver.
+//! [`MessageDialog`] — the in-canvas message/alert box on the widget
+//! contract, plus [`MessageDialogController`], its thin event-driven
+//! wrapper.
 //!
-//! Owns the interaction state (keyboard button focus, resolve-on-click)
-//! for the in-canvas [`Dialog`] primitive, giving it the same
-//! show → block-until-resolved → return-a-choice contract
+//! A `MessageDialog` composes the custom-drawn [`Dialog`]: it lays out
+//! and paints through `Dialog`'s own [`Primitive`] and hands input to
+//! `Dialog`'s [`Interactive`], adding only the alert-box keyboard model
+//! on top. It gives the dialog the same show → block-until-resolved →
+//! return-a-choice contract
 //! [`crate::backend::PlatformServices::show_message_dialog`] has on a
-//! backend with a native alert facility. Renders via the existing
-//! `Dialog` primitive ([`Backend::draw_dialog`]) — no new `Backend`
-//! trait method needed, mirroring [`crate::compose::FolderPickerController`].
+//! backend with a native alert facility.
 //!
-//! On TUI, `TuiPlatformServices::show_message_dialog` drives this controller
-//! through a nested draw-and-read loop (see `crate::tui::services` module docs)
-//! to return a real [`crate::backend::MessageDialogChoice`] — see
-//! `examples/tui_message_dialog.rs` for the controller used directly by an app.
+//! On TUI, `TuiPlatformServices::show_message_dialog` drives the
+//! controller through a nested draw-and-read loop (see
+//! `crate::tui::services` module docs) to return a real
+//! [`crate::backend::MessageDialogChoice`] — see
+//! `examples/tui_message_dialog.rs` for the controller used directly by
+//! an app.
 //!
 //! # Usage pattern
 //!
@@ -38,15 +42,19 @@
 //! }
 //! ```
 //!
+//! An app on the runtime's routing engine pushes the [`MessageDialog`]
+//! itself as a `Surface::Widget` and registers it in its frame tree; the
+//! choice then arrives as [`UiEvent::MessageDialogResolved`].
+//!
 //! # Keyboard model
 //!
-//! Left/Right and Tab/Shift+Tab cycle keyboard focus among the buttons
-//! (wrapping); Enter activates the focused button; Escape resolves to
+//! One focus stop per button. Left/Right and Tab/Shift+Tab cycle
+//! keyboard focus among the buttons (wrapping); Enter activates the
+//! focused button, which starts on the default one; Escape resolves to
 //! [`Dialog::cancel_button_id`], falling back to
-//! [`Dialog::default_button_id`] when no button declares
-//! `is_cancel` — the same "there's always something to degrade to"
-//! principle this controller exists to uphold (a single-button "OK"
-//! alert must still be dismissible with Escape, not just Enter).
+//! [`Dialog::default_button_id`] when no button declares `is_cancel` —
+//! a single-button "OK" alert must still be dismissible with Escape, not
+//! just Enter.
 //!
 //! # No visual keyboard-focus ring (known limitation)
 //!
@@ -55,18 +63,23 @@
 //! so the rendered dialog cannot visually distinguish the keyboard-focused
 //! button from an unfocused one beyond `is_default`'s existing styling.
 //! Enter/click routing is fully correct regardless — this only affects
-//! what a sighted user sees highlighted while tabbing. Extending
-//! `DialogButton` to carry focus is a separate, primitives-layer change
-//! (would touch every backend's `draw_dialog` rasteriser), out of scope
-//! here.
+//! what a sighted user sees highlighted while tabbing.
 
+use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
 use crate::backend::DrawsPrimitives;
 use crate::backend::{MessageDialogChoice, MessageDialogOptions};
+use crate::compose::widget_host;
 use crate::compose::Handled;
-use crate::event::{Point, Rect, UiEvent};
-use crate::primitives::dialog::{Dialog, DialogButton, DialogHit, DialogLayout};
-use crate::types::StyledText;
-use crate::{Backend, Key, Modifiers, NamedKey};
+use crate::event::{Rect, UiEvent};
+use crate::interactive::{
+    EventCx, FocusSpec, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget, WidgetAction,
+};
+use crate::primitive::{LayoutCtx, Primitive, Size};
+use crate::primitives::dialog::{
+    Dialog, DialogAction, DialogButton, DialogLayout, DialogPrimitiveLayout, DialogState,
+};
+use crate::types::{StyledText, WidgetId};
+use crate::{Backend, Key, NamedKey};
 
 /// What happened after [`MessageDialogController::handle`] processed an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,28 +101,42 @@ pub enum MessageDialogEvent {
     Ignored,
 }
 
-/// Cross-backend compose controller for the in-canvas message/alert box.
+// ── Widget ────────────────────────────────────────────────────────────────
+
+/// The in-canvas message/alert box: a [`Dialog`] with the alert-box
+/// keyboard model of this module's doc.
 ///
-/// See the [module-level documentation](self) for a usage example.
-pub struct MessageDialogController {
-    dialog: Dialog,
-    /// Index into `dialog.buttons` of the keyboard-focused button.
-    /// Seeded from [`Dialog::default_button_id`] (or `0` when there is
-    /// no default and at least one button).
-    focused: usize,
+/// The modal centres itself in the rect it is laid out in, so a host
+/// hands it the whole viewport.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MessageDialog {
+    /// The dialog this alert paints and routes input through. Its
+    /// [`Dialog::id`] is the widget's id.
+    pub dialog: Dialog,
 }
 
-impl MessageDialogController {
-    /// Build a controller from the same [`MessageDialogOptions`]
+/// [`Interactive::State`] for [`MessageDialog`]: the composed
+/// [`Dialog`]'s own state, which tracks the keyboard-focused button.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct MessageDialogState {
+    /// The composed dialog's state. Its `focused_button` stays `None`
+    /// until a key or click moves focus, and the alert then reads its
+    /// default button as the focused one.
+    pub dialog: DialogState,
+}
+
+impl MessageDialog {
+    /// Build an alert from the same [`MessageDialogOptions`]
     /// [`crate::backend::PlatformServices::show_message_dialog`] takes —
     /// so a TUI backend's implementation of that method can construct
     /// one directly from its `opts` argument with no translation step.
     ///
-    /// `opts.body` is split on `\n` into one [`crate::types::StyledText`]
-    /// line per segment, matching [`crate::primitives::dialog::Dialog::body`]'s
-    /// multi-line shape (the inverse of what
-    /// [`crate::primitives::dialog::native_dialog_options`] does when
-    /// going the other way).
+    /// `opts.body` is split on `\n` into one [`StyledText`] line per
+    /// segment, matching [`Dialog::body`]'s multi-line shape (the inverse
+    /// of what [`crate::primitives::dialog::native_dialog_options`] does
+    /// when going the other way). The id defaults to
+    /// `WidgetId::new("message_dialog")`.
     pub fn new(opts: MessageDialogOptions) -> Self {
         let buttons: Vec<DialogButton> = opts
             .buttons
@@ -123,25 +150,239 @@ impl MessageDialogController {
                 spec: b.spec.clone(),
             })
             .collect();
-        let focused = buttons.iter().position(|b| b.is_default).unwrap_or(0);
-        let dialog = Dialog {
-            id: crate::types::WidgetId::new("message_dialog"),
-            title: StyledText::plain(opts.title),
-            body: opts.body.lines().map(StyledText::plain).collect(),
-            buttons,
-            severity: opts.severity,
-            vertical_buttons: false,
-            table: None,
-            input: None,
-        };
-        Self { dialog, focused }
+        Self {
+            dialog: Dialog {
+                id: WidgetId::new("message_dialog"),
+                title: StyledText::plain(opts.title),
+                body: opts.body.lines().map(StyledText::plain).collect(),
+                buttons,
+                severity: opts.severity,
+                vertical_buttons: false,
+                table: None,
+                input: None,
+            },
+        }
     }
 
-    /// Override the [`crate::types::WidgetId`] used by the rendered
-    /// `Dialog`. Defaults to `WidgetId::new("message_dialog")`. Returns
-    /// `self` for builder-style chaining.
+    /// Override the alert's [`WidgetId`]. Returns `self` for
+    /// builder-style chaining.
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.dialog.id = crate::types::WidgetId::new(id.into());
+        self.dialog.id = WidgetId::new(id.into());
+        self
+    }
+
+    /// Stack buttons vertically instead of the default right-aligned
+    /// horizontal row — see [`Dialog::vertical_buttons`]. Returns `self`
+    /// for builder-style chaining.
+    pub fn with_vertical_buttons(mut self, vertical: bool) -> Self {
+        self.dialog.vertical_buttons = vertical;
+        self
+    }
+
+    /// The button keyboard focus sits on: the one a key or click moved
+    /// it to, else the default button, else the first.
+    pub fn focused_button(&self, state: &MessageDialogState) -> Option<usize> {
+        if self.dialog.buttons.is_empty() {
+            return None;
+        }
+        Some(
+            state
+                .dialog
+                .focused_button
+                .filter(|i| *i < self.dialog.buttons.len())
+                .unwrap_or_else(|| {
+                    self.dialog
+                        .buttons
+                        .iter()
+                        .position(|b| b.is_default)
+                        .unwrap_or(0)
+                }),
+        )
+    }
+
+    /// The choice Escape resolves to: the cancel button, else the default.
+    fn escape_choice(&self) -> Option<MessageDialogChoice> {
+        self.dialog
+            .cancel_button_id()
+            .or_else(|| self.dialog.default_button_id())
+            .copied()
+    }
+
+    /// Move keyboard focus `delta` buttons along the row, wrapping.
+    fn cycle(
+        &self,
+        state: &mut MessageDialogState,
+        delta: isize,
+        cx: &mut EventCx,
+    ) -> Handled<MessageDialogChoice> {
+        let n = self.dialog.buttons.len();
+        let Some(current) = self.focused_button(state) else {
+            return Handled::Ignored;
+        };
+        let next = crate::focus::cycle_index(current, delta, n);
+        state.dialog.focused_button = Some(next);
+        cx.request_focus(Some(SubTarget(next as u64)));
+        cx.request_redraw();
+        Handled::Consumed
+    }
+
+    /// The composed dialog's answer, as this alert's choice.
+    fn choice_from(handled: Handled<DialogAction>) -> Handled<MessageDialogChoice> {
+        match handled {
+            Handled::Event(DialogAction::ButtonActivated(id)) => Handled::Event(id),
+            Handled::Event(DialogAction::Cancelled { button: Some(id) }) => Handled::Event(id),
+            Handled::Event(_) | Handled::Consumed => Handled::Consumed,
+            Handled::Ignored => Handled::Ignored,
+        }
+    }
+}
+
+impl WidgetAction for MessageDialogChoice {
+    /// A choice is the button the alert resolved to, which
+    /// [`UiEvent::MessageDialogResolved`] carries — the crate's one "an
+    /// in-canvas dialog was answered" channel.
+    fn into_ui_event(self, _id: WidgetId) -> UiEvent {
+        UiEvent::MessageDialogResolved(self)
+    }
+}
+
+impl A11yPrimitive for MessageDialog {
+    fn a11y_info(&self) -> A11yInfo {
+        self.dialog.a11y_info()
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        self.dialog.a11y_children()
+    }
+}
+
+impl Primitive for MessageDialog {
+    type Layout = DialogPrimitiveLayout;
+    type Event = MessageDialogChoice;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.dialog.id)
+    }
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        Primitive::capture(&self.dialog)
+    }
+
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        Primitive::paint_bleed(&self.dialog, style)
+    }
+
+    fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize {
+        Primitive::measure(&self.dialog, ctx, avail)
+    }
+
+    /// The composed dialog's own layout, centred in `rect`.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> DialogPrimitiveLayout {
+        Primitive::layout(&self.dialog, ctx, rect)
+    }
+
+    fn paint(
+        &self,
+        layout: &DialogPrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        Primitive::paint(&self.dialog, layout, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &DialogPrimitiveLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        Primitive::paint_cells(&self.dialog, layout, cells, env);
+    }
+}
+
+impl Interactive for MessageDialog {
+    type State = MessageDialogState;
+    type Action = MessageDialogChoice;
+
+    /// The composed dialog's stops: one per button.
+    fn focus(&self) -> FocusSpec {
+        Interactive::focus(&self.dialog)
+    }
+
+    fn sub_regions(&self, layout: &DialogPrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        Interactive::sub_regions(&self.dialog, layout)
+    }
+
+    fn a11y_actions(&self, state: &MessageDialogState) -> Vec<crate::a11y::A11yAction> {
+        Interactive::a11y_actions(&self.dialog, &state.dialog)
+    }
+
+    /// Enter, Escape and the arrow/Tab keys follow this module's keyboard
+    /// model; every other event — clicks, focus changes, assistive
+    /// actions — is the composed dialog's, and its outcome is reported as
+    /// the choice it names.
+    fn handle(
+        &self,
+        state: &mut MessageDialogState,
+        event: &RoutedEvent,
+        layout: &DialogPrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<MessageDialogChoice> {
+        if let RoutedEvent::Key(KeyEvent { key, modifiers, .. }) = event {
+            match key {
+                Key::Named(NamedKey::Escape) => {
+                    return match self.escape_choice() {
+                        Some(id) => Handled::Event(id),
+                        None => Handled::Ignored,
+                    };
+                }
+                Key::Named(NamedKey::Enter) => {
+                    return match self.focused_button(state) {
+                        Some(i) => Handled::Event(self.dialog.buttons[i].id),
+                        None => Handled::Ignored,
+                    };
+                }
+                Key::Named(NamedKey::Left) => return self.cycle(state, -1, cx),
+                Key::Named(NamedKey::Right) => return self.cycle(state, 1, cx),
+                Key::Named(NamedKey::Tab) => {
+                    return self.cycle(state, if modifiers.shift { -1 } else { 1 }, cx);
+                }
+                Key::Named(NamedKey::BackTab) => return self.cycle(state, -1, cx),
+                _ => {}
+            }
+        }
+        let handled = Interactive::handle(&self.dialog, &mut state.dialog, event, layout, cx);
+        Self::choice_from(handled)
+    }
+}
+
+// ── Controller ────────────────────────────────────────────────────────────
+
+/// Event-driven wrapper over a [`MessageDialog`] and its state, for a
+/// host that calls it with raw [`UiEvent`]s rather than routing it
+/// through the runtime's engine.
+///
+/// See the [module-level documentation](self) for a usage example.
+pub struct MessageDialogController {
+    widget: MessageDialog,
+    state: MessageDialogState,
+}
+
+impl MessageDialogController {
+    /// Build a controller over [`MessageDialog::new`]'s alert.
+    pub fn new(opts: MessageDialogOptions) -> Self {
+        Self {
+            widget: MessageDialog::new(opts),
+            state: MessageDialogState::default(),
+        }
+    }
+
+    /// Override the [`WidgetId`] used by the rendered `Dialog`. Defaults
+    /// to `WidgetId::new("message_dialog")`. Returns `self` for
+    /// builder-style chaining.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.widget = self.widget.with_id(id);
         self
     }
 
@@ -150,69 +391,101 @@ impl MessageDialogController {
     /// dialogs. See [`Dialog::vertical_buttons`]. Returns `self` for
     /// builder-style chaining.
     pub fn with_vertical_buttons(mut self, vertical: bool) -> Self {
-        self.dialog.vertical_buttons = vertical;
+        self.widget = self.widget.with_vertical_buttons(vertical);
         self
     }
 
     /// The underlying [`Dialog`] descriptor.
     pub fn dialog(&self) -> &Dialog {
-        &self.dialog
+        &self.widget.dialog
+    }
+
+    /// The [`MessageDialog`] widget this controller drives.
+    pub fn widget(&self) -> &MessageDialog {
+        &self.widget
     }
 
     /// The `WidgetId` of the currently keyboard-focused button, if any.
-    pub fn focused_button_id(&self) -> Option<&crate::types::WidgetId> {
-        self.dialog.buttons.get(self.focused).map(|b| &b.id)
+    pub fn focused_button_id(&self) -> Option<&WidgetId> {
+        self.widget
+            .focused_button(&self.state)
+            .map(|i| &self.widget.dialog.buttons[i].id)
     }
 
     /// The dialog's full on-screen bounds for this backend's current
     /// viewport — the same [`DialogLayout::bounds`] [`Self::render`] paints
-    /// and [`Self::handle`]'s click routing hit-tests against. A caller
-    /// that tracks a [`crate::ModalStack`] entry for the open dialog (so
-    /// other modal-aware code gets the same hit-test precedence an open
-    /// context menu already has) pushes this.
+    /// and [`Self::handle_event`]'s click routing hit-tests against. A
+    /// caller that tracks a [`crate::ModalStack`] entry for the open
+    /// dialog (so other modal-aware code gets the same hit-test precedence
+    /// an open context menu already has) pushes this.
     pub fn bounds(&self, backend: &dyn Backend) -> Rect {
         self.layout(backend).bounds
     }
 
-    // ── Layout ────────────────────────────────────────────────────────
-
-    /// Resolve the modal's geometry through the widget contract, from
-    /// the backend's own viewport and font metrics — the "one layout fn,
-    /// two callers" pattern `docs/LESSONS.md` documents, so paint and
-    /// hit-test can never disagree.
-    fn layout(&self, backend: &dyn Backend) -> DialogLayout {
+    /// The whole viewport, which the modal centres itself in.
+    fn viewport(backend: &dyn Backend) -> Rect {
         let vp = backend.viewport();
-        let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
-        backend.layout_primitive(viewport, &self.dialog).layout
+        Rect::new(0.0, 0.0, vp.width, vp.height)
     }
 
-    // ── Render ────────────────────────────────────────────────────────
+    /// The modal's geometry, resolved through the widget contract from the
+    /// backend's own viewport and font metrics, so paint and hit-test can
+    /// never disagree.
+    fn layout(&self, backend: &dyn Backend) -> DialogLayout {
+        backend
+            .layout_primitive(Self::viewport(backend), &self.widget)
+            .layout
+    }
 
     /// Paint the dialog, centered in the backend's current viewport.
     ///
     /// Call this from `AppLogic::render` whenever the dialog is open.
     pub fn render(&self, backend: &mut dyn Backend) {
-        let vp = backend.viewport();
-        let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
-        backend.draw_dyn(viewport, &self.dialog, &());
+        let viewport = Self::viewport(backend);
+        backend.draw_dyn(viewport, &self.widget, &());
     }
 
-    // ── Handle ────────────────────────────────────────────────────────
-
-    /// Drive the state machine with a backend-neutral [`UiEvent`].
+    /// Drive the alert with a backend-neutral [`UiEvent`].
     ///
-    /// Needs `backend` (immutably) to recompute the same [`DialogLayout`]
-    /// [`Self::render`] just painted, so a `MouseDown` can hit-test
-    /// against the exact button bounds on screen.
+    /// Needs `backend` (immutably) to recompute the same layout
+    /// [`Self::render`] just painted, so a `MouseDown` can hit-test against
+    /// the exact button bounds on screen. A press anywhere that is not a
+    /// button is swallowed: the alert is modal.
     pub fn handle_event(
         &mut self,
         event: &UiEvent,
         backend: &dyn Backend,
     ) -> Handled<MessageDialogChoice> {
-        match event {
-            UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
-            UiEvent::MouseDown { position, .. } => self.handle_click(*position, backend),
-            _ => Handled::Ignored,
+        if !matches!(
+            event,
+            UiEvent::KeyPressed { .. } | UiEvent::MouseDown { .. }
+        ) {
+            return Handled::Ignored;
+        }
+        let viewport = Self::viewport(backend);
+        let layout = backend.layout_primitive(viewport, &self.widget);
+        let subs = Interactive::sub_regions(&self.widget, &layout);
+        let Some(routed) = widget_host::routed_event(event, viewport, &subs) else {
+            return Handled::Ignored;
+        };
+        let units = crate::backend::primitive_layout_ctx(backend).units();
+        let driven = widget_host::drive(
+            &self.widget,
+            self.widget.dialog.id,
+            &mut self.state,
+            &routed,
+            &layout,
+            units,
+        );
+        match (driven.handled, &routed) {
+            (
+                Handled::Ignored,
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Down(_),
+                    ..
+                },
+            ) => Handled::Consumed,
+            (handled, _) => handled,
         }
     }
 
@@ -227,58 +500,6 @@ impl MessageDialogController {
             Handled::Event(choice) => MessageDialogEvent::Resolved(choice),
             Handled::Consumed => MessageDialogEvent::Consumed,
             Handled::Ignored => MessageDialogEvent::Ignored,
-        }
-    }
-
-    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> Handled<MessageDialogChoice> {
-        let n = self.dialog.buttons.len();
-        match key {
-            Key::Named(NamedKey::Escape) => {
-                match self
-                    .dialog
-                    .cancel_button_id()
-                    .or_else(|| self.dialog.default_button_id())
-                {
-                    Some(id) => Handled::Event(*id),
-                    None => Handled::Ignored,
-                }
-            }
-            Key::Named(NamedKey::Enter) => match self.dialog.buttons.get(self.focused) {
-                Some(b) => Handled::Event(b.id),
-                None => Handled::Ignored,
-            },
-            Key::Named(NamedKey::Left) if n > 0 => {
-                self.focused = crate::focus::cycle_index(self.focused, -1, n);
-                Handled::Consumed
-            }
-            Key::Named(NamedKey::Right) if n > 0 => {
-                self.focused = crate::focus::cycle_index(self.focused, 1, n);
-                Handled::Consumed
-            }
-            Key::Named(NamedKey::Tab) if n > 0 => {
-                self.focused = crate::focus::cycle_index(
-                    self.focused,
-                    if modifiers.shift { -1 } else { 1 },
-                    n,
-                );
-                Handled::Consumed
-            }
-            _ => Handled::Ignored,
-        }
-    }
-
-    fn handle_click(
-        &mut self,
-        position: Point,
-        backend: &dyn Backend,
-    ) -> Handled<MessageDialogChoice> {
-        let layout = self.layout(backend);
-        match layout.hit_test(position.x, position.y) {
-            DialogHit::Button(id) => Handled::Event(id),
-            // Modal overlay: swallow clicks on the body or outside rather
-            // than letting them fall through, matching `Dialog`'s own
-            // backend contract ("Modal overlay — intercept all clicks").
-            _ => Handled::Consumed,
         }
     }
 }
@@ -299,7 +520,9 @@ impl MessageDialogController {
 mod tests {
     use super::*;
     use crate::backend::MessageDialogButton;
+    use crate::event::Point;
     use crate::types::WidgetId;
+    use crate::Modifiers;
 
     fn opts_two_buttons() -> MessageDialogOptions {
         MessageDialogOptions {
@@ -568,8 +791,8 @@ mod tests {
         let mut controller = MessageDialogController::new(opts_ok_only());
         let mut spec = crate::primitives::button::ButtonSpec::new("Move to Trash");
         spec.variant = crate::primitives::button::ButtonVariant::Danger;
-        controller.dialog.buttons[0].label = "Move to Trash".into();
-        controller.dialog.buttons[0].spec = Some(spec.clone());
+        controller.widget.dialog.buttons[0].label = "Move to Trash".into();
+        controller.widget.dialog.buttons[0].spec = Some(spec.clone());
 
         let backend = crate::tui::backend::TuiBackend::new();
         let layout = controller.layout(&backend);
@@ -627,12 +850,12 @@ mod tests {
         let mut controller = MessageDialogController::new(opts_ok_only());
         let mut spec = crate::primitives::button::ButtonSpec::new(long_label);
         spec.icon = Some(crate::types::Icon::new("\u{f071}", "!"));
-        controller.dialog.buttons[0].label = long_label.into();
-        controller.dialog.buttons[0].spec = Some(spec);
+        controller.widget.dialog.buttons[0].label = long_label.into();
+        controller.widget.dialog.buttons[0].spec = Some(spec);
 
         let mut controller_no_icon = MessageDialogController::new(opts_ok_only());
-        controller_no_icon.dialog.buttons[0].label = long_label.into();
-        controller_no_icon.dialog.buttons[0].spec =
+        controller_no_icon.widget.dialog.buttons[0].label = long_label.into();
+        controller_no_icon.widget.dialog.buttons[0].spec =
             Some(crate::primitives::button::ButtonSpec::new(long_label));
 
         let backend = crate::testing::RecordingBackend {

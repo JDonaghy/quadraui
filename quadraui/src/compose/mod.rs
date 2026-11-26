@@ -97,6 +97,7 @@ pub mod toast_stack;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
 pub mod tree_table_controller;
+mod widget_host;
 pub mod workspace;
 
 pub use app_shell::{
@@ -113,21 +114,25 @@ pub use chat_controller::{ChatController, ChatControllerAction, ChatRole, ChatTu
 #[allow(deprecated)]
 pub use chat_controller::ChatControllerEvent;
 pub use context_menu_controller::{ContextMenuController, ContextMenuOutcome};
-pub use dual_mode_palette::{DualModePaletteAction, DualModePaletteController};
+pub use dual_mode_palette::{
+    DualModePalette, DualModePaletteAction, DualModePaletteController, DualModePaletteState,
+};
 // `DualModePaletteEvent` is `#[deprecated]` (use
 // `DualModePaletteController::handle_event`'s `Handled<DualModePaletteAction>`
 // instead). Allow it here since `pub use` of a deprecated item is itself a
 // use site.
 #[allow(deprecated)]
 pub use dual_mode_palette::DualModePaletteEvent;
-pub use file_picker::{FilePickerController, FilePickerMode};
+pub use file_picker::{FilePicker, FilePickerController, FilePickerMode, FilePickerState};
 // `FilePickerEvent` is `#[deprecated]` (use `FilePickerController::handle_event`'s
 // `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
 // deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use file_picker::FilePickerEvent;
 pub use focus_group::FocusGroup;
-pub use folder_picker::{FolderPickerController, PALETTE_CHROME_ROWS};
+pub use folder_picker::{
+    FolderPicker, FolderPickerController, FolderPickerState, PALETTE_CHROME_ROWS,
+};
 // `FolderPickerEvent` is `#[deprecated]` (use `FolderPickerController::handle_event`'s
 // `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
 // deprecated item is itself a use site.
@@ -139,7 +144,9 @@ pub use form_controller::{FormController, FormControllerAction};
 // here since `pub use` of a deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use form_controller::FormControllerEvent;
-pub use form_dialog::{FormDialogAction, FormDialogController};
+pub use form_dialog::{
+    FormDialog, FormDialogAction, FormDialogController, FormDialogLayout, FormDialogState,
+};
 // `FormDialogEvent` is `#[deprecated]` (use `FormDialogController::handle_event`'s
 // `Handled<FormDialogAction>` instead). Allow it here since `pub use` of a
 // deprecated item is itself a use site.
@@ -147,8 +154,9 @@ pub use form_dialog::{FormDialogAction, FormDialogController};
 pub use form_dialog::FormDialogEvent;
 pub use handled::Handled;
 pub use help_layer::{
-    filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote, HelpOverlayAction,
-    HelpOverlayController, HelpRegistry, ViewHelp,
+    filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote, HelpOverlay,
+    HelpOverlayAction, HelpOverlayController, HelpOverlayLayout, HelpOverlayState, HelpRegistry,
+    ViewHelp,
 };
 // `HelpOverlayEvent` is `#[deprecated]` (use `HelpOverlayController::handle_event`'s
 // `Handled<HelpOverlayAction>` instead). Allow it here since `pub use` of a
@@ -157,15 +165,17 @@ pub use help_layer::{
 pub use help_layer::HelpOverlayEvent;
 pub use hover_tooltip_tracker::HoverTooltipTracker;
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
-pub use menu_system::{MenuDef, MenuEvent, MenuSystem};
-pub use message_dialog::MessageDialogController;
+pub use menu_system::{
+    AppMenu, AppMenuEvent, AppMenuLayout, AppMenuState, AppMenuView, MenuDef, MenuEvent, MenuSystem,
+};
+pub use message_dialog::{MessageDialog, MessageDialogController, MessageDialogState};
 // `MessageDialogEvent` is `#[deprecated]` (use `MessageDialogController::handle_event`'s
 // `Handled<MessageDialogChoice>` instead). Allow it here since `pub use` of a
 // deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use message_dialog::MessageDialogEvent;
 pub use notification::notify_or_toast;
-pub use path_picker::PathPickerAction;
+pub use path_picker::{PathPickerAction, PathPickerState};
 pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
 pub use sidebar_system::{
     NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,

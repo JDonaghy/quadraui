@@ -1,45 +1,30 @@
-//! `FilePickerController` — engine-level file open/save picker.
+//! [`FilePicker`] — a file open/save picker on the widget contract, plus
+//! [`FilePickerController`], its thin event-driven wrapper.
 //!
-//! Modelled directly on [`crate::compose::FolderPickerController`] (same
-//! fuzzy-filter + key-routing shape, rendered via the same [`Palette`]
-//! primitive) — but browses **files**, not just directories, and adds a
-//! save-mode where the typed query doubles as the destination filename.
+//! Modelled on [`crate::compose::FolderPicker`] — same fuzzy filter and
+//! the same [`PathPickerState`] browsing model, composed from the same
+//! [`Palette`] — but browses **files**, not just directories, and adds a
+//! save mode where the typed query doubles as the destination filename.
 //!
-//! # Relation to issue #965
-//!
-//! Before this controller existed, `compose/` had a folder picker but no
-//! file picker, so `TuiPlatformServices::show_file_open_dialog` /
-//! `show_file_save_dialog` had nothing to degrade to and returned `None`
-//! unconditionally. `crate::tui::services` now drives this controller
-//! through a nested draw-and-read loop (see that module's doc) so both
-//! methods return a real path on TUI too — see
-//! `examples/tui_file_picker.rs` for the same controller used directly
-//! by an app (no `PlatformServices` involved), and `crate::tui::services`'s
-//! own tests for the `PlatformServices`-level round trip.
+//! `TuiPlatformServices::show_file_open_dialog` / `show_file_save_dialog`
+//! drive the controller through a nested draw-and-read loop (see
+//! `crate::tui::services`' module doc) so both methods return a real path
+//! on TUI too — see `examples/tui_file_picker.rs` for the controller used
+//! directly by an app.
 //!
 //! # Shares its key map with the folder picker — mode-aware
 //!
-//! Key dispatch is routed through the same `classify_nav_key` both
-//! [`FolderPickerController`] and this controller use, so the two never
-//! drift apart on the keys they *do* share. But the vim-style `-`/`j`/`k`
-//! shortcuts are gated by [`classify_nav_key`]'s `vim_keys` parameter,
-//! which this controller sets from [`mode`](Self::mode):
+//! Both pickers route keys through the same palette input, so they never
+//! drift apart on the keys they share. The vim-style `-`/`j`/`k`
+//! shortcuts follow the mode:
 //!
-//! - [`FilePickerMode::Open`]: `vim_keys` is `true` — `-`/`j`/`k` navigate
-//!   (parent-dir/up/down), matching the folder picker, because there is
-//!   nothing to type a name into.
-//! - [`FilePickerMode::Save`]: `vim_keys` is `false` — `-`/`j`/`k` type
-//!   into the query like any other character, because the query *is*
-//!   the destination filename there (see "Save-mode semantics" below)
-//!   and real filenames routinely contain all three (`my-notes.txt`,
-//!   `journal.md`, `Makefile-k8s`).
-//!
-//! A consumer that needs typing-priority in `Open` mode too (rather than
-//! switching mode) can call [`push_char`](Self::push_char) directly
-//! instead of routing through `handle()`.
-//!
-//! [`FolderPickerController`]: crate::compose::FolderPickerController
-//! [`classify_nav_key`]: super::path_picker::classify_nav_key
+//! - [`FilePickerMode::Open`]: `-`/`j`/`k` navigate (parent-dir/up/down),
+//!   matching the folder picker, because there is nothing to type a name
+//!   into.
+//! - [`FilePickerMode::Save`]: `-`/`j`/`k` type into the query like any
+//!   other character, because the query *is* the destination filename
+//!   there (see "Save-mode semantics" below) and real filenames routinely
+//!   contain all three (`my-notes.txt`, `journal.md`, `Makefile-k8s`).
 //!
 //! # Save-mode semantics
 //!
@@ -70,23 +55,25 @@
 //!     Handled::Event(PathPickerAction::Confirmed { path }) => { /* open/save `path` */ }
 //!     Handled::Event(PathPickerAction::Cancelled)          => { /* dismiss modal */ }
 //!     Handled::Consumed                                    => { /* redraw */ }
-//!     Handled::Ignored                                      => {}
+//!     _                                                    => {}
 //! }
 //! ```
 
 use std::path::{Path, PathBuf};
 
 use super::path_picker::{
-    classify_nav_key, dir_entry_is_dir, NavKey, PathPickerAction, PathPickerCore,
+    dir_entry_is_dir, handle_picker_event, painted_caret, PathPickerAction, PathPickerState,
 };
-use crate::compose::folder_picker::{DEFAULT_IGNORE_DIRS, DEFAULT_MAX_DEPTH};
+use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
+use crate::compose::folder_picker::{drive_picker, DEFAULT_IGNORE_DIRS, DEFAULT_MAX_DEPTH};
 use crate::compose::Handled;
-use crate::{
-    Backend, Icon, Key, Modifiers, Palette, PaletteItem, Rect, StyledText, UiEvent, WidgetId,
-};
+use crate::interactive::{EventCx, FocusSpec, Interactive, RoutedEvent, SubTarget};
+use crate::primitive::{LayoutCtx, Primitive, Size};
+use crate::primitives::palette::{PalettePrimitiveLayout, PaletteState};
+use crate::{Backend, Icon, Palette, PaletteItem, Rect, StyledText, UiEvent, WidgetId};
 
-/// Whether a [`FilePickerController`] is choosing a file to open (must
-/// exist) or a destination to save to (may not exist yet).
+/// Whether a [`FilePicker`] is choosing a file to open (must exist) or a
+/// destination to save to (may not exist yet).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilePickerMode {
     /// Enter only confirms an existing, highlighted file.
@@ -115,25 +102,44 @@ pub enum FilePickerEvent {
     Ignored,
 }
 
-/// Cross-backend compose controller for a file open/save picker modal.
+// ── Widget ────────────────────────────────────────────────────────────────
+
+/// A file open/save picker, painted as a [`Palette`].
 ///
-/// See the [module-level documentation](self) for a usage example.
-pub struct FilePickerController {
-    id: WidgetId,
-    mode: FilePickerMode,
-    /// Shared query/list/selection/scroll state.
-    core: PathPickerCore,
+/// [`Self::paths`] is the visible browsing model and belongs to the host,
+/// which applies the [`PathPickerAction`]s the picker reports through
+/// [`Self::apply`]; the walk options decide what a re-walk surfaces.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FilePicker {
+    /// The picker's id, also the painted palette's.
+    pub id: WidgetId,
+    /// Open or Save.
+    pub mode: FilePickerMode,
+    /// Root, query, entries, highlight and scroll.
+    pub paths: PathPickerState,
     /// Extension filters — `(display_name, &[ext])` pairs, mirroring
     /// [`crate::backend::FileDialogOptions::filters`]. Empty means "show
     /// every file". Directories are never filtered out.
-    filters: Vec<(String, Vec<String>)>,
-    show_hidden: bool,
-    ignore_dirs: Vec<String>,
-    max_depth: usize,
+    pub filters: Vec<(String, Vec<String>)>,
+    /// Whether to surface hidden entries (names beginning with `.`).
+    pub show_hidden: bool,
+    /// Directory names skipped by the walk.
+    pub ignore_dirs: Vec<String>,
+    /// Maximum recursion depth for the walk.
+    pub max_depth: usize,
 }
 
-impl FilePickerController {
-    /// Create a new picker rooted at `root`.
+/// [`Interactive::State`] for [`FilePicker`]: the composed palette's own
+/// editing state (the query caret and selection anchor).
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FilePickerState {
+    /// The composed palette's state.
+    pub palette: PaletteState,
+}
+
+impl FilePicker {
+    /// A picker rooted at `root`.
     ///
     /// `filters` restricts which **files** are listed (directories are
     /// always shown, so the user can navigate through them regardless of
@@ -144,216 +150,61 @@ impl FilePickerController {
         root: impl Into<PathBuf>,
         filters: Vec<(String, Vec<String>)>,
     ) -> Self {
-        let root = root.into();
-        let ignore_dirs: Vec<String> = DEFAULT_IGNORE_DIRS
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
-        let max_depth = DEFAULT_MAX_DEPTH;
-        let show_hidden = false;
-        let all_entries =
-            collect_file_entries(&root, show_hidden, &ignore_dirs, &filters, max_depth);
-        Self {
+        let mut picker = Self {
             id: WidgetId::new("file_picker"),
             mode,
-            core: PathPickerCore::new(root, all_entries),
+            paths: PathPickerState::new(root.into(), Vec::new()),
             filters,
-            show_hidden,
-            ignore_dirs,
-            max_depth,
-        }
+            show_hidden: false,
+            ignore_dirs: DEFAULT_IGNORE_DIRS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect(),
+            max_depth: DEFAULT_MAX_DEPTH,
+        };
+        let entries = picker.walk(&picker.paths.root);
+        picker.paths = PathPickerState::new(picker.paths.root.clone(), entries);
+        picker
     }
 
-    /// Seed [`Self::query`] (the Save-mode destination filename) with an
-    /// initial value, mirroring
+    /// Seed the query (the Save-mode destination filename), mirroring
     /// [`crate::backend::FileDialogOptions::initial_filename`]. Returns
     /// `self` for builder-style chaining.
     pub fn with_initial_filename(mut self, name: impl Into<String>) -> Self {
-        self.core.query = name.into();
+        self.paths.query = name.into();
         self
     }
 
-    /// Override the `WidgetId` used by the rendered `Palette`. Defaults
-    /// to `WidgetId::new("file_picker")`. Returns `self` for
+    /// Override the picker's [`WidgetId`]. Returns `self` for
     /// builder-style chaining.
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
         self.id = WidgetId::new(id.into());
         self
     }
 
-    // ── State accessors ───────────────────────────────────────────────
-
-    pub fn mode(&self) -> FilePickerMode {
-        self.mode
-    }
-
-    pub fn root(&self) -> &Path {
-        &self.core.root
-    }
-
-    pub fn query(&self) -> &str {
-        &self.core.query
-    }
-
-    pub fn filtered(&self) -> &[PathBuf] {
-        &self.core.filtered
-    }
-
-    pub fn selected(&self) -> usize {
-        self.core.selected
-    }
-
-    pub fn scroll_top(&self) -> usize {
-        self.core.scroll_top
-    }
-
-    fn is_dir_entry(&self, rel: &Path) -> bool {
-        rel.as_os_str() == ".." || self.core.root.join(rel).is_dir()
-    }
-
-    // ── Navigation ────────────────────────────────────────────────────
-
-    /// Navigate to `new_root`, clearing the query and reloading entries.
-    pub fn navigate_to(&mut self, new_root: PathBuf) {
-        let all_entries = collect_file_entries(
-            &new_root,
+    /// `root`'s entries under this picker's walk options.
+    fn walk(&self, root: &Path) -> Vec<PathBuf> {
+        collect_file_entries(
+            root,
             self.show_hidden,
             &self.ignore_dirs,
             &self.filters,
             self.max_depth,
-        );
-        self.core.navigate_to(new_root, all_entries);
+        )
     }
 
-    /// Navigate to the parent directory (no-op at filesystem root).
-    ///
-    /// Shared with [`FolderPickerController::navigate_up`] via the `-`
-    /// key in `classify_nav_key`.
-    ///
-    /// [`FolderPickerController::navigate_up`]: crate::compose::FolderPickerController::navigate_up
-    pub fn navigate_up(&mut self) {
-        if let Some(parent) = self.core.root.parent() {
-            self.navigate_to(parent.to_path_buf());
-        }
+    /// Whether row `rel` is a directory (`..` always is).
+    fn is_dir_entry(&self, rel: &Path) -> bool {
+        rel.as_os_str() == ".." || self.paths.root.join(rel).is_dir()
     }
 
-    // ── Query editing ─────────────────────────────────────────────────
-
-    pub fn push_char(&mut self, c: char) {
-        self.core.push_char(c);
+    /// Browse `new_root`: clear the query and re-walk.
+    pub fn navigate_to(&mut self, new_root: PathBuf) {
+        let entries = self.walk(&new_root);
+        self.paths.navigate_to(new_root, entries);
     }
 
-    pub fn pop_char(&mut self) {
-        self.core.pop_char();
-    }
-
-    /// Re-compute `filtered` from `all_entries` and the current `query`.
-    pub fn refilter(&mut self) {
-        self.core.refilter();
-    }
-
-    // ── Selection movement ────────────────────────────────────────────
-
-    pub fn move_up(&mut self) {
-        self.core.move_up();
-    }
-
-    pub fn move_down(&mut self) {
-        self.core.move_down();
-    }
-
-    pub fn sync_scroll(&mut self, visible_rows: usize) {
-        self.core.sync_scroll(visible_rows);
-    }
-
-    // ── Render ────────────────────────────────────────────────────────
-
-    /// Paint the picker as a `Palette` inside `rect`.
-    pub fn render(&self, rect: Rect, backend: &mut dyn Backend) {
-        let palette = self.build_palette(rect);
-        crate::backend::DrawsPrimitives::draw_primitive(backend, rect, &palette);
-    }
-
-    // ── Handle ────────────────────────────────────────────────────────
-
-    /// Drive the state machine with a backend-neutral `UiEvent`.
-    ///
-    /// `visible_rows` is the number of list rows that fit inside the
-    /// palette chrome; compute it as
-    /// `popup_height.saturating_sub(PALETTE_CHROME_ROWS)` (see
-    /// [`crate::compose::folder_picker::PALETTE_CHROME_ROWS`]).
-    pub fn handle_event(
-        &mut self,
-        event: &UiEvent,
-        visible_rows: usize,
-    ) -> Handled<PathPickerAction> {
-        let result = match event {
-            UiEvent::KeyPressed { key, modifiers, .. } => self.handle_key(key, modifiers),
-            _ => Handled::Ignored,
-        };
-        if matches!(result, Handled::Consumed) {
-            self.sync_scroll(visible_rows);
-        }
-        result
-    }
-
-    /// Drive the state machine with a backend-neutral `UiEvent`.
-    #[deprecated(
-        since = "0.9.0",
-        note = "use `handle_event`, which returns `Handled<PathPickerAction>` instead of `FilePickerEvent`"
-    )]
-    #[allow(deprecated)] // `FilePickerEvent` is `#[deprecated]`; this method is its own shim.
-    pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> FilePickerEvent {
-        match self.handle_event(event, visible_rows) {
-            Handled::Event(PathPickerAction::Confirmed { path }) => {
-                FilePickerEvent::Confirmed { path }
-            }
-            Handled::Event(PathPickerAction::Cancelled) => FilePickerEvent::Cancelled,
-            Handled::Consumed => FilePickerEvent::Consumed,
-            Handled::Ignored => FilePickerEvent::Ignored,
-        }
-    }
-
-    /// Key dispatch, shared with [`FolderPickerController`] via
-    /// [`classify_nav_key`] so the two pickers' key maps can't drift
-    /// apart; see the [module doc](self) for which modes the vim-style
-    /// `-`/`j`/`k` shortcuts are active in.
-    ///
-    /// [`FolderPickerController`]: crate::compose::FolderPickerController
-    fn handle_key(&mut self, key: &Key, modifiers: &Modifiers) -> Handled<PathPickerAction> {
-        // `Save` mode's query is the destination filename, so the vim
-        // shortcuts must not steal `-`/`j`/`k` from it — only `Open`
-        // mode, where there is nothing to type a name into, gets them.
-        let vim_keys = self.mode == FilePickerMode::Open;
-        match classify_nav_key(key, modifiers, vim_keys) {
-            Some(NavKey::Escape) => Handled::Event(PathPickerAction::Cancelled),
-            Some(NavKey::Confirm) => self.confirm_selection(),
-            Some(NavKey::NavigateUp) => {
-                self.navigate_up();
-                Handled::Consumed
-            }
-            Some(NavKey::Up) => {
-                self.move_up();
-                Handled::Consumed
-            }
-            Some(NavKey::Down) => {
-                self.move_down();
-                Handled::Consumed
-            }
-            Some(NavKey::Backspace) => {
-                self.pop_char();
-                Handled::Consumed
-            }
-            Some(NavKey::Char(c)) => {
-                self.push_char(c);
-                Handled::Consumed
-            }
-            None => Handled::Ignored,
-        }
-    }
-
-    /// Enter's resolution logic — shared by [`Self::handle_key`], split
-    /// out so it stays unit-testable without constructing a `UiEvent`.
+    /// What Enter means right now.
     ///
     /// The ".." row needs special-casing beyond "it's a directory": it's
     /// the row `selected` defaults to (index 0) whenever the entry list
@@ -362,88 +213,83 @@ impl FilePickerController {
     /// [`Self::with_initial_filename`] and confirmed with an *immediate*
     /// Enter — no arrowing, no typing — would silently navigate up a
     /// directory instead of saving. A typed/seeded Save-mode filename
-    /// takes priority over that unmoved default; explicitly arrowing
-    /// onto a *real* directory row (handled below, not here) still
-    /// navigates regardless of mode or query, matching native save
-    /// dialogs' "Enter on a folder row browses" convention.
-    fn confirm_selection(&mut self) -> Handled<PathPickerAction> {
-        let highlighted = self.core.filtered.get(self.core.selected).cloned();
-        let highlighted_is_dotdot = highlighted
-            .as_deref()
-            .map(|p| p.as_os_str() == "..")
-            .unwrap_or(false);
+    /// takes priority over that unmoved default; explicitly arrowing onto
+    /// a *real* directory row still browses into it regardless of mode or
+    /// query, matching native save dialogs' "Enter on a folder row
+    /// browses" convention.
+    pub fn confirm(&self) -> Handled<PathPickerAction> {
+        let highlighted = self.paths.highlighted();
+        let save_as = || {
+            Handled::Event(PathPickerAction::Confirmed {
+                path: self.paths.root.join(&self.paths.query),
+            })
+        };
 
-        if highlighted_is_dotdot {
-            if self.mode == FilePickerMode::Save && !self.core.query.is_empty() {
-                return Handled::Event(PathPickerAction::Confirmed {
-                    path: self.core.root.join(&self.core.query),
-                });
+        if highlighted.is_some_and(|p| p.as_os_str() == "..") {
+            if self.mode == FilePickerMode::Save && !self.paths.query.is_empty() {
+                return save_as();
             }
-            self.navigate_up();
-            return Handled::Consumed;
+            return match self.paths.parent() {
+                Some(root) => Handled::Event(PathPickerAction::Navigated { root }),
+                None => Handled::Consumed,
+            };
         }
 
-        if let Some(rel) = &highlighted {
+        if let Some(rel) = highlighted {
             if self.is_dir_entry(rel) {
-                self.navigate_to(self.core.root.join(rel));
-                return Handled::Consumed;
+                return Handled::Event(PathPickerAction::Navigated {
+                    root: self.paths.root.join(rel),
+                });
             }
         }
 
         match self.mode {
             FilePickerMode::Open => match highlighted {
                 Some(rel) => Handled::Event(PathPickerAction::Confirmed {
-                    path: self.core.root.join(rel),
+                    path: self.paths.root.join(rel),
                 }),
                 None => Handled::Ignored,
             },
-            FilePickerMode::Save => {
-                if self.core.query.is_empty() {
-                    Handled::Ignored
-                } else {
-                    Handled::Event(PathPickerAction::Confirmed {
-                        path: self.core.root.join(&self.core.query),
-                    })
-                }
-            }
+            FilePickerMode::Save if self.paths.query.is_empty() => Handled::Ignored,
+            FilePickerMode::Save => save_as(),
         }
     }
 
-    /// Build the `Palette` descriptor for the current state.
-    fn build_palette(&self, rect: Rect) -> Palette {
-        let r = self.core.root.to_string_lossy();
-        let max = (rect.width as usize).saturating_sub(30).max(10);
-        let root_display = if r.len() > max {
-            let s: &str = r.as_ref();
-            let target_drop = s.len().saturating_sub(max);
-            let mut split_at = s.len();
-            for (idx, _) in s.char_indices() {
-                if idx >= target_drop {
-                    split_at = idx;
-                    break;
-                }
+    /// Apply a browsing change this picker reported: a query edit
+    /// refilters, a highlight move scrolls it into a `visible_rows`-tall
+    /// list, and a navigation re-walks the new root. A confirmation or a
+    /// dismissal changes nothing here.
+    pub fn apply(&mut self, action: &PathPickerAction, visible_rows: usize) {
+        match action {
+            PathPickerAction::QueryChanged { query } => self.paths.set_query(query.clone()),
+            PathPickerAction::SelectionChanged { idx } => {
+                self.paths.select(*idx);
+                self.paths.sync_scroll(visible_rows);
             }
-            format!("…{}", &s[split_at..])
-        } else {
-            r.into_owned()
-        };
+            PathPickerAction::Navigated { root } => self.navigate_to(root.clone()),
+            _ => {}
+        }
+    }
+
+    /// The [`Palette`] this picker paints in a rect `width` units wide,
+    /// with the query caret at `caret`.
+    pub fn palette(&self, width: f32, caret: usize) -> Palette {
         let verb = match self.mode {
             FilePickerMode::Open => "Open File",
             FilePickerMode::Save => "Save File",
         };
-        let title = format!("{verb} {root_display}");
+        let title = format!("{verb} {}", self.paths.root_display(width));
 
         // Codicon glyph on a GUI backend (`nerd_fonts_enabled` defaults
-        // `true` there), falling back to the pre-existing emoji on TUI
-        // (`nerd_fonts_enabled` defaults `false`), so TUI output is
-        // unchanged while GUI gets the vector folder/file icon.
+        // `true` there), falling back to the emoji on TUI
+        // (`nerd_fonts_enabled` defaults `false`).
         let folder_icon = Icon::codicon("folder", "\u{1F4C1}")
             .unwrap_or_else(|| Icon::new("\u{1F4C1}", "\u{1F4C1}")); // 📁
         let file_icon = Icon::codicon("file", "\u{1F4C4}")
             .unwrap_or_else(|| Icon::new("\u{1F4C4}", "\u{1F4C4}")); // 📄
 
         let items: Vec<PaletteItem> = self
-            .core
+            .paths
             .filtered
             .iter()
             .map(|entry| {
@@ -465,8 +311,8 @@ impl FilePickerController {
             .collect();
 
         let create_label = match self.mode {
-            FilePickerMode::Save if !self.core.query.is_empty() => {
-                Some(format!("Save as \"{}\"", self.core.query))
+            FilePickerMode::Save if !self.paths.query.is_empty() => {
+                Some(format!("Save as \"{}\"", self.paths.query))
             }
             _ => None,
         };
@@ -474,17 +320,315 @@ impl FilePickerController {
         Palette {
             id: self.id,
             title,
-            query: self.core.query.clone(),
-            query_cursor: self.core.query.len(),
+            query: self.paths.query.clone(),
+            query_cursor: caret,
             items,
-            selected_idx: self.core.selected,
-            scroll_offset: self.core.scroll_top,
-            total_count: self.core.all_entries.len(),
+            selected_idx: self.paths.selected,
+            scroll_offset: self.paths.scroll_top,
+            total_count: self.paths.all_entries.len(),
             has_focus: true,
             show_query: true,
             create_label,
             preview: None,
             mode: crate::primitives::palette::PaletteMode::List,
+        }
+    }
+
+    /// The palette as painted for `layout`, with `state`'s caret.
+    fn painted_palette(
+        &self,
+        layout: &PalettePrimitiveLayout,
+        state: Option<&PaletteState>,
+    ) -> Palette {
+        self.palette(layout.area.width, painted_caret(&self.paths.query, state))
+    }
+}
+
+impl A11yPrimitive for FilePicker {
+    fn a11y_info(&self) -> A11yInfo {
+        self.palette(0.0, self.paths.query.len()).a11y_info()
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        self.palette(0.0, self.paths.query.len()).a11y_children()
+    }
+}
+
+impl Primitive for FilePicker {
+    type Layout = PalettePrimitiveLayout;
+    type Event = PathPickerAction;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        Primitive::paint_bleed(&self.palette(0.0, 0), style)
+    }
+
+    fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize {
+        Primitive::measure(&self.palette(avail.width, 0), ctx, avail)
+    }
+
+    /// The palette's own layout for `rect`.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> PalettePrimitiveLayout {
+        Primitive::layout(&self.palette(rect.width, self.paths.query.len()), ctx, rect)
+    }
+
+    fn paint(
+        &self,
+        layout: &PalettePrimitiveLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        let state = env.widget_state_as::<FilePickerState>().map(|s| &s.palette);
+        Primitive::paint(&self.painted_palette(layout, state), layout, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &PalettePrimitiveLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        let state = env.widget_state_as::<FilePickerState>().map(|s| &s.palette);
+        Primitive::paint_cells(&self.painted_palette(layout, state), layout, cells, env);
+    }
+}
+
+impl Interactive for FilePicker {
+    type State = FilePickerState;
+    type Action = PathPickerAction;
+
+    /// One stop: the palette is modal, so keys go to it as a whole.
+    fn focus(&self) -> FocusSpec {
+        FocusSpec::Stop
+    }
+
+    fn sub_regions(&self, layout: &PalettePrimitiveLayout) -> Vec<(Rect, SubTarget)> {
+        Interactive::sub_regions(&self.palette(layout.area.width, 0), layout)
+    }
+
+    /// `Open` mode's query is never a filename, so the vim shortcuts take
+    /// priority there; in `Save` mode they type.
+    fn handle(
+        &self,
+        state: &mut FilePickerState,
+        event: &RoutedEvent,
+        layout: &PalettePrimitiveLayout,
+        cx: &mut EventCx,
+    ) -> Handled<PathPickerAction> {
+        let palette = self.painted_palette(layout, Some(&state.palette));
+        handle_picker_event(
+            &self.paths,
+            &palette,
+            &mut state.palette,
+            event,
+            layout,
+            cx,
+            self.mode == FilePickerMode::Open,
+            || self.confirm(),
+        )
+    }
+}
+
+// ── Controller ────────────────────────────────────────────────────────────
+
+/// Event-driven wrapper over a [`FilePicker`] and its state, for a host
+/// that calls it with raw [`UiEvent`]s: it applies every browsing change
+/// itself and reports only a confirmation or a dismissal.
+///
+/// See the [module-level documentation](self) for a usage example.
+pub struct FilePickerController {
+    widget: FilePicker,
+    state: FilePickerState,
+}
+
+impl FilePickerController {
+    /// Create a controller over [`FilePicker::new`]'s picker.
+    pub fn new(
+        mode: FilePickerMode,
+        root: impl Into<PathBuf>,
+        filters: Vec<(String, Vec<String>)>,
+    ) -> Self {
+        Self {
+            widget: FilePicker::new(mode, root, filters),
+            state: FilePickerState::default(),
+        }
+    }
+
+    /// See [`FilePicker::with_initial_filename`].
+    pub fn with_initial_filename(mut self, name: impl Into<String>) -> Self {
+        self.widget = self.widget.with_initial_filename(name);
+        self
+    }
+
+    /// Override the `WidgetId` used by the rendered `Palette`. Defaults
+    /// to `WidgetId::new("file_picker")`. Returns `self` for
+    /// builder-style chaining.
+    pub fn with_id(mut self, id: impl Into<String>) -> Self {
+        self.widget = self.widget.with_id(id);
+        self
+    }
+
+    /// The [`FilePicker`] widget this controller drives.
+    pub fn widget(&self) -> &FilePicker {
+        &self.widget
+    }
+
+    // ── State accessors ───────────────────────────────────────────────
+
+    pub fn mode(&self) -> FilePickerMode {
+        self.widget.mode
+    }
+
+    pub fn root(&self) -> &Path {
+        &self.widget.paths.root
+    }
+
+    pub fn query(&self) -> &str {
+        &self.widget.paths.query
+    }
+
+    pub fn filtered(&self) -> &[PathBuf] {
+        &self.widget.paths.filtered
+    }
+
+    pub fn selected(&self) -> usize {
+        self.widget.paths.selected
+    }
+
+    pub fn scroll_top(&self) -> usize {
+        self.widget.paths.scroll_top
+    }
+
+    // ── Navigation ────────────────────────────────────────────────────
+
+    /// Navigate to `new_root`, clearing the query and reloading entries.
+    pub fn navigate_to(&mut self, new_root: PathBuf) {
+        self.widget.navigate_to(new_root);
+        self.state.palette = PaletteState::default();
+    }
+
+    /// Navigate to the parent directory (no-op at filesystem root) — the
+    /// `-` key in `Open` mode.
+    pub fn navigate_up(&mut self) {
+        if let Some(parent) = self.widget.paths.parent() {
+            self.navigate_to(parent);
+        }
+    }
+
+    // ── Query editing ─────────────────────────────────────────────────
+
+    pub fn push_char(&mut self, c: char) {
+        self.widget.paths.push_char(c);
+        self.state.palette = PaletteState::default();
+    }
+
+    pub fn pop_char(&mut self) {
+        self.widget.paths.pop_char();
+        self.state.palette = PaletteState::default();
+    }
+
+    /// Re-compute `filtered` from `all_entries` and the current `query`.
+    pub fn refilter(&mut self) {
+        self.widget.paths.refilter();
+    }
+
+    // ── Selection movement ────────────────────────────────────────────
+
+    pub fn move_up(&mut self) {
+        self.widget.paths.move_up();
+    }
+
+    pub fn move_down(&mut self) {
+        self.widget.paths.move_down();
+    }
+
+    pub fn sync_scroll(&mut self, visible_rows: usize) {
+        self.widget.paths.sync_scroll(visible_rows);
+    }
+
+    // ── Render ────────────────────────────────────────────────────────
+
+    /// The palette as painted in `rect`.
+    fn build_palette(&self, rect: Rect) -> Palette {
+        self.widget.palette(
+            rect.width,
+            painted_caret(&self.widget.paths.query, Some(&self.state.palette)),
+        )
+    }
+
+    /// Paint the picker as a `Palette` inside `rect`.
+    pub fn render(&self, rect: Rect, backend: &mut dyn Backend) {
+        crate::backend::DrawsPrimitives::draw_primitive(backend, rect, &self.build_palette(rect));
+    }
+
+    // ── Handle ────────────────────────────────────────────────────────
+
+    /// Apply one picker answer: a browsing change is applied here and
+    /// reported as [`Handled::Consumed`]; a confirmation or a dismissal is
+    /// the caller's.
+    fn settle(
+        &mut self,
+        handled: Handled<PathPickerAction>,
+        visible_rows: usize,
+    ) -> Handled<PathPickerAction> {
+        match handled {
+            Handled::Event(
+                action @ (PathPickerAction::Confirmed { .. } | PathPickerAction::Cancelled),
+            ) => Handled::Event(action),
+            Handled::Event(action) => {
+                if matches!(action, PathPickerAction::Navigated { .. }) {
+                    self.state.palette = PaletteState::default();
+                }
+                self.widget.apply(&action, visible_rows);
+                Handled::Consumed
+            }
+            other => other,
+        }
+    }
+
+    /// Enter's resolution, applied.
+    #[cfg(test)]
+    fn confirm_selection(&mut self) -> Handled<PathPickerAction> {
+        let handled = self.widget.confirm();
+        self.settle(handled, 0)
+    }
+
+    /// Drive the picker with a backend-neutral `UiEvent`.
+    ///
+    /// `visible_rows` is the number of list rows that fit inside the
+    /// palette chrome; compute it as
+    /// `popup_height.saturating_sub(PALETTE_CHROME_ROWS)` (see
+    /// [`crate::compose::folder_picker::PALETTE_CHROME_ROWS`]).
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        visible_rows: usize,
+    ) -> Handled<PathPickerAction> {
+        let UiEvent::KeyPressed { .. } = event else {
+            return Handled::Ignored;
+        };
+        let handled = drive_picker(&self.widget, &mut self.state, event, visible_rows);
+        self.settle(handled, visible_rows)
+    }
+
+    /// Drive the state machine with a backend-neutral `UiEvent`.
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<PathPickerAction>` instead of `FilePickerEvent`"
+    )]
+    #[allow(deprecated)] // `FilePickerEvent` is `#[deprecated]`; this method is its own shim.
+    pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> FilePickerEvent {
+        match self.handle_event(event, visible_rows) {
+            Handled::Event(PathPickerAction::Confirmed { path }) => {
+                FilePickerEvent::Confirmed { path }
+            }
+            Handled::Event(PathPickerAction::Cancelled) => FilePickerEvent::Cancelled,
+            Handled::Event(_) | Handled::Consumed => FilePickerEvent::Consumed,
+            Handled::Ignored => FilePickerEvent::Ignored,
         }
     }
 }
@@ -609,7 +753,7 @@ fn extension_matches(filters: &[(String, Vec<String>)], name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::NamedKey;
+    use crate::{Key, Modifiers, NamedKey};
 
     fn scratch_dir_with(files: &[&str], dirs: &[&str]) -> tempfile::TempDir {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -626,9 +770,21 @@ mod tests {
     fn new_lists_files_and_dirs() {
         let tmp = scratch_dir_with(&["a.rs", "b.txt"], &["sub"]);
         let picker = FilePickerController::new(FilePickerMode::Open, tmp.path(), vec![]);
-        assert!(picker.core.all_entries.contains(&PathBuf::from("a.rs")));
-        assert!(picker.core.all_entries.contains(&PathBuf::from("b.txt")));
-        assert!(picker.core.all_entries.contains(&PathBuf::from("sub")));
+        assert!(picker
+            .widget
+            .paths
+            .all_entries
+            .contains(&PathBuf::from("a.rs")));
+        assert!(picker
+            .widget
+            .paths
+            .all_entries
+            .contains(&PathBuf::from("b.txt")));
+        assert!(picker
+            .widget
+            .paths
+            .all_entries
+            .contains(&PathBuf::from("sub")));
     }
 
     /// A directory row's icon is `Icon::codicon("folder", "📁")` and a
@@ -676,10 +832,22 @@ mod tests {
             tmp.path(),
             vec![("Rust".to_string(), vec!["rs".to_string()])],
         );
-        assert!(picker.core.all_entries.contains(&PathBuf::from("a.rs")));
-        assert!(!picker.core.all_entries.contains(&PathBuf::from("b.txt")));
+        assert!(picker
+            .widget
+            .paths
+            .all_entries
+            .contains(&PathBuf::from("a.rs")));
+        assert!(!picker
+            .widget
+            .paths
+            .all_entries
+            .contains(&PathBuf::from("b.txt")));
         assert!(
-            picker.core.all_entries.contains(&PathBuf::from("sub")),
+            picker
+                .widget
+                .paths
+                .all_entries
+                .contains(&PathBuf::from("sub")),
             "directories bypass file filters so the user can still navigate through them"
         );
     }
@@ -693,7 +861,7 @@ mod tests {
             .iter()
             .position(|p| p == &PathBuf::from("a.rs"))
             .expect("a.rs listed");
-        picker.core.selected = idx;
+        picker.widget.paths.selected = idx;
         let result = picker.confirm_selection();
         assert_eq!(
             result,
@@ -712,7 +880,7 @@ mod tests {
             .iter()
             .position(|p| p == &PathBuf::from("sub"))
             .expect("sub listed");
-        picker.core.selected = idx;
+        picker.widget.paths.selected = idx;
         let result = picker.confirm_selection();
         assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), tmp.path().join("sub"));
@@ -724,7 +892,7 @@ mod tests {
         let sub = parent.path().join("child");
         std::fs::create_dir_all(&sub).expect("mkdir child");
         let mut picker = FilePickerController::new(FilePickerMode::Open, sub.clone(), vec![]);
-        picker.core.selected = 0;
+        picker.widget.paths.selected = 0;
         assert_eq!(picker.filtered().first(), Some(&PathBuf::from("..")));
         let result = picker.confirm_selection();
         assert_eq!(result, Handled::Consumed);
@@ -754,7 +922,7 @@ mod tests {
         // No entries at all (empty dir, no "..": tmp roots have a parent,
         // so ".." is still present) — clear it to hit the empty-query,
         // no-highlighted-row path directly.
-        picker.core.filtered.clear();
+        picker.widget.paths.filtered.clear();
         let result = picker.confirm_selection();
         assert_eq!(result, Handled::Ignored);
     }
@@ -788,7 +956,8 @@ mod tests {
         let mut picker = FilePickerController::new(FilePickerMode::Save, tmp.path(), vec![]);
         picker.push_char('x'); // non-empty query — would confirm if not for the dir row
         let idx = picker
-            .core
+            .widget
+            .paths
             .all_entries
             .iter()
             .position(|p| p == &PathBuf::from("sub"))
@@ -797,8 +966,8 @@ mod tests {
         // `filtered`, since "sub" doesn't fuzzy-match "x"); this test only
         // cares about `confirm_selection`'s directory-vs-file branch, so
         // bypass the filter machinery.
-        picker.core.filtered = vec![picker.core.all_entries[idx].clone()];
-        picker.core.selected = 0;
+        picker.widget.paths.filtered = vec![picker.widget.paths.all_entries[idx].clone()];
+        picker.widget.paths.selected = 0;
         let result = picker.confirm_selection();
         assert_eq!(result, Handled::Consumed);
         assert_eq!(picker.root(), tmp.path().join("sub"));
@@ -1042,7 +1211,11 @@ mod tests {
             vec![("Rust".to_string(), vec!["rs".to_string()])],
         );
         assert!(
-            picker.core.all_entries.contains(&PathBuf::from("link")),
+            picker
+                .widget
+                .paths
+                .all_entries
+                .contains(&PathBuf::from("link")),
             "a symlink to a directory must bypass the file extension filter, \
              the same as a real directory"
         );
@@ -1052,7 +1225,7 @@ mod tests {
             .iter()
             .position(|p| p == &PathBuf::from("link"))
             .expect("link listed");
-        picker.core.selected = idx;
+        picker.widget.paths.selected = idx;
         assert_eq!(picker.confirm_selection(), Handled::Consumed);
         assert_eq!(picker.root(), tmp.path().join("link"));
     }

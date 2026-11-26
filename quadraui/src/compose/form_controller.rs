@@ -792,21 +792,6 @@ impl FormController {
 
 // ── Keyboard editing helpers ──────────────────────────────────────────
 
-/// Focusable field ids of `form`, in Tab-order — shared by
-/// [`FormController::move_focus`] (which wraps within the form) and
-/// [`crate::compose::form_dialog::FormDialogController`] (which needs to
-/// detect stepping off either end *before* forwarding a Tab/Shift-Tab
-/// keypress into the form, so it can hand focus to its own button row
-/// instead — something `move_focus`'s own wrap-within-the-form traversal
-/// can't signal). Delegates to [`crate::primitives::form::focus_order`],
-/// the canonical implementation — also used by a `quadraui-py`/
-/// `quadraui-node` host's `InteractionEngine` for the identical "detect
-/// either end" check, to hand focus to the next app-level tab stop
-/// instead of a dialog's buttons.
-pub(crate) fn focus_order(form: &Form) -> Vec<WidgetId> {
-    crate::primitives::form::focus_order(form)
-}
-
 /// Append a trailing `" *"` span to the label of every field that carries
 /// a [`Validator::Required`] rule in `rules`, so the shared painter
 /// (`primitives::form`) and the TUI renderer (`tui::form`) both show a

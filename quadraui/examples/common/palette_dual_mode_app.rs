@@ -229,7 +229,7 @@ impl AppLogic for PaletteDualModeApp {
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                Handled::Consumed => return Reaction::Redraw,
+                Handled::Event(_) | Handled::Consumed => return Reaction::Redraw,
                 Handled::Ignored => {}
             }
         } else {

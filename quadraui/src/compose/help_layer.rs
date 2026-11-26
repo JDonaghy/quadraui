@@ -36,9 +36,15 @@
 
 use std::collections::BTreeMap;
 
+use serde::{Deserialize, Serialize};
+
+use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
 use crate::backend::DrawsPrimitives;
 use crate::compose::Handled;
 use crate::event::Rect;
+use crate::interactive::{EventCx, FocusSpec, Interactive, PointerKind, RoutedEvent, WidgetAction};
+use crate::primitive::{LayoutCtx, Primitive, Size};
+use crate::primitives::dialog::DialogPrimitiveLayout;
 use crate::types::{StyledSpan, StyledText, WidgetId};
 use crate::{Backend, Dialog, DialogTable, Key, NamedKey, PaletteItem, UiEvent};
 
@@ -168,13 +174,21 @@ impl HelpRegistry {
 
 /// Semantic payload of [`Handled::Event`] returned by
 /// [`HelpOverlayController::handle_event`] / `open_action` / `close_action` /
-/// `toggle_action`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `toggle_action`, and the [`HelpOverlay`] widget's action.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HelpOverlayAction {
     /// The overlay just opened.
     Opened,
     /// The overlay just closed.
     Closed,
+}
+
+impl WidgetAction for HelpOverlayAction {
+    /// Rides [`UiEvent::HelpOverlay`] under the overlay's own id; the host
+    /// applies it onto [`HelpOverlay::open`].
+    fn into_ui_event(self, id: WidgetId) -> UiEvent {
+        UiEvent::HelpOverlay(id, self)
+    }
 }
 
 /// Result of [`HelpOverlayController::handle`] / `open` / `close` /
@@ -197,9 +211,222 @@ pub enum HelpOverlayEvent {
     Ignored,
 }
 
+/// The `?`-triggered cheatsheet as a widget: a [`Dialog`] card showing
+/// one view's [`ViewHelp`] while [`Self::open`] is set, and nothing while
+/// it is not.
+///
+/// Composed from [`Dialog`] — see the module docs for the card chrome +
+/// aligned-table rendering this gets for free. `open` is the host's: the
+/// overlay reports [`HelpOverlayAction`] and the host writes it back.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelpOverlay {
+    /// The overlay's id, also the painted [`Dialog`]'s.
+    pub id: WidgetId,
+    /// Whether the cheatsheet is showing.
+    pub open: bool,
+    /// The active view's help, or `None` when the view registered none —
+    /// which still paints a minimal "no help available" card, so an open
+    /// overlay is always a visible one (see [`HelpOverlayController::render`]).
+    pub help: Option<ViewHelp>,
+}
+
+/// [`Interactive::State`] for [`HelpOverlay`]. The overlay has no
+/// interaction state of its own: whether it is open is
+/// [`HelpOverlay::open`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HelpOverlayState {}
+
+/// [`HelpOverlay`]'s resolved layout: the rect it was laid out in, and
+/// the card's own layout while it is open.
+#[non_exhaustive]
+#[derive(Debug, Clone, PartialEq)]
+pub struct HelpOverlayLayout {
+    /// The rect [`Primitive::layout`] was called with — the container the
+    /// card centres itself in.
+    pub area: Rect,
+    /// The card's layout, `None` while the overlay is closed.
+    pub dialog: Option<DialogPrimitiveLayout>,
+}
+
+impl HelpOverlay {
+    /// A closed overlay with no help content, under `id`.
+    pub fn new(id: WidgetId) -> Self {
+        Self {
+            id,
+            open: false,
+            help: None,
+        }
+    }
+
+    /// The card this overlay paints: the help's title, notes and action
+    /// table, with no buttons — the cheatsheet is dismiss-only, through
+    /// `Esc`/`?`.
+    pub fn dialog(&self) -> Dialog {
+        let title = match &self.help {
+            Some(h) => format!("Help — {}  (Esc to close)", h.title),
+            None => "Help  (Esc to close)".to_string(),
+        };
+        let (body, table) = build_help_body_and_table(self.help.as_ref());
+        Dialog {
+            id: self.id,
+            title: StyledText::plain(title),
+            body,
+            buttons: Vec::new(),
+            severity: None,
+            vertical_buttons: false,
+            table,
+            input: None,
+        }
+    }
+
+    /// Resolve one keystroke: `?` opens a closed overlay; `Escape` or `?`
+    /// closes an open one, and every other key is swallowed while open
+    /// (modal — nothing leaks through to the view underneath). Ctrl/Alt/
+    /// Cmd-held combos never open or close it, so a `Ctrl+?` binding
+    /// stays the app's.
+    fn handle_key(&self, key: &Key, modifiers: &crate::Modifiers) -> Handled<HelpOverlayAction> {
+        let plain = !modifiers.ctrl && !modifiers.alt && !modifiers.cmd;
+        if self.open {
+            match key {
+                Key::Named(NamedKey::Escape) => Handled::Event(HelpOverlayAction::Closed),
+                Key::Char('?') if plain => Handled::Event(HelpOverlayAction::Closed),
+                _ => Handled::Consumed,
+            }
+        } else if plain && matches!(key, Key::Char('?')) {
+            Handled::Event(HelpOverlayAction::Opened)
+        } else {
+            Handled::Ignored
+        }
+    }
+}
+
+impl A11yPrimitive for HelpOverlay {
+    fn a11y_info(&self) -> A11yInfo {
+        if self.open {
+            self.dialog().a11y_info()
+        } else {
+            A11yInfo::new()
+        }
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        if self.open {
+            self.dialog().a11y_children()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+impl Primitive for HelpOverlay {
+    type Layout = HelpOverlayLayout;
+    type Event = HelpOverlayAction;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        Primitive::paint_bleed(&self.dialog(), style)
+    }
+
+    /// The open card's own size; nothing while closed.
+    fn measure(&self, ctx: &LayoutCtx, avail: Size) -> crate::NaturalSize {
+        if self.open {
+            Primitive::measure(&self.dialog(), ctx, avail)
+        } else {
+            crate::NaturalSize::NONE
+        }
+    }
+
+    /// The card centres itself in `rect`, through [`Dialog`]'s own
+    /// layout, sized from the backend's real metrics — never hardcoded
+    /// cells/pixels.
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> HelpOverlayLayout {
+        HelpOverlayLayout {
+            area: rect,
+            dialog: self
+                .open
+                .then(|| Primitive::layout(&self.dialog(), ctx, rect)),
+        }
+    }
+
+    fn paint(
+        &self,
+        layout: &HelpOverlayLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        if let Some(dialog_layout) = &layout.dialog {
+            Primitive::paint(&self.dialog(), dialog_layout, surface, env);
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &HelpOverlayLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        if let Some(dialog_layout) = &layout.dialog {
+            Primitive::paint_cells(&self.dialog(), dialog_layout, cells, env);
+        }
+    }
+}
+
+impl Interactive for HelpOverlay {
+    type State = HelpOverlayState;
+    type Action = HelpOverlayAction;
+
+    /// One stop while open, so keys reach the card; none while closed.
+    fn focus(&self) -> FocusSpec {
+        if self.open {
+            FocusSpec::Stop
+        } else {
+            FocusSpec::None
+        }
+    }
+
+    /// Keys through [`HelpOverlay::handle_key`]; a press on the open card
+    /// is swallowed, since the card is modal.
+    fn handle(
+        &self,
+        _state: &mut HelpOverlayState,
+        event: &RoutedEvent,
+        layout: &HelpOverlayLayout,
+        cx: &mut EventCx,
+    ) -> Handled<HelpOverlayAction> {
+        match event {
+            RoutedEvent::Key(key) => self.handle_key(&key.key, &key.modifiers),
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(_),
+                local,
+                ..
+            } => match &layout.dialog {
+                Some(dialog) => {
+                    let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+                    if dialog
+                        .layout
+                        .bounds
+                        .contains(crate::event::Point::new(x, y))
+                    {
+                        cx.request_focus(None);
+                        Handled::Consumed
+                    } else {
+                        Handled::Ignored
+                    }
+                }
+                None => Handled::Ignored,
+            },
+            _ => Handled::Ignored,
+        }
+    }
+}
+
 /// Cross-backend compose controller for a `?`-triggered cheatsheet
-/// overlay. Wraps a [`Dialog`] — see the module docs for the card chrome
-/// + aligned-table rendering this gets for free.
+/// overlay: a thin open/close wrapper over a [`HelpOverlay`].
 ///
 /// Purely a display + open/close state machine: it does not own a
 /// [`HelpRegistry`] itself. Callers pass the current view's [`ViewHelp`]
@@ -209,34 +436,37 @@ pub enum HelpOverlayEvent {
 /// falls out of the caller picking which `ViewHelp` to hand it.
 #[derive(Debug, Clone)]
 pub struct HelpOverlayController {
-    id: WidgetId,
-    open: bool,
+    widget: HelpOverlay,
 }
 
 impl HelpOverlayController {
     /// Create a closed overlay controller.
     pub fn new() -> Self {
         Self {
-            id: WidgetId::new("help-cheatsheet"),
-            open: false,
+            widget: HelpOverlay::new(WidgetId::new("help-cheatsheet")),
         }
     }
 
     /// Override the `WidgetId` used for the rendered [`Dialog`].
     pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.id = WidgetId::new(id.into());
+        self.widget.id = WidgetId::new(id.into());
         self
     }
 
     /// Whether the cheatsheet is currently showing.
     pub fn is_open(&self) -> bool {
-        self.open
+        self.widget.open
+    }
+
+    /// Apply `action` onto the overlay's `open` flag, returning it.
+    fn apply(&mut self, action: HelpOverlayAction) -> HelpOverlayAction {
+        self.widget.open = action == HelpOverlayAction::Opened;
+        action
     }
 
     /// Open the overlay unconditionally.
     pub fn open_action(&mut self) -> HelpOverlayAction {
-        self.open = true;
-        HelpOverlayAction::Opened
+        self.apply(HelpOverlayAction::Opened)
     }
 
     /// Open the overlay unconditionally.
@@ -254,8 +484,7 @@ impl HelpOverlayController {
 
     /// Close the overlay unconditionally.
     pub fn close_action(&mut self) -> HelpOverlayAction {
-        self.open = false;
-        HelpOverlayAction::Closed
+        self.apply(HelpOverlayAction::Closed)
     }
 
     /// Close the overlay unconditionally.
@@ -273,7 +502,7 @@ impl HelpOverlayController {
 
     /// Flip open/closed.
     pub fn toggle_action(&mut self) -> HelpOverlayAction {
-        if self.open {
+        if self.widget.open {
             self.close_action()
         } else {
             self.open_action()
@@ -298,32 +527,21 @@ impl HelpOverlayController {
     ///
     /// - Closed: `?` opens it (any other event is [`Handled::Ignored`] so
     ///   callers can fall through to their own handling).
-    /// - Open: `Escape` or `?` closes it; every other key is
+    /// - Open: `Escape` or `?` closes it; every other event is
     ///   [`Handled::Consumed`] (modal — nothing leaks through to the view
     ///   underneath, matching [`crate::Palette`]'s "click intercept is
     ///   mandatory" contract for keyboard input).
     pub fn handle_event(&mut self, event: &UiEvent) -> Handled<HelpOverlayAction> {
         let UiEvent::KeyPressed { key, modifiers, .. } = event else {
-            return if self.open {
+            return if self.widget.open {
                 Handled::Consumed
             } else {
                 Handled::Ignored
             };
         };
-        // Ignore Ctrl/Alt/Cmd-held combos so this doesn't steal e.g. a
-        // hypothetical Ctrl+? or Cmd+? binding from the app.
-        let plain = !modifiers.ctrl && !modifiers.alt && !modifiers.cmd;
-
-        if self.open {
-            match key {
-                Key::Named(NamedKey::Escape) => Handled::Event(self.close_action()),
-                Key::Char('?') if plain => Handled::Event(self.close_action()),
-                _ => Handled::Consumed,
-            }
-        } else if plain && matches!(key, Key::Char('?')) {
-            Handled::Event(self.open_action())
-        } else {
-            Handled::Ignored
+        match self.widget.handle_key(key, modifiers) {
+            Handled::Event(action) => Handled::Event(self.apply(action)),
+            other => other,
         }
     }
 
@@ -340,6 +558,14 @@ impl HelpOverlayController {
             Handled::Event(HelpOverlayAction::Closed) => HelpOverlayEvent::Closed,
             Handled::Consumed => HelpOverlayEvent::Consumed,
             Handled::Ignored => HelpOverlayEvent::Ignored,
+        }
+    }
+
+    /// The [`HelpOverlay`] this controller paints for `help`.
+    pub fn widget(&self, help: Option<&ViewHelp>) -> HelpOverlay {
+        HelpOverlay {
+            help: help.cloned(),
+            ..self.widget.clone()
         }
     }
 
@@ -360,30 +586,10 @@ impl HelpOverlayController {
     /// *something* keeps "overlay open" and "overlay visible" the same
     /// fact.
     pub fn render(&self, container: Rect, backend: &mut dyn Backend, help: Option<&ViewHelp>) {
-        if !self.open {
+        if !self.widget.open {
             return;
         }
-        let title = match help {
-            Some(h) => format!("Help — {}  (Esc to close)", h.title),
-            None => "Help  (Esc to close)".to_string(),
-        };
-        let (body, table) = build_help_body_and_table(help);
-
-        let dialog = Dialog {
-            id: self.id,
-            title: StyledText::plain(title),
-            body,
-            buttons: Vec::new(),
-            severity: None,
-            vertical_buttons: false,
-            table,
-            input: None,
-        };
-
-        // The cheatsheet carries no buttons — it is dismiss-only via
-        // `Esc`/`?`, handled by `handle_event` — so the widget's own
-        // layout reserves no button row for it.
-        backend.draw_dyn(container, &dialog, &());
+        backend.draw_dyn(container, &self.widget(help), &());
     }
 }
 
