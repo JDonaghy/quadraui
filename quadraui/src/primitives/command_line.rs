@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 ///     text: ":wq".to_string(),
 ///     cursor_offset: Some(3),
 ///     right_align: false,
+///     selection: None,
 /// };
 ///
 /// let rect = Rect::new(0.0, 23.0, 80.0, 1.0);
@@ -50,6 +51,12 @@ pub struct CommandLine {
     /// When `true`, right-align the text (used for count/match displays).
     #[serde(default)]
     pub right_align: bool,
+    /// Active selection as a `(start, end)` byte-offset pair into
+    /// [`Self::text`], either order. `None` (or an empty range) paints no
+    /// highlight. `#[serde(default)]`, so a frame deserialized without
+    /// the key keeps the no-selection bar.
+    #[serde(default)]
+    pub selection: Option<(usize, usize)>,
 }
 
 /// Backend-supplied character metrics for [`CommandLine::layout`]. TUI
@@ -350,6 +357,7 @@ pub(crate) mod native_surface_paint {
                 text: text.into(),
                 cursor_offset: cursor,
                 right_align,
+                selection: None,
             }
         }
 
@@ -653,17 +661,9 @@ pub(crate) mod cell_paint {
 /// absolute area the bar was laid out into, the resolved
 /// [`CommandLineLayout`], and the selection the paint path highlights.
 ///
-/// # Why `selection` is always `None` here
-///
-/// A selection range is host state ([`CommandLine`] itself carries no
-/// field for one — see that type's doc), and
-/// [`crate::primitive::Primitive::layout`] sees only the descriptor. A
-/// host that tracks a drag-selection paints it by resolving
-/// [`CommandLine::layout`] itself and calling the selection-aware painter
-/// ([`crate::Backend::draw_command_line_selection`], which is the same
-/// painter with the range filled in). The field exists on this layout so
-/// that painter has exactly one source for the range, rather than a
-/// second draw entry point.
+/// `selection` is copied off [`CommandLine::selection`], so the painter
+/// has exactly one source for the range rather than a second draw entry
+/// point.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub struct CommandLinePrimitiveLayout {
@@ -695,6 +695,14 @@ impl crate::primitive::Primitive for CommandLine {
         crate::frame::OwnedContent::CommandLine(self.clone())
     }
 
+    /// A command bar shows the user's own typed text on the editor's
+    /// monospace grid, so it is one of
+    /// [`crate::EditorClassPrimitive::ALL`] and measures/paints in the
+    /// editor font rather than the trait's chrome-by-default.
+    fn font_role(&self) -> crate::FontRole {
+        crate::FontRole::Editor
+    }
+
     /// Exactly one row tall, as wide as the text — a command bar
     /// normally stretches, so the width is advisory only.
     fn measure(
@@ -710,6 +718,10 @@ impl crate::primitive::Primitive for CommandLine {
     /// comes from [`cell_layout`]; on a pixel surface from
     /// [`CommandLine::layout`] with the backend's own monospace advance.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> CommandLinePrimitiveLayout {
+        let rect = match ctx.units() {
+            crate::primitive::Units::Cells => crate::primitive::cell_grid_rect(rect),
+            _ => rect,
+        };
         let layout = match ctx.units() {
             crate::primitive::Units::Cells => cell_layout(self, rect),
             _ => self.layout(rect, CommandLineMeasure::new(ctx.char_width)),
@@ -717,7 +729,7 @@ impl crate::primitive::Primitive for CommandLine {
         CommandLinePrimitiveLayout {
             area: rect,
             layout,
-            selection: None,
+            selection: self.selection,
         }
     }
 
@@ -770,19 +782,14 @@ impl crate::primitive::Primitive for CommandLine {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = layout.area;
-        crate::tui::command_line::draw_command_line_selection(
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
             buf,
-            ratatui::layout::Rect::new(
-                area.x as u16,
-                area.y as u16,
-                area.width as u16,
-                area.height as u16,
-            ),
-            self,
-            theme,
-            layout.selection,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
         );
+        cell_paint::paint(self, &layout.layout, &mut surface, theme, layout.selection);
     }
 }
 
@@ -1123,6 +1130,7 @@ mod interactive_tests {
             text: text.into(),
             cursor_offset: Some(text.len()),
             right_align: false,
+            selection: None,
         }
     }
 
@@ -1390,9 +1398,9 @@ mod cell_paint_tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
+    use super::cell_test_paint::{draw_command_line, draw_command_line_selection};
     use crate::primitives::command_line::CommandLine;
     use crate::theme::Theme;
-    use crate::tui::command_line::{draw_command_line, draw_command_line_selection};
     use crate::types::{Color, WidgetId};
 
     /// The ratatui colour `crate::tui`'s own cell writers land for a
@@ -1418,6 +1426,7 @@ mod cell_paint_tests {
             text: text.into(),
             cursor_offset: Some(2),
             right_align: false,
+            selection: None,
         };
 
         // Must not panic.
@@ -1448,6 +1457,7 @@ mod cell_paint_tests {
             text: ":wq".into(),
             cursor_offset: None,
             right_align: false,
+            selection: None,
         };
 
         let layout = draw_command_line(&mut buf, area, &cmd, &theme);
@@ -1482,6 +1492,7 @@ mod cell_paint_tests {
             text: ":wq!".into(),
             cursor_offset: None,
             right_align: false,
+            selection: None,
         };
 
         // Select ":w" -> byte offsets 0..2 -> columns 0,1 -> cells x=5,6.
@@ -1538,6 +1549,7 @@ mod tests {
             text: ":wq".into(),
             cursor_offset: Some(3),
             right_align: false,
+            selection: None,
         };
         let json = serde_json::to_string(&cmd).unwrap();
         let back: CommandLine = serde_json::from_str(&json).unwrap();
@@ -1557,6 +1569,7 @@ mod tests {
 
     fn cmd(text: &str, right_align: bool) -> CommandLine {
         CommandLine {
+            selection: None,
             id: WidgetId::new("cmd"),
             text: text.into(),
             cursor_offset: None,
@@ -1675,5 +1688,52 @@ mod tests {
         let end = layout.hit_test(3.0);
         let r = layout.selection_bounds((start, end)).unwrap();
         assert_eq!((r.x, r.width), (1.0, 2.0));
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+
+    pub fn draw_command_line(
+        buf: &mut Buffer,
+        area: ratatui::layout::Rect,
+        cmd: &CommandLine,
+        theme: &Theme,
+    ) -> CommandLineLayout {
+        draw_command_line_selection(buf, area, cmd, theme, None)
+    }
+
+    pub fn draw_command_line_selection(
+        buf: &mut Buffer,
+        area: ratatui::layout::Rect,
+        cmd: &CommandLine,
+        theme: &Theme,
+        selection: Option<(usize, usize)>,
+    ) -> CommandLineLayout {
+        let layout = cell_layout(
+            cmd,
+            Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+        );
+        let mut sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut sink,
+        );
+        cell_paint::paint(cmd, &layout, &mut surface, theme, selection);
+        layout
     }
 }

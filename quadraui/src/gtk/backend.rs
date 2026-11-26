@@ -56,9 +56,9 @@ use crate::paint_surface::PaintSurface;
 use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
-    Accelerator, AcceleratorId, Backend, CommandLine, DragState, FontRole, GenericFamily, ListView,
-    ModalStack, PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, SystemTheme,
-    TextDisplay, TreeView, UiEvent, UserPayload, Viewport,
+    Accelerator, AcceleratorId, Backend, DragState, FontRole, GenericFamily, ListView, ModalStack,
+    PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, SystemTheme, TreeView,
+    UiEvent, UserPayload, Viewport,
 };
 // `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
 // `#[cfg(test)]` code below — they're gated to avoid unused import
@@ -1945,7 +1945,7 @@ impl Backend for GtkBackend {
         // text_regions.
         self.focused_activity_bar = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_dyn).
+        // to earn them again (via draw_primitive/draw_dyn).
         self.modal_stack.borrow_mut().reset_frame_paint();
     }
 
@@ -2952,305 +2952,6 @@ impl Backend for GtkBackend {
         self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
     }
 
-    /// Shared text-display painting lives in
-    /// [`crate::primitives::text_display::paint`] now — see that fn's
-    /// doc for the divergence (Windows's bold-span support) resolved
-    /// while unifying `gtk::text_display::draw_text_display`,
-    /// `macos::text_display::draw_text_display` and
-    /// `win::text_display::draw_text_display` into one implementation.
-    fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
-        let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
-        let char_width = self.current_char_width as f32;
-        // The text display is editor-class — see `EditorSurface`'s own
-        // doc.
-        let mut surface = EditorSurface { backend: self };
-        crate::primitives::text_display::paint(
-            td,
-            rect,
-            &mut surface,
-            &theme,
-            line_height,
-            char_width,
-        );
-    }
-
-    fn draw_command_line(&mut self, rect: QRect, cmd: &CommandLine) {
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_command_line called outside enter_frame_scope");
-        crate::gtk::command_line::draw_command_line(
-            cr,
-            layout,
-            cmd,
-            &self.current_theme,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            self.current_line_height,
-            self.current_char_width as f32,
-        );
-    }
-
-    fn draw_command_line_selection(
-        &mut self,
-        rect: QRect,
-        cmd: &CommandLine,
-        selection: Option<(usize, usize)>,
-    ) {
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_command_line_selection called outside enter_frame_scope");
-        crate::gtk::command_line::draw_command_line_selection(
-            cr,
-            layout,
-            cmd,
-            &self.current_theme,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            self.current_line_height,
-            self.current_char_width as f32,
-            selection,
-        );
-    }
-
-    fn command_line_layout(
-        &self,
-        rect: QRect,
-        cmd: &CommandLine,
-    ) -> crate::primitives::command_line::CommandLineLayout {
-        crate::gtk::command_line::gtk_command_line_layout(
-            cmd,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            self.current_line_height,
-            self.current_char_width as f32,
-        )
-    }
-
-    fn text_display_layout(
-        &self,
-        rect: QRect,
-        td: &TextDisplay,
-    ) -> crate::primitives::text_display::TextDisplayLayout {
-        crate::gtk::gtk_text_display_layout(
-            td,
-            rect,
-            self.current_line_height,
-            self.current_char_width,
-        )
-    }
-
-    /// Routes through the shared
-    /// [`crate::primitives::text_input::paint`] via `self`'s own
-    /// [`PaintSurface`] impl — same unwrapped-`self` shape as
-    /// [`Self::draw_number_input`]/[`Self::draw_combo_box`]. `self`'s
-    /// `PaintSurface::surface_draw_text_run` already forces `ui_font`
-    /// (see that method's doc), so no explicit font save/swap/restore is
-    /// needed here.
-    fn draw_text_input(
-        &mut self,
-        rect: QRect,
-        ti: &crate::primitives::text_input::TextInput,
-    ) -> crate::primitives::text_input::TextInputLayout {
-        let theme = self.current_theme;
-        let style = self.style();
-        let lh = self.current_line_height as f32;
-        let cw = self.current_char_width as f32;
-        let layout = crate::gtk::gtk_text_input_layout(ti, rect, lh, cw);
-        crate::primitives::text_input::paint(ti, &layout, self, &theme, &style);
-        layout
-    }
-
-    fn text_input_layout(
-        &self,
-        rect: QRect,
-        ti: &crate::primitives::text_input::TextInput,
-    ) -> crate::primitives::text_input::TextInputLayout {
-        crate::gtk::gtk_text_input_layout(
-            ti,
-            rect,
-            self.current_line_height as f32,
-            self.current_char_width as f32,
-        )
-    }
-
-    /// Stroked-box framed field, same shared painter as `MacBackend`/
-    /// `WinBackend` — see
-    /// [`crate::primitives::text_field::paint_text_field_gui`]'s doc.
-    fn draw_text_field(
-        &mut self,
-        rect: QRect,
-        tf: &crate::primitives::text_field::TextField,
-    ) -> crate::primitives::text_field::TextFieldLayout {
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled();
-        let measure = crate::primitives::text_field::TextFieldMeasure::new(
-            self.current_char_width as f32,
-            self.current_line_height as f32,
-        );
-        let layout = tf.layout(rect, measure);
-        crate::primitives::text_field::paint_text_field_gui(
-            self,
-            rect,
-            &layout,
-            tf,
-            &theme,
-            nerd_fonts_enabled,
-        );
-        layout
-    }
-
-    fn draw_number_input(
-        &mut self,
-        number_input: &crate::primitives::number_input::NumberInput,
-        layout: &crate::primitives::number_input::NumberInputLayout,
-    ) {
-        // `NumberInput`'s stepper glyphs and field text are chrome, not
-        // editor content — `self`'s own `PaintSurface::surface_draw_text_run`
-        // already forces `ui_font`, same as `Self::draw_scrollbar`'s
-        // unwrapped-`self` shape, so no explicit font save/swap/restore
-        // is needed here.
-        let theme = self.current_theme;
-        crate::primitives::number_input::native_surface_paint::paint(
-            number_input,
-            layout,
-            self,
-            &theme,
-        );
-        self.register_zone(number_input.id, layout.bounds);
-    }
-
-    fn draw_combo_box(
-        &mut self,
-        combo_box: &crate::primitives::combo_box::ComboBox,
-        layout: &crate::primitives::combo_box::ComboBoxLayout,
-    ) {
-        // Same unwrapped-`self` shape as `Self::draw_number_input` above —
-        // field and dropdown-row labels are chrome text.
-        let theme = self.current_theme;
-        crate::primitives::combo_box::native_surface_paint::paint(combo_box, layout, self, &theme);
-        self.register_zone(combo_box.id, layout.field_bounds);
-    }
-
-    fn draw_date_picker(
-        &mut self,
-        date_picker: &crate::primitives::date_picker::DatePicker,
-        layout: &crate::primitives::date_picker::DatePickerLayout,
-    ) {
-        let theme = self.current_theme;
-        crate::primitives::date_picker::native_surface_paint::paint(
-            date_picker,
-            layout,
-            self,
-            &theme,
-        );
-        self.register_zone(date_picker.id, layout.bounds());
-    }
-
-    fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout_arg: &crate::TooltipLayout) {
-        self.draw_tooltip_with_chrome(tooltip, layout_arg, &crate::TooltipChrome::default());
-    }
-
-    fn draw_tooltip_with_chrome(
-        &mut self,
-        tooltip: &crate::Tooltip,
-        layout_arg: &crate::TooltipLayout,
-        chrome: &crate::TooltipChrome,
-    ) {
-        let style = self.style();
-        let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
-        let char_width = self.current_char_width as f32;
-        // Tooltip text is chrome, not editor content — same font
-        // save/swap/restore as `Self::draw_tree`. Calls the shared
-        // paint directly (rather than through
-        // `crate::gtk::draw_tooltip_with_chrome`, whose public signature
-        // stays additive-only and so cannot take a live `&Style`) so
-        // this live backend path honours `Self::set_style` overrides —
-        // see `crate::gtk::draw_tooltip_with_chrome`'s own doc.
-        self.with_chrome_surface("draw_tooltip", |surface| {
-            crate::primitives::tooltip::native_surface_paint::paint(
-                tooltip,
-                layout_arg,
-                chrome,
-                line_height,
-                char_width,
-                surface,
-                &theme,
-                &style,
-            );
-        });
-        // Register the tooltip's own surface — see the matching
-        // comment on `TuiBackend::draw_tooltip`. GTK already painted a
-        // full 4-sided box here before TUI did; this just makes
-        // that box observable to a structural-parity assertion.
-        self.register_zone(tooltip.id, layout_arg.bounds);
-        // See `overlay_bounds_this_frame`'s own doc: a later
-        // `draw_focus_ring` call this same frame must not stroke over
-        // this tooltip.
-        self.overlay_bounds_this_frame.push(layout_arg.bounds);
-    }
-
-    fn draw_dialog(
-        &mut self,
-        dialog: &crate::Dialog,
-        dialog_layout: &crate::DialogLayout,
-    ) -> Vec<QRect> {
-        // Marked before the frame borrow: this id is now painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&dialog.id);
-        let line_height = self.current_line_height;
-        let theme = self.current_theme;
-        let style = self.style();
-        // Calls the shared paint directly (rather than through
-        // `crate::gtk::draw_dialog`, whose public signature stays
-        // additive-only and so cannot take a live `&Style`) so this live
-        // backend path honours `Self::set_style` overrides — the
-        // toolbar sub-paint below mirrors that free function's own body
-        // exactly.
-        self.with_chrome_surface("draw_dialog", |surface| {
-            let rects = crate::primitives::dialog::native_surface_paint::paint(
-                dialog,
-                dialog_layout,
-                line_height as f32,
-                surface,
-                &theme,
-                &style,
-            );
-            if let (Some(input_b), Some(crate::primitives::dialog::DialogInput::Toolbar(toolbar))) =
-                (dialog_layout.input_bounds, dialog.input.as_ref())
-            {
-                let pango_layout = surface
-                    .layout
-                    .expect("CairoSurface built with layout: Some(_)");
-                pango_layout.set_width(-1);
-                pango_layout.set_ellipsize(pango::EllipsizeMode::None);
-                crate::primitives::toolbar::native_surface_paint::paint_embedded(
-                    toolbar, input_b, surface, &theme,
-                );
-                pango_layout.set_attributes(None);
-            }
-            rects
-        })
-    }
-
-    fn draw_float(
-        &mut self,
-        float: &crate::primitives::float::Float,
-        layout: &crate::primitives::float::FloatLayout,
-    ) {
-        // Marked before the frame borrow: this id is now painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&float.id);
-        let theme = self.current_theme;
-        crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
-        // Same convention `draw_scrollbar` uses for a chrome-only
-        // primitive with no painted text of its own: register the
-        // float's own bounds under its id so it's inventory-observable.
-        self.register_zone(float.id, layout.bounds);
-    }
-
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
 
     fn draw_multi_section_view(
@@ -3446,60 +3147,6 @@ impl Backend for GtkBackend {
         pango_layout.set_font_description(saved_font.as_ref());
     }
 
-    fn draw_rich_text_popup(
-        &mut self,
-        popup: &crate::primitives::rich_text_popup::RichTextPopup,
-        layout_arg: &crate::primitives::rich_text_popup::RichTextPopupLayout,
-    ) {
-        let theme = self.current_theme;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_rich_text_popup called outside enter_frame_scope");
-        // GTK rasteriser returns link bounds; for trait parity we
-        // discard them. Hosts that need link hit-testing query the
-        // primitive's own `popup.layout(...).hit_test(...)` API.
-        let _ = crate::gtk::draw_rich_text_popup(
-            cr,
-            pango_layout,
-            &ui_font_desc,
-            popup,
-            layout_arg,
-            &theme,
-        );
-    }
-
-    fn draw_rich_text_popup_with_font_role(
-        &mut self,
-        popup: &crate::primitives::rich_text_popup::RichTextPopup,
-        layout_arg: &crate::primitives::rich_text_popup::RichTextPopupLayout,
-        role: crate::FontRole,
-    ) {
-        // `role` picks which live font this call paints
-        // the popup's content in — `FontRole::Chrome` keeps `ui_font`
-        // (same as plain `draw_rich_text_popup`); `FontRole::Editor`
-        // swaps in the editor's own Pango description, the same
-        // resolution `Self::measure_text`/
-        // `Self::surface_draw_text_run_with_role` already use per role.
-        if role == crate::FontRole::Chrome {
-            self.draw_rich_text_popup(popup, layout_arg);
-            return;
-        }
-        let theme = self.current_theme;
-        let font_desc = pango::FontDescription::from_string(&self.editor_font_pango_string());
-        let (cr, pango_layout) = self.current_frame_refs().expect(
-            "GtkBackend::draw_rich_text_popup_with_font_role called outside enter_frame_scope",
-        );
-        let _ = crate::gtk::draw_rich_text_popup(
-            cr,
-            pango_layout,
-            &font_desc,
-            popup,
-            layout_arg,
-            &theme,
-        );
-    }
-
     fn draw_find_replace(
         &mut self,
         rect: QRect,
@@ -3516,27 +3163,6 @@ impl Backend for GtkBackend {
         // BACKEND_TRAIT_PROPOSAL §6.2).
         let _ = rect;
         crate::primitives::find_replace::paint(panel, self, &theme);
-    }
-
-    fn draw_completions(
-        &mut self,
-        completions: &crate::primitives::completions::Completions,
-        layout_arg: &crate::primitives::completions::CompletionsLayout,
-    ) {
-        let theme = self.current_theme;
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, pango_layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_completions called outside enter_frame_scope");
-        // The completions popup is chrome, not editor content — same
-        // save/swap/restore as `Self::draw_tree`, since
-        // `crate::gtk::draw_completions` paints directly against
-        // whatever font `pango_layout` carries in rather than going
-        // through `PaintSurface`.
-        let saved_font = pango_layout.font_description();
-        pango_layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_completions(cr, pango_layout, completions, layout_arg, &theme);
-        pango_layout.set_font_description(saved_font.as_ref());
     }
 
     fn draw_scrollbar(
@@ -3626,35 +3252,6 @@ impl Backend for GtkBackend {
     ) -> crate::primitives::canvas::CanvasLayout {
         let layout = canvas.layout(rect);
         crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
-        layout
-    }
-
-    fn draw_toast_overlay(
-        &mut self,
-        rect: QRect,
-        stack: &crate::primitives::toast::ToastOverlay,
-    ) -> crate::primitives::toast::ToastStackLayout {
-        // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc) each require
-        // an active frame internally, so this method needs no separate cr/pango fetch.
-        let theme = self.current_theme;
-        let style = self.style();
-        let line_height = self.current_line_height as f32;
-        let layout = crate::primitives::toast::native_surface_paint::paint(
-            stack,
-            self,
-            &theme,
-            &style,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            line_height,
-        );
-        // See `overlay_bounds_this_frame`'s own doc: a later
-        // `draw_focus_ring` call this same frame must not stroke over
-        // any of these.
-        self.overlay_bounds_this_frame
-            .extend(layout.visible_toasts.iter().map(|t| t.bounds));
         layout
     }
 
@@ -3749,30 +3346,6 @@ impl Backend for GtkBackend {
                 rect.width,
                 self.current_line_height as f32,
             ),
-        )
-    }
-
-    fn toast_stack_layout(
-        &self,
-        rect: QRect,
-        stack: &crate::primitives::toast::ToastOverlay,
-    ) -> crate::primitives::toast::ToastStackLayout {
-        // Layout-only path measures via a real `pango::Layout` when available,
-        // falling back to `PangoTextMeasure`'s character count estimate otherwise.
-        let char_w = self.current_char_width as f32;
-        let pango_layout = self.chrome_measure_layout();
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-        crate::primitives::layout_metrics::pixel_toast_stack_layout(
-            stack,
-            &measure,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            self.current_line_height as f32,
         )
     }
 
@@ -4345,6 +3918,12 @@ fn icon_font_description(size_px: f32) -> pango::FontDescription {
 }
 
 impl PaintSurface for GtkBackend {
+    /// Remembers the box so a later [`Backend::draw_focus_ring`] this
+    /// frame keeps clear of it — see `overlay_bounds_this_frame`.
+    fn surface_note_overlay(&mut self, rect: QRect) {
+        self.overlay_bounds_this_frame.push(rect);
+    }
+
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
     }
@@ -4738,6 +4317,7 @@ mod tests {
     // this file's own coverage of the methods it deprecates.
     #![allow(deprecated)]
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::primitives::status_bar::{StatusBar, StatusBarPrimitiveLayout};
     use crate::{MenuBarItem, TerminalCell, TerminalCursorShape, WidgetId};
 
@@ -9735,9 +9315,10 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                let layout =
-                    b.draw_toast_overlay(QRect::new(0.0, 0.0, W as f32, H as f32), &overlay);
-                let vt = layout.visible_toasts[0].bounds;
+                let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+                let layout = b.layout_primitive(viewport, &overlay);
+                b.draw_dyn(viewport, &overlay, &());
+                let vt = layout.layout.visible_toasts[0].bounds;
                 // A tab-stop focus ring whose rect is the toast's own
                 // bounds — the worst case, a toast that lands exactly
                 // over the focused widget it was raised from.
@@ -9750,7 +9331,7 @@ mod tests {
         surface.flush();
         let stride = surface.stride() as usize;
         let data = surface.data().expect("surface data");
-        let vt = layout.visible_toasts[0].bounds;
+        let vt = layout.layout.visible_toasts[0].bounds;
         let theme = crate::Theme::default();
         let success_bg = theme.success_bg();
 
@@ -9810,7 +9391,7 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                let _layout = b.draw_toast_overlay(focused_rect, &overlay);
+                b.draw_dyn(focused_rect, &overlay, &());
                 b.draw_focus_ring(focused_rect);
             });
         }
@@ -9853,7 +9434,7 @@ mod tests {
     fn gtk_backend_draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame() {
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
-        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+        use crate::primitives::tooltip::Tooltip;
 
         const W: i32 = 200;
         const H: i32 = 100;
@@ -9872,12 +9453,8 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             backend.begin_frame(crate::Viewport::new(W as f32, H as f32, 1.0));
             let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
-            let tooltip_layout = TooltipLayout {
-                bounds: rect,
-                resolved_placement: ResolvedPlacement::Bottom,
-            };
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_tooltip(&tooltip, &tooltip_layout);
+                b.draw_dyn(rect, &tooltip, &());
                 // The focused widget this tooltip is anchored to shares
                 // the tooltip's own bounds exactly — the ring must yield.
                 b.draw_focus_ring(rect);
@@ -10262,20 +9839,16 @@ mod tests {
         });
     }
 
-    /// [`Backend::draw_rich_text_popup_with_font_role`]
-    /// must select a genuinely different live font, not a documented
-    /// no-op — proven the same way as
+    /// [`crate::RichTextPopup::font_role`] must select a genuinely
+    /// different live font, not a documented no-op — proven the same way
+    /// as
     /// `gtk_backend_paint_surface_draw_text_run_with_role_uses_the_requested_fonts_size`:
     /// a huge chrome font versus a tiny editor font paints visibly
-    /// different amounts of ink for the same popup content. Plain
-    /// `draw_rich_text_popup` (no role argument) must still paint with
-    /// the chrome font — proving the new method didn't change today's
-    /// behaviour for existing call sites.
+    /// different amounts of ink for the same popup content. A descriptor
+    /// left at the default role must paint with the chrome font.
     #[test]
     fn gtk_rich_text_popup_font_role_selects_the_requested_fonts_size() {
-        use crate::primitives::rich_text_popup::{
-            PopupPlacement, RichTextPopup, RichTextPopupMeasure,
-        };
+        use crate::primitives::rich_text_popup::{PopupPlacement, RichTextPopup};
         use crate::types::{StyledText, WidgetId};
         use crate::FontRole;
         use pangocairo::cairo::{Context, Format, ImageSurface};
@@ -10283,13 +9856,23 @@ mod tests {
         const W: i32 = 100;
         const H: i32 = 100;
 
-        fn ink_pixel_count(surface: &mut ImageSurface) -> usize {
+        /// Glyph ink only: the popup's own `bg` fills `content_bounds`
+        /// pure black, so every non-black pixel strictly inside that box
+        /// is body text. Counting the whole surface instead would be
+        /// dominated by the frame stroke, whose perimeter is the same in
+        /// both font configurations and so swamps the glyph difference
+        /// this test is about.
+        fn ink_pixel_count(surface: &mut ImageSurface, content: QRect) -> usize {
             surface.flush();
             let stride = surface.stride() as usize;
             let data = surface.data().expect("surface data");
             let mut count = 0;
-            for y in 0..H {
-                for x in 0..W {
+            let y0 = content.y.ceil().max(0.0) as i32;
+            let y1 = (content.y + content.height).floor().min(H as f32) as i32;
+            let x0 = content.x.ceil().max(0.0) as i32;
+            let x1 = (content.x + content.width).floor().min(W as f32) as i32;
+            for y in y0..y1 {
+                for x in x0..x1 {
                     let (r, g, b) = probe_pixel_417(&data, stride, x, y);
                     if r as u32 + g as u32 + b as u32 > 0 {
                         count += 1;
@@ -10322,28 +9905,32 @@ mod tests {
         fn paint(backend: &mut GtkBackend, role: Option<FontRole>) -> usize {
             let mut surface =
                 ImageSurface::create(Format::ARgb32, W, H).expect("create ImageSurface");
-            let p = popup();
+            // The descriptor carries the font role the popup measures
+            // and paints its body in.
+            let p = RichTextPopup {
+                font_role: role.unwrap_or_default(),
+                ..popup()
+            };
             let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-            let measure = RichTextPopupMeasure::new(80.0, 80.0);
-            let layout = p.layout(2.0, 2.0, viewport, measure, |_, s, e| (e - s) as f32);
-            {
+            let content = {
                 let cr = Context::new(&surface).expect("Context::new");
                 let pango_ctx = pangocairo::functions::create_context(&cr);
                 let pango_layout = pango::Layout::new(&pango_ctx);
-                backend.enter_frame_scope(&cr, &pango_layout, |b| match role {
-                    Some(role) => b.draw_rich_text_popup_with_font_role(&p, &layout, role),
-                    None => b.draw_rich_text_popup(&p, &layout),
-                });
-            }
-            ink_pixel_count(&mut surface)
+                backend.enter_frame_scope(&cr, &pango_layout, |b| {
+                    crate::DrawsPrimitives::draw_primitive(b, viewport, &p)
+                        .layout
+                        .content_bounds
+                })
+            };
+            ink_pixel_count(&mut surface, content)
         }
 
         let mut backend = GtkBackend::new();
         backend.set_ui_font("Sans 48");
         backend.set_editor_font("Monospace", 6.0);
 
-        // `None` = plain `draw_rich_text_popup` (today's call site, no
-        // role argument at all) — must still paint the chrome font.
+        // `None` = a descriptor with the default role — must paint in
+        // the chrome font.
         let chrome_ink = paint(&mut backend, None);
         let editor_ink = paint(&mut backend, Some(FontRole::Editor));
 
@@ -10354,8 +9941,8 @@ mod tests {
         assert!(
             chrome_ink > editor_ink * 3,
             "a 48pt chrome font must paint far more ink than a 6pt editor font for the \
-             same glyph if plain draw_rich_text_popup (no role argument) really selects \
-             the chrome font: chrome={chrome_ink}, editor={editor_ink}"
+             same glyph if the descriptor's default role really selects the chrome \
+             font: chrome={chrome_ink}, editor={editor_ink}"
         );
     }
 
@@ -10784,7 +10371,7 @@ mod tests {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_text_display(QRect::new(0.0, 0.0, TD_W as f32, TD_H as f32), td);
+                b.draw_dyn(QRect::new(0.0, 0.0, TD_W as f32, TD_H as f32), td, &());
             });
         }
         surface.flush();

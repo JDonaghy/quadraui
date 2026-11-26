@@ -140,6 +140,7 @@ mod ms11_542_structural_parity {
                 placement: TooltipPlacement::Bottom,
                 bg: None,
                 fg: None,
+                chrome: Default::default(),
             };
             // One text line plus a row of chrome above and below it, and
             // room for chrome either side — i.e. a box big enough for a
@@ -158,7 +159,7 @@ mod ms11_542_structural_parity {
                 lh * 3.0,
             );
             let layout = tooltip.layout(anchor, viewport, measure, lh);
-            backend.draw_tooltip(&tooltip, &layout);
+            let _ = backend.draw_dyn(layout.bounds, &tooltip, &());
         }
 
         fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

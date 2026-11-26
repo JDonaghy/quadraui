@@ -115,7 +115,6 @@ pub mod backend;
 mod board;
 mod chart;
 mod combo_box;
-mod command_line;
 mod completions;
 mod data_table;
 mod date_picker;

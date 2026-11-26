@@ -27,11 +27,11 @@
 #![allow(dead_code)]
 
 use quadraui::gtk::testing::{driver_with_shell, GtkDriver};
+use quadraui::DrawsPrimitives;
 use quadraui::{
     compute_find_replace_hit_regions, AppLogic, Backend, CommandCenter, CompletionItem,
     CompletionItemMeasure, CompletionKind, Completions, FindReplacePanel, Reaction, Rect,
-    ResolvedPlacement, StyledText, Tooltip, TooltipBorder, TooltipChrome, TooltipLayout,
-    TooltipPlacement, UiEvent, WidgetId,
+    StyledText, Tooltip, TooltipBorder, TooltipChrome, TooltipPlacement, UiEvent, WidgetId,
 };
 
 #[path = "../examples/common/ai_transcript.rs"]
@@ -480,15 +480,8 @@ impl AppLogic for TooltipFixtureApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut tooltip = Tooltip::new(WidgetId::new("tip"), "Hover hint");
         tooltip.placement = TooltipPlacement::Bottom;
-        let layout = TooltipLayout {
-            bounds: Rect::new(10.0, 10.0, 120.0, 24.0),
-            resolved_placement: ResolvedPlacement::Bottom,
-        };
-        backend.draw_tooltip_with_chrome(
-            &tooltip,
-            &layout,
-            &TooltipChrome::new(TooltipBorder::default()),
-        );
+        tooltip.chrome = TooltipChrome::new(TooltipBorder::default());
+        backend.draw_dyn(Rect::new(10.0, 10.0, 120.0, 24.0), &tooltip, &());
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -575,7 +568,7 @@ impl AppLogic for CompletionsFixtureApp {
             80.0,
             |_| CompletionItemMeasure::new(16.0),
         );
-        backend.draw_completions(&completions, &layout);
+        backend.draw_dyn(layout.bounds, &completions, &());
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

@@ -424,6 +424,17 @@ pub trait PaintSurface {
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32);
 
     // ─── Shadow + path ─────────────────────────────────────────────────
+    /// Record `rect` as a floating overlay (a tooltip or toast box)
+    /// painted into this frame, so chrome drawn later in the same frame
+    /// can keep clear of it.
+    ///
+    /// Default: a no-op. A terminal has no sub-cell chrome to collide
+    /// with, so TUI never needs it; `GtkBackend`/`MacBackend`/
+    /// `WinBackend` each override it to remember the box, and their
+    /// `Backend::draw_focus_ring` skips a ring whose stroke band would
+    /// cross one — an overlay has to stay topmost.
+    fn surface_note_overlay(&mut self, _rect: Rect) {}
+
     /// Paint an elevation-based drop shadow behind the rounded box
     /// described by `rect`/`radius`, in `color` (typically a near-black
     /// translucent tint the caller already has to hand — this trait has

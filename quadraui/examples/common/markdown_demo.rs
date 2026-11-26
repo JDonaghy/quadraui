@@ -19,6 +19,7 @@
 //! confirmation of GTK's editor-role paint arm; TUI has one font per
 //! cell and ignores the role.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{
     render_markdown_to_styled, AppLogic, Backend, FontRole, Key, NamedKey, PopupPlacement,
     Reaction, Rect, RichTextPopup, RichTextPopupMeasure, Theme, UiEvent, WidgetId,
@@ -114,18 +115,14 @@ impl AppLogic for MarkdownDemo {
         let layout = popup.layout(anchor_x, anchor_y, vp, measure, |_, start, end| {
             (end - start) as f32 * col_w
         });
-        // `f` toggles `self.font_role` — `Chrome` goes through plain
-        // `draw_rich_text_popup` (today's call, unchanged); `Editor`
-        // goes through `draw_rich_text_popup_with_font_role` so this
-        // demo visually exercises both paint paths.
-        match self.font_role {
-            FontRole::Editor => {
-                backend.draw_rich_text_popup_with_font_role(&popup, &layout, FontRole::Editor)
-            }
-            FontRole::Chrome | FontRole::ChromeBold | FontRole::Icon => {
-                backend.draw_rich_text_popup(&popup, &layout)
-            }
-        }
+        // `f` toggles `self.font_role`, which the descriptor carries —
+        // so this demo visually exercises the chrome-font and
+        // editor-font measure/paint paths through one call.
+        let popup = RichTextPopup {
+            font_role: self.font_role,
+            ..popup
+        };
+        backend.draw_dyn(layout.bounds, &popup, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

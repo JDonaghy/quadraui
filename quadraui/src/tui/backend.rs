@@ -51,9 +51,8 @@ use crate::backend::{ColorDepth, Screenshot, ScreenshotRun};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
-    Accelerator, AcceleratorId, Backend, Color, CommandLine, DragState, ListView, ModalStack,
-    PlatformServices, Point, Rect as QRect, Split, TerminalCellSize, TextDisplay, TreeView,
-    UiEvent, Viewport, WidgetId,
+    Accelerator, AcceleratorId, Backend, Color, DragState, ListView, ModalStack, PlatformServices,
+    Point, Rect as QRect, Split, TerminalCellSize, TreeView, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
 // only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs
@@ -2321,7 +2320,7 @@ impl Backend for TuiBackend {
         self.last_cell_surface_cursor = None;
         self.cell_surface_scratch = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_dyn).
+        // to earn them again (via draw_primitive/draw_dyn).
         self.modal_stack.borrow_mut().reset_frame_paint();
         // Clear any unbalanced push_clip left over from the previous
         // frame — see `clip_stack`'s own doc for why a stale narrowed
@@ -3212,216 +3211,6 @@ impl Backend for TuiBackend {
         self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
     }
 
-    fn draw_text_display(&mut self, rect: QRect, td: &TextDisplay) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_text_display called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_text_display(frame.buffer_mut(), area, td, &theme);
-    }
-
-    fn draw_command_line(&mut self, rect: QRect, cmd: &CommandLine) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_command_line called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::command_line::draw_command_line(frame.buffer_mut(), area, cmd, &theme);
-    }
-
-    fn draw_command_line_selection(
-        &mut self,
-        rect: QRect,
-        cmd: &CommandLine,
-        selection: Option<(usize, usize)>,
-    ) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_command_line_selection called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::command_line::draw_command_line_selection(
-            frame.buffer_mut(),
-            area,
-            cmd,
-            &theme,
-            selection,
-        );
-    }
-
-    fn command_line_layout(
-        &self,
-        rect: QRect,
-        cmd: &CommandLine,
-    ) -> crate::primitives::command_line::CommandLineLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::command_line::tui_command_line_layout(cmd, area)
-    }
-
-    fn text_display_layout(
-        &self,
-        rect: QRect,
-        td: &TextDisplay,
-    ) -> crate::primitives::text_display::TextDisplayLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_text_display_layout(td, area)
-    }
-
-    fn draw_text_input(
-        &mut self,
-        rect: QRect,
-        ti: &crate::primitives::text_input::TextInput,
-    ) -> crate::primitives::text_input::TextInputLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_text_input called outside enter_frame_scope"
-            );
-            return self.text_input_layout(rect, ti);
-        };
-        crate::tui::draw_text_input(frame.buffer_mut(), area, ti, &theme)
-    }
-
-    fn text_input_layout(
-        &self,
-        rect: QRect,
-        ti: &crate::primitives::text_input::TextInput,
-    ) -> crate::primitives::text_input::TextInputLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_text_input_layout(ti, area)
-    }
-
-    fn draw_text_field(
-        &mut self,
-        rect: QRect,
-        tf: &crate::primitives::text_field::TextField,
-    ) -> crate::primitives::text_field::TextFieldLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_text_field called outside enter_frame_scope"
-            );
-            return self.text_field_layout(rect, tf);
-        };
-        crate::tui::draw_text_field(frame.buffer_mut(), area, tf, &theme, nerd_fonts)
-    }
-
-    fn text_field_layout(
-        &self,
-        rect: QRect,
-        tf: &crate::primitives::text_field::TextField,
-    ) -> crate::primitives::text_field::TextFieldLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_text_field_layout(tf, area)
-    }
-
-    fn draw_tooltip(&mut self, tooltip: &crate::Tooltip, layout: &crate::TooltipLayout) {
-        self.draw_tooltip_with_chrome(tooltip, layout, &crate::TooltipChrome::default());
-    }
-
-    fn draw_tooltip_with_chrome(
-        &mut self,
-        tooltip: &crate::Tooltip,
-        layout: &crate::TooltipLayout,
-        chrome: &crate::TooltipChrome,
-    ) {
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_tooltip called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_tooltip_with_chrome(frame.buffer_mut(), tooltip, layout, chrome, &theme);
-        // Register the tooltip's own surface so a structural-parity
-        // observer (`ConformanceDriver::inventory().zones()`) can see the
-        // tooltip was drawn at all, not just infer it from text presence —
-        // `screen_has("Keybindings")` stayed true on both backends through
-        // #541 even though only one of them drew the chrome around it.
-        //
-        // Register `tooltip_painted_bounds`, not the raw float
-        // `layout.bounds` — `draw_tooltip` rounds to whole cells before
-        // painting, and registering the unrounded rect would report a
-        // surface that doesn't match what was actually drawn.
-        self.register_zone(tooltip.id, crate::tui::tooltip_painted_bounds(layout));
-    }
-
-    fn draw_dialog(
-        &mut self,
-        dialog: &crate::primitives::dialog::Dialog,
-        layout: &crate::primitives::dialog::DialogLayout,
-    ) -> Vec<QRect> {
-        // Marked before the frame borrow: this id is now painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&dialog.id);
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        // The returned `Vec` comes from `layout`, not frame state, so a
-        // missing frame only skips the paint.
-        if let Some(frame) = self.current_frame_mut() {
-            crate::tui::draw_dialog_with_nerd_fonts(
-                frame.buffer_mut(),
-                dialog,
-                layout,
-                &theme,
-                nerd_fonts_enabled,
-            );
-        } else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_dialog called outside enter_frame_scope"
-            );
-        }
-        // Derive button rects from the layout (TUI rasteriser doesn't
-        // return them; the primitive owns the layout).
-        layout
-            .visible_buttons
-            .iter()
-            .map(|vis| vis.bounds)
-            .collect()
-    }
-
-    fn draw_float(
-        &mut self,
-        float: &crate::primitives::float::Float,
-        layout: &crate::primitives::float::FloatLayout,
-    ) {
-        // Marked before the frame borrow: this id is now painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&float.id);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_float called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_float(frame.buffer_mut(), float, layout, &theme);
-        // Same convention `draw_scrollbar` uses for a chrome-only
-        // primitive: register the float's own bounds under its id so
-        // it's inventory-observable even when `border: false` leaves no
-        // painted glyph behind.
-        self.register_zone(float.id, layout.bounds);
-    }
-
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
 
     fn draw_multi_section_view(
@@ -3576,22 +3365,6 @@ impl Backend for TuiBackend {
         crate::tui::draw_message_list(frame.buffer_mut(), area, list, panel_bg);
     }
 
-    fn draw_rich_text_popup(
-        &mut self,
-        popup: &crate::primitives::rich_text_popup::RichTextPopup,
-        layout: &crate::primitives::rich_text_popup::RichTextPopupLayout,
-    ) {
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_rich_text_popup called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_rich_text_popup(frame.buffer_mut(), popup, layout, &theme);
-    }
-
     fn draw_find_replace(
         &mut self,
         rect: QRect,
@@ -3612,73 +3385,6 @@ impl Backend for TuiBackend {
             return;
         };
         crate::tui::draw_find_replace(frame.buffer_mut(), area, panel, &theme, editor_left);
-    }
-
-    fn draw_completions(
-        &mut self,
-        completions: &crate::primitives::completions::Completions,
-        layout: &crate::primitives::completions::CompletionsLayout,
-    ) {
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_completions called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_completions(frame.buffer_mut(), completions, layout, &theme);
-    }
-
-    fn draw_number_input(
-        &mut self,
-        number_input: &crate::primitives::number_input::NumberInput,
-        layout: &crate::primitives::number_input::NumberInputLayout,
-    ) {
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_number_input called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_number_input(frame.buffer_mut(), number_input, layout, &theme);
-        self.register_zone(number_input.id, layout.bounds);
-    }
-
-    fn draw_combo_box(
-        &mut self,
-        combo_box: &crate::primitives::combo_box::ComboBox,
-        layout: &crate::primitives::combo_box::ComboBoxLayout,
-    ) {
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_combo_box called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_combo_box(frame.buffer_mut(), combo_box, layout, &theme);
-        self.register_zone(combo_box.id, layout.field_bounds);
-    }
-
-    fn draw_date_picker(
-        &mut self,
-        date_picker: &crate::primitives::date_picker::DatePicker,
-        layout: &crate::primitives::date_picker::DatePickerLayout,
-    ) {
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_date_picker called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_date_picker(frame.buffer_mut(), date_picker, layout, &theme);
-        self.register_zone(date_picker.id, layout.bounds());
     }
 
     fn draw_scrollbar(
@@ -3806,32 +3512,6 @@ impl Backend for TuiBackend {
         #[cfg(not(feature = "tui-images"))]
         let _ = (kitty, truecolor);
         layout
-    }
-
-    fn draw_toast_overlay(
-        &mut self,
-        rect: QRect,
-        stack: &crate::primitives::toast::ToastOverlay,
-    ) -> crate::primitives::toast::ToastStackLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_toast_stack called outside enter_frame_scope"
-            );
-            return self.toast_stack_layout(rect, stack);
-        };
-        crate::tui::draw_toast_stack(frame.buffer_mut(), area, stack, &theme)
-    }
-
-    fn toast_stack_layout(
-        &self,
-        rect: QRect,
-        stack: &crate::primitives::toast::ToastOverlay,
-    ) -> crate::primitives::toast::ToastStackLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_toast_stack_layout(stack, area)
     }
 
     fn draw_pipeline_view(
@@ -4382,78 +4062,6 @@ mod tests {
         ) {
         }
         fn draw_solid_fill(&mut self, _r: QRect, _c: Color) {}
-        fn draw_text_display(&mut self, _r: QRect, _t: &TextDisplay) {}
-        fn draw_command_line(&mut self, _r: QRect, _c: &CommandLine) {}
-        fn draw_command_line_selection(
-            &mut self,
-            _r: QRect,
-            _c: &CommandLine,
-            _s: Option<(usize, usize)>,
-        ) {
-        }
-        fn command_line_layout(
-            &self,
-            _r: QRect,
-            _c: &CommandLine,
-        ) -> crate::primitives::command_line::CommandLineLayout {
-            Default::default()
-        }
-        fn text_display_layout(
-            &self,
-            r: QRect,
-            td: &TextDisplay,
-        ) -> crate::primitives::text_display::TextDisplayLayout {
-            td.layout(r.width, r.height, |_| {
-                crate::primitives::text_display::TextDisplayLineMeasure::new(1.0)
-            })
-        }
-        fn draw_text_input(
-            &mut self,
-            r: QRect,
-            ti: &crate::primitives::text_input::TextInput,
-        ) -> crate::primitives::text_input::TextInputLayout {
-            ti.layout(
-                r,
-                crate::primitives::text_input::TextInputMeasure::new(1.0, 1.0),
-            )
-        }
-        fn text_input_layout(
-            &self,
-            r: QRect,
-            ti: &crate::primitives::text_input::TextInput,
-        ) -> crate::primitives::text_input::TextInputLayout {
-            ti.layout(
-                r,
-                crate::primitives::text_input::TextInputMeasure::new(1.0, 1.0),
-            )
-        }
-        fn draw_text_field(
-            &mut self,
-            r: QRect,
-            tf: &crate::primitives::text_field::TextField,
-        ) -> crate::primitives::text_field::TextFieldLayout {
-            tf.layout(
-                r,
-                crate::primitives::text_field::TextFieldMeasure::new(1.0, 1.0),
-            )
-        }
-        fn draw_number_input(&mut self, _n: &crate::NumberInput, _l: &crate::NumberInputLayout) {}
-        fn draw_combo_box(&mut self, _c: &crate::ComboBox, _l: &crate::ComboBoxLayout) {}
-        fn draw_date_picker(&mut self, _d: &crate::DatePicker, _l: &crate::DatePickerLayout) {}
-        fn draw_tooltip(&mut self, _t: &crate::Tooltip, _l: &crate::TooltipLayout) {}
-        fn draw_dialog(
-            &mut self,
-            _d: &crate::primitives::dialog::Dialog,
-            _l: &crate::primitives::dialog::DialogLayout,
-        ) -> Vec<QRect> {
-            Vec::new()
-        }
-        fn draw_float(
-            &mut self,
-            _f: &crate::primitives::float::Float,
-            _l: &crate::primitives::float::FloatLayout,
-        ) {
-        }
 
         fn char_width(&self) -> f32 {
             1.0
@@ -4530,24 +4138,10 @@ mod tests {
         ) {
         }
 
-        fn draw_rich_text_popup(
-            &mut self,
-            _p: &crate::primitives::rich_text_popup::RichTextPopup,
-            _l: &crate::primitives::rich_text_popup::RichTextPopupLayout,
-        ) {
-        }
-
         fn draw_find_replace(
             &mut self,
             _r: QRect,
             _p: &crate::primitives::find_replace::FindReplacePanel,
-        ) {
-        }
-
-        fn draw_completions(
-            &mut self,
-            _c: &crate::primitives::completions::Completions,
-            _l: &crate::primitives::completions::CompletionsLayout,
         ) {
         }
 
@@ -4598,26 +4192,6 @@ mod tests {
         ) -> crate::primitives::canvas::CanvasLayout {
             let bounds = crate::event::Rect::new(r.x, r.y, r.width, r.height);
             canvas.layout(bounds)
-        }
-
-        fn draw_toast_overlay(
-            &mut self,
-            _r: QRect,
-            stack: &crate::primitives::toast::ToastOverlay,
-        ) -> crate::primitives::toast::ToastStackLayout {
-            stack.layout(_r.x, _r.y, _r.width, _r.height, 1.0, 1.0, |_| {
-                crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
-            })
-        }
-
-        fn toast_stack_layout(
-            &self,
-            _r: QRect,
-            stack: &crate::primitives::toast::ToastOverlay,
-        ) -> crate::primitives::toast::ToastStackLayout {
-            stack.layout(_r.x, _r.y, _r.width, _r.height, 1.0, 1.0, |_| {
-                crate::primitives::toast::ToastMeasure::new(40.0, 1.0)
-            })
         }
 
         fn draw_pipeline_view(
@@ -5213,15 +4787,15 @@ mod tests {
         assert!(h2.borrow().is_active());
     }
 
-    /// `TuiBackend::draw_dialog` must mark the modal
-    /// stack entry it paints, so `ModalStack::unpainted_ids` can catch a
-    /// backend that registers a modal for hit-testing but never actually
-    /// paints it — vimcode#587's exact failure shape ("registered but
-    /// invisible"), reproduced here at the backend-wiring level rather
-    /// than `ModalStack` in isolation (already covered in
-    /// `crate::modal_stack::tests`).
+    /// Painting a `Dialog` through the widget contract must mark the
+    /// modal stack entry it paints, so `ModalStack::unpainted_ids` can
+    /// catch a host that registers a modal for hit-testing but never
+    /// actually paints it — vimcode#587's exact failure shape
+    /// ("registered but invisible"), reproduced here at the
+    /// backend-wiring level rather than `ModalStack` in isolation
+    /// (already covered in `crate::modal_stack::tests`).
     #[test]
-    fn draw_dialog_marks_its_modal_stack_entry_painted() {
+    fn drawing_a_dialog_marks_its_modal_stack_entry_painted() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
@@ -5243,28 +4817,15 @@ mod tests {
             vertical_buttons: false,
             input: None,
         };
-        let measure = crate::DialogMeasure {
-            width: 40.0,
-            title_height: 1.0,
-            body_height: 1.0,
-            table_height: 0.0,
-            input_height: 0.0,
-            button_row_height: 1.0,
-            button_width: 10.0,
-            button_gap: 2.0,
-            padding: 1.0,
-        };
         let viewport_rect = QRect::new(0.0, 0.0, 80.0, 24.0);
-        let layout = dialog.layout(viewport_rect, measure, |_| {
-            crate::ToolbarItemMeasure::new(0.0)
-        });
+        let bounds = crate::primitives::dialog::cell_layout(&dialog, viewport_rect).bounds;
 
         let mut backend = TuiBackend::new();
         backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
         backend
             .modal_stack_handle()
             .borrow_mut()
-            .push(dialog_id.clone(), layout.bounds);
+            .push(dialog_id.clone(), bounds);
 
         // Registered but not yet drawn this frame — exactly the drift
         // #455 wants surfaced.
@@ -5277,22 +4838,22 @@ mod tests {
         terminal
             .draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
-                    b.draw_dialog(&dialog, &layout);
+                    b.draw_dyn(viewport_rect, &dialog, &());
                 });
             })
             .expect("draw");
 
-        // draw_dialog ran through the real trait method and marked its
-        // own id painted — the drift is gone for this frame.
+        // The contract paint marked the dialog's own id painted — the
+        // drift is gone for this frame.
         assert!(backend
             .modal_stack_handle()
             .borrow()
             .unpainted_ids()
             .is_empty());
 
-        // The next frame must reset the mark: a backend that stops
-        // calling draw_dialog (even though the modal stays registered)
-        // has to be caught again, not remembered as painted forever.
+        // The next frame must reset the mark: a host that stops painting
+        // the dialog (even though the modal stays registered) has to be
+        // caught again, not remembered as painted forever.
         backend.begin_frame(Viewport::new(80.0, 24.0, 1.0));
         assert_eq!(
             backend.modal_stack_handle().borrow().unpainted_ids(),

@@ -467,19 +467,19 @@ impl AppLogic for FloatApp {
         // beneath it this frame.
         if let Some(float) = self.overlay_float(backend) {
             let layout = self.overlay_layout(backend);
-            backend.draw_float(&float, &layout);
+            backend.draw_dyn(layout.bounds, &float, &());
             self.paint_overlay_content(backend, &layout);
         }
         if self.menu_open {
             let layout = self.menu_layout(backend);
             let float = self.menu_float(backend);
-            backend.draw_float(&float, &layout);
+            backend.draw_dyn(layout.bounds, &float, &());
             self.paint_menu_content(backend, &layout);
         }
         if self.hint_open {
             let layout = self.hint_layout(backend);
             let float = self.hint_float(backend);
-            backend.draw_float(&float, &layout);
+            backend.draw_dyn(layout.bounds, &float, &());
             self.paint_hint_content(backend, &layout);
         }
     }

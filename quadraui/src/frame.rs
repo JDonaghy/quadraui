@@ -40,9 +40,9 @@
 //!
 //! Every primitive that has a `Backend::draw_*` method has a matching
 //! [`Surface`] variant (`Board`, `DiffView`, `Image`, `MessageList`,
-//! `Minimap`, `PipelineView`, `Progress`, `Spinner`, `SplitTree`,
-//! `TextField`, `TextInput` included). `Backend::draw_<name>` stays reachable directly
-//! for the reasons above; there is no primitive that is categorically
+//! `Minimap`, `PipelineView`, `Progress`, `Spinner`, `SplitTree`
+//! included). `Backend::draw_<name>` stays reachable directly for the
+//! reasons above; there is no primitive that is categorically
 //! unreachable through the declarative path.
 //!
 //! ## `FrameHitMap` is serializable; [`OwnedFrame`] is the owned `Frame`
@@ -211,14 +211,14 @@ use crate::primitives::cell_grid::CellGrid;
 use crate::primitives::chart::Chart;
 use crate::primitives::command_center::CommandCenter;
 use crate::primitives::command_line::CommandLine;
-use crate::primitives::completions::{Completions, CompletionsLayout};
+use crate::primitives::completions::Completions;
 use crate::primitives::context_menu::ContextMenu;
 use crate::primitives::data_table::DataTable;
-use crate::primitives::dialog::{Dialog, DialogLayout};
+use crate::primitives::dialog::Dialog;
 use crate::primitives::diff_view::DiffView;
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
-use crate::primitives::float::{Float, FloatLayout};
+use crate::primitives::float::Float;
 use crate::primitives::form::Form;
 use crate::primitives::image::Image;
 use crate::primitives::list::ListView;
@@ -230,7 +230,7 @@ use crate::primitives::palette::Palette;
 use crate::primitives::pipeline_view::PipelineView;
 use crate::primitives::progress::ProgressBar;
 use crate::primitives::radio_group::RadioGroup;
-use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
+use crate::primitives::rich_text_popup::RichTextPopup;
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::sidebar_panel::SidebarPanel;
 use crate::primitives::spinner::Spinner;
@@ -245,7 +245,7 @@ use crate::primitives::text_field::TextField;
 use crate::primitives::text_input::TextInput;
 use crate::primitives::toast::ToastOverlay;
 use crate::primitives::toolbar::Toolbar;
-use crate::primitives::tooltip::{Tooltip, TooltipLayout};
+use crate::primitives::tooltip::Tooltip;
 use crate::primitives::tree::TreeView;
 use crate::types::WidgetId;
 use crate::Backend;
@@ -268,14 +268,6 @@ pub enum Surface {
         rect: Rect,
         editor: Editor,
     },
-    CommandLine {
-        rect: Rect,
-        cmd: CommandLine,
-    },
-    TextDisplay {
-        rect: Rect,
-        td: TextDisplay,
-    },
     MultiSectionView {
         rect: Rect,
         view: MultiSectionView,
@@ -296,37 +288,9 @@ pub enum Surface {
         rect: Rect,
         sb: Scrollbar,
     },
-    Tooltip {
-        tooltip: Tooltip,
-        layout: TooltipLayout,
-    },
-    Dialog {
-        dialog: Dialog,
-        layout: DialogLayout,
-    },
-    /// Like `Tooltip`/`Dialog` above, carries its own
-    /// resolved `layout` rather than a plain `rect` — `Float`
-    /// is an overlay-with-caller-anchor primitive, so there's no bare
-    /// `rect` the host would otherwise have on hand.
-    Float {
-        float: Float,
-        layout: FloatLayout,
-    },
-    Completions {
-        completions: Completions,
-        layout: CompletionsLayout,
-    },
     FindReplace {
         rect: Rect,
         panel: FindReplacePanel,
-    },
-    RichTextPopup {
-        popup: RichTextPopup,
-        layout: RichTextPopupLayout,
-    },
-    Toast {
-        rect: Rect,
-        stack: ToastOverlay,
     },
     DataTable {
         rect: Rect,
@@ -399,14 +363,6 @@ pub enum Surface {
         rect: Rect,
         tree: SplitTree,
     },
-    TextInput {
-        rect: Rect,
-        ti: TextInput,
-    },
-    TextField {
-        rect: Rect,
-        tf: TextField,
-    },
 }
 
 /// Identifies which surface zone a point landed in.
@@ -446,12 +402,6 @@ pub enum FrameZone {
     TabBar {
         idx: usize,
     },
-    CommandLine {
-        idx: usize,
-    },
-    TextDisplay {
-        idx: usize,
-    },
     MultiSectionView {
         idx: usize,
     },
@@ -467,25 +417,7 @@ pub enum FrameZone {
     Scrollbar {
         idx: usize,
     },
-    Tooltip {
-        idx: usize,
-    },
-    Dialog {
-        idx: usize,
-    },
-    Float {
-        idx: usize,
-    },
-    Completions {
-        idx: usize,
-    },
     FindReplace {
-        idx: usize,
-    },
-    RichTextPopup {
-        idx: usize,
-    },
-    Toast {
         idx: usize,
     },
     DataTable {
@@ -531,12 +463,6 @@ pub enum FrameZone {
         idx: usize,
     },
     SplitTree {
-        idx: usize,
-    },
-    TextInput {
-        idx: usize,
-    },
-    TextField {
         idx: usize,
     },
     Empty,
@@ -768,12 +694,6 @@ impl ScreenLayout {
                 Surface::Editor { rect, editor } => {
                     backend.draw_editor(*rect, editor);
                 }
-                Surface::CommandLine { rect, cmd } => {
-                    backend.draw_command_line(*rect, cmd);
-                }
-                Surface::TextDisplay { rect, td } => {
-                    backend.draw_text_display(*rect, td);
-                }
                 Surface::MultiSectionView { rect, view } => {
                     backend.draw_multi_section_view(*rect, view);
                 }
@@ -791,29 +711,8 @@ impl ScreenLayout {
                 Surface::Scrollbar { rect, sb } => {
                     backend.draw_scrollbar(*rect, sb);
                 }
-                Surface::Tooltip { tooltip, layout } => {
-                    backend.draw_tooltip(tooltip, layout);
-                }
-                Surface::Dialog { dialog, layout } => {
-                    backend.draw_dialog(dialog, layout);
-                }
-                Surface::Float { float, layout } => {
-                    backend.draw_float(float, layout);
-                }
-                Surface::Completions {
-                    completions,
-                    layout,
-                } => {
-                    backend.draw_completions(completions, layout);
-                }
                 Surface::FindReplace { rect, panel } => {
                     backend.draw_find_replace(*rect, panel);
-                }
-                Surface::RichTextPopup { popup, layout } => {
-                    backend.draw_rich_text_popup(popup, layout);
-                }
-                Surface::Toast { rect, stack } => {
-                    backend.draw_toast_overlay(*rect, stack);
                 }
                 #[allow(deprecated)]
                 Surface::DataTable {
@@ -873,12 +772,6 @@ impl ScreenLayout {
                 Surface::SplitTree { rect, tree } => {
                     backend.draw_split_tree(*rect, tree);
                 }
-                Surface::TextInput { rect, ti } => {
-                    backend.draw_text_input(*rect, ti);
-                }
-                Surface::TextField { rect, tf } => {
-                    backend.draw_text_field(*rect, tf);
-                }
             }
 
             let (rect, zone) = Self::zone_for(idx, surface);
@@ -922,14 +815,9 @@ impl ScreenLayout {
     ///
     /// Only surfaces that carry both a plain `rect` and an owning
     /// [`WidgetId`] participate. Excluded, deliberately:
-    /// - Transient overlays (`Tooltip`, `Dialog`,
-    ///   `Float`, `Completions`, `RichTextPopup`, `FindReplace`,
-    ///   `Toast`) — these already own their own internal
-    ///   focus/dismiss handling while open, and being modal, nothing
-    ///   behind them should be Tab-reachable anyway. `Float` in
-    ///   particular already has its own, finer-grained focus story —
-    ///   [`crate::ModalStack::top_focusable`] — rather than
-    ///   participating in `Tab`/`Shift+Tab` cycling.
+    /// - Transient overlays (`FindReplace`) — these already own their
+    ///   own internal focus/dismiss handling while open, and being
+    ///   modal, nothing behind them should be Tab-reachable anyway.
     /// - Structural chrome (`Split`, `Scrollbar`, `SplitTree`) —
     ///   containers/controls with no independent focusable identity of
     ///   their own.
@@ -956,8 +844,6 @@ impl ScreenLayout {
             .iter()
             .flat_map(|s| match s {
                 Surface::Editor { rect, editor } => vec![(editor.id, *rect)],
-                Surface::CommandLine { rect, cmd } => vec![(cmd.id, *rect)],
-                Surface::TextDisplay { rect, td } => vec![(td.id, *rect)],
                 Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
                 Surface::Tree { rect, tree } => vec![(tree.id, *rect)],
                 Surface::List { rect, list } => vec![(list.id, *rect)],
@@ -970,22 +856,14 @@ impl ScreenLayout {
                 Surface::Minimap { rect, minimap } => vec![(minimap.id, *rect)],
                 Surface::PipelineView { rect, view } => vec![(view.id, *rect)],
                 Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
-                Surface::TextInput { rect, ti } => vec![(ti.id, *rect)],
-                Surface::TextField { rect, tf } => vec![(tf.id, *rect)],
                 Surface::Image { .. }
                 | Surface::Spinner { .. }
                 | Surface::Canvas { .. }
                 | Surface::Progress { .. }
                 | Surface::Split { .. }
                 | Surface::Scrollbar { .. }
-                | Surface::Tooltip { .. }
-                | Surface::Dialog { .. }
-                | Surface::Float { .. }
-                | Surface::Completions { .. }
                 | Surface::FindReplace { .. }
-                | Surface::RichTextPopup { .. }
-                | Surface::SplitTree { .. }
-                | Surface::Toast { .. } => Vec::new(),
+                | Surface::SplitTree { .. } => Vec::new(),
             })
             .collect();
         stops.sort_by(|(_, a), (_, b)| {
@@ -1027,22 +905,12 @@ impl ScreenLayout {
     fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
             Surface::Editor { rect, .. } => (*rect, FrameZone::Editor { idx }),
-            Surface::CommandLine { rect, .. } => (*rect, FrameZone::CommandLine { idx }),
-            Surface::TextDisplay { rect, .. } => (*rect, FrameZone::TextDisplay { idx }),
             Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
             Surface::Tree { rect, .. } => (*rect, FrameZone::Tree { idx }),
             Surface::List { rect, .. } => (*rect, FrameZone::List { idx }),
             Surface::Split { rect, .. } => (*rect, FrameZone::Split { idx }),
             Surface::Scrollbar { rect, .. } => (*rect, FrameZone::Scrollbar { idx }),
-            Surface::Tooltip { layout, .. } => (layout.bounds, FrameZone::Tooltip { idx }),
-            Surface::Dialog { layout, .. } => (layout.bounds, FrameZone::Dialog { idx }),
-            Surface::Float { layout, .. } => (layout.bounds, FrameZone::Float { idx }),
-            Surface::Completions { layout, .. } => (layout.bounds, FrameZone::Completions { idx }),
             Surface::FindReplace { rect, .. } => (*rect, FrameZone::FindReplace { idx }),
-            Surface::RichTextPopup { layout, .. } => {
-                (layout.bounds, FrameZone::RichTextPopup { idx })
-            }
-            Surface::Toast { rect, .. } => (*rect, FrameZone::Toast { idx }),
             Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
             Surface::Widget { rect, widget } => (
                 *rect,
@@ -1062,8 +930,6 @@ impl ScreenLayout {
             Surface::Progress { rect, .. } => (*rect, FrameZone::Progress { idx }),
             Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
             Surface::SplitTree { rect, .. } => (*rect, FrameZone::SplitTree { idx }),
-            Surface::TextInput { rect, .. } => (*rect, FrameZone::TextInput { idx }),
-            Surface::TextField { rect, .. } => (*rect, FrameZone::TextField { idx }),
         }
     }
 
@@ -1227,10 +1093,9 @@ impl OwnedContent {
     /// indices) is not captured by [`OwnedFrame::from_layout`], so
     /// every such parameter is passed as `None`/absent here.
     ///
-    /// The six overlay variants that need a non-serializable `*Layout`
-    /// companion to redraw (`Tooltip`, `ContextMenu`, `Dialog`, `Float`,
-    /// `Completions`, `RichTextPopup`), plus [`Self::FindReplace`] and
-    /// [`Self::Opaque`], are no-ops: their
+    /// [`Self::ContextMenu`] — the one overlay variant that still needs
+    /// a non-serializable `*Layout` companion to redraw — plus
+    /// [`Self::FindReplace`] and [`Self::Opaque`] are no-ops: their
     /// hit-test zone still round-trips, but repainting them needs either
     /// a layout or primitive content this owned snapshot does not keep.
     fn draw(&self, rect: Rect, backend: &mut dyn Backend) {
@@ -1251,11 +1116,15 @@ impl OwnedContent {
             OwnedContent::ActivityBar(bar) => {
                 backend.draw_primitive(rect, bar);
             }
-            OwnedContent::CommandLine(cmd) => backend.draw_command_line(rect, cmd),
+            OwnedContent::CommandLine(cmd) => {
+                backend.draw_primitive(rect, cmd);
+            }
             OwnedContent::Terminal(term) => {
                 backend.draw_primitive(rect, term);
             }
-            OwnedContent::TextDisplay(td) => backend.draw_text_display(rect, td),
+            OwnedContent::TextDisplay(td) => {
+                backend.draw_primitive(rect, td);
+            }
             OwnedContent::MultiSectionView(view) => backend.draw_multi_section_view(rect, view),
             #[allow(deprecated)]
             OwnedContent::Tree(tree) => backend.draw_tree(rect, tree),
@@ -1308,7 +1177,7 @@ impl OwnedContent {
                 backend.draw_primitive(rect, palette);
             }
             OwnedContent::Toast(stack) => {
-                backend.draw_toast_overlay(rect, stack);
+                backend.draw_primitive(rect, stack);
             }
             #[allow(deprecated)]
             OwnedContent::DataTable(table) => {
@@ -1360,10 +1229,10 @@ impl OwnedContent {
                 backend.draw_split_tree(rect, tree);
             }
             OwnedContent::TextInput(ti) => {
-                backend.draw_text_input(rect, ti);
+                backend.draw_primitive(rect, ti);
             }
             OwnedContent::TextField(tf) => {
-                backend.draw_text_field(rect, tf);
+                backend.draw_primitive(rect, tf);
             }
             OwnedContent::Toolbar(bar) => {
                 backend.draw_primitive(rect, bar);
@@ -1389,14 +1258,22 @@ impl OwnedContent {
                 // still carries.
                 backend.draw_primitive(rect, button);
             }
-            OwnedContent::Tooltip(_)
-            | OwnedContent::ContextMenu(_)
-            | OwnedContent::Dialog(_)
-            | OwnedContent::Float(_)
-            | OwnedContent::Completions(_)
-            | OwnedContent::RichTextPopup(_)
-            | OwnedContent::FindReplace
-            | OwnedContent::Opaque => {}
+            OwnedContent::Tooltip(tooltip) => {
+                backend.draw_primitive(rect, tooltip);
+            }
+            OwnedContent::Dialog(dialog) => {
+                backend.draw_primitive(rect, dialog);
+            }
+            OwnedContent::Float(float) => {
+                backend.draw_primitive(rect, float);
+            }
+            OwnedContent::Completions(completions) => {
+                backend.draw_primitive(rect, completions);
+            }
+            OwnedContent::RichTextPopup(popup) => {
+                backend.draw_primitive(rect, popup);
+            }
+            OwnedContent::ContextMenu(_) | OwnedContent::FindReplace | OwnedContent::Opaque => {}
         }
     }
 
@@ -1420,12 +1297,18 @@ impl OwnedContent {
                 idx,
                 id: Some(bar.id),
             },
-            OwnedContent::CommandLine(_) => FrameZone::CommandLine { idx },
+            OwnedContent::CommandLine(cmd) => FrameZone::Widget {
+                idx,
+                id: Some(cmd.id),
+            },
             OwnedContent::Terminal(term) => FrameZone::Widget {
                 idx,
                 id: Some(term.id),
             },
-            OwnedContent::TextDisplay(_) => FrameZone::TextDisplay { idx },
+            OwnedContent::TextDisplay(td) => FrameZone::Widget {
+                idx,
+                id: Some(td.id),
+            },
             OwnedContent::MultiSectionView(_) => FrameZone::MultiSectionView { idx },
             OwnedContent::Tree(_) => FrameZone::Tree { idx },
             OwnedContent::List(_) => FrameZone::List { idx },
@@ -1447,16 +1330,34 @@ impl OwnedContent {
                 idx,
                 id: Some(palette.id),
             },
-            OwnedContent::Tooltip(_) => FrameZone::Tooltip { idx },
+            OwnedContent::Tooltip(tooltip) => FrameZone::Widget {
+                idx,
+                id: Some(tooltip.id),
+            },
             OwnedContent::ContextMenu(menu) => FrameZone::Widget {
                 idx,
                 id: Some(menu.id),
             },
-            OwnedContent::Dialog(_) => FrameZone::Dialog { idx },
-            OwnedContent::Float(_) => FrameZone::Float { idx },
-            OwnedContent::Completions(_) => FrameZone::Completions { idx },
-            OwnedContent::RichTextPopup(_) => FrameZone::RichTextPopup { idx },
-            OwnedContent::Toast(_) => FrameZone::Toast { idx },
+            OwnedContent::Dialog(dialog) => FrameZone::Widget {
+                idx,
+                id: Some(dialog.id),
+            },
+            OwnedContent::Float(float) => FrameZone::Widget {
+                idx,
+                id: Some(float.id),
+            },
+            OwnedContent::Completions(completions) => FrameZone::Widget {
+                idx,
+                id: Some(completions.id),
+            },
+            OwnedContent::RichTextPopup(popup) => FrameZone::Widget {
+                idx,
+                id: Some(popup.id),
+            },
+            OwnedContent::Toast(stack) => FrameZone::Widget {
+                idx,
+                id: Some(stack.id),
+            },
             OwnedContent::DataTable(_) => FrameZone::DataTable { idx },
             OwnedContent::CellGrid(grid) => FrameZone::Widget {
                 idx,
@@ -1481,8 +1382,14 @@ impl OwnedContent {
             },
             OwnedContent::Spinner(_) => FrameZone::Spinner { idx },
             OwnedContent::SplitTree(_) => FrameZone::SplitTree { idx },
-            OwnedContent::TextInput(_) => FrameZone::TextInput { idx },
-            OwnedContent::TextField(_) => FrameZone::TextField { idx },
+            OwnedContent::TextInput(ti) => FrameZone::Widget {
+                idx,
+                id: Some(ti.id),
+            },
+            OwnedContent::TextField(tf) => FrameZone::Widget {
+                idx,
+                id: Some(tf.id),
+            },
             OwnedContent::Toolbar(bar) => FrameZone::Widget {
                 idx,
                 id: Some(bar.id),
@@ -1722,12 +1629,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::Editor { rect, editor } => {
             (*rect, Some(editor.id), OwnedContent::Editor(editor.clone()))
         }
-        Surface::CommandLine { rect, cmd } => {
-            (*rect, Some(cmd.id), OwnedContent::CommandLine(cmd.clone()))
-        }
-        Surface::TextDisplay { rect, td } => {
-            (*rect, Some(td.id), OwnedContent::TextDisplay(td.clone()))
-        }
         Surface::MultiSectionView { rect, view } => (
             *rect,
             Some(view.id),
@@ -1737,30 +1638,7 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List(list.clone())),
         Surface::Split { rect, split } => (*rect, None, OwnedContent::Split(split.clone())),
         Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar(sb.clone())),
-        Surface::Tooltip { tooltip, layout } => {
-            (layout.bounds, None, OwnedContent::Tooltip(tooltip.clone()))
-        }
-        Surface::Dialog { dialog, layout } => {
-            (layout.bounds, None, OwnedContent::Dialog(dialog.clone()))
-        }
-        Surface::Float { float, layout } => {
-            (layout.bounds, None, OwnedContent::Float(float.clone()))
-        }
-        Surface::Completions {
-            completions,
-            layout,
-        } => (
-            layout.bounds,
-            None,
-            OwnedContent::Completions(completions.clone()),
-        ),
         Surface::FindReplace { rect, .. } => (*rect, None, OwnedContent::FindReplace),
-        Surface::RichTextPopup { popup, layout } => (
-            layout.bounds,
-            None,
-            OwnedContent::RichTextPopup(popup.clone()),
-        ),
-        Surface::Toast { rect, stack } => (*rect, None, OwnedContent::Toast(stack.clone())),
         Surface::DataTable { rect, table, .. } => (
             *rect,
             Some(table.id),
@@ -1800,12 +1678,6 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         ),
         Surface::Spinner { rect, spinner } => (*rect, None, OwnedContent::Spinner(spinner.clone())),
         Surface::SplitTree { rect, tree } => (*rect, None, OwnedContent::SplitTree(tree.clone())),
-        Surface::TextInput { rect, ti } => {
-            (*rect, Some(ti.id), OwnedContent::TextInput(ti.clone()))
-        }
-        Surface::TextField { rect, tf } => {
-            (*rect, Some(tf.id), OwnedContent::TextField(tf.clone()))
-        }
     }
 }
 
@@ -1942,11 +1814,11 @@ mod tests {
         // Overlay covers top-left quadrant.
         map.push(
             Rect::new(0.0, 0.0, 50.0, 50.0),
-            FrameZone::Dialog { idx: 1 },
+            FrameZone::FindReplace { idx: 1 },
         );
 
         // Point in the overlay → highest-z wins.
-        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::Dialog { idx: 1 });
+        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::FindReplace { idx: 1 });
         // Point outside the overlay but inside editor.
         assert_eq!(map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
         // Point outside everything.
@@ -1970,12 +1842,12 @@ mod tests {
         map.push(Rect::new(0.0, 0.0, 80.0, 1.0), FrameZone::TabBar { idx: 1 });
         map.push(
             Rect::new(0.0, 23.0, 80.0, 1.0),
-            FrameZone::CommandLine { idx: 2 },
+            FrameZone::Scrollbar { idx: 2 },
         );
 
         assert_eq!(map.hit_test(40.0, 0.5), FrameZone::TabBar { idx: 1 });
         assert_eq!(map.hit_test(40.0, 12.0), FrameZone::Editor { idx: 0 });
-        assert_eq!(map.hit_test(40.0, 23.5), FrameZone::CommandLine { idx: 2 });
+        assert_eq!(map.hit_test(40.0, 23.5), FrameZone::Scrollbar { idx: 2 });
     }
 
     #[test]
@@ -2493,9 +2365,9 @@ mod tests {
             rect,
             tree: split_tree,
         });
-        layout.push(Surface::TextInput {
+        layout.push(Surface::Widget {
             rect,
-            ti: text_input,
+            widget: Box::new(text_input),
         });
         layout.push(Surface::Widget {
             rect,
@@ -2530,7 +2402,13 @@ mod tests {
         );
         assert_eq!(zones[10], &FrameZone::Spinner { idx: 10 });
         assert_eq!(zones[11], &FrameZone::SplitTree { idx: 11 });
-        assert_eq!(zones[12], &FrameZone::TextInput { idx: 12 });
+        assert_eq!(
+            zones[12],
+            &FrameZone::Widget {
+                idx: 12,
+                id: Some(WidgetId::new("ti")),
+            }
+        );
         assert_eq!(
             zones[13],
             &FrameZone::Widget {
@@ -2583,12 +2461,13 @@ mod tests {
         assert_eq!(stops[0].0.as_str(), "pb");
     }
 
-    /// `Surface::Float` dispatches to `Backend::draw_float` and is
-    /// excluded from Tab order — same transient-overlay treatment as
-    /// `Tooltip`/`ContextMenu`/`Dialog` (see this module's
-    /// `tab_stops` doc).
+    /// A `Float` pushed as `Surface::Widget` paints through
+    /// `DrawsPrimitives::draw_dyn`, gets a `FrameZone::Widget` hit region
+    /// at its resolved bounds, and stays out of Tab order — the same
+    /// transient-overlay treatment `Tooltip`/`ContextMenu`/`Dialog` get
+    /// (see this module's `tab_stops` doc).
     #[test]
-    fn surface_float_dispatches_to_draw_float_and_is_excluded_from_tab_stops() {
+    fn a_float_widget_surface_paints_and_is_excluded_from_tab_stops() {
         use crate::layout::{Anchor, Side};
         use crate::testing::RecordingBackend;
         use crate::{Float, FloatMeasure};
@@ -2633,14 +2512,21 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
             editor,
         });
-        layout.push(Surface::Float {
-            float,
-            layout: float_layout,
+        layout.push(Surface::Widget {
+            rect: float_layout.bounds,
+            widget: Box::new(float),
         });
 
         let mut backend = RecordingBackend::new();
-        layout.draw(&mut backend);
-        assert!(backend.calls.contains(&"draw_float"));
+        let hit_map = layout.draw(&mut backend);
+        assert_eq!(hit_map.zones()[1].0, float_layout.bounds);
+        assert_eq!(
+            hit_map.zones()[1].1,
+            FrameZone::Widget {
+                idx: 1,
+                id: Some(WidgetId::new("f")),
+            }
+        );
 
         let stops = layout.tab_stops();
         assert_eq!(
@@ -2652,14 +2538,15 @@ mod tests {
         assert_eq!(stops[0].0.as_str(), "ed");
     }
 
-    /// `Surface::TextField` dispatches to `Backend::draw_text_field`,
-    /// produces a `FrameZone::TextField` hit region at the field's own
-    /// rect, and is a Tab stop — the same `Surface`/`FrameZone`/
-    /// `zone_for`/`tab_stops` wiring every other focusable primitive
-    /// gets, so a `TextField` dropped into a `ScreenLayout` (a Finder-
-    /// style search box above a list, say) is reachable the same way.
+    /// A `TextField` pushed as `Surface::Widget` paints through
+    /// `DrawsPrimitives::draw_dyn`, produces a `FrameZone::Widget` hit
+    /// region at the field's own rect, and is a Tab stop — the same
+    /// `Surface`/`FrameZone`/`zone_for`/`tab_stops` wiring every other
+    /// focusable widget gets, so a `TextField` dropped into a
+    /// `ScreenLayout` (a Finder-style search box above a list, say) is
+    /// reachable the same way.
     #[test]
-    fn surface_text_field_dispatches_to_draw_text_field_and_is_a_tab_stop() {
+    fn a_text_field_widget_surface_paints_and_is_a_tab_stop() {
         use crate::testing::RecordingBackend;
         use crate::TextField;
 
@@ -2667,13 +2554,21 @@ mod tests {
         let field = TextField::new(WidgetId::new("search")).with_value("hi");
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::TextField { rect, tf: field });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(field),
+        });
 
         let mut backend = RecordingBackend::new();
         let hit_map = layout.draw(&mut backend);
-        assert!(backend.calls.contains(&"draw_text_field"));
         assert_eq!(hit_map.zones()[0].0, rect);
-        assert_eq!(hit_map.zones()[0].1, FrameZone::TextField { idx: 0 });
+        assert_eq!(
+            hit_map.zones()[0].1,
+            FrameZone::Widget {
+                idx: 0,
+                id: Some(WidgetId::new("search")),
+            }
+        );
 
         let stops = layout.tab_stops();
         assert_eq!(stops.len(), 1);
@@ -2807,9 +2702,16 @@ mod tests {
         };
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::TextField {
+        layout.push(Surface::Progress {
             rect: Rect::new(0.0, 10.0, 20.0, 1.0),
-            tf: TextField::new(Id::new("status")),
+            bar: ProgressBar {
+                id: Id::new("status"),
+                label: String::new(),
+                value: None,
+                frame_idx: 0,
+                cancellable: false,
+                accent: None,
+            },
         });
         layout.push(Surface::Widget {
             rect: widget_rect,

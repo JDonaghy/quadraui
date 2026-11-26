@@ -145,7 +145,7 @@ impl Demo for ToastDemo {
         let _ = backend.draw_dyn(hint_rect, &self.hint_bar(), &());
 
         let overlay_area = Self::overlay_area(backend, area);
-        let _ = backend.draw_toast_overlay(overlay_area, &self.stack());
+        backend.draw_dyn(overlay_area, &self.stack(), &());
     }
 
     fn handle(
@@ -236,7 +236,7 @@ impl Demo for ToastDemo {
             UiEvent::MouseDown { position, .. } => {
                 let overlay_area = Self::overlay_area(backend, area);
                 let stack = self.stack();
-                let layout = backend.toast_stack_layout(overlay_area, &stack);
+                let layout = backend.layout_primitive(overlay_area, &stack);
                 match layout.hit_test(position.x, position.y) {
                     ToastHit::Dismiss(id) => {
                         self.toasts.retain(|t| t.id != id);

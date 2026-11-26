@@ -87,13 +87,13 @@
 //! what a sighted user sees highlighted while tabbing.
 
 use crate::backend::Backend;
+use crate::backend::DrawsPrimitives;
 use crate::compose::Handled;
 use crate::event::{Point, Rect, UiEvent};
 use crate::primitives::dialog::{
-    Dialog, DialogButton, DialogHit, DialogInput, DialogLayout, DialogMeasure, DialogSeverity,
+    Dialog, DialogButton, DialogHit, DialogInput, DialogLayout, DialogSeverity,
 };
 use crate::primitives::form::{FieldKind, Form, FormEvent};
-use crate::primitives::toolbar::ToolbarItemMeasure;
 use crate::types::{StyledText, WidgetId};
 use crate::{Key, Modifiers, NamedKey};
 
@@ -295,71 +295,14 @@ impl FormDialogController {
 
     // ── Layout ────────────────────────────────────────────────────────
 
+    /// Resolve the modal's geometry through the widget contract, from
+    /// the backend's own viewport and font metrics — the "one layout fn,
+    /// two callers" pattern `docs/LESSONS.md` documents, so paint and
+    /// hit-test can never disagree.
     fn layout(&self, backend: &dyn Backend) -> DialogLayout {
-        let m = backend.measure();
-        let lh = m.line_height;
-        let char_w = m.char_width;
-        let viewport = backend.viewport();
-        let dialog = self.dialog();
-        let has_title = dialog.title.spans.iter().any(|s| !s.text.is_empty());
-        let button_width = self
-            .buttons
-            .iter()
-            .map(|b| b.resolved_button_spec().min_cell_width() * char_w)
-            .fold(char_w * 10.0, f32::max);
-        let width = (viewport.width * 0.5).clamp(char_w * 30.0, char_w * 64.0);
-        let padding = lh;
-        let input_height = self.measure_input_height(backend, &dialog, width, padding);
-        let measure = DialogMeasure {
-            width,
-            title_height: if has_title { lh } else { 0.0 },
-            body_height: lh * dialog.body.len() as f32,
-            table_height: 0.0,
-            input_height,
-            button_row_height: lh,
-            button_width,
-            button_gap: char_w * 2.0,
-            padding,
-        };
-        let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        dialog.layout(viewport_rect, measure, |_| ToolbarItemMeasure::new(0.0))
-    }
-
-    /// The input slot's real height for `dialog.input`, measured
-    /// per-field through the form's widget-contract layout
-    /// ([`crate::DrawsPrimitives::layout_primitive`]) rather than the
-    /// one-row-per-field estimate every other `DialogInput` variant can
-    /// get away with — a `FieldKind::TextArea` is `visible_rows` tall, a
-    /// `Top`-labelled field takes an extra row for its label line, and a
-    /// focused `Dropdown` grows to fit its open option list (see
-    /// `primitives::form::cell_layout::tui_form_layout`'s own per-kind measure). Probes with
-    /// a generously tall rect so every field lands at its full,
-    /// unclipped height — [`Form::layout`]'s "last row squeezed to fit
-    /// the viewport" clipping never kicks in here, since this *is* how
-    /// the viewport height gets decided.
-    fn measure_input_height(
-        &self,
-        backend: &dyn Backend,
-        dialog: &Dialog,
-        dialog_width: f32,
-        padding: f32,
-    ) -> f32 {
-        let Some(DialogInput::Form(form)) = dialog.input.as_ref() else {
-            return 0.0;
-        };
-        if form.fields.is_empty() {
-            return 0.0;
-        }
-        let content_w = (dialog_width - padding * 2.0).max(0.0);
-        let probe_rect = Rect::new(0.0, 0.0, content_w, f32::MAX / 4.0);
-        let probe =
-            crate::backend::DrawsPrimitives::layout_primitive(backend, probe_rect, form).layout;
-        let content_h = probe
-            .visible_fields
-            .iter()
-            .map(|f| f.bounds.y + f.bounds.height)
-            .fold(0.0_f32, f32::max);
-        content_h + form.spacing.padding
+        let vp = backend.viewport();
+        let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
+        backend.layout_primitive(viewport, &self.dialog()).layout
     }
 
     /// The on-screen rect the embedded form renders/hit-tests within —
@@ -377,9 +320,11 @@ impl FormDialogController {
     ///
     /// Call this from `AppLogic::render` whenever the dialog is open.
     pub fn render(&self, backend: &mut dyn Backend) {
-        let layout = self.layout(backend);
+        let vp = backend.viewport();
+        let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
         let dialog = self.dialog();
-        backend.draw_dialog(&dialog, &layout);
+        let layout = backend.layout_primitive(viewport, &dialog).layout;
+        backend.draw_dyn(viewport, &dialog, &());
         if let Some(input_bounds) = layout.input_bounds {
             self.form.render(backend, input_bounds);
         }

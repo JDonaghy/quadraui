@@ -3050,6 +3050,7 @@ mod tests {
     use quadraui::backend::MessageDialogOptions;
     use quadraui::tui::testing::TuiDriver;
     use quadraui::tui::TuiBackend;
+    use quadraui::DrawsPrimitives;
     use quadraui::{
         AppLogic, Backend, Button, ButtonMask, Point, Reaction, Rect, TextInput, Toast,
         ToastSeverity, UiEvent,
@@ -4098,7 +4099,7 @@ mod tests {
             let mut editor = TextInput::new(WidgetId::new("editor"));
             editor.lines = vec!["fn main() {}".to_string()];
             editor.has_focus = true;
-            backend.draw_text_input(rect, &editor);
+            backend.draw_dyn(rect, &editor, &());
             render_overlays(&self.engine, backend, Vec::new());
         }
 

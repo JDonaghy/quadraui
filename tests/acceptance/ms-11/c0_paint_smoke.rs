@@ -181,7 +181,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_command_line",
+            method: "draw_dyn(CommandLine)",
             needle: Some("c0cmd"),
             paint: |b, area| {
                 let lh = b.line_height();
@@ -190,8 +190,9 @@ mod ms11_492_c0_paint_smoke {
                     text: ":c0cmd".to_string(),
                     cursor_offset: None,
                     right_align: false,
+                    selection: None,
                 };
-                b.draw_command_line(Rect::new(0.0, 0.0, area.width, lh), &cmd);
+                let _ = b.draw_dyn(Rect::new(0.0, 0.0, area.width, lh), &cmd, &());
             },
         },
         PrimitiveCase {
@@ -207,7 +208,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_text_display",
+            method: "draw_dyn(TextDisplay)",
             needle: Some("c0text"),
             paint: |b, area| {
                 let td = TextDisplay {
@@ -224,7 +225,7 @@ mod ms11_492_c0_paint_smoke {
                     title: None,
                     show_scrollbar: false,
                 };
-                b.draw_text_display(area, &td);
+                let _ = b.draw_dyn(area, &td, &());
             },
         },
         PrimitiveCase {
@@ -320,7 +321,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_tooltip",
+            method: "draw_dyn(Tooltip)",
             needle: Some("c0tip"),
             paint: |b, area| {
                 let cw = b.char_width();
@@ -333,13 +334,14 @@ mod ms11_492_c0_paint_smoke {
                     placement: TooltipPlacement::Bottom,
                     bg: None,
                     fg: None,
+                    chrome: Default::default(),
                 };
                 // Room for a border on all four sides plus the whole label
                 // — a box measured to exactly `border + text + border`
                 // leaves a backend no padding and clips the last glyph.
                 let measure = TooltipMeasure::new(cw * 9.0, lh * 3.0);
                 let layout = tooltip.layout(anchor, area, measure, lh);
-                b.draw_tooltip(&tooltip, &layout);
+                let _ = b.draw_dyn(layout.bounds, &tooltip, &());
             },
         },
         PrimitiveCase {

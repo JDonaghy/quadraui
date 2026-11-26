@@ -236,13 +236,13 @@ impl Demo for FloatDemo {
         if self.menu_open {
             let layout = self.menu_layout(variant, area, backend);
             let float = self.menu_float(variant, area, backend);
-            backend.draw_float(&float, &layout);
+            backend.draw_dyn(layout.bounds, &float, &());
             self.paint_menu_content(backend, &layout);
         }
         if self.hint_open {
             let layout = self.hint_layout(area, backend);
             let float = self.hint_float(area, backend);
-            backend.draw_float(&float, &layout);
+            backend.draw_dyn(layout.bounds, &float, &());
             self.paint_hint_content(backend, &layout);
         }
     }

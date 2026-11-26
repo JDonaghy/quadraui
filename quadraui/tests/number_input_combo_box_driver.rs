@@ -15,6 +15,7 @@
 //! "host applies the event" split each primitive's module doc states.
 
 use quadraui::tui::testing::TuiDriver;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, ComboBox, ComboBoxEvent, ComboBoxHit, CompletionItemMeasure, Decoration,
     Key, NamedKey, NumberInput, NumberInputEvent, Point, Reaction, Rect, ScrollDelta, StyledSpan,
@@ -170,7 +171,7 @@ impl AppLogic for NumberComboApp {
             decoration: Decoration::default(),
             timestamp: None,
         });
-        backend.draw_text_display(Rect::new(0.0, 0.0, 40.0, 4.0), &display);
+        backend.draw_dyn(Rect::new(0.0, 0.0, 40.0, 4.0), &display, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

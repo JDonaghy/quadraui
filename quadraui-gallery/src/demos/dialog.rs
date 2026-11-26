@@ -24,9 +24,8 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, Dialog, DialogButton, DialogHit, DialogLayout, DialogMeasure,
-    DialogSeverity, FontRole, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
-    StyledText, ToolbarItemMeasure, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Dialog, DialogButton, DialogHit, DialogLayout, DialogSeverity,
+    Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -159,62 +158,14 @@ impl DialogDemo {
         }
     }
 
-    /// Dialog layout for `area`. Called from both `render` and `handle`
-    /// so paint and hit-test can never disagree.
+    /// Dialog layout for `area`, resolved through the widget contract.
+    /// Called from both `render` and `handle` so paint and hit-test can
+    /// never disagree — `Dialog`'s own `Primitive::layout` centres the
+    /// modal box in `area` and measures it with the calling backend's
+    /// real font metrics (cell-snapped on TUI, `Style::control_height`
+    /// button row on a pixel surface).
     fn dialog_layout(&self, backend: &dyn Backend, area: Rect, variant: usize) -> DialogLayout {
-        let m = backend.measure();
-        let lh = m.line_height;
-        let char_w = m.char_width;
-        let dialog = self.dialog(variant);
-        let button_width = dialog
-            .buttons
-            .iter()
-            .map(|b| backend.measure_text(&b.label, FontRole::Chrome).0)
-            .fold(0.0_f32, f32::max)
-            + char_w * 2.0;
-        // Snapped to a whole multiple of `char_w`, not the raw
-        // `area.width * 0.6` — see `snap_for_centering`'s doc for why a
-        // fractional content width breaks hit-testing on TUI.
-        let width = (((area.width * 0.6).clamp(char_w * 24.0, char_w * 48.0) / char_w).round()
-            * char_w)
-            .max(char_w);
-        let title_height = lh;
-        let body_height = lh * dialog.body.len() as f32;
-        // On a pixel backend (`lh > 1.0`), size the button row at
-        // `Style::control_height` — the same fixed-pixel row
-        // `MessageDialogController::layout` sizes its own OK/Cancel row
-        // at, via `Dialog::measure_generic_with_style`'s `is_pixel`
-        // split. TUI's one-cell row (`lh == 1.0`) is unaffected.
-        let is_pixel = lh > 1.0;
-        let button_row_height = if is_pixel {
-            backend.style().control_height
-        } else {
-            lh
-        };
-        let padding = lh;
-        // A vertical button stack reserves one row per button instead
-        // of one row total — matches the block height `Dialog::layout`
-        // itself substitutes internally, so the two never disagree on
-        // the dialog's total content height.
-        let button_block_height = if dialog.vertical_buttons {
-            button_row_height * dialog.buttons.len().max(1) as f32
-        } else {
-            button_row_height
-        };
-        let total_height = padding * 2.0 + title_height + body_height + button_block_height;
-        let measure = DialogMeasure {
-            width,
-            title_height,
-            body_height,
-            table_height: 0.0,
-            input_height: 0.0,
-            button_row_height,
-            button_width,
-            button_gap: char_w * 2.0,
-            padding,
-        };
-        let centering_area = snap_for_centering(area, width, total_height, char_w, lh);
-        dialog.layout(centering_area, measure, |_| ToolbarItemMeasure::new(0.0))
+        backend.layout_primitive(area, &self.dialog(variant)).layout
     }
 
     fn row_at(&self, backend: &dyn Backend, area: Rect, y: f32) -> Option<usize> {
@@ -295,37 +246,6 @@ impl DialogDemo {
     }
 }
 
-/// Trim `area` by less than two `char_w`/`lh` cells on each axis so that
-/// `Dialog::layout`'s centering — `(area_dim - content_dim) / 2` —
-/// always lands on a whole cell.
-///
-/// That division is only a whole number when `area_dim` and
-/// `content_dim` share the same parity (both even or both odd
-/// multiples of the cell size). `content_w`/`content_h` here are
-/// always whole multiples of `char_w`/`lh` (every `DialogMeasure`
-/// field this demo sets is), but `area` is this demo's own
-/// Demo-tab content rect, sized by whatever the gallery's chrome
-/// leaves over — not under this function's control, and not always
-/// the same parity as the content. A half-cell offset is invisible on
-/// GTK's sub-pixel rendering but breaks TUI outright: the painted
-/// glyph lands on a whole cell regardless, while the unrounded
-/// hit-test rect stays half a cell off, so a real click on a real
-/// button can resolve to [`DialogHit::Body`] instead of
-/// [`DialogHit::Button`].
-fn snap_for_centering(area: Rect, content_w: f32, content_h: f32, char_w: f32, lh: f32) -> Rect {
-    let trim_w = if char_w > 0.0 {
-        (area.width - content_w).rem_euclid(2.0 * char_w)
-    } else {
-        0.0
-    };
-    let trim_h = if lh > 0.0 {
-        (area.height - content_h).rem_euclid(2.0 * lh)
-    } else {
-        0.0
-    };
-    Rect::new(area.x, area.y, area.width - trim_w, area.height - trim_h)
-}
-
 impl Default for DialogDemo {
     fn default() -> Self {
         Self::new()
@@ -369,8 +289,7 @@ impl Demo for DialogDemo {
         // Modal paints last (highest z) — the ModalStack has no opinion
         // on draw order, only on hit-test precedence.
         if self.dialog_open {
-            let layout = self.dialog_layout(backend, area, variant);
-            backend.draw_dialog(&self.dialog(variant), &layout);
+            backend.draw_dyn(area, &self.dialog(variant), &());
         }
     }
 
@@ -480,13 +399,13 @@ mod tests {
     /// `GalleryApp`'s real demo-content rect for a 100x32 terminal is
     /// `Rect { x: 24, y: 1, width: 76, height: 23 }` — an *odd* height,
     /// while this dialog's own total content height is even.
-    /// `snap_for_centering` must keep every edge of the laid-out dialog
-    /// box on a whole cell regardless: without it, centering an
-    /// even-height box inside an odd-height area lands the button row
-    /// on a half-cell boundary, so a click at the whole-cell center of
-    /// the row the button glyph actually paints on falls just outside
-    /// its hit region and resolves to `DialogHit::Body` instead of
-    /// `DialogHit::Button`.
+    /// `Dialog`'s own cell-grid layout must keep every edge of the
+    /// laid-out box on a whole cell regardless: centering an even-height
+    /// box inside an odd-height area un-snapped would land the button
+    /// row on a half-cell boundary, so a click at the whole-cell center
+    /// of the row the button glyph actually paints on would fall just
+    /// outside its hit region and resolve to `DialogHit::Body` instead
+    /// of `DialogHit::Button`.
     #[test]
     #[cfg(feature = "tui")]
     fn dialog_bounds_land_on_whole_cells_even_with_an_odd_height_area() {

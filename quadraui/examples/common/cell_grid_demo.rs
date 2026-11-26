@@ -609,9 +609,9 @@ impl AppLogic for CellGridDemo {
             rect: bands.tabs,
             widget: Box::new(self.tab_bar()),
         });
-        frame.push(Surface::TextField {
+        frame.push(Surface::Widget {
             rect: bands.formula,
-            tf: self.formula_field(),
+            widget: Box::new(self.formula_field()),
         });
         frame.push(Surface::Widget {
             rect: bands.grid,

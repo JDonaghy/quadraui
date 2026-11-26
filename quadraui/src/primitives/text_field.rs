@@ -803,6 +803,10 @@ impl crate::primitive::Primitive for TextField {
     /// [`TextField::layout`] with the backend's own advance and line
     /// height.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextFieldPrimitiveLayout {
+        let rect = match ctx.units() {
+            crate::primitive::Units::Cells => crate::primitive::cell_grid_rect(rect),
+            _ => rect,
+        };
         let (layout, char_width) = match ctx.units() {
             crate::primitive::Units::Cells => (cell_layout(self, rect), 1.0),
             _ => (
@@ -865,19 +869,14 @@ impl crate::primitive::Primitive for TextField {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = layout.area;
-        crate::tui::draw_text_field(
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
             buf,
-            ratatui::layout::Rect::new(
-                area.x as u16,
-                area.y as u16,
-                area.width as u16,
-                area.height as u16,
-            ),
-            self,
-            theme,
-            layout.nerd_fonts,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
         );
+        cell_paint::paint(self, &layout.layout, &mut surface, theme, layout.nerd_fonts);
     }
 }
 
@@ -1462,9 +1461,9 @@ mod cell_paint_tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
+    use super::cell_test_paint::draw_text_field;
     use crate::primitives::text_field::TextField;
     use crate::theme::Theme;
-    use crate::tui::draw_text_field;
     use crate::types::{Color, Icon, WidgetId};
 
     fn theme() -> Theme {
@@ -1681,5 +1680,53 @@ mod tests {
         assert_eq!(field.value, "");
         assert_eq!(field.cursor, Some(0));
         assert_eq!(field.selection_anchor, None);
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
+    }
+
+    pub fn draw_text_field(
+        buf: &mut Buffer,
+        rect: ratatui::layout::Rect,
+        tf: &TextField,
+        theme: &Theme,
+        nerd_fonts_enabled: bool,
+    ) -> TextFieldLayout {
+        let area = Rect::new(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+        );
+        let layout = cell_layout(tf, area);
+        let mut sink = None;
+        cell_paint::paint(
+            tf,
+            &layout,
+            &mut surface(buf, &mut sink),
+            theme,
+            nerd_fonts_enabled,
+        );
+        layout
     }
 }

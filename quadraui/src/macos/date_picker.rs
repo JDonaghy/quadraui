@@ -2,8 +2,8 @@
 //!
 //! Painting is implemented in the shared
 //! [`crate::primitives::date_picker::native_surface_paint::paint`] — see
-//! that function's documentation for details; [`crate::macos::backend`]'s
-//! `Backend::draw_date_picker` impl reaches it. Focus movement, month
+//! that function's documentation for details;
+//! [`crate::DrawsPrimitives::draw_primitive`] reaches it. Focus movement, month
 //! navigation and day/time selection semantics live on `DatePicker`
 //! itself (`DatePicker::navigate`). This module carries no production
 //! code of its own: it holds only the macOS-side round-trip tests
@@ -13,41 +13,41 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::backend::DrawsPrimitives;
     use crate::macos::testing::MacDriver;
     use crate::runner::{AppLogic, Reaction};
     use crate::theme::Theme;
     use crate::{
-        Backend, CalendarDate, DatePicker, DatePickerEvent, DatePickerLayout, Key, NamedKey,
-        UiEvent, WidgetId,
+        Backend, CalendarDate, DatePicker, DatePickerEvent, Key, NamedKey, Rect, UiEvent, WidgetId,
     };
 
-    /// Point metrics for the layout every test paints. Cells are large
-    /// relative to Menlo 14pt (the font [`MacDriver::new`] installs) so a
-    /// day digit — drawn from the cell's top-left corner by
-    /// `MacBackend`'s `surface_draw_text_run` — leaves the lower-right of
-    /// the cell as clear fill for
+    /// The surface is sized to exactly the painted rect, which is big
+    /// enough that the ~30pt day cells `DatePickerPrimitiveLayout`
+    /// derives from it are large relative to Menlo 14pt (the font
+    /// [`MacDriver::new`] installs): a day digit — drawn from the cell's
+    /// top-left corner by `MacBackend`'s `surface_draw_text_run` — then
+    /// leaves the lower-right of the cell as clear fill for
     /// [`selecting_a_day_fills_its_cell_with_the_selected_background`] to
     /// sample.
-    const CELL_W: f32 = 30.0;
-    const CELL_H: f32 = 30.0;
-    const HEADER_H: f32 = 20.0;
-
-    /// The surface is sized to exactly the painted rect: `CELL_W * 7`
-    /// wide, `HEADER_H + CELL_H * 6` tall (six complete week rows).
     const SURFACE_W: u32 = 210;
     const SURFACE_H: u32 = 200;
 
-    /// The geometry `DatePickerApp::render` hands to
-    /// `Backend::draw_date_picker`. Tests resolve it again to read a
-    /// cell's exact `bounds` without re-deriving the grid.
-    fn sample_layout(picker: &DatePicker) -> DatePickerLayout {
-        picker.layout(0.0, 0.0, CELL_W, CELL_H, HEADER_H, 0.0)
-    }
+    /// The rect `DatePickerApp::render` lays the calendar into: the month
+    /// header, six week rows and (for a picker with a time) the time
+    /// field all size themselves inside it, so tests read a cell's exact
+    /// `bounds` back out of the resolved layout rather than re-deriving
+    /// the grid.
+    const CALENDAR_AREA: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: SURFACE_W as f32,
+        height: SURFACE_H as f32,
+    };
 
     /// Minimal `AppLogic` wrapping a single focused `DatePicker`, painted
-    /// through the real `Backend::draw_date_picker` — used only by this
-    /// driver test, mirroring `win::date_picker`'s `DatePickerApp` but
-    /// routed through `MacDriver`.
+    /// through the real `DrawsPrimitives::draw_dyn` path — used only by
+    /// this driver test, mirroring `win::date_picker`'s `DatePickerApp`
+    /// but routed through `MacDriver`.
     struct DatePickerApp {
         picker: DatePicker,
     }
@@ -82,8 +82,7 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let layout = sample_layout(&self.picker);
-            backend.draw_date_picker(&self.picker, &layout);
+            backend.draw_dyn(CALENDAR_AREA, &self.picker, &());
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
@@ -156,7 +155,7 @@ mod tests {
         );
     }
 
-    /// Real paint assertions against `draw_date_picker`'s output — the
+    /// Real paint assertions against the painted calendar — the
     /// month/year header label, the prev/next glyphs and a day-of-month
     /// digit must all land in `MacBackend`'s painted-text recording.
     #[test]
@@ -188,7 +187,10 @@ mod tests {
         let selected = CalendarDate::new(2024, 3, 16);
         assert_eq!(driver.app().picker.selected, Some(selected));
 
-        let layout = sample_layout(&driver.app().picker);
+        let layout = driver
+            .backend()
+            .layout_primitive(CALENDAR_AREA, &driver.app().picker)
+            .layout;
         let cell = layout
             .day_cells
             .iter()

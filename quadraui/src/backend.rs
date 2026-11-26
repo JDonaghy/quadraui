@@ -47,24 +47,19 @@ use crate::paths::AppPathKind;
 use crate::power::{BlockerId, PowerSaveKind, ThermalState};
 use crate::primitive::{
     DynWidget, LayoutCtx, PaintEnv, PaintServices, PaintState, PaintTarget, Primitive,
-    PrimitiveLayout,
+    PrimitiveLayout, Units,
 };
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::combo_box::{ComboBox, ComboBoxLayout};
-use crate::primitives::command_line::{CommandLine, CommandLineLayout};
-use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::context_menu::ContextMenu;
 use crate::primitives::data_table::{
     DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
 };
-use crate::primitives::date_picker::{DatePicker, DatePickerLayout};
-use crate::primitives::dialog::{Dialog, DialogLayout, DialogSeverity};
+use crate::primitives::dialog::DialogSeverity;
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::editor::{CursorShape as EditorCursorShape, Editor, EditorLayout};
 use crate::primitives::find_replace::FindReplacePanel;
-use crate::primitives::float::{Float, FloatLayout};
 use crate::primitives::image::{Image, ImageSource};
 use crate::primitives::list::{ListPaintState, ListViewLayout};
 use crate::primitives::message_list::MessageList;
@@ -72,28 +67,18 @@ use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale};
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
-use crate::primitives::number_input::{NumberInput, NumberInputLayout};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
-use crate::primitives::text_display::TextDisplayLayout;
-use crate::primitives::text_field::{TextField, TextFieldLayout, TextFieldMeasure};
-use crate::primitives::text_input::{TextInput, TextInputLayout};
-use crate::primitives::toast::{ToastOverlay, ToastStackLayout};
-use crate::primitives::tooltip::{Tooltip, TooltipChrome, TooltipLayout};
 use crate::primitives::tree::{TreePaintState, TreeViewLayout};
 use crate::primitives::tree_table::TreeTableLayout;
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
-use crate::{
-    Accelerator, AcceleratorId, GlobalShortcutId, ListView, TabBar, TextDisplay, TreeTable,
-    TreeView,
-};
+use crate::{Accelerator, AcceleratorId, GlobalShortcutId, ListView, TabBar, TreeTable, TreeView};
 use serde::{Deserialize, Serialize};
 
 /// Which edge or corner of a window a resize gesture originates from.
@@ -2789,210 +2774,6 @@ pub trait Backend: sealed::Sealed {
     /// compile error and fills in a real rasteriser
     /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
     fn draw_solid_fill(&mut self, rect: Rect, color: Color);
-    /// Draw a `TextDisplay` (streaming-text panel — log viewer, output
-    /// pane, YAML view, etc). No hit-region data is returned;
-    /// `TextDisplay` itself is non-interactive (selection / scroll
-    /// happen at the panel chrome level, not at the line/span level).
-    fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay);
-
-    /// Draw a [`CommandLine`] bar (editor `:` / `/` / `?` prompt or
-    /// message display). Fills `rect` with the command line background,
-    /// renders text (left- or right-aligned), and optionally draws an
-    /// insert cursor at `cursor_offset`.
-    fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine);
-
-    /// Draw a [`CommandLine`] bar exactly like [`Self::draw_command_line`],
-    /// additionally painting a selection highlight behind the text for
-    /// `selection` (a `(start, end)` byte-offset pair into `cmd.text`,
-    /// either order — same contract as
-    /// [`crate::primitives::command_line::CommandLineLayout::selection_bounds`],
-    /// which supplies the rect this paints). `None` (or an empty/
-    /// zero-width range) paints identically to `draw_command_line`.
-    ///
-    /// This is a **new method, not a new `CommandLine` field or a changed
-    /// `draw_command_line` signature** — `CommandLine` is an all-`pub`-field,
-    /// exhaustively-constructed-by-consumers primitive (see
-    /// `crate::primitives::text_input`'s module doc for why that makes a
-    /// field addition breaking under `PRIMITIVE_RULES.md` rule 8), so the
-    /// selection a host is tracking is threaded through as an argument
-    /// instead — the same non-breaking shape `TextInput`/`TextEditor`
-    /// established.
-    fn draw_command_line_selection(
-        &mut self,
-        rect: Rect,
-        cmd: &CommandLine,
-        selection: Option<(usize, usize)>,
-    );
-
-    /// Compute the click/selection layout `draw_command_line` paints from.
-    /// Hosts call this to hit-test a click to a **byte offset** in
-    /// `cmd.text` (`CommandLineLayout::hit_test`) and to turn a selection
-    /// range back into a paintable rect
-    /// (`CommandLineLayout::selection_bounds`), without re-deriving glyph
-    /// metrics or repainting. Every backend exposes the same
-    /// character-offset mapping, so a host can share one selection
-    /// implementation across all of them.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`;
-    /// callers compare directly against raw click coordinates, matching
-    /// [`Self::text_input_layout`].
-    fn command_line_layout(&self, rect: Rect, cmd: &CommandLine) -> CommandLineLayout;
-
-    /// Compute the text-display layout the rasteriser would produce for
-    /// `td` in `rect`, using the backend's native metrics. Hosts call
-    /// this to drive hit-testing for scrollbar drag interaction without
-    /// re-deriving metrics — paint and click consume one layout per
-    /// frame, the source-of-truth contract.
-    ///
-    /// Coordinate frame: **LOCAL** — relative to `rect`'s origin.
-    fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout;
-
-    /// Draw a [`TextInput`] (multi-line text entry) and return the
-    /// resolved layout for hit-testing. Backends paint the border,
-    /// text lines, cursor, and placeholder (when active).
-    ///
-    /// Coordinate frame: **ABSOLUTE** — `content_bounds` / hit regions
-    /// are shifted by `rect.x` / `rect.y`, matching [`Self::text_input_layout`].
-    fn draw_text_input(&mut self, rect: Rect, ti: &TextInput) -> TextInputLayout;
-
-    /// Compute the layout `draw_text_input` would produce. Used by
-    /// hosts to route clicks without re-rendering.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`;
-    /// callers compare directly against raw click coordinates.
-    fn text_input_layout(&self, rect: Rect, ti: &TextInput) -> TextInputLayout;
-
-    /// Draw a [`TextField`] (standalone single-line framed field — the
-    /// Finder-style search-box shape: `[` + optional leading icon +
-    /// text + optional clear button + `]`) and return the resolved
-    /// layout for hit-testing.
-    ///
-    /// Coordinate frame: **ABSOLUTE**, matching [`Self::draw_text_input`].
-    ///
-    /// Required, no default (`PRIMITIVE_RULES.md` rule 7): `TuiBackend`
-    /// paints the one-row `[ icon value × ]` bracket form
-    /// (`tui::text_field::draw_text_field`); `GtkBackend`/`MacBackend`/
-    /// `WinBackend` paint the stroked-box form
-    /// (`primitives::text_field::paint_text_field_gui`), built from the
-    /// same `primitives::form::paint_text_run_with_caret` routine
-    /// `Form`'s own `TextInput` row paints with. A tracked follow-up
-    /// introducing a generic `Primitive` trait would let every backend
-    /// share one dispatch instead of each calling its own painter here.
-    fn draw_text_field(&mut self, rect: Rect, tf: &TextField) -> TextFieldLayout;
-
-    /// Compute the layout [`Self::draw_text_field`] would produce.
-    ///
-    /// Default body: [`TextField::layout`] is a pure function of
-    /// [`Self::char_width`]/[`Self::line_height`] and `tf`'s own state —
-    /// the "provably uniform" shape this file's `_layout`-default rule
-    /// allows (`PRIMITIVE_RULES.md` rule 7) — so every backend shares
-    /// this one default; only [`Self::draw_text_field`] itself needs a
-    /// per-backend override.
-    ///
-    /// Coordinate frame: **ABSOLUTE**, matching [`Self::draw_text_field`].
-    fn text_field_layout(&self, rect: Rect, tf: &TextField) -> TextFieldLayout {
-        tf.layout(rect, TextFieldMeasure::from_metrics(&self.measure()))
-    }
-
-    /// Draw a [`NumberInput`] at its caller-resolved `layout`: the text
-    /// area plus the increment/decrement stepper buttons. The caller
-    /// computes `layout` itself via [`NumberInput::layout`] — no
-    /// separate `number_input_layout` accessor exists, mirroring
-    /// [`Self::draw_tooltip`] and [`Self::draw_completions`], whose
-    /// layouts are likewise host-resolved rather than backend-resolved.
-    ///
-    /// Required, no default (`PRIMITIVE_RULES.md` rule 7): every
-    /// in-tree backend must rasterise this primitive itself rather than
-    /// silently painting nothing.
-    fn draw_number_input(&mut self, number_input: &NumberInput, layout: &NumberInputLayout);
-
-    /// Draw a [`ComboBox`] at its caller-resolved `layout`: the field
-    /// plus, when open, the filtered dropdown. The caller computes
-    /// `layout` itself via [`ComboBox::layout`] — no separate
-    /// `combo_box_layout` accessor exists, same host-resolves-layout
-    /// shape as [`Self::draw_number_input`].
-    ///
-    /// Required, no default (`PRIMITIVE_RULES.md` rule 7) — same
-    /// "every backend must rasterise it" reasoning as
-    /// [`Self::draw_number_input`].
-    fn draw_combo_box(&mut self, combo_box: &ComboBox, layout: &ComboBoxLayout);
-
-    /// Draw a [`DatePicker`] at its caller-resolved `layout`: the
-    /// month/year header with prev/next controls, the 42-cell day grid,
-    /// and — when `layout.time_bounds` is `Some` — the time field. The
-    /// caller computes `layout` itself via [`DatePicker::layout`], same
-    /// host-resolves-layout shape as [`Self::draw_combo_box`].
-    ///
-    /// Required, no default (`PRIMITIVE_RULES.md` rule 7) — same
-    /// "every backend must rasterise it" reasoning as
-    /// [`Self::draw_combo_box`].
-    fn draw_date_picker(&mut self, date_picker: &DatePicker, layout: &DatePickerLayout);
-
-    /// Draw a [`Tooltip`] popup at its caller-resolved layout, with the
-    /// default chrome ([`crate::TooltipBorder::Full`], no title). The
-    /// caller computes anchor + viewport + content measurement and
-    /// asks `tooltip.layout(...)` for the bounds. Tooltips are
-    /// non-interactive — no hit data returned.
-    ///
-    /// To ask for a different border, or for a title in the top rule,
-    /// call [`Backend::draw_tooltip_with_chrome`].
-    fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout);
-
-    /// Draw a [`Tooltip`] popup with an explicit [`TooltipChrome`]
-    /// request: which border to stroke (`Sides` / `Full` / `None`) and an
-    /// optional title to embed in `Full`'s top rule.
-    ///
-    /// Added rather than folded into [`Backend::draw_tooltip`]'s
-    /// signature, and given a default body, so it breaks no existing
-    /// `Backend` implementor and no existing call site — see
-    /// `primitives::tooltip`'s module doc.
-    ///
-    /// The default body **ignores `chrome`** and delegates to
-    /// `draw_tooltip`, i.e. renders `TooltipChrome::default()`. That is
-    /// the correct fallback for a backend that has no chrome vocabulary
-    /// of its own, but it does mean a `Sides`/`None`/title request is
-    /// silently dropped by any backend that hasn't overridden this.
-    /// The TUI, GTK and macOS backends all override it and honour the
-    /// request in full.
-    fn draw_tooltip_with_chrome(
-        &mut self,
-        tooltip: &Tooltip,
-        layout: &TooltipLayout,
-        chrome: &TooltipChrome,
-    ) {
-        let _ = chrome;
-        self.draw_tooltip(tooltip, layout);
-    }
-
-    /// Draw a [`Dialog`] popup at its caller-resolved layout. Returns
-    /// the per-button hit rectangles in the same order as
-    /// `dialog.buttons`'s visible entries so the caller's click
-    /// handler can resolve a click to a button without re-running
-    /// layout.
-    fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect>;
-
-    /// Draw a [`Float`]'s chrome — background fill + optional border
-    /// stroke — at its caller-resolved layout. Like
-    /// [`Self::draw_tooltip`]/[`Self::draw_dialog`] above, the caller computes the layout
-    /// itself (`float.layout(viewport, measure)`, see [`Float`]'s own
-    /// module doc) rather than this trait exposing a separate
-    /// `float_layout` method — there is nothing backend-specific left
-    /// to compute once the caller has resolved the anchor.
-    ///
-    /// **Content is NOT painted here.** A `Float` is pure chrome — the
-    /// host paints its own content (a tree, a list, a form, plain text —
-    /// whatever the which-key hint / jump label / sticky header / floating
-    /// terminal actually needs) into `layout.content_bounds` after this
-    /// call returns.
-    ///
-    /// No default impl — every backend implementer sees this as a
-    /// compile error, same as [`Self::draw_image`] (`PRIMITIVE_RULES.md`
-    /// rule 7). Shared across GTK/macOS/Win via
-    /// [`crate::primitives::float::native_surface_paint::paint`], the
-    /// same zero-backend-specific-policy pattern as `Canvas`;
-    /// TUI has its own cell-based rasteriser in
-    /// `crate::tui::draw_float` (`#[doc(hidden)]`, so not linked here).
-    fn draw_float(&mut self, float: &Float, layout: &FloatLayout);
 
     /// Draw a [`MultiSectionView`]. The backend computes the layout
     /// internally with native metrics (cells for TUI, pixels +
@@ -3239,65 +3020,12 @@ pub trait Backend: sealed::Sealed {
     /// directly via the backend crate's free function.
     fn draw_message_list(&mut self, rect: Rect, list: &MessageList);
 
-    /// Draw a [`RichTextPopup`] at its caller-resolved layout, in the
-    /// chrome (UI) font — [`crate::ChromePrimitive::RichTextPopup`]'s
-    /// classification. Mirrors [`draw_tooltip`](Self::draw_tooltip):
-    /// host computes anchor + viewport + measure and asks
-    /// `popup.layout(...)` for the bounds. Link hit regions are
-    /// tracked on the backend's internal state; hosts that need them
-    /// query via the backend-specific accessor today (link-hit-test
-    /// trait method is a follow-up).
-    ///
-    /// To render editor content (hover docs, signatures, diagnostics)
-    /// in the editor's own font instead, call
-    /// [`Backend::draw_rich_text_popup_with_font_role`] with
-    /// [`crate::FontRole::Editor`].
-    fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout);
-
-    /// Draw a [`RichTextPopup`] with an explicit [`crate::FontRole`]
-    /// request: paint its content in the chrome (UI) font or the
-    /// editor's own monospace font, instead of always the chrome font
-    /// [`Self::draw_rich_text_popup`] uses. Lets a consumer render
-    /// editor content (hover docs, signatures, diagnostics) with the
-    /// editor's metrics so link hit-testing stays in sync with the
-    /// glyphs actually painted, while another popup instance (e.g.
-    /// settings help text) keeps the chrome font.
-    ///
-    /// The widget-contract equivalent is [`RichTextPopup::font_role`],
-    /// which [`crate::Primitive::font_role`] reports and
-    /// [`crate::Primitive::measure`]/[`crate::Primitive::layout`]
-    /// measure through — a host rendering the popup as
-    /// [`crate::frame::Surface::Widget`] sets the field instead of
-    /// reaching for this method.
-    ///
-    /// The default body **ignores `role`** and delegates to
-    /// `draw_rich_text_popup`, i.e. always paints the chrome font. That
-    /// is the correct fallback for a backend with no font-role
-    /// vocabulary of its own. GTK, macOS and Win-GUI all override it and
-    /// honour [`crate::FontRole::Editor`]; TUI has one font per cell and
-    /// keeps the default.
-    fn draw_rich_text_popup_with_font_role(
-        &mut self,
-        popup: &RichTextPopup,
-        layout: &RichTextPopupLayout,
-        role: crate::FontRole,
-    ) {
-        let _ = role;
-        self.draw_rich_text_popup(popup, layout);
-    }
-
     /// Draw a [`FindReplacePanel`] (find/replace overlay sitting
     /// above the editor). The backend pulls the editor-relative
     /// origin from `rect.x` (TUI's `editor_left` parameter is
     /// derived from `rect`); hosts that want a non-default offset
     /// compose the panel into a sub-rect.
     fn draw_find_replace(&mut self, rect: Rect, panel: &FindReplacePanel);
-
-    /// Draw a [`Completions`] popup at its caller-resolved layout.
-    /// Mirrors [`draw_tooltip`](Self::draw_tooltip): host computes
-    /// anchor + viewport + measure and asks `completions.layout(...)`
-    /// for the bounds.
-    fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout);
 
     /// Draw a [`Scrollbar`] (standalone primitive, vs the
     /// per-section scrollbars MSV paints internally). The backend
@@ -3337,19 +3065,6 @@ pub trait Backend: sealed::Sealed {
     /// Coordinate frame: **ABSOLUTE** — leaf / divider bounds are
     /// shifted by `rect.x` / `rect.y`.
     fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout;
-
-    /// Draw a [`ToastOverlay`] overlay. The backend computes the layout
-    /// with its native toast dimensions (cell-width boxes for TUI,
-    /// pixel boxes for GTK) and returns the [`ToastStackLayout`] so
-    /// hosts can route clicks to dismiss, action, or body. Same
-    /// coordinate frame as [`Self::toast_stack_layout`] (ABSOLUTE).
-    fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout;
-
-    /// Compute the toast-stack layout without painting. Hosts call
-    /// this in click handlers to resolve hits.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout;
 
     /// Draw a [`PipelineView`] (horizontal multi-stage workflow widget).
     /// The backend paints stage boxes, status icons, labels, optional
@@ -3706,6 +3421,12 @@ pub trait DrawsPrimitives: Backend {
     /// [`Primitive::paint_cells`], mirroring every `TuiBackend::draw_*`
     /// method's own "called outside enter_frame_scope" panic.
     ///
+    /// Once painted, an identified primitive whose
+    /// [`Primitive::paint_zone`] answers `Some` for the surface kind it
+    /// was painted on ([`crate::primitive::Units::Pixels`] for a paint
+    /// surface, [`crate::primitive::Units::Cells`] for a cell surface)
+    /// has that rect registered as its zone via [`Backend::register_zone`].
+    ///
     /// ```ignore
     /// // `MyBackend` implements `Backend` (sealed — in-crate only, so
     /// // this example can't actually run as a doctest); `Swatch`
@@ -3719,10 +3440,14 @@ pub trait DrawsPrimitives: Backend {
         let style = self.style();
         let theme = self.theme();
         let clip = grow_rect(rect, primitive.paint_bleed(&style));
+        let mut painted_units = None;
         if let Some(surface) = self.paint_surface() {
             surface.surface_push_clip(clip);
-            primitive.paint(&layout, surface, &theme, &style);
+            paint_in_role(surface, primitive.font_role(), &mut |s| {
+                primitive.paint(&layout, s, &theme, &style)
+            });
             surface.surface_pop_clip();
+            painted_units = Some(Units::Pixels);
         }
         #[cfg(feature = "tui")]
         if let Some(cell_surface) = self.cell_surface() {
@@ -3732,9 +3457,13 @@ pub trait DrawsPrimitives: Backend {
                  scope (TuiBackend::enter_frame_scope)",
             );
             primitive.paint_cells(&layout, buf, &theme);
+            painted_units = Some(Units::Cells);
         }
         if let Some(id) = primitive.id() {
             mark_modal_painted(self, id);
+            if let Some(zone) = painted_units.and_then(|u| primitive.paint_zone(&layout, u)) {
+                self.register_zone(*id, zone);
+            }
         }
         layout
     }
@@ -3771,6 +3500,9 @@ pub trait DrawsPrimitives: Backend {
     /// one method taking a [`PaintTarget`] — there is exactly one paint
     /// call to make here regardless of which target [`Backend::paint_surface`]/
     /// [`Backend::cell_surface`] resolved.
+    ///
+    /// Registers [`DynWidget::paint_zone`]'s rect as the widget's zone
+    /// after painting it, exactly as [`Self::draw_primitive`] does.
     ///
     /// # Painted-layout record
     ///
@@ -3814,10 +3546,14 @@ pub trait DrawsPrimitives: Backend {
             row_height: ctx.line_height,
         };
         let clip = grow_rect(rect, w.paint_bleed(&style));
+        let mut painted_units = None;
         if let Some(surface) = self.paint_surface() {
             surface.surface_push_clip(clip);
-            w.paint(layout.as_ref(), PaintTarget::Surface(surface), &env, state);
+            paint_in_role(surface, w.font_role(), &mut |s| {
+                w.paint(layout.as_ref(), PaintTarget::Surface(s), &env, state)
+            });
             surface.surface_pop_clip();
+            painted_units = Some(Units::Pixels);
         }
         #[cfg(feature = "tui")]
         if let Some(cell_surface) = self.cell_surface() {
@@ -3827,9 +3563,17 @@ pub trait DrawsPrimitives: Backend {
                  scope (TuiBackend::enter_frame_scope)",
             );
             w.paint(layout.as_ref(), PaintTarget::Cells(buf), &env, state);
+            painted_units = Some(Units::Cells);
         }
         if let Some(id) = w.id() {
+            // A modal widget reached through the contract marks its own
+            // `ModalStack` entry painted, so `unpainted_ids` still
+            // catches a host that registers a modal for hit-testing and
+            // never paints it.
             mark_modal_painted(self, id);
+            if let Some(zone) = painted_units.and_then(|u| w.paint_zone(layout.as_ref(), u)) {
+                self.register_zone(*id, zone);
+            }
             let sub_regions = w
                 .sub_regions(layout.as_ref())
                 .into_iter()
@@ -3851,6 +3595,25 @@ pub trait DrawsPrimitives: Backend {
         }
         layout
     }
+}
+
+/// Run `paint` against `surface`, in the editor font when `role` asks for
+/// it and the surface has an editor-font twin
+/// ([`crate::paint_surface::PaintSurface::surface_with_editor_font`]) —
+/// the one place the
+/// widget contract honours [`Primitive::font_role`], so a backend never
+/// needs a per-widget "…_with_font_role" entry point. A surface with no
+/// editor twin (and every [`crate::FontRole::Chrome`]/
+/// [`crate::FontRole::Icon`] widget) paints straight through.
+fn paint_in_role(
+    surface: &mut dyn crate::paint_surface::PaintSurface,
+    role: crate::FontRole,
+    paint: &mut dyn FnMut(&mut dyn crate::paint_surface::PaintSurface),
+) {
+    if role == crate::FontRole::Editor && surface.surface_with_editor_font(paint) {
+        return;
+    }
+    paint(surface);
 }
 
 /// `rect` grown by `by` on every side: the paint clip
@@ -3892,6 +3655,7 @@ pub(crate) fn primitive_layout_ctx<B: Backend + ?Sized>(backend: &B) -> LayoutCt
         backend.nerd_fonts_enabled(),
     )
     .with_editor_line_height(backend.line_height())
+    .with_scaled_text_rows(backend.scales_text_rows())
 }
 
 impl<B: Backend + ?Sized> DrawsPrimitives for B {}

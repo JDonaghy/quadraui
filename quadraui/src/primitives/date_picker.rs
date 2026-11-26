@@ -729,7 +729,14 @@ impl Primitive for DatePicker {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        crate::tui::draw_date_picker(buf, self, &layout.layout, theme);
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
+        );
+        cell_paint::paint(self, &layout.layout, &mut surface, theme);
     }
 }
 
@@ -1654,9 +1661,9 @@ mod tests {
 
     #[cfg(feature = "tui")]
     mod cells {
+        use super::super::cell_test_paint::draw_date_picker;
         use super::*;
         use crate::theme::Theme;
-        use crate::tui::draw_date_picker;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect as RRect;
 
@@ -2006,5 +2013,38 @@ mod interactive_tests {
         timed.time = Some(TimeOfDay::new(0, 0));
         let size = Primitive::measure(&timed, &ctx, Size::new(80.0, 24.0));
         assert_eq!(size.height, Some(8.0), "the time field adds a row");
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
+    }
+
+    pub fn draw_date_picker(
+        buf: &mut Buffer,
+        date_picker: &DatePicker,
+        layout: &DatePickerLayout,
+        theme: &Theme,
+    ) {
+        let mut sink = None;
+        cell_paint::paint(date_picker, layout, &mut surface(buf, &mut sink), theme);
     }
 }

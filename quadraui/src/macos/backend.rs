@@ -32,7 +32,7 @@
 //! rather than going through the queue.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
@@ -64,10 +64,7 @@ use crate::paint_surface::PaintSurface;
 use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::command_line::CommandLine;
-use crate::primitives::completions::{Completions, CompletionsLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
-use crate::primitives::dialog::{Dialog, DialogInput, DialogLayout};
 use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::menu_bar::MenuBar;
@@ -76,22 +73,17 @@ use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::rich_text_popup::{RichTextPopup, RichTextPopupLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
-use crate::primitives::text_display::TextDisplayLayout;
-use crate::primitives::toast::{ToastCorner, ToastOverlay, ToastStackLayout};
-use crate::primitives::tooltip::{Tooltip, TooltipLayout};
 use crate::primitives::tree::TreeViewLayout;
 use crate::testing::{TextRun, ZoneRec};
-use crate::transition::{lerp, Transition};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
 use crate::{
-    Accelerator, AcceleratorId, Key, ListView, Modifiers, ParsedBinding, PlatformServices,
-    TextDisplay, Theme, TreeView,
+    Accelerator, AcceleratorId, Key, ListView, Modifiers, ParsedBinding, PlatformServices, Theme,
+    TreeView,
 };
 // The `TabBar` family is only named by `#[cfg(test)]` code below — a tab
 // strip paints through its widget contract, not a method on this
@@ -401,17 +393,6 @@ pub struct MacBackend {
     /// does. [`Self::poll_events`] drains this into its output alongside
     /// `events` and `user_events`, on the AppKit main thread.
     notification_events: Arc<Mutex<VecDeque<UiEvent>>>,
-    /// Per-toast entrance-slide animation, keyed by [`Toast::id`]. Inserted
-    /// in [`Self::draw_toast_overlay`] the first time a toast id is seen and
-    /// retained only while that id is still present in the
-    /// [`ToastOverlay`] passed in; drives the x-offset
-    /// `crate::primitives::toast::native_surface_paint::paint_with_x_offset`
-    /// slides a toast in from its stack's off-screen edge. Toasts are
-    /// removed from the overlay (not animated out) on dismissal, so this
-    /// only ever covers the entrance half of the motion: there is no
-    /// lingering `Toast` to sample geometry from once dismissal removes it,
-    /// so an exit slide has nothing to paint.
-    toast_enter: HashMap<WidgetId, Transition>,
     /// Opt-in retention of the frame this backend last painted, handed
     /// out by [`Backend::frame_capture`] and read by
     /// [`Backend::last_frame`]. Disabled and empty by default, so a live
@@ -838,7 +819,6 @@ impl MacBackend {
             wake_callback,
             tick_callback: Arc::new(std::sync::OnceLock::new()),
             notification_events,
-            toast_enter: HashMap::new(),
             frame_capture: crate::frame::FrameCapture::default(),
         }
     }
@@ -1576,7 +1556,7 @@ impl Backend for MacBackend {
         // per-frame lifecycle as `zones`, matching `GtkBackend::begin_frame`.
         self.focused_activity_bar = None;
         // Clear last frame's modal paint marks so this frame has
-        // to earn them again (via draw_dialog/draw_dyn).
+        // to earn them again (via draw_primitive/draw_dyn).
         self.modal_stack.borrow_mut().reset_frame_paint();
         // Clear per-frame text regions so stale registrations from the
         // previous frame don't linger. Mirrors `GtkBackend`/`TuiBackend`/
@@ -2777,297 +2757,7 @@ impl Backend for MacBackend {
         // `TuiBackend::draw_solid_fill`'s identical registration for why.
         self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
     }
-    /// Shared text-display painting lives in
-    /// [`crate::primitives::text_display::paint`] now — see that fn's
-    /// doc for the divergence resolved while unifying
-    /// `gtk::text_display::draw_text_display`,
-    /// `macos::text_display::draw_text_display` and
-    /// `win::text_display::draw_text_display` into one implementation.
-    fn draw_text_display(&mut self, rect: Rect, td: &TextDisplay) {
-        let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
-        let char_width = self.current_char_width as f32;
-        // `TextDisplay` is editor-class — see `EditorSurface`'s doc.
-        let mut surface = EditorSurface { backend: self };
-        crate::primitives::text_display::paint(
-            td,
-            rect,
-            &mut surface,
-            &theme,
-            line_height,
-            char_width,
-        );
-    }
-    fn draw_command_line(&mut self, rect: Rect, cmd: &CommandLine) {
-        self.draw_command_line_selection(rect, cmd, None);
-    }
-    /// Real selection-highlight paint via the shared
-    /// `primitives::command_line::native_surface_paint::paint`.
-    fn draw_command_line_selection(
-        &mut self,
-        rect: Rect,
-        cmd: &CommandLine,
-        selection: Option<(usize, usize)>,
-    ) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_command_line_selection called outside enter_frame_scope",
-        );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
-        let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width as f32;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::command_line::draw_command_line_selection(
-                ctx,
-                font,
-                cmd,
-                &theme,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                line_height,
-                char_width,
-                selection,
-            );
-        }
-    }
-    fn command_line_layout(
-        &self,
-        rect: Rect,
-        cmd: &CommandLine,
-    ) -> crate::primitives::command_line::CommandLineLayout {
-        cmd.layout(
-            rect,
-            crate::primitives::command_line::CommandLineMeasure::from_metrics(&self.measure()),
-        )
-    }
-    fn text_display_layout(&self, rect: Rect, td: &TextDisplay) -> TextDisplayLayout {
-        super::text_display::mac_text_display_layout(
-            td,
-            rect,
-            self.current_line_height,
-            self.current_char_width,
-        )
-    }
-    /// Was a layout-only stub — no background, text, or cursor
-    /// ever painted. Now builds the layout via
-    /// [`super::text_input::mac_text_input_layout`] and hands it to the
-    /// shared [`crate::primitives::text_input::paint`] through this
-    /// backend's own [`PaintSurface`] impl below, mirroring
-    /// `draw_text_display`'s shape.
-    fn draw_text_input(
-        &mut self,
-        rect: Rect,
-        ti: &crate::primitives::text_input::TextInput,
-    ) -> crate::primitives::text_input::TextInputLayout {
-        debug_assert!(
-            !self.current_cg().is_null(),
-            "MacBackend::draw_text_input called outside enter_frame_scope",
-        );
-        // `TextInput` is chrome: it paints through plain `self`, which
-        // resolves `chrome_font` for every glyph (see
-        // `Self::surface_measure_text`'s doc). The grid this layout
-        // builds has to use that same font's advance — `chrome_char_width`
-        // / `chrome_line_height`, not `current_char_width` /
-        // `current_line_height` — or the caret and click-to-column grid
-        // disagree with the glyphs they sit between. Same hazard
-        // `Self::list_char_width`'s doc documents for `draw_list`.
-        let theme = self.current_theme;
-        let style = self.style();
-        let line_height = self.chrome_line_height as f32;
-        let char_width = self.chrome_char_width as f32;
-        let layout = super::text_input::mac_text_input_layout(ti, rect, line_height, char_width);
-        crate::primitives::text_input::paint(ti, &layout, self, &theme, &style);
-        layout
-    }
-    fn text_input_layout(
-        &self,
-        rect: Rect,
-        ti: &crate::primitives::text_input::TextInput,
-    ) -> crate::primitives::text_input::TextInputLayout {
-        // No-paint twin of `draw_text_input` — must agree with what that
-        // method painted, so it resolves the same chrome metrics.
-        super::text_input::mac_text_input_layout(
-            ti,
-            rect,
-            self.chrome_line_height as f32,
-            self.chrome_char_width as f32,
-        )
-    }
-    /// Stroked-box framed field: the leading icon, value/placeholder/
-    /// selection/caret run and clear button paint through
-    /// [`crate::primitives::text_field::paint_text_field_gui`] — see
-    /// that fn's doc. `TextField` is chrome, same reasoning as
-    /// `draw_text_input` above, so this resolves the chrome metrics
-    /// too.
-    fn draw_text_field(
-        &mut self,
-        rect: Rect,
-        tf: &crate::primitives::text_field::TextField,
-    ) -> crate::primitives::text_field::TextFieldLayout {
-        debug_assert!(
-            !self.current_cg().is_null(),
-            "MacBackend::draw_text_field called outside enter_frame_scope",
-        );
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled();
-        let layout = self.text_field_layout(rect, tf);
-        crate::primitives::text_field::paint_text_field_gui(
-            self,
-            rect,
-            &layout,
-            tf,
-            &theme,
-            nerd_fonts_enabled,
-        );
-        layout
-    }
-    /// No-paint twin of `draw_text_field` above — must agree with what
-    /// that method painted, so it resolves the same chrome metrics
-    /// rather than the trait's default `self.measure()` (`current_*`,
-    /// not `chrome_*`). Same reasoning as `text_input_layout`'s own
-    /// override.
-    fn text_field_layout(
-        &self,
-        rect: Rect,
-        tf: &crate::primitives::text_field::TextField,
-    ) -> crate::primitives::text_field::TextFieldLayout {
-        tf.layout(
-            rect,
-            crate::primitives::text_field::TextFieldMeasure::new(
-                self.chrome_char_width as f32,
-                self.chrome_line_height as f32,
-            ),
-        )
-    }
-    fn draw_tooltip(&mut self, tooltip: &Tooltip, layout: &TooltipLayout) {
-        self.draw_tooltip_with_chrome(tooltip, layout, &crate::TooltipChrome::default());
-    }
 
-    fn draw_tooltip_with_chrome(
-        &mut self,
-        tooltip: &Tooltip,
-        layout: &TooltipLayout,
-        chrome: &crate::TooltipChrome,
-    ) {
-        // `Tooltip` is chrome, not editor content — see
-        // `draw_data_table`'s comment.
-        let theme = self.current_theme;
-        let style = self.style();
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
-        // Calls the shared paint directly (rather than through
-        // `super::tooltip::draw_tooltip_with_chrome`, whose public
-        // signature stays additive-only and so cannot take a live
-        // `&Style`) so this live backend path honours `Self::set_style`
-        // overrides — see that free function's own doc.
-        let mut surface = self.chrome_surface("draw_tooltip");
-        crate::primitives::tooltip::native_surface_paint::paint(
-            tooltip,
-            layout,
-            chrome,
-            line_height as f32,
-            char_width as f32,
-            &mut surface,
-            &theme,
-            &style,
-        );
-        // See `overlay_bounds_this_frame`'s own doc: a later
-        // `draw_focus_ring` call this same frame must not stroke over this
-        // tooltip.
-        self.overlay_bounds_this_frame.push(layout.bounds);
-    }
-    fn draw_dialog(&mut self, dialog: &Dialog, layout: &DialogLayout) -> Vec<Rect> {
-        // Marked before the CG borrow: this id is now painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&dialog.id);
-        // Chrome primitives are drawn through `chrome_font` —
-        // `draw_tree`'s comment explains the swap and why `line_height`
-        // stays the editor pitch.
-        let theme = self.current_theme;
-        let style = self.style();
-        let line_height = self.current_line_height;
-        // Calls the shared paint directly (rather than through
-        // `super::dialog::draw_dialog`, whose public signature stays
-        // additive-only and so cannot take a live `&Style`) so this live
-        // backend path honours `Self::set_style` overrides — the
-        // toolbar-sub-paint step below mirrors that free function's own
-        // body exactly.
-        let mut surface = self.chrome_surface("draw_dialog");
-        let button_rects = crate::primitives::dialog::native_surface_paint::paint(
-            dialog,
-            layout,
-            line_height as f32,
-            &mut surface,
-            &theme,
-            &style,
-        );
-        if let (Some(input_b), Some(DialogInput::Toolbar(toolbar))) =
-            (layout.input_bounds, dialog.input.as_ref())
-        {
-            crate::primitives::toolbar::native_surface_paint::paint_embedded(
-                toolbar,
-                input_b,
-                &mut surface,
-                &theme,
-            );
-        }
-        button_rects
-    }
-    fn draw_float(
-        &mut self,
-        float: &crate::primitives::float::Float,
-        layout: &crate::primitives::float::FloatLayout,
-    ) {
-        // Marked before the CG borrow: this id is now painted this frame.
-        self.modal_stack.borrow_mut().mark_painted(&float.id);
-        let theme = self.current_theme;
-        crate::primitives::float::native_surface_paint::paint(float, layout, self, &theme);
-        // Same convention `draw_minimap`/`draw_image` use for a
-        // chrome-only primitive: register the float's own bounds under
-        // its id so it's inventory-observable.
-        self.register_zone(float.id, layout.bounds);
-    }
-    fn draw_number_input(
-        &mut self,
-        number_input: &crate::primitives::number_input::NumberInput,
-        layout: &crate::primitives::number_input::NumberInputLayout,
-    ) {
-        let theme = self.current_theme;
-        crate::primitives::number_input::native_surface_paint::paint(
-            number_input,
-            layout,
-            self,
-            &theme,
-        );
-        self.register_zone(number_input.id, layout.bounds);
-    }
-    /// Same shape as [`Self::draw_number_input`] above.
-    fn draw_combo_box(
-        &mut self,
-        combo_box: &crate::primitives::combo_box::ComboBox,
-        layout: &crate::primitives::combo_box::ComboBoxLayout,
-    ) {
-        let theme = self.current_theme;
-        crate::primitives::combo_box::native_surface_paint::paint(combo_box, layout, self, &theme);
-        self.register_zone(combo_box.id, layout.field_bounds);
-    }
-    fn draw_date_picker(
-        &mut self,
-        date_picker: &crate::primitives::date_picker::DatePicker,
-        layout: &crate::primitives::date_picker::DatePickerLayout,
-    ) {
-        let theme = self.current_theme;
-        crate::primitives::date_picker::native_surface_paint::paint(
-            date_picker,
-            layout,
-            self,
-            &theme,
-        );
-        self.register_zone(date_picker.id, layout.bounds());
-    }
     fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -3200,46 +2890,7 @@ impl Backend for MacBackend {
             );
         }
     }
-    fn draw_rich_text_popup(&mut self, popup: &RichTextPopup, layout: &RichTextPopupLayout) {
-        // Chrome primitives are drawn through `chrome_font` —
-        // `draw_tree`'s comment explains the swap.
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_rich_text_popup called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe { super::rich_text_popup::draw_rich_text_popup(ctx, font, popup, layout, &theme) }
-    }
 
-    fn draw_rich_text_popup_with_font_role(
-        &mut self,
-        popup: &RichTextPopup,
-        layout: &RichTextPopupLayout,
-        role: crate::FontRole,
-    ) {
-        // `role` picks which live `CTFont` this call
-        // paints the popup in — `FontRole::Chrome` keeps `chrome_font`
-        // (same as plain `draw_rich_text_popup`); `FontRole::Editor`
-        // swaps in `current_font`, the same resolution
-        // `Self::measure_text`/`Self::surface_draw_text_run_with_role`
-        // already use per role.
-        if role == crate::FontRole::Chrome {
-            self.draw_rich_text_popup(popup, layout);
-            return;
-        }
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_rich_text_popup_with_font_role called outside enter_frame_scope",
-        );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
-        let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe { super::rich_text_popup::draw_rich_text_popup(ctx, font, popup, layout, &theme) }
-    }
     fn draw_find_replace(&mut self, _rect: Rect, panel: &FindReplacePanel) {
         debug_assert!(
             !self.current_cg().is_null(),
@@ -3253,19 +2904,6 @@ impl Backend for MacBackend {
         // there is nothing for this call to precondition on.
         let theme = self.current_theme;
         crate::primitives::find_replace::paint(panel, self, &theme);
-    }
-    fn draw_completions(&mut self, completions: &Completions, layout: &CompletionsLayout) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_completions called outside enter_frame_scope",
-        );
-        // The completions popup chrome (labels, icons) is chrome, not
-        // editor content — see `draw_data_table`'s comment.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe { super::completions::draw_completions(ctx, font, completions, layout, &theme) }
     }
     fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
         let theme = self.current_theme;
@@ -3321,104 +2959,6 @@ impl Backend for MacBackend {
         let layout = canvas.layout(rect);
         crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
         layout
-    }
-    fn draw_toast_overlay(&mut self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
-        // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
-        // each debug_assert their own frame + font internally, so
-        // this method needs no separate ctx/font fetch of its own.
-        let theme = self.current_theme;
-        let style = self.style();
-        let line_height = self.current_line_height as f32;
-
-        let toast_slide_duration = if self.skip_animations {
-            Duration::ZERO
-        } else {
-            Duration::from_millis(220)
-        };
-        let now = std::time::Instant::now();
-
-        // Track one entrance transition per live toast id: drop any whose
-        // toast has disappeared (dismissed toasts are removed from `stack`
-        // immediately, so there is nothing left to animate out), and start
-        // a fresh one for any id seen for the first time this frame.
-        let live_ids: HashSet<WidgetId> = stack.toasts.iter().map(|t| t.id).collect();
-        self.toast_enter.retain(|id, _| live_ids.contains(id));
-        for id in &live_ids {
-            self.toast_enter
-                .entry(*id)
-                .or_insert_with(|| Transition::start(toast_slide_duration));
-        }
-
-        // Toasts slide in from their stack's off-screen edge: right corners
-        // from beyond the viewport's right edge, left corners from beyond
-        // its left edge.
-        let start_dx = match stack.corner {
-            ToastCorner::BottomRight | ToastCorner::TopRight => rect.width,
-            ToastCorner::BottomLeft | ToastCorner::TopLeft => -rect.width,
-        };
-
-        let mut still_animating = false;
-        let offsets: HashMap<WidgetId, f32> = self
-            .toast_enter
-            .iter()
-            .map(|(id, transition)| {
-                let progress = transition.progress_at(now);
-                if progress < 1.0 {
-                    still_animating = true;
-                }
-                (*id, lerp(start_dx, 0.0, progress))
-            })
-            .collect();
-
-        let layout = crate::primitives::toast::native_surface_paint::paint_with_x_offset(
-            stack,
-            self,
-            &theme,
-            &style,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            line_height,
-            |id| offsets.get(id).copied().unwrap_or(0.0),
-        );
-
-        if still_animating {
-            self.request_frame_in(Duration::from_millis(16));
-        }
-
-        // See `overlay_bounds_this_frame`'s own doc: a later
-        // `draw_focus_ring` call this same frame must not stroke over any
-        // of these. `layout.visible_toasts[].bounds` is the toast's
-        // *resting* position (`paint_with_x_offset`'s own doc: it stays
-        // there "without perturbing the returned `ToastStackLayout`"), but
-        // during the entrance slide this frame actually painted each box
-        // shifted by `offsets[id]` — record the rect that's actually on
-        // screen, not the one it's sliding toward.
-        self.overlay_bounds_this_frame
-            .extend(layout.visible_toasts.iter().map(|t| {
-                let dx = offsets.get(&t.id).copied().unwrap_or(0.0);
-                Rect::new(t.bounds.x + dx, t.bounds.y, t.bounds.width, t.bounds.height)
-            }));
-
-        layout
-    }
-    fn toast_stack_layout(&self, rect: Rect, stack: &ToastOverlay) -> ToastStackLayout {
-        // No-paint twin of `draw_toast_overlay` — that method paints
-        // through `self` as `&mut dyn PaintSurface`, which defaults to
-        // `chrome_font` (`Toast` is chrome, not editor content) — see
-        // `draw_data_table`'s comment and `MacBackend`'s own
-        // `PaintSurface` impl.
-        let font = &self.chrome_font;
-        super::toast::mac_toast_stack_layout(
-            stack,
-            font,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            self.current_line_height,
-        )
     }
     /// Paint via the shared
     /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
@@ -4106,6 +3646,12 @@ impl PaintSurface for EditorSurface<'_> {
 }
 
 impl PaintSurface for MacBackend {
+    /// Remembers the box so a later [`Backend::draw_focus_ring`] this
+    /// frame keeps clear of it — see `overlay_bounds_this_frame`.
+    fn surface_note_overlay(&mut self, rect: Rect) {
+        self.overlay_bounds_this_frame.push(rect);
+    }
+
     fn surface_begin_frame(&mut self, viewport: Viewport) {
         Backend::begin_frame(self, viewport);
     }
@@ -7245,22 +6791,17 @@ mod tests {
         backend.end_frame();
     }
 
-    // ── #1093: draw_text_input real-pixel driver test ────────────────────
+    // ── TextInput real-pixel driver tests ───────────────────────────────
     //
-    // Regression for #1093: pre-fix, `MacBackend::draw_text_input` was a
-    // bare layout-only stub — `ti.layout(..)` and nothing else — so a
-    // text input was completely invisible on macOS: no background, no
-    // value, no cursor, and no `BackendCaps` flag said so. Confirmed to
-    // reproduce (both assertions below fail) against the unfixed stub.
-    // `draw_text_input` now routes through the shared
+    // `TextInput` paints through the shared
     // `primitives::text_input::paint` via this backend's own
-    // `PaintSurface` impl — this drives that real Core Text/CoreGraphics
-    // path end to end, the same "acceptance bar" shape
+    // `PaintSurface` impl — these drive that real Core
+    // Text/CoreGraphics path end to end, the same "acceptance bar" shape
     // `mac_backend_draw_find_replace_paints_popup_background` and
     // `mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop`
     // use above.
     #[test]
-    fn mac_backend_draw_text_input_paints_value_and_cursor() {
+    fn mac_backend_text_input_paints_value_and_cursor() {
         use super::super::headless::BitmapSurface;
         use crate::primitives::text_input::TextInput;
 
@@ -7279,13 +6820,10 @@ mod tests {
         ti.has_focus = true;
 
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
-        let layout_cell = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_text_input(rect, &ti);
-            *layout_cell.borrow_mut() = Some(l);
+        let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            crate::DrawsPrimitives::draw_primitive(b, rect, &ti).layout
         });
         backend.end_frame();
-        let layout = layout_cell.into_inner().expect("draw_text_input ran");
 
         let theme = Theme::default();
         let bg = (theme.background.r, theme.background.g, theme.background.b);
@@ -7306,8 +6844,8 @@ mod tests {
         }
         assert!(
             painted_any,
-            "expected draw_text_input to paint the value's glyphs, not just \
-             background/border — this is exactly #1093's silent-stub bug",
+            "expected the input to paint the value's glyphs, not just \
+             background/border",
         );
 
         // The insert cursor must paint at exactly `cursor_bounds` — the
@@ -7339,7 +6877,7 @@ mod tests {
     /// probe below needs — an odd width would antialias the probe pixel
     /// for a reason unrelated to the ring's presence.
     #[test]
-    fn mac_backend_draw_text_input_paints_focus_ring_when_focused() {
+    fn mac_backend_text_input_paints_focus_ring_when_focused() {
         use super::super::headless::BitmapSurface;
         use crate::primitives::button::native_surface_paint::focus_ring_geometry;
         use crate::primitives::text_input::TextInput;
@@ -7368,7 +6906,7 @@ mod tests {
             ti.has_focus = has_focus;
 
             backend.enter_frame_scope(surface.context_ptr(), |b| {
-                b.draw_text_input(rect, &ti);
+                crate::DrawsPrimitives::draw_primitive(b, rect, &ti);
             });
             backend.end_frame();
             surface.pixel(probe_x, probe_y)
@@ -7399,25 +6937,19 @@ mod tests {
         );
     }
 
-    /// `TextInput` paints through plain `self`, which resolves
-    /// `chrome_font` for its glyphs — so its caret grid has to use
-    /// `chrome_char_width`, not `current_char_width`, or the caret lands
-    /// somewhere other than where the glyphs it sits between actually
-    /// are. Installs a Menlo editor font and a deliberately much
-    /// narrower Menlo chrome font so the two advances can't agree by
-    /// coincidence, then checks `cursor_bounds.x` against each.
+    /// `TextInput` is a chrome primitive, so it paints through plain
+    /// `self` — which resolves `chrome_font` for its glyphs. Its caret
+    /// grid therefore has to sit on the *chrome* advance, not
+    /// `current_char_width`, or the caret lands somewhere other than
+    /// where the glyphs it sits between actually are. Installs a Menlo
+    /// editor font and a deliberately much narrower Menlo chrome font so
+    /// the two advances can't agree by coincidence, then checks
+    /// `cursor_bounds.x` against each.
     #[test]
-    fn text_input_layout_cursor_grid_uses_chrome_char_width_not_editor() {
+    fn text_input_layout_cursor_grid_uses_the_chrome_advance_not_the_editor_one() {
         let mut backend = MacBackend::new();
         backend.set_current_font(font()); // Menlo 14pt — a wide editor advance.
         backend.set_ui_font("Menlo 6"); // Menlo 6pt — a narrow chrome advance.
-        assert!(
-            (backend.chrome_char_width - backend.current_char_width).abs() > 1.0,
-            "chrome and editor char widths must differ enough that a grid built from \
-             the wrong one can't pass by coincidence: chrome={}, editor={}",
-            backend.chrome_char_width,
-            backend.current_char_width,
-        );
 
         let mut ti =
             crate::primitives::text_input::TextInput::new(WidgetId::new("chrome-grid-regression"));
@@ -7426,17 +6958,30 @@ mod tests {
         ti.cursor_col = 3;
         ti.has_focus = true;
 
+        // The advance the glyphs are actually shaped at: one character
+        // measured in the role `TextInput` paints in, through the same
+        // `Backend::measure_text` the widget contract's own measurer
+        // calls.
+        let chrome_advance = Backend::measure_text(&backend, "0", crate::FontRole::Chrome).0;
+        let editor_advance = Backend::measure_text(&backend, "0", crate::FontRole::Editor).0;
+        assert!(
+            (chrome_advance - editor_advance).abs() > 1.0,
+            "chrome and editor advances must differ enough that a grid built from \
+             the wrong one can't pass by coincidence: chrome={chrome_advance}, \
+             editor={editor_advance}",
+        );
+
         let rect = Rect::new(0.0, 0.0, 200.0, 40.0);
-        let layout = backend.text_input_layout(rect, &ti);
+        let layout = crate::DrawsPrimitives::layout_primitive(&backend, rect, &ti).layout;
         let cursor = layout.cursor_bounds.expect("cursor visible when has_focus");
 
-        let expected_x = layout.content_bounds.x + 3.0 * backend.chrome_char_width as f32;
-        let wrong_x = layout.content_bounds.x + 3.0 * backend.current_char_width as f32;
+        let expected_x = layout.content_bounds.x + 3.0 * chrome_advance;
+        let wrong_x = layout.content_bounds.x + 3.0 * editor_advance;
         assert!(
             (cursor.x - expected_x).abs() < 0.01,
-            "cursor_bounds.x must sit on the chrome_char_width grid \
-             `draw_text_input` actually paints glyphs on: got {}, expected {expected_x} \
-             (the current_char_width grid would have put it at {wrong_x})",
+            "cursor_bounds.x must sit on the chrome advance grid the painter actually \
+             places glyphs on: got {}, expected {expected_x} (the editor advance would \
+             have put it at {wrong_x})",
             cursor.x,
         );
     }
@@ -7910,12 +7455,11 @@ mod tests {
         }
     }
 
-    // ── #810: draw_text_display real-pixel driver tests ─────────────────
+    // ── TextDisplay real-pixel driver tests ─────────────────────────────
     //
-    // Ported from the deleted `macos::text_display::tests` (that module
-    // already drove the real `MacBackend::draw_text_display` via its own
-    // local `paint`/`paint_at` helpers) to live alongside every other
-    // `draw_*`-family driver test in this module.
+    // These live alongside every other real-pixel driver test in this
+    // module, driving `TextDisplay` through the widget-contract paint
+    // path on a live Core Graphics context.
 
     use crate::primitives::text_display::{
         TextDisplay as TextDisplayModel, TextDisplayHit, TextDisplayLine as TextDisplayLineModel,
@@ -7958,18 +7502,15 @@ mod tests {
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(TD_W as f32, TD_H as f32, 1.0));
-        let layout = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_text_display(rect, td);
-            let l = b.text_display_layout(rect, td);
-            *layout.borrow_mut() = Some(l);
+        let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            crate::DrawsPrimitives::draw_primitive(b, rect, td).layout
         });
         backend.end_frame();
-        (surface, layout.into_inner().unwrap())
+        (surface, layout)
     }
 
     #[test]
-    fn mac_backend_draw_text_display_background_fills_theme_background() {
+    fn mac_backend_text_display_background_fills_theme_background() {
         let td = make_td(0, false);
         let (s, _) = paint_td_via_backend(&td, Rect::new(0.0, 0.0, TD_W as f32, TD_H as f32));
         let theme = Theme::default();
@@ -7981,7 +7522,7 @@ mod tests {
     }
 
     #[test]
-    fn mac_backend_draw_text_display_scrollbar_gutter_paints_track_colour() {
+    fn mac_backend_text_display_scrollbar_gutter_paints_track_colour() {
         let td = make_td(100, true);
         let (s, layout) = paint_td_via_backend(&td, Rect::new(0.0, 0.0, TD_W as f32, TD_H as f32));
         let gutter = layout.scrollbar_bounds.expect("gutter present");
@@ -8000,7 +7541,7 @@ mod tests {
     }
 
     #[test]
-    fn mac_backend_draw_text_display_scrollbar_thumb_paints_thumb_colour() {
+    fn mac_backend_text_display_scrollbar_thumb_paints_thumb_colour() {
         let td = make_td(100, true);
         let (s, layout) = paint_td_via_backend(&td, Rect::new(0.0, 0.0, TD_W as f32, TD_H as f32));
         let thumb = layout.thumb_bounds.expect("thumb present");
@@ -8019,7 +7560,7 @@ mod tests {
     }
 
     #[test]
-    fn mac_backend_draw_text_display_layout_hit_test_resolves_lines() {
+    fn mac_backend_text_display_layout_hit_test_resolves_lines() {
         let td = make_td(20, false);
         let (_, layout) = paint_td_via_backend(&td, Rect::new(0.0, 0.0, TD_W as f32, TD_H as f32));
         let vis = &layout.visible_lines[0];
@@ -8035,7 +7576,7 @@ mod tests {
     /// origin with a title row present, round-tripping an absolute click
     /// the way a real host does.
     #[test]
-    fn mac_backend_draw_text_display_layout_hit_test_resolves_lines_at_nonzero_origin() {
+    fn mac_backend_text_display_layout_hit_test_resolves_lines_at_nonzero_origin() {
         let mut td = make_td(20, false);
         td.title = Some(crate::types::StyledText::plain("Logs"));
 
@@ -9269,7 +8810,9 @@ mod tests {
         );
     }
 
-    // ── toast overlay entrance slide ─────────────────────────────────────
+    // ── toast overlay paint ──────────────────────────────────────────────
+
+    use crate::primitives::toast::{ToastCorner, ToastOverlay, ToastStackLayout};
 
     const TOAST_W: u32 = 400;
     const TOAST_H: u32 = 200;
@@ -9290,10 +8833,8 @@ mod tests {
         }
     }
 
-    /// Paints `overlay` through `MacBackend::draw_toast_overlay` on a fresh
-    /// frame and returns both the surface and the resolved layout, which
-    /// stays pinned to each toast's resting bounds regardless of any
-    /// in-flight slide offset (see `paint_with_x_offset`'s own doc).
+    /// Paints `overlay` through the widget-contract paint path on a
+    /// fresh frame and returns both the surface and the resolved layout.
     fn paint_toast_overlay(
         backend: &mut MacBackend,
         overlay: &ToastOverlay,
@@ -9303,59 +8844,27 @@ mod tests {
         let surface = BitmapSurface::new(TOAST_W, TOAST_H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         backend.begin_frame(Viewport::new(TOAST_W as f32, TOAST_H as f32, 1.0));
-        let layout = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l =
-                b.draw_toast_overlay(Rect::new(0.0, 0.0, TOAST_W as f32, TOAST_H as f32), overlay);
-            *layout.borrow_mut() = Some(l);
+        let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            crate::DrawsPrimitives::draw_primitive(
+                b,
+                Rect::new(0.0, 0.0, TOAST_W as f32, TOAST_H as f32),
+                overlay,
+            )
+            .layout
         });
         backend.end_frame();
-        (surface, layout.into_inner().unwrap())
+        (surface, layout)
     }
 
-    /// `MacBackend::draw_toast_overlay` slides a newly-shown toast in from
-    /// its stack's off-screen edge via `Transition`, instead of painting it
-    /// at full, resting position on the very first frame: sampling the
-    /// toast's resting-position centre on frame one must not show its
-    /// (deterministic, severity-driven) fill colour, since the box is still
-    /// painted off-canvas at that point.
+    /// A toast paints at the resting bounds its own resolved layout
+    /// reports, on the first frame it is shown: sampling that box's
+    /// centre must show the toast's (deterministic, severity-driven)
+    /// fill colour.
     #[test]
-    fn toast_overlay_slides_in_from_off_screen_on_first_frame() {
+    fn toast_overlay_paints_at_its_resting_position() {
         let overlay = sample_toast_overlay();
         let mut backend = MacBackend::new();
         backend.set_current_font(super::super::text::make_font("Menlo", 14.0).expect("Menlo"));
-
-        let (surface, layout) = paint_toast_overlay(&mut backend, &overlay);
-        let vt = &layout.visible_toasts[0];
-        let cx = (vt.bounds.x + vt.bounds.width / 2.0) as u32;
-        let cy = (vt.bounds.y + vt.bounds.height / 2.0) as u32;
-        let (r, g, b, _a) = surface.pixel(cx, cy);
-        let success_bg = Theme::default().success_bg();
-        assert_ne!(
-            (r, g, b),
-            (success_bg.r, success_bg.g, success_bg.b),
-            "first frame should paint the toast off-screen, slid in from the stack's edge, \
-             not already at its resting position",
-        );
-    }
-
-    /// Once a toast has been visible for longer than its slide's duration,
-    /// it should be painted at its resting position — the animation hands
-    /// off to a static layout once it finishes, same contract as the
-    /// toolbar hover fade
-    /// (`toolbar::tests::hover_highlight_reaches_full_opacity_after_fade_duration`).
-    #[test]
-    fn toast_overlay_reaches_resting_position_after_slide_duration() {
-        let overlay = sample_toast_overlay();
-        let mut backend = MacBackend::new();
-        backend.set_current_font(super::super::text::make_font("Menlo", 14.0).expect("Menlo"));
-
-        let _first = paint_toast_overlay(&mut backend, &overlay);
-
-        // The slide's duration (220ms) plus generous margin for scheduler
-        // jitter — mirrors the sleep-based timing tests elsewhere in this
-        // crate (e.g. `toolbar::tests`, `tui::backend`, `win::run`).
-        std::thread::sleep(Duration::from_millis(320));
 
         let (surface, layout) = paint_toast_overlay(&mut backend, &overlay);
         let vt = &layout.visible_toasts[0];
@@ -9369,7 +8878,7 @@ mod tests {
         assert_eq!(
             (r, g, b),
             (success_bg.r, success_bg.g, success_bg.b),
-            "toast should be painted at its resting position once the slide finishes",
+            "toast should be painted at the resting position its layout reports",
         );
     }
 
@@ -9395,22 +8904,22 @@ mod tests {
         let surface = BitmapSurface::new(TOAST_W, TOAST_H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         backend.begin_frame(Viewport::new(TOAST_W as f32, TOAST_H as f32, 1.0));
-        let toast_bounds = std::cell::RefCell::new(Rect::new(0.0, 0.0, 0.0, 0.0));
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let layout = b.draw_toast_overlay(
+        let vt = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let layout = crate::DrawsPrimitives::draw_primitive(
+                b,
                 Rect::new(0.0, 0.0, TOAST_W as f32, TOAST_H as f32),
                 &overlay,
-            );
+            )
+            .layout;
             let vt = layout.visible_toasts[0].bounds;
-            *toast_bounds.borrow_mut() = vt;
             // A tab-stop focus ring whose rect is the toast's own bounds —
             // the worst case, a toast that lands exactly over the focused
             // widget it was raised from.
             b.draw_focus_ring(vt);
+            vt
         });
         backend.end_frame();
 
-        let vt = *toast_bounds.borrow();
         let theme = Theme::default();
         let success_bg = theme.success_bg();
         // Probe right at the toast's edge, where the ring would have
@@ -9441,7 +8950,7 @@ mod tests {
     /// The ring is a perimeter stroke
     /// ([`focus_ring_band_overlaps`]), not a filled rect, so a toast that
     /// lands strictly *inside* a large focused widget — the issue's own
-    /// headline scenario, e.g. `draw_toast_overlay` insetting the stack by
+    /// headline scenario, e.g. a toast overlay insetting the stack by
     /// `TOAST_MARGIN` from a focused editor/list that spans the whole
     /// viewport — must leave the ring (and its `chrome:focus-ring` zone)
     /// intact: there is no pixel conflict to suppress.
@@ -9463,7 +8972,7 @@ mod tests {
         // focused rect's edges — the stroke band the ring actually paints.
         let focused_rect = Rect::new(0.0, 0.0, TOAST_W as f32, TOAST_H as f32);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let _layout = b.draw_toast_overlay(focused_rect, &overlay);
+            crate::DrawsPrimitives::draw_primitive(b, focused_rect, &overlay);
             b.draw_focus_ring(focused_rect);
         });
         backend.end_frame();
@@ -9500,7 +9009,7 @@ mod tests {
     #[test]
     fn draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame() {
         use super::super::headless::BitmapSurface;
-        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+        use crate::primitives::tooltip::Tooltip;
 
         const W: u32 = 200;
         const H: u32 = 100;
@@ -9513,12 +9022,8 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
 
         let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
-        let layout = TooltipLayout {
-            bounds: rect,
-            resolved_placement: ResolvedPlacement::Bottom,
-        };
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_tooltip(&tooltip, &layout);
+            crate::DrawsPrimitives::draw_primitive(b, rect, &tooltip);
             // The focused widget this tooltip is anchored to shares the
             // tooltip's own bounds exactly — the ring must yield.
             b.draw_focus_ring(rect);

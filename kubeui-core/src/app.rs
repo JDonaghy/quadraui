@@ -242,7 +242,7 @@ impl AppLogic for KubeApp {
 
         let yaml = build_yaml_view(&self.state, &self.theme);
         backend.set_theme(Self::yaml_pane_theme(&self.theme));
-        backend.draw_text_display(yaml_rect, &yaml);
+        backend.draw_dyn(yaml_rect, &yaml, &());
         backend.set_theme(self.theme);
 
         let bar = build_status_bar(&self.state, &self.theme);

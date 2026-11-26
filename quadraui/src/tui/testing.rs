@@ -2203,27 +2203,27 @@ mod tests {
         }
     }
 
+    use crate::backend::DrawsPrimitives;
+
     impl AppLogic for BackgroundResultApp {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_text_display(
-                Rect::new(0.0, 0.0, 40.0, 1.0),
-                &crate::TextDisplay {
-                    id: QWidgetId::new("result"),
-                    lines: vec![crate::TextDisplayLine {
-                        spans: vec![crate::types::StyledSpan::plain(self.last.clone())],
-                        decoration: Default::default(),
-                        timestamp: None,
-                    }],
-                    scroll_offset: 0,
-                    auto_scroll: true,
-                    max_lines: 0,
-                    has_focus: false,
-                    title: None,
-                    show_scrollbar: false,
-                },
-            );
+            let display = crate::TextDisplay {
+                id: QWidgetId::new("result"),
+                lines: vec![crate::TextDisplayLine {
+                    spans: vec![crate::types::StyledSpan::plain(self.last.clone())],
+                    decoration: Default::default(),
+                    timestamp: None,
+                }],
+                scroll_offset: 0,
+                auto_scroll: true,
+                max_lines: 0,
+                has_focus: false,
+                title: None,
+                show_scrollbar: false,
+            };
+            backend.draw_dyn(Rect::new(0.0, 0.0, 40.0, 1.0), &display, &());
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

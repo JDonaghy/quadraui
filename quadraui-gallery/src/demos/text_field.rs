@@ -5,6 +5,7 @@
 //! hand-rolled insert/backspace/cursor logic — the same discipline
 //! `TextInputDemo` follows for the multi-line primitive.
 
+use quadraui::DrawsPrimitives;
 use quadraui::{Backend, EditOp, Icon, Reaction, Rect, TextField, TextFieldHit, UiEvent, WidgetId};
 
 use crate::demo::{extract_region, Demo};
@@ -77,7 +78,7 @@ impl Demo for TextFieldDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = Self::field_rect(area, backend);
-        backend.draw_text_field(rect, self.field(variant));
+        backend.draw_dyn(rect, self.field(variant), &());
     }
 
     fn handle(
@@ -91,7 +92,7 @@ impl Demo for TextFieldDemo {
         match event {
             UiEvent::MouseDown { position, .. } => {
                 let rect = Self::field_rect(area, backend);
-                let layout = backend.text_field_layout(rect, &self.fields[idx]);
+                let layout = backend.layout_primitive(rect, &self.fields[idx]);
                 match layout.hit_test(position.x, position.y) {
                     TextFieldHit::Clear => {
                         self.fields[idx].clear();
@@ -183,8 +184,11 @@ mod tui_tests {
         let mut backend = quadraui::tui::TuiBackend::new();
         let area = Rect::new(0.0, 0.0, 40.0, 3.0);
         let rect = TextFieldDemo::field_rect(area, &backend);
-        let layout = backend.text_field_layout(rect, &demo.fields[1]);
-        let clear = layout.clear_rect.expect("search variant is clearable");
+        let layout = backend.layout_primitive(rect, &demo.fields[1]);
+        let clear = layout
+            .layout
+            .clear_rect
+            .expect("search variant is clearable");
         let event = quadraui::mouse_down(
             quadraui::MouseButton::Left,
             clear.x + 0.5,

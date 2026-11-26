@@ -36,11 +36,11 @@
 
 use std::collections::BTreeMap;
 
+use crate::backend::DrawsPrimitives;
 use crate::compose::Handled;
 use crate::event::Rect;
-use crate::primitives::toolbar::ToolbarItemMeasure;
 use crate::types::{StyledSpan, StyledText, WidgetId};
-use crate::{Backend, Dialog, DialogMeasure, DialogTable, Key, NamedKey, PaletteItem, UiEvent};
+use crate::{Backend, Dialog, DialogTable, Key, NamedKey, PaletteItem, UiEvent};
 
 // ── Data model ───────────────────────────────────────────────────────────
 
@@ -369,14 +369,6 @@ impl HelpOverlayController {
         };
         let (body, table) = build_help_body_and_table(help);
 
-        let m = backend.measure();
-        let line_height = m.line_height;
-        let char_width = m.char_width;
-        let table_height = table
-            .as_ref()
-            .map(|t| t.tui_total_height() as f32 * line_height)
-            .unwrap_or(0.0);
-
         let dialog = Dialog {
             id: self.id,
             title: StyledText::plain(title),
@@ -388,31 +380,10 @@ impl HelpOverlayController {
             input: None,
         };
 
-        // 70% of `container`, floored to a readable minimum derived from
-        // the backend's own char width (never a hardcoded pixel constant
-        // — see `docs/LESSONS.md`), clamped so a narrow `container` never
-        // produces an inverted `.max(..).min(..)` range.
-        let min_w = (char_width * 44.0).min(container.width.max(1.0));
-        let width = (container.width * 0.7)
-            .max(min_w)
-            .min(container.width.max(1.0));
-
-        let measure = DialogMeasure {
-            width,
-            title_height: line_height,
-            body_height: dialog.body.len() as f32 * line_height,
-            table_height,
-            input_height: 0.0,
-            // No buttons — a cheatsheet is dismiss-only via `Esc`/`?`,
-            // handled by `handle_event`, not a button click — so the
-            // row reserves no space.
-            button_row_height: 0.0,
-            button_width: 0.0,
-            button_gap: 0.0,
-            padding: line_height,
-        };
-        let layout = dialog.layout(container, measure, |_| ToolbarItemMeasure::new(0.0));
-        backend.draw_dialog(&dialog, &layout);
+        // The cheatsheet carries no buttons — it is dismiss-only via
+        // `Esc`/`?`, handled by `handle_event` — so the widget's own
+        // layout reserves no button row for it.
+        backend.draw_dyn(container, &dialog, &());
     }
 }
 

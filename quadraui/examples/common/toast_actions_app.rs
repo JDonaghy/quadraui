@@ -128,7 +128,7 @@ impl AppLogic for ToastActionsApp {
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
         let overlay_rect = self.overlay_rect(backend);
-        let _ = backend.draw_toast_overlay(overlay_rect, &self.stack());
+        backend.draw_dyn(overlay_rect, &self.stack(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -195,7 +195,7 @@ impl AppLogic for ToastActionsApp {
             }
             UiEvent::MouseDown { position, .. } => {
                 let overlay_rect = self.overlay_rect(backend);
-                let layout = backend.toast_stack_layout(overlay_rect, &stack);
+                let layout = backend.layout_primitive(overlay_rect, &stack);
                 match layout.hit_test(position.x, position.y) {
                     ToastHit::Dismiss(id) => self.dismiss(id),
                     ToastHit::Action(id) => {

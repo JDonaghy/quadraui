@@ -1,13 +1,14 @@
 #![cfg(feature = "tui")]
-//! `quadraui::tui::draw_float` with `Float::transparent` set: the
-//! background fill is skipped, so cells the host painted beneath the
-//! float survive everywhere the float puts no border glyph.
+//! Painting a [`Float`] with `Float::transparent` set: the background
+//! fill is skipped, so cells the host painted beneath the float survive
+//! everywhere the float puts no border glyph.
 
 use quadraui::layout::{Anchor, Side};
-use quadraui::tui::draw_float;
-use quadraui::{Float, FloatLayout, FloatMeasure, Rect, Theme, WidgetId};
+use quadraui::tui::TuiBackend;
+use quadraui::{DrawsPrimitives, Float, FloatLayout, FloatMeasure, Rect, WidgetId};
+use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
-use ratatui::layout::Rect as RRect;
+use ratatui::Terminal;
 
 fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
     buf.cell((x, y)).unwrap().symbol().chars().next().unwrap()
@@ -35,17 +36,33 @@ fn bounds(layout: &FloatLayout) -> (u16, u16, u16, u16) {
     )
 }
 
+/// Paint `base` (the host's own earlier layer) and then the float, and
+/// hand back the resulting terminal buffer — the real
+/// `enter_frame_scope` -> `draw_dyn` path a TUI host uses, so the
+/// transparency assertions below are made against cells a backend
+/// actually wrote.
+fn painted(float: &Float, layout: &FloatLayout, base: &[(u16, u16, char)]) -> Buffer {
+    let mut backend = TuiBackend::new();
+    let mut terminal = Terminal::new(TestBackend::new(40, 20)).expect("test terminal");
+    terminal
+        .draw(|frame| {
+            for (x, y, ch) in base {
+                frame.buffer_mut().cell_mut((*x, *y)).unwrap().set_char(*ch);
+            }
+            backend.enter_frame_scope(frame, |b| {
+                b.draw_dyn(layout.bounds, float, &());
+            });
+        })
+        .expect("draw");
+    terminal.backend().buffer().clone()
+}
+
 #[test]
 fn transparent_float_leaves_underlying_cells_outside_the_border_untouched() {
-    let mut buf = Buffer::empty(RRect::new(0, 0, 40, 20));
     let (float, layout) = transparent_float(true);
     let (x, y, w, h) = bounds(&layout);
 
-    // The host's base layer, painted earlier in the frame, under the
-    // float's interior.
-    buf.cell_mut((x + 1, y + 1)).unwrap().set_char('*');
-
-    draw_float(&mut buf, &float, &layout, &Theme::default());
+    let buf = painted(&float, &layout, &[(x + 1, y + 1, '*')]);
 
     assert_eq!(cell_char(&buf, x, y), '┌');
     assert_eq!(cell_char(&buf, x + w - 1, y), '┐');
@@ -56,12 +73,10 @@ fn transparent_float_leaves_underlying_cells_outside_the_border_untouched() {
 
 #[test]
 fn transparent_borderless_float_paints_nothing() {
-    let mut buf = Buffer::empty(RRect::new(0, 0, 40, 20));
     let (float, layout) = transparent_float(false);
     let (x, y, _, _) = bounds(&layout);
-    buf.cell_mut((x, y)).unwrap().set_char('*');
 
-    draw_float(&mut buf, &float, &layout, &Theme::default());
+    let buf = painted(&float, &layout, &[(x, y, '*')]);
 
     assert_eq!(cell_char(&buf, x, y), '*');
 }

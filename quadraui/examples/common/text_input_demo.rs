@@ -111,7 +111,7 @@ impl AppLogic for TextInputDemo {
         backend.draw_dyn(status_rect, &self.status(), &());
 
         let input_rect = Self::input_rect(backend);
-        backend.draw_text_input(input_rect, &self.input);
+        backend.draw_dyn(input_rect, &self.input.input, &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -141,7 +141,7 @@ impl AppLogic for TextInputDemo {
                 ..
             } => {
                 let rect = Self::input_rect(backend);
-                let layout = backend.text_input_layout(rect, &self.input);
+                let layout = backend.layout_primitive(rect, &self.input.input);
                 let op = match layout.hit_test(position.x, position.y) {
                     TextInputHit::Line { line_idx } => EditOp::SetCursor {
                         line: line_idx,

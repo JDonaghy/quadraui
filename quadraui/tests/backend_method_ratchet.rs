@@ -66,7 +66,7 @@ fn trait_method_names(t: &ItemTrait) -> Vec<String> {
 /// implement `quadraui::Primitive` (`src/primitive.rs`) instead, and reach
 /// every backend through `DrawsPrimitives::draw_primitive` — see
 /// `tests/primitive_public_api.rs` for a worked third-party example.
-const BACKEND_METHOD_COUNT_BASELINE: usize = 146;
+const BACKEND_METHOD_COUNT_BASELINE: usize = 125;
 
 #[test]
 fn backend_trait_method_count_may_only_shrink() {
@@ -139,21 +139,7 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("TreeTable", "draw_tree_table"),
     ("TreeTable", "tree_table_layout"),
     ("TreeTable", "tree_layout"),
-    // Group-B ports keep these until the group's cleanup deletes them
-    // together with their wrapper files and `Surface` variants.
-    ("Tooltip", "draw_tooltip"),
-    ("Tooltip", "draw_tooltip_with_chrome"),
-    ("Float", "draw_float"),
-    ("Completions", "draw_completions"),
-    ("RichTextPopup", "draw_rich_text_popup"),
-    ("RichTextPopup", "draw_rich_text_popup_with_font_role"),
-    ("Dialog", "draw_dialog"),
-    ("ToastOverlay", "draw_toast_overlay"),
-    ("ToastOverlay", "toast_stack_layout"),
-    ("NumberInput", "draw_number_input"),
-    ("ComboBox", "draw_combo_box"),
-    ("DatePicker", "draw_date_picker"),
-    // Group-A ports, on the same terms as Group B: each now paints
+    // Group-A ports: each now paints
     // through `Primitive`/`Interactive`, and keeps its bespoke pair
     // until the group's cleanup deletes the methods, the per-backend
     // wrapper files and the `Surface` variants together. `draw_scrollbar`
@@ -166,17 +152,6 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Spinner", "draw_spinner"),
     ("Spinner", "spinner_layout"),
     ("Scrollbar", "draw_scrollbar"),
-    // Group-B ports keep these until the group's cleanup deletes them
-    // together with their wrapper files and `Surface` variants.
-    ("TextInput", "draw_text_input"),
-    ("TextInput", "text_input_layout"),
-    ("TextField", "draw_text_field"),
-    ("TextField", "text_field_layout"),
-    ("CommandLine", "draw_command_line"),
-    ("CommandLine", "draw_command_line_selection"),
-    ("CommandLine", "command_line_layout"),
-    ("TextDisplay", "draw_text_display"),
-    ("TextDisplay", "text_display_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

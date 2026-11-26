@@ -13,6 +13,7 @@
 //! content-unit arithmetic, not by the content's own type.
 
 use quadraui::tui::testing::TuiDriver;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Decoration, NamedKey, Point, Reaction, Rect, ScrollDelta, ScrollView,
     ScrollViewEvent, StyledSpan, TextDisplay, TextDisplayLine, UiEvent, WidgetId,
@@ -67,7 +68,7 @@ impl AppLogic for ScrollViewApp {
                 });
             }
         }
-        backend.draw_text_display(VIEWPORT, &display);
+        backend.draw_dyn(VIEWPORT, &display, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

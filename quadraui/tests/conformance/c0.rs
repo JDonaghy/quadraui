@@ -31,20 +31,15 @@
 //! `tests::NON_TRAIT_DRAW_FNS`.
 
 use quadraui::{
-    compute_hunks, Anchor, AppLogic, Backend, BadgeStatus, BoardCard, BoardColumn, BoardModel,
-    CalendarDate, Canvas, CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth,
-    ComboBox, CommandLine, CompletionItem, CompletionItemMeasure, Completions, DataRow, DataTable,
-    DatePicker, Decoration, Dialog, DialogButton, DialogMeasure, DiffEditability, DiffMode,
-    DiffPane, DiffView, DrawOp, Editor, EditorCursor, EditorCursorPos, EditorCursorShape,
-    EditorLine, EditorStyle, EditorStyledSpan, FindReplacePanel, Float, FloatMeasure, FontRole,
-    Image, ImageFit, ImageSource, ListItem, ListView, MessageList, MessageRow, Minimap,
-    MinimapLine, MsvAxis, MultiSectionView, NumberInput, PipelineStage, PipelineView,
-    PopupPlacement, ProgressBar, Reaction, Rect, RichTextPopup, RichTextPopupMeasure, ScrollAxis,
-    ScrollMode, Scrollbar, Section, SectionBody, SectionHeader, SectionSize, SelectionMode, Series,
-    Side, Spinner, Split, SplitDirection, SplitTree, StageStatus, StyledSpan, StyledText,
-    TextDisplay, TextDisplayLine, TextField, TextInput, Toast, ToastCorner, ToastOverlay,
-    ToastSeverity, ToolbarItemMeasure, Tooltip, TooltipBorder, TooltipChrome, TooltipMeasure,
-    TooltipPlacement, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
+    compute_hunks, AppLogic, Backend, BadgeStatus, BoardCard, BoardColumn, BoardModel, Canvas,
+    CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable,
+    Decoration, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, Editor, EditorCursor,
+    EditorCursorPos, EditorCursorShape, EditorLine, EditorStyle, EditorStyledSpan,
+    FindReplacePanel, Image, ImageFit, ImageSource, ListItem, ListView, MessageList, MessageRow,
+    Minimap, MinimapLine, MsvAxis, MultiSectionView, PipelineStage, PipelineView, ProgressBar,
+    Reaction, Rect, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody, SectionHeader,
+    SectionSize, SelectionMode, Series, Spinner, Split, SplitDirection, SplitTree, StageStatus,
+    StyledText, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -81,34 +76,6 @@ pub struct Case {
 /// trait is therefore one more entry here, not an optional one.
 pub const CASES: &[Case] = &[
     Case {
-        method: "draw_command_line",
-        needle: Some("c0cmd"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let cmd = CommandLine {
-                id: id("command-line"),
-                text: ":c0cmd".to_string(),
-                cursor_offset: None,
-                right_align: false,
-            };
-            b.draw_command_line(Rect::new(0.0, 0.0, area.width, lh), &cmd);
-        },
-    },
-    Case {
-        method: "draw_command_line_selection",
-        needle: Some("c0cmdsel"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let cmd = CommandLine {
-                id: id("command-line-selection"),
-                text: ":c0cmdsel".to_string(),
-                cursor_offset: None,
-                right_align: false,
-            };
-            b.draw_command_line_selection(Rect::new(0.0, 0.0, area.width, lh), &cmd, Some((0, 4)));
-        },
-    },
-    Case {
         method: "draw_message_list",
         needle: Some("c0msg"),
         paint: |b, area| {
@@ -118,27 +85,6 @@ pub const CASES: &[Case] = &[
                 scroll_top: 0,
             };
             b.draw_message_list(area, &list);
-        },
-    },
-    Case {
-        method: "draw_text_display",
-        needle: Some("c0text"),
-        paint: |b, area| {
-            let td = TextDisplay {
-                id: id("text-display"),
-                lines: vec![TextDisplayLine {
-                    spans: vec![StyledSpan::plain("c0text")],
-                    decoration: Decoration::Normal,
-                    timestamp: None,
-                }],
-                scroll_offset: 0,
-                auto_scroll: true,
-                max_lines: 0,
-                has_focus: false,
-                title: None,
-                show_scrollbar: false,
-            };
-            b.draw_text_display(area, &td);
         },
     },
     Case {
@@ -298,46 +244,6 @@ pub const CASES: &[Case] = &[
                 has_focus: false,
             };
             let _ = b.draw_diff_view(area, &view);
-        },
-    },
-    Case {
-        method: "draw_tooltip",
-        needle: Some("c0tip"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let anchor = Rect::new(0.0, 0.0, area.width, lh);
-            let mut tooltip = Tooltip::new(id("tooltip"), "c0tip");
-            tooltip.placement = TooltipPlacement::Bottom;
-            // Room for a border on all sides plus the whole label — a box
-            // measured to exactly `border + text + border` leaves no
-            // padding and clips the last glyph.
-            let measure = TooltipMeasure::new(cw * 9.0, lh * 3.0);
-            let layout = tooltip.layout(anchor, area, measure, lh);
-            b.draw_tooltip(&tooltip, &layout);
-        },
-    },
-    Case {
-        // The chrome-carrying entry point. Same content as
-        // `draw_tooltip` above (which renders `TooltipChrome::default()`),
-        // but asking explicitly for `Sides` chrome so C0 exercises a
-        // non-default request reaching the backend rather than only the
-        // delegating path.
-        method: "draw_tooltip_with_chrome",
-        needle: Some("c0chrome"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let anchor = Rect::new(0.0, 0.0, area.width, lh);
-            let mut tooltip = Tooltip::new(id("tooltip-chrome"), "c0chrome");
-            tooltip.placement = TooltipPlacement::Bottom;
-            let measure = TooltipMeasure::new(cw * 12.0, lh * 3.0);
-            let layout = tooltip.layout(anchor, area, measure, lh);
-            b.draw_tooltip_with_chrome(
-                &tooltip,
-                &layout,
-                &TooltipChrome::new(TooltipBorder::Sides),
-            );
         },
     },
     Case {
@@ -543,82 +449,6 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_text_input",
-        needle: Some("c0tin"),
-        paint: |b, area| {
-            let mut ti = TextInput::new(id("text-input"));
-            ti.lines = vec!["c0tin".to_string()];
-            ti.has_focus = true;
-            let _ = b.draw_text_input(area, &ti);
-        },
-    },
-    Case {
-        method: "draw_text_field",
-        needle: Some("c0tfld"),
-        paint: |b, area| {
-            let tf = TextField::new(id("text-field"))
-                .with_value("c0tfld")
-                .with_has_focus(true);
-            let _ = b.draw_text_field(area, &tf);
-        },
-    },
-    Case {
-        method: "draw_dialog",
-        needle: Some("c0dlgb"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let dialog = Dialog {
-                id: id("dialog"),
-                title: StyledText::plain("Dialog"),
-                body: vec![StyledText::plain("c0dlgb")],
-                buttons: vec![DialogButton {
-                    spec: None,
-                    id: id("dialog-ok"),
-                    label: "OK".to_string(),
-                    is_default: true,
-                    is_cancel: false,
-                    tint: None,
-                }],
-                severity: None,
-                vertical_buttons: false,
-                table: None,
-                input: None,
-            };
-            let measure = DialogMeasure {
-                width: cw * 40.0,
-                title_height: lh,
-                body_height: lh * 3.0,
-                table_height: 0.0,
-                input_height: 0.0,
-                button_row_height: lh,
-                button_width: cw * 10.0,
-                button_gap: cw,
-                padding: cw,
-            };
-            let layout = dialog.layout(area, measure, |_| ToolbarItemMeasure::new(0.0));
-            let _ = b.draw_dialog(&dialog, &layout);
-        },
-    },
-    Case {
-        // `Float` is pure chrome — a background fill and
-        // (border-on, the default) a stroke, no text of its own, by
-        // design (see `Float`'s module doc). No needle to search for on
-        // any backend; observability comes from `draw_float`'s
-        // `register_zone` call, same convention `draw_scrollbar` uses.
-        method: "draw_float",
-        needle: None,
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let anchor = Anchor::new(Rect::new(0.0, 0.0, area.width, lh), Side::Bottom);
-            let float = Float::new(id("float"), anchor);
-            let measure = FloatMeasure::new(cw * 10.0, lh * 3.0);
-            let layout = float.layout(area, measure);
-            b.draw_float(&float, &layout);
-        },
-    },
-    Case {
         method: "draw_multi_section_view",
         needle: Some("c0msv"),
         paint: |b, area| {
@@ -707,71 +537,6 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_rich_text_popup",
-        needle: Some("c0rtp"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let popup = RichTextPopup {
-                id: id("rich-text-popup"),
-                lines: vec![StyledText::plain("c0rtp")],
-                line_text: vec!["c0rtp".to_string()],
-                line_scales: vec![],
-                scroll_top: 0,
-                max_visible_rows: 10,
-                has_focus: true,
-                selection: None,
-                links: vec![],
-                focused_link: None,
-                placement: PopupPlacement::Below,
-                padding: 1.0,
-                fg: None,
-                bg: None,
-                font_role: Default::default(),
-            };
-            let measure = RichTextPopupMeasure::new(cw * 20.0, lh);
-            let layout = popup.layout(0.0, 0.0, area, measure, |_, start, end| {
-                (end - start) as f32 * cw
-            });
-            b.draw_rich_text_popup(&popup, &layout);
-        },
-    },
-    Case {
-        // The role-carrying entry point. Same content as
-        // `draw_rich_text_popup` above (whose default delegates to
-        // `FontRole::Chrome`), but asking explicitly for `Editor` so C0
-        // exercises a non-default request reaching the backend rather
-        // than only the delegating path.
-        method: "draw_rich_text_popup_with_font_role",
-        needle: Some("c0rtpf"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let popup = RichTextPopup {
-                id: id("rich-text-popup-font-role"),
-                lines: vec![StyledText::plain("c0rtpf")],
-                line_text: vec!["c0rtpf".to_string()],
-                line_scales: vec![],
-                scroll_top: 0,
-                max_visible_rows: 10,
-                has_focus: true,
-                selection: None,
-                links: vec![],
-                focused_link: None,
-                placement: PopupPlacement::Below,
-                padding: 1.0,
-                fg: None,
-                bg: None,
-                font_role: Default::default(),
-            };
-            let measure = RichTextPopupMeasure::new(cw * 20.0, lh);
-            let layout = popup.layout(0.0, 0.0, area, measure, |_, start, end| {
-                (end - start) as f32 * cw
-            });
-            b.draw_rich_text_popup_with_font_role(&popup, &layout, FontRole::Editor);
-        },
-    },
-    Case {
         method: "draw_find_replace",
         needle: Some("c0find"),
         paint: |b, area| {
@@ -803,28 +568,6 @@ pub const CASES: &[Case] = &[
                 hit_regions,
             };
             b.draw_find_replace(area, &panel);
-        },
-    },
-    Case {
-        method: "draw_completions",
-        needle: Some("c0cmpl"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let cw = b.char_width();
-            let mut completions = Completions::default();
-            completions.id = id("completions");
-            completions.items = vec![CompletionItem {
-                label: StyledText::plain("c0cmpl"),
-                detail: None,
-                documentation: None,
-                kind: Default::default(),
-                icon: None,
-            }];
-            completions.has_focus = true;
-            let layout = completions.layout(0.0, 0.0, lh, area, cw * 20.0, lh * 6.0, |_| {
-                CompletionItemMeasure::new(lh)
-            });
-            b.draw_completions(&completions, &layout);
         },
     },
     // ── More chrome-only primitives ────────────────────────────────────
@@ -871,26 +614,6 @@ pub const CASES: &[Case] = &[
                 focusable: false,
             };
             let _ = b.draw_canvas(area, &canvas);
-        },
-    },
-    Case {
-        method: "draw_toast_overlay",
-        needle: Some("c0tost"),
-        paint: |b, area| {
-            let stack = ToastOverlay {
-                id: id("toast-stack"),
-                corner: ToastCorner::BottomRight,
-                toasts: vec![Toast {
-                    id: id("toast"),
-                    title: "c0tost".to_string(),
-                    body: String::new(),
-                    severity: ToastSeverity::Info,
-                    actions: vec![],
-                    accent: None,
-                }],
-                focus: None,
-            };
-            let _ = b.draw_toast_overlay(area, &stack);
         },
     },
     Case {
@@ -994,55 +717,6 @@ pub const CASES: &[Case] = &[
                 fallback_text: "c0img".to_string(),
             };
             let _ = b.draw_image(area, &image);
-        },
-    },
-    Case {
-        method: "draw_number_input",
-        needle: Some("70"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let mut number_input = NumberInput::default();
-            number_input.id = id("number-input");
-            number_input.value = 70.0;
-            number_input.min = 0.0;
-            number_input.max = 100.0;
-            number_input.step = 1.0;
-            number_input.focused = true;
-            let bounds = Rect::new(0.0, 0.0, cw * 10.0, lh);
-            let layout = number_input.layout(bounds);
-            let _ = area;
-            b.draw_number_input(&number_input, &layout);
-        },
-    },
-    Case {
-        method: "draw_combo_box",
-        needle: Some("c0combo"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let mut combo_box = ComboBox::default();
-            combo_box.id = id("combo-box");
-            combo_box.options = vec!["c0combo".to_string()];
-            combo_box.text = "c0combo".to_string();
-            combo_box.focused = true;
-            let field_bounds = Rect::new(0.0, 0.0, cw * 20.0, lh);
-            let layout = combo_box.layout(field_bounds, area, cw * 20.0, lh * 6.0, |_| {
-                CompletionItemMeasure::new(lh)
-            });
-            b.draw_combo_box(&combo_box, &layout);
-        },
-    },
-    Case {
-        method: "draw_date_picker",
-        needle: Some("2024-03"),
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            let date_picker = DatePicker::new(id("date-picker"), CalendarDate::new(2024, 3, 15));
-            let layout = date_picker.layout(0.0, 0.0, cw * 4.0, lh, lh, 0.0);
-            let _ = area;
-            b.draw_date_picker(&date_picker, &layout);
         },
     },
     Case {
@@ -1246,7 +920,7 @@ mod tests {
     fn cases_cover_every_draw_method_on_the_trait() {
         let trait_methods: Vec<&str> = draw_fn_names(backend_trait_body());
         assert!(
-            trait_methods.len() >= 30,
+            trait_methods.len() >= 25,
             "sanity check failed: expected dozens of `fn draw_*` trait methods in backend.rs, \
              found only {} — the line-based parser above likely broke against a reformatted \
              file rather than the trait actually shrinking: {trait_methods:?}",

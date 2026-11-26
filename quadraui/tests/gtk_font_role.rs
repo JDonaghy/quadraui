@@ -60,6 +60,7 @@
 #![cfg(feature = "gtk")]
 
 use quadraui::gtk::testing::GtkDriver;
+use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, CompletionItem, CompletionItemMeasure, CompletionKind, Completions,
     Decoration, DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView,
@@ -237,7 +238,7 @@ fn draw_text_display_paints_in_editor_font() {
             title: None,
             show_scrollbar: false,
         };
-        b.draw_text_display(area, &td);
+        b.draw_dyn(area, &td, &());
     });
 }
 
@@ -365,7 +366,7 @@ fn draw_toast_overlay_paints_in_chrome_font() {
             }],
             focus: None,
         };
-        let _ = b.draw_toast_overlay(area, &stack);
+        b.draw_dyn(area, &stack, &());
     });
 }
 
@@ -395,7 +396,7 @@ fn draw_palette_paints_in_chrome_font() {
 fn draw_text_input_paints_in_chrome_font() {
     assert_paints_in_chrome_font("draw_text_input", |b, area| {
         let ti = TextInput::new(id("text-input")).with_lines(vec![LABEL.to_string()]);
-        let _ = b.draw_text_input(area, &ti);
+        b.draw_dyn(area, &ti, &());
     });
 }
 
@@ -424,7 +425,7 @@ fn draw_completions_paints_in_chrome_font() {
             area.height.min(200.0),
             |_| CompletionItemMeasure::new(PINNED_LINE_HEIGHT),
         );
-        b.draw_completions(&completions, &layout);
+        b.draw_dyn(layout.bounds, &completions, &());
     });
 }
 
@@ -458,6 +459,7 @@ fn draw_tooltip_paints_in_chrome_font() {
             placement: Default::default(),
             bg: None,
             fg: None,
+            chrome: Default::default(),
         };
         let layout = tooltip.layout(
             Rect::new(area.x, area.y, 10.0, 10.0),
@@ -469,7 +471,7 @@ fn draw_tooltip_paints_in_chrome_font() {
             TooltipMeasure::new(160.0, PINNED_LINE_HEIGHT + 20.0),
             4.0,
         );
-        b.draw_tooltip(&tooltip, &layout);
+        b.draw_dyn(layout.bounds, &tooltip, &());
     });
 }
 

@@ -5158,7 +5158,8 @@ mod coverage {
             id,
             text,
             cursor_offset,
-            right_align
+            right_align,
+            selection
         }
     );
     assert_fields!(

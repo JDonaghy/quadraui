@@ -10,16 +10,22 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::backend::DrawsPrimitives;
     use crate::gtk::testing::GtkDriver;
     use crate::runner::{AppLogic, Reaction};
     use crate::{
-        Backend, CalendarDate, DatePicker, DatePickerEvent, DatePickerLayout, Key, NamedKey,
-        UiEvent, WidgetId,
+        Backend, CalendarDate, DatePicker, DatePickerEvent, Key, NamedKey, Rect, UiEvent, WidgetId,
     };
 
-    fn sample_layout(picker: &DatePicker) -> DatePickerLayout {
-        picker.layout(0.0, 0.0, 4.0, 1.0, 1.0, 0.0)
-    }
+    /// The rect the driver's calendar is laid out into — the month
+    /// header, six week rows and the time field all size themselves
+    /// inside it (see `DatePickerPrimitiveLayout`).
+    const CALENDAR_AREA: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 28.0,
+        height: 10.0,
+    };
 
     /// Minimal `AppLogic` wrapping a single focused `DatePicker`, painted
     /// through the real `Backend::draw_date_picker` — used only by this
@@ -59,8 +65,7 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let layout = sample_layout(&self.picker);
-            backend.draw_date_picker(&self.picker, &layout);
+            backend.draw_dyn(CALENDAR_AREA, &self.picker, &());
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

@@ -189,6 +189,9 @@ pub struct LayoutCtx<'a> {
     /// The calling backend's editor-font row height — see
     /// [`Self::with_editor_line_height`] and [`Self::editor_line_height`].
     editor_line_height: Option<f32>,
+    /// Whether the calling backend paints per-row text scale — see
+    /// [`Self::with_scaled_text_rows`] and [`Self::scales_text_rows`].
+    scales_text_rows: bool,
 }
 
 /// Prints the three scalar metrics plus whether a text measurer is
@@ -237,6 +240,7 @@ impl LayoutCtx<'static> {
             measurer: None,
             style: None,
             editor_line_height: None,
+            scales_text_rows: false,
         }
     }
 }
@@ -291,6 +295,25 @@ impl<'a> LayoutCtx<'a> {
     /// [`Self::line_height`].
     pub fn editor_line_height(&self) -> f32 {
         self.editor_line_height.unwrap_or(self.line_height)
+    }
+
+    /// This ctx with `scales` as [`crate::Backend::scales_text_rows`], so
+    /// a layout that reserves taller rows for scaled text (a markdown
+    /// heading) agrees with a host that sized the same box from that
+    /// backend capability.
+    pub fn with_scaled_text_rows(self, scales: bool) -> Self {
+        Self {
+            scales_text_rows: scales,
+            ..self
+        }
+    }
+
+    /// The capability attached with [`Self::with_scaled_text_rows`] —
+    /// [`crate::Backend::scales_text_rows`] on a ctx
+    /// [`crate::DrawsPrimitives`] built — else `false`, every row one
+    /// [`Self::line_height`] tall.
+    pub fn scales_text_rows(&self) -> bool {
+        self.scales_text_rows
     }
 
     /// The style attached with [`Self::with_style`], else
@@ -399,6 +422,25 @@ pub enum Units {
     /// Whole terminal cells — [`crate::tui::backend::TuiBackend`]'s
     /// native coordinate space.
     Cells,
+}
+
+/// Quantise `rect` to the whole cells a cell-grid backend actually paints
+/// it into — the same rounding [`crate::tui::backend::TuiBackend`] applies
+/// when it converts a [`Rect`] to its native grid before painting a cell.
+///
+/// A container can hand a leaf a fractional rect (a ratio-split
+/// [`crate::SplitTree`] pane), but only whole cells of it are painted. A `Primitive::layout` that resolves its
+/// cell-grid geometry against the raw rect hit-tests one cell wider than
+/// what painted, claiming a neighbour's cell (the split divider beside the
+/// pane) as its own body. Resolving against this rect instead keeps
+/// hit-testing on the painted grid.
+pub(crate) fn cell_grid_rect(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x.max(0.0).round(),
+        rect.y.max(0.0).round(),
+        rect.width.max(0.0).round(),
+        rect.height.max(0.0).round(),
+    )
 }
 
 /// A named bundle of the chrome metrics [`LayoutCtx`] carries, plus the
@@ -718,7 +760,7 @@ pub trait Primitive: A11yPrimitive {
     /// Resolve this primitive's layout for `rect`.
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Self::Layout;
 
-    /// How far beyond its `rect` the implementor paints on a pixel surface,
+    /// How far past its `rect` this primitive paints on a pixel surface,
     /// on every side: an overlay's drop shadow, or a border stroke
     /// centred on its edge. [`crate::DrawsPrimitives::draw_primitive`]
     /// and [`crate::DrawsPrimitives::draw_dyn`] widen their paint clip by
@@ -727,6 +769,22 @@ pub trait Primitive: A11yPrimitive {
     fn paint_bleed(&self, style: &Style) -> f32 {
         let _ = style;
         0.0
+    }
+
+    /// The rect the primitive's paint occupies for `layout`, in `units`
+    /// (the painted surface's own coordinate space), when it is a surface
+    /// a structural observer must be able to see. After painting an
+    /// identified primitive ([`Self::id`]),
+    /// [`crate::DrawsPrimitives::draw_primitive`] and
+    /// [`crate::DrawsPrimitives::draw_dyn`] report a `Some` rect as that
+    /// id's zone via [`crate::Backend::register_zone`], so it appears in
+    /// [`crate::testing::FrameInventory::zones`]. A cell-grid widget
+    /// returns the whole-cell rect it actually painted, not its raw float
+    /// bounds. Default: `None` — the primitive reports no zone of its
+    /// own, and nothing is registered.
+    fn paint_zone(&self, layout: &Self::Layout, units: Units) -> Option<Rect> {
+        let _ = (layout, units);
+        None
     }
 
     /// Paint `layout` (as produced by [`Self::layout`]) onto `surface`.
@@ -835,9 +893,14 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// [`PrimitiveLayout`] — see [`Primitive::layout`].
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> Box<dyn PrimitiveLayout>;
 
-    /// How far beyond its `rect` this widget paints — see
+    /// How far past its `rect` this widget paints — see
     /// [`Primitive::paint_bleed`].
     fn paint_bleed(&self, style: &Style) -> f32;
+
+    /// The rect this widget's paint occupies for `layout`, if it reports
+    /// one — see [`Primitive::paint_zone`]. `None` when `layout` isn't
+    /// this widget's own layout type.
+    fn paint_zone(&self, layout: &dyn PrimitiveLayout, units: Units) -> Option<Rect>;
 
     /// Paint `layout` (as produced by [`Self::layout`]) onto `target`.
     /// Replaces [`Primitive::paint`]/[`Primitive::paint_cells`]'s split
@@ -933,6 +996,11 @@ where
 
     fn paint_bleed(&self, style: &Style) -> f32 {
         Primitive::paint_bleed(self, style)
+    }
+
+    fn paint_zone(&self, layout: &dyn PrimitiveLayout, units: Units) -> Option<Rect> {
+        let layout = layout.downcast_ref::<W::Layout>()?;
+        Primitive::paint_zone(self, layout, units)
     }
 
     fn paint(

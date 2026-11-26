@@ -1271,6 +1271,13 @@ impl crate::primitive::Primitive for TextInput {
         crate::frame::OwnedContent::TextInput(self.clone())
     }
 
+    /// The focus-visible ring strokes outside the input's own box, at the
+    /// outset gap `focus_ring_geometry` uses, so the paint clip has to
+    /// reach the far edge of that stroke.
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        crate::primitives::button::FOCUS_RING_GAP + style.focus_ring_width / 2.0
+    }
+
     /// One row per buffer line plus the two border rows, and — as a
     /// width — the longest line plus the border/padding inset
     /// [`TextInput::layout`] reserves on both sides.
@@ -1298,15 +1305,28 @@ impl crate::primitive::Primitive for TextInput {
 
     /// `rect` is the input's own box. On a cell grid the layout comes
     /// from [`cell_layout`]; on a pixel surface from
-    /// [`TextInput::layout`] with the backend's own line height and
-    /// character advance.
+    /// [`TextInput::layout`] with the backend's own line height and the
+    /// advance of the font this input actually paints its glyphs in.
+    ///
+    /// That advance is measured through `ctx`'s own role-aware measurer
+    /// rather than read off [`crate::primitive::LayoutCtx::char_width`]:
+    /// `char_width` is the ambient *editor* advance, a different pitch
+    /// from the chrome one whenever the two fonts differ, and the caret
+    /// column has to sit on the same grid as the glyphs beside it.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextInputPrimitiveLayout {
+        let rect = match ctx.units() {
+            crate::primitive::Units::Cells => crate::primitive::cell_grid_rect(rect),
+            _ => rect,
+        };
         let (layout, char_width) = match ctx.units() {
             crate::primitive::Units::Cells => (cell_layout(self, rect), 1.0),
-            _ => (
-                self.layout(rect, TextInputMeasure::new(ctx.line_height, ctx.char_width)),
-                ctx.char_width.max(1.0),
-            ),
+            _ => {
+                let advance = ctx.text_width("0", self.font_role()).max(1.0);
+                (
+                    self.layout(rect, TextInputMeasure::new(ctx.line_height, advance)),
+                    advance,
+                )
+            }
         };
         TextInputPrimitiveLayout {
             area: rect,
@@ -1355,18 +1375,14 @@ impl crate::primitive::Primitive for TextInput {
         buf: &mut ratatui::buffer::Buffer,
         theme: &crate::theme::Theme,
     ) {
-        let area = layout.area;
-        crate::tui::draw_text_input(
+        // The painter never moves the cursor, so the sink is never read.
+        let mut cursor_sink = None;
+        let mut surface = crate::tui::cell_surface::TuiCellSurface::new(
             buf,
-            ratatui::layout::Rect::new(
-                area.x as u16,
-                area.y as u16,
-                area.width as u16,
-                area.height as u16,
-            ),
-            self,
-            theme,
+            crate::backend::ColorDepth::TrueColor,
+            &mut cursor_sink,
         );
+        cell_paint::paint(self, &layout.layout, &mut surface, theme);
     }
 }
 
@@ -1973,10 +1989,10 @@ mod cell_paint_tests {
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
+    use super::cell_test_paint::draw_text_input;
     use crate::event::Point;
     use crate::primitives::text_input::{TextInput, TextInputHit};
     use crate::theme::Theme;
-    use crate::tui::draw_text_input;
     use crate::types::{Color, WidgetId};
 
     /// The ratatui colour `crate::tui`'s own cell writers land for a
@@ -2963,5 +2979,46 @@ mod tests {
         let (new_value, _, _) =
             apply_flat_edit_op(value, value.len(), Some(2), EditOp::DeleteSelection);
         assert_eq!(new_value, "h");
+    }
+}
+
+/// Cell-painting entry points used by this module's own `#[cfg(test)]`
+/// rasteriser tests: they build the `Buffer` -> [`crate::CellSurface`]
+/// adapter (private to `crate::tui`) the same way
+/// [`crate::primitive::Primitive::paint_cells`] does, so a test can
+/// paint into a bare ratatui buffer without a backend.
+#[cfg(all(test, feature = "tui"))]
+mod cell_test_paint {
+    use super::*;
+    use crate::theme::Theme;
+    use ratatui::buffer::Buffer;
+
+    fn surface<'a>(
+        buf: &'a mut Buffer,
+        sink: &'a mut Option<(u16, u16, crate::cell_surface::CursorShape)>,
+    ) -> impl crate::CellSurface + 'a {
+        crate::tui::cell_surface::TuiCellSurface::new(
+            buf,
+            crate::backend::ColorDepth::TrueColor,
+            sink,
+        )
+    }
+
+    pub fn draw_text_input(
+        buf: &mut Buffer,
+        rect: ratatui::layout::Rect,
+        ti: &TextInput,
+        theme: &Theme,
+    ) -> TextInputLayout {
+        let area = Rect::new(
+            rect.x as f32,
+            rect.y as f32,
+            rect.width as f32,
+            rect.height as f32,
+        );
+        let layout = cell_layout(ti, area);
+        let mut sink = None;
+        cell_paint::paint(ti, &layout, &mut surface(buf, &mut sink), theme);
+        layout
     }
 }

@@ -60,11 +60,11 @@
 //! (would touch every backend's `draw_dialog` rasteriser), out of scope
 //! here.
 
+use crate::backend::DrawsPrimitives;
 use crate::backend::{MessageDialogChoice, MessageDialogOptions};
 use crate::compose::Handled;
 use crate::event::{Point, Rect, UiEvent};
-use crate::primitives::dialog::{Dialog, DialogButton, DialogHit, DialogLayout, DialogMeasure};
-use crate::primitives::toolbar::ToolbarItemMeasure;
+use crate::primitives::dialog::{Dialog, DialogButton, DialogHit, DialogLayout};
 use crate::types::StyledText;
 use crate::{Backend, Key, Modifiers, NamedKey};
 
@@ -176,89 +176,14 @@ impl MessageDialogController {
 
     // ── Layout ────────────────────────────────────────────────────────
 
-    /// Compute the dialog layout from the backend's own metrics
-    /// ([`Backend::measure`]/[`Backend::viewport`]) — the "one layout fn,
-    /// two callers" pattern `docs/LESSONS.md` documents (also used by
-    /// `examples/common/modal_occlusion_demo.rs`), so paint and hit-test
-    /// can never disagree.
-    ///
-    /// On a pixel backend (`lh > 1.0`), the button row is sized at
-    /// [`crate::Style::control_height`] with VS Code-like horizontal
-    /// label padding, instead of the raw chrome line height/char-width
-    /// estimate — the same "pixel path reads `Style`, TUI's cell grid
-    /// keeps its char-cell geometry" split [`crate::compose::tab_group`]'s
-    /// own `strip_h` already draws for its tab strip.
+    /// Resolve the modal's geometry through the widget contract, from
+    /// the backend's own viewport and font metrics — the "one layout fn,
+    /// two callers" pattern `docs/LESSONS.md` documents, so paint and
+    /// hit-test can never disagree.
     fn layout(&self, backend: &dyn Backend) -> DialogLayout {
-        let m = backend.measure();
-        let lh = m.line_height;
-        let char_w = m.char_width;
-        let viewport = backend.viewport();
-        let has_title = self.dialog.title.spans.iter().any(|s| !s.text.is_empty());
-        let is_pixel = lh > 1.0;
-        let style = backend.style();
-        // VS Code's own dialog-button horizontal label inset, each side
-        // of the label — only meaningful once a real label width is
-        // available (`is_pixel`'s `measure_text` branch below).
-        const BUTTON_PADDING_X: f32 = 14.0;
-        // VS Code's own dialog button minimum width — a short "OK"/"No"
-        // label still gets a VS Code-sized button rather than shrinking
-        // to just its own text + padding.
-        const MIN_BUTTON_WIDTH_PX: f32 = 65.0;
-        let button_width = if is_pixel {
-            self.dialog
-                .buttons
-                .iter()
-                .map(|b| {
-                    let spec = b.resolved_button_spec();
-                    let (label_w, _) = backend.measure_text(&spec.label, crate::FontRole::Chrome);
-                    // An icon reserves its own glyph width plus the gap
-                    // before the label, mirroring
-                    // `button::native_surface_paint::paint`'s own
-                    // `icon_w + gap + label_w` content width — otherwise
-                    // a `Danger`/`Warning` spec's icon has no room and
-                    // clips against the label, the same anti-clipping
-                    // property `min_cell_width()` already pins on TUI.
-                    let icon_w = spec.icon.as_ref().map_or(0.0, |icon| {
-                        backend.measure_text(&icon.glyph, crate::FontRole::Chrome).0
-                    });
-                    let gap = if spec.icon.is_some() && !spec.label.is_empty() {
-                        spec.icon_gap.max(0.0)
-                    } else {
-                        0.0
-                    };
-                    (label_w + icon_w + gap + BUTTON_PADDING_X * 2.0).max(MIN_BUTTON_WIDTH_PX)
-                })
-                .fold(0.0_f32, f32::max)
-        } else {
-            // Floored at today's 10-char-width estimate; widened
-            // per-button via `resolved_button_spec()` so an explicit
-            // `spec`'s icon + longer label never clips its closing
-            // bracket — see `ButtonSpec::min_cell_width`'s own doc.
-            self.dialog
-                .buttons
-                .iter()
-                .map(|b| b.resolved_button_spec().min_cell_width() * char_w)
-                .fold(char_w * 10.0, f32::max)
-        };
-        let button_row_height = if is_pixel { style.control_height } else { lh };
-        // `button_row_height` is a *single* row; `Dialog::layout` itself
-        // multiplies by `self.buttons.len()` when `vertical_buttons` is
-        // set (see that method's own `button_block_h` local) — no need
-        // to pre-multiply here.
-        let measure = DialogMeasure {
-            width: (viewport.width * 0.5).clamp(char_w * 24.0, char_w * 64.0),
-            title_height: if has_title { lh } else { 0.0 },
-            body_height: lh * self.dialog.body.len().max(1) as f32,
-            table_height: 0.0,
-            input_height: 0.0,
-            button_row_height,
-            button_width,
-            button_gap: char_w * 2.0,
-            padding: lh,
-        };
-        let viewport_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        self.dialog
-            .layout(viewport_rect, measure, |_| ToolbarItemMeasure::new(0.0))
+        let vp = backend.viewport();
+        let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
+        backend.layout_primitive(viewport, &self.dialog).layout
     }
 
     // ── Render ────────────────────────────────────────────────────────
@@ -267,8 +192,9 @@ impl MessageDialogController {
     ///
     /// Call this from `AppLogic::render` whenever the dialog is open.
     pub fn render(&self, backend: &mut dyn Backend) {
-        let layout = self.layout(backend);
-        backend.draw_dialog(&self.dialog, &layout);
+        let vp = backend.viewport();
+        let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
+        backend.draw_dyn(viewport, &self.dialog, &());
     }
 
     // ── Handle ────────────────────────────────────────────────────────

@@ -11,6 +11,7 @@
 
 #[cfg(all(test, target_os = "windows"))]
 mod tests {
+    use crate::backend::DrawsPrimitives;
     use crate::runner::{AppLogic, Reaction};
     use crate::win::testing::WinDriver;
     use crate::{
@@ -30,7 +31,7 @@ mod tests {
     }
 
     /// Minimal `AppLogic` wrapping a single focused `NumberInput`, painted
-    /// through the real `Backend::draw_number_input` — used only by this
+    /// through the real `DrawsPrimitives::draw_dyn` — used only by this
     /// driver test, mirroring `gtk::number_input`'s `NumberInputApp` but
     /// routed through `WinDriver`.
     struct NumberInputApp {
@@ -75,8 +76,7 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            let layout = self.number.layout(BOUNDS);
-            backend.draw_number_input(&self.number, &layout);
+            backend.draw_dyn(BOUNDS, &self.number, &());
         }
 
         fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

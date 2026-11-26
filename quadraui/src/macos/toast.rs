@@ -57,6 +57,7 @@ mod tests {
     use super::super::text::make_font;
     use super::super::MacBackend;
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::event::{Rect as QRect, Viewport};
     use crate::primitives::layout_metrics::pixel;
     use crate::primitives::toast::{Toast, ToastButton, ToastCorner, ToastHit, ToastSeverity};
@@ -112,16 +113,15 @@ mod tests {
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = b.draw_toast_overlay(
+        let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(
                 QRect::new(origin_x, origin_y, W as f32 - origin_x, H as f32 - origin_y),
                 stack,
-            );
-            *layout.borrow_mut() = Some(l);
+            )
+            .layout
         });
         backend.end_frame();
-        (surface, layout.into_inner().unwrap())
+        (surface, layout)
     }
 
     #[test]
@@ -146,41 +146,6 @@ mod tests {
         );
     }
 
-    /// Paints a [`ToastOverlay`] via the shared
-    /// [`crate::primitives::toast::native_surface_paint::paint`] path,
-    /// bypassing `MacBackend::draw_toast_overlay`'s entrance-slide
-    /// animation so the toast is at its resting position on the first
-    /// frame.  Animation behaviour is covered by
-    /// `toast_overlay_slides_in_from_off_screen_on_first_frame` in
-    /// `macos::backend::tests`.
-    fn paint_settled(stack: &ToastOverlay) -> (BitmapSurface, ToastStackLayout) {
-        let surface = BitmapSurface::new(W, H);
-        surface.fill(0.0, 0.0, 0.0, 0.0);
-        let mut backend = MacBackend::new();
-        backend.set_current_font(font());
-        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let theme = Theme::default();
-        let style = backend.style();
-        let line_height = backend.line_height();
-        let layout = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            let l = crate::primitives::toast::native_surface_paint::paint(
-                stack,
-                b,
-                &theme,
-                &style,
-                0.0,
-                0.0,
-                W as f32,
-                H as f32,
-                line_height,
-            );
-            *layout.borrow_mut() = Some(l);
-        });
-        backend.end_frame();
-        (surface, layout.into_inner().unwrap())
-    }
-
     #[test]
     fn severity_tint_painted() {
         let stack = ToastOverlay {
@@ -189,7 +154,7 @@ mod tests {
             toasts: vec![toast("err", "Boom", ToastSeverity::Error)],
             focus: None,
         };
-        let (surface, layout) = paint_settled(&stack);
+        let (surface, layout) = paint_via_backend(&stack);
         let theme = Theme::default();
         let t = &layout.visible_toasts[0];
         // Probe inside the box, away from glyphs (right of the title
@@ -305,19 +270,17 @@ mod tests {
         editor.has_focus = true;
         let editor_rect = QRect::new(0.0, 0.0, W as f32, H as f32);
 
-        let layout = std::cell::RefCell::new(None);
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_text_input(editor_rect, &editor);
-            let l = b.draw_toast_overlay(editor_rect, &stack);
-            *layout.borrow_mut() = Some(l);
+        let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(editor_rect, &editor);
+            let l = b.draw_primitive(editor_rect, &stack).layout;
             // The chrome-level focus ring the runner strokes around
             // `editor_rect` once `AppLogic::render` returns — must not
             // land on top of the toast just painted above.
             b.draw_focus_ring(editor_rect);
+            l
         });
         backend.end_frame();
 
-        let layout = layout.into_inner().unwrap();
         let t = &layout.visible_toasts[0];
         let probe_x = (t.bounds.x + t.bounds.width - pixel::TOAST_DISMISS_WIDTH - 4.0) as u32;
         let probe_y = (t.bounds.y + t.bounds.height - 2.0) as u32;

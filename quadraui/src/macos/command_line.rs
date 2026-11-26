@@ -51,9 +51,9 @@ pub unsafe fn draw_command_line(
 }
 
 /// Paint `cmd` exactly like [`draw_command_line`], additionally painting
-/// a selection highlight behind the text for `selection`. Sibling function,
-/// not a new parameter, mirroring
-/// [`crate::gtk::command_line::draw_command_line_selection`]'s shape.
+/// a selection highlight behind the text for `selection`. Sibling
+/// function, not a new parameter, mirroring
+/// `win::command_line::draw_command_line_selection`'s shape.
 ///
 /// # Safety
 ///
@@ -92,6 +92,7 @@ mod tests {
     use super::super::text::make_font;
     use super::super::MacBackend;
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::event::{Rect as QRect, Viewport};
     use crate::types::WidgetId;
     use crate::Backend;
@@ -105,11 +106,12 @@ mod tests {
             text: text.into(),
             cursor_offset: cursor,
             right_align,
+            selection: None,
         }
     }
 
-    /// Paint through the real `Backend::draw_command_line` path — the
-    /// same call chain the live `drawRect:` runner uses.
+    /// Paint through the real `DrawsPrimitives::draw_primitive` path —
+    /// the same call chain the live `drawRect:` runner uses.
     fn paint_via_backend(cmd: &CommandLine, rect: QRect) -> (BitmapSurface, f64) {
         let surface = BitmapSurface::new(W, H);
         // Known non-theme background so "did the bar fill happen here?"
@@ -120,7 +122,7 @@ mod tests {
         let line_height = backend.line_height() as f64;
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_command_line(rect, cmd);
+            b.draw_primitive(rect, cmd);
         });
         backend.end_frame();
         (surface, line_height)
@@ -191,8 +193,9 @@ mod tests {
 
     /// The cursor bar paints at the shared
     /// [`crate::primitives::command_line::CommandLineLayout::char_bounds`]
-    /// column — the same rect [`Backend::command_line_layout`] would hand
-    /// back for hit-testing that column, not a hand-measured Core Text prefix width.
+    /// column — the same rect [`DrawsPrimitives::layout_primitive`] would
+    /// hand back for hit-testing that column, not a hand-measured Core
+    /// Text prefix width.
     #[test]
     fn cursor_paints_cursor_colour_after_the_prefix() {
         let cmd = sample(":wq", Some(1), false);
@@ -202,7 +205,7 @@ mod tests {
 
         let mut backend = MacBackend::new();
         backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
-        let layout = backend.command_line_layout(rect, &cmd);
+        let layout = backend.layout_primitive(rect, &cmd).layout;
         let cursor_rect = layout.char_bounds(1);
 
         let px = (cursor_rect.x + 1.0) as u32;
@@ -223,7 +226,10 @@ mod tests {
         // A space character deliberately, so the probed pixel carries no
         // glyph ink and the highlight colour (alpha 1.0, an opaque
         // replace over the white background) can be asserted exactly.
-        let cmd = sample("  x", None, false);
+        let cmd = CommandLine {
+            selection: Some((0, 1)),
+            ..sample("  x", None, false)
+        };
         let rect = QRect::new(0.0, 0.0, W as f32, 20.0);
         let theme = Theme {
             // `paint()` fills the *entire* bar rect with `command_line_bg`
@@ -247,11 +253,11 @@ mod tests {
         let line_height = backend.line_height() as f64;
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_command_line_selection(rect, &cmd, Some((0, 1)));
+            b.draw_primitive(rect, &cmd);
         });
         backend.end_frame();
 
-        let layout = backend.command_line_layout(rect, &cmd);
+        let layout = backend.layout_primitive(rect, &cmd).layout;
         let sel_rect = layout
             .selection_bounds((0, 1))
             .expect("non-empty selection should produce a rect");
@@ -347,10 +353,12 @@ mod tests {
         );
     }
 
-    /// Paint/click round-trip: paint through the real `Backend::draw_command_line`
-    /// path, find the actual painted (non-background) pixel for two different
-    /// characters, then `hit_test` those exact pixels via `Backend::command_line_layout`
-    /// and assert they resolve to the right byte offsets. `MacBackend` derives
+    /// Paint/click round-trip: paint through the real
+    /// `DrawsPrimitives::draw_primitive` path, find the actual painted
+    /// (non-background) pixel for two different characters, then
+    /// `hit_test` those exact pixels via
+    /// `DrawsPrimitives::layout_primitive` and assert they resolve to the
+    /// right byte offsets. `MacBackend` derives
     /// `current_char_width` from the same Menlo font metrics `draw_text` paints
     /// with, so paint and layout share one ground-truth measurement here.
     ///
@@ -368,11 +376,11 @@ mod tests {
         backend.set_current_font(make_font("Menlo", 14.0).expect("Menlo installed"));
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_command_line(rect, &cmd);
+            b.draw_primitive(rect, &cmd);
         });
         backend.end_frame();
 
-        let layout = backend.command_line_layout(rect, &cmd);
+        let layout = backend.layout_primitive(rect, &cmd).layout;
         let char_width = backend.char_width();
         assert!(char_width > 1.0, "Menlo char_width should be several px");
 

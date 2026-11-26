@@ -148,7 +148,7 @@ impl AppLogic for StandaloneControlsApp {
             decoration: Decoration::default(),
             timestamp: None,
         });
-        backend.draw_text_display(Rect::new(0.0, 0.0, 40.0, 4.0), &display);
+        backend.draw_dyn(Rect::new(0.0, 0.0, 40.0, 4.0), &display, &());
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

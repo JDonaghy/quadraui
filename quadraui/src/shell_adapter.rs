@@ -852,14 +852,10 @@ mod tests {
         let on_divider = Point::new(divider.x + divider.width / 2.0, divider.y + 1.0);
 
         // Arm the drag directly against `AppShell::handle` — not through
-        // `ShellAdapter::handle` — so this stays on `RecordingBackend`:
-        // `ShellAdapter::handle`'s own modal-stack check runs
-        // unconditionally for every `MouseDown` (see its doc), and
-        // `RecordingBackend::modal_stack_handle` is deliberately
-        // `unimplemented!()` (see that struct's doc). `AppShell::handle`
-        // itself never touches the modal stack, so this reaches the same
-        // `drag_offset` arming `ShellAdapter::handle` would have, without
-        // needing a live backend.
+        // `ShellAdapter::handle` — because the divider drag is
+        // `AppShell`'s own state machine, and `AppShell::handle` reaches
+        // the same `drag_offset` arming `ShellAdapter::handle` would,
+        // without the adapter's surrounding modal/drag plumbing.
         adapter.shell.handle(
             &crate::event::mouse_down(
                 MouseButton::Left,

@@ -87,11 +87,10 @@
 //! [`Self::reset_frame_paint`] from `Backend::begin_frame` and
 //! [`Self::unpainted_ids`] from `Backend::end_frame` to warn (in debug
 //! builds) about any entry that's registered but was never marked
-//! painted that frame. See `TuiBackend::draw_dialog` /
-//! `GtkBackend::draw_dialog` / `MacBackend::draw_dialog` (and
-//! `DrawsPrimitives::draw_primitive` / `draw_dyn`, which mark any widget
-//! they paint) for where the mark happens, and the same backends' `begin_frame` / `end_frame` for
-//! where the reset/check happens.
+//! painted that frame. `DrawsPrimitives::draw_primitive` / `draw_dyn`
+//! mark every identified widget they paint, which is where the mark
+//! happens for every modal widget; each backend's `begin_frame` /
+//! `end_frame` is where the reset/check happens.
 
 use crate::event::{Point, Rect};
 use crate::types::WidgetId;
@@ -250,11 +249,10 @@ impl ModalStack {
     /// or ghost content by id outside the modal stack, and that isn't
     /// the "registered but invisible" defect this exists to catch.
     ///
-    /// Call from a backend's `draw_dialog` (and any other modal-capable
-    /// painter; the widget-contract paint seam calls it for every widget it
-    /// paints)
-    /// with the primitive's own `id` field, right where it already
-    /// paints — see `TuiBackend::draw_dialog` for the pattern.
+    /// The widget-contract paint seam (`DrawsPrimitives::draw_primitive` /
+    /// `draw_dyn`) calls this for every identified widget it paints; any
+    /// other modal-capable painter calls it with the primitive's own `id`
+    /// field, right where it paints.
     pub fn mark_painted(&mut self, id: &WidgetId) {
         if let Some(entry) = self.entries.iter_mut().find(|e| &e.id == id) {
             entry.painted_this_frame = true;

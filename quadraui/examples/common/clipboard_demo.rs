@@ -119,7 +119,7 @@ impl AppLogic for ClipboardDemo {
         backend.draw_dyn(status_rect, &self.status(), &());
 
         let input_rect = Rect::new(pad, pad, viewport.width - pad * 2.0, lh);
-        backend.draw_text_input(input_rect, &self.input);
+        backend.draw_dyn(input_rect, &self.input, &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {

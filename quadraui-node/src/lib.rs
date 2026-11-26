@@ -274,6 +274,7 @@ use serde_json::Value as JsonValue;
 
 use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::tui::{RunConfig, StepOutcome, TuiRunner};
+use quadraui::DrawsPrimitives;
 use quadraui::{
     A11yChild, A11yInfo, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
     BottomPanelEvent, CanvasRegion, ContextMenuItem, DialogButton, DrawOp, FloatMeasure,
@@ -4346,7 +4347,7 @@ impl ShellApp for NodeShellApp {
             Ok(result) => {
                 if let Ok(lines) = env.from_js_value::<Vec<String>, _>(result) {
                     let td = text_display_from_lines(WidgetId::new("shell:content"), lines);
-                    backend.draw_text_display(layout.main_content_bounds, &td);
+                    backend.draw_dyn(layout.main_content_bounds, &td, &());
                 }
             }
             Err(err) => self.state.borrow_mut().record_error(err),

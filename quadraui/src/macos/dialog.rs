@@ -66,11 +66,12 @@ pub unsafe fn draw_dialog(
 #[cfg(test)]
 mod tests {
     use super::super::headless::BitmapSurface;
-    use super::super::text::{make_font, measure_text};
+    use super::super::text::make_font;
     use super::super::MacBackend;
     use super::*;
+    use crate::backend::DrawsPrimitives;
     use crate::event::Viewport;
-    use crate::primitives::dialog::{DialogButton, DialogMeasure};
+    use crate::primitives::dialog::DialogButton;
     use crate::types::{Color, StyledText, WidgetId};
     use crate::Backend;
 
@@ -111,68 +112,28 @@ mod tests {
         }
     }
 
-    fn layout_for(dialog: &Dialog, viewport: QRect, line_height: f32) -> DialogLayout {
-        let measure = DialogMeasure {
-            width: 240.0,
-            title_height: line_height,
-            body_height: line_height,
-            // Fixture dialogs carry no `table`, so the table slot is zero-height.
-            table_height: 0.0,
-            input_height: if dialog.input.is_some() {
-                line_height
-            } else {
-                0.0
-            },
-            button_row_height: line_height,
-            button_width: 80.0,
-            button_gap: 8.0,
-            padding: 8.0,
-        };
-        dialog.layout(viewport, measure, |btn| {
-            use crate::primitives::toolbar::ToolbarItemMeasure;
-            let text_w = match btn {
-                crate::primitives::toolbar::ToolbarButton::Action { label, .. } => {
-                    let (w, _) = measure_text(&make_font("Menlo", 14.0).unwrap(), label);
-                    w + 16.0
-                }
-                crate::primitives::toolbar::ToolbarButton::Separator => 12.0,
-                crate::primitives::toolbar::ToolbarButton::Label { text, .. } => {
-                    let (w, _) = measure_text(&make_font("Menlo", 14.0).unwrap(), text);
-                    w
-                }
-                crate::primitives::toolbar::ToolbarButton::Spacer => 0.0,
-                // This fixture's button row never builds a segmented
-                // `Group`, an embedded `Field` or a `MenuButton`; zero
-                // here keeps the match exhaustive without claiming a
-                // measurement this test never exercises.
-                crate::primitives::toolbar::ToolbarButton::Group { .. }
-                | crate::primitives::toolbar::ToolbarButton::Field { .. }
-                | crate::primitives::toolbar::ToolbarButton::MenuButton { .. } => 0.0,
-            };
-            ToolbarItemMeasure::new(text_w as f32)
-        })
-    }
-
-    fn paint_via_backend(dialog: &Dialog, layout: &DialogLayout) -> (BitmapSurface, Vec<QRect>) {
+    /// Paint `dialog` centred in the full viewport through the
+    /// widget-contract path and hand back both the pixels and the layout
+    /// the backend resolved, so every probe below reads the geometry that
+    /// was actually painted.
+    fn paint_via_backend(dialog: &Dialog) -> (BitmapSurface, DialogLayout) {
+        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
         let mut backend = MacBackend::new();
         backend.set_current_font(font());
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let rects = std::cell::RefCell::new(Vec::new());
-        backend.enter_frame_scope(surface.context_ptr(), |b| {
-            *rects.borrow_mut() = b.draw_dialog(dialog, layout);
+        let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(viewport, dialog).layout
         });
         backend.end_frame();
-        (surface, rects.into_inner())
+        (surface, layout)
     }
 
     #[test]
     fn dialog_paints_surface_bg() {
         let dialog = sample_dialog();
-        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = layout_for(&dialog, viewport, 16.0);
-        let (surface, _) = paint_via_backend(&dialog, &layout);
+        let (surface, layout) = paint_via_backend(&dialog);
         let theme = Theme::default();
         let b = layout.bounds;
         // Probe near the right edge, away from the body text.
@@ -187,9 +148,7 @@ mod tests {
     #[test]
     fn default_button_paints_selected_bg() {
         let dialog = sample_dialog();
-        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = layout_for(&dialog, viewport, 16.0);
-        let (surface, _) = paint_via_backend(&dialog, &layout);
+        let (surface, layout) = paint_via_backend(&dialog);
         let theme = Theme::default();
         // "Delete" is the default button — second in visible_buttons.
         let btn = layout
@@ -212,12 +171,10 @@ mod tests {
     }
 
     #[test]
-    fn button_rects_returned_for_each_visible_button() {
+    fn button_rects_resolved_for_each_visible_button() {
         let dialog = sample_dialog();
-        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = layout_for(&dialog, viewport, 16.0);
-        let (_surface, rects) = paint_via_backend(&dialog, &layout);
-        assert_eq!(rects.len(), 2);
+        let (_surface, layout) = paint_via_backend(&dialog);
+        assert_eq!(layout.visible_buttons.len(), 2);
     }
 
     /// Every button now gets a stroked border, not just the
@@ -228,9 +185,7 @@ mod tests {
     #[test]
     fn every_button_paints_a_border_stroke() {
         let dialog = sample_dialog();
-        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = layout_for(&dialog, viewport, 16.0);
-        let (surface, _) = paint_via_backend(&dialog, &layout);
+        let (surface, layout) = paint_via_backend(&dialog);
         // Cancel (button_idx 0) is NOT the default button, so its
         // interior is plain surface_bg — its top edge should still
         // differ (border ink) from a point 3px further in.
@@ -263,9 +218,7 @@ mod tests {
         let mut dialog = sample_dialog();
         let tint = Color::rgb(220, 40, 40);
         dialog.buttons[1].tint = Some(tint); // "Delete" — the default button
-        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = layout_for(&dialog, viewport, 16.0);
-        let (surface, _) = paint_via_backend(&dialog, &layout);
+        let (surface, layout) = paint_via_backend(&dialog);
         let btn = layout
             .visible_buttons
             .iter()

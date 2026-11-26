@@ -24,9 +24,9 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, ComboBox, CompletionItemMeasure, FieldKind, Form, FormController,
-    FormControllerAction, FormEvent, FormField, Handled, Key, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Color, ComboBox, FieldKind, Form, FormController, FormControllerAction,
+    FormEvent, FormField, Handled, Key, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    StyledText, UiEvent, WidgetId,
 };
 
 pub struct FormComboBoxApp {
@@ -150,19 +150,19 @@ impl AppLogic for FormComboBoxApp {
 
         if self.combo.open {
             let field_bounds = self.field_bounds(backend);
+            // `ComboBox` lays the field out on the first row of the rect
+            // it is given and drops its open list into the room below,
+            // so reserve eight rows of dropdown under the field, clipped
+            // to whatever the viewport actually has left.
             let vp = backend.viewport();
-            let viewport = Rect::new(0.0, 0.0, vp.width, vp.height);
-            let line_height = backend.line_height();
-            let layout = self.combo.layout(
-                field_bounds,
-                viewport,
+            let room_below = (vp.height - field_bounds.y).max(field_bounds.height);
+            let area = Rect::new(
+                field_bounds.x,
+                field_bounds.y,
                 field_bounds.width,
-                line_height * 8.0,
-                |_idx| CompletionItemMeasure {
-                    height: line_height,
-                },
+                (field_bounds.height + backend.line_height() * 8.0).min(room_below),
             );
-            backend.draw_combo_box(&self.combo, &layout);
+            backend.draw_dyn(area, &self.combo, &());
         }
 
         let _hits = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
