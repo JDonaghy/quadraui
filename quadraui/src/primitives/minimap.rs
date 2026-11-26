@@ -256,7 +256,7 @@ pub struct MinimapLayout {
     ///
     /// A host that colour-aggregates its own [`Minimap::syntax_spans`] via
     /// [`aggregate_spans`] must build its [`MinimapGrid::cols_per_cell`]
-    /// from **this** field — read back from a `minimap_layout`/`draw_minimap`
+    /// from **this** field — read back from the minimap's resolved layout
     /// call against the same [`Minimap::lines`] — rather than hardcoding a
     /// constant. Before #1032 this was the only way TUI's scale could be
     /// known: it was a compile-time constant a host could copy, but once
@@ -301,7 +301,7 @@ pub const MAX_ROW_PITCH: f32 = 8.0;
 /// Every backend's row pitch drives some paint cost per row — GTK's and
 /// Win-GUI's drive a Pango/DirectWrite font size (or, below the
 /// legibility floor, a colour block), and TUI's drives how many cell rows
-/// `draw_minimap` paints per row (exactly one — braille rows are
+/// the minimap paints per row (exactly one — braille rows are
 /// cell-native, with no font to scale, but that still means a
 /// file-length-dependent pitch turns into file-length-dependent *gaps*
 /// rather than a file-length-dependent glyph size, which was #992). A
@@ -1190,7 +1190,7 @@ pub enum MinimapRenderMode {
 }
 
 /// Pure function of the row pitch: is `line_px` legible enough to shape
-/// real text? Every backend's `draw_minimap` calls this exact function to
+/// real text? The minimap's pixel painter calls this exact function to
 /// pick a branch, so it is the one source of truth for the threshold —
 /// tests exercise it directly instead of needing a live paint surface.
 pub fn is_legible(line_px: f64) -> bool {
@@ -1630,8 +1630,8 @@ pub fn color_at_column(row_spans: &[MinimapSpan], col: usize, default_fg: Color)
 /// [`aggregate_spans`]'s documented output order — once across a
 /// caller-driven sequence of *non-decreasing* `line_idx` queries, hence one
 /// merge-walk in O(rows + spans) total rather than one `filter` scan of the
-/// whole slice per row (#667 pt. 4). Shared by every backend's
-/// `draw_minimap` row loop.
+/// whole slice per row (#667 pt. 4). Shared by the minimap painters'
+/// row loops.
 pub struct SpanCursor<'a> {
     spans: &'a [MinimapSpan],
     pos: usize,
@@ -1643,8 +1643,8 @@ impl<'a> SpanCursor<'a> {
     }
 
     /// The contiguous run of spans covering `line_idx`. `line_idx` must be
-    /// non-decreasing across successive calls (true for every backend's
-    /// `draw_minimap` row loop) — an out-of-order query would silently
+    /// non-decreasing across successive calls (true for every minimap
+    /// painter's row loop) — an out-of-order query would silently
     /// miss spans the cursor already walked past.
     pub fn row_spans(&mut self, line_idx: usize) -> &'a [MinimapSpan] {
         while self.pos < self.spans.len() && self.spans[self.pos].line_idx < line_idx {

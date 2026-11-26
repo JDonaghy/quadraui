@@ -66,7 +66,7 @@ impl MinimapDemo {
         }
     }
 
-    fn minimap(&self, area: Rect, backend: &dyn Backend) -> Minimap {
+    fn minimap(&self, area: Rect, backend: &dyn Backend, scale: MinimapScale) -> Minimap {
         let buffer = &self.buffer;
         let lines = sample_blocks(buffer.len(), buffer.len(), |i| buffer[i].clone());
 
@@ -86,12 +86,14 @@ impl MinimapDemo {
             visible_row_start,
             visible_row_count: visible_row_end.saturating_sub(visible_row_start).max(1),
             total_buffer_lines: self.buffer.len(),
-            scale: backend.minimap_scale(),
-            sizing: backend.minimap_sizing(),
+            scale,
+            sizing: None,
         };
 
         let minimap_rect = Self::minimap_rect(area, backend);
-        let cols_per_cell = backend.minimap_layout(minimap_rect, &minimap).cols_per_cell;
+        let cols_per_cell = backend
+            .layout_primitive(minimap_rect, &minimap)
+            .cols_per_cell;
 
         let raw_spans: Vec<MinimapSpan> = minimap
             .lines
@@ -192,10 +194,9 @@ impl Demo for MinimapDemo {
     }
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
-        backend.set_minimap_scale(Self::scale(variant));
         let minimap_rect = Self::minimap_rect(area, backend);
-        let minimap = self.minimap(area, backend);
-        let _ = backend.draw_minimap(minimap_rect, &minimap);
+        let minimap = self.minimap(area, backend, Self::scale(variant));
+        let _ = backend.draw_primitive(minimap_rect, &minimap);
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
@@ -229,10 +230,9 @@ impl Demo for MinimapDemo {
                 position,
                 ..
             } => {
-                backend.set_minimap_scale(Self::scale(variant));
                 let minimap_rect = Self::minimap_rect(area, backend);
-                let minimap = self.minimap(area, backend);
-                let layout = backend.minimap_layout(minimap_rect, &minimap);
+                let minimap = self.minimap(area, backend, Self::scale(variant));
+                let layout = backend.layout_primitive(minimap_rect, &minimap);
                 if let MinimapHit::Seek { fraction } = layout.hit_test(position.x, position.y) {
                     self.seek(fraction);
                 }

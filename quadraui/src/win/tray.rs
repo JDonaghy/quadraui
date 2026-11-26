@@ -10,7 +10,7 @@
 //! ## Icon
 //!
 //! [`set_icon`] decodes `ImageSource` through the same WIC pipeline
-//! `super::image::draw_image` uses (`IWICImagingFactory` →
+//! the image paint in `super::surface::image` uses (`IWICImagingFactory` →
 //! `IWICBitmapDecoder` → `IWICFormatConverter` into 32bpp premultiplied
 //! BGRA), then builds a `HICON` from the raw pixels via
 //! `CreateDIBSection` (the exact 32bpp top-down DIB shape

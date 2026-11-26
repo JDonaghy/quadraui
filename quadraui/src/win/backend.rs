@@ -9,8 +9,7 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use crate::backend::{
-    Backend, BackendError, EditorPaintResult, PlatformServices, PointerShape, ServiceResult,
-    WindowControl,
+    Backend, BackendError, PlatformServices, PointerShape, ServiceResult, WindowControl,
 };
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
 use crate::event::{Point, Rect, UiEvent, Viewport};
@@ -18,7 +17,6 @@ use crate::event::{Point, Rect, UiEvent, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::message_list::MessageList;
 use crate::primitives::multi_section_view::{
@@ -415,17 +413,6 @@ pub struct WinBackend {
     services: WinPlatformServices,
     current_line_height: f32,
     current_char_width: f32,
-    /// Editor vertical scrollbar column width set through
-    /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
-    /// `current_char_width` wide.
-    editor_v_scrollbar_w: Option<f32>,
-    /// [`crate::backend::Backend::minimap_scale`]'s backing field — read by
-    /// [`Backend::draw_minimap`]/[`Backend::minimap_layout`] to resolve the
-    /// row pitch and per-column width. Defaults to
-    /// [`crate::primitives::minimap::MinimapScale::One`], so a host that
-    /// never calls [`Backend::set_minimap_scale`] sees no behaviour change.
-    /// Not `target_os`-gated: `MinimapScale` has no WinAPI dependency.
-    minimap_scale: crate::primitives::minimap::MinimapScale,
     /// DPI ratio (`GetDpiForWindow(hwnd) / 96.0`). Mirrored into
     /// `viewport.scale` on every attach/resize/`WM_DPICHANGED` so
     /// `Backend::viewport()` and this field never drift. Kept as its own
@@ -784,8 +771,6 @@ impl WinBackend {
             services: WinPlatformServices::new(),
             current_line_height: 16.0,
             current_char_width: 8.0,
-            editor_v_scrollbar_w: None,
-            minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             #[cfg(target_os = "windows")]
             dpi_scale: 1.0,
             #[cfg(target_os = "windows")]
@@ -1241,10 +1226,9 @@ impl WinBackend {
     /// reach a `WinBackend` at all — can reproduce this state directly.
     /// [`super::testing::WinDriver::drop_surface`] is this method's only
     /// caller, and exists to close exactly that gap: before it, the only
-    /// way any test (in-crate or down) could observe
-    /// [`Backend::draw_minimap`]'s (or any other `draw_*`'s)
-    /// `painted: false` fallback was to never attach a surface in the
-    /// first place (`draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout`,
+    /// way any test (in-crate or down) could observe a `draw_*`'s
+    /// surface-less fallback was to never attach a surface in the
+    /// first place (`minimap_with_no_surface_resolves_the_same_layout_as_its_query`,
     /// below) — proving the fallback on a backend that *had* a surface
     /// and then lost it (the actual, narrower reported bug) was
     /// impossible from outside this file. `self.hwnd`/`self.headless_target`
@@ -3415,64 +3399,6 @@ impl Backend for WinBackend {
         true
     }
 
-    /// See [`Self::draw_tree`]'s doc for the "surface not
-    /// attached yet" fallback posture. `rect` is unused on the painted
-    /// path — `editor.rect` is authoritative (mirrors
-    /// `GtkBackend::draw_editor`, which does the same).
-    ///
-    /// The vertical scrollbar column (sized by
-    /// [`Self::set_editor_v_scrollbar_width`]) is painted after the
-    /// rasteriser returns, through [`Self::draw_scrollbar`] — see
-    /// `win::editor`'s "Scrollbar" module doc.
-    fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let _ = rect;
-            let options = crate::primitives::editor::EditorPaintOptions::default();
-            let result = super::editor::draw_editor_with_options_and_v_scrollbar_w(
-                &surface.target,
-                dwrite,
-                editor,
-                self.current_char_width,
-                self.current_line_height,
-                &self.current_theme,
-                options,
-                self.editor_v_scrollbar_w,
-            );
-            let layout = editor.layout_with_options_and_v_scrollbar_w(
-                editor.rect,
-                self.current_char_width,
-                self.current_line_height,
-                options,
-                self.editor_v_scrollbar_w,
-            );
-            if let Some(v_track) = layout.v_scrollbar_bounds {
-                let sb = Scrollbar::vertical(
-                    "win:editor:v_scrollbar",
-                    v_track,
-                    editor.scroll_top as f32,
-                    editor.total_lines as f32,
-                    layout.visible_lines as f32,
-                    self.current_line_height,
-                );
-                self.draw_scrollbar(v_track, &sb);
-            }
-            return result;
-        }
-        // No surface/DWrite yet — paint nothing and report no cursor
-        // position, matching every other backend's "nothing painted" shape.
-        let _ = (rect, editor);
-        EditorPaintResult::default()
-    }
-
-    fn set_editor_v_scrollbar_width(&mut self, px: Option<f32>) {
-        self.editor_v_scrollbar_w = px;
-    }
-
-    fn editor_v_scrollbar_width(&self) -> Option<f32> {
-        self.editor_v_scrollbar_w
-    }
-
     /// Real Direct2D/DirectWrite rasteriser via `win::message_list`
     /// once a surface is attached. Mirrors `GtkBackend::draw_message_list`
     /// / `MacBackend::draw_message_list` — no panel-background fill here;
@@ -3658,80 +3584,6 @@ impl Backend for WinBackend {
             rect.width,
             rect.height,
         )
-    }
-
-    /// Real Direct2D/DirectWrite rasteriser via `win::minimap` once a
-    /// surface is attached — see [`Self::draw_tree`]'s doc for the
-    /// "surface not attached yet" fallback posture.
-    fn draw_minimap(
-        &mut self,
-        rect: Rect,
-        minimap: &crate::primitives::minimap::Minimap,
-    ) -> crate::backend::MinimapPaintResult {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let layout = super::minimap::draw_minimap_scaled(
-                &surface.target,
-                dwrite,
-                rect,
-                minimap,
-                &self.current_theme,
-                self.minimap_scale,
-            );
-            return crate::backend::MinimapPaintResult {
-                layout,
-                painted: true,
-            };
-        }
-        // No surface/DWrite yet — same treatment as `MacBackend::draw_minimap`:
-        // real geometry via `minimap_layout`, `painted: false`, nothing drawn.
-        crate::backend::MinimapPaintResult {
-            layout: self.minimap_layout(rect, minimap),
-            painted: false,
-        }
-    }
-
-    /// Pure geometry — `minimap_layout` needs no measurer at all
-    /// (fixed DIP constants, same posture as
-    /// [`Self::board_layout`]'s doc), only kept behind the
-    /// `target_os = "windows"` gate for consistency with every other
-    /// method in this file.
-    fn minimap_layout(
-        &self,
-        rect: Rect,
-        minimap: &crate::primitives::minimap::Minimap,
-    ) -> crate::primitives::minimap::MinimapLayout {
-        // Pure geometry (fixed DIP constants) — `Minimap::layout_with_sizing`
-        // needs no Direct2D/DirectWrite type, so this is computed directly
-        // instead of reaching into the Windows-only `super::minimap` module.
-        // One buffer line per painted row (no cross-line colour reduction),
-        // same `LINES_PER_ROW` value that module uses. `self.minimap_scale`'s
-        // own `row_pitch_px` replaces the bare `ROW_PITCH_PX` constant this
-        // used before, so this pure-geometry path and `super::minimap`'s real
-        // paint path always resolve the same pitch.
-        minimap.layout_with_sizing(
-            rect,
-            1,
-            crate::primitives::minimap::MinimapSizing::FixedPitch(
-                self.minimap_scale.row_pitch_px() as f32,
-            ),
-        )
-    }
-
-    fn minimap_scale(&self) -> crate::primitives::minimap::MinimapScale {
-        self.minimap_scale
-    }
-
-    fn set_minimap_scale(&mut self, scale: crate::primitives::minimap::MinimapScale) {
-        self.minimap_scale = scale;
-    }
-
-    fn draw_image(
-        &mut self,
-        rect: Rect,
-        image: &crate::primitives::image::Image,
-    ) -> crate::backend::ImagePaintResult {
-        image.paint_reporting(&image.layout(rect), self)
     }
 
     /// Unlike [`Self::draw_toast_overlay`] above,
@@ -4978,7 +4830,7 @@ impl PaintSurface for WinBackend {
     ) -> crate::backend::ImagePaintResult {
         #[cfg(target_os = "windows")]
         if let Some(surface) = &mut self.surface {
-            return super::image::draw_image_cached(
+            return super::surface::image::draw_image_cached(
                 &surface.target,
                 rect,
                 image,
@@ -4997,15 +4849,8 @@ impl PaintSurface for WinBackend {
 /// handful of primitives still need the editor font. The terminal and
 /// the plain text display paint through this trait and need
 /// `EditorSurface`; the diff view also paints through this trait and
-/// needs it too. The full-screen editor paints through its own dedicated
-/// DirectWrite calls instead of this trait at all (see
-/// [`WinBackend::draw_editor`]), so it needs no adapter. The
-/// minimap and the command line are `crate::font_role::EditorClassPrimitive`
-/// too, but both reach their own dedicated `win::minimap`/
-/// `win::command_line` module functions directly with the editor
-/// `dwrite` handle (see [`WinBackend::draw_minimap`]/
-/// [`WinBackend::draw_command_line_selection`]) rather than through this
-/// trait, so they need no adapter here either.
+/// needs it too. The editor and the minimap select the editor font
+/// through `FontRole::Editor` on this backend's own surface.
 ///
 /// Every font-agnostic method (fills, strokes, clip, lines, images, frame
 /// lifecycle) forwards straight through to [`WinBackend`]'s own impl,
@@ -7295,13 +7140,14 @@ mod tests {
         );
     }
 
-    /// `draw_editor` must read the live theme from `WinBackend::current_theme`
+    /// The editor must read the live theme from `WinBackend::current_theme`
     /// rather than building its own `Theme::default()`, so a dark-themed app
     /// gets a dark editor background after `:colorscheme`/`set_theme`. Same
     /// pixel-probe pattern as the activity bar's `set_theme` coverage.
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_editor() {
+        use crate::backend::DrawsPrimitives;
         use crate::primitives::editor::Editor;
         use crate::theme::Theme;
         use crate::types::{Color, WidgetId};
@@ -7331,7 +7177,7 @@ mod tests {
         let editor = Editor::new(WidgetId::new("editor"), rect);
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let _ = backend.draw_editor(rect, &editor);
+        backend.draw_primitive(rect, &editor);
         backend.end_frame();
 
         let px = surface.pixel_at(W / 2, H / 2);
@@ -7342,14 +7188,14 @@ mod tests {
         );
     }
 
-    /// `Backend::set_editor_v_scrollbar_width(Some(14.0))` makes
-    /// `WinBackend::draw_editor` paint a scrollbar column exactly 14 DIPs
-    /// wide — `[186, 200)` in a 200-DIP viewport — instead of one
-    /// `current_char_width` (8 DIPs), and `Backend::editor_layout`
-    /// reports the same column for hit-testing.
+    /// `paint_options.v_scrollbar_w = Some(14.0)` makes the editor paint a
+    /// scrollbar column exactly 14 DIPs wide — `[186, 200)` in a 200-DIP
+    /// viewport — instead of one `current_char_width` (8 DIPs), and its
+    /// layout reports the same column for hit-testing.
     #[cfg(target_os = "windows")]
     #[test]
-    fn set_editor_v_scrollbar_width_paints_14px_column() {
+    fn editor_v_scrollbar_w_paints_14px_column() {
+        use crate::backend::DrawsPrimitives;
         use crate::primitives::editor::Editor;
         use crate::theme::Theme;
         use crate::types::WidgetId;
@@ -7370,9 +7216,10 @@ mod tests {
             backend
                 .attach_headless(surface.target().clone(), W, H)
                 .expect("attach headless surface");
-            backend.set_editor_v_scrollbar_width(v_scrollbar_w);
+            let mut editor = editor.clone();
+            editor.paint_options.v_scrollbar_w = v_scrollbar_w;
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let _ = backend.draw_editor(rect, &editor);
+            backend.draw_primitive(rect, &editor);
             backend.end_frame();
             surface
         };
@@ -7415,10 +7262,11 @@ mod tests {
             "default column is 8px: x=194 is track"
         );
 
-        let mut backend = WinBackend::new();
-        backend.set_editor_v_scrollbar_width(Some(14.0));
-        assert_eq!(backend.editor_v_scrollbar_width(), Some(14.0));
-        let vsb = Backend::editor_layout(&backend, rect, &editor)
+        let backend = WinBackend::new();
+        let mut editor = editor.clone();
+        editor.paint_options.v_scrollbar_w = Some(14.0);
+        let vsb = backend
+            .layout_primitive(rect, &editor)
             .v_scrollbar_bounds
             .expect("buffer overflows");
         assert_eq!((vsb.x, vsb.width), (186.0, 14.0));
@@ -9678,8 +9526,8 @@ mod tests {
             fallback_text: "[i]".to_string(),
         };
         // Direct2D bitmap decode fails on empty bytes on the real path
-        // too — this call only needs to prove it reaches the same code
-        // `Backend::draw_image` does, not any particular decode outcome.
+        // too — this call only needs to prove it reaches the decoder, not
+        // any particular decode outcome.
         let _ = backend.surface_draw_image(Rect::new(0.0, 40.0, 8.0, 8.0), &image);
 
         backend.surface_end_frame();
@@ -10604,14 +10452,10 @@ mod tests {
         };
         let _ = crate::DrawsPrimitives::draw_dyn(&mut backend, rect, &toolbar, &());
 
-        // `MinimapPaintResult` category (`painted: false`, real layout).
+        // A `Minimap` through `draw_primitive` resolves its real layout
+        // and skips paint when no surface answers.
         let minimap = sample_minimap();
-        let _ = backend.draw_minimap(rect, &minimap);
-
-        // `ImagePaintResult`/`EditorPaintResult` categories — trivial,
-        // fixed fallback values (`Unsupported` / `::default()`), no
-        // fixture needed to exercise the code path meaningfully; covered
-        // by inspection, not repeated here.
+        let _ = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &minimap);
 
         // `PaintSurface` measurement category (nominal char-width
         // estimate).
@@ -10621,73 +10465,55 @@ mod tests {
         Backend::end_frame(&mut backend);
     }
 
-    /// A layout returned with no surface attached reports real geometry
-    /// and agrees with what [`WinBackend::draw_minimap`] itself reports as
-    /// unpainted layout, upholding the "paint and no-paint query can't
-    /// drift apart" contract that every backend upholds.
+    /// A minimap painted with no surface attached still resolves the same
+    /// real geometry its no-paint layout query does.
     #[test]
-    fn draw_minimap_with_no_surface_reports_unpainted_and_agrees_with_minimap_layout() {
+    fn minimap_with_no_surface_resolves_the_same_layout_as_its_query() {
+        use crate::backend::DrawsPrimitives;
+
         let mut backend = WinBackend::new();
         let minimap = sample_minimap();
         let rect = Rect::new(0.0, 0.0, 20.0, 100.0);
 
-        let result = backend.draw_minimap(rect, &minimap);
-
+        let painted = backend.draw_primitive(rect, &minimap);
         assert!(
-            !result.painted,
-            "no surface attached — `painted` must honestly report `false`, not panic"
-        );
-        assert!(
-            !result.layout.visible_lines.is_empty(),
+            !painted.visible_lines.is_empty(),
             "the layout must still be real geometry, not an empty stub"
         );
-
-        let no_paint = backend.minimap_layout(rect, &minimap);
-        assert_eq!(
-            result.layout, no_paint,
-            "draw_minimap's returned layout must agree with minimap_layout's \
-             standalone query"
-        );
+        assert_eq!(painted, backend.layout_primitive(rect, &minimap));
     }
 
-    /// `set_minimap_scale`/`minimap_scale` must actually change the row
-    /// pitch that `minimap_layout` resolves. This path needs no Windows
-    /// surface, so it provides real signal on every host.
+    /// A minimap's `scale` changes the row pitch its layout resolves. This
+    /// path needs no Windows surface, so it provides real signal on every
+    /// host.
     #[test]
-    fn set_minimap_scale_changes_the_resolved_row_pitch() {
+    fn minimap_scale_changes_the_resolved_row_pitch() {
+        use crate::backend::DrawsPrimitives;
         use crate::primitives::minimap::MinimapScale;
 
-        let mut backend = WinBackend::new();
-        let minimap = sample_minimap();
+        let backend = WinBackend::new();
+        let mut minimap = sample_minimap();
         let rect = Rect::new(0.0, 0.0, 20.0, 100.0);
 
-        assert_eq!(backend.minimap_scale(), MinimapScale::One);
-        let default_layout = backend.minimap_layout(rect, &minimap);
+        assert_eq!(minimap.scale, MinimapScale::One);
+        let default_layout = backend.layout_primitive(rect, &minimap);
         assert_eq!(
             default_layout.visible_lines[0].bounds.height,
             MinimapScale::One.row_pitch_px() as f32
         );
 
-        backend.set_minimap_scale(MinimapScale::Two);
-        assert_eq!(backend.minimap_scale(), MinimapScale::Two);
-        let scaled_layout = backend.minimap_layout(rect, &minimap);
+        minimap.scale = MinimapScale::Two;
+        let scaled_layout = backend.layout_primitive(rect, &minimap);
         assert_eq!(
             scaled_layout.visible_lines[0].bounds.height,
             MinimapScale::Two.row_pitch_px() as f32
         );
-
-        let result = backend.draw_minimap(rect, &minimap);
-        assert_eq!(
-            result.layout, scaled_layout,
-            "draw_minimap's own (unpainted, no-surface) layout must also honor the \
-             backend's minimap_scale"
-        );
     }
 
-    /// `draw_image` on a surface-less backend must report `Unsupported`
-    /// rather than panic.
+    /// An image painted on a surface-less backend reports `Unsupported`
+    /// rather than panicking.
     #[test]
-    fn draw_image_with_no_surface_reports_unsupported() {
+    fn image_with_no_surface_reports_unsupported() {
         let mut backend = WinBackend::new();
         let image = crate::primitives::image::Image {
             id: WidgetId::new("img"),
@@ -10698,17 +10524,9 @@ mod tests {
         };
         let rect = Rect::new(0.0, 0.0, 50.0, 50.0);
 
-        let result = backend.draw_image(rect, &image);
+        let result = PaintSurface::surface_draw_image(&mut backend, rect, &image);
         assert_eq!(result, crate::backend::ImagePaintResult::Unsupported);
     }
-
-    // `draw_editor`'s no-surface fallback (`EditorPaintResult::default()`)
-    // is a one-line, zero-logic return with nothing to get wrong beyond
-    // what `cargo check`/`clippy` already verify — building a full
-    // `Editor` fixture (~20 required fields) to cover it isn't worth the
-    // weight; `EditorPaintResult`'s own `#[derive(Default)]` is exercised
-    // directly wherever it's constructed (e.g. `Default::default()` in
-    // `src/backend.rs`'s own tests).
 
     /// `PaintSurface::surface_measure_text`/`surface_measure_text_styled`
     /// on a surface-less backend must return a finite nominal estimate

@@ -156,13 +156,70 @@ mod tests {
     use crate::primitives::minimap::{
         resolve_cols_per_cell, MinimapHit, MinimapLine, MinimapSizing, MinimapSpan,
     };
-    use crate::tui::{
-        draw_minimap, draw_minimap_with_scale, draw_minimap_with_sizing, ratatui_color,
-        tui_minimap_layout, COLS_PER_CELL, LINES_PER_ROW,
-    };
+    use crate::primitives::minimap::{MinimapLayout, BRAILLE_COLS_PER_CELL, BRAILLE_LINES_PER_ROW};
+    use crate::tui::{ratatui_color, BufferCellSurface};
     use crate::types::WidgetId;
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
+
+    const LINES_PER_ROW: usize = BRAILLE_LINES_PER_ROW;
+    const COLS_PER_CELL: usize = BRAILLE_COLS_PER_CELL;
+
+    fn to_rect(area: Rect) -> crate::Rect {
+        crate::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        )
+    }
+
+    fn tui_minimap_layout(minimap: &Minimap, area: Rect) -> MinimapLayout {
+        minimap.cell_layout(to_rect(area), MinimapSizing::FixedPitch(1.0))
+    }
+
+    fn paint_minimap(
+        buf: &mut Buffer,
+        area: Rect,
+        minimap: &Minimap,
+        theme: &Theme,
+    ) -> MinimapLayout {
+        let cols_per_cell = resolve_cols_per_cell(minimap, area.width as usize);
+        paint_minimap_with_scale(buf, area, minimap, theme, cols_per_cell)
+    }
+
+    fn paint_minimap_with_scale(
+        buf: &mut Buffer,
+        area: Rect,
+        minimap: &Minimap,
+        theme: &Theme,
+        cols_per_cell: usize,
+    ) -> MinimapLayout {
+        paint_minimap_with_sizing(
+            buf,
+            area,
+            minimap,
+            theme,
+            cols_per_cell,
+            MinimapSizing::FixedPitch(1.0),
+        )
+    }
+
+    /// Paints `minimap` into `buf` at an explicit horizontal scale and
+    /// row-pitch strategy, returning the layout it painted.
+    fn paint_minimap_with_sizing(
+        buf: &mut Buffer,
+        area: Rect,
+        minimap: &Minimap,
+        theme: &Theme,
+        cols_per_cell: usize,
+        sizing: MinimapSizing,
+    ) -> MinimapLayout {
+        let mut layout = minimap.cell_layout(to_rect(area), sizing);
+        layout.cols_per_cell = cols_per_cell.max(1);
+        paint(minimap, &layout, &mut BufferCellSurface::new(buf), theme);
+        layout
+    }
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
@@ -209,7 +266,7 @@ mod tests {
         let mm = eight_by_four();
         let area = Rect::new(0, 0, 2, 2);
         let mut buf = Buffer::empty(area);
-        let _layout = draw_minimap(&mut buf, area, &mm, &Theme::default());
+        let _layout = paint_minimap(&mut buf, area, &mm, &Theme::default());
         // Hand-derived from the BRAILLE_OFFSETS table (see `crate::tui::braille`):
         // left cell: bit0 (line0 col0) + bit5 (line2 col1) -> 0x21.
         // right cell: bit1 (line1 col0) + bit7 (line3 col1) -> 0x82.
@@ -222,7 +279,7 @@ mod tests {
         let mm = eight_by_four();
         let area = Rect::new(0, 0, 2, 2);
         let mut buf = Buffer::empty(area);
-        let _layout = draw_minimap(&mut buf, area, &mm, &Theme::default());
+        let _layout = paint_minimap(&mut buf, area, &mm, &Theme::default());
         // Second row group (lines 4-7) is all-whitespace: must paint the
         // actual U+2800 blank-braille glyph, not a plain space, so a
         // minimap row visually reads as "no code here" rather than an
@@ -243,7 +300,7 @@ mod tests {
         });
         let area = Rect::new(0, 0, 2, 2);
         let mut buf = Buffer::empty(area);
-        let _layout = draw_minimap(&mut buf, area, &mm, &Theme::default());
+        let _layout = paint_minimap(&mut buf, area, &mm, &Theme::default());
         assert_eq!(buf[(0u16, 0u16)].fg, ratatui_color(red));
         // The other cell has no matching span: falls back to theme fg.
         assert_eq!(
@@ -263,7 +320,7 @@ mod tests {
         };
         let area = Rect::new(0, 0, 2, 2);
         let mut buf = Buffer::empty(area);
-        let _layout = draw_minimap(&mut buf, area, &mm, &theme);
+        let _layout = paint_minimap(&mut buf, area, &mm, &theme);
         let expected_tint = ratatui_color(theme.background.blend(theme.accent_bg, 0.25));
         assert_eq!(buf[(0u16, 0u16)].bg, expected_tint);
         assert_ne!(buf[(0u16, 1u16)].bg, expected_tint);
@@ -284,7 +341,7 @@ mod tests {
         };
         let area = Rect::new(0, 0, 2, 2);
         let mut buf = Buffer::empty(area);
-        let _layout = draw_minimap(&mut buf, area, &mm, &theme);
+        let _layout = paint_minimap(&mut buf, area, &mm, &theme);
 
         let expected = theme.background.blend(theme.accent_bg, 0.25);
         assert_eq!(buf[(0u16, 0u16)].bg, ratatui_color(expected));
@@ -320,7 +377,7 @@ mod tests {
             mm.visible_row_count = 40;
             let area = Rect::new(0, 0, 3, 6);
             let mut buf = Buffer::empty(area);
-            let layout = draw_minimap(&mut buf, area, &mm, &theme);
+            let layout = paint_minimap(&mut buf, area, &mm, &theme);
             assert_eq!(
                 layout.viewport_highlight.height, 0.0,
                 "{label}: layout must not report a viewport band"
@@ -347,7 +404,7 @@ mod tests {
         let mm = minimap_from(vec!["x"; 8], 8);
         let area = Rect::new(origin_x, origin_y, 4, 8); // 2 rows of 4 lines each -> track height 8
         let mut buf = Buffer::empty(area);
-        let layout = draw_minimap(&mut buf, area, &mm, &Theme::default());
+        let layout = paint_minimap(&mut buf, area, &mm, &Theme::default());
         assert_eq!(
             layout.hit_test(origin_x as f32 + 2.0, origin_y as f32 + 4.0),
             MinimapHit::Seek { fraction: 0.5 }
@@ -372,7 +429,7 @@ mod tests {
 
     /// Regression test: under the previous [`MinimapSizing::Fill`] sizing, a
     /// short file in a tall strip resolved to a row pitch of up to
-    /// `MAX_ROW_PITCH` cell rows, but `draw_minimap` only ever painted the
+    /// `MAX_ROW_PITCH` cell rows, but `paint_minimap` only ever painted the
     /// first cell row of each band — leaving `pitch - 1` blank cell rows
     /// between every painted row, growing as the file got shorter. TUI now
     /// uses `FixedPitch(1.0)`: exactly one cell row per minimap row, tiled
@@ -382,7 +439,7 @@ mod tests {
         let mm = eight_by_four(); // 8 lines, 2 row groups of 4 lines each
         let area = Rect::new(0, 0, 2, 20); // strip far taller than 2 rows
         let mut buf = Buffer::empty(area);
-        let layout = draw_minimap(&mut buf, area, &mm, &Theme::default());
+        let layout = paint_minimap(&mut buf, area, &mm, &Theme::default());
 
         assert_eq!(layout.visible_lines.len(), 2);
         assert_eq!(
@@ -412,7 +469,7 @@ mod tests {
     fn zero_size_is_a_no_op() {
         let mm = eight_by_four();
         let mut buf = Buffer::empty(Rect::new(0, 0, 4, 4));
-        let _layout = draw_minimap(&mut buf, Rect::new(0, 0, 0, 4), &mm, &Theme::default());
+        let _layout = paint_minimap(&mut buf, Rect::new(0, 0, 0, 4), &mm, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -526,23 +583,23 @@ mod tests {
 
     #[test]
     fn draw_minimap_matches_draw_minimap_with_scale_at_the_default_cols_per_cell() {
-        // `draw_minimap` delegates to `draw_minimap_with_scale`, resolving
+        // `paint_minimap` delegates to `paint_minimap_with_scale`, resolving
         // its own scale via `resolve_cols_per_cell` rather than always passing
         // a hardcoded constant. `eight_by_four`'s widest line is 4 columns on a
         // 2-cell-wide strip (dot budget 4), which resolves to exactly
         // `COLS_PER_CELL` — this fixture is deliberately narrow so the two entry
-        // points still agree here, proving `draw_minimap` is still a pure
+        // points still agree here, proving `paint_minimap` is still a pure
         // delegation (just to a resolved, not hardcoded, scale) rather than
         // diverging paint logic of its own.
         let mm = eight_by_four();
         let area = Rect::new(0, 0, 2, 2);
 
         let mut via_plain = Buffer::empty(area);
-        let plain_layout = draw_minimap(&mut via_plain, area, &mm, &Theme::default());
+        let plain_layout = paint_minimap(&mut via_plain, area, &mm, &Theme::default());
 
         let mut via_scale = Buffer::empty(area);
         let scale_layout =
-            draw_minimap_with_scale(&mut via_scale, area, &mm, &Theme::default(), COLS_PER_CELL);
+            paint_minimap_with_scale(&mut via_scale, area, &mm, &Theme::default(), COLS_PER_CELL);
 
         assert_eq!(via_plain, via_scale);
         assert_eq!(plain_layout, scale_layout);
@@ -583,9 +640,9 @@ mod tests {
     /// property guaranteed near column 0, now reachable at depths the fixed
     /// [`COLS_PER_CELL`] scale could never paint at all.
     ///
-    /// The "before widening" baseline here uses [`draw_minimap_with_scale`]
-    /// pinned to the fixed [`COLS_PER_CELL`], not [`draw_minimap`]'s own
-    /// default — since `draw_minimap` resolves its scale adaptively from the
+    /// The "before widening" baseline here uses [`paint_minimap_with_scale`]
+    /// pinned to the fixed [`COLS_PER_CELL`], not [`paint_minimap`]'s own
+    /// default — since `paint_minimap` resolves its scale adaptively from the
     /// buffer's widest line, so for this fixture (a 90-column line) it would
     /// already reach both spans without any explicit widening. This test's own
     /// job is to prove the *explicit* `cols_per_cell` parameter works as a
@@ -618,7 +675,7 @@ mod tests {
         // Both spans are beyond the 22-column visible range at the fixed
         // COLS_PER_CELL scale, so both cells fall back to the theme default.
         let mut buf_narrow = Buffer::empty(area);
-        draw_minimap_with_scale(&mut buf_narrow, area, &mm, &Theme::default(), COLS_PER_CELL);
+        paint_minimap_with_scale(&mut buf_narrow, area, &mm, &Theme::default(), COLS_PER_CELL);
         assert_eq!(
             buf_narrow[(4u16, 0u16)].fg,
             ratatui_color(Theme::default().foreground),
@@ -633,7 +690,7 @@ mod tests {
         // Widened to 10 cols per cell (5 per dot), both spans land inside
         // the strip and paint their own distinct colour.
         let mut buf_wide = Buffer::empty(area);
-        draw_minimap_with_scale(&mut buf_wide, area, &mm, &Theme::default(), 10);
+        paint_minimap_with_scale(&mut buf_wide, area, &mm, &Theme::default(), 10);
         assert_eq!(
             buf_wide[(4u16, 0u16)].fg,
             ratatui_color(red),
@@ -651,17 +708,17 @@ mod tests {
         // `cols_per_cell: 0` would otherwise collapse `cell_color`'s
         // `col_lo..col_hi` lookup range to empty (matching nothing) while
         // `braille_char_for_cell`'s `cols_per_dot` already guards its own
-        // `.max(1)` — the clamp in `draw_minimap_with_scale` must cover
+        // `.max(1)` — the clamp in `paint_minimap_with_scale` must cover
         // both call sites uniformly rather than relying on each helper's
         // own partial guard.
         let mm = eight_by_four();
         let area = Rect::new(0, 0, 2, 2);
 
         let mut via_zero = Buffer::empty(area);
-        draw_minimap_with_scale(&mut via_zero, area, &mm, &Theme::default(), 0);
+        paint_minimap_with_scale(&mut via_zero, area, &mm, &Theme::default(), 0);
 
         let mut via_one = Buffer::empty(area);
-        draw_minimap_with_scale(&mut via_one, area, &mm, &Theme::default(), 1);
+        paint_minimap_with_scale(&mut via_one, area, &mm, &Theme::default(), 1);
 
         assert_eq!(
             via_zero, via_one,
@@ -707,7 +764,7 @@ mod tests {
             });
 
             let mut buf = Buffer::empty(area);
-            draw_minimap_with_scale(&mut buf, area, &mm, &Theme::default(), 11);
+            paint_minimap_with_scale(&mut buf, area, &mm, &Theme::default(), 11);
             assert_ne!(
                 cell_char(&buf, 4, 0),
                 '\u{2800}',
@@ -737,7 +794,7 @@ mod tests {
             });
 
             let mut buf = Buffer::empty(area);
-            draw_minimap_with_scale(&mut buf, area, &mm, &Theme::default(), 11);
+            paint_minimap_with_scale(&mut buf, area, &mm, &Theme::default(), 11);
             assert_eq!(
                 cell_char(&buf, 4, 0),
                 '\u{2800}',
@@ -774,7 +831,7 @@ mod tests {
 
         let area = Rect::new(0, 0, width_cells as u16, rows as u16);
         let mut buf = Buffer::empty(area);
-        draw_minimap_with_scale(&mut buf, area, &mm, &Theme::default(), cols_per_cell);
+        paint_minimap_with_scale(&mut buf, area, &mm, &Theme::default(), cols_per_cell);
 
         (0..rows as u16)
             .map(|y| {
@@ -808,7 +865,7 @@ mod tests {
     /// A boolean-OR dot rule saturates every row here; this test drives the
     /// widened scale with dithered dots: `cols_per_cell: 10` (5 source
     /// columns per dot), the scale a host widens to via
-    /// `draw_minimap_with_scale`.
+    /// `paint_minimap_with_scale`.
     #[test]
     fn real_source_file_minimap_right_edge_tracks_line_length_not_saturated() {
         let source = include_str!(concat!(
@@ -982,7 +1039,7 @@ mod tests {
 
         let area = Rect::new(0, 0, width_cells as u16, 2);
         let mut buf = Buffer::empty(area);
-        draw_minimap(&mut buf, area, &mm, &Theme::default());
+        paint_minimap(&mut buf, area, &mm, &Theme::default());
 
         let last_set = |y: u16| -> Option<u16> {
             (0..width_cells as u16)
@@ -1006,7 +1063,7 @@ mod tests {
         );
     }
 
-    /// Direct regression for the exact scenario: `draw_minimap`'s *default*
+    /// Direct regression for the exact scenario: `paint_minimap`'s *default*
     /// entry point (no explicit `cols_per_cell`) reaching indent 40 and 80 on
     /// a 90-column buffer, with no host-side widening required. Companion to
     /// `cell_color_survives_at_indent_40_and_80_with_a_widened_scale`, which
@@ -1037,11 +1094,11 @@ mod tests {
 
         let area = Rect::new(0, 0, 11, 1);
         let mut buf = Buffer::empty(area);
-        let layout = draw_minimap(&mut buf, area, &mm, &Theme::default());
+        let layout = paint_minimap(&mut buf, area, &mm, &Theme::default());
 
         assert_eq!(
             layout.cols_per_cell, 10,
-            "layout must report back the scale draw_minimap actually resolved and used"
+            "layout must report back the scale paint_minimap actually resolved and used"
         );
         assert_eq!(
             buf[(4u16, 0u16)].fg,
@@ -1055,8 +1112,8 @@ mod tests {
         );
     }
 
-    /// [`tui_minimap_layout`] (the no-paint layout query `Backend::minimap_layout`
-    /// uses) must resolve the exact same scale `draw_minimap` will paint
+    /// [`tui_minimap_layout`] (the no-paint layout query) must resolve the
+    /// exact same scale `paint_minimap` will paint
     /// with — a host reading `cols_per_cell` back before a paint has run
     /// (e.g. to hit-test a click, or to build a colour-aggregation grid
     /// ahead of painting, as `examples/common/minimap_app.rs` does) must
@@ -1072,13 +1129,13 @@ mod tests {
         let no_paint_layout = tui_minimap_layout(&mm, area);
 
         let mut buf = Buffer::empty(area);
-        let painted_layout = draw_minimap(&mut buf, area, &mm, &Theme::default());
+        let painted_layout = paint_minimap(&mut buf, area, &mm, &Theme::default());
 
         assert_eq!(no_paint_layout.cols_per_cell, painted_layout.cols_per_cell);
         assert_eq!(painted_layout.cols_per_cell, 10);
     }
 
-    /// [`draw_minimap_with_sizing`] under [`MinimapSizing::RepeatToFill`]
+    /// [`paint_minimap_with_sizing`] under [`MinimapSizing::RepeatToFill`]
     /// must repeat-paint a short file's one sampled row across every cell
     /// row [`tui_minimap_layout_with_sizing`] assigns it — a 4-line file in
     /// a 20-row-tall strip resolves `k = 20` (one braille dot-group repeated
@@ -1091,7 +1148,7 @@ mod tests {
         let area = Rect::new(0, 0, 2, 20);
         let mut buf = Buffer::empty(area);
 
-        let layout = draw_minimap_with_sizing(
+        let layout = paint_minimap_with_sizing(
             &mut buf,
             area,
             &mm,

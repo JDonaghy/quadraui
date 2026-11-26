@@ -1256,14 +1256,6 @@ impl crate::Backend for RecordingBackend {
             false
         }
     }
-    fn draw_editor(
-        &mut self,
-        _r: Rect,
-        _e: &crate::primitives::editor::Editor,
-    ) -> crate::backend::EditorPaintResult {
-        self.record("draw_editor");
-        Default::default()
-    }
     fn draw_message_list(&mut self, _r: Rect, _l: &crate::primitives::message_list::MessageList) {
         self.record("draw_message_list");
     }
@@ -1376,29 +1368,6 @@ impl crate::Backend for RecordingBackend {
             bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
             columns: vec![],
         }
-    }
-    fn draw_minimap(
-        &mut self,
-        _r: Rect,
-        _m: &crate::primitives::minimap::Minimap,
-    ) -> crate::backend::MinimapPaintResult {
-        self.record("draw_minimap");
-        crate::backend::MinimapPaintResult::default()
-    }
-    fn minimap_layout(
-        &self,
-        _r: Rect,
-        _m: &crate::primitives::minimap::Minimap,
-    ) -> crate::primitives::minimap::MinimapLayout {
-        crate::primitives::minimap::MinimapLayout::default()
-    }
-    fn draw_image(
-        &mut self,
-        _r: Rect,
-        _i: &crate::primitives::image::Image,
-    ) -> crate::backend::ImagePaintResult {
-        self.record("draw_image");
-        crate::backend::ImagePaintResult::Unsupported
     }
 }
 

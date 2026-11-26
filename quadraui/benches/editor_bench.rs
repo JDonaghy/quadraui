@@ -15,8 +15,9 @@
 //!    `EditorLine`s (syntax spans, gutter text, diagnostics) from a
 //!    4000-line buffer.
 //! 2. **`layout`** — [`quadraui::Editor::layout`] (core).
-//! 3. **`paint`** — TUI (`quadraui::tui::draw_editor`) / GTK
-//!    (`quadraui::gtk::draw_editor`, headless in-memory Cairo).
+//! 3. **`paint`** — the widget's own painters: TUI's cell painter on a
+//!    bare ratatui buffer, GTK's pixel painter through `GtkBackend` on a
+//!    headless in-memory Cairo surface.
 //!
 //! Run: `cargo bench --bench editor_bench --features tui,gtk`.
 
@@ -130,19 +131,23 @@ criterion_group!(core_benches, bench_frame_build, bench_layout);
 #[cfg(feature = "tui")]
 mod tui_bench {
     use super::*;
-    use quadraui::tui::draw_editor;
-    use quadraui::Theme;
+    use quadraui::tui::BufferCellSurface;
+    use quadraui::{PaintEnv, Primitive, Style, Theme};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect as TuiRect;
 
     pub fn bench_paint(c: &mut Criterion) {
         let editor = build_editor(TOTAL_LINES / 2);
         let theme = Theme::default();
+        let style = Style::default();
+        let env = PaintEnv::new(&theme, &style);
         let area = TuiRect::new(0, 0, 90, VISIBLE_LINES as u16);
+        let layout = editor.layout(Rect::new(0.0, 0.0, 90.0, VISIBLE_LINES as f32), 1.0, 1.0);
         c.bench_function("editor_paint_tui_4k_lines", |b| {
             b.iter(|| {
                 let mut buf = Buffer::empty(area);
-                black_box(draw_editor(&mut buf, area, &editor, &theme));
+                editor.paint_cells(&layout, &mut BufferCellSurface::new(&mut buf), &env);
+                black_box(buf);
             })
         });
     }
@@ -156,12 +161,11 @@ mod gtk_bench {
     use super::*;
     use gtk4::pango;
     use pangocairo::cairo::{Context, Format, ImageSurface};
-    use quadraui::gtk::draw_editor;
-    use quadraui::Theme;
+    use quadraui::gtk::GtkBackend;
+    use quadraui::DrawsPrimitives;
 
     pub fn bench_paint(c: &mut Criterion) {
         let editor = build_editor(TOTAL_LINES / 2);
-        let theme = Theme::default();
         let height = VISIBLE_LINES as i32 * 18;
         let surface =
             ImageSurface::create(Format::ARgb32, 800, height).expect("create ImageSurface");
@@ -170,11 +174,14 @@ mod gtk_bench {
         let font_desc = pango::FontDescription::from_string("Monospace 12");
         pctx.set_font_description(&font_desc);
         let layout = pango::Layout::new(&pctx);
-        let metrics = pctx.metrics(Some(&font_desc), None);
+        let mut backend = GtkBackend::new();
+        backend.set_current_line_height(18.0);
+        let rect = editor.rect;
         c.bench_function("editor_paint_gtk_4k_lines", |b| {
             b.iter(|| {
-                draw_editor(&cr, &layout, &metrics, &editor, &theme, 8.0, 18.0);
-                black_box(());
+                backend.enter_frame_scope(&cr, &layout, |b| {
+                    black_box(b.draw_primitive(rect, &editor));
+                });
             })
         });
     }

@@ -114,8 +114,8 @@ pub struct Image {
     /// Required, not optional: TUI paints this in place of real pixels
     /// whenever it can't rasterise them — a bare `tui` build (no
     /// `tui-images` feature), a terminal that hasn't confirmed Kitty-
-    /// protocol graphics support, or a real decode failure (see
-    /// `Backend::draw_image`'s doc comment) — and it's what GTK/macOS
+    /// protocol graphics support, or a real decode failure — and it's
+    /// what GTK/macOS
     /// paint nothing in place of on a decode failure (bad path, corrupt
     /// bytes), so a host can still show *something* on every backend and
     /// every failure mode. An empty string means "leave the rect blank",
@@ -431,5 +431,95 @@ mod tests {
         let bounds = Rect::new(5.0, 5.0, 40.0, 20.0);
         let layout = image(ImageFit::Fill, Some((100, 50))).layout(bounds);
         assert_eq!(layout.hit_test(0.0, 0.0), ImageHit::Empty);
+    }
+}
+
+#[cfg(all(test, feature = "tui"))]
+mod cell_tests {
+    use super::*;
+    use crate::backend::ImagePaintResult;
+    use crate::theme::Theme;
+    use crate::tui::BufferCellSurface;
+    use crate::types::WidgetId;
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect as RtRect;
+
+    fn image(fallback_text: &str) -> Image {
+        Image {
+            id: WidgetId::new("logo"),
+            source: ImageSource::Path("/tmp/logo.png".into()),
+            intrinsic_size: Some((16, 16)),
+            fit: ImageFit::Contain,
+            fallback_text: fallback_text.into(),
+        }
+    }
+
+    /// Paints `image` into `buf` through a surface with no graphics
+    /// channel, so only the fallback text can paint.
+    fn paint_image(
+        buf: &mut Buffer,
+        area: RtRect,
+        image: &Image,
+        theme: &Theme,
+    ) -> ImagePaintResult {
+        let rect = Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        );
+        let layout = image.layout(rect);
+        let mut cells = BufferCellSurface::new(buf);
+        image.paint_cells_reporting(&layout, &mut cells, theme)
+    }
+
+    fn screen_text(buf: &Buffer, area: RtRect) -> String {
+        let mut out = String::new();
+        for y in area.top()..area.bottom() {
+            for x in area.left()..area.right() {
+                out.push_str(buf[(x, y)].symbol());
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn a_surface_without_graphics_reports_unsupported() {
+        let mut buf = Buffer::empty(RtRect::new(0, 0, 20, 3));
+        let theme = Theme::default();
+        let result = paint_image(&mut buf, RtRect::new(0, 0, 20, 3), &image("[LOGO]"), &theme);
+        assert_eq!(result, ImagePaintResult::Unsupported);
+    }
+
+    #[test]
+    fn fallback_text_paints_into_the_rect() {
+        let area = RtRect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        paint_image(&mut buf, area, &image("[LOGO]"), &theme);
+        assert!(
+            screen_text(&buf, area).contains("[LOGO]"),
+            "fallback text should be painted somewhere in the rect:\n{}",
+            screen_text(&buf, area)
+        );
+    }
+
+    #[test]
+    fn empty_fallback_text_paints_nothing() {
+        let area = RtRect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        let theme = Theme::default();
+        let result = paint_image(&mut buf, area, &image(""), &theme);
+        assert_eq!(result, ImagePaintResult::Unsupported);
+        assert!(screen_text(&buf, area).trim().is_empty());
+    }
+
+    #[test]
+    fn zero_size_rect_does_not_panic() {
+        let area = RtRect::new(0, 0, 0, 0);
+        let mut buf = Buffer::empty(RtRect::new(0, 0, 1, 1));
+        let theme = Theme::default();
+        let result = paint_image(&mut buf, area, &image("[LOGO]"), &theme);
+        assert_eq!(result, ImagePaintResult::Unsupported);
     }
 }

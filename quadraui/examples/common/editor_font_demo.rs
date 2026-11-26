@@ -114,7 +114,7 @@ impl ShellApp for EditorFontDemo {
         let main = layout.main_content_bounds;
         let editor_rect = Rect::new(main.x, main.y, main.width, main.height - lh);
         let editor = self.build_editor(editor_rect);
-        backend.draw_editor(editor.rect, &editor);
+        backend.draw_primitive(editor.rect, &editor);
 
         let status = StatusBar {
             id: WidgetId::new("editor-font-demo-status"),

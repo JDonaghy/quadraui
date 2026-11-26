@@ -640,7 +640,7 @@ mod gtk_pixel_tests {
     /// What the GTK delegate does: lay out at `editor.rect`, paint through
     /// a `CairoSurface` over `cr` and the editor-font `layout`.
     #[allow(clippy::too_many_arguments)]
-    fn draw_editor_with_options_and_v_scrollbar_w(
+    fn paint_editor_with_options_and_v_scrollbar_w(
         cr: &Context,
         layout: &pango::Layout,
         _font_metrics: &pango::FontMetrics,
@@ -666,7 +666,7 @@ mod gtk_pixel_tests {
         super::paint_with_options(editor, &geom, &mut surface, theme, options);
     }
 
-    fn draw_editor(
+    fn paint_editor(
         cr: &Context,
         layout: &pango::Layout,
         font_metrics: &pango::FontMetrics,
@@ -675,7 +675,7 @@ mod gtk_pixel_tests {
         char_width: f64,
         line_height: f64,
     ) {
-        draw_editor_with_options_and_v_scrollbar_w(
+        paint_editor_with_options_and_v_scrollbar_w(
             cr,
             layout,
             font_metrics,
@@ -790,7 +790,7 @@ mod gtk_pixel_tests {
             pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
             let metrics = pango_ctx.metrics(None, None);
 
-            draw_editor(
+            paint_editor(
                 &cr,
                 &pango_layout,
                 &metrics,
@@ -806,7 +806,7 @@ mod gtk_pixel_tests {
         (data, stride)
     }
 
-    /// [`scroll_test_paint`], but through [`draw_editor_with_options`] so
+    /// [`scroll_test_paint`], but through [`paint_editor_with_options`] so
     /// tests can exercise [`EditorPaintOptions`].
     fn scroll_test_paint_with_options(
         editor: &Editor,
@@ -817,7 +817,7 @@ mod gtk_pixel_tests {
     }
 
     /// [`scroll_test_paint_with_options`], plus a scrollbar-width
-    /// override via [`draw_editor_with_options_and_v_scrollbar_w`].
+    /// override via [`paint_editor_with_options_and_v_scrollbar_w`].
     fn scroll_test_paint_with_v_scrollbar_w(
         editor: &Editor,
         theme: &Theme,
@@ -837,7 +837,7 @@ mod gtk_pixel_tests {
             pango_ctx.set_font_description(&pango::FontDescription::from_string("Monospace 12"));
             let metrics = pango_ctx.metrics(None, None);
 
-            draw_editor_with_options_and_v_scrollbar_w(
+            paint_editor_with_options_and_v_scrollbar_w(
                 &cr,
                 &pango_layout,
                 &metrics,
@@ -855,7 +855,7 @@ mod gtk_pixel_tests {
         (data, stride)
     }
 
-    /// `gtk::draw_editor` must paint scrollbars when a buffer is taller
+    /// `gtk::paint_editor` must paint scrollbars when a buffer is taller
     /// than the viewport — a vertical scrollbar track in the reserved
     /// rightmost `char_width`-wide column; a buffer that fits must not
     /// tint that column at all.
@@ -965,18 +965,18 @@ mod gtk_pixel_tests {
     }
 
     /// Passing `EditorPaintOptions { suppress_v_scrollbar: true, .. }`
-    /// through `draw_editor_with_options` must stop the vertical
+    /// through `paint_editor_with_options` must stop the vertical
     /// scrollbar from painting at all, even though the buffer still
     /// overflows the viewport — this is the opt-out a host running a
     /// `Minimap`-as-scrollbar passes to avoid a redundant second
-    /// affordance beside it. `draw_editor` (no options) must remain
+    /// affordance beside it. `paint_editor` (no options) must remain
     /// unaffected.
     #[test]
     fn draw_editor_with_options_suppress_v_scrollbar_paints_no_column() {
         let theme = Theme::default();
         let overflowing = scroll_test_editor(50, 0, 5);
 
-        // Baseline: plain `draw_editor` still paints the column.
+        // Baseline: plain `paint_editor` still paints the column.
         let (data0, stride0) = scroll_test_paint(&overflowing, &theme);
         assert_ne!(
             scroll_test_pixel(&data0, stride0 as usize, 198, 40),
@@ -1203,7 +1203,7 @@ mod gtk_pixel_tests {
             editor.gutter_char_width = gutter_chars;
             editor.rect = Rect::new(0.0, 0.0, CENTRE_TEST_W as f32, pitch as f32);
 
-            draw_editor_with_options_and_v_scrollbar_w(
+            paint_editor_with_options_and_v_scrollbar_w(
                 &cr,
                 &pango_layout,
                 &metrics,
@@ -1293,7 +1293,7 @@ mod gtk_pixel_tests {
             });
             editor.rect = Rect::new(0.0, 0.0, CENTRE_TEST_W as f32, pitch as f32);
 
-            draw_editor_with_options_and_v_scrollbar_w(
+            paint_editor_with_options_and_v_scrollbar_w(
                 &cr,
                 &pango_layout,
                 &metrics,

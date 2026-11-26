@@ -764,9 +764,10 @@ pub trait PaintSurface {
     fn surface_pop_clip(&mut self);
 
     // ─── Images ────────────────────────────────────────────────────────
-    /// Paint `image` into `rect`. Phase 1 implementations forward to
-    /// [`crate::Backend::draw_image`] — see that method's doc comment
-    /// for the per-backend decode contract.
+    /// Paint `image` into `rect`, decoding it through this surface's
+    /// platform image service. Reports [`ImagePaintResult::Unsupported`]
+    /// and paints nothing on a decode failure, a zero-size `rect`, or a
+    /// surface with no image support.
     fn surface_draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult;
 }
 

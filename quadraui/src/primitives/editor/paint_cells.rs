@@ -685,10 +685,55 @@ fn render_selection(
 mod tests {
     use super::super::{DiagnosticMark, SelectionKind, SpellMark};
     use super::*;
-    use crate::tui::{draw_editor, draw_editor_with_reserve, ratatui_color as qc, set_cell};
+    use crate::tui::{ratatui_color as qc, set_cell, BufferCellSurface};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect as RtRect;
     use ratatui::style::Color as RColor;
+
+    /// The caret a test paint reported: `Some` for a `Bar`/`Underline`
+    /// caret the painter placed through [`crate::CellSurface::set_cursor`].
+    #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+    struct EditorPaintResult {
+        cursor_position: Option<(u16, u16)>,
+    }
+
+    fn paint_editor(
+        buf: &mut Buffer,
+        area: RtRect,
+        editor: &Editor,
+        theme: &Theme,
+    ) -> EditorPaintResult {
+        paint_editor_with_reserve(buf, area, editor, theme, 0)
+    }
+
+    /// Paints `editor` into `buf` with a `right_reserve_w`-cell strip left
+    /// unpainted between the text and the vertical scrollbar.
+    fn paint_editor_with_reserve(
+        buf: &mut Buffer,
+        area: RtRect,
+        editor: &Editor,
+        theme: &Theme,
+        right_reserve_w: u16,
+    ) -> EditorPaintResult {
+        let layout = editor.layout_with_options_and_reserve(
+            crate::Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+            1.0,
+            1.0,
+            super::super::EditorPaintOptions::default(),
+            None,
+            right_reserve_w as f32,
+        );
+        let mut surface = BufferCellSurface::new(buf);
+        paint(editor, &layout, right_reserve_w, &mut surface, theme);
+        EditorPaintResult {
+            cursor_position: surface.cursor().map(|(x, y, _)| (x, y)),
+        }
+    }
 
     /// Minimal one-line [`EditorLine`] carrying decoration-overlay
     /// categories at the given columns. All columns land past `raw_text`'s
@@ -758,7 +803,7 @@ mod tests {
         }
     }
 
-    /// `draw_editor` must bounds-check every overlay write against
+    /// `paint_editor` must bounds-check every overlay write against
     /// `buf.area` (the buffer's real, already-resized extent), not the
     /// caller-supplied `area`. A resize between layout computation and
     /// `ratatui::Terminal::draw` can leave `area` describing a larger
@@ -783,7 +828,7 @@ mod tests {
         let area = RtRect::new(0, 0, 20, 5);
 
         // Must not panic.
-        let _ = draw_editor(&mut buf, area, &editor, &theme);
+        let _ = paint_editor(&mut buf, area, &editor, &theme);
     }
 
     /// `right_reserve_w` must carve out a strip at the trailing edge of
@@ -811,7 +856,7 @@ mod tests {
             }
         }
 
-        let _ = draw_editor_with_reserve(&mut buf, area, &editor, &theme, right_reserve_w);
+        let _ = paint_editor_with_reserve(&mut buf, area, &editor, &theme, right_reserve_w);
 
         let scrollbar_x = area.x + area.width - 1;
         for y in 0..area.height {
@@ -884,7 +929,7 @@ mod tests {
     /// row, and a diff-padding row — same matrix
     /// `tests/conformance/editor.rs` proves against
     /// `EditorSelection::cols_on` directly, proven again here through a
-    /// real `draw_editor` paint so this backend's own call site is
+    /// real `paint_editor` paint so this backend's own call site is
     /// covered too.
     #[test]
     fn draw_editor_selection_respects_wrapped_ghost_and_diff_padding_rows() {
@@ -921,7 +966,7 @@ mod tests {
 
         let mut buf = Buffer::empty(RtRect::new(0, 0, 10, 4));
         let area = RtRect::new(0, 0, 10, 4);
-        let _ = draw_editor(&mut buf, area, &editor, &theme);
+        let _ = paint_editor(&mut buf, area, &editor, &theme);
 
         let sel_bg = qc(theme.selection);
         let window_bg = qc(theme.background);
@@ -949,7 +994,7 @@ mod tests {
         );
     }
 
-    /// `draw_editor_with_reserve(..., 0)` must reproduce `draw_editor`
+    /// `paint_editor_with_reserve(..., 0)` must reproduce `paint_editor`
     /// cell-for-cell — the convenience wrapper is a thin forward, not an
     /// independent code path that could silently drift from it.
     #[test]
@@ -963,8 +1008,8 @@ mod tests {
         let area = RtRect::new(0, 0, 10, 4);
         let mut buf_a = Buffer::empty(area);
         let mut buf_b = Buffer::empty(area);
-        let result_a = draw_editor(&mut buf_a, area, &editor, &theme);
-        let result_b = draw_editor_with_reserve(&mut buf_b, area, &editor, &theme, 0);
+        let result_a = paint_editor(&mut buf_a, area, &editor, &theme);
+        let result_b = paint_editor_with_reserve(&mut buf_b, area, &editor, &theme, 0);
 
         assert_eq!(result_a, result_b);
         for y in 0..area.height {
@@ -1009,7 +1054,7 @@ mod tests {
         }
 
         let right_reserve_w = 2;
-        let _ = draw_editor_with_reserve(&mut buf, area, &editor, &theme, right_reserve_w);
+        let _ = paint_editor_with_reserve(&mut buf, area, &editor, &theme, right_reserve_w);
 
         let cursorline_bg = qc(theme.cursorline_bg);
 

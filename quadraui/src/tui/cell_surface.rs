@@ -178,9 +178,9 @@ pub struct BufferCellSurface<'a> {
     /// position/shape it receives — `&mut TuiBackend::last_cell_surface_cursor`
     /// at construction time, taken by
     /// [`crate::tui::backend::TuiBackend::take_last_cell_surface_cursor`]
-    /// once per frame, the same "buffer-only paint → frame-level side
-    /// effect" handoff `TuiBackend::last_cursor_position` uses for
-    /// `draw_editor`'s caret. Unlike `buf`, this points at a field on
+    /// once per frame — a "buffer-only paint → frame-level side effect"
+    /// handoff, since a painter cannot reach the `Frame`. Unlike `buf`,
+    /// this points at a field on
     /// `TuiBackend` itself, not at frame-scoped storage, so it stays valid
     /// for `self`'s entire lifetime — rebuilding this surface on every
     /// [`crate::tui::backend::TuiBackend::cell_surface`] call can't drop a
@@ -405,7 +405,7 @@ impl CellSurface for BufferCellSurface<'_> {
         let area = super::backend::q_rect_to_ratatui(rect);
         // SAFETY: see `GraphicsChannel::state`'s own doc.
         let state = unsafe { &mut *graphics.state };
-        match graphics.kitty_cell_px {
+        let painted = match graphics.kitty_cell_px {
             Some(cell_px) => draw_image_kitty(self.buf(), area, image, cell_px, &mut state.kitty),
             None => draw_image_halfblock(
                 self.buf(),
@@ -414,7 +414,15 @@ impl CellSurface for BufferCellSurface<'_> {
                 graphics.background,
                 &mut state.halfblock,
             ),
+        };
+        if painted {
+            state.painted.push(PaintedImage {
+                id: image.id,
+                fallback_text: (!image.fallback_text.is_empty())
+                    .then(|| image.fallback_text.clone()),
+            });
         }
+        painted
     }
 
     fn color_depth(&self) -> ColorDepth {
@@ -434,6 +442,10 @@ impl CellSurface for BufferCellSurface<'_> {
 pub(crate) struct ImageGraphicsState {
     pub(crate) kitty: KittyImageState,
     pub(crate) halfblock: HalfBlockImageState,
+    /// Images painted with real pixels this frame whose zone the backend
+    /// has not registered yet. The backend registers each one's zone as an
+    /// opaque rect, so selection and copy skip the pixel cells.
+    pub(crate) painted: Vec<PaintedImage>,
 }
 
 #[cfg(feature = "tui-images")]
@@ -442,8 +454,17 @@ impl ImageGraphicsState {
         Self {
             kitty: KittyImageState::new(),
             halfblock: HalfBlockImageState::new(),
+            painted: Vec::new(),
         }
     }
+}
+
+/// An image [`CellSurface::emit_graphics`] painted with real pixels.
+#[cfg(feature = "tui-images")]
+pub(crate) struct PaintedImage {
+    pub(crate) id: crate::types::WidgetId,
+    /// What copying the image's cells yields: its fallback text, if any.
+    pub(crate) fallback_text: Option<String>,
 }
 
 /// What a surface's [`CellSurface::emit_graphics`] paints with.

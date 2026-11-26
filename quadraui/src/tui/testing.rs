@@ -723,8 +723,8 @@ impl<A: AppLogic> TuiDriver<A> {
 
     /// The `(x, y)` position `Terminal::draw` last applied to the
     /// underlying `TestBackend` via `Frame::set_cursor_position` —
-    /// reflecting [`super::run::render_frame`]'s `take_last_cursor_position`
-    /// handoff from `TuiBackend::draw_editor`.
+    /// reflecting [`super::run::render_frame`]'s handoff of the caret a
+    /// widget placed through `CellSurface::set_cursor`.
     ///
     /// Note `TestBackend` tracks only the last-set position, not whether
     /// the cursor is currently hidden — so this always returns the most

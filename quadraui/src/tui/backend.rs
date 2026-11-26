@@ -73,7 +73,7 @@ use super::text::{char_cell_width, display_width};
 /// Frames a Kitty-graphics id may go untouched before
 /// [`TuiBackend::end_frame`] expires and deletes it. `1` — not a
 /// multi-frame grace period — because `begin_frame` already ages every
-/// entry before this frame's `draw_image` calls get a chance to
+/// entry before this frame's image paints get a chance to
 /// [`crate::tui::kitty_graphics::IdRegistry::touch`] it back to `0`: an
 /// id still untouched by the time `end_frame` runs genuinely didn't
 /// paint this frame (its image scrolled out of the layout, or the
@@ -188,29 +188,6 @@ pub struct TuiBackend {
     /// `KeyPressed` events to `UiEvent::ActivityBar(id, KeyPressed { … })`
     /// so app logic receives activity-bar keys through a typed channel.
     focused_activity_bar: Option<WidgetId>,
-    /// Screen-space `(x, y)` for `Frame::set_cursor_position`, cached from
-    /// the most recent [`Backend::draw_editor`] call **that reported a
-    /// `Some` position** this frame.
-    ///
-    /// `draw_editor` only has access to the ratatui buffer, not the `Frame`
-    /// itself (see [`Self::current_frame_mut`]'s note on why trait methods
-    /// can't reach `Frame::set_cursor_position` directly), so it stashes
-    /// the position here. [`super::run::render_frame`] takes it via
-    /// [`Self::take_last_cursor_position`] after the render closure returns
-    /// and applies it to the real `Frame`, mirroring how
-    /// `apply_selection_highlight` bridges buffer-only paint to a
-    /// frame-level side effect.
-    ///
-    /// Cleared at the start of every frame by [`Self::begin_frame`] (same
-    /// lifecycle as `text_regions`) so a frame that doesn't paint an editor
-    /// doesn't inherit a stale cursor position from the previous one. Within
-    /// a frame, the `draw_editor` call site only overwrites this on a
-    /// `Some` result — a frame can call `draw_editor` once
-    /// per window (e.g. a split), and only the active window ever reports
-    /// `Some`; an inactive window's later, cursor-less call must not
-    /// clobber an active window's `Some` recorded earlier in the same
-    /// frame regardless of paint order.
-    last_cursor_position: Option<(u16, u16)>,
     /// Colour fidelity this backend's rasterisers should quantise to —
     /// see [`crate::backend::ColorDepth`]. Detected from the process
     /// environment (`COLORTERM`/`TERM`) at construction time via
@@ -371,29 +348,6 @@ pub struct TuiBackend {
     /// [`Self::input_gone`]'s doc and the `stdin_hung_up` guard (below in
     /// this file) for the full rationale.
     input_gone: bool,
-    /// Row-pitch strategy [`Backend::draw_minimap`]/[`Backend::minimap_layout`]
-    /// resolve from, set via [`Backend::set_minimap_sizing`]. `None` (the
-    /// default) means "use this rasteriser's own hardcoded default" —
-    /// `crate::tui::tui_minimap_layout`'s `FixedPitch(1.0)`
-    /// (`#[doc(hidden)]`, so not linked here) — so a host
-    /// that never calls the setter sees byte-for-byte the same layout and
-    /// paint as before this field existed.
-    minimap_sizing: Option<crate::primitives::minimap::MinimapSizing>,
-    /// Column count reserved between the editor's text area and its
-    /// vertical scrollbar, set via
-    /// [`Backend::set_editor_right_reserve_w`]. `None` (the default)
-    /// reserves nothing — [`Self::draw_editor`]/[`Backend::editor_layout`]
-    /// paint and hit-test exactly as before this field existed. The
-    /// setter quantises to a whole cell at set-time (one TUI cell is one
-    /// pixel unit here, so this is a no-op for already-integral input),
-    /// which is what keeps this value's two readers in agreement:
-    /// [`Backend::editor_layout`]'s default body folds the raw `f32` in
-    /// directly, while `crate::tui::draw_editor_with_reserve`
-    /// (`#[doc(hidden)]`, so not linked here) takes a
-    /// `u16` and would otherwise round independently (and possibly
-    /// differently, for a non-integral input) from what `editor_layout`
-    /// saw.
-    editor_right_reserve_w: Option<f32>,
     /// Active [`Backend::push_clip`]/[`Backend::pop_clip`] stack — see
     /// [`Self::push_clip`]'s doc for how each frame's snapshot lets
     /// `pop_clip` roll back anything painted outside the narrowed clip.
@@ -426,14 +380,17 @@ pub struct TuiBackend {
     ///
     /// [`Self::cell_surface`] passes `&mut self.last_cell_surface_cursor`
     /// into [`super::cell_surface::TuiCellSurface::over`] as its write-back
-    /// sink, the same "buffer-only paint → frame-level side effect" handoff
-    /// `last_cursor_position` uses for `draw_editor`'s caret — see that
-    /// field's own doc. [`Self::take_last_cell_surface_cursor`] consumes it
+    /// sink: a widget painting into the buffer cannot reach the `Frame`
+    /// (see [`Self::current_frame_mut`]), so the caret it places is
+    /// applied afterwards. [`Self::take_last_cell_surface_cursor`] consumes it
     /// once per frame in [`super::run::paint_frame`], which applies the
     /// position via `Frame::set_cursor_position` and the shape via a
     /// DECSCUSR write, then [`Self::begin_frame`] clears it so a frame that
     /// never calls `set_cursor` doesn't inherit a stale value.
     last_cell_surface_cursor: Option<(u16, u16, crate::CursorShape)>,
+    /// The hardware caret shape last written to the terminal, so a caret a
+    /// widget places every frame rewrites the shape only when it changes.
+    hardware_caret_shape: Option<crate::CursorShape>,
 }
 
 /// One cell rect registered via [`TuiBackend::register_opaque_rect`] —
@@ -480,7 +437,6 @@ impl TuiBackend {
             opaque_rects: Vec::new(),
             cached_selection_text: String::new(),
             focused_activity_bar: None,
-            last_cursor_position: None,
             color_depth: super::caps::detect_color_depth(),
             kitty_keyboard: super::caps::detect_kitty_keyboard(),
             mouse_enabled: true,
@@ -496,13 +452,12 @@ impl TuiBackend {
             frame_scheduler: crate::runtime::FrameScheduler::new(),
             full_repaint_requested: false,
             input_gone: false,
-            minimap_sizing: None,
-            editor_right_reserve_w: None,
             clip_stack: Vec::new(),
             frame_capture: crate::frame::FrameCapture::default(),
             last_screenshot: None,
             cell_surface_scratch: None,
             last_cell_surface_cursor: None,
+            hardware_caret_shape: None,
         }
     }
 
@@ -758,7 +713,7 @@ impl TuiBackend {
     /// Runs once per frame, over the whole buffer, from
     /// [`super::run::paint_frame`] right after every rasteriser for the
     /// frame has painted — not threaded as a parameter through
-    /// the tab strip/`draw_editor`/the terminal cell painter (the three
+    /// the tab strip/the editor/the terminal cell painter (the three
     /// call sites that set `underline_color`). A
     /// single per-frame sweep here can't miss a call site a
     /// future primitive adds, costs nothing beyond one extra `bool`
@@ -955,8 +910,9 @@ impl TuiBackend {
     /// Cleared at the start of every frame by [`Self::begin_frame`], same
     /// lifecycle as `zones`/`text_regions`.
     ///
-    /// Called by [`Self::draw_image`] whenever it painted real Kitty
-    /// graphics placeholder cells this frame — see that method's body.
+    /// Called by [`Backend::register_zone`] for an image the cell surface
+    /// painted with real pixels this frame.
+    #[cfg_attr(not(feature = "tui-images"), allow(dead_code))]
     pub(crate) fn register_opaque_rect(
         &mut self,
         id: WidgetId,
@@ -1220,28 +1176,12 @@ impl TuiBackend {
         self.cached_selection_text.clone()
     }
 
-    /// Take the editor cursor position cached by the most recent
-    /// [`Backend::draw_editor`] call this frame, leaving `None` behind.
-    ///
-    /// Called by [`super::run::render_frame`] once per frame, after the
-    /// render closure returns but still inside `terminal.draw(|frame| …)`,
-    /// so it can apply `frame.set_cursor_position(pos)` — the only place
-    /// with access to the real `Frame`. "Take" (not a plain
-    /// getter) because the value is frame-scoped: [`Self::begin_frame`]
-    /// clears it again before the next `draw_editor` call, so nothing relies
-    /// on the value surviving past this one read.
-    pub(crate) fn take_last_cursor_position(&mut self) -> Option<(u16, u16)> {
-        self.last_cursor_position.take()
-    }
-
     /// Take the `(x, y, shape)` cached by the most recent
     /// [`crate::CellSurface::set_cursor`] call this frame, leaving `None`
     /// behind.
     ///
-    /// Called by [`super::run::paint_frame`] once per frame, after the
-    /// editor-cursor handoff [`Self::take_last_cursor_position`] already
-    /// consumes — same "take, not a plain getter" reasoning: the value is
-    /// frame-scoped, cleared again by [`Self::begin_frame`] before the next
+    /// Called by [`super::run::paint_frame`] once per frame. "Take", not a
+    /// plain getter, because the value is frame-scoped: cleared again by [`Self::begin_frame`] before the next
     /// `set_cursor` call, so nothing relies on it surviving past this read.
     pub(crate) fn take_last_cell_surface_cursor(
         &mut self,
@@ -1251,17 +1191,23 @@ impl TuiBackend {
 
     /// Apply the `(x, y, shape)` [`Self::take_last_cell_surface_cursor`]
     /// returns, if any: moves the terminal cursor via
-    /// `frame.set_cursor_position` — the same call
-    /// [`super::run::paint_frame`] makes for `draw_editor`'s cached
-    /// position, run right after it — and steers its hardware shape via
-    /// the same best-effort DECSCUSR write [`Backend::set_caret_shape`]
-    /// uses. A no-op when nothing called [`crate::CellSurface::set_cursor`]
-    /// this frame.
+    /// `frame.set_cursor_position` and, when the shape differs from the
+    /// last one written, steers its hardware shape via the same best-effort
+    /// DECSCUSR write [`Backend::set_caret_shape`] uses. A no-op when
+    /// nothing called [`crate::CellSurface::set_cursor`] this frame.
     pub(crate) fn apply_last_cell_surface_cursor(&mut self, frame: &mut Frame<'_>) {
         let Some((x, y, shape)) = self.take_last_cell_surface_cursor() else {
             return;
         };
         frame.set_cursor_position((x, y));
+        if self.hardware_caret_shape != Some(shape) {
+            self.write_hardware_caret_shape(shape);
+        }
+    }
+
+    /// Write `shape` to the terminal's hardware caret (DECSCUSR) and
+    /// remember it. Best-effort: a failed write is swallowed.
+    fn write_hardware_caret_shape(&mut self, shape: crate::CursorShape) {
         use ratatui::crossterm::cursor::SetCursorStyle;
         use ratatui::crossterm::execute;
         let style = match shape {
@@ -1270,6 +1216,7 @@ impl TuiBackend {
             crate::CursorShape::Underline => SetCursorStyle::SteadyUnderScore,
         };
         let _ = execute!(std::io::stdout(), style);
+        self.hardware_caret_shape = Some(shape);
     }
 
     /// Set the active selection to cover the entire visible content of the
@@ -2298,13 +2245,8 @@ impl Backend for TuiBackend {
         // Clear the focused activity bar — re-set by end_frame
         // during the render pass if still focused.
         self.focused_activity_bar = None;
-        // Clear the cached editor cursor position — re-set by draw_editor
-        // during the render pass if an editor paints this frame. Without
-        // this a frame that stops painting an editor (e.g. it's hidden)
-        // would keep showing the terminal cursor at the last-known spot.
-        self.last_cursor_position = None;
-        // Clear the cached cell-surface cursor for the same reason — a
-        // frame that stops calling `CellSurface::set_cursor` must stop
+        // Clear the cached cell-surface cursor — a frame that stops calling
+        // `CellSurface::set_cursor` (an editor that is hidden) must stop
         // showing the terminal cursor at the last-known spot. Also drops
         // the previous frame's scratch `TuiCellSurface`, whose buffer
         // pointer is only valid inside the `enter_frame_scope` call that
@@ -2325,13 +2267,36 @@ impl Backend for TuiBackend {
         // until `end_frame` expires and deletes it.
         #[cfg(feature = "tui-images")]
         self.image_graphics.kitty.registry.begin_frame();
+        #[cfg(feature = "tui-images")]
+        self.image_graphics.painted.clear();
     }
 
     fn register_text_region(&mut self, region: TextRegion) {
         self.core.register_text_region(region);
     }
 
+    /// An image the cell surface painted with real pixels this frame
+    /// registers as an opaque rect instead, so selection and copy skip its
+    /// cells.
     fn register_zone(&mut self, id: WidgetId, bounds: QRect) {
+        #[cfg(feature = "tui-images")]
+        if let Some(i) = self.image_graphics.painted.iter().position(|p| p.id == id) {
+            let painted = self.image_graphics.painted.swap_remove(i);
+            // A raw pointer, not a `&Buffer` borrow: `current_frame_mut`'s
+            // loan on `self` would otherwise conflict with the `&mut self`
+            // `register_opaque_rect` call below.
+            let buf_ptr: Option<*const ratatui::buffer::Buffer> = self
+                .current_frame_mut()
+                .map(|frame| frame.buffer_mut() as *const _);
+            if let Some(buf_ptr) = buf_ptr {
+                // SAFETY: `buf_ptr` points at the live frame buffer the
+                // image painted into; nothing mutates it for the duration
+                // of this call.
+                let buf = unsafe { &*buf_ptr };
+                self.register_opaque_rect(id, bounds, buf, painted.fallback_text);
+                return;
+            }
+        }
         self.zones.push(ZoneRec { id, bounds });
     }
 
@@ -2907,9 +2872,8 @@ impl Backend for TuiBackend {
     // layout-returning method falls back to its pure `*_layout`/
     // `*_hits`-style twin (or an already-computed local `layout`) so a
     // host that queries geometry still gets a real answer, and
-    // `draw_minimap`/`draw_image` report `painted: false`/`Unsupported`
-    // exactly as their "no rasteriser available" paths already do
-    // elsewhere.
+    // a method with a paint result reports the same "nothing painted"
+    // value its "no rasteriser available" path already does elsewhere.
 
     fn draw_tree(&mut self, rect: QRect, tree: &TreeView) {
         let area = q_rect_to_ratatui(rect);
@@ -3271,58 +3235,6 @@ impl Backend for TuiBackend {
         )
     }
 
-    fn draw_editor(
-        &mut self,
-        rect: QRect,
-        editor: &crate::primitives::editor::Editor,
-    ) -> crate::backend::EditorPaintResult {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let right_reserve = self.editor_right_reserve_w.unwrap_or(0.0).max(0.0).round() as u16;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_editor called outside enter_frame_scope"
-            );
-            return crate::backend::EditorPaintResult::default();
-        };
-        let tui_result = crate::tui::draw_editor_with_reserve(
-            frame.buffer_mut(),
-            area,
-            editor,
-            &theme,
-            right_reserve,
-        );
-        // Cache for `render_frame` — `draw_editor` only sees
-        // the buffer, not the `Frame`, so it can't call
-        // `Frame::set_cursor_position` itself. See
-        // `last_cursor_position`'s field doc for the full handoff.
-        //
-        // Only overwrite on `Some`: a frame can call
-        // `draw_editor` once per window (e.g. a split), and only the active
-        // window's editor ever reports a `Some` cursor position — inactive
-        // windows correctly report `None` (see `RenderedWindow.cursor`'s
-        // `is_active` gating on the consumer side). Whichever call happened
-        // to run last used to win unconditionally, so an inactive window's
-        // `None` could clobber the active window's `Some` recorded earlier
-        // in the same frame, hiding the caret whenever paint order didn't
-        // happen to place the active window last. `begin_frame`
-        // already resets this to `None` at frame-start, so within a frame we
-        // only ever want to move from `None` to `Some`, never back.
-        if tui_result.cursor_position.is_some() {
-            self.last_cursor_position = tui_result.cursor_position;
-        }
-        crate::backend::EditorPaintResult {
-            // `tui_result.cursor_position` is the TUI-internal, already
-            // cell-rounded `(u16, u16)` shape `Frame::set_cursor_position`
-            // needs (see `last_cursor_position`'s doc); widen to the
-            // portable `Point` for the trait's return value.
-            cursor_position_native: tui_result
-                .cursor_position
-                .map(|(x, y)| crate::event::Point::new(x as f32, y as f32)),
-        }
-    }
-
     /// Steers the terminal emulator's hardware caret via DECSCUSR
     /// (crossterm's `SetCursorStyle`) — see [`Backend::set_caret_shape`]'s
     /// doc for why TUI is the one backend that overrides this (issue
@@ -3340,14 +3252,11 @@ impl Backend for TuiBackend {
     /// sequence didn't land." Errors are swallowed rather than
     /// propagated, matching this trait method's `()` return.
     fn set_caret_shape(&mut self, shape: crate::EditorCursorShape) {
-        use ratatui::crossterm::cursor::SetCursorStyle;
-        use ratatui::crossterm::execute;
-        let style = match shape {
-            crate::EditorCursorShape::Block => SetCursorStyle::SteadyBlock,
-            crate::EditorCursorShape::Bar => SetCursorStyle::SteadyBar,
-            crate::EditorCursorShape::Underline => SetCursorStyle::SteadyUnderScore,
-        };
-        let _ = execute!(std::io::stdout(), style);
+        self.write_hardware_caret_shape(match shape {
+            crate::EditorCursorShape::Block => crate::CursorShape::Block,
+            crate::EditorCursorShape::Bar => crate::CursorShape::Bar,
+            crate::EditorCursorShape::Underline => crate::CursorShape::Underline,
+        });
     }
 
     fn draw_message_list(
@@ -3674,126 +3583,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_board_layout(model, q_rect_to_ratatui(rect))
     }
 
-    fn draw_minimap(
-        &mut self,
-        rect: QRect,
-        minimap: &crate::primitives::minimap::Minimap,
-    ) -> crate::backend::MinimapPaintResult {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let sizing = self.minimap_sizing;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_minimap called outside enter_frame_scope"
-            );
-            // Mirrors `MacBackend`'s pre-#802 `painted: false` report — the
-            // real layout, nothing rasterised, no zone registered.
-            return crate::backend::MinimapPaintResult {
-                layout: self.minimap_layout(rect, minimap),
-                painted: false,
-            };
-        };
-        let layout = match sizing {
-            Some(sizing) => {
-                let cols_per_cell =
-                    crate::tui::minimap::resolve_cols_per_cell(minimap, area.width as usize);
-                crate::tui::draw_minimap_with_sizing(
-                    frame.buffer_mut(),
-                    area,
-                    minimap,
-                    &theme,
-                    cols_per_cell,
-                    sizing,
-                )
-            }
-            None => crate::tui::draw_minimap(frame.buffer_mut(), area, minimap, &theme),
-        };
-        self.register_zone(minimap.id, rect);
-        crate::backend::MinimapPaintResult {
-            layout,
-            painted: true,
-        }
-    }
-
-    fn minimap_layout(
-        &self,
-        rect: QRect,
-        minimap: &crate::primitives::minimap::Minimap,
-    ) -> crate::primitives::minimap::MinimapLayout {
-        let area = q_rect_to_ratatui(rect);
-        match self.minimap_sizing {
-            Some(sizing) => crate::tui::tui_minimap_layout_with_sizing(minimap, area, sizing),
-            None => crate::tui::tui_minimap_layout(minimap, area),
-        }
-    }
-
-    fn minimap_sizing(&self) -> Option<crate::primitives::minimap::MinimapSizing> {
-        self.minimap_sizing
-    }
-
-    fn set_minimap_sizing(&mut self, sizing: Option<crate::primitives::minimap::MinimapSizing>) {
-        self.minimap_sizing = sizing;
-    }
-
-    fn editor_right_reserve_w(&self) -> Option<f32> {
-        self.editor_right_reserve_w
-    }
-
-    fn set_editor_right_reserve_w(&mut self, px: Option<f32>) {
-        // Quantise to a whole cell at set-time (one TUI cell == one pixel
-        // unit here), so the stored value already matches what
-        // `draw_editor_with_reserve`'s `.round() as u16` produces. Without
-        // this, a non-integral `px` (e.g. `Some(2.5)`) would round one way
-        // for `editor_layout`'s raw-`f32` fold and round again
-        // (independently) for the `u16` cast, and the two could disagree.
-        self.editor_right_reserve_w = px.map(|v| v.max(0.0).round());
-    }
-
-    /// Paints through the widget's own cell painter on this frame's
-    /// [`Self::cell_surface`], so the graphics channel and the fallback
-    /// text are the ones a `Surface::Widget` image gets.
-    fn draw_image(
-        &mut self,
-        rect: QRect,
-        image: &crate::primitives::image::Image,
-    ) -> crate::backend::ImagePaintResult {
-        let theme = self.current_theme;
-        let layout = image.layout(rect);
-        let Some(cells) = self.cell_surface() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_image called outside enter_frame_scope"
-            );
-            // Mirrors the win/macOS "no rasteriser" report —
-            // no zone registered either, since nothing was painted.
-            return crate::backend::ImagePaintResult::Unsupported;
-        };
-        let result = image.paint_cells_reporting(&layout, cells, &theme);
-        if result == crate::backend::ImagePaintResult::Painted {
-            // Real pixels now sit under these cells — shield them from
-            // selection/copy the same way any other non-text rasteriser
-            // does (`Self::register_opaque_rect`'s own doc), rather than
-            // the plain zone a fallback-text paint gets below.
-            let fallback_text =
-                (!image.fallback_text.is_empty()).then(|| image.fallback_text.clone());
-            // A raw pointer, not a `&Buffer` borrow: `current_frame_mut`'s
-            // loan on `self` would otherwise conflict with the `&mut self`
-            // `register_opaque_rect` call below.
-            let buf_ptr: *const ratatui::buffer::Buffer = match self.current_frame_mut() {
-                Some(frame) => frame.buffer_mut(),
-                None => return result,
-            };
-            // SAFETY: `buf_ptr` points at the live frame buffer the cell
-            // surface above painted into; nothing mutates it for the
-            // duration of this call.
-            self.register_opaque_rect(image.id, rect, unsafe { &*buf_ptr }, fallback_text);
-        } else {
-            self.register_zone(image.id, rect);
-        }
-        result
-    }
-
     // ─── Window control ─────────────────────────────────────────────────
     fn window(&mut self) -> Option<&mut dyn crate::backend::WindowControl> {
         Some(self)
@@ -4095,14 +3884,6 @@ mod tests {
             t.vscrollbar_with_track_width(r, 1.0, 1.0)
         }
 
-        fn draw_editor(
-            &mut self,
-            _r: QRect,
-            _e: &crate::primitives::editor::Editor,
-        ) -> crate::backend::EditorPaintResult {
-            crate::backend::EditorPaintResult::default()
-        }
-
         fn draw_message_list(
             &mut self,
             _r: QRect,
@@ -4329,30 +4110,6 @@ mod tests {
                     0.0,
                 ),
             )
-        }
-
-        fn draw_minimap(
-            &mut self,
-            _r: QRect,
-            _m: &crate::primitives::minimap::Minimap,
-        ) -> crate::backend::MinimapPaintResult {
-            crate::backend::MinimapPaintResult::default()
-        }
-
-        fn minimap_layout(
-            &self,
-            _r: QRect,
-            _m: &crate::primitives::minimap::Minimap,
-        ) -> crate::primitives::minimap::MinimapLayout {
-            crate::primitives::minimap::MinimapLayout::default()
-        }
-
-        fn draw_image(
-            &mut self,
-            _r: QRect,
-            _i: &crate::primitives::image::Image,
-        ) -> crate::backend::ImagePaintResult {
-            crate::backend::ImagePaintResult::Unsupported
         }
     }
 
@@ -6761,9 +6518,9 @@ mod tests {
         );
     }
 
-    /// Minimal blank `EditorLine` for `editor_layout` parity tests below
-    /// — content doesn't matter, only that `lines.len()` matches the
-    /// viewport row count so `draw_editor` doesn't early-`break`.
+    /// Minimal blank `EditorLine` for the editor layout tests below —
+    /// content doesn't matter, only that `lines.len()` matches the
+    /// viewport row count so the paint doesn't early-`break`.
     fn blank_editor_line(idx: usize) -> crate::EditorLine {
         crate::EditorLine {
             raw_text: String::new(),
@@ -6790,18 +6547,12 @@ mod tests {
         }
     }
 
-    /// Issue #506 review fix: `editor_layout` is claimed to be
-    /// "verified byte-for-byte against each backend's real paint
-    /// formula" — this test makes that claim true for TUI. TUI's
-    /// `draw_editor` re-derives its own scrollbar-presence formula by
-    /// hand rather than calling `Editor::layout` (`src/tui/editor.rs`:
-    /// `has_scrollbar = total_lines > viewport_lines && area.width >
-    /// gutter_w + 1`, v-scrollbar track at `(area.x + area.width - 1,
-    /// area.y, 1, track_h)`); this test pins `editor_layout`'s
-    /// `v_scrollbar_bounds` against that exact independently-derived
-    /// track, so the two can't silently drift apart.
+    /// The editor's cell layout on TUI puts the v-scrollbar track in the
+    /// last column, `(area.x + area.width - 1, area.y, 1, track_h)`, and
+    /// its own hit-test resolves the track's origin as the scrollbar.
     #[test]
-    fn editor_layout_matches_draw_editor_scrollbar_track() {
+    fn editor_layout_puts_the_scrollbar_track_in_the_last_column() {
+        use crate::backend::DrawsPrimitives;
         let backend = TuiBackend::new();
         let rect = QRect::new(2.0, 1.0, 20.0, 5.0);
         let editor = crate::Editor {
@@ -6836,54 +6587,33 @@ mod tests {
             paint_options: Default::default(),
         };
 
-        let layout = backend.editor_layout(rect, &editor);
+        let layout = backend.layout_primitive(rect, &editor);
         let vsb = layout
             .v_scrollbar_bounds
             .expect("100 lines in a 5-row viewport must trigger a v-scrollbar");
         assert_eq!(
             vsb,
             crate::event::Rect::new(rect.x + rect.width - 1.0, rect.y, 1.0, rect.height),
-            "editor_layout's v_scrollbar_bounds must match draw_editor's own track formula \
-             `(area.x + area.width - 1, area.y, 1, track_h)` (src/tui/editor.rs)"
+            "the v-scrollbar track must be `(area.x + area.width - 1, area.y, 1, track_h)`"
         );
-
-        // Paint via the exact free fn TuiBackend::draw_editor calls —
-        // proves the shared scrollbar-presence formula doesn't panic
-        // against this geometry, and that the hit-test the layout
-        // exposes resolves at the painted track's own origin.
-        let area = q_rect_to_ratatui(rect);
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_editor(&mut buf, area, &editor, &backend.current_theme);
-
         assert_eq!(
             layout.hit_test(vsb.x, vsb.y),
             crate::EditorHit::VScrollbar,
-            "a click at the painted scrollbar track's origin must resolve via editor_layout's \
-             own hit_test as VScrollbar"
+            "a click at the scrollbar track's origin must resolve as VScrollbar"
         );
     }
 
-    /// `Backend::set_editor_right_reserve_w`/`editor_right_reserve_w` must
-    /// round-trip, default to `None`, and `TuiBackend::editor_layout` must
-    /// fold the stored value into `Editor::layout_with_options_and_reserve`
-    /// so `text_bounds`/`h_scrollbar_bounds` narrow by the reserve while
-    /// `v_scrollbar_bounds` keeps hugging the true right edge — matching
-    /// `draw_editor`'s own `right_reserve` handling (`src/tui/editor.rs`).
-    /// `max_col` is large enough (relative to the 20-column viewport) that
-    /// an h-scrollbar is actually present in both the baseline and the
-    /// reserved layout, so `h_scrollbar_bounds` narrowing is a real
-    /// assertion rather than a vacuous `None`. The paint call at the end
-    /// cross-checks `editor_layout` against `draw_editor` at this same
-    /// *non-zero* reserve, not just at `0` (which is all
-    /// `editor_layout_matches_draw_editor_scrollbar_track` above covers).
+    /// An editor's `paint_options.right_reserve_w` narrows
+    /// `text_bounds`/`h_scrollbar_bounds` by the reserve while
+    /// `v_scrollbar_bounds` keeps hugging the true right edge. `max_col` is
+    /// large enough (relative to the 20-column viewport) that an
+    /// h-scrollbar is present in both the baseline and the reserved
+    /// layout, so `h_scrollbar_bounds` narrowing is a real assertion
+    /// rather than a vacuous `None`.
     #[test]
     fn editor_right_reserve_w_narrows_layout_without_moving_scrollbar() {
-        let mut backend = TuiBackend::new();
-        assert_eq!(
-            backend.editor_right_reserve_w(),
-            None,
-            "a host that never calls the setter must see no reserve"
-        );
+        use crate::backend::DrawsPrimitives;
+        let backend = TuiBackend::new();
 
         let rect = QRect::new(2.0, 1.0, 20.0, 5.0);
         let editor = crate::Editor {
@@ -6917,11 +6647,11 @@ mod tests {
             paint_options: Default::default(),
         };
 
-        let baseline = backend.editor_layout(rect, &editor);
+        let baseline = backend.layout_primitive(rect, &editor);
 
-        backend.set_editor_right_reserve_w(Some(3.0));
-        assert_eq!(backend.editor_right_reserve_w(), Some(3.0));
-        let reserved = backend.editor_layout(rect, &editor);
+        let mut reserved_editor = editor.clone();
+        reserved_editor.paint_options.right_reserve_w = 3.0;
+        let reserved = backend.layout_primitive(rect, &reserved_editor);
 
         let vsb = baseline
             .v_scrollbar_bounds
@@ -6948,37 +6678,22 @@ mod tests {
             baseline_hsb.width - 3.0,
             "h_scrollbar_bounds must narrow by exactly the stored reserve, same as text_bounds"
         );
-
-        // Cross-check against the real `draw_editor` paint at this same
-        // non-zero reserve: `v_scrollbar_bounds` must match the track
-        // `draw_editor` actually painted (area.x + area.width - 1, …),
-        // same invariant as the reserve-0 test above but exercised here
-        // with `right_reserve = 3`.
-        let area = q_rect_to_ratatui(rect);
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        crate::tui::draw_editor_with_reserve(&mut buf, area, &editor, &backend.current_theme, 3);
         assert_eq!(
             vsb.x,
             rect.x + rect.width - 1.0,
-            "v_scrollbar_bounds's x must match draw_editor's track formula \
-             (area.x + area.width - 1) even with a non-zero reserve"
+            "the v-scrollbar track stays in the last column with a non-zero reserve"
         );
     }
 
-    /// An inactive window's `None` cursor must not clobber
-    /// an active window's `Some` position recorded earlier in the same
-    /// frame. A split has one `draw_editor` call per window; only the
-    /// active window's `Editor.cursor` is `Some` (the consumer only ever
-    /// sets `RenderedWindow.cursor` for the active window), so the
-    /// inactive window's call correctly reports `None` — but before this
-    /// fix `last_cursor_position` was overwritten unconditionally on every
-    /// call, so whichever window painted *last* decided the whole frame's
-    /// caret, not whichever window was actually active. This reproduces
-    /// vimcode#1039's "active window, wrong paint order ⇒ no caret" shape
-    /// by painting the active window first and the inactive window
-    /// second.
+    /// An inactive window's caret-less editor must not clobber the
+    /// active window's caret placed earlier in the same frame. A split
+    /// paints one editor per window and only the active window's
+    /// `Editor.cursor` is `Some`, so whichever window paints last must not
+    /// decide the frame's caret. Paints the active window first and the
+    /// inactive window second.
     #[test]
-    fn draw_editor_none_does_not_clobber_earlier_some_cursor_in_same_frame() {
+    fn caretless_editor_does_not_clobber_an_earlier_caret_in_the_same_frame() {
+        use crate::backend::DrawsPrimitives;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
@@ -7028,29 +6743,17 @@ mod tests {
         terminal
             .draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
-                    // Active window paints first and reports `Some` —
-                    // mirrors vimcode's pre-workaround fixed paint order
-                    // (left, then right), which broke whenever the left
-                    // (active) window wasn't the one painted last.
-                    let active_result = b.draw_editor(rect, &active_editor);
-                    assert_eq!(
-                        active_result.cursor_position_native,
-                        Some(crate::event::Point::new(0.0, 0.0))
-                    );
-
-                    // Inactive window paints second and correctly reports
-                    // `None` — this must not clobber the cache.
-                    let inactive_result = b.draw_editor(rect, &inactive_editor);
-                    assert_eq!(inactive_result.cursor_position_native, None);
+                    b.draw_primitive(rect, &active_editor);
+                    b.draw_primitive(rect, &inactive_editor);
                 });
             })
             .expect("draw");
 
         assert_eq!(
-            backend.take_last_cursor_position(),
-            Some((0, 0)),
-            "an inactive window's None cursor_position must not clobber the active \
-             window's Some position recorded earlier in the same frame (quadraui#1002)"
+            backend.take_last_cell_surface_cursor(),
+            Some((0, 0, crate::CursorShape::Bar)),
+            "an inactive window's caret-less paint must not clobber the active \
+             window's caret placed earlier in the same frame"
         );
     }
 
@@ -7321,54 +7024,6 @@ mod tests {
         );
     }
 
-    #[test]
-    #[cfg(not(debug_assertions))]
-    fn draw_minimap_outside_frame_scope_reports_not_painted() {
-        let mut backend = TuiBackend::new();
-        let minimap = crate::primitives::minimap::Minimap {
-            id: WidgetId::new("minimap"),
-            lines: Vec::new(),
-            syntax_spans: Vec::new(),
-            visible_row_start: 0,
-            visible_row_count: 0,
-            total_buffer_lines: 0,
-            scale: Default::default(),
-            sizing: None,
-        };
-        let rect = QRect::new(0.0, 0.0, 10.0, 20.0);
-
-        let result = backend.draw_minimap(rect, &minimap);
-        assert!(
-            !result.painted,
-            "no frame means nothing was actually rasterised"
-        );
-        assert_eq!(
-            result.layout,
-            backend.minimap_layout(rect, &minimap),
-            "the reported layout must still be the real geometry, not a stub"
-        );
-    }
-
-    #[test]
-    #[cfg(not(debug_assertions))]
-    fn draw_image_outside_frame_scope_reports_unsupported() {
-        let mut backend = TuiBackend::new();
-        let image = crate::primitives::image::Image {
-            id: WidgetId::new("image"),
-            source: crate::primitives::image::ImageSource::Bytes(Vec::new()),
-            intrinsic_size: None,
-            fit: crate::primitives::image::ImageFit::Contain,
-            fallback_text: "[image]".to_string(),
-        };
-        let rect = QRect::new(0.0, 0.0, 10.0, 10.0);
-
-        assert_eq!(
-            backend.draw_image(rect, &image),
-            crate::backend::ImagePaintResult::Unsupported,
-            "mirrors the win/macOS \"no rasteriser available\" report (issue #924)"
-        );
-    }
-
     // ── Kitty graphics protocol ─────────────────────────────────────────
 
     /// `kitty_graphics` is `None` until both halves of its state are set —
@@ -7428,13 +7083,13 @@ mod tests {
         assert_eq!(backend.kitty_graphics(), None);
     }
 
-    /// `draw_image`, on a confirmed-Kitty-graphics truecolor backend,
-    /// paints real Unicode placeholder cells (reporting `Painted`) and
+    /// An image painted on a confirmed-Kitty-graphics truecolor backend
+    /// paints real Unicode placeholder cells and
     /// shields them from selection/copy via `register_opaque_rect` —
     /// not the plain `register_zone` a fallback-text paint gets.
     #[test]
     #[cfg(feature = "tui-images")]
-    fn draw_image_on_confirmed_kitty_terminal_paints_real_pixels_and_registers_opaque() {
+    fn image_on_confirmed_kitty_terminal_paints_real_pixels_and_registers_opaque() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
@@ -7463,16 +7118,14 @@ mod tests {
         let rect = QRect::new(0.0, 0.0, 4.0, 4.0);
 
         let mut terminal = Terminal::new(TestBackend::new(20, 5)).expect("test terminal");
-        let mut result = crate::backend::ImagePaintResult::Unsupported;
         terminal
             .draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
-                    result = b.draw_image(rect, &image);
+                    b.draw_primitive(rect, &image);
                 });
             })
             .expect("draw into TestBackend is infallible");
 
-        assert_eq!(result, crate::backend::ImagePaintResult::Painted);
         let buf = terminal.backend().buffer();
         assert!(
             backend.is_opaque_cell(buf, 0, 0),
@@ -7481,15 +7134,14 @@ mod tests {
         );
     }
 
-    /// `draw_image`, on a truecolor backend that has NOT confirmed Kitty
-    /// graphics, falls through to the half-block mosaic (reporting
-    /// `Painted`, registered opaque) rather than plain fallback text —
+    /// An image painted on a truecolor backend that has NOT confirmed Kitty
+    /// graphics falls through to the half-block mosaic (registered
+    /// opaque) rather than plain fallback text —
     /// the degrade tier between the Kitty path above and
-    /// `draw_image_falls_back_to_text_on_256_color_terminal` below.
+    /// `image_falls_back_to_text_on_256_color_terminal` below.
     #[test]
     #[cfg(feature = "tui-images")]
-    fn draw_image_on_truecolor_terminal_without_kitty_paints_halfblock_mosaic_and_registers_opaque()
-    {
+    fn image_on_truecolor_terminal_without_kitty_paints_halfblock_mosaic_and_registers_opaque() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
@@ -7517,16 +7169,14 @@ mod tests {
         let rect = QRect::new(0.0, 0.0, 4.0, 4.0);
 
         let mut terminal = Terminal::new(TestBackend::new(20, 5)).expect("test terminal");
-        let mut result = crate::backend::ImagePaintResult::Unsupported;
         terminal
             .draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
-                    result = b.draw_image(rect, &image);
+                    b.draw_primitive(rect, &image);
                 });
             })
             .expect("draw into TestBackend is infallible");
 
-        assert_eq!(result, crate::backend::ImagePaintResult::Painted);
         let buf = terminal.backend().buffer();
         assert_eq!(
             buf[(0, 0)].symbol(),
@@ -7542,11 +7192,10 @@ mod tests {
 
     /// Same source and rect as the two tests above, but on a 256-colour
     /// backend: neither the Kitty path nor the half-block path applies,
-    /// so `draw_image` falls all the way back to `Image::fallback_text`
-    /// and reports `Unsupported`.
+    /// so the image falls all the way back to `Image::fallback_text`.
     #[test]
     #[cfg(feature = "tui-images")]
-    fn draw_image_falls_back_to_text_on_256_color_terminal() {
+    fn image_falls_back_to_text_on_256_color_terminal() {
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
@@ -7577,16 +7226,14 @@ mod tests {
         let rect = QRect::new(0.0, 0.0, 20.0, 3.0);
 
         let mut terminal = Terminal::new(TestBackend::new(20, 5)).expect("test terminal");
-        let mut result = crate::backend::ImagePaintResult::Unsupported;
         terminal
             .draw(|frame| {
                 backend.enter_frame_scope(frame, |b| {
-                    result = b.draw_image(rect, &image);
+                    b.draw_primitive(rect, &image);
                 });
             })
             .expect("draw into TestBackend is infallible");
 
-        assert_eq!(result, crate::backend::ImagePaintResult::Unsupported);
         let buf = terminal.backend().buffer();
         let mut text = String::new();
         for x in 0..20 {
@@ -7632,8 +7279,8 @@ mod tests {
     }
 
     /// One-line `Editor` carrying a diagnostic and a spell error at
-    /// distinct columns — the two decoration categories `editor::draw_editor`
-    /// sets `Cell::underline_color` for.
+    /// distinct columns — the two decoration categories the editor's cell
+    /// painter sets `Cell::underline_color` for.
     fn underline_fixture_editor() -> crate::Editor {
         let line = crate::EditorLine {
             raw_text: "x".repeat(20),
@@ -7697,7 +7344,7 @@ mod tests {
 
     /// Paints [`underline_fixture_tab_bar`] + [`underline_fixture_editor`]
     /// through the real production call path — the tab strip through its
-    /// `Primitive` contract, the editor through its `Backend` method —
+    /// `Primitive` contract, the editor through its own —
     /// not the free rasteriser functions directly.
     struct UnderlineFixtureApp;
     impl crate::runner::AppLogic for UnderlineFixtureApp {
@@ -7706,7 +7353,7 @@ mod tests {
             let bar = underline_fixture_tab_bar();
             crate::DrawsPrimitives::draw_dyn(backend, QRect::new(0.0, 0.0, 20.0, 1.0), &bar, &());
             let editor = underline_fixture_editor();
-            backend.draw_editor(editor.rect, &editor);
+            crate::DrawsPrimitives::draw_primitive(backend, editor.rect, &editor);
         }
         fn handle(
             &mut self,

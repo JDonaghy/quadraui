@@ -51,10 +51,8 @@ pub enum EditorHit {
     /// fixed-cell grid, but can drift from the actual glyph on
     /// proportional-font or per-span-attributed backends (bold /
     /// italic / `font_scale` spans paint at a different advance than
-    /// `cell_width`). Callers that need the exact column on those backends
-    /// should discard this field and resolve via
-    /// [`crate::Backend::editor_col_at_x`] instead (falls back to this
-    /// same approximation on TUI).
+    /// `cell_width`). The editor's own pointer events resolve the column
+    /// the same monospace way (see [`EditorLayout::col_at_x`]).
     BufferPos { line: usize, col: usize },
     /// Click landed in the gutter region.
     Gutter { line_idx: usize, gutter_col: usize },
@@ -100,9 +98,7 @@ impl EditorLayout {
     /// Zone classification (gutter / scrollbar / text-area) and the
     /// resolved `line` are always accurate. The `col` on the returned
     /// [`EditorHit::BufferPos`] is a uniform-monospace approximation —
-    /// see that variant's doc and [`Self::col_at_x`] /
-    /// [`crate::Backend::editor_col_at_x`] for the text-engine-accurate
-    /// resolution proportional/attributed backends need.
+    /// see that variant's doc and [`Self::col_at_x`].
     pub fn hit_test(&self, x: f32, y: f32) -> EditorHit {
         if x < self.bounds.x
             || x >= self.bounds.x + self.bounds.width
@@ -154,13 +150,10 @@ impl EditorLayout {
     /// Resolve `x` to a character column within `editor.lines[view_row]`
     /// using uniform monospace division (`self.cell_width`).
     ///
-    /// This is the default [`crate::Backend::editor_col_at_x`]
-    /// implementation — correct for TUI's fixed-cell grid and any
-    /// backend whose configured font renders every glyph at the same
-    /// advance width. Backends that paint editor text with a real
-    /// text-shaping engine and per-span attributes (bold / italic /
-    /// `font_scale`) override `Backend::editor_col_at_x` with an exact
-    /// glyph-position inverse of their `draw_editor` instead.
+    /// Correct for TUI's fixed-cell grid and any backend whose configured
+    /// font renders every glyph at the same advance width; an approximation
+    /// for text painted with per-span attributes (bold / italic /
+    /// `font_scale`) at a different advance.
     ///
     /// The returned column already folds in `self.scroll_left` and the
     /// row's `segment_col_offset` (0 for non-wrapped lines and the
@@ -264,9 +257,8 @@ impl Editor {
     /// column to size) when `options.suppress_v_scrollbar` is `true` or
     /// the buffer doesn't overflow the viewport.
     ///
-    /// GUI hosts normally reach this through
-    /// [`crate::Backend::set_editor_v_scrollbar_width`] rather than
-    /// calling it directly.
+    /// GUI hosts normally reach this through the editor's
+    /// `paint_options.v_scrollbar_w` rather than calling it directly.
     ///
     /// Equivalent to [`Self::layout_with_options_and_reserve`] with
     /// `right_reserve_w: 0.0`.

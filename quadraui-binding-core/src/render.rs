@@ -4311,9 +4311,7 @@ mod tests {
     #[test]
     fn align_sizes_every_extra_leaf_kind_to_its_own_natural_height() {
         use crate::extra_paint::{Checkbox, PasswordInput, Select, Slider, TextArea};
-        use quadraui::{
-            ComboBox, Image, ImageFit, ImageSource, ProgressBar, Spinner, TextField, TextInput,
-        };
+        use quadraui::{ComboBox, ProgressBar, Spinner, TextField, TextInput};
 
         let kinds: Vec<(&str, Rc<dyn ExtraPaint>)> = vec![
             (
@@ -4334,16 +4332,6 @@ mod tests {
                     label: String::new(),
                     frame_idx: 0,
                     accent: None,
-                }),
-            ),
-            (
-                "image",
-                Rc::new(Image {
-                    id: WidgetId::new("image"),
-                    source: ImageSource::Path(std::path::PathBuf::new()),
-                    intrinsic_size: None,
-                    fit: ImageFit::Contain,
-                    fallback_text: "img".to_string(),
                 }),
             ),
             (

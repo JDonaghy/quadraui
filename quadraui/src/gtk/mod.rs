@@ -120,9 +120,7 @@ mod data_table;
 mod date_picker;
 mod dialog;
 mod diff_view;
-mod editor;
 pub mod events;
-mod image;
 mod list;
 // `MenuOverlay` is the module's only `pub` item and has zero reachers —
 // see the `pub use` block below for the full unused-flat-re-export
@@ -133,7 +131,6 @@ mod list;
 #[doc(hidden)]
 pub mod menu_overlay;
 mod message_list;
-mod minimap;
 mod multi_section_view;
 mod number_input;
 mod painted_text;
@@ -180,28 +177,14 @@ pub use chart::gtk_chart_layout;
 pub use completions::draw_completions;
 #[doc(hidden)]
 pub use dialog::draw_dialog;
-pub use editor::{draw_editor, editor_col_at_x};
 #[doc(hidden)]
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
-#[doc(hidden)]
-pub use image::draw_image;
 #[doc(hidden)]
 pub use list::{draw_list, draw_list_with_state, gtk_list_layout};
 #[doc(hidden)]
 pub use menu_overlay::MenuOverlay;
 #[doc(hidden)]
 pub use message_list::draw_message_list;
-pub use minimap::draw_minimap;
-// The legibility/render-mode thresholds (`is_legible`, `render_mode`,
-// `minimap_font_px`, `MinimapRenderMode`) and the shared `ROW_PITCH_PX` /
-// `COLUMN_CAPACITY` geometry constants moved to `primitives::minimap` so
-// `win::minimap` (and any future macOS rasteriser) consume the exact same
-// decision logic — see that module's docs. Zero hits for any of those
-// names in `~/src/coord-tui/src` or `~/src/vimcode/src`, so they're
-// dropped from this re-export list rather than kept as a stale alias
-// (CLAUDE.md's "Downstream consumers" rule 8: zero hits ⇒ free to move).
-#[doc(hidden)]
-pub use minimap::gtk_minimap_layout;
 #[doc(hidden)]
 pub use multi_section_view::{
     draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,

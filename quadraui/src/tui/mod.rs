@@ -44,11 +44,9 @@ pub mod color;
 // `CellSurface` adapter, which cannot be built outside `crate::tui`.
 mod data_table;
 mod diff_view;
-mod editor;
 pub mod events;
 mod find_replace;
 mod focus_ring;
-mod image;
 // Decode + downscale for the Kitty graphics protocol.
 // Gated separately from `kitty_graphics` below: this module alone needs
 // `dep:image`, so only it sits behind `tui-images` rather than the bare
@@ -65,7 +63,6 @@ mod image_decode;
 mod kitty_graphics;
 mod list;
 mod message_list;
-mod minimap;
 mod multi_section_view;
 mod pipeline_view;
 mod progress;
@@ -115,15 +112,9 @@ pub use data_table::{draw_tree_table, tree_table_layout};
 #[doc(hidden)]
 pub use diff_view::draw_diff_view;
 #[doc(hidden)]
-pub use editor::draw_editor;
-#[doc(hidden)]
-pub use editor::{draw_editor_with_reserve, EditorPaintResult};
-#[doc(hidden)]
 pub use find_replace::draw_find_replace;
 #[doc(hidden)]
 pub use focus_ring::draw_focus_ring;
-#[doc(hidden)]
-pub use image::draw_image;
 #[doc(hidden)]
 pub use list::{
     draw_list, draw_list_with_scroll_px, draw_list_with_state, tui_list_layout,
@@ -131,12 +122,6 @@ pub use list::{
 };
 #[doc(hidden)]
 pub use message_list::draw_message_list;
-pub use minimap::draw_minimap;
-#[doc(hidden)]
-pub use minimap::{
-    draw_minimap_with_scale, draw_minimap_with_sizing, tui_minimap_layout,
-    tui_minimap_layout_with_sizing, COLS_PER_CELL, LINES_PER_ROW,
-};
 pub use multi_section_view::{draw_multi_section_view, tui_msv_layout};
 #[doc(hidden)]
 pub use pipeline_view::{draw_pipeline_view, tui_pipeline_view_layout};

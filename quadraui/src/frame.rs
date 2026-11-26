@@ -39,9 +39,8 @@
 //! ## `Surface` coverage
 //!
 //! Every primitive that has a `Backend::draw_*` method has a matching
-//! [`Surface`] variant (`Board`, `DiffView`, `Image`, `MessageList`,
-//! `Minimap`, `PipelineView`, `Progress`, `Spinner`, `SplitTree`
-//! included). `Backend::draw_<name>` stays reachable directly for the
+//! [`Surface`] variant (`Board`, `DiffView`, `MessageList`,
+//! `PipelineView`, `Progress`, `Spinner`, `SplitTree` included). `Backend::draw_<name>` stays reachable directly for the
 //! reasons above; there is no primitive that is categorically
 //! unreachable through the declarative path.
 //!
@@ -264,10 +263,6 @@ use crate::Backend;
 #[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
 pub enum Surface {
-    Editor {
-        rect: Rect,
-        editor: Editor,
-    },
     MultiSectionView {
         rect: Rect,
         view: MultiSectionView,
@@ -332,17 +327,9 @@ pub enum Surface {
         rect: Rect,
         view: DiffView,
     },
-    Image {
-        rect: Rect,
-        image: Image,
-    },
     MessageList {
         rect: Rect,
         list: MessageList,
-    },
-    Minimap {
-        rect: Rect,
-        minimap: Minimap,
     },
     PipelineView {
         rect: Rect,
@@ -396,9 +383,6 @@ pub enum Surface {
     note = "use `crate::frame_tree::FrameTree` (via `ScreenLayout::into_frame_tree`/`AppLogic::frame_tree`) for click/hit-test routing instead"
 )]
 pub enum FrameZone {
-    Editor {
-        idx: usize,
-    },
     TabBar {
         idx: usize,
     },
@@ -444,13 +428,7 @@ pub enum FrameZone {
     DiffView {
         idx: usize,
     },
-    Image {
-        idx: usize,
-    },
     MessageList {
-        idx: usize,
-    },
-    Minimap {
         idx: usize,
     },
     PipelineView {
@@ -691,9 +669,6 @@ impl ScreenLayout {
 
         for (idx, surface) in self.surfaces.iter().enumerate() {
             match surface {
-                Surface::Editor { rect, editor } => {
-                    backend.draw_editor(*rect, editor);
-                }
                 Surface::MultiSectionView { rect, view } => {
                     backend.draw_multi_section_view(*rect, view);
                 }
@@ -746,14 +721,8 @@ impl ScreenLayout {
                 Surface::DiffView { rect, view } => {
                     backend.draw_diff_view(*rect, view);
                 }
-                Surface::Image { rect, image } => {
-                    backend.draw_image(*rect, image);
-                }
                 Surface::MessageList { rect, list } => {
                     backend.draw_message_list(*rect, list);
-                }
-                Surface::Minimap { rect, minimap } => {
-                    backend.draw_minimap(*rect, minimap);
                 }
                 Surface::PipelineView { rect, view } => {
                     backend.draw_pipeline_view(*rect, view);
@@ -838,7 +807,6 @@ impl ScreenLayout {
             .surfaces
             .iter()
             .flat_map(|s| match s {
-                Surface::Editor { rect, editor } => vec![(editor.id, *rect)],
                 Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
                 Surface::Tree { rect, tree } => vec![(tree.id, *rect)],
                 Surface::List { rect, list } => vec![(list.id, *rect)],
@@ -848,11 +816,9 @@ impl ScreenLayout {
                 Surface::Board { rect, model } => vec![(model.id, *rect)],
                 Surface::DiffView { rect, view } => vec![(view.id, *rect)],
                 Surface::MessageList { rect, list } => vec![(list.id, *rect)],
-                Surface::Minimap { rect, minimap } => vec![(minimap.id, *rect)],
                 Surface::PipelineView { rect, view } => vec![(view.id, *rect)],
                 Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
-                Surface::Image { .. }
-                | Surface::Spinner { .. }
+                Surface::Spinner { .. }
                 | Surface::Canvas { .. }
                 | Surface::Progress { .. }
                 | Surface::Split { .. }
@@ -899,7 +865,6 @@ impl ScreenLayout {
     #[allow(deprecated)]
     fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
-            Surface::Editor { rect, .. } => (*rect, FrameZone::Editor { idx }),
             Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
             Surface::Tree { rect, .. } => (*rect, FrameZone::Tree { idx }),
             Surface::List { rect, .. } => (*rect, FrameZone::List { idx }),
@@ -918,9 +883,7 @@ impl ScreenLayout {
             Surface::Canvas { rect, .. } => (*rect, FrameZone::Canvas { idx }),
             Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
             Surface::DiffView { rect, .. } => (*rect, FrameZone::DiffView { idx }),
-            Surface::Image { rect, .. } => (*rect, FrameZone::Image { idx }),
             Surface::MessageList { rect, .. } => (*rect, FrameZone::MessageList { idx }),
-            Surface::Minimap { rect, .. } => (*rect, FrameZone::Minimap { idx }),
             Surface::PipelineView { rect, .. } => (*rect, FrameZone::PipelineView { idx }),
             Surface::Progress { rect, .. } => (*rect, FrameZone::Progress { idx }),
             Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
@@ -1096,7 +1059,7 @@ impl OwnedContent {
     fn draw(&self, rect: Rect, backend: &mut dyn Backend) {
         match self {
             OwnedContent::Editor(editor) => {
-                backend.draw_editor(rect, editor);
+                backend.draw_primitive(rect, editor);
             }
             OwnedContent::TabBar(bar) => {
                 // `impl Primitive for TabBar` is unconditional, like
@@ -1200,11 +1163,11 @@ impl OwnedContent {
                 backend.draw_diff_view(rect, view);
             }
             OwnedContent::Image(image) => {
-                backend.draw_image(rect, image);
+                backend.draw_primitive(rect, image);
             }
             OwnedContent::MessageList(list) => backend.draw_message_list(rect, list),
             OwnedContent::Minimap(minimap) => {
-                backend.draw_minimap(rect, minimap);
+                backend.draw_primitive(rect, minimap);
             }
             OwnedContent::PipelineView(view) => {
                 backend.draw_pipeline_view(rect, view);
@@ -1279,7 +1242,10 @@ impl OwnedContent {
     #[allow(deprecated)]
     fn zone(&self, idx: usize) -> FrameZone {
         match self {
-            OwnedContent::Editor(_) => FrameZone::Editor { idx },
+            OwnedContent::Editor(editor) => FrameZone::Widget {
+                idx,
+                id: Some(editor.id),
+            },
             OwnedContent::TabBar(bar) => FrameZone::Widget {
                 idx,
                 id: Some(bar.id),
@@ -1366,9 +1332,15 @@ impl OwnedContent {
                 id: Some(cc.id),
             },
             OwnedContent::DiffView(_) => FrameZone::DiffView { idx },
-            OwnedContent::Image(_) => FrameZone::Image { idx },
+            OwnedContent::Image(image) => FrameZone::Widget {
+                idx,
+                id: Some(image.id),
+            },
             OwnedContent::MessageList(_) => FrameZone::MessageList { idx },
-            OwnedContent::Minimap(_) => FrameZone::Minimap { idx },
+            OwnedContent::Minimap(minimap) => FrameZone::Widget {
+                idx,
+                id: Some(minimap.id),
+            },
             OwnedContent::PipelineView(_) => FrameZone::PipelineView { idx },
             OwnedContent::Progress(_) => FrameZone::Progress { idx },
             OwnedContent::SidebarPanel(panel) => FrameZone::Widget {
@@ -1621,9 +1593,6 @@ impl OwnedFrame {
 /// Deserialize}` — it still keeps its own distinct [`FrameZone`] tag.
 fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) {
     match surface {
-        Surface::Editor { rect, editor } => {
-            (*rect, Some(editor.id), OwnedContent::Editor(editor.clone()))
-        }
         Surface::MultiSectionView { rect, view } => (
             *rect,
             Some(view.id),
@@ -1650,16 +1619,10 @@ fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) 
         Surface::DiffView { rect, view } => {
             (*rect, Some(view.id), OwnedContent::DiffView(view.clone()))
         }
-        Surface::Image { rect, image } => (*rect, None, OwnedContent::Image(image.clone())),
         Surface::MessageList { rect, list } => (
             *rect,
             Some(list.id),
             OwnedContent::MessageList(list.clone()),
-        ),
-        Surface::Minimap { rect, minimap } => (
-            *rect,
-            Some(minimap.id),
-            OwnedContent::Minimap(minimap.clone()),
         ),
         Surface::PipelineView { rect, view } => (
             *rect,
@@ -1804,7 +1767,7 @@ mod tests {
         // Background surface covers entire area.
         map.push(
             Rect::new(0.0, 0.0, 100.0, 100.0),
-            FrameZone::Editor { idx: 0 },
+            FrameZone::Tree { idx: 0 },
         );
         // Overlay covers top-left quadrant.
         map.push(
@@ -1814,8 +1777,8 @@ mod tests {
 
         // Point in the overlay → highest-z wins.
         assert_eq!(map.hit_test(25.0, 25.0), FrameZone::FindReplace { idx: 1 });
-        // Point outside the overlay but inside editor.
-        assert_eq!(map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
+        // Point outside the overlay but inside the tree.
+        assert_eq!(map.hit_test(75.0, 75.0), FrameZone::Tree { idx: 0 });
         // Point outside everything.
         assert_eq!(map.hit_test(150.0, 150.0), FrameZone::Empty);
     }
@@ -1830,10 +1793,7 @@ mod tests {
     #[test]
     fn multiple_overlapping_zones_last_wins() {
         let mut map = FrameHitMap::new();
-        map.push(
-            Rect::new(0.0, 0.0, 80.0, 24.0),
-            FrameZone::Editor { idx: 0 },
-        );
+        map.push(Rect::new(0.0, 0.0, 80.0, 24.0), FrameZone::Tree { idx: 0 });
         map.push(Rect::new(0.0, 0.0, 80.0, 1.0), FrameZone::TabBar { idx: 1 });
         map.push(
             Rect::new(0.0, 23.0, 80.0, 1.0),
@@ -1841,7 +1801,7 @@ mod tests {
         );
 
         assert_eq!(map.hit_test(40.0, 0.5), FrameZone::TabBar { idx: 1 });
-        assert_eq!(map.hit_test(40.0, 12.0), FrameZone::Editor { idx: 0 });
+        assert_eq!(map.hit_test(40.0, 12.0), FrameZone::Tree { idx: 0 });
         assert_eq!(map.hit_test(40.0, 23.5), FrameZone::Scrollbar { idx: 2 });
     }
 
@@ -1974,9 +1934,9 @@ mod tests {
         });
         empty_layout.tree_frame();
         assert_eq!(empty_layout.tree_store.len(), 1);
-        empty_layout.surfaces_mut()[0] = Surface::Editor {
+        empty_layout.surfaces_mut()[0] = Surface::Widget {
             rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-            editor: Editor {
+            widget: Box::new(Editor {
                 id: "ed".into(),
                 rect: Rect::new(0.0, 0.0, 40.0, 10.0),
                 lines: Vec::new(),
@@ -2002,7 +1962,7 @@ mod tests {
                 cursorline: false,
                 lightbulb_glyph: '\0',
                 paint_options: Default::default(),
-            },
+            }),
         };
         empty_layout.tree_frame();
         assert_eq!(empty_layout.tree_store.len(), 0);
@@ -2054,9 +2014,9 @@ mod tests {
         };
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::Editor {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
-            editor,
+            widget: Box::new(editor),
         });
         layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 50.0, 50.0),
@@ -2078,7 +2038,13 @@ mod tests {
             }
         );
         // Point outside the overlay but inside the editor.
-        assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
+        assert_eq!(
+            hit_map.hit_test(75.0, 75.0),
+            FrameZone::Widget {
+                idx: 0,
+                id: Some("ed".into())
+            }
+        );
         // Point outside everything.
         assert_eq!(hit_map.hit_test(150.0, 150.0), FrameZone::Empty);
     }
@@ -2202,9 +2168,9 @@ mod tests {
         let mut layout = ScreenLayout::new();
         // Pushed in the "wrong" (bottom-to-top) order — `tab_stops` must
         // still resolve reading order (top-to-bottom) from the rects.
-        layout.push(Surface::Editor {
+        layout.push(Surface::Widget {
             rect: editor.rect,
-            editor,
+            widget: Box::new(editor),
         });
         layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 50.0, 5.0),
@@ -2342,12 +2308,18 @@ mod tests {
             rect: overlay.bounds(),
             widget: Box::new(overlay.clone()),
         });
-        layout.push(Surface::Image { rect, image });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(image),
+        });
         layout.push(Surface::MessageList {
             rect,
             list: message_list,
         });
-        layout.push(Surface::Minimap { rect, minimap });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(minimap),
+        });
         layout.push(Surface::PipelineView {
             rect,
             view: pipeline,
@@ -2388,9 +2360,21 @@ mod tests {
         );
         assert_eq!(zones[2], &FrameZone::DiffView { idx: 2 });
         assert_eq!(zones[3], &FrameZone::Widget { idx: 3, id: None });
-        assert_eq!(zones[4], &FrameZone::Image { idx: 4 });
+        assert_eq!(
+            zones[4],
+            &FrameZone::Widget {
+                idx: 4,
+                id: Some(WidgetId::new("img")),
+            }
+        );
         assert_eq!(zones[5], &FrameZone::MessageList { idx: 5 });
-        assert_eq!(zones[6], &FrameZone::Minimap { idx: 6 });
+        assert_eq!(
+            zones[6],
+            &FrameZone::Widget {
+                idx: 6,
+                id: Some(WidgetId::new("mm")),
+            }
+        );
         assert_eq!(zones[7], &FrameZone::PipelineView { idx: 7 });
         assert_eq!(zones[8], &FrameZone::Progress { idx: 8 });
         assert_eq!(
@@ -2426,15 +2410,16 @@ mod tests {
         // non-cancellable `Progress` (no activatable affordance).
         let stops = layout.tab_stops();
         let stop_ids: Vec<&str> = stops.iter().map(|(id, _)| id.as_str()).collect();
-        for id in ["board", "cc", "diff", "ml", "mm", "pv", "ti"] {
+        for id in ["board", "cc", "diff", "ml", "pv", "ti"] {
             assert!(stop_ids.contains(&id), "{id} should be a tab stop");
         }
-        // A `SidebarPanel` is pointer-only (`FocusSpec::None`), and a
-        // toolbar with no button has nothing to focus.
-        for id in ["img", "sn", "pb", "leaf", "sp", "tb"] {
+        // A `SidebarPanel` and a `Minimap` are pointer-only
+        // (`FocusSpec::None`), and a toolbar with no button has nothing to
+        // focus.
+        for id in ["img", "mm", "sn", "pb", "leaf", "sp", "tb"] {
             assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
         }
-        assert_eq!(stop_ids.len(), 7);
+        assert_eq!(stop_ids.len(), 6);
     }
 
     /// A cancellable `Progress` bar *does* get a tab stop — the cancel
@@ -2509,9 +2494,9 @@ mod tests {
         );
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::Editor {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
-            editor,
+            widget: Box::new(editor),
         });
         layout.push(Surface::Widget {
             rect: float_layout.bounds,
@@ -3193,9 +3178,9 @@ mod tests {
         };
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::Editor {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 100.0, 100.0),
-            editor,
+            widget: Box::new(editor),
         });
         layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 50.0, 50.0),
@@ -3221,7 +3206,13 @@ mod tests {
             }
         );
         // Point outside the overlay but inside the editor.
-        assert_eq!(hit_map.hit_test(75.0, 75.0), FrameZone::Editor { idx: 0 });
+        assert_eq!(
+            hit_map.hit_test(75.0, 75.0),
+            FrameZone::Widget {
+                idx: 0,
+                id: Some("ed".into())
+            }
+        );
         // Point outside everything.
         assert_eq!(hit_map.hit_test(150.0, 150.0), FrameZone::Empty);
     }
@@ -3267,9 +3258,9 @@ mod tests {
         };
 
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::Editor {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 20.0, 5.0),
-            editor,
+            widget: Box::new(editor),
         });
 
         let captured = OwnedFrame::from_layout(&layout);
@@ -3302,7 +3293,13 @@ mod tests {
             .expect("render ran at least once during TuiDriver::new");
 
         assert!(!hit_map.is_empty());
-        assert_eq!(hit_map.hit_test(1.0, 1.0), FrameZone::Editor { idx: 0 });
+        assert_eq!(
+            hit_map.hit_test(1.0, 1.0),
+            FrameZone::Widget {
+                idx: 0,
+                id: Some("ed".into())
+            }
+        );
     }
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]

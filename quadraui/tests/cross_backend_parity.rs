@@ -1338,8 +1338,8 @@ fn title_does_not_reach_the_screen_when_border_is_not_full() {
 // The two backends that rasterise both primitives agree on the resulting logical
 // state, the same "one AppLogic, one script, both backends" shape.
 
-/// Bounds of the zone [`minimap_app::MinimapApp`] registers every frame
-/// via `Backend::draw_minimap`'s `register_zone` call — read from each
+/// Bounds of the zone [`minimap_app::MinimapApp`]'s minimap registers every
+/// frame through its widget contract — read from each
 /// driver's own [`FrameInventory`] rather than recomputing the app's
 /// private `minimap_rect` math, so the click point below is never a
 /// hardcoded coordinate in either backend's units.
@@ -1400,16 +1400,16 @@ fn scroll_line_number(status: &str) -> u32 {
 /// mathematically the same result as the CPU-side pre-mix TUI must do instead,
 /// since a terminal cell's background has no alpha channel to composite through.
 ///
-/// Drives each backend's real, production `draw_minimap` rasteriser directly
+/// Drives each backend's real, production minimap painter directly
 /// (not through an `AppLogic`/driver), using an all-blank-lines fixture so nothing
 /// paints over the highlight band on either backend. TUI's cell read is exact;
 /// GTK's is Cairo's alpha-composited byte result, allowed a small rounding tolerance.
 #[test]
 fn minimap_viewport_slider_is_a_blended_tint_not_opaque_accent_bg_on_tui_and_gtk() {
     use gtk4::cairo::{Context as CairoContext, Format, ImageSurface};
-    use quadraui::gtk::draw_minimap as gtk_draw_minimap;
-    use quadraui::tui::draw_minimap as tui_draw_minimap;
-    use quadraui::{Minimap, MinimapLine};
+    use quadraui::gtk::GtkBackend;
+    use quadraui::tui::BufferCellSurface;
+    use quadraui::{Minimap, MinimapLine, MinimapSizing, PaintEnv, Primitive, Style};
 
     let theme = Theme::default();
     let expected = theme.background.blend(theme.accent_bg, 0.25);
@@ -1440,7 +1440,16 @@ fn minimap_viewport_slider_is_a_blended_tint_not_opaque_accent_bg_on_tui_and_gtk
     let tui_mm = blank_minimap(16);
     let tui_area = ratatui::layout::Rect::new(0, 0, 4, 4);
     let mut tui_buf = ratatui::buffer::Buffer::empty(tui_area);
-    tui_draw_minimap(&mut tui_buf, tui_area, &tui_mm, &theme);
+    let tui_layout = tui_mm.cell_layout(
+        Rect::new(0.0, 0.0, 4.0, 4.0),
+        MinimapSizing::FixedPitch(1.0),
+    );
+    let style = Style::default();
+    tui_mm.paint_cells(
+        &tui_layout,
+        &mut BufferCellSurface::new(&mut tui_buf),
+        &PaintEnv::new(&theme, &style),
+    );
     let tui_bg = tui_buf[(0u16, 0u16)].bg;
     let expected_ratatui = ratatui_color(expected);
     let opaque_accent_ratatui = ratatui_color(theme.accent_bg);
@@ -1463,7 +1472,10 @@ fn minimap_viewport_slider_is_a_blended_tint_not_opaque_accent_bg_on_tui_and_gtk
     {
         let cr = CairoContext::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
-        gtk_draw_minimap(&cr, &pango_layout, 0.0, 0.0, 40.0, 40.0, &gtk_mm, &theme);
+        let mut backend = GtkBackend::new();
+        backend.enter_frame_scope(&cr, &pango_layout, |b| {
+            b.draw_primitive(Rect::new(0.0, 0.0, 40.0, 40.0), &gtk_mm);
+        });
     }
     surface.flush();
     let stride = surface.stride() as usize;
@@ -1521,8 +1533,8 @@ fn minimap_seek_click_agrees_tui_and_gtk_on_resulting_scroll_line() {
 
 /// The two halves of #662 (real pixels on GTK, `Unsupported` + `fallback_text`
 /// on TUI) still must not desync the menu bar's icon-reserved click routing —
-/// `ImageApp::bar_rects` narrows the same way regardless of which `ImagePaintResult`
-/// `draw_image` returns.
+/// `ImageApp::bar_rects` narrows the same way regardless of which tier the
+/// image painted with.
 #[test]
 fn image_menu_click_agrees_tui_and_gtk_on_activated_action() {
     fn activated_after_clicking_file<D: ConformanceDriver>(d: &mut D) -> bool {

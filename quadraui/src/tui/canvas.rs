@@ -9,8 +9,8 @@
 //!   ([`super::braille`]).
 //! - [`crate::DrawOp::TextRun`] / [`crate::DrawOp::Image`] snap to the
 //!   nearest whole cell (text can't live inside a dot cell) — `Image`
-//!   paints [`crate::Image::fallback_text`], same posture as
-//!   [`super::image::draw_image`].
+//!   paints [`crate::Image::fallback_text`], same posture as the
+//!   `Image` widget's own cell painter.
 //! - [`crate::DrawOp::PushClip`] / [`crate::DrawOp::PopClip`] quantise
 //!   their rect outward to whole cells.
 //!
@@ -707,7 +707,17 @@ pub(crate) fn draw_canvas_kitty_images(
             (y1 - y0) as u16,
         );
         if !crate::tui::cell_surface::draw_image_kitty(buf, op_area, image, cell_px, state) {
-            crate::tui::draw_image(buf, op_area, image, theme);
+            let fallback_area = crate::Rect::new(
+                op_area.x as f32,
+                op_area.y as f32,
+                op_area.width as f32,
+                op_area.height as f32,
+            );
+            image.paint_fallback_cells(
+                fallback_area,
+                &mut crate::tui::BufferCellSurface::new(buf),
+                theme,
+            );
         }
     }
 }

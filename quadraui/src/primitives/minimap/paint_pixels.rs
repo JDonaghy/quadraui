@@ -42,10 +42,7 @@ pub(crate) enum Glyphs {
     /// when the surface supplies a sample sheet; column blocks otherwise.
     Atlas { dpi_scale: f32 },
     /// Column blocks only.
-    #[cfg_attr(
-        not(any(feature = "gtk", all(feature = "macos", target_os = "macos"))),
-        allow(dead_code)
-    )]
+    #[cfg_attr(not(test), allow(dead_code))]
     Blocks,
 }
 

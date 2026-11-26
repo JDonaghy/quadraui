@@ -50,7 +50,7 @@
 //! `n.icon()` maps to `gio::BytesIcon`/`gio::FileIcon` — GIO's own
 //! `GLoadableIcon` machinery decodes/loads it, not this crate's image
 //! pipeline, so no pixel decoding happens in-process for a notification
-//! icon the way [`Backend::draw_image`][crate::Backend::draw_image] does
+//! icon the way [`crate::PaintSurface::surface_draw_image`] does
 //! for a painted one. `n.is_silent()` has nothing to bind to: GTK4's
 //! `gio::Notification` carries no sound-control property at all — the
 //! desktop shell/notification daemon decides, same as

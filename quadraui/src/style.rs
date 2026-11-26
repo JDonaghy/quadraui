@@ -46,7 +46,7 @@
 //!   pre-mixes the backdrop
 //!   colour on the CPU via [`crate::Color::blend`]
 //!   before writing opaque cells, the same technique
-//!   [`crate::tui::draw_minimap`] already uses to simulate a translucent
+//!   the minimap's cell painter already uses to simulate a translucent
 //!   highlight tint.
 //!
 //! No [`Style`] token is physically absent on TUI the way a tray icon

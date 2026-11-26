@@ -181,7 +181,7 @@ impl Demo for CaretShapeDemo {
         let bar_h = chrome_strip_height(backend, |s| s.status_bar_height);
         let editor_area = Rect::new(area.x, area.y, area.width, (area.height - bar_h).max(0.0));
         let editor = Self::build_editor(shape, editor_area);
-        backend.draw_editor(editor.rect, &editor);
+        backend.draw_primitive(editor.rect, &editor);
 
         let bar_rect = Rect::new(area.x, area.y + editor_area.height, area.width, bar_h);
         let _ = backend.draw_dyn(bar_rect, &self.status_bar(shape), &());
@@ -238,7 +238,7 @@ mod tests {
 }
 
 // The "switch variants → `set_caret_shape` calls once per change" claim
-// needs a real ratatui `Frame` (`Backend::draw_editor` panics outside
+// needs a real ratatui `Frame` (painting the editor needs
 // `TuiBackend::enter_frame_scope`, which only a `Terminal::draw` call —
 // i.e. a full `TuiDriver` render — opens). That integration-level check
 // lives in `tests/gallery_driver.rs`, driven through the real gallery

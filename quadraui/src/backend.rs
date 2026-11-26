@@ -57,12 +57,11 @@ use crate::primitives::data_table::{
 };
 use crate::primitives::dialog::DialogSeverity;
 use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
-use crate::primitives::editor::{CursorShape as EditorCursorShape, Editor, EditorLayout};
+use crate::primitives::editor::CursorShape as EditorCursorShape;
 use crate::primitives::find_replace::FindReplacePanel;
-use crate::primitives::image::{Image, ImageSource};
+use crate::primitives::image::ImageSource;
 use crate::primitives::list::{ListPaintState, ListViewLayout};
 use crate::primitives::message_list::MessageList;
-use crate::primitives::minimap::{Minimap, MinimapLayout, MinimapScale};
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
@@ -376,7 +375,7 @@ pub trait WindowControl {
 /// genuinely back with a native call.
 ///
 /// [`Self::set_icon`] takes an [`ImageSource`], the same source type
-/// [`crate::primitives::image::Image`] decodes behind `Backend::draw_image`.
+/// [`crate::primitives::image::Image`] decodes behind `PaintSurface::surface_draw_image`.
 /// [`Self::set_menu`] takes a [`ContextMenu`], the same primitive
 /// [`Backend::show_context_menu`] renders natively, so there is one menu
 /// vocabulary and one `WidgetId` activation path
@@ -1279,9 +1278,9 @@ pub trait Backend: sealed::Sealed {
     /// Backends that build a shared per-frame text layout (GTK's Pango
     /// layout) resolve `line_height()` / `char_width()` from this same
     /// font on every frame, so painted glyphs and click-to-column math
-    /// (e.g. `editor_col_at_x`) always derive from one source of truth.
+    /// (e.g. `EditorLayout::col_at_x`) always derive from one source of truth.
     /// `family` should name a monospace font: primitives that map columns
-    /// to pixels (`draw_editor`'s `scroll_left * char_width`, etc.) assume
+    /// to pixels (the editor's `scroll_left * char_width`, etc.) assume
     /// uniform glyph width.
     ///
     /// Call once from `setup()` for a static font, or again any time the
@@ -2851,147 +2850,10 @@ pub trait Backend: sealed::Sealed {
         false
     }
 
-    /// Draw an [`Editor`]. Returns paint-side data the host needs
-    /// for chrome alignment (cursor pixel position for caret blink
-    /// overlays, etc.). Asymmetric across backends: TUI populates
-    /// the result; GTK paints its own caret and returns the default.
-    fn draw_editor(&mut self, rect: Rect, editor: &Editor) -> EditorPaintResult;
-
-    /// Set the width, in this backend's native pixel units, of the
-    /// vertical scrollbar column every subsequent [`Self::draw_editor`]
-    /// (and [`Self::editor_layout`]) reserves and paints for an
-    /// overflowing buffer. `None` restores the default: a column one
-    /// [`Self::char_width`] wide.
-    ///
-    /// GUI hosts call this once at setup — e.g. `Some(14.0)` to match
-    /// VS Code's fixed 14px editor scrollbar regardless of font size.
-    /// See [`Editor::layout_with_options_and_v_scrollbar_w`] for the
-    /// geometry. The GTK, macOS and Win backends honour it; TUI keeps its
-    /// one-cell scrollbar column and ignores it (the default body is a
-    /// no-op).
-    fn set_editor_v_scrollbar_width(&mut self, _px: Option<f32>) {}
-
-    /// The width last set through [`Self::set_editor_v_scrollbar_width`],
-    /// or `None` when unset or ignored by this backend (the default
-    /// body). [`Self::editor_layout`] reads this so hit-testing agrees
-    /// with what [`Self::draw_editor`] painted.
-    fn editor_v_scrollbar_width(&self) -> Option<f32> {
-        None
-    }
-
-    /// Set the width, in this backend's native pixel units, of a strip
-    /// every subsequent [`Self::draw_editor`] (and [`Self::editor_layout`])
-    /// reserves between the editor's text area and its vertical
-    /// scrollbar. `None` (the default) reserves nothing — `text_bounds`
-    /// runs flush to the scrollbar exactly as before this method existed.
-    ///
-    /// See [`Editor::layout_with_options_and_reserve`]'s `right_reserve_w`
-    /// doc for the exact geometry: the vertical scrollbar keeps hugging
-    /// the viewport's true right edge regardless of this value, and the
-    /// reserved strip is the gap between the narrowed text area and that
-    /// scrollbar. A host docking a minimap strip next to the editor calls
-    /// this instead of narrowing the `rect` it hands to `draw_editor` —
-    /// narrowing `rect` directly would relocate the scrollbar along with
-    /// the minimap, which is the behaviour this method exists to avoid.
-    fn set_editor_right_reserve_w(&mut self, _px: Option<f32>) {}
-
-    /// The width last set through [`Self::set_editor_right_reserve_w`],
-    /// or `None` when unset or ignored by this backend (the default
-    /// body). [`Self::editor_layout`] reads this so hit-testing agrees
-    /// with what [`Self::draw_editor`] painted.
-    fn editor_right_reserve_w(&self) -> Option<f32> {
-        None
-    }
-
-    /// Compute the editor viewport layout (gutter / text / scrollbar
-    /// bounds) without painting — the no-paint twin of [`Self::draw_editor`].
-    /// Uses this backend's own [`Self::char_width`] /
-    /// [`Self::line_height`] as the cell metrics — the same values
-    /// `draw_editor` resolves them to on every backend that implements it
-    /// today (`GtkBackend`/`WinBackend`/`MacBackend` all pass
-    /// `current_char_width` / `current_line_height`, which is exactly what
-    /// [`Self::char_width`] / [`Self::line_height`] return; TUI's fixed
-    /// `(1.0, 1.0)` matches its uniform cell grid).
-    ///
-    /// Coordinate frame: **ABSOLUTE** — `text_bounds` / `gutter_bounds` /
-    /// scrollbar bounds are shifted by `rect.x` / `rect.y`, matching
-    /// [`Self::editor_col_at_x`]'s "x is an absolute (surface-space)
-    /// coordinate" contract.
-    ///
-    /// Default body: uniform for every backend, since it's a pure
-    /// function of the two metrics above — no backend needs to override
-    /// this.
-    ///
-    /// **Caller invariant:** `rect` here must be the same rect the
-    /// backend actually paints with. This holds by construction on TUI
-    /// (`draw_editor` takes the `rect` argument directly), but on GTK
-    /// `GtkBackend::draw_editor` ignores its own `rect` parameter
-    /// (`let _ = rect;`) and paints at `editor.rect` instead
-    /// (`src/gtk/editor.rs`). The two happen to always match in every
-    /// call site today, but nothing enforces it — pass a `rect` that
-    /// diverges from `editor.rect` and this method's return value quietly
-    /// stops matching what GTK painted.
-    fn editor_layout(&self, rect: Rect, editor: &Editor) -> EditorLayout {
-        editor.layout_with_options_and_reserve(
-            rect,
-            self.char_width(),
-            self.line_height(),
-            crate::primitives::editor::EditorPaintOptions::default(),
-            self.editor_v_scrollbar_width(),
-            self.editor_right_reserve_w().unwrap_or(0.0),
-        )
-    }
-
-    /// Resolve a click x-coordinate to a text column on one visible row
-    /// of an [`Editor`], honouring the same glyph-advance metrics
-    /// [`Self::draw_editor`] painted that row with (bold / italic /
-    /// `font_scale` spans on GTK's Pango layout; uniform monospace
-    /// cells on TUI) — keeping paint and click resolution in agreement.
-    ///
-    /// `layout` is the [`EditorLayout`] `editor.layout(...)` produced
-    /// for the same viewport/metrics the caller painted with.
-    /// `view_row` indexes into `editor.lines` (0 = topmost visible row
-    /// — the same row [`crate::primitives::editor::EditorLayout::hit_test`]
-    /// resolves from a y-coordinate). `x` is an absolute (surface-space)
-    /// coordinate, matching the `x` passed to `hit_test`.
-    ///
-    /// Returns the resolved character column *within the buffer line*
-    /// (already folds in `layout.scroll_left` and the row's
-    /// `segment_col_offset` for wrap-continuation rows) — callers
-    /// combine it with `hit_test`'s resolved `line` to get a full
-    /// buffer position:
-    ///
-    /// ```ignore
-    /// if let EditorHit::BufferPos { line, .. } = layout.hit_test(x, y) {
-    ///     let view_row = line - layout.scroll_top;
-    ///     let col = backend.editor_col_at_x(&layout, &editor, view_row, x);
-    ///     // (line, col) is the resolved buffer position.
-    /// }
-    /// ```
-    ///
-    /// Default implementation delegates to
-    /// [`EditorLayout::col_at_x`] (uniform monospace division) —
-    /// correct for TUI and any backend whose configured font renders
-    /// every glyph at the same advance width. `GtkBackend` overrides
-    /// this with an exact Pango `xy_to_index` resolution against the
-    /// same per-span-attributed layout `draw_editor` painted with, so
-    /// a line containing bold / italic / `font_scale` spans (e.g. a
-    /// markdown heading) resolves clicks against its *actual* painted
-    /// glyph positions instead of a uniform grid.
-    fn editor_col_at_x(
-        &self,
-        layout: &EditorLayout,
-        editor: &Editor,
-        view_row: usize,
-        x: f32,
-    ) -> usize {
-        layout.col_at_x(editor, view_row, x)
-    }
-
     /// Drive the terminal/OS **hardware** caret to match an
-    /// [`Editor`]'s [`EditorCursorShape`] — block for Normal/Visual, bar
+    /// [`crate::Editor`]'s [`EditorCursorShape`] — block for Normal/Visual, bar
     /// for Insert, underline for a pending replace-char command. This is
-    /// a distinct surface from the caret [`Self::draw_editor`] *paints*
+    /// a distinct surface from the caret an [`crate::Editor`] *paints*
     /// into the frame buffer: GTK/Win/macOS already paint their own caret
     /// there and have no separate hardware cursor to steer, so the
     /// default here is a genuine, permanent no-op for them — not a gap
@@ -3003,7 +2865,7 @@ pub trait Backend: sealed::Sealed {
     /// steer the terminal emulator's own cursor glyph — the one place
     /// that writes this escape sequence, so consumer code never has to.
     ///
-    /// Not [`Self::draw_editor`]'s job to call this itself: painting
+    /// Not the editor paint's job to call this itself: painting
     /// happens every frame regardless of whether the shape changed,
     /// while retitling the hardware caret is a comparatively heavy
     /// terminal write hosts should only issue on an actual shape
@@ -3217,118 +3079,6 @@ pub trait Backend: sealed::Sealed {
     /// report an empty board's worth of hit regions.
     fn board_layout(&self, rect: Rect, model: &BoardModel) -> BoardLayout;
 
-    /// Draw a [`Minimap`] (code-overview density view). GTK and Win-GUI
-    /// both tile rows at a fixed pitch and paint one colour block per
-    /// non-blank character column ([`crate::MinimapSizing::FixedPitch`]);
-    /// TUI packs `U+2800`-block braille dots, also at a fixed pitch — one
-    /// cell row per minimap row. All three techniques consume the exact
-    /// same [`Minimap`] data — the primitive owns the sampling and
-    /// colour-aggregation math (`sample_blocks` / `aggregate_spans`) and
-    /// the legibility/render-mode threshold and span-lookup helpers too
-    /// (`crate::primitives::minimap`), so no backend re-derives any of it.
-    ///
-    /// Returns [`MinimapPaintResult`] carrying the resolved
-    /// [`MinimapLayout`] so hosts can route clicks via
-    /// `result.layout.hit_test(x, y)` without re-deriving geometry.
-    /// Same coordinate frame as [`Self::minimap_layout`] (ABSOLUTE).
-    ///
-    /// No default impl — every backend implementer sees this as a
-    /// compile error and fills in a real rasteriser (`PRIMITIVE_RULES.md`
-    /// rule 7).
-    fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) -> MinimapPaintResult;
-
-    /// The [`MinimapScale`] [`Self::draw_minimap`]/[`Self::minimap_layout`]
-    /// resolve their row pitch (and, for a pixel backend, per-column
-    /// width) from. Default-provided, returning [`MinimapScale::One`] —
-    /// the fixed pitch every backend paints at unless a host also calls
-    /// [`Self::set_minimap_scale`]. TUI's braille rasteriser has no font
-    /// to scale and never overrides either method — see
-    /// [`crate::primitives::minimap::MinimapScale`]'s doc for why this
-    /// lives here rather than as a field on [`Minimap`] itself.
-    fn minimap_scale(&self) -> MinimapScale {
-        MinimapScale::One
-    }
-
-    /// Set the [`MinimapScale`] a later [`Self::draw_minimap`]/
-    /// [`Self::minimap_layout`] call resolves its row pitch from. Default
-    /// no-op: a backend that never overrides [`Self::minimap_scale`] has
-    /// nowhere to store this and nothing reads it back. GTK, Win-GUI, and
-    /// macOS override both methods to back a real field; a host picks
-    /// VS Code's own default (`MinimapScale::Two`) once, at startup, the
-    /// same way it configures `dpi_scale` or the editor font.
-    fn set_minimap_scale(&mut self, _scale: MinimapScale) {}
-
-    /// The [`crate::MinimapSizing`] a later [`Self::draw_minimap`]/
-    /// [`Self::minimap_layout`] call resolves its row pitch *strategy*
-    /// from — orthogonal to [`Self::minimap_scale`], which only picks the
-    /// pixel/cell size of one row. Default-provided, returning `None`,
-    /// meaning "use this rasteriser's own hardcoded default sizing"
-    /// (TUI: [`crate::MinimapSizing::FixedPitch`]`(1.0)`) — a host that
-    /// never calls [`Self::set_minimap_sizing`] sees exactly the behaviour
-    /// it always has. `Some(sizing)` overrides that default, e.g. with
-    /// [`crate::MinimapSizing::RepeatToFill`] to stretch a short file
-    /// across a tall strip.
-    fn minimap_sizing(&self) -> Option<crate::primitives::minimap::MinimapSizing> {
-        None
-    }
-
-    /// Set the [`crate::MinimapSizing`] [`Self::draw_minimap`]/
-    /// [`Self::minimap_layout`] resolve their row-pitch strategy from.
-    /// Default no-op, mirroring [`Self::set_minimap_scale`]: a backend
-    /// that never overrides [`Self::minimap_sizing`] has nowhere to store
-    /// this and nothing reads it back.
-    fn set_minimap_sizing(&mut self, _sizing: Option<crate::primitives::minimap::MinimapSizing>) {}
-
-    /// Compute [`Minimap`] layout without painting — mirrors
-    /// [`Backend::chart_layout`] / [`Backend::tree_layout`]. Apps call
-    /// this from `AppLogic::handle` (which only has `&mut self`, not the
-    /// `MinimapPaintResult` `render` produced) to hit-test a click
-    /// against the same geometry the last paint used.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    /// Real on every backend, including macOS, which computes this exact
-    /// geometry whether or not a paint has run yet.
-    fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout;
-
-    /// Paint `image` within `rect`, honoring `image.fit` (see
-    /// [`Image::layout`] for the geometry). GTK decodes `image.source`
-    /// through `gdk_pixbuf` and paints real pixels; Win and macOS are
-    /// scoped out for now — rather than a reachable `todo!()`,
-    /// `MacBackend::draw_image` reports [`ImagePaintResult::Unsupported`]
-    /// and paints nothing, the same signal TUI falls back to below. This
-    /// method has no default (rule 7 below still applies to it), so
-    /// every backend implementer still sees a compile error until it
-    /// picks one of these two honest outcomes.
-    ///
-    /// **TUI has no pixel grid**, so it cannot decode raster pixels
-    /// itself — but behind the `tui-images` Cargo feature it has two
-    /// fallback tiers short of plain text. On a terminal that has
-    /// confirmed Kitty-protocol graphics support
-    /// (`crate::tui::backend::TuiBackend::kitty_graphics` returning
-    /// `Some`, truecolor) it paints real pixels a different way: decode
-    /// through [`crate::tui::image_decode`], fill the placed cells with
-    /// [`crate::tui::kitty_graphics`]'s Unicode placeholder content, and
-    /// report [`ImagePaintResult::Painted`] — the terminal emulator
-    /// itself composites the actual bitmap behind those cells. On any
-    /// other truecolor terminal, `crate::tui::cell_surface::draw_image_halfblock`
-    /// paints a lower-fidelity `▀`-glyph half-block mosaic instead,
-    /// still reporting `Painted` — there is no further ASCII-art decoder
-    /// under *that* tier. Short of both (a bare `tui` build, a
-    /// 256/16-colour terminal, or a real decode failure), TUI paints
-    /// [`Image::fallback_text`] instead, centered in `rect`, and reports
-    /// [`ImagePaintResult::Unsupported`] rather than a silent no-op. A
-    /// GTK decode failure (bad path, corrupt bytes) also reports
-    /// `Unsupported` and paints nothing, and macOS reports `Unsupported`
-    /// unconditionally for the same reason — so a host can tell "no
-    /// pixels appeared" apart from a successful paint without inspecting
-    /// pixels itself.
-    ///
-    /// No default impl — every backend implementer sees this as a
-    /// compile error and fills in a real rasteriser, or an explicit
-    /// `todo!()` if the primitive is out of scope for that backend for
-    /// now (`PRIMITIVE_RULES.md` rule 7).
-    fn draw_image(&mut self, rect: Rect, image: &Image) -> ImagePaintResult;
-
     /// Paint a [`Canvas`]'s `ops` into `rect`. Every `DrawOp` coordinate
     /// is LOCAL to `rect` — see [`Canvas`]'s own module doc for the full
     /// coordinate-frame contract.
@@ -3345,7 +3095,7 @@ pub trait Backend: sealed::Sealed {
     /// N/A).
     ///
     /// No default impl — every backend implementer sees this as a
-    /// compile error, same as [`Self::draw_image`] (`PRIMITIVE_RULES.md`
+    /// compile error, same as [`Self::draw_board`] (`PRIMITIVE_RULES.md`
     /// rule 7).
     fn draw_canvas(&mut self, rect: Rect, canvas: &Canvas) -> CanvasLayout;
 
@@ -3357,8 +3107,8 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Defaulted: a pure function of `rect` alone (`CanvasLayout {
     /// bounds: rect }`), with no backend-specific input at all — a
-    /// stronger case for a default body than `editor_layout`
-    /// (`tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`),
+    /// stronger case for a default body than the layouts in
+    /// `tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`,
     /// which still depend on `char_width()`/`line_height()`. Every
     /// backend takes this default; see `ACCEPTED_DEFAULTS`'s
     /// `canvas_layout` entries for the from-scratch justification each
@@ -3757,49 +3507,17 @@ fn mark_modal_painted<B: Backend + ?Sized>(backend: &B, id: &WidgetId) {
     }
 }
 
-/// Paint-side data returned by [`Backend::draw_minimap`]. See
-/// [`EditorPaintResult`] for the sibling pattern this mirrors.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct MinimapPaintResult {
-    pub layout: MinimapLayout,
-    /// Whether this call actually rasterised pixels into the target
-    /// rect. `true` on every backend, including macOS's own Core
-    /// Graphics/Core Text rasteriser (`crate::macos::minimap::draw_minimap`).
-    /// `layout` is always the real geometry
-    /// [`Backend::minimap_layout`] would also return (the shared
-    /// `Minimap::layout_with_sizing` logic, not a stub), regardless of
-    /// `painted`, so a host can always hit-test clicks against it. The
-    /// bool-on-a-struct shape (rather than an enum like
-    /// [`ImagePaintResult`]) is because this method already returns a
-    /// struct carrying a layout; `painted` draws the same
-    /// Unsupported-vs-real distinction that enum's `Unsupported` variant
-    /// draws for `draw_image` (which still uses that shape — macOS has
-    /// no `NSImage` decoder yet, a separate, still-open gap). Defaults
-    /// to `false` via `#[derive(Default)]` — the honest "nothing
-    /// happened yet" starting point, same reasoning as
-    /// [`BackendCaps::empty`].
-    pub painted: bool,
-}
-
-/// Paint-side result of [`Backend::draw_image`]. Deliberately a plain
-/// enum, not a struct carrying a layout like [`MinimapPaintResult`] —
-/// [`Image::layout`] is pure geometry with no backend-specific
-/// measurement step (unlike `Minimap`'s TUI/GTK sampling density), so
-/// callers needing the target rect call that directly instead of
-/// threading it through the paint result.
+/// Paint-side result of [`crate::PaintSurface::surface_draw_image`]. A
+/// plain enum, not a struct carrying a layout: [`crate::Image::layout`] is pure
+/// geometry with no backend-specific measurement step, so a caller
+/// needing the target rect calls that directly.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImagePaintResult {
-    /// The backend rasterised actual image pixels into the target rect
-    /// — including TUI, on a confirmed Kitty-graphics terminal, via its
-    /// Unicode-placeholder-cell paint path. See
-    /// [`Backend::draw_image`]'s doc comment.
+    /// The surface rasterised actual image pixels into the target rect.
     Painted,
-    /// The backend could not (or, for macOS, categorically can not)
-    /// rasterise pixels. TUI falls back to this short of a confirmed
-    /// Kitty-graphics terminal or on a real decode failure; GTK on a
-    /// decode failure and macOS unconditionally (no `NSImage` decoder
-    /// wired up yet) both paint nothing. See
-    /// [`Backend::draw_image`]'s doc comment.
+    /// The surface could not rasterise pixels — a decode failure, a
+    /// zero-size rect, or a surface with no image support — and painted
+    /// nothing.
     Unsupported,
 }
 
@@ -3871,23 +3589,6 @@ pub fn tab_bar_hits_from_layout(layout: &TabBarLayout, bar: &TabBar) -> TabBarHi
         available_cols: layout.bar_width as usize,
         correct_scroll_offset: layout.resolved_scroll_offset,
     }
-}
-
-/// Paint-side data returned by [`Backend::draw_editor`]. Carries
-/// information the host needs to align external chrome (caret blink
-/// overlay, virtual-text positioning) with the editor's painted
-/// content. Backends that paint their own caret (GTK) populate the
-/// default; backends that delegate caret rendering to the host (TUI
-/// terminal cursor) populate the actual cursor cell.
-#[derive(Debug, Clone, Default, PartialEq)]
-pub struct EditorPaintResult {
-    /// Cursor's painted position in backend-native units, if the host is
-    /// responsible for terminal-cursor positioning. `None` when the
-    /// backend painted its own caret OR when the cursor is outside the
-    /// viewport. TUI rounds to the nearest cell internally before
-    /// returning, then widens the cell coordinates back into this
-    /// field's `f32` unit.
-    pub cursor_position_native: Option<Point>,
 }
 
 /// Trait for content that can render itself into a rect using any backend.
@@ -5052,7 +4753,7 @@ mod system_theme_tests {
 /// ([`Clipboard::read_image`] / [`Clipboard::write_image`]).
 ///
 /// Deliberately a bare pixel buffer, not [`ImageSource`] — the type
-/// [`TrayService::set_icon`] shares with `Backend::draw_image` per that
+/// [`TrayService::set_icon`] shares with the `Image` widget per that
 /// trait's own doc note. `ImageSource::Bytes`/`Path` describe *where an
 /// image comes from* (encoded bytes a backend still has to sniff and
 /// decode); a clipboard image is already-decoded pixels the moment it

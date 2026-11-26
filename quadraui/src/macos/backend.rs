@@ -52,8 +52,7 @@ use objc2_app_kit::{
 use objc2_foundation::{MainThreadMarker, NSPoint, NSRect, NSSize, NSString};
 
 use crate::backend::{
-    Backend, BackendError, EditorPaintResult, PointerShape, ResizeEdge, ServiceResult,
-    WindowControl,
+    Backend, BackendError, PointerShape, ResizeEdge, ServiceResult, WindowControl,
 };
 use crate::desktop::WindowDragArm;
 use crate::dispatch::{DoubleClickDetector, DragState, TextRegion};
@@ -65,7 +64,6 @@ use crate::primitives::board::{BoardLayout, BoardModel};
 use crate::primitives::canvas::{Canvas, CanvasLayout};
 use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::data_table::{DataTable, DataTableLayout};
-use crate::primitives::editor::Editor;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::menu_bar::MenuBar;
 use crate::primitives::message_list::MessageList;
@@ -152,8 +150,8 @@ pub struct MacBackend {
     /// rather than folded into `Theme`.
     current_style: crate::Style,
     /// Decoded-`CGImage` cache for [`PaintSurface::surface_draw_image`]
-    /// — see [`crate::image_cache`]'s module doc and
-    /// [`super::image::draw_image`]'s "Decode cache" section for why
+    /// — see [`crate::image_cache`]'s module doc and the "Decode cache"
+    /// section of `super::surface::image` for why
     /// this backend keys on source only (a `CGImage` decode is reused at
     /// every paint size, unlike GTK's already-scaled `Pixbuf`). Survives
     /// across frames, mirroring `GtkBackend::image_cache`.
@@ -172,10 +170,6 @@ pub struct MacBackend {
     current_font: Option<CTFont>,
     current_line_height: f64,
     current_char_width: f64,
-    /// Editor vertical scrollbar column width set through
-    /// [`Backend::set_editor_v_scrollbar_width`]; `None` = one
-    /// `current_char_width` wide.
-    editor_v_scrollbar_w: Option<f32>,
     /// Timestamp of the most recent trackpad/wheel scroll, fed in by
     /// `super::run`'s `scrollWheel:` handler via
     /// [`Self::note_scroll_activity`]. [`Self::new`] seeds this with its
@@ -297,13 +291,6 @@ pub struct MacBackend {
     /// [`super::run::dispatch_event`] to redirect the next `KeyPressed`
     /// into the bar. Mirrors `GtkBackend::focused_activity_bar`.
     focused_activity_bar: Option<WidgetId>,
-    /// [`crate::backend::Backend::minimap_scale`]'s backing field — read by
-    /// [`Backend::draw_minimap`]/[`Backend::minimap_layout`] to resolve
-    /// the row pitch (and per-column width) a paint or layout call uses.
-    /// Defaults to [`crate::primitives::minimap::MinimapScale::One`],
-    /// the fixed pitch, so a host that never calls
-    /// [`Backend::set_minimap_scale`] sees no behaviour change.
-    minimap_scale: crate::primitives::minimap::MinimapScale,
     /// Top-level window handle, set once by `macos::run::run` via
     /// [`Self::set_window`]. `None` until the runner finishes
     /// constructing the window (and in unit tests, which never call
@@ -779,7 +766,6 @@ impl MacBackend {
             current_font: None,
             current_line_height: 16.0,
             current_char_width: 8.0,
-            editor_v_scrollbar_w: None,
             scroll_fade_last_interaction: Some(std::time::Instant::now()),
             scroll_fade_clock_override: None,
             chrome_font,
@@ -800,7 +786,6 @@ impl MacBackend {
             skip_animations: false,
             text_runs: Vec::new(),
             focused_activity_bar: None,
-            minimap_scale: crate::primitives::minimap::MinimapScale::default(),
             window: None,
             pending_window_press: WindowDragArm::new(),
             requested_cursor: PointerShape::Default,
@@ -1435,34 +1420,6 @@ impl MacBackend {
         );
         self.menu_target = Some(target);
     }
-}
-
-/// Defensive clamp for [`MacBackend::draw_editor`]: both `editor.rect`
-/// and `viewport` are already in points (see [`Viewport`]'s doc), so no
-/// scale conversion is needed — this only ever shrinks `editor.rect`'s
-/// right/bottom edge back inside `viewport`, never moves its origin or
-/// grows it.
-///
-/// Returns `None` when `editor.rect` already fits (the overwhelmingly
-/// common case — no clone), and `None` rather than clamping at all when
-/// `viewport` is the all-zero default (`MacBackend::new` before its first
-/// `begin_frame`), so a backend used outside the normal
-/// `begin_frame` → `enter_frame_scope` → `draw_editor` sequence keeps
-/// unclamped behaviour instead of silently painting nothing.
-fn clamp_editor_rect_to_viewport(editor: &Editor, viewport: Viewport) -> Option<Editor> {
-    if viewport.width <= 0.0 || viewport.height <= 0.0 {
-        return None;
-    }
-    let rect = editor.rect;
-    let max_width = (viewport.width - rect.x).max(0.0);
-    let max_height = (viewport.height - rect.y).max(0.0);
-    if rect.width <= max_width && rect.height <= max_height {
-        return None;
-    }
-    let mut clamped = editor.clone();
-    clamped.rect.width = rect.width.min(max_width);
-    clamped.rect.height = rect.height.min(max_height);
-    Some(clamped)
 }
 
 impl Default for MacBackend {
@@ -2825,52 +2782,6 @@ impl Backend for MacBackend {
     fn tree_paints_own_scrollbar(&self) -> bool {
         true
     }
-    fn draw_editor(&mut self, _rect: Rect, editor: &Editor) -> EditorPaintResult {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_editor called outside enter_frame_scope",
-        );
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
-        let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        let char_width = self.current_char_width;
-        let v_scrollbar_w = self.editor_v_scrollbar_w;
-        // `editor.rect` is the sole geometry
-        // `draw_editor_with_options_and_v_scrollbar_w` reads (see that
-        // function's module doc) — this trait method's own `_rect`
-        // argument is unused by design, same as `GtkBackend::draw_editor`
-        // (see `Backend::draw_editor`'s doc for the caller invariant that
-        // the two are expected to agree). A host's `editor.rect` can
-        // disagree with this backend's real window bounds (e.g. a
-        // rounding/DPI mismatch making `editor.rect` wider than the
-        // window); painting straight into it lays the reserved scrollbar
-        // column mostly or wholly past the right edge, leaving only a
-        // sliver visible. Clamp a defensive copy so nothing this
-        // rasteriser paints — least of all the scrollbar track — can
-        // extend past the real viewport.
-        let clamped = clamp_editor_rect_to_viewport(editor, self.viewport);
-        let editor = clamped.as_ref().unwrap_or(editor);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::editor::draw_editor_with_options_and_v_scrollbar_w(
-                ctx,
-                font,
-                editor,
-                &theme,
-                char_width,
-                line_height,
-                crate::primitives::editor::EditorPaintOptions::default(),
-                v_scrollbar_w,
-            )
-        }
-    }
-    fn set_editor_v_scrollbar_width(&mut self, px: Option<f32>) {
-        self.editor_v_scrollbar_w = px;
-    }
-    fn editor_v_scrollbar_width(&self) -> Option<f32> {
-        self.editor_v_scrollbar_w
-    }
     fn draw_message_list(&mut self, rect: Rect, list: &MessageList) {
         let ctx = self.current_cg();
         debug_assert!(
@@ -3114,69 +3025,6 @@ impl Backend for MacBackend {
             rect.width as f64,
             rect.height as f64,
         )
-    }
-
-    /// Paints through [`super::minimap::draw_minimap_cached`]: the shared
-    /// minimap painter with glyph-atlas character shapes sampled from the
-    /// editor font.
-    fn draw_minimap(
-        &mut self,
-        rect: Rect,
-        minimap: &crate::primitives::minimap::Minimap,
-    ) -> crate::backend::MinimapPaintResult {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_minimap called outside enter_frame_scope",
-        );
-        self.register_zone(minimap.id, rect);
-        let font = self.current_font.as_ref().unwrap_or(&self.chrome_font);
-        let theme = self.current_theme;
-        let dpi_scale = self.viewport.scale as f64;
-        // SAFETY: ctx is non-null inside the frame scope (checked above).
-        let layout = unsafe {
-            super::minimap::draw_minimap_cached(
-                ctx,
-                font,
-                rect,
-                minimap,
-                &theme,
-                self.minimap_scale,
-                dpi_scale,
-            )
-        };
-        crate::backend::MinimapPaintResult {
-            layout,
-            painted: true,
-        }
-    }
-
-    /// The no-paint layout query — same geometry `draw_minimap` computes
-    /// internally, exposed standalone for click-routing callers that don't
-    /// need a repaint. See [`Self::draw_minimap`]'s doc comment.
-    fn minimap_layout(
-        &self,
-        rect: Rect,
-        minimap: &crate::primitives::minimap::Minimap,
-    ) -> crate::primitives::minimap::MinimapLayout {
-        super::minimap::mac_minimap_layout_scaled(minimap, rect, self.minimap_scale)
-    }
-
-    fn minimap_scale(&self) -> crate::primitives::minimap::MinimapScale {
-        self.minimap_scale
-    }
-
-    fn set_minimap_scale(&mut self, scale: crate::primitives::minimap::MinimapScale) {
-        self.minimap_scale = scale;
-    }
-
-    fn draw_image(
-        &mut self,
-        rect: Rect,
-        image: &crate::primitives::image::Image,
-    ) -> crate::backend::ImagePaintResult {
-        self.register_zone(image.id, rect);
-        image.paint_reporting(&image.layout(rect), self)
     }
 
     // ─── Clipping ────────────────────────────────────────────────────────
@@ -4014,16 +3862,18 @@ impl PaintSurface for MacBackend {
     ) -> crate::backend::ImagePaintResult {
         let ctx = self.current_cg();
         let scale = self.viewport.scale;
-        // Unlike `draw_minimap`, an image paint can legitimately return
+        // An image paint can legitimately return
         // `Unsupported` (a decode failure, or a zero-size `rect`) without
         // ever touching `ctx` — so the null-context guard lives inside
-        // `super::image::draw_image_cached` itself, right before the
+        // `super::surface::image::draw_image_cached` itself, right before the
         // CoreGraphics calls that actually need it, rather than an
         // unconditional upfront `debug_assert!` here.
         //
-        // SAFETY: `super::image::draw_image_cached` only dereferences
+        // SAFETY: `super::surface::image::draw_image_cached` only dereferences
         // `ctx` after confirming it's non-null.
-        unsafe { super::image::draw_image_cached(ctx, rect, image, &mut self.image_cache, scale) }
+        unsafe {
+            super::surface::image::draw_image_cached(ctx, rect, image, &mut self.image_cache, scale)
+        }
     }
 }
 
@@ -5539,25 +5389,11 @@ mod tests {
         assert_eq!(overridden_layout.visible_items[0].bounds.height, 30.0);
     }
 
-    // ── #802/#961/#962: Minimap/Image must not panic on macOS, and both
-    // must actually paint ────────────────────────────────────────────────
+    // ── Minimap/Image paint real pixels on macOS ─────────────────────────
     //
-    // Before #802, `MacBackend::draw_minimap`/`draw_image` were `todo!()`
-    // — any `AppLogic` calling either generically through `&mut dyn
-    // Backend` (exactly what `examples/common/minimap_app.rs` /
-    // `image_app.rs` do, the same fixtures `tests/macos_example_driver.rs`
-    // now drives) panicked and took the whole host down on macOS while
-    // working fine on TUI/GTK/Win-GUI. #802 replaced that with an honest
-    // `painted: false` no-op / `Unsupported` result. #961 replaced the
-    // minimap no-op with a real Core Graphics/Core Text paint
-    // (`super::minimap::draw_minimap`); #962 does the same for `draw_image`
-    // via `super::image::draw_image` (Core Graphics + ImageIO). macOS is
-    // no longer the only backend painting nothing for either primitive, so
-    // `draw_minimap_paints_and_reports_painted` and
-    // `draw_image_paints_and_reports_painted` below assert pixels actually
-    // landed, not just "didn't panic" — the corrupt/missing-source cases
-    // still assert the clean `Unsupported` degrade (`draw_image_from_*`
-    // below).
+    // Both paint through their widget contracts on this backend's
+    // `PaintSurface`; the corrupt/missing-source cases still degrade to a
+    // clean `Unsupported` (`image_from_*` below).
 
     fn sample_minimap() -> crate::primitives::minimap::Minimap {
         crate::primitives::minimap::Minimap {
@@ -5577,11 +5413,11 @@ mod tests {
         }
     }
 
-    /// `draw_minimap` must paint pixels and report `painted: true`.
-    /// This replaced an earlier `draw_minimap_does_not_panic_and_reports_unpainted`
-    /// test after macOS gained a real Core Graphics/Core Text minimap rasteriser.
+    /// A minimap painted through its contract paints pixels, resolves a
+    /// real layout and registers its click zone.
     #[test]
-    fn draw_minimap_paints_and_reports_painted() {
+    fn minimap_paints_and_registers_its_zone() {
+        use crate::backend::DrawsPrimitives;
         use super::super::headless::BitmapSurface;
         use super::super::text::make_font;
 
@@ -5597,19 +5433,14 @@ mod tests {
 
         let result = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |backend| {
-            *result.borrow_mut() = Some(backend.draw_minimap(rect, &minimap));
+            *result.borrow_mut() = Some(backend.draw_primitive(rect, &minimap));
         });
-        let result = result
+        let layout = result
             .into_inner()
-            .expect("draw_minimap ran inside the frame scope");
+            .expect("the minimap painted inside the frame scope");
 
         assert!(
-            result.painted,
-            "macOS now has a Core Graphics/Core Text minimap rasteriser (#961) -- \
-             `painted` must report `true`"
-        );
-        assert!(
-            !result.layout.visible_lines.is_empty(),
+            !layout.visible_lines.is_empty(),
             "the layout must be real geometry"
         );
         assert!(
@@ -5623,14 +5454,14 @@ mod tests {
                 (r, g, bl) != (255, 255, 255)
             })
         });
-        assert!(painted_any, "draw_minimap must paint non-background pixels");
+        assert!(painted_any, "the minimap must paint non-background pixels");
     }
 
-    /// `minimap_layout` (the no-paint query `AppLogic::handle` calls for
-    /// click routing) must agree with the layout `draw_minimap` just
-    /// returned — same contract every other backend upholds.
+    /// The no-paint layout query `AppLogic::handle` calls for click routing
+    /// agrees with the layout the paint just returned.
     #[test]
-    fn minimap_layout_agrees_with_draw_minimap() {
+    fn minimap_layout_agrees_with_its_paint() {
+        use crate::backend::DrawsPrimitives;
         use super::super::headless::BitmapSurface;
         use super::super::text::make_font;
 
@@ -5642,22 +5473,22 @@ mod tests {
 
         let painted = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |backend| {
-            *painted.borrow_mut() = Some(backend.draw_minimap(rect, &minimap));
+            *painted.borrow_mut() = Some(backend.draw_primitive(rect, &minimap));
         });
         let painted = painted
             .into_inner()
-            .expect("draw_minimap ran inside the frame scope");
-        let layout_only = b.minimap_layout(rect, &minimap);
+            .expect("the minimap painted inside the frame scope");
+        let layout_only = b.layout_primitive(rect, &minimap);
 
-        assert_eq!(painted.layout, layout_only);
+        assert_eq!(painted, layout_only);
     }
 
     /// Empty byte source is a clean `Unsupported` result: the decoder was
     /// tried and had nothing to decode. Deliberately called outside
     /// `enter_frame_scope` (no `ctx`) to prove decoding is attempted before
-    /// `draw_image` ever needs a live CoreGraphics context.
+    /// the paint ever needs a live CoreGraphics context.
     #[test]
-    fn draw_image_from_empty_bytes_reports_unsupported() {
+    fn image_from_empty_bytes_reports_unsupported() {
         let mut b = MacBackend::new();
         let image = crate::primitives::image::Image {
             id: WidgetId::new("logo"),
@@ -5668,7 +5499,7 @@ mod tests {
         };
         let rect = Rect::new(0.0, 0.0, 24.0, 24.0);
 
-        let result = b.draw_image(rect, &image);
+        let result = b.surface_draw_image(rect, &image);
 
         assert_eq!(
             result,
@@ -5676,18 +5507,11 @@ mod tests {
             "an empty byte source has nothing to decode -- this must be a clean \
              Unsupported result, not a panic"
         );
-        assert!(
-            b.zones().iter().any(|z| z.id == image.id),
-            "a click/hover zone must still be registered even though nothing painted"
-        );
     }
 
-    /// A tiny solid-colour PNG, generated at test time — same fixture
-    /// shape `super::super::image::tests::tiny_png_bytes` /
-    /// `win::image::tests::tiny_png_bytes` build, duplicated here (rather
-    /// than shared) because it's a test-only fixture with no runtime
-    /// purpose, matching how each backend's own `image.rs` test module
-    /// already keeps its own copy.
+    /// A tiny solid-colour PNG, generated at test time — the same fixture
+    /// the image pixel tests in `super::super::surface` build, duplicated
+    /// here because it's a test-only fixture with no runtime purpose.
     fn tiny_png_bytes() -> Vec<u8> {
         let mut png = Vec::new();
         png.extend_from_slice(b"\x89PNG\r\n\x1a\n");
@@ -5710,8 +5534,7 @@ mod tests {
         // `clippy::same_item_push` misreads the filter-byte push as a
         // "replace this loop with vec![0; N]" candidate — the loop body
         // also appends the row's actual pixel bytes right after it, so
-        // that rewrite doesn't apply (see `macos::image::tests::tiny_png_bytes`,
-        // whose scanline loop has the same shape).
+        // that rewrite doesn't apply.
         #[allow(clippy::same_item_push)]
         let raw = {
             let mut raw = Vec::new();
@@ -5763,11 +5586,11 @@ mod tests {
         !crc
     }
 
-    /// `draw_image` must paint pixels and report `Painted`. This replaced
-    /// an earlier degrade-to-`Unsupported` test after macOS gained a real
-    /// Core Graphics/ImageIO image rasteriser.
+    /// An image painted through its contract paints real pixels and
+    /// registers its zone.
     #[test]
-    fn draw_image_paints_and_reports_painted() {
+    fn image_paints_and_registers_its_zone() {
+        use crate::backend::DrawsPrimitives;
         use super::super::headless::BitmapSurface;
 
         const W: u32 = 64;
@@ -5785,20 +5608,10 @@ mod tests {
         };
         let rect = Rect::new(10.0, 10.0, 20.0, 20.0);
 
-        let result = std::cell::RefCell::new(None);
         b.enter_frame_scope(surface.context_ptr(), |backend| {
-            *result.borrow_mut() = Some(backend.draw_image(rect, &image));
+            backend.draw_primitive(rect, &image);
         });
-        let result = result
-            .into_inner()
-            .expect("draw_image ran inside the frame scope");
 
-        assert_eq!(
-            result,
-            crate::backend::ImagePaintResult::Painted,
-            "macOS now has a Core Graphics/ImageIO image rasteriser (#962) -- a \
-             decodable source must report Painted"
-        );
         assert!(
             b.zones().iter().any(|z| z.id == image.id),
             "a click/hover zone must be registered"
@@ -5810,7 +5623,7 @@ mod tests {
                 (r, g, bl) != (255, 255, 255)
             })
         });
-        assert!(painted_any, "draw_image must paint non-background pixels");
+        assert!(painted_any, "the image must paint non-background pixels");
     }
 
     // ── Text selection ───────────────────────────────────────────────
@@ -6277,8 +6090,8 @@ mod tests {
                 fallback_text: "[i]".to_string(),
             };
             // Empty bytes have nothing to decode, so this stays `Unsupported`
-            // even with a real decoder. This call proves it reaches the same code
-            // `Backend::draw_image` does (inside a live frame scope).
+            // even with a real decoder. This call proves it reaches the decoder
+            // inside a live frame scope.
             let _ = b.surface_draw_image(Rect::new(0.0, 40.0, 8.0, 8.0), &image);
         });
 
