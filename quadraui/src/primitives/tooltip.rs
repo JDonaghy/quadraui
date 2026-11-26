@@ -525,6 +525,16 @@ impl crate::primitive::Primitive for Tooltip {
         }
     }
 
+    /// The tooltip box is a surface every backend reports: on a cell
+    /// grid the whole-cell rect [`painted_bounds`] paints into, on a
+    /// pixel surface the box itself.
+    fn paint_zone(&self, layout: &TooltipLayout, units: crate::primitive::Units) -> Option<Rect> {
+        Some(match units {
+            crate::primitive::Units::Cells => painted_bounds(layout),
+            crate::primitive::Units::Pixels => layout.bounds,
+        })
+    }
+
     /// The shared pixel painter, with the surface's own line height and
     /// character advance as the row pitch and horizontal padding — the
     /// same metrics every pixel backend's `draw_tooltip` passes it.
@@ -587,6 +597,19 @@ impl crate::primitive::Primitive for Tooltip {
 
 crate::non_interactive!(Tooltip);
 
+/// The whole-cell bounds the cell-grid painter actually paints into —
+/// `layout.bounds` rounded to integer terminal columns/rows. This, not the
+/// raw float bounds, is the tooltip's zone on a cell grid, so a
+/// structural-parity observer sees exactly the painted cells.
+pub(crate) fn painted_bounds(layout: &TooltipLayout) -> Rect {
+    Rect::new(
+        layout.bounds.x.round(),
+        layout.bounds.y.round(),
+        layout.bounds.width.round(),
+        layout.bounds.height.round(),
+    )
+}
+
 /// The cell-grid painter for [`Tooltip`], written against
 /// [`crate::CellSurface`].
 ///
@@ -613,24 +636,11 @@ crate::non_interactive!(Tooltip);
 /// (`height >= 3`) must measure `N + 2`.
 #[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
-    use super::{Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
+    use super::{painted_bounds, Tooltip, TooltipBorder, TooltipChrome, TooltipLayout};
     use crate::cell_surface::{CellStyle, CellSurface};
     use crate::event::Rect;
     use crate::theme::Theme;
     use crate::types::Color;
-
-    /// The whole-cell bounds [`paint`] actually paints into —
-    /// `layout.bounds` rounded to integer terminal columns/rows. A
-    /// backend registers *this* as the tooltip's zone, so a
-    /// structural-parity observer sees exactly the painted cells.
-    pub(crate) fn painted_bounds(layout: &TooltipLayout) -> Rect {
-        Rect::new(
-            layout.bounds.x.round(),
-            layout.bounds.y.round(),
-            layout.bounds.width.round(),
-            layout.bounds.height.round(),
-        )
-    }
 
     fn style(fg: Color, bg: Color) -> CellStyle {
         CellStyle {
@@ -1011,6 +1021,40 @@ mod tests {
     use super::*;
 
     // ── Tooltip primitive tests (D6 shape) ────────────────────────────
+
+    /// The zone the widget contract registers for a tooltip is the
+    /// whole-cell painted rect on a cell grid and the box itself on a
+    /// pixel surface, through both the typed and the erased entry points.
+    #[test]
+    fn paint_zone_is_cell_rounded_on_cells_and_raw_on_pixels() {
+        use crate::primitive::{DynWidget, Primitive, Units};
+        let tooltip = Tooltip {
+            chrome: TooltipChrome::default(),
+            id: WidgetId::new("hover"),
+            text: "hi".into(),
+            styled_lines: None,
+            placement: TooltipPlacement::Bottom,
+            fg: None,
+            bg: None,
+        };
+        let layout = TooltipLayout {
+            bounds: Rect::new(0.4, 1.6, 9.6, 2.5),
+            resolved_placement: ResolvedPlacement::Bottom,
+        };
+        assert_eq!(
+            Primitive::paint_zone(&tooltip, &layout, Units::Cells),
+            Some(Rect::new(0.0, 2.0, 10.0, 3.0))
+        );
+        assert_eq!(
+            Primitive::paint_zone(&tooltip, &layout, Units::Pixels),
+            Some(layout.bounds)
+        );
+        let erased: &dyn DynWidget = &tooltip;
+        assert_eq!(
+            erased.paint_zone(&layout, Units::Pixels),
+            Some(layout.bounds)
+        );
+    }
 
     /// The border/title vocabulary is a separate [`TooltipChrome`]
     /// value passed alongside the tooltip and its layout — *not* a field
@@ -1600,7 +1644,6 @@ mod tests {
         use crate::event::Rect as QRect;
         use crate::theme::Theme;
         use crate::types::StyledSpan;
-        use cell_paint::painted_bounds;
         use ratatui::buffer::Buffer;
         use ratatui::layout::Rect;
 

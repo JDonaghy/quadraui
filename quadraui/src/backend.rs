@@ -48,7 +48,7 @@ use crate::paths::AppPathKind;
 use crate::power::{BlockerId, PowerSaveKind, ThermalState};
 use crate::primitive::{
     DynWidget, LayoutCtx, PaintEnv, PaintServices, PaintState, PaintTarget, Primitive,
-    PrimitiveLayout,
+    PrimitiveLayout, Units,
 };
 use crate::primitives::activity_bar::{ActivityBarRowHit, ActivityBarStyle};
 use crate::primitives::board::{BoardLayout, BoardModel};
@@ -3930,6 +3930,12 @@ pub trait DrawsPrimitives: Backend {
     /// [`Primitive::paint_cells`], mirroring every `TuiBackend::draw_*`
     /// method's own "called outside enter_frame_scope" panic.
     ///
+    /// Once painted, an identified primitive whose
+    /// [`Primitive::paint_zone`] answers `Some` for the surface kind it
+    /// was painted on ([`crate::primitive::Units::Pixels`] for a paint
+    /// surface, [`crate::primitive::Units::Cells`] for a cell surface)
+    /// has that rect registered as its zone via [`Backend::register_zone`].
+    ///
     /// ```ignore
     /// // `MyBackend` implements `Backend` (sealed — in-crate only, so
     /// // this example can't actually run as a doctest); `Swatch`
@@ -3943,12 +3949,14 @@ pub trait DrawsPrimitives: Backend {
         let style = self.style();
         let theme = self.theme();
         let clip = grow_rect(rect, primitive.paint_bleed(&style));
+        let mut painted_units = None;
         if let Some(surface) = self.paint_surface() {
             surface.surface_push_clip(clip);
             paint_in_role(surface, primitive.font_role(), &mut |s| {
                 primitive.paint(&layout, s, &theme, &style)
             });
             surface.surface_pop_clip();
+            painted_units = Some(Units::Pixels);
         }
         #[cfg(feature = "tui")]
         if let Some(cell_surface) = self.cell_surface() {
@@ -3958,9 +3966,13 @@ pub trait DrawsPrimitives: Backend {
                  scope (TuiBackend::enter_frame_scope)",
             );
             primitive.paint_cells(&layout, buf, &theme);
+            painted_units = Some(Units::Cells);
         }
         if let Some(id) = primitive.id() {
             self.modal_stack_handle().borrow_mut().mark_painted(id);
+            if let Some(zone) = painted_units.and_then(|u| primitive.paint_zone(&layout, u)) {
+                self.register_zone(*id, zone);
+            }
         }
         layout
     }
@@ -3997,6 +4009,9 @@ pub trait DrawsPrimitives: Backend {
     /// one method taking a [`PaintTarget`] — there is exactly one paint
     /// call to make here regardless of which target [`Backend::paint_surface`]/
     /// [`Backend::cell_surface`] resolved.
+    ///
+    /// Registers [`DynWidget::paint_zone`]'s rect as the widget's zone
+    /// after painting it, exactly as [`Self::draw_primitive`] does.
     ///
     /// # Painted-layout record
     ///
@@ -4040,12 +4055,14 @@ pub trait DrawsPrimitives: Backend {
             row_height: ctx.line_height,
         };
         let clip = grow_rect(rect, w.paint_bleed(&style));
+        let mut painted_units = None;
         if let Some(surface) = self.paint_surface() {
             surface.surface_push_clip(clip);
             paint_in_role(surface, w.font_role(), &mut |s| {
                 w.paint(layout.as_ref(), PaintTarget::Surface(s), &env, state)
             });
             surface.surface_pop_clip();
+            painted_units = Some(Units::Pixels);
         }
         #[cfg(feature = "tui")]
         if let Some(cell_surface) = self.cell_surface() {
@@ -4055,6 +4072,7 @@ pub trait DrawsPrimitives: Backend {
                  scope (TuiBackend::enter_frame_scope)",
             );
             w.paint(layout.as_ref(), PaintTarget::Cells(buf), &env, state);
+            painted_units = Some(Units::Cells);
         }
         if let Some(id) = w.id() {
             // A modal widget reached through the contract marks its own
@@ -4063,6 +4081,9 @@ pub trait DrawsPrimitives: Backend {
             // never paints it. `mark_painted` is a no-op for an id the
             // stack does not hold, so a non-modal widget costs nothing.
             self.modal_stack_handle().borrow_mut().mark_painted(id);
+            if let Some(zone) = painted_units.and_then(|u| w.paint_zone(layout.as_ref(), u)) {
+                self.register_zone(*id, zone);
+            }
             let sub_regions = w
                 .sub_regions(layout.as_ref())
                 .into_iter()

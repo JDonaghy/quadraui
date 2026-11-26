@@ -729,6 +729,22 @@ pub trait Primitive: A11yPrimitive {
         0.0
     }
 
+    /// The rect the primitive's paint occupies for `layout`, in `units`
+    /// (the painted surface's own coordinate space), when it is a surface
+    /// a structural observer must be able to see. After painting an
+    /// identified primitive ([`Self::id`]),
+    /// [`crate::DrawsPrimitives::draw_primitive`] and
+    /// [`crate::DrawsPrimitives::draw_dyn`] report a `Some` rect as that
+    /// id's zone via [`crate::Backend::register_zone`], so it appears in
+    /// [`crate::testing::FrameInventory::zones`]. A cell-grid widget
+    /// returns the whole-cell rect it actually painted, not its raw float
+    /// bounds. Default: `None` — the primitive reports no zone of its
+    /// own, and nothing is registered.
+    fn paint_zone(&self, layout: &Self::Layout, units: Units) -> Option<Rect> {
+        let _ = (layout, units);
+        None
+    }
+
     /// Paint `layout` (as produced by [`Self::layout`]) onto `surface`.
     fn paint(
         &self,
@@ -839,6 +855,11 @@ pub trait DynWidget: A11yPrimitive + std::any::Any {
     /// [`Primitive::paint_bleed`].
     fn paint_bleed(&self, style: &Style) -> f32;
 
+    /// The rect this widget's paint occupies for `layout`, if it reports
+    /// one — see [`Primitive::paint_zone`]. `None` when `layout` isn't
+    /// this widget's own layout type.
+    fn paint_zone(&self, layout: &dyn PrimitiveLayout, units: Units) -> Option<Rect>;
+
     /// Paint `layout` (as produced by [`Self::layout`]) onto `target`.
     /// Replaces [`Primitive::paint`]/[`Primitive::paint_cells`]'s split
     /// with a single method that matches on [`PaintTarget`] itself, since
@@ -933,6 +954,11 @@ where
 
     fn paint_bleed(&self, style: &Style) -> f32 {
         Primitive::paint_bleed(self, style)
+    }
+
+    fn paint_zone(&self, layout: &dyn PrimitiveLayout, units: Units) -> Option<Rect> {
+        let layout = layout.downcast_ref::<W::Layout>()?;
+        Primitive::paint_zone(self, layout, units)
     }
 
     fn paint(
