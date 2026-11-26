@@ -8120,7 +8120,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn set_theme_reaches_the_completions() {
-        use crate::primitives::completions::{CompletionItem, CompletionItemMeasure};
+        use crate::primitives::completions::{CompletionItem, Completions};
         use crate::theme::Theme;
         use crate::types::{Color, StyledText};
         use crate::win::testing::HeadlessSurface;
@@ -8145,12 +8145,11 @@ mod tests {
             ..Theme::default()
         });
 
-        // Two real items, because `Completions::layout` sums the
-        // per-item measures to size the popup: an empty `items` gives
-        // `bounds.height == 0`, `draw_completions` early-returns without
-        // painting anything, and the probe reads `begin_frame`'s clear
-        // colour instead of the fill under test. `detail` stays `None`
-        // so no right-aligned text paints into the probe column.
+        // Two real items, so the popup has a second, unselected row for
+        // the probe: with no items there are no rows, nothing paints,
+        // and the probe reads `begin_frame`'s clear colour instead of
+        // the fill under test. `detail` stays `None` so no right-aligned
+        // text paints into the probe column.
         let item = |label: &str| CompletionItem {
             label: StyledText::plain(label),
             detail: None,
@@ -8165,13 +8164,13 @@ mod tests {
             scroll_offset: 0,
             has_focus: true,
         };
-        let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
-        let layout = completions.layout(10.0, 10.0, 16.0, viewport, 120.0, 60.0, |_| {
-            CompletionItemMeasure::new(16.0)
-        });
+        // The popup's already-placed box, tall enough for both rows at
+        // this backend's own chrome row pitch.
+        let popup = Rect::new(10.0, 10.0, 120.0, 80.0);
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_completions(&completions, &layout);
+        let layout =
+            crate::DrawsPrimitives::draw_primitive(&mut backend, popup, &completions).layout;
         backend.end_frame();
 
         assert!(
@@ -9322,23 +9321,25 @@ mod tests {
         assert!(editor_ink > 0, "FontRole::Editor must still paint real ink");
     }
 
-    /// `WinBackend::draw_dialog` now passes `chrome_dwrite` for body text, so it
-    /// should render at the *chrome* font's size, not the editor's.
+    /// A `Dialog` paints its body text in the chrome font, so it should
+    /// render at the *chrome* font's size, not the editor's.
     ///
     /// The editor font size is held **fixed** across both runs — only the chrome
-    /// (ui) font size varies. If it were still painted through the editor `dwrite`
+    /// (ui) font size varies. If it were painted through the editor `dwrite`
     /// handle, both runs would paint identical ink regardless of the chrome size.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_dialog_paints_body_text_in_the_chrome_fonts_size() {
-        use crate::primitives::dialog::DialogMeasure;
-        use crate::primitives::toolbar::ToolbarItemMeasure;
+    fn win_backend_dialog_paints_body_text_in_the_chrome_fonts_size() {
+        use crate::primitives::dialog::Dialog;
         use crate::theme::Theme;
         use crate::types::{StyledText, WidgetId};
         use crate::win::testing::HeadlessSurface;
 
-        const W: u32 = 100;
-        const H: u32 = 100;
+        // Room for the dialog to lay itself out at either chrome size:
+        // its box is sized from the chrome font's own metrics, so at
+        // 40pt it needs far more than a 6pt run does.
+        const W: u32 = 400;
+        const H: u32 = 300;
         const EDITOR_SIZE_PT: f32 = 14.0;
 
         fn body_only_dialog() -> Dialog {
@@ -9354,39 +9355,22 @@ mod tests {
             }
         }
 
-        fn body_layout() -> DialogLayout {
-            let dialog = body_only_dialog();
-            let viewport = Rect::new(0.0, 0.0, W as f32, H as f32);
-            let measure = DialogMeasure {
-                width: W as f32,
-                title_height: 0.0,
-                body_height: 90.0,
-                table_height: 0.0,
-                input_height: 0.0,
-                button_row_height: 0.0,
-                button_width: 0.0,
-                button_gap: 0.0,
-                padding: 4.0,
-            };
-            dialog.layout(viewport, measure, |_| ToolbarItemMeasure::new(0.0))
-        }
-
         /// Rightmost ink column within `body_bounds` that differs from
         /// `theme.surface_bg` — i.e. the right edge of the body text's
         /// glyph ink, relative to `body_bounds.x`. Horizontal extent,
-        /// not pixel *count*: `body_bounds`' row height is always the
-        /// (fixed, in this test) editor font's line height — see this
-        /// test's own doc — so a much taller chrome glyph gets vertically
-        /// clipped by `D2D1_DRAW_TEXT_OPTIONS_CLIP` regardless of its
-        /// point size, making a raw ink-pixel *count* comparison weak.
-        /// Its *width* is never clipped (the row is far wider than one
-        /// glyph), and a larger font paints a strictly wider glyph for
-        /// any real typeface.
+        /// not pixel *count*: a glyph taller than its body row is
+        /// vertically clipped by `D2D1_DRAW_TEXT_OPTIONS_CLIP`, which
+        /// makes a raw ink-pixel *count* comparison weak. Its *width* is
+        /// never clipped (the row is far wider than one glyph), and a
+        /// larger font paints a strictly wider glyph for any real
+        /// typeface. Scanning stops at the surface's own edge.
         fn body_ink_right_edge(surface: &HeadlessSurface, body_bounds: Rect) -> i32 {
             let bg = Theme::default().surface_bg;
             let mut last = 0i32;
-            for y in body_bounds.y as u32..(body_bounds.y + body_bounds.height) as u32 {
-                for x in body_bounds.x as u32..(body_bounds.x + body_bounds.width) as u32 {
+            let y_end = ((body_bounds.y + body_bounds.height) as u32).min(H);
+            let x_end = ((body_bounds.x + body_bounds.width) as u32).min(W);
+            for y in body_bounds.y as u32..y_end {
+                for x in body_bounds.x as u32..x_end {
                     let px = surface.pixel_at(x, y);
                     if (px.r, px.g, px.b) != (bg.r, bg.g, bg.b) {
                         last = last.max(x as i32 - body_bounds.x as i32);
@@ -9396,7 +9380,7 @@ mod tests {
             last
         }
 
-        fn paint_with_chrome_size(chrome_size_pt: f32, layout: &DialogLayout) -> i32 {
+        fn paint_with_chrome_size(chrome_size_pt: f32) -> i32 {
             let surface = HeadlessSurface::new(W, H).expect("create headless surface");
             let mut backend = WinBackend::new();
             backend.set_editor_font(DEFAULT_UI_FONT_FAMILY, EDITOR_SIZE_PT);
@@ -9405,21 +9389,25 @@ mod tests {
                 .attach_headless(surface.target().clone(), W, H)
                 .expect("attach headless surface");
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let _ = Backend::draw_dialog(&mut backend, &body_only_dialog(), layout);
+            // The dialog centres itself in the viewport it is handed.
+            let layout = crate::DrawsPrimitives::draw_primitive(
+                &mut backend,
+                Rect::new(0.0, 0.0, W as f32, H as f32),
+                &body_only_dialog(),
+            )
+            .layout;
             backend.end_frame();
             body_ink_right_edge(&surface, layout.body_bounds)
         }
 
-        let layout = body_layout();
-
-        let right_tiny_chrome = paint_with_chrome_size(6.0, &layout);
-        let right_huge_chrome = paint_with_chrome_size(40.0, &layout);
+        let right_tiny_chrome = paint_with_chrome_size(6.0);
+        let right_huge_chrome = paint_with_chrome_size(40.0);
 
         assert!(
             right_huge_chrome > right_tiny_chrome * 2,
             "with the editor font size held fixed at {EDITOR_SIZE_PT}pt, only varying \
              the chrome font size (6pt vs 40pt), the dialog body's glyph should paint \
-             far wider at the larger chrome size — proves draw_dialog paints body text \
+             far wider at the larger chrome size — proves the dialog paints body text \
              via chrome_dwrite, not the (unchanged) editor dwrite handle \
              (right_tiny_chrome={right_tiny_chrome}, right_huge_chrome={right_huge_chrome})"
         );
@@ -9430,17 +9418,15 @@ mod tests {
         );
     }
 
-    /// `Backend::draw_rich_text_popup_with_font_role` must select a genuinely
-    /// different live `IDWriteTextFormat`, not a documented no-op. Plain
-    /// `draw_rich_text_popup` (no role argument) must paint through the chrome
-    /// handle, and `draw_rich_text_popup_with_font_role(.., FontRole::Editor)`
-    /// must paint through the editor handle instead.
+    /// [`crate::RichTextPopup::font_role`] must select a genuinely
+    /// different live `IDWriteTextFormat`, not a documented no-op. A
+    /// descriptor left at the default role must paint through the chrome
+    /// handle, and one carrying `FontRole::Editor` must paint through the
+    /// editor handle instead.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_rich_text_popup_honours_font_role() {
-        use crate::primitives::rich_text_popup::{
-            PopupPlacement, RichTextPopup, RichTextPopupMeasure,
-        };
+    fn win_backend_rich_text_popup_honours_font_role() {
+        use crate::primitives::rich_text_popup::{PopupPlacement, RichTextPopup};
         use crate::types::{Color, StyledText, WidgetId};
         use crate::win::testing::HeadlessSurface;
 
@@ -9471,10 +9457,18 @@ mod tests {
             }
         }
 
+        /// Rightmost glyph-ink column strictly inside `bounds` (the
+        /// popup's `content_bounds`, which its own `bg` fills), relative
+        /// to `bounds.x`. Strictly inside, so the frame stroke around the
+        /// box — the same in both font configurations — is never counted.
         fn ink_right_edge(surface: &HeadlessSurface, bounds: Rect, bg: (u8, u8, u8)) -> i32 {
             let mut last = 0i32;
-            for y in bounds.y as u32..(bounds.y + bounds.height) as u32 {
-                for x in bounds.x as u32..(bounds.x + bounds.width) as u32 {
+            let y0 = bounds.y.ceil().max(0.0) as u32;
+            let y1 = (bounds.y + bounds.height).floor().min(H as f32) as u32;
+            let x0 = bounds.x.ceil().max(0.0) as u32;
+            let x1 = (bounds.x + bounds.width).floor().min(W as f32) as u32;
+            for y in y0..y1 {
+                for x in x0..x1 {
                     let px = surface.pixel_at(x, y);
                     if (px.r, px.g, px.b) != bg {
                         last = last.max(x as i32 - bounds.x as i32);
@@ -9493,22 +9487,19 @@ mod tests {
                 .attach_headless(surface.target().clone(), W, H)
                 .expect("attach headless surface");
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let p = popup(bg, fg);
-            let measure = RichTextPopupMeasure::new(100.0, 90.0);
-            let layout = p.layout(
-                2.0,
-                2.0,
+            // The descriptor carries the font role the popup measures and
+            // paints its body in.
+            let p = RichTextPopup {
+                font_role: role.unwrap_or_default(),
+                ..popup(bg, fg)
+            };
+            let content = crate::DrawsPrimitives::draw_primitive(
+                &mut backend,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
-                measure,
-                |_, s, e| (e - s) as f32,
-            );
-            let content = layout.content_bounds;
-            match role {
-                Some(role) => {
-                    Backend::draw_rich_text_popup_with_font_role(&mut backend, &p, &layout, role)
-                }
-                None => Backend::draw_rich_text_popup(&mut backend, &p, &layout),
-            }
+                &p,
+            )
+            .layout
+            .content_bounds;
             backend.end_frame();
             (
                 ink_right_edge(&surface, content, (bg.r, bg.g, bg.b)),
@@ -9516,8 +9507,8 @@ mod tests {
             )
         }
 
-        // `None` = plain `draw_rich_text_popup` (today's call site, no
-        // role argument at all) — must still paint the chrome font.
+        // `None` = a descriptor with the default role — must paint in the
+        // chrome font.
         let (chrome_right, _) = paint_with_role(None, bg, fg);
         let (editor_right, _) = paint_with_role(Some(crate::FontRole::Editor), bg, fg);
 
@@ -9527,9 +9518,9 @@ mod tests {
         );
         assert!(
             chrome_right > editor_right * 2,
-            "with the editor font size held fixed at {EDITOR_SIZE_PT}pt, plain \
-             draw_rich_text_popup (no role argument) painting the {CHROME_SIZE_PT}pt \
-             chrome font should paint a far wider glyph than FontRole::Editor: \
+            "with the editor font size held fixed at {EDITOR_SIZE_PT}pt, a popup at \
+             the default role painting the {CHROME_SIZE_PT}pt chrome font should \
+             paint a far wider glyph than FontRole::Editor: \
              chrome_right={chrome_right}, editor_right={editor_right}"
         );
     }
@@ -9547,7 +9538,7 @@ mod tests {
     // painted through the editor `dwrite` handle regardless of
     // `set_ui_font`, so two renders that differ *only* in chrome font
     // size were byte-identical. Diffing the whole painted frame (rather
-    // than measuring one glyph's ink extent, `win_backend_draw_dialog_paints_body_text_in_the_chrome_fonts_size`'s
+    // than measuring one glyph's ink extent, `win_backend_dialog_paints_body_text_in_the_chrome_fonts_size`'s
     // approach above) is primitive-agnostic: it needs no per-primitive
     // knowledge of background colour or exact glyph bounds, just "this
     // primitive paints some real text".
@@ -9571,7 +9562,7 @@ mod tests {
             let mut backend = WinBackend::new();
             // Editor font held fixed across both renders — only the
             // chrome (`ui_font`) one varies, same discipline
-            // `win_backend_draw_dialog_paints_body_text_in_the_chrome_fonts_size`
+            // `win_backend_dialog_paints_body_text_in_the_chrome_fonts_size`
             // documents.
             backend.set_editor_font(DEFAULT_UI_FONT_FAMILY, 10.0);
             backend.set_ui_font(ui_font);
@@ -10012,8 +10003,8 @@ mod tests {
     /// `chrome_font_diff_pixel_count`) should affect it.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_text_display_does_not_vary_with_chrome_font_size() {
-        let td = TextDisplay {
+    fn win_backend_text_display_does_not_vary_with_chrome_font_size() {
+        let td = crate::TextDisplay {
             id: WidgetId::new("log"),
             lines: vec![crate::primitives::text_display::TextDisplayLine {
                 spans: vec![crate::types::StyledSpan::plain("hello world")],
@@ -10033,19 +10024,23 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_text_display(Rect::new(0.0, 0.0, 200.0, 40.0), &td);
+                crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 40.0),
+                    &td,
+                );
             },
         );
         assert_eq!(
             diff, 0,
-            "draw_text_display is editor-class — it must keep painting through \
+            "a text display is editor-class — it must keep painting through \
              EditorSurface (the editor dwrite handle) regardless of the chrome \
              font's size"
         );
     }
 
     /// `Terminal`'s paint through `EditorSurface` — see
-    /// [`win_backend_draw_text_display_does_not_vary_with_chrome_font_size`]'s
+    /// [`win_backend_text_display_does_not_vary_with_chrome_font_size`]'s
     /// doc for why this must stay pixel-identical across chrome font
     /// sizes.
     #[cfg(target_os = "windows")]
@@ -10253,8 +10248,8 @@ mod tests {
     /// `draw_data_table` above.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_toast_overlay_paints_title_in_the_chrome_fonts_size() {
-        let stack = ToastOverlay {
+    fn win_backend_toast_overlay_paints_title_in_the_chrome_fonts_size() {
+        let stack = crate::ToastOverlay {
             id: WidgetId::new("toast-stack"),
             corner: crate::ToastCorner::BottomRight,
             toasts: vec![crate::Toast {
@@ -10273,13 +10268,17 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_toast_overlay(Rect::new(0.0, 0.0, 360.0, 120.0), &stack);
+                crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 360.0, 120.0),
+                    &stack,
+                );
             },
         );
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_toast_overlay must paint the toast's title through \
+             a toast overlay must paint the toast's title through \
              chrome_dwrite (WinBackend's own PaintSurface default), not the \
              editor dwrite handle"
         );
@@ -10289,7 +10288,7 @@ mod tests {
     /// `draw_data_table` above.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_text_input_paints_text_in_the_chrome_fonts_size() {
+    fn win_backend_text_input_paints_text_in_the_chrome_fonts_size() {
         let mut ti = crate::TextInput::new(WidgetId::new("ti"));
         ti.lines = vec!["hello world".to_string()];
         ti.has_focus = true;
@@ -10299,25 +10298,28 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_text_input(Rect::new(0.0, 0.0, 200.0, 40.0), &ti);
+                crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 40.0),
+                    &ti,
+                );
             },
         );
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_text_input must paint its text through chrome_dwrite, not the \
+             a text input must paint its text through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
         );
     }
 
     /// Same "builds its own adapter from the passed `dwrite`" shape as
-    /// `draw_data_table` above. `Backend::draw_tooltip`'s default body
-    /// delegates to `Self::draw_tooltip_with_chrome` (see that method's
-    /// doc), so this exercises the same `chrome_dwrite`-preferring swap.
+    /// `draw_data_table` above, painted into the box `Tooltip::layout`
+    /// places for an anchor.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_tooltip_paints_text_in_the_chrome_fonts_size() {
-        let mut tooltip = Tooltip::new(WidgetId::new("tip"), "Explain this control");
+    fn win_backend_tooltip_paints_text_in_the_chrome_fonts_size() {
+        let mut tooltip = crate::Tooltip::new(WidgetId::new("tip"), "Explain this control");
         tooltip.placement = crate::TooltipPlacement::Bottom;
         let anchor = Rect::new(10.0, 4.0, 60.0, 20.0);
         let viewport = Rect::new(0.0, 0.0, 200.0, 120.0);
@@ -10329,13 +10331,13 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_tooltip(&tooltip, &layout);
+                crate::DrawsPrimitives::draw_primitive(backend, layout.bounds, &tooltip);
             },
         );
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_tooltip (via draw_tooltip_with_chrome) must paint its text \
+             a tooltip must paint its text \
              through chrome_dwrite, not the (unchanged) editor dwrite handle"
         );
     }
@@ -10344,7 +10346,7 @@ mod tests {
     /// `draw_data_table` above.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_completions_paints_item_labels_in_the_chrome_fonts_size() {
+    fn win_backend_completions_paints_item_labels_in_the_chrome_fonts_size() {
         let item = |label: &str| crate::CompletionItem {
             label: crate::types::StyledText::plain(label),
             detail: None,
@@ -10352,30 +10354,29 @@ mod tests {
             kind: Default::default(),
             icon: None,
         };
-        let completions = Completions {
+        let completions = crate::Completions {
             id: WidgetId::new("comp"),
             items: vec![item("alpha"), item("beta")],
             selected_idx: 0,
             scroll_offset: 0,
             has_focus: true,
         };
-        let viewport = Rect::new(0.0, 0.0, 200.0, 120.0);
-        let layout = completions.layout(10.0, 10.0, 16.0, viewport, 120.0, 60.0, |_| {
-            crate::CompletionItemMeasure::new(16.0)
-        });
+        // The popup's already-placed box, tall enough for a row at either
+        // chrome size, so both renders paint a label.
+        let popup = Rect::new(10.0, 10.0, 180.0, 100.0);
         let diff = chrome_font_diff_pixel_count(
             200,
             120,
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_completions(&completions, &layout);
+                crate::DrawsPrimitives::draw_primitive(backend, popup, &completions);
             },
         );
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_completions must paint item labels through chrome_dwrite, not \
+             completions must paint item labels through chrome_dwrite, not \
              the (unchanged) editor dwrite handle"
         );
     }
@@ -10607,13 +10608,12 @@ mod tests {
         );
     }
 
-    /// `toast_stack_layout` must wrap the toast's body against the same
-    /// `chrome_dwrite`-preferring handle `Self::draw_toast_overlay`
-    /// paints with — see that method's doc.
+    /// A toast overlay's no-paint layout must wrap the toast's body
+    /// against the same chrome font the overlay paints with.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_toast_stack_layout_wraps_body_in_the_chrome_fonts_size() {
-        let stack = ToastOverlay {
+    fn win_backend_toast_overlay_layout_wraps_body_in_the_chrome_fonts_size() {
+        let stack = crate::ToastOverlay {
             id: WidgetId::new("toast-stack"),
             corner: crate::ToastCorner::BottomRight,
             toasts: vec![crate::Toast {
@@ -10630,16 +10630,20 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend
-                    .toast_stack_layout(Rect::new(0.0, 0.0, 400.0, 400.0), &stack)
-                    .visible_toasts[0]
+                crate::DrawsPrimitives::layout_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 400.0, 400.0),
+                    &stack,
+                )
+                .layout
+                .visible_toasts[0]
                     .bounds
                     .height
             },
         );
         assert!(
             big_h > small_h,
-            "toast_stack_layout must wrap the toast body through chrome_dwrite, \
+            "the toast overlay layout must wrap the toast body through chrome_dwrite, \
              not the (unchanged) editor dwrite handle: small_h={small_h}, \
              big_h={big_h}"
         );
@@ -11601,9 +11605,9 @@ mod tests {
         );
     }
 
-    // ── #810: draw_text_display real-pixel driver tests ───────────────────────
+    // ── TextDisplay real-pixel driver tests ──────────────────────────────────
     //
-    // Drive the real `Backend::draw_text_display` →
+    // Drive the real `DrawsPrimitives::draw_primitive` →
     // `primitives::text_display::paint` path end to end.
 
     #[cfg(target_os = "windows")]
@@ -11631,7 +11635,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_text_display_background_fills_theme_background() {
+    fn win_backend_text_display_background_fills_theme_background() {
         use crate::win::testing::HeadlessSurface;
 
         const W: u32 = 240;
@@ -11645,7 +11649,11 @@ mod tests {
 
         let td = make_td(0, false);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_text_display(Rect::new(0.0, 0.0, W as f32, H as f32), &td);
+        crate::DrawsPrimitives::draw_primitive(
+            &mut backend,
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            &td,
+        );
         backend.end_frame();
 
         let theme = Theme::default();
@@ -11658,7 +11666,7 @@ mod tests {
 
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_text_display_scrollbar_gutter_and_thumb_paint() {
+    fn win_backend_text_display_scrollbar_gutter_and_thumb_paint() {
         use crate::win::testing::HeadlessSurface;
 
         const W: u32 = 240;
@@ -11673,8 +11681,7 @@ mod tests {
         let td = make_td(100, true);
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_text_display(rect, &td);
-        let layout = backend.text_display_layout(rect, &td);
+        let layout = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &td).layout;
         backend.end_frame();
 
         let theme = Theme::default();
@@ -11711,13 +11718,12 @@ mod tests {
     /// must return coords in the same frame across backends.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_text_display_layout_hit_test_resolves_lines_at_nonzero_origin() {
+    fn win_backend_text_display_layout_hit_test_resolves_lines_at_nonzero_origin() {
         use crate::primitives::text_display::TextDisplayHit;
         use crate::win::testing::HeadlessSurface;
 
         const W: u32 = 240;
         const H: u32 = 160;
-        const LINE_HEIGHT: f32 = 16.0;
 
         let surface = HeadlessSurface::new(W, H).expect("create headless surface");
         let mut backend = WinBackend::new();
@@ -11732,11 +11738,17 @@ mod tests {
         let rect_y = 17.0_f32;
         let rect = Rect::new(rect_x, rect_y, W as f32 - rect_x, H as f32 - rect_y);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_text_display(rect, &td);
-        let layout = backend.text_display_layout(rect, &td);
+        let painted = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &td);
         backend.end_frame();
 
-        let body_y = rect_y + LINE_HEIGHT;
+        // The body strip starts below the title row, at the editor row
+        // pitch the display was painted on.
+        let body_y = painted.body.y;
+        assert!(
+            body_y > rect_y,
+            "the title row must push the body below the rect's own top: body_y={body_y}"
+        );
+        let layout = &painted.layout;
         let vis = &layout.visible_lines[0];
         assert_eq!(
             vis.bounds.y, 0.0,
@@ -11745,19 +11757,17 @@ mod tests {
 
         let abs_x = rect_x + vis.bounds.x + vis.bounds.width * 0.5;
         let abs_y = body_y + vis.bounds.y + vis.bounds.height * 0.5;
-        let local_x = abs_x - rect_x;
-        let local_y = abs_y - body_y;
-        match layout.hit_test(local_x, local_y) {
+        match painted.hit_test(abs_x, abs_y) {
             TextDisplayHit::Line(idx) => assert_eq!(idx, vis.line_idx),
             other => panic!("expected Line, got {:?}", other),
         }
     }
 
-    /// No-paint layout must agree byte-for-byte with what
-    /// `draw_text_display` painted.
+    /// No-paint layout must agree byte-for-byte with what the paint
+    /// path resolved.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_text_display_no_paint_layout_matches_paint_layout() {
+    fn win_backend_text_display_no_paint_layout_matches_paint_layout() {
         use crate::win::testing::HeadlessSurface;
 
         const W: u32 = 240;
@@ -11772,11 +11782,10 @@ mod tests {
         let td = make_td(30, true);
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_text_display(rect, &td);
-        let painted = backend.text_display_layout(rect, &td);
+        let painted = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &td);
         backend.end_frame();
 
-        let no_paint = backend.text_display_layout(rect, &td);
+        let no_paint = crate::DrawsPrimitives::layout_primitive(&backend, rect, &td);
         assert_eq!(painted, no_paint);
     }
 
@@ -12031,8 +12040,8 @@ mod tests {
     // ── overlay order: tooltip/toast stay topmost of the focus ring ──────
 
     #[cfg(target_os = "windows")]
-    fn sample_toast_overlay() -> ToastOverlay {
-        use crate::primitives::toast::{Toast, ToastCorner, ToastSeverity};
+    fn sample_toast_overlay() -> crate::ToastOverlay {
+        use crate::primitives::toast::{Toast, ToastCorner, ToastOverlay, ToastSeverity};
         ToastOverlay {
             id: WidgetId::new("toasts:bottom_right"),
             corner: ToastCorner::BottomRight,
@@ -12073,7 +12082,12 @@ mod tests {
             .expect("attach headless surface");
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = backend.draw_toast_overlay(Rect::new(0.0, 0.0, W as f32, H as f32), &overlay);
+        let layout = crate::DrawsPrimitives::draw_primitive(
+            &mut backend,
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            &overlay,
+        )
+        .layout;
         let vt = layout.visible_toasts[0].bounds;
         // A tab-stop focus ring whose rect is the toast's own bounds — the
         // worst case, a toast that lands exactly over the focused widget it
@@ -12110,7 +12124,7 @@ mod tests {
 
     /// The ring is a perimeter stroke ([`focus_ring_band_overlaps`]), not a
     /// filled rect, so a toast that lands strictly *inside* a large focused
-    /// widget — e.g. `draw_toast_overlay` insetting the stack from a
+    /// widget — e.g. a toast overlay insetting the stack from a
     /// focused editor/list that spans the whole viewport — must leave the
     /// ring (and its `chrome:focus-ring` zone) intact: there is no pixel
     /// conflict to suppress. Mirrors
@@ -12137,7 +12151,7 @@ mod tests {
         // focused rect's edges — the stroke band the ring actually paints.
         let focused_rect = Rect::new(0.0, 0.0, W as f32, H as f32);
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let _layout = backend.draw_toast_overlay(focused_rect, &overlay);
+        crate::DrawsPrimitives::draw_primitive(&mut backend, focused_rect, &overlay);
         backend.draw_focus_ring(focused_rect);
         backend.end_frame();
 
@@ -12174,7 +12188,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn draw_focus_ring_does_not_paint_over_a_tooltip_from_the_same_frame() {
-        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+        use crate::primitives::tooltip::Tooltip;
         use crate::theme::Theme;
         use crate::win::testing::HeadlessSurface;
 
@@ -12190,11 +12204,7 @@ mod tests {
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover text");
-        let layout = TooltipLayout {
-            bounds: rect,
-            resolved_placement: ResolvedPlacement::Bottom,
-        };
-        backend.draw_tooltip(&tooltip, &layout);
+        crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &tooltip);
         // The focused widget this tooltip is anchored to shares the
         // tooltip's own bounds exactly — the ring must yield.
         backend.draw_focus_ring(rect);
@@ -12214,7 +12224,7 @@ mod tests {
             "the focus ring must not stroke over a tooltip painted earlier this frame",
         );
         // The tooltip's own fill is present at its centre — a positive
-        // assertion that `draw_tooltip` actually painted something there,
+        // assertion that the tooltip actually painted something there,
         // not just that the ring's colour is absent. Probed at mid-height
         // just inside the right border: the left-aligned "Hover text" label
         // ends well short of there at any chrome font size, so the pixel
@@ -12265,8 +12275,9 @@ mod tests {
         let editor_rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_text_input(editor_rect, &editor);
-        let layout = backend.draw_toast_overlay(editor_rect, &overlay);
+        crate::DrawsPrimitives::draw_primitive(&mut backend, editor_rect, &editor);
+        let layout =
+            crate::DrawsPrimitives::draw_primitive(&mut backend, editor_rect, &overlay).layout;
         // The chrome-level focus ring the runner strokes around
         // `editor_rect` once `AppLogic::render` returns — must not land on
         // top of the toast just painted above.
@@ -12309,7 +12320,7 @@ mod tests {
     /// straight into dispatch rather than through the live `wndproc`'s
     /// `route_mouse_move`/`route_pointer` step first. Not a test of
     /// `HoverTooltipTracker` itself (that lives in its own module) — this
-    /// proves the Win-GUI dispatch + tick + `draw_tooltip` wiring actually
+    /// proves the Win-GUI dispatch + tick + tooltip paint wiring actually
     /// shows and hides a tooltip in response to real pointer input.
     /// Mirrors
     /// `macos::tooltip::tests::hover_driven::tooltip_appears_after_the_delay_and_hides_on_pointer_leave`.
@@ -12320,7 +12331,7 @@ mod tests {
 
         use super::*;
         use crate::compose::HoverTooltipTracker;
-        use crate::primitives::tooltip::{ResolvedPlacement, Tooltip, TooltipLayout};
+        use crate::primitives::tooltip::Tooltip;
         use crate::runner::Reaction;
         use crate::win::testing::WinDriver;
         use crate::{AppLogic, ButtonMask, Point, UiEvent};
@@ -12354,11 +12365,7 @@ mod tests {
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
                 if self.tracker.borrow().visible_item().is_some() {
                     let tooltip = Tooltip::new(WidgetId::new("tip"), "Hover hint");
-                    let layout = TooltipLayout {
-                        bounds: anchor(),
-                        resolved_placement: ResolvedPlacement::Bottom,
-                    };
-                    backend.draw_tooltip(&tooltip, &layout);
+                    crate::DrawsPrimitives::draw_dyn(backend, anchor(), &tooltip, &());
                 }
             }
 
