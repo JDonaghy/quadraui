@@ -803,6 +803,10 @@ impl crate::primitive::Primitive for TextField {
     /// [`TextField::layout`] with the backend's own advance and line
     /// height.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextFieldPrimitiveLayout {
+        let rect = match ctx.units() {
+            crate::primitive::Units::Cells => crate::primitive::cell_grid_rect(rect),
+            _ => rect,
+        };
         let (layout, char_width) = match ctx.units() {
             crate::primitive::Units::Cells => (cell_layout(self, rect), 1.0),
             _ => (

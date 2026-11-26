@@ -589,13 +589,7 @@ pub(crate) fn cell_button_layout(
     ctx: &crate::primitive::LayoutCtx,
     rect: Rect,
 ) -> ButtonLayout {
-    let quantised = Rect::new(
-        rect.x.max(0.0).round(),
-        rect.y.max(0.0).round(),
-        rect.width.max(0.0).round(),
-        rect.height.max(0.0).round(),
-    );
-    let mut layout = button.layout(quantised);
+    let mut layout = button.layout(crate::primitive::cell_grid_rect(rect));
     layout.nerd_fonts_enabled = ctx.nerd_fonts_enabled;
     layout
 }

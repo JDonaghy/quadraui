@@ -718,6 +718,10 @@ impl crate::primitive::Primitive for CommandLine {
     /// comes from [`cell_layout`]; on a pixel surface from
     /// [`CommandLine::layout`] with the backend's own monospace advance.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> CommandLinePrimitiveLayout {
+        let rect = match ctx.units() {
+            crate::primitive::Units::Cells => crate::primitive::cell_grid_rect(rect),
+            _ => rect,
+        };
         let layout = match ctx.units() {
             crate::primitive::Units::Cells => cell_layout(self, rect),
             _ => self.layout(rect, CommandLineMeasure::new(ctx.char_width)),

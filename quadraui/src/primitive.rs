@@ -424,6 +424,25 @@ pub enum Units {
     Cells,
 }
 
+/// Quantise `rect` to the whole cells a cell-grid backend actually paints
+/// it into — the same rounding [`crate::tui::backend::TuiBackend`] applies
+/// when it converts a [`Rect`] to its native grid before painting a cell.
+///
+/// A container can hand a leaf a fractional rect (a ratio-split
+/// [`crate::SplitTree`] pane), but only whole cells of it are painted. A `Primitive::layout` that resolves its
+/// cell-grid geometry against the raw rect hit-tests one cell wider than
+/// what painted, claiming a neighbour's cell (the split divider beside the
+/// pane) as its own body. Resolving against this rect instead keeps
+/// hit-testing on the painted grid.
+pub(crate) fn cell_grid_rect(rect: Rect) -> Rect {
+    Rect::new(
+        rect.x.max(0.0).round(),
+        rect.y.max(0.0).round(),
+        rect.width.max(0.0).round(),
+        rect.height.max(0.0).round(),
+    )
+}
+
 /// A named bundle of the chrome metrics [`LayoutCtx`] carries, plus the
 /// [`Units`] they're expressed in — see [`LayoutCtx::measure`], which
 /// builds one of these from a live `LayoutCtx`.

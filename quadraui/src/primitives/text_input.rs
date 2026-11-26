@@ -1314,6 +1314,10 @@ impl crate::primitive::Primitive for TextInput {
     /// from the chrome one whenever the two fonts differ, and the caret
     /// column has to sit on the same grid as the glyphs beside it.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextInputPrimitiveLayout {
+        let rect = match ctx.units() {
+            crate::primitive::Units::Cells => crate::primitive::cell_grid_rect(rect),
+            _ => rect,
+        };
         let (layout, char_width) = match ctx.units() {
             crate::primitive::Units::Cells => (cell_layout(self, rect), 1.0),
             _ => {

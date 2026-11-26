@@ -1565,7 +1565,9 @@ impl crate::primitive::Primitive for TextDisplay {
     /// when the chrome and editor fonts have different heights.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> TextDisplayPrimitiveLayout {
         match ctx.units() {
-            crate::primitive::Units::Cells => cell_layout(self, rect),
+            crate::primitive::Units::Cells => {
+                cell_layout(self, crate::primitive::cell_grid_rect(rect))
+            }
             _ => pixel_layout(self, rect, ctx.editor_line_height(), ctx.char_width),
         }
     }
@@ -1961,6 +1963,22 @@ mod interactive_tests {
     ) -> Handled<TextDisplayEvent> {
         let mut cx = EventCx::new(td.id, host);
         Interactive::handle(td, state, event, layout, &mut cx)
+    }
+
+    /// A fractional pane rect (a ratio-split pane) paints only its whole
+    /// cells, so the cell-grid layout must not claim the column past them —
+    /// that column belongs to whatever sits beside the pane.
+    #[test]
+    fn a_fractional_cell_rect_hit_tests_only_its_painted_cells() {
+        let td = display(3, false);
+        let layout = Primitive::layout(
+            &td,
+            &LayoutCtx::new(1.0, 1.0, false),
+            Rect::new(0.0, 0.0, 23.4, 5.0),
+        );
+        assert_eq!(layout.area, Rect::new(0.0, 0.0, 23.0, 5.0));
+        assert_eq!(layout.hit_test(22.0, 0.0), TextDisplayHit::Line(0));
+        assert_eq!(layout.hit_test(23.0, 0.0), TextDisplayHit::Empty);
     }
 
     #[test]
