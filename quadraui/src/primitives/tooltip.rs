@@ -525,6 +525,17 @@ impl crate::primitive::Primitive for Tooltip {
         }
     }
 
+    /// A [`TooltipBorder::Full`] card paints its drop shadow and the
+    /// border stroke centred on its edge outside its box on a pixel
+    /// surface; `Sides` and `None` chrome paint inside it.
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        if matches!(self.chrome.border, TooltipBorder::Full) {
+            crate::paint_surface::shadow_extent(style.shadow_elevation) + style.border_width
+        } else {
+            0.0
+        }
+    }
+
     /// The tooltip box is a surface every backend reports: on a cell
     /// grid the whole-cell rect [`painted_bounds`] paints into, on a
     /// pixel surface the box itself.
@@ -1016,6 +1027,23 @@ mod tests {
     use super::*;
 
     // ── Tooltip primitive tests (D6 shape) ────────────────────────────
+
+    /// Only the fully-bordered card paints a shadow and a centred border
+    /// stroke past its box; side-bar and borderless chrome stay inside.
+    #[test]
+    fn paint_bleed_covers_the_full_card_shadow_only() {
+        use crate::primitive::Primitive;
+        let style = crate::Style::default();
+        let mut tip = Tooltip::new(WidgetId::new("tip"), "hi");
+        assert_eq!(
+            tip.paint_bleed(&style),
+            crate::paint_surface::shadow_extent(style.shadow_elevation) + style.border_width
+        );
+        tip.chrome.border = TooltipBorder::Sides;
+        assert_eq!(tip.paint_bleed(&style), 0.0);
+        tip.chrome.border = TooltipBorder::None;
+        assert_eq!(tip.paint_bleed(&style), 0.0);
+    }
 
     /// The zone the widget contract registers for a tooltip is the
     /// whole-cell painted rect on a cell grid and the box itself on a

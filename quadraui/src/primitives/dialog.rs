@@ -33,6 +33,7 @@ use crate::primitives::form::Form;
 use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::toolbar::{Toolbar, ToolbarHit, ToolbarItemMeasure, ToolbarLayout};
 use crate::style::Style;
+use crate::text_util::display_width;
 use crate::types::{Color, StyledText, WidgetId};
 use crate::Handled;
 use serde::{Deserialize, Serialize};
@@ -603,6 +604,15 @@ impl Dialog {
         }
     }
 
+    /// The widest [`Self::body`] line, each line flattened to plain text
+    /// and measured by `width_of`.
+    fn widest_body_line(&self, width_of: &dyn Fn(&str) -> f32) -> f32 {
+        self.body
+            .iter()
+            .map(|line| width_of(&flatten(line)))
+            .fold(0.0, f32::max)
+    }
+
     /// Convenience: find the default button's id (first with
     /// `is_default = true`, or the last button as a fallback).
     pub fn default_button_id(&self) -> Option<&WidgetId> {
@@ -784,8 +794,15 @@ impl Dialog {
             Some(DialogInput::ContentSlot(DialogContentSlot { width: Some(w), .. })) => *w,
             _ => (viewport.width * 0.5).clamp(min_w, max_w),
         };
+        // The widest body line plus the padding either side, measured
+        // through `measure` when the caller has a real text measurer.
+        let body_preferred_w = self.widest_body_line(&|line: &str| match measure {
+            Some(m) => m.width_of(line),
+            None => display_width(line) as f32 * char_width,
+        }) + line_height * 2.0;
         let dialog_w = default_w
             .max(table_preferred_w)
+            .max(body_preferred_w)
             .min(viewport.width - char_width * 4.0 - border_chrome_inset * 2.0);
 
         // Floored at today's 8-char-width estimate so a row of short
@@ -1076,7 +1093,7 @@ pub(crate) mod native_surface_paint {
         surface.surface_draw_shadow(
             bounds,
             style.corner_radius,
-            style.shadow_elevation.max(3),
+            style.shadow_elevation.max(super::MODAL_SHADOW_ELEVATION),
             Color::rgba(0, 0, 0, 120),
         );
         surface.surface_fill_rounded_rect(bounds, style.corner_radius, theme.surface_bg);
@@ -1570,19 +1587,17 @@ pub(crate) fn cell_layout(dialog: &Dialog, viewport: Rect) -> DialogLayout {
 }
 
 /// The cell-grid [`DialogMeasure`] a terminal paints a [`Dialog`] at:
-/// one row per body line (capped at [`CELL_MAX_BODY_ROWS`] so a long
-/// body can't fill the whole viewport), a one-row title/button row, and
-/// a box width that fits the widest table column, clamped to
-/// 30…60 columns and never wider than the viewport minus a two-column
-/// margin either side.
+/// one row per body line (capped only so the box still fits the
+/// viewport), a one-row title/button row, and a box width that fits the
+/// widest body line and the widest table column, floored at the
+/// 30…60-column default and never wider than the viewport minus a
+/// two-column margin either side.
 ///
 /// Every other field matches what [`Dialog::measure_generic`] derives
 /// for `char_width == line_height == 1.0`; only the body-row cap is
-/// specific to the cell grid, where a dialog shares a 24-row terminal
+/// specific to the cell grid, where a dialog shares a short terminal
 /// with the app behind it.
 pub(crate) fn cell_measure(dialog: &Dialog, viewport: Rect) -> DialogMeasure {
-    let body_h = (dialog.body.len() as f32).clamp(0.0, CELL_MAX_BODY_ROWS);
-
     let (table_h, table_preferred_w) = match &dialog.table {
         // +2 for the 1-cell padding on each side.
         Some(t) => (
@@ -1608,7 +1623,22 @@ pub(crate) fn cell_measure(dialog: &Dialog, viewport: Rect) -> DialogMeasure {
         Some(DialogInput::ContentSlot(DialogContentSlot { width: Some(w), .. })) => *w,
         _ => (viewport.width * 0.5).clamp(30.0, 60.0),
     };
-    let dialog_w = default_w.max(table_preferred_w).min(viewport.width - 4.0);
+    // +2 for the 1-cell padding on each side.
+    let body_preferred_w = dialog.widest_body_line(&|line: &str| display_width(line) as f32) + 2.0;
+    let dialog_w = default_w
+        .max(table_preferred_w)
+        .max(body_preferred_w)
+        .min(viewport.width - 4.0);
+
+    let title_h = if dialog.title.spans.iter().any(|s| !s.text.is_empty()) {
+        1.0
+    } else {
+        0.0
+    };
+    // Title, table, input and button rows, plus the 1-row padding above
+    // and below; the body gets whatever of the viewport they leave.
+    let other_rows = title_h + table_h + input_h + 1.0 + 2.0;
+    let body_h = (dialog.body.len() as f32).min((viewport.height - other_rows).max(0.0));
 
     // Floored at an 8-cell estimate so a row of short labels ("OK" /
     // "No") doesn't shrink below the width a plain label row renders at;
@@ -1624,11 +1654,7 @@ pub(crate) fn cell_measure(dialog: &Dialog, viewport: Rect) -> DialogMeasure {
 
     DialogMeasure {
         width: dialog_w,
-        title_height: if dialog.title.spans.iter().any(|s| !s.text.is_empty()) {
-            1.0
-        } else {
-            0.0
-        },
+        title_height: title_h,
         body_height: body_h,
         table_height: table_h,
         input_height: input_h,
@@ -1639,8 +1665,9 @@ pub(crate) fn cell_measure(dialog: &Dialog, viewport: Rect) -> DialogMeasure {
     }
 }
 
-/// Most body rows [`cell_measure`] reserves — see its own doc.
-const CELL_MAX_BODY_ROWS: f32 = 10.0;
+/// The shadow elevation a modal dialog paints at, at least — the
+/// heaviest overlay tier, matching VS Code's own modal shadow.
+const MODAL_SHADOW_ELEVATION: u8 = 3;
 
 // ── Cell-grid painter ───────────────────────────────────────────────────────
 
@@ -2109,6 +2136,14 @@ impl crate::primitive::Primitive for Dialog {
         .layout
         .bounds;
         crate::NaturalSize::new(Some(bounds.width), Some(bounds.height))
+    }
+
+    /// The modal's drop shadow — at the modal elevation the painter
+    /// floors it to — and the border stroke centred on its edge paint
+    /// outside its box on a pixel surface.
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        crate::paint_surface::shadow_extent(style.shadow_elevation.max(MODAL_SHADOW_ELEVATION))
+            + style.border_width
     }
 
     /// `rect` is the viewport the modal centres itself in — the same
