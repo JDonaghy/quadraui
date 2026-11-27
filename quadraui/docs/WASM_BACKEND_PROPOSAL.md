@@ -5,11 +5,17 @@ paint through `<canvas>`, so an unmodified quadraui app runs in a browser
 tab with no server process, true pixel fidelity with GTK/macOS/Win, and
 (per the widget-contract consolidation) near-zero new rendering code.
 
-Status: **proposed, not decided.** This is the re-decision
-`docs/WEB_BACKEND_PROPOSAL.md` / D-015 left open — it resolves that
-doc's semantic-HTML-vs-pixel-canvas fork in the pixel-canvas direction,
-for different reasons than D-015's own CoordApp use case. Nothing here
-is queued; see §8 for what would need to happen before it is.
+Status: **rejected for shipping apps (D-030, 2026-11-27).** This
+resolved `docs/WEB_BACKEND_PROPOSAL.md` / D-015's semantic-HTML-vs-
+pixel-canvas fork toward pixel canvas — then, walking through what it
+would actually buy (§6a), turned out to solve the one named personal
+case (coord-tui over Tailscale) worse than a tool that already exists
+(`ttyd`/`gotty` over the existing TUI binary), and to not clear the bar
+for general use for the reasons §4 already listed (canvas text
+input/IME, zero accessibility, no native text selection). Not queued.
+The doc stays as the record of the pixel-canvas design and the one
+narrow use left genuinely open: CI/visual-regression infra (§6a). See
+D-030 in `docs/decisions/DECISIONS.md` for the full decision.
 
 ---
 
@@ -274,6 +280,56 @@ choosing between them for a specific consumer.
 
 ---
 
+## 6a. Why this is rejected for shipping apps (D-030, 2026-11-27)
+
+Feasibility (§§1–3) was never the problem — the design above is sound
+and cheap relative to when quadraweb was shelved. What kills it is that
+neither case it would serve is actually worth having.
+
+**The named personal case is already solved, with no new code.**
+coord-tui already runs as a terminal program. `ttyd`/`gotty` wraps any
+TUI binary as an xterm.js session served over HTTP — "coord-tui, in a
+browser tab, over Tailscale" exists today with zero lines written, and
+it has *none* of this backend's real costs: xterm.js already solved
+text input/IME, native terminal text selection, and doesn't need
+accessibility bolted on (a terminal is already screen-reader-legible).
+Building `WasmBackend` to reach the same destination would mean taking
+on this doc's hardest open problems (canvas IME, zero accessibility, no
+native text selection or find-in-page — see §4 and the discussion that
+produced this decision) to arrive somewhere a 15-year-old class of tool
+already gets you for free.
+
+**The general case doesn't clear the bar either.** Every real "canvas
+GUI in a browser tab" success (Figma is the standard reference) was a
+single product with a dedicated rendering team making a deliberate,
+product-specific bet — not a reusable multi-backend framework that is
+*also* trying to be a way to build web apps. Adding this backend adds a
+fifth backend's permanent cost (pixel-fidelity chasing forever, a wasm
+toolchain, permanent IME/accessibility debt) without extending
+quadraui's actual pitch ("one app, native everywhere, for apps that
+already have native targets"). Nobody surveyed in reaching this
+decision — including the person who'd be the first user — came up with
+a reason to reach for it over the existing TUI/GTK/native builds, or
+over wrapping the TUI in a terminal-in-browser tool.
+
+**What's left standing, narrowly, and still undecided:** a
+headless-Chrome wasm build as CI/visual-regression infrastructure, not
+an app target. The gallery's screenshot matrix has a real, already-felt
+gap — GTK and Windows have no capture leg and sit "pending" (native GUI
+capture is fragile: macmini AX/tmux issues, dell64 sleep stalling
+Windows smoke). A headless render sidesteps all of that, and the
+limitations that sink the app-shipping case (no filesystem, no
+accessibility, no IME) are irrelevant to a test harness. This is real,
+but it's a thin justification on its own — whether it's worth a new
+backend's permanent maintenance cost versus just fixing the native
+capture legs directly is a close call. **Not decided, not queued.** If
+it's ever picked up, it should be scoped explicitly as test
+infrastructure from the start, not as "the WASM backend, which happens
+to also be useful for CI" — the two framings lead to very different
+scope.
+
+---
+
 ## 7. Open questions
 
 - **Q1 — JS API surface for the wasm leaf.** Hand-authored to mirror
@@ -290,22 +346,22 @@ choosing between them for a specific consumer.
   the Python file manager) or live in-tree as a `web`/`wasm` cargo
   feature, peer of `src/gtk/`? Precedent exists for both; decide at
   Phase 1 based on how large `WasmBackend` + its loader actually get.
-- **Q4 — is there a real consumer yet?** Unlike quadraweb (CoordApp) or
-  the Python file manager (dogfooding the Python bindings), this
-  proposal has no named first consumer. Recommend not queuing any work
-  until one exists, or until it's explicitly adopted as a showcase item
-  under [[goal-showcase-agentic-engineering]]-style portfolio framing.
+- **Q4 — is there a real consumer yet?** Resolved, no: walking through
+  the two candidate consumers (coord-tui over Tailscale; general app
+  shipping) in the discussion that produced D-030, neither held up —
+  see §6a. Superseded by the decision; kept here for the record of how
+  the question was originally framed.
 
 ---
 
-## 8. Before this is queued
+## 8. Disposition (see D-030)
 
-This is a sketch, not a decision. Per this repo's own pattern
-(`docs/WEB_BACKEND_PROPOSAL.md` → D-015 in `DECISIONS.md`), reviving
-browser work needs an explicit decision entry, not just a proposal doc.
-Recommend treating this the way the libghostty terminal question was
-handled: park it, named, with its trigger condition (widget-contract
-collapse lands + a real consumer appears) rather than filing issues now.
+**Rejected for shipping apps, 2026-11-27.** See §6a and D-030 in
+`docs/decisions/DECISIONS.md` for the reasoning. Not queued, no issues
+filed. The one thing left genuinely open is the narrow CI/visual-
+regression use in §6a — if that's ever picked up, treat it as a new,
+differently-scoped proposal (test infra, not an app backend), not a
+revival of this one.
 
 ---
 
@@ -314,8 +370,8 @@ collapse lands + a real consumer appears) rather than filing issues now.
 - `quadraui/docs/WEB_BACKEND_PROPOSAL.md` — the shelved semantic-HTML
   design this supersedes-for-a-different-case, not invalidates.
 - `quadraui/docs/decisions/DECISIONS.md` — D-015 (web backend shelved,
-  the fork this resolves) and D-016 (unit contract / DPI scale, reused
-  unchanged here).
+  the fork this resolves), D-016 (unit contract / DPI scale, reused
+  unchanged here), and D-030 (this proposal rejected for shipping apps).
 - `quadraui/src/paint_surface.rs` — the `PaintSurface` trait this
   backend implements.
 - `quadraui/docs/decisions/BINDING_STRATEGY.md` — the native-per-language

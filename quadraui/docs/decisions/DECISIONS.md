@@ -3197,3 +3197,67 @@ binding-core collapse (#2976–#2979):
 
 - Shipping half a contract would publish two ways to write a widget, and
   the first public release would teach the one that is being deleted.
+
+## D-030 — The WASM backend proposal is rejected for shipping apps; narrowed to a possible CI-only use (issue none; `docs/WASM_BACKEND_PROPOSAL.md`)
+
+**Status:** Decided 2026-11-27 (operator decision).
+
+**Date:** 2026-11-27.
+
+### Question
+
+`docs/WASM_BACKEND_PROPOSAL.md` resolved `WEB_BACKEND_PROPOSAL.md`/D-015's
+semantic-HTML-vs-pixel-canvas fork toward pixel canvas (a `WasmBackend`
+implementing `PaintSurface` against `CanvasRenderingContext2D`), for a
+new reason unrelated to D-015's CoordApp-on-phone case: running an
+unmodified quadraui app client-side in a browser tab, no server. Walking
+through what that would actually buy — appearance, server-API calls,
+XSS, and the stated first target (coord-tui, personal use over
+Tailscale) — surfaced that the real costs (canvas text input/IME, zero
+accessibility, no native text selection or find-in-page) buy nothing
+the operator or anyone else would use, for either of the two cases
+considered.
+
+### Decision
+
+**Do not build the WASM/canvas backend to ship apps to a browser.**
+
+- The named personal case (coord-tui, Tailscale-only, from a browser) is
+  already solved, today, with no new code: `ttyd`/`gotty` wraps the
+  existing TUI binary as an xterm.js session over HTTP. It has none of
+  the canvas backend's gaps (IME, accessibility, text selection are all
+  xterm.js's solved problems already), so the WASM backend would be
+  solving an already-solved problem the harder way.
+- As a general web-development framework, no angle rescues it. Every
+  real-world instance of "canvas-rendered GUI in a browser tab" that
+  succeeded (Figma being the standard example) was a single product
+  with a dedicated rendering team making a deliberate bet, not a
+  reusable multi-backend framework also trying to be a way to build
+  websites. Bolting "and also browser" onto quadraui adds a fifth
+  backend's permanent maintenance cost (pixel-fidelity chasing, a wasm
+  toolchain, permanent IME/accessibility debt) without extending
+  quadraui's actual value proposition ("one app, native everywhere").
+
+**One narrow possible future use, explicitly NOT decided here:** a
+headless-Chrome wasm build as CI/visual-regression infrastructure —
+replacing the gallery's GTK/Windows screenshot-capture gap (no capture
+leg today; native GUI capture is fragile — macmini AX/tmux issues,
+dell64 sleep stalling Windows smoke) with a headless render immune to
+all of that, since a test harness needs none of the limitations
+(filesystem, accessibility, IME) that sink the app-shipping case. This
+is a real, already-felt pain point, but whether it justifies a new
+backend's permanent maintenance cost over just fixing the native
+capture legs directly is a close call that has not been decided. No
+work is queued for it.
+
+### What this does NOT mean
+
+- It does not withdraw `docs/WASM_BACKEND_PROPOSAL.md`. It stays as the
+  record of the pixel-canvas design, now marked rejected-for-apps, with
+  the CI-infra question left open.
+- It does not reopen D-015. The web backend stays shelved for the
+  CoordApp-on-phone case (still solved by code-coordinator's React
+  webapp); this decision is about a different, newer proposal.
+- It does not affect `PaintSurface` itself, which stays the shared paint
+  seam for GTK, macOS and Windows regardless of whether a browser
+  painter is ever built against it.
