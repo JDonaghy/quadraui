@@ -946,7 +946,7 @@ mod split_tree_cell_tests {
         horizontal_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md).
+    /// Non-zero-origin regression guard (LESSONS.md).
     #[test]
     fn horizontal_paint_and_click_round_trip_at_nonzero_origin() {
         horizontal_round_trip_at(7, 13);
@@ -1025,7 +1025,7 @@ mod split_tree_cell_tests {
         assert_eq!(layout.leaves.len(), 3);
     }
 
-    /// quadraui#1067 acceptance: a `:vsplit` inside a `:split` — the
+    /// A `:vsplit` inside a `:split` — the
     /// nested-tree geometry from `nested_tree_paints_all_dividers_and_
     /// round_trips` above — paints a junction glyph, not a dangling
     /// `'│'`, where the inner divider's row meets the outer divider's
@@ -1159,8 +1159,8 @@ mod split_tree_cell_tests {
         fractional_ratio_round_trip_at(0, 0);
     }
 
-    /// Non-zero-origin regression guard (quadraui#494 / LESSONS.md):
-    /// the #452 paint/hit-test agreement must also hold when the tree
+    /// Non-zero-origin regression guard (LESSONS.md): the paint/hit-test
+    /// agreement must also hold when the tree
     /// isn't painted at the screen origin.
     #[test]
     fn hit_test_agrees_with_actually_painted_cell_for_fractional_ratio_at_nonzero_origin() {

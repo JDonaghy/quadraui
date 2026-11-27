@@ -10,8 +10,8 @@
 use quadraui::primitive::{LayoutCtx, Primitive, Units};
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, FrameTree, Reaction, Rect, ScreenLayout, SplitDirection, SplitTree,
-    Surface, UiEvent, WidgetId,
+    AppLogic, Backend, FrameTree, Reaction, Rect, ScreenLayout, SplitDirection, SplitTree, Surface,
+    UiEvent, WidgetId,
 };
 
 const COLS: u16 = 50;
@@ -105,8 +105,18 @@ fn surface_widget_tree_paints_both_dividers_and_their_junction() {
     let outer_x = AREA.x as u16 + 20;
     // The stacked divider: 11 rows less one leaves 10, half is row 5.
     let inner_y = AREA.y as u16 + 5;
-    assert_eq!(cell(&driver, outer_x, AREA.y as u16), '│', "{}", driver.screen());
-    assert_eq!(cell(&driver, AREA.x as u16, inner_y), '─', "{}", driver.screen());
+    assert_eq!(
+        cell(&driver, outer_x, AREA.y as u16),
+        '│',
+        "{}",
+        driver.screen()
+    );
+    assert_eq!(
+        cell(&driver, AREA.x as u16, inner_y),
+        '─',
+        "{}",
+        driver.screen()
+    );
     assert_eq!(cell(&driver, outer_x, inner_y), '┤', "{}", driver.screen());
 }
 

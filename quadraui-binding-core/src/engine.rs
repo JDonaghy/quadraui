@@ -11152,8 +11152,8 @@ mod tests {
         assert_eq!(split_index, 0);
         // The exact inverse of the layout: the cursor's offset over the
         // span the divider shares out, (23 + 10 - 0) / (40 - 1).
-        let expected_ratio = (divider_cell + 10.0 - divider.axis_start)
-            / (divider.axis_size - divider.thickness);
+        let expected_ratio =
+            (divider_cell + 10.0 - divider.axis_start) / (divider.axis_size - divider.thickness);
         assert!(
             (new_ratio - expected_ratio).abs() < 0.001,
             "expected a ratio around {expected_ratio}, got {new_ratio}"

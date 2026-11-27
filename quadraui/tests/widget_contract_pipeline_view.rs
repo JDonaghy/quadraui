@@ -95,7 +95,11 @@ fn driver() -> TuiDriver<PipelineApp> {
 fn surface_widget_pipeline_paints_every_stage() {
     let driver = driver();
     for needle in ["Build", "Test", "Ship", "Retry"] {
-        assert!(driver.screen_contains(needle), "{needle}:\n{}", driver.screen());
+        assert!(
+            driver.screen_contains(needle),
+            "{needle}:\n{}",
+            driver.screen()
+        );
     }
 }
 

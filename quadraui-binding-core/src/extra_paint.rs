@@ -12,13 +12,12 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    render_markdown_to_styled, Backend, Canvas, Chart, Column, ComboBox, CommandLine,
-    DatePicker, Decoration, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon,
-    LabelPosition, MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput,
-    NumberInputHit, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
-    ScrollView, Scrollbar, Spinner, StyledText, TextDisplay, TextDisplayLine, TextField, TextInput,
-    TextRegion, Theme, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData,
-    WidgetId,
+    render_markdown_to_styled, Backend, Canvas, Chart, Column, ComboBox, CommandLine, DatePicker,
+    Decoration, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon, LabelPosition,
+    MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, Point,
+    ProgressBar, Rect, RenderedMarkdown, ScrollAxis, ScrollView, Scrollbar, Spinner, StyledText,
+    TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar, ToolbarButton,
+    TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed

@@ -9,8 +9,8 @@
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
     AppLogic, Backend, DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind,
-    DiffView, DiffViewEvent, FrameTree, NamedKey, Point, Reaction, Rect, ScreenLayout, ScrollDelta, Surface,
-    UiEvent, WidgetId,
+    DiffView, DiffViewEvent, FrameTree, NamedKey, Point, Reaction, Rect, ScreenLayout, ScrollDelta,
+    Surface, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 64;
@@ -124,7 +124,11 @@ fn wheel(driver: &mut TuiDriver<DiffApp>, dy: f32) {
 fn surface_widget_diff_paints_labels_and_rows() {
     let driver = driver(DiffMode::SideBySide);
     for needle in ["a/file", "b/file", "old line 1", "new line 0"] {
-        assert!(driver.screen_contains(needle), "{needle}:\n{}", driver.screen());
+        assert!(
+            driver.screen_contains(needle),
+            "{needle}:\n{}",
+            driver.screen()
+        );
     }
 }
 
@@ -137,7 +141,11 @@ fn the_wheel_scrolls_three_rows_a_notch_and_stops_at_the_end() {
         vec![DiffViewEvent::Scrolled { scroll_offset: 3 }]
     );
     assert!(driver.screen_contains("old line 3"), "{}", driver.screen());
-    assert!(!driver.screen_contains("old line 1 "), "{}", driver.screen());
+    assert!(
+        !driver.screen_contains("old line 1 "),
+        "{}",
+        driver.screen()
+    );
     for _ in 0..20 {
         wheel(&mut driver, -1.0);
     }

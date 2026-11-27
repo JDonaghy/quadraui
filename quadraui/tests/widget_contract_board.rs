@@ -8,7 +8,7 @@
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, BadgeStatus, Backend, BoardAction, BoardCard, BoardColumn, BoardModel, CardBadge,
+    AppLogic, Backend, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardModel, CardBadge,
     FrameTree, MoveDir, Reaction, Rect, ScreenLayout, Surface, UiEvent, WidgetId,
 };
 
@@ -109,7 +109,11 @@ fn driver() -> TuiDriver<BoardApp> {
 fn surface_widget_board_paints_column_titles_and_cards() {
     let driver = driver();
     for needle in ["Todo", "Done", "First card", "Second card", "Third card"] {
-        assert!(driver.screen_contains(needle), "{needle}:\n{}", driver.screen());
+        assert!(
+            driver.screen_contains(needle),
+            "{needle}:\n{}",
+            driver.screen()
+        );
     }
 }
 
