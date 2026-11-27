@@ -381,8 +381,10 @@ impl StatusBar {
     /// - `bar_width`, `bar_height` — bar dimensions in the measurer's unit.
     /// - `min_gap` — minimum gap between the left group and the right
     ///   group. Right segments are dropped from the front (least important)
-    ///   until they fit, preserving the gap. Typical values: `2` cells
-    ///   (TUI), `16` pixels (native).
+    ///   until they fit, preserving the gap. The gap never truncates left
+    ///   text: when the left group fits beside the remaining right group
+    ///   but not with the full gap, the gap shrinks instead. Typical
+    ///   values: `2` cells (TUI), `16` pixels (native).
     /// - `measure(seg)` — returns a `StatusSegmentMeasure` for the segment.
     ///   Receives the full `StatusBarSegment` so measurers can vary by
     ///   `bold` or other style flags.
@@ -533,7 +535,15 @@ impl StatusBar {
         } else {
             0.0
         };
-        let left_budget = (bar_width - 2.0 * edge_inset - right_reserved).max(0.0);
+        // The gap gives way before left text does: a left group that fits
+        // beside the resolved right group without the gap keeps its full
+        // width and the gap shrinks to whatever space is left.
+        let gapless_budget = (bar_width - 2.0 * edge_inset - total_visible).max(0.0);
+        let left_budget = if total_left <= gapless_budget + f32::EPSILON {
+            total_left
+        } else {
+            (bar_width - 2.0 * edge_inset - right_reserved).max(0.0)
+        };
 
         // ── Left segments, left-to-right from the inset edge ───────────
         let mut cursor = edge_inset;
@@ -599,23 +609,41 @@ impl StatusBar {
     }
 }
 
-/// Minimum gap, in character cells, reserved between the left and right
-/// segment groups on a cell grid — the cell-unit counterpart of
+/// Default minimum gap, in character cells, reserved between the left
+/// and right segment groups on a cell grid — the cell-unit counterpart of
 /// `native_surface_paint`'s own pixel `MIN_GAP`. Both exist because
 /// [`StatusBar::layout`]'s `min_gap` is expressed in the caller's own
-/// unit, so each unit system names its own value.
+/// unit, so each unit system names its own value. A host changes it
+/// through [`crate::Style::status_bar_cell_gap`].
 pub const MIN_GAP_CELLS: f32 = 2.0;
 
+/// How a cell-grid status bar paints a segment whose text is wider than
+/// the cells its layout left it. Set through
+/// [`crate::Style::status_bar_cell_overflow`].
+///
+/// `#[non_exhaustive]`: a future overflow style is additive.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum StatusBarOverflow {
+    /// End the visible text in `…`, so the cut reads as deliberate.
+    #[default]
+    Ellipsis,
+    /// Cut the text at the segment's last cell with no marker.
+    Clip,
+}
+
 /// The cell-units [`StatusBarLayout`] every cell-grid caller shares: one
-/// cell per character, [`MIN_GAP_CELLS`] between the two groups, and a
-/// single-row bar.
+/// cell per character, `style`'s [`crate::Style::status_bar_cell_gap`]
+/// between the two groups, and a single-row bar.
 ///
 /// No edge inset and no per-segment padding — a monospace grid has no
 /// sub-cell space to spend on either, and cell-grid callers already
 /// reserve visual breathing room with literal space characters inside
 /// segment text (see [`StatusBar::layout`]).
-pub fn cell_layout(bar: &StatusBar, area: Rect) -> StatusBarLayout {
-    bar.layout(area.width, 1.0, MIN_GAP_CELLS, |seg| {
+pub fn cell_layout(bar: &StatusBar, area: Rect, style: &crate::Style) -> StatusBarLayout {
+    let gap = style.status_bar_cell_gap.max(0.0);
+    bar.layout(area.width, 1.0, gap, |seg| {
         StatusSegmentMeasure::new(seg.text.chars().count() as f32)
     })
 }
@@ -628,12 +656,13 @@ pub fn cell_layout(bar: &StatusBar, area: Rect) -> StatusBarLayout {
 /// and paints the resolved `visible_segments`. No layout decisions live
 /// here; any policy change (priority drop, gap rules, …) belongs in
 /// [`StatusBar::layout_padded`]. The one adjustment made at paint time is
-/// ellipsis-truncating a segment's text to the `bounds.width` cells the
-/// layout already resolved for it — a rendering detail, not a layout
-/// decision, since the width itself came from the layout.
+/// fitting a segment's text to the `bounds.width` cells the layout
+/// already resolved for it, by its [`StatusBarOverflow`] — a rendering
+/// detail, not a layout decision, since the width itself came from the
+/// layout.
 #[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
-    use super::{StatusBar, StatusBarLayout, StatusSegmentSide};
+    use super::{StatusBar, StatusBarLayout, StatusBarOverflow, StatusSegmentSide};
     use crate::cell_surface::{CellStyle, CellSurface};
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
@@ -664,16 +693,19 @@ pub(crate) mod cell_paint {
     ///
     /// `hovered_id`/`pressed_id` tint the matching *clickable* segment's
     /// background (lighten on hover, darken on press) — the descriptor
-    /// itself carries no mouse state.
+    /// itself carries no mouse state. `overflow` decides how a segment
+    /// wider than its cells is cut.
     ///
     /// A degenerate `area` short-circuits to the no-paint layout without
     /// touching `surface`.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn paint(
         bar: &StatusBar,
         layout: &StatusBarLayout,
         area: Rect,
         surface: &mut dyn CellSurface,
         theme: &Theme,
+        overflow: StatusBarOverflow,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
     ) -> StatusBarLayout {
@@ -731,16 +763,24 @@ pub(crate) mod cell_paint {
             }
             // `vs.bounds.width` is already the priority-drop-resolved
             // budget (see `StatusBar::layout_padded`) in the same
-            // char-count unit this painter measures in — ellipsis-truncate
-            // to it so an over-long segment (most often the always-kept
-            // first left segment) never paints past its own reserved cells
-            // into a neighbouring segment. A segment that overflows only by
-            // the trailing space a consumer padded it with is clipped
-            // instead, keeping the character the `…` would have eaten.
-            let paint_text =
-                crate::text_util::truncate_padded_with_ellipsis(&seg.text, vs.bounds.width, |s| {
-                    s.chars().count() as f32
-                });
+            // char-count unit this painter measures in — fit the text to
+            // it so an over-long segment (most often the always-kept first
+            // left segment) never paints past its own reserved cells into
+            // a neighbouring segment. With an ellipsis, a segment that
+            // overflows only by the trailing space a consumer padded it
+            // with is clipped instead, keeping the character the `…`
+            // would have eaten.
+            let paint_text = match overflow {
+                StatusBarOverflow::Clip => {
+                    let kept = vs.bounds.width.max(0.0).round() as usize;
+                    std::borrow::Cow::Owned(seg.text.chars().take(kept).collect())
+                }
+                _ => crate::text_util::truncate_padded_with_ellipsis(
+                    &seg.text,
+                    vs.bounds.width,
+                    |s| s.chars().count() as f32,
+                ),
+            };
             surface.put_str_clipped(
                 start_x,
                 y,
@@ -1750,7 +1790,7 @@ impl crate::primitive::Primitive for StatusBar {
     /// every pixel rasteriser paints with.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> StatusBarPrimitiveLayout {
         let layout = match ctx.units() {
-            crate::primitive::Units::Cells => cell_layout(self, rect),
+            crate::primitive::Units::Cells => cell_layout(self, rect, ctx.style()),
             _ => self.layout_padded(
                 rect.width,
                 rect.height,
@@ -1811,7 +1851,8 @@ impl crate::primitive::Primitive for StatusBar {
     }
 
     /// [`cell_paint::paint`] over `cells`, tinting the clickable segment
-    /// `env` reports hovered or pressed.
+    /// `env` reports hovered or pressed and cutting overlong text by
+    /// [`crate::Style::status_bar_cell_overflow`].
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1833,6 +1874,7 @@ impl crate::primitive::Primitive for StatusBar {
             area,
             cells,
             theme,
+            env.style().status_bar_cell_overflow,
             hovered.as_ref(),
             pressed.as_ref(),
         );
@@ -2614,6 +2656,7 @@ mod cell_paint_tests {
             ),
             &mut surface,
             theme,
+            super::StatusBarOverflow::default(),
             hovered_id,
             pressed_id,
         )
@@ -3028,7 +3071,7 @@ mod cell_paint_tests {
     /// cell-grid caller shares — rather than a hand-rolled measurer.
     fn paint_at_width(bar: &StatusBar, width: u16) -> (Buffer, StatusBarLayout) {
         let area = crate::event::Rect::new(0.0, 0.0, width as f32, 1.0);
-        let layout = cell_layout(bar, area);
+        let layout = cell_layout(bar, area, &crate::Style::default());
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 1));
         draw_status_bar(
             &mut buf,

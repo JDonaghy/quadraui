@@ -2404,6 +2404,13 @@ impl crate::primitive::Primitive for ToastOverlay {
         crate::frame::OwnedContent::Toast(self.clone())
     }
 
+    /// Each toast card's drop shadow and the border stroke centred on
+    /// its edge paint outside the card on a pixel surface, so a card
+    /// placed flush with the overlay's edge bleeds past it.
+    fn paint_bleed(&self, style: &crate::Style) -> f32 {
+        crate::paint_surface::shadow_extent(style.shadow_elevation) + style.border_width
+    }
+
     /// `rect` is the app's overlay area — the stack anchors
     /// [`Self::corner`] to it and sizes each box from its own content.
     ///
@@ -2666,6 +2673,18 @@ mod tests {
             toasts,
             focus: None,
         }
+    }
+
+    /// A toast card's shadow and border stroke reach past the card, so
+    /// the overlay's paint clip is widened by both.
+    #[test]
+    fn paint_bleed_covers_the_card_shadow_and_border() {
+        let stack = make_toast_stack(ToastCorner::BottomRight, vec![make_toast("t", "T")]);
+        let style = crate::Style::default();
+        assert_eq!(
+            crate::primitive::Primitive::paint_bleed(&stack, &style),
+            crate::paint_surface::shadow_extent(style.shadow_elevation) + style.border_width
+        );
     }
 
     #[test]

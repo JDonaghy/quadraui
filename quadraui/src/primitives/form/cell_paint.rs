@@ -26,8 +26,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::cell_layout::{
-    field_is_focused, is_top_label, left_label_column_width, resolved_control_width_cells,
-    track_cells_within, tui_form_layout_with_label_width,
+    content_end_margin_cells, field_is_focused, is_top_label, left_label_column_width,
+    resolved_control_width_cells, track_cells_within, tui_form_layout_with_label_width,
 };
 use super::{FieldKind, Form, LabelAlign, LabelPosition, ValidationState};
 use ratatui::style::Color as RatatuiColor;
@@ -478,6 +478,14 @@ fn build_row_ctx<'a>(
     };
     let available = (row_x_offset + row_width).saturating_sub(control_start);
     let control_width = resolved_control_width_cells(form, field, available);
+    let control_start = match content_end_margin_cells(field) {
+        Some(margin) => form.resolved_control_width(field).place(
+            control_start as f32,
+            (row_x_offset + row_width).saturating_sub(margin) as f32,
+            control_width as f32,
+        ) as usize,
+        None => control_start,
+    };
 
     RowCtx {
         area,

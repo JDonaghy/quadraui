@@ -774,8 +774,9 @@ pub use primitives::split_tree::{
     MAX_RATIO as SPLIT_TREE_MAX_RATIO, MIN_RATIO as SPLIT_TREE_MIN_RATIO,
 };
 pub use primitives::status_bar::{
-    StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
-    StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
+    StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout,
+    StatusBarOverflow, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
+    VisibleStatusSegment,
 };
 pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
 pub use primitives::text_area::{TextArea, TextAreaAction};
@@ -787,7 +788,7 @@ pub use primitives::text_area::{TextArea, TextAreaAction};
 pub use primitives::tab_bar::{
     tab_icon_at, tab_icon_cols, SegmentMeasure, TabBar, TabBarEvent, TabBarGlyphs, TabBarHit,
     TabBarHits, TabBarLayout, TabBarSegment, TabChrome, TabFrame, TabIcon, TabItem, TabMeasure,
-    VisibleSegment, VisibleTab,
+    TabSeparator, VisibleSegment, VisibleTab,
 };
 // `TabBar`'s `Primitive::Layout` — unconditional, like `impl Primitive
 // for TabBar` itself: the three pixel backends paint it via
@@ -902,7 +903,7 @@ pub use paint_surface::{AlphaSheet, PaintSurface, PathVerb, TextRunStyle};
 // unaliased `CellStyle` (spreadsheet-cell formatting) at this crate root.
 pub use cell_surface::{BorderSet, CellStyle as CellSurfaceStyle, CellSurface, CursorShape};
 // The `Primitive` trait — see that module's doc.
-pub use primitive::{LayoutCtx, PaintEnv, Primitive};
+pub use primitive::{LayoutCtx, PaintEnv, Placed, Primitive};
 // The behaviour half of the widget contract — see `interactive`'s module
 // doc. `non_interactive!` itself is exported at the crate root by
 // `#[macro_export]`, not re-exported here.

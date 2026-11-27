@@ -1094,7 +1094,12 @@ impl ChatController {
             .len()
             .max(1);
         let input_rows = visual_rows.clamp(self.input_min_rows, self.input_max_rows);
-        let input_h = input_rows as f32 * lh + 2.0;
+        // The rows at the pitch the painted `TextInput` lays them out at,
+        // which on a pixel backend can exceed the editor line height.
+        let input_row_h = crate::backend::primitive_layout_ctx(backend)
+            .line_height
+            .max(1.0);
+        let input_h = input_rows as f32 * input_row_h + 2.0;
 
         // Persistent hint row: a fixed one-row strip directly
         // above the input box, present only when `set_hint` was called.

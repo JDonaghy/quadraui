@@ -31,7 +31,8 @@ Five subcommands, used from `release.yml` and `ci.yml`:
 appended to the file named by `$GITHUB_OUTPUT`, if set) and touches the
 network only via `git ls-remote` against the real remote tags, never the
 shallow local checkout. `notes` extracts the `## [<version>]` CHANGELOG.md
-section and exits 1, writing nothing, if that section is missing or empty —
+section (truncated, with a pointer back to CHANGELOG.md, when it would
+exceed GitHub's release-body limit) and exits 1, writing nothing, if that section is missing or empty —
 `ci.yml`'s `changelog-version-check` job runs this on the `develop` -> `main`
 promotion PR itself, against the version `version` below reads, so a
 CHANGELOG still titled `## [Unreleased]` fails the PR before merge instead of
@@ -344,6 +345,39 @@ def cmd_check_binding_versions(args: argparse.Namespace) -> int:
     return 0
 
 
+# GitHub rejects a release body longer than 125,000 characters, and
+# `release.yml` creates the GitHub Release only after `cargo publish` and
+# the tag push have already happened. This cap leaves margin under that
+# limit for the truncation marker and any whitespace GitHub adds.
+RELEASE_NOTES_MAX_LEN = 120_000
+
+RELEASE_NOTES_TRUNCATION_MARKER = (
+    "\n\n…(truncated — see CHANGELOG.md's full `## [{version}]` section for "
+    "the rest)\n"
+)
+
+
+def release_notes(section: str, version: str, *, max_len: int = RELEASE_NOTES_MAX_LEN) -> str:
+    """`section` as GitHub Release notes: unchanged when it fits in
+    `max_len` characters, otherwise cut at the last line break that keeps
+    the result (marker included) within `max_len`, followed by a marker
+    pointing at CHANGELOG.md's full `## [version]` section."""
+    if len(section) <= max_len:
+        return section
+    marker = RELEASE_NOTES_TRUNCATION_MARKER.format(version=version)
+    budget = max_len - len(marker)
+    if budget <= 0:
+        raise ValueError(
+            f"max_len={max_len} leaves no room for the {len(marker)}-char "
+            "truncation marker"
+        )
+    head = section[:budget]
+    cut = head.rfind("\n")
+    if cut > 0:
+        head = head[:cut]
+    return head.rstrip() + marker
+
+
 def cmd_notes(args: argparse.Namespace) -> int:
     changelog_path = Path(args.changelog)
     text = changelog_path.read_text(encoding="utf-8")
@@ -354,7 +388,7 @@ def cmd_notes(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    Path(args.out).write_text(section, encoding="utf-8")
+    Path(args.out).write_text(release_notes(section, args.version), encoding="utf-8")
     return 0
 
 

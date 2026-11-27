@@ -75,6 +75,10 @@ use canvas_app::CanvasApp;
 mod canvas_shapes_app;
 use canvas_shapes_app::CanvasShapesApp;
 
+#[path = "../examples/common/chat_demo.rs"]
+mod chat_demo;
+use chat_demo::ChatDemo;
+
 // Pixel canvas — big enough for five stage boxes + arrow connectors + the
 // bottom status bar at GTK's native (pixel, not cell) scale.
 const W: i32 = 800;
@@ -2093,5 +2097,39 @@ fn canvas_v2_rect_op_honours_per_op_alpha_on_gtk() {
         ),
         "the translucent top rect should blend with the base, not paint its own RGB \
          opaquely (ignoring `a`): got {center:?}"
+    );
+}
+
+// ─── ChatDemo: a multi-line input paints every line ─────────────────────────
+
+#[test]
+fn chat_multi_line_input_paints_every_line() {
+    let mut driver = GtkDriver::new(ChatDemo::new(), W, H);
+
+    for c in "first".chars() {
+        driver.type_char(c);
+    }
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Named(NamedKey::Enter),
+        modifiers: Modifiers {
+            shift: true,
+            ..Default::default()
+        },
+        repeat: false,
+    });
+    for c in "second".chars() {
+        driver.type_char(c);
+    }
+    driver.render();
+
+    let first = driver
+        .find_bounds("first")
+        .expect("first input line painted");
+    let second = driver
+        .find_bounds("second")
+        .expect("second input line painted");
+    assert!(
+        second.y > first.y,
+        "the second line paints below the first: {first:?} then {second:?}"
     );
 }

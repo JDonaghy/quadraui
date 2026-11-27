@@ -264,9 +264,12 @@ pub struct Style {
     pub bold: bool,
     #[serde(default)]
     pub italic: bool,
-    /// Font scale factor (1.0 = normal). Carried on the wire, but no
-    /// painter honours it: every backend paints the span at the editor's
-    /// own font size.
+    /// Font scale factor (1.0 = normal). Every pixel backend (GTK, macOS,
+    /// Win) paints the span at this multiple of the editor font's size,
+    /// measures caret, selection and underline positions with it, and
+    /// grows the line's text box to its tallest span; the row pitch stays
+    /// uniform. The TUI cell grid cannot scale glyphs and paints the span
+    /// one cell per column.
     pub font_scale: f32,
 }
 

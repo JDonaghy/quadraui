@@ -945,6 +945,7 @@ Alias for `"None" | "Single" | "Multi"`.
 | `row_height` | `number \| null` | no |  |
 | `bordered` | `boolean` | no |  |
 | `vim_keys` | `boolean` | no |  |
+| `show_scrollbar` | `boolean` | no |  |
 
 <a id="wire-modifiers"></a>
 #### `Modifiers`
@@ -1739,6 +1740,8 @@ A per-node "style" override, scoped to that node's own subtree: every quadraui::
 | `tab_padding_x` | `number` | no |  |
 | `tooltip_delay_ms` | `number` | no |  |
 | `tooltip_auto_dismiss_ms` | `number` | no |  |
+| `status_bar_cell_gap` | `number` | no |  |
+| `status_bar_cell_overflow` | `"ellipsis" \| "clip"` | no |  |
 | `font_family` | `string` | no |  |
 | `font_size` | `number` | no |  |
 | `font_weight` | `"normal" \| "bold"` | no |  |
@@ -3077,7 +3080,7 @@ Alias for `("Chevron" | "ToggleCase" | "ToggleWholeWord" | "ToggleRegex" | "Prev
 <a id="wire-controlwidth"></a>
 #### `ControlWidth`
 
-Alias for `("Fill" | "Content") | _ControlWidthFixed`.
+Alias for `("Fill" | "Content" | "ContentEnd") | _ControlWidthFixed`.
 
 <a id="wire-labelposition"></a>
 #### `LabelPosition`

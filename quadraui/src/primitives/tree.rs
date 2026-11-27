@@ -463,7 +463,8 @@ impl TreeView {
     }
 
     /// Vertical scrollbar geometry for this tree rendered into `area`, or
-    /// `None` when the tree is empty or all rows fit in the viewport.
+    /// `None` when the tree is empty, all rows fit in the viewport, or
+    /// [`crate::types::TreeStyle::show_scrollbar`] is off.
     ///
     /// This is the single source of truth shared by any rasteriser that
     /// paints a tree scrollbar and consumers that hit-test the resolved
@@ -531,7 +532,7 @@ impl TreeView {
         track_width: f32,
         scroll_px: Option<f32>,
     ) -> Option<Scrollbar> {
-        if row_height <= 0.0 || track_width <= 0.0 {
+        if !self.style.show_scrollbar || row_height <= 0.0 || track_width <= 0.0 {
             return None;
         }
         let total = self.rows.len() as f32;
@@ -2235,15 +2236,18 @@ impl crate::primitive::Primitive for TreeView {
         if ctx.units() == crate::primitive::Units::Cells {
             let viewport_rows = (rect.height - border).max(0.0).floor() as usize;
             // A cell grid has no overlay: the scrollbar takes the
-            // rightmost column away from the rows when they overflow.
-            let (area, vscrollbar) = if self.rows.len() > viewport_rows && rect.width > 1.0 {
-                (
-                    Rect::new(rect.x, rect.y, rect.width - 1.0, rect.height),
-                    self.vscrollbar_with_track_width(rect, 1.0, 1.0),
-                )
-            } else {
-                (rect, None)
-            };
+            // rightmost column away from the rows when they overflow,
+            // unless the style turns the scrollbar off.
+            let (area, vscrollbar) =
+                if self.style.show_scrollbar && self.rows.len() > viewport_rows && rect.width > 1.0
+                {
+                    (
+                        Rect::new(rect.x, rect.y, rect.width - 1.0, rect.height),
+                        self.vscrollbar_with_track_width(rect, 1.0, 1.0),
+                    )
+                } else {
+                    (rect, None)
+                };
             let layout =
                 crate::tui::tui_tree_layout(self, crate::tui::backend::q_rect_to_ratatui(area));
             let vscrollbar_layout = vscrollbar

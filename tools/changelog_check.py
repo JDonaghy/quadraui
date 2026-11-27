@@ -474,8 +474,9 @@ def release_promotion_version(base: str, head: str, repo_root: Path) -> str | No
 LIB_RS_PATH = "quadraui/src/lib.rs"
 
 # The exact file set `scripts/release.py prepare` commits on a release
-# branch (quadraui/Cargo.toml, Cargo.lock, CHANGELOG.md, README.md and
-# quadraui/src/lib.rs) — the shape ci.yml's `bump-shape` job uses to decide
+# branch (quadraui/Cargo.toml, Cargo.lock, CHANGELOG.md, README.md,
+# quadraui/src/lib.rs, and the docs and starter template whose dependency
+# snippet it rewrites) — the shape ci.yml's `bump-shape` job uses to decide
 # whether a `release-X.Y.Z` -> `develop` bump PR can skip the full
 # build/test/clippy matrix.
 BUMP_FILE_SET = frozenset(
@@ -485,6 +486,9 @@ BUMP_FILE_SET = frozenset(
         CHANGELOG_PATH,
         "README.md",
         LIB_RS_PATH,
+        "quadraui/docs/INSTALL.md",
+        "quadraui/docs/GUIDE.md",
+        "templates/app/Cargo.toml.liquid",
     }
 )
 

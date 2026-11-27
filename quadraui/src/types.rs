@@ -837,11 +837,21 @@ pub struct TreeStyle {
     /// like every other printable key.
     #[serde(default)]
     pub vim_keys: bool,
+    /// Paint a vertical scrollbar when the rows overflow the viewport. On
+    /// by default. Off, a cell grid gives every column to the rows instead
+    /// of taking the rightmost one for the track, and a pixel backend
+    /// paints no overlay scrollbar.
+    #[serde(default = "TreeStyle::default_show_scrollbar")]
+    pub show_scrollbar: bool,
 }
 
 impl TreeStyle {
     fn default_row_height() -> Option<u16> {
         Some(22)
+    }
+
+    fn default_show_scrollbar() -> bool {
+        true
     }
 }
 
@@ -855,6 +865,7 @@ impl Default for TreeStyle {
             row_height: Self::default_row_height(),
             bordered: false,
             vim_keys: false,
+            show_scrollbar: Self::default_show_scrollbar(),
         }
     }
 }

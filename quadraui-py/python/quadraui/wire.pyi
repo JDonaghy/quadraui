@@ -77,6 +77,7 @@ class TreeStyle(TypedDict):
     row_height: NotRequired[Optional[int]]
     bordered: NotRequired[bool]
     vim_keys: NotRequired[bool]
+    show_scrollbar: NotRequired[bool]
 
 class Modifiers(TypedDict):
     shift: NotRequired[bool]
@@ -580,6 +581,8 @@ class StyleValue(TypedDict):
     tab_padding_x: NotRequired[float]
     tooltip_delay_ms: NotRequired[int]
     tooltip_auto_dismiss_ms: NotRequired[int]
+    status_bar_cell_gap: NotRequired[float]
+    status_bar_cell_overflow: NotRequired[Literal['ellipsis', 'clip']]
     font_family: NotRequired[str]
     font_size: NotRequired[float]
     font_weight: NotRequired[Literal['normal', 'bold']]
@@ -1452,7 +1455,7 @@ class FindReplacePanelDescriptor(TypedDict):
 class _ControlWidthFixed(TypedDict):
     Fixed: float
 
-ControlWidth = Union[Literal['Fill', 'Content'], _ControlWidthFixed]
+ControlWidth = Union[Literal['Fill', 'Content', 'ContentEnd'], _ControlWidthFixed]
 
 LabelPosition = Literal['Left', 'Top', 'Inline', 'Hidden']
 

@@ -261,8 +261,9 @@ pub struct Form {
 /// non-item-based field kind (`Toggle`, `TextInput`, `PasswordInput`,
 /// `TextArea`, `ReadOnly`, `Slider`, `ColorPicker`, `Dropdown`,
 /// `ComboBox`, `DatePicker`, `Button`) starts its control at the same
-/// column, right after the shared label column, regardless of mode —
-/// only the column's *width* changes between modes.
+/// column, right after the shared label column, in every mode but
+/// [`ControlWidth::ContentEnd`], which places it against the row's right
+/// edge instead.
 #[derive(Debug, Clone, Copy, PartialEq, Default, Serialize, Deserialize)]
 pub enum ControlWidth {
     /// Stretch the control to fill the row's remaining width after the
@@ -278,11 +279,22 @@ pub enum ControlWidth {
     /// behaviour, just repositioned to start right after the label
     /// instead of hugging the row's right edge.
     Content,
+    /// Size the control to its natural content, like `Content`, and place
+    /// it flush against the row's right edge rather than right after the
+    /// label column. On a cell grid the control leaves two blank cells
+    /// before the edge (a bracketed text box or dropdown closes inside the
+    /// first of them); on a pixel backend it ends at the same right edge a
+    /// `Fill` control does. A row too narrow for both starts the control
+    /// right after the label column, as `Content` does. `Button` is
+    /// right-anchored in every mode; `Slider`, `NumberInput` and the
+    /// item-bearing kinds place their items through the form layout and
+    /// keep their `Content` position.
+    ContentEnd,
 }
 
 impl ControlWidth {
     /// Resolve this mode to a concrete width given the control's
-    /// natural `content_width` (used only by `Content`), the
+    /// natural `content_width` (used only by `Content`/`ContentEnd`), the
     /// `available_width` remaining after the label column (used only
     /// by `Fill`), and an optional `min_width` floor applied
     /// regardless of mode. Units are whatever the caller measures in
@@ -291,9 +303,21 @@ impl ControlWidth {
         let raw = match self {
             ControlWidth::Fill => available_width,
             ControlWidth::Fixed(w) => w,
-            ControlWidth::Content => content_width,
+            ControlWidth::Content | ControlWidth::ContentEnd => content_width,
         };
         raw.max(min_width.unwrap_or(0.0))
+    }
+
+    /// Where a control of resolved width `control_width` starts, given the
+    /// shared control column's `control_start` and the `control_end` it
+    /// may reach. `ContentEnd` ends the control at `control_end` without
+    /// starting it before `control_start`; every other mode starts at
+    /// `control_start`.
+    pub fn place(self, control_start: f32, control_end: f32, control_width: f32) -> f32 {
+        match self {
+            ControlWidth::ContentEnd => (control_end - control_width).max(control_start),
+            _ => control_start,
+        }
     }
 }
 
@@ -2063,6 +2087,7 @@ mod native_surface_paint {
                 let cc = ControlCtx {
                     row_rect,
                     control_start,
+                    control_end: input_right,
                     available,
                     field_fg,
                     disabled: field.disabled,
@@ -2146,7 +2171,7 @@ mod native_surface_paint {
                     FieldKind::ReadOnly { value } => {
                         let text = plain_text(value);
                         let (w, h) = surface.surface_measure_text(&text);
-                        let ix = control_start;
+                        let ix = resolved_control_width.place(control_start, input_right, w);
                         if available > 0.0 {
                             let iy = row_rect.y + (row_h - h) / 2.0;
                             // Was unconditionally `theme.muted_fg`,
@@ -2170,7 +2195,11 @@ mod native_surface_paint {
                         let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
                         let (hw, hh) = surface.surface_measure_text(&hex);
                         let swatch = 12.0_f32;
-                        let ix = control_start;
+                        let ix = resolved_control_width.place(
+                            control_start,
+                            input_right,
+                            swatch + 6.0 + hw,
+                        );
                         if available > 0.0 {
                             let sy = row_rect.y + (row_h - swatch) / 2.0;
                             surface.surface_fill_rect(Rect::new(ix, sy, swatch, swatch), *value);
@@ -2307,7 +2336,7 @@ mod native_surface_paint {
                         };
                         let text = date.format(picker.locale.format);
                         let (tw, th) = surface.surface_measure_text(&text);
-                        let ix = control_start;
+                        let ix = resolved_control_width.place(control_start, input_right, tw);
                         if available > 0.0 {
                             let ty = row_rect.y + (row_h - th) / 2.0;
                             surface.surface_draw_text_run(
@@ -2328,7 +2357,11 @@ mod native_surface_paint {
                         // why the two share the same trailing-arrow affordance.
                         let chevron = crate::codicon::CHEVRON_DOWN.to_string();
                         let (chev_w, _) = surface.surface_measure_text(&chevron);
-                        let ix = control_start;
+                        let ix = resolved_control_width.place(
+                            control_start,
+                            input_right,
+                            tw + 4.0 + chev_w,
+                        );
                         if available > 0.0 {
                             let ty = row_rect.y + (row_h - th) / 2.0;
                             surface.surface_draw_text_run(
@@ -2480,10 +2513,12 @@ mod native_surface_paint {
         let (default_fg, row_bg) = row_colors(theme, false, focused);
         surface.surface_fill_rect(rect, row_bg);
         let control_start = rect.x + super::BARE_CONTROL_INSET;
+        let control_end = rect.x + rect.width - 8.0;
         let cc = ControlCtx {
             row_rect: rect,
             control_start,
-            available: (rect.x + rect.width - 8.0 - control_start).max(0.0),
+            control_end,
+            available: (control_end - control_start).max(0.0),
             field_fg: if disabled { theme.muted_fg } else { default_fg },
             disabled,
             control_width: super::ControlWidth::Fill,
@@ -2523,14 +2558,16 @@ mod native_surface_paint {
 
     /// What every per-kind control painter below needs from the row it
     /// paints in: the (label-excluded) content rect, where the shared
-    /// control column starts, how much width `ControlWidth::Fill`
-    /// stretches to, and the row's resolved foreground. A `Form` row and
+    /// control column starts and how far right a control may reach, how
+    /// much width `ControlWidth::Fill` stretches to, and the row's
+    /// resolved foreground. A `Form` row and
     /// a standalone control ([`paint_bare_field`]) build one and call the
     /// same painter, so the two cannot drift apart.
     #[derive(Clone, Copy)]
     pub(crate) struct ControlCtx<'a> {
         pub(crate) row_rect: Rect,
         pub(crate) control_start: f32,
+        pub(crate) control_end: f32,
         pub(crate) available: f32,
         pub(crate) field_fg: Color,
         pub(crate) disabled: bool,
@@ -2558,7 +2595,7 @@ mod native_surface_paint {
             field_fg
         };
         let box_size = (row_h - 8.0).clamp(10.0, 16.0);
-        let ix = control_start;
+        let ix = cc.control_width.place(control_start, cc.control_end, box_size);
         if available > 0.0 {
             let iy = row_rect.y + (row_h - box_size) / 2.0;
             let box_rect = Rect::new(ix, iy, box_size, box_size);
@@ -2612,7 +2649,7 @@ mod native_surface_paint {
             paint_text_input_box(
                 surface,
                 row_rect,
-                control_start,
+                resolved_control_width.place(control_start, cc.control_end, control_w),
                 control_w,
                 value,
                 placeholder,
@@ -2657,7 +2694,7 @@ mod native_surface_paint {
             paint_text_input_box(
                 surface,
                 row_rect,
-                control_start,
+                resolved_control_width.place(control_start, cc.control_end, control_w),
                 control_w,
                 value,
                 placeholder,
@@ -2706,7 +2743,7 @@ mod native_surface_paint {
             paint_text_input_box(
                 surface,
                 row_rect,
-                control_start,
+                resolved_control_width.place(control_start, cc.control_end, control_w),
                 control_w,
                 first_line,
                 placeholder,
@@ -2831,19 +2868,15 @@ mod native_surface_paint {
                 surface.surface_measure_text(&chosen).0 + TEXT_BOX_PADDING * 2.0 + chev_w + 4.0;
             let control_w = resolved_control_width.resolve(natural_w, available, min_control_width);
             let box_w = control_w.max(TEXT_BOX_PADDING * 2.0 + chev_w);
-            let box_rect = Rect::new(
-                control_start,
-                row_rect.y + 2.0,
-                box_w,
-                (row_h - 4.0).max(1.0),
-            );
+            let box_x = resolved_control_width.place(control_start, cc.control_end, box_w);
+            let box_rect = Rect::new(box_x, row_rect.y + 2.0, box_w, (row_h - 4.0).max(1.0));
             surface.surface_stroke_rect(box_rect, theme.muted_fg, 1.0);
             let text_budget = (box_w - TEXT_BOX_PADDING * 2.0 - chev_w - 4.0).max(0.0);
             let (drawn_len, cw, ch) = clip_run_to_width(surface, &chosen, text_budget);
             let shown = &chosen[..drawn_len];
             let ty = box_rect.y + (box_rect.height - ch) / 2.0;
             surface.surface_draw_text_run(
-                Rect::new(control_start + TEXT_BOX_PADDING, ty, cw, ch),
+                Rect::new(box_x + TEXT_BOX_PADDING, ty, cw, ch),
                 shown,
                 field_fg,
             );
@@ -3941,6 +3974,33 @@ mod native_surface_paint {
                 "value run (right edge {run_right}) must fit inside the stroked \
                  box (right edge {box_right}), not spill past it"
             );
+        }
+
+        /// `ControlWidth::ContentEnd` keeps `Content`'s box width but ends
+        /// the box at the same right edge a `Fill` box reaches.
+        #[test]
+        fn content_end_control_width_box_ends_at_the_fill_edge() {
+            let content = text_input_field("name", "value", Some(ControlWidth::Content));
+            let (content_surface, _) = paint_recorded(&form_with_one_field(content));
+            let content_box = content_surface.strokes.first().expect("stroked box").0;
+
+            let fill = text_input_field("name", "value", Some(ControlWidth::Fill));
+            let (fill_surface, _) = paint_recorded(&form_with_one_field(fill));
+            let fill_box = fill_surface.strokes.first().expect("stroked box").0;
+
+            let end = text_input_field("name", "value", Some(ControlWidth::ContentEnd));
+            let (end_surface, _) = paint_recorded(&form_with_one_field(end));
+            let end_box = end_surface.strokes.first().expect("stroked box").0;
+
+            assert_eq!(end_box.width, content_box.width);
+            assert_eq!(end_box.x + end_box.width, fill_box.x + fill_box.width);
+            assert!(end_box.x > content_box.x);
+            let run = end_surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text == "value")
+                .expect("the value is drawn as a text run");
+            assert!(run.0.x > end_box.x && run.0.x + run.0.width <= end_box.x + end_box.width);
         }
 
         /// A `ControlWidth::Fixed` column narrower than its value must
@@ -5757,6 +5817,17 @@ mod tests {
         assert_eq!(ControlWidth::Fill.resolve(10.0, 42.0, None), 42.0);
         assert_eq!(ControlWidth::Fixed(15.0).resolve(10.0, 42.0, None), 15.0);
         assert_eq!(ControlWidth::Content.resolve(10.0, 42.0, None), 10.0);
+        assert_eq!(ControlWidth::ContentEnd.resolve(10.0, 42.0, None), 10.0);
+    }
+
+    #[test]
+    fn control_width_place_ends_only_content_end_at_the_control_end() {
+        assert_eq!(ControlWidth::ContentEnd.place(9.0, 38.0, 3.0), 35.0);
+        assert_eq!(ControlWidth::Content.place(9.0, 38.0, 3.0), 9.0);
+        assert_eq!(ControlWidth::Fill.place(9.0, 38.0, 29.0), 9.0);
+        // Too narrow to end at `control_end`: never starts inside the
+        // label column.
+        assert_eq!(ControlWidth::ContentEnd.place(9.0, 10.0, 3.0), 9.0);
     }
 
     #[test]

@@ -837,6 +837,22 @@ pub(super) fn opt_u64(value: &Value, key: &str, context: &str) -> Result<Option<
     }
 }
 
+/// Reads `value[key]` as an optional [`quadraui::StatusBarOverflow`]
+/// (`"ellipsis"`/`"clip"`), raising a [`DecodeError`] at `context` if
+/// present but not one of those. `None` when absent.
+pub(super) fn opt_status_bar_overflow(
+    value: &Value,
+    key: &str,
+    context: &str,
+) -> Result<Option<quadraui::StatusBarOverflow>, DecodeError> {
+    match obj_get(value, key) {
+        Some(v) => serde_json::from_value(v.clone())
+            .map(Some)
+            .map_err(|_| DecodeError::type_mismatch(context, key, "\"ellipsis\" or \"clip\"")),
+        None => Ok(None),
+    }
+}
+
 /// [`dict_str`], but raises a [`DecodeError`] when `key` is absent or
 /// `null` instead of returning `Ok(None)`.
 pub(super) fn dict_required_str(

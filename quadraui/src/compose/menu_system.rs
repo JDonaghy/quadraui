@@ -196,6 +196,11 @@ pub struct AppMenu {
     /// opens. A host sets it from the backend every frame.
     #[serde(default)]
     pub native: bool,
+    /// Whether a plain printable key in an open dropdown is type-ahead
+    /// (on by default). Off, the dropdown leaves such a key unhandled so
+    /// it reaches the host.
+    #[serde(default = "crate::primitives::tab_bar::default_true")]
+    pub typeahead: bool,
 }
 
 /// What an [`AppMenu`] reports.
@@ -319,6 +324,7 @@ impl AppMenu {
             menus,
             view: AppMenuView::default(),
             native: false,
+            typeahead: true,
         }
     }
 
@@ -659,6 +665,12 @@ impl AppMenu {
             }
             return Handled::Consumed;
         }
+        if let Key::Char(_) = key.key {
+            let accelerator = key.modifiers.ctrl || key.modifiers.cmd;
+            if !self.typeahead && !accelerator {
+                return Handled::Ignored;
+            }
+        }
         let depth = self.view.submenu_path.len();
         let Some(level) = self.level_menu(depth) else {
             return Handled::Ignored;
@@ -769,21 +781,26 @@ impl AppMenu {
             return Handled::Ignored;
         };
         let hit = layout.bar.hit_test_local(local.x, local.y);
+        let on_label = matches!(hit, MenuBarHit::Item(_));
         match kind {
             // While closed, hover tracks the focused item and leaving the
-            // items clears it.
+            // items clears it. A move off the labels stays unhandled so it
+            // also reaches whatever sits under the pointer.
             PointerKind::Move if !self.is_open() => {
                 let focus = match hit {
                     MenuBarHit::Item(i) if !self.menus[i].disabled => Some(i),
                     _ => None,
                 };
                 next.view.focused_item = focus;
-                if focus == self.view.focused_item {
+                if focus.is_none() || focus == self.view.focused_item {
                     Handled::Ignored
                 } else {
                     Handled::Consumed
                 }
             }
+            // While closed, the strip past and between the labels is not
+            // the menu's: the host's own chrome sits there.
+            _ if !self.is_open() && !on_label => Handled::Ignored,
             // A press on the strip's background closes an open menu.
             PointerKind::Down(MouseButton::Left) if hit == MenuBarHit::Bar && self.is_open() => {
                 next.close();
@@ -980,11 +997,14 @@ impl Interactive for AppMenu {
         }
         let changed = AppMenuEvent::Changed(next.view);
         match handled {
-            Handled::Event(activated) => {
+            // An activation, or an event left to the host that still moved
+            // the view (a hover leaving the labels), reports the view
+            // change alongside.
+            Handled::Event(_) | Handled::Ignored => {
                 cx.emit(changed.into_ui_event(self.id));
-                Handled::Event(activated)
+                handled
             }
-            _ => Handled::Event(changed),
+            Handled::Consumed => Handled::Event(changed),
         }
     }
 
@@ -1096,6 +1116,7 @@ impl Interactive for AppMenuLevel {
 pub struct MenuSystem {
     menu: AppMenu,
     state: AppMenuState,
+    view_changed: bool,
 }
 
 /// An empty menu bar with nothing registered — equivalent to
@@ -1112,7 +1133,16 @@ impl MenuSystem {
         Self {
             menu: AppMenu::new(WidgetId::new("menu-system-bar"), menus),
             state: AppMenuState::default(),
+            view_changed: false,
         }
+    }
+
+    /// Whether a plain printable key in an open dropdown jumps the
+    /// highlight to the matching item (on by default). Off, such a key
+    /// is reported [`MenuEvent::Ignored`] and the dropdown stays open,
+    /// so the host handles the key itself.
+    pub fn set_typeahead(&mut self, on: bool) {
+        self.menu.typeahead = on;
     }
 
     /// The [`AppMenu`] this wrapper drives.
@@ -1344,12 +1374,18 @@ impl MenuSystem {
     /// on `bar_rect`); it is translated to the same
     /// [`MenuEvent::Activated`] the painted path produces, so one match
     /// arm covers both.
+    ///
+    /// While no dropdown is open, a pointer event on the strip outside its
+    /// labels is [`MenuEvent::Ignored`], so the host's own chrome in that
+    /// band receives it. A move there still clears the label hover, which
+    /// [`Self::view_changed`] reports so the host repaints the bar.
     pub fn handle(
         &mut self,
         event: &UiEvent,
         backend: &mut dyn Backend,
         bar_rect: Rect,
     ) -> MenuEvent {
+        self.view_changed = false;
         if let UiEvent::MenuActivated(id) = event {
             return MenuEvent::Activated(*id);
         }
@@ -1391,8 +1427,18 @@ impl MenuSystem {
             Handled::Consumed => MenuEvent::Consumed,
             Handled::Ignored => MenuEvent::Ignored,
         };
+        self.view_changed = was != self.menu.view;
         self.sync_modal(&was, backend, bar_rect);
         result
+    }
+
+    /// Whether the last [`Self::handle`] call changed what the menu paints
+    /// — an open, close or highlight move, or a hover cleared by an event
+    /// the call still reported [`MenuEvent::Ignored`] so the host could
+    /// route it on. A host that repaints only for a handled event also
+    /// repaints when this is set.
+    pub fn view_changed(&self) -> bool {
+        self.view_changed
     }
 }
 
@@ -2447,6 +2493,113 @@ mod tests {
         assert!(
             ms.menu.view.open_item.is_some(),
             "menu must remain open — MouseUp must not activate or close"
+        );
+    }
+
+    /// The x a quarter-unit past the right edge of the bar's last label.
+    fn past_last_label(ms: &MenuSystem, backend: &MockBackend) -> f32 {
+        let layout = backend.layout_primitive(bar_rect(), ms.widget());
+        let last = layout
+            .bar
+            .layout
+            .visible_items
+            .last()
+            .expect("the bar lays out its labels")
+            .bounds;
+        let x = last.x + last.width + 0.25;
+        assert!(x < bar_rect().width, "the bar must extend past its labels");
+        x
+    }
+
+    fn mouse_moved_ev(x: f32, y: f32) -> UiEvent {
+        crate::event::mouse_moved(x, y, crate::event::ButtonMask::default())
+    }
+
+    #[test]
+    fn closed_click_past_the_last_label_is_ignored() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        let x = past_last_label(&ms, &backend);
+        let down = crate::event::mouse_down(MouseButton::Left, x, 0.0, crate::Modifiers::default());
+
+        assert_eq!(
+            ms.handle(&down, &mut backend, bar_rect()),
+            MenuEvent::Ignored
+        );
+        assert_eq!(
+            ms.handle(&mouse_up_ev(Point::new(x, 0.0)), &mut backend, bar_rect()),
+            MenuEvent::Ignored
+        );
+        assert!(!ms.is_open());
+    }
+
+    #[test]
+    fn closed_hover_leaving_the_labels_clears_focus_and_is_ignored() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        let x = past_last_label(&ms, &backend);
+
+        let on_file = ms.handle(&mouse_moved_ev(1.0, 0.0), &mut backend, bar_rect());
+        assert_eq!(on_file, MenuEvent::Consumed);
+        assert_eq!(ms.menu_bar().focused_item, Some(0));
+
+        let off = ms.handle(&mouse_moved_ev(x, 0.0), &mut backend, bar_rect());
+        assert_eq!(off, MenuEvent::Ignored);
+        assert_eq!(ms.menu_bar().focused_item, None);
+        assert!(ms.view_changed(), "clearing the hover asks for a repaint");
+
+        let again = ms.handle(&mouse_moved_ev(x, 0.0), &mut backend, bar_rect());
+        assert_eq!(again, MenuEvent::Ignored);
+        assert!(!ms.view_changed(), "a no-op move asks for nothing");
+    }
+
+    #[test]
+    fn open_click_past_the_last_label_still_closes_the_menu() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        let x = past_last_label(&ms, &backend);
+        ms.open_menu(0, &mut backend, bar_rect());
+        let down = crate::event::mouse_down(MouseButton::Left, x, 0.0, crate::Modifiers::default());
+
+        assert_eq!(
+            ms.handle(&down, &mut backend, bar_rect()),
+            MenuEvent::StateChanged
+        );
+        assert!(!ms.is_open());
+    }
+
+    #[test]
+    fn an_open_dropdown_takes_a_plain_char_as_typeahead_by_default() {
+        let mut ms = MenuSystem::new(sample_menus());
+        let mut backend = MockBackend::new();
+        ms.open_menu(0, &mut backend, bar_rect());
+
+        let result = ms.handle(&key_ev(Key::Char('s')), &mut backend, bar_rect());
+
+        assert_ne!(result, MenuEvent::Ignored);
+        assert_eq!(ms.menu.view.dropdown_selected, 1, "typeahead moved to Save");
+    }
+
+    #[test]
+    fn typeahead_off_lets_a_plain_char_reach_the_host() {
+        let mut ms = MenuSystem::new(sample_menus());
+        ms.set_typeahead(false);
+        let mut backend = MockBackend::new();
+        ms.open_menu(0, &mut backend, bar_rect());
+
+        let result = ms.handle(&key_ev(Key::Char('s')), &mut backend, bar_rect());
+
+        assert_eq!(result, MenuEvent::Ignored);
+        assert_eq!(ms.menu.view.dropdown_selected, 0, "the highlight stays put");
+        let down = ms.handle(
+            &key_ev(Key::Named(NamedKey::Down)),
+            &mut backend,
+            bar_rect(),
+        );
+        assert_ne!(
+            down,
+            MenuEvent::Ignored,
+            "navigation keys still belong to the menu"
         );
     }
 }
