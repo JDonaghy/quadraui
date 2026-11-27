@@ -828,8 +828,8 @@ pub use text_util::{
 pub use theme::Theme;
 pub use transition::{lerp, lerp_rect, Transition};
 pub use types::{
-    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, SelectionGesture,
-    SelectionMode, StyledSpan, StyledText, TreePath, TreeStyle, WidgetId,
+    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, SelectionCore,
+    SelectionGesture, SelectionMode, StyledSpan, StyledText, TreePath, TreeStyle, WidgetId,
 };
 pub use undo::UndoStack;
 

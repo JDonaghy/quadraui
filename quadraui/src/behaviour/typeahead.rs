@@ -23,6 +23,21 @@
 pub struct Typeahead {
     buffer: String,
     last_ms: u64,
+    /// The clock [`Self::push_now`] reads; `None` reads
+    /// [`monotonic_now_ms`].
+    clock: Option<fn() -> u64>,
+}
+
+/// Milliseconds on a process-wide monotonic clock — the default clock
+/// [`Typeahead::push_now`] reads. Only differences between two readings
+/// matter. Starts past the debounce window, so the very first keystroke
+/// never reads as a continuation of an empty buffer's zero timestamp.
+pub fn monotonic_now_ms() -> u64 {
+    use std::sync::OnceLock;
+    use std::time::Instant;
+    static EPOCH: OnceLock<Instant> = OnceLock::new();
+    let epoch = *EPOCH.get_or_init(Instant::now);
+    epoch.elapsed().as_millis() as u64 + RESET_AFTER_MS + 1
 }
 
 /// How long a gap between keystrokes resets the buffer instead of
@@ -33,6 +48,28 @@ impl Typeahead {
     /// An empty buffer, as if no key had been typed yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An empty buffer whose [`Self::push_now`] reads `clock` instead of
+    /// [`monotonic_now_ms`] — a test drives the debounce window through
+    /// this without sleeping.
+    pub fn with_clock(clock: fn() -> u64) -> Self {
+        Self {
+            clock: Some(clock),
+            ..Self::default()
+        }
+    }
+
+    /// [`Self::push`] at the current time on this buffer's clock.
+    pub fn push_now<'a>(
+        &mut self,
+        ch: char,
+        items: impl Fn(usize) -> &'a str,
+        len: usize,
+        from: usize,
+    ) -> Option<usize> {
+        let now_ms = self.clock.map_or_else(monotonic_now_ms, |clock| clock());
+        self.push(ch, now_ms, items, len, from)
     }
 
     /// The buffer's current contents (lowercased on push, so this is
@@ -137,6 +174,31 @@ mod tests {
     fn empty_list_is_none() {
         let mut t = Typeahead::new();
         assert_eq!(t.push('a', 0, item, 0, 0), None);
+    }
+
+    #[test]
+    fn push_now_reads_the_injected_clock() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static NOW: AtomicU64 = AtomicU64::new(0);
+        fn clock() -> u64 {
+            NOW.load(Ordering::SeqCst)
+        }
+        let mut t = Typeahead::with_clock(clock);
+        assert_eq!(t.push_now('a', item, OPTIONS.len(), 0), Some(0));
+        NOW.store(100, Ordering::SeqCst);
+        assert_eq!(t.push_now('p', item, OPTIONS.len(), 0), Some(0));
+        assert_eq!(t.buffer(), "ap");
+        NOW.store(700, Ordering::SeqCst);
+        assert_eq!(t.push_now('b', item, OPTIONS.len(), 0), Some(2));
+        assert_eq!(t.buffer(), "b");
+    }
+
+    #[test]
+    fn push_now_without_a_clock_extends_within_the_window() {
+        let mut t = Typeahead::new();
+        assert_eq!(t.push_now('a', item, OPTIONS.len(), 0), Some(0));
+        assert_eq!(t.push_now('p', item, OPTIONS.len(), 0), Some(0));
+        assert_eq!(t.buffer(), "ap");
     }
 
     #[test]

@@ -673,32 +673,6 @@ pub enum ActivityBarEvent {
     KeyPressed { key: String, modifiers: Modifiers },
 }
 
-/// Convert a [`crate::Key`] to the string form carried in
-/// [`ActivityBarEvent::KeyPressed`].
-///
-/// - Printable characters map to their single-character string (`"j"`, `"k"`, …).
-/// - Named keys use TitleCase names (`"Escape"`, `"Enter"`, `"Up"`, …).
-///
-/// The TUI, GTK and macOS backends all use this helper so the emitted key
-/// strings are identical regardless of which backend is active.
-///
-/// This is `pub(crate)` because external consumers receive the already-normalised
-/// string from [`ActivityBarEvent::KeyPressed::key`] — they have no reason to call
-/// the conversion helper directly.
-#[cfg(any(
-    feature = "tui",
-    feature = "gtk",
-    all(feature = "macos", target_os = "macos"),
-    feature = "win"
-))]
-pub(crate) fn key_to_activity_bar_string(key: &crate::event::Key) -> String {
-    use crate::event::Key;
-    match key {
-        Key::Char(c) => c.to_string(),
-        Key::Named(named) => named.name().into_owned(),
-    }
-}
-
 // `paint` below delegates to `crate::primitives::toolbar::native_surface_paint::paint_rail`,
 // the one shared rail painter every pixel backend paints through — see that
 // function's own doc for the fill order and per-row foreground rule. This

@@ -158,6 +158,28 @@ where
     })
 }
 
+/// The inverse of [`stack_rows_from`] for uniform rows: which absolute row
+/// index a `y` lands on when rows of height `pitch` are stacked from
+/// `origin`, starting at `scroll_offset` with the first row shifted up by
+/// `scroll_sub_px`. `None` above `origin` or for a non-positive `pitch`.
+///
+/// Hit-testing through this rather than `floor((y - origin) / pitch)`
+/// keeps a click on the painted row when the rows are scrolled by a
+/// fraction of a row.
+pub fn row_index_at(
+    y: f32,
+    origin: f32,
+    pitch: f32,
+    scroll_offset: usize,
+    scroll_sub_px: f32,
+) -> Option<usize> {
+    if pitch <= 0.0 || y < origin {
+        return None;
+    }
+    let row = ((y - origin + scroll_sub_px) / pitch).floor();
+    Some(scroll_offset + row as usize)
+}
+
 /// Shared vertical-scrollbar thumb geometry: resolve `scroll_offset` /
 /// `scroll_px` against `total_rows`, convert to a continuous row
 /// position, and build the [`Scrollbar::vertical`] thumb — the tail end
@@ -317,8 +339,9 @@ pub(crate) mod row_content_paint {
     use crate::types::{Color, Icon, StyledText};
 
     /// Paint a row's optional leading icon glyph (`ListItem::icon` /
-    /// `PaletteItem::icon`) at `cursor_x`, nerd-font glyph vs. ASCII
-    /// fallback per `nerd_fonts_enabled`, and return the cursor position
+    /// `PaletteItem::icon` / `TreeRow::icon`) at `cursor_x`, nerd-font
+    /// glyph vs. ASCII fallback per `nerd_fonts_enabled`, and return the
+    /// cursor position
     /// advanced past it (plus a 6-unit trailing gap) — unchanged
     /// (`cursor_x` as given) when there is no icon.
     ///
@@ -354,7 +377,7 @@ pub(crate) mod row_content_paint {
             surface,
             Rect::new(cursor_x, row_y + (row_h - ih) / 2.0, iw, ih),
             glyph,
-            fg,
+            icon.color.unwrap_or(fg),
         );
         cursor_x + iw + 6.0
     }
@@ -722,6 +745,28 @@ pub(crate) mod row_content_paint {
             assert_eq!(glyph, "F");
             assert_eq!(fg, Color::rgb(10, 20, 30));
             assert_eq!(rect.x, 10.0);
+        }
+
+        #[test]
+        fn paint_row_icon_paints_in_the_icons_own_colour_over_the_row_fg() {
+            let mut surface = RecordingSurface::default();
+            let icon = Icon {
+                glyph: "\u{f15b}".to_string(),
+                fallback: "F".to_string(),
+                color: Some(Color::rgb(200, 0, 0)),
+            };
+            let mut drawn_fg = None;
+            paint_row_icon(
+                &mut surface,
+                Some(&icon),
+                false,
+                Color::rgb(10, 20, 30),
+                0.0,
+                16.0,
+                10.0,
+                |_, _, _, fg| drawn_fg = Some(fg),
+            );
+            assert_eq!(drawn_fg, Some(Color::rgb(200, 0, 0)));
         }
 
         #[test]
@@ -1132,6 +1177,21 @@ pub(crate) mod row_content_paint {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_index_at_inverts_stack_rows_from_at_a_sub_row_scroll() {
+        let rows: Vec<_> = stack_rows_from(3, 6.0, 4, 0.0, 20.0, 100.0, |_| (16.0, ())).collect();
+        for r in &rows {
+            for y in [r.bounds.y.max(20.0), r.bounds.y + r.bounds.height - 0.5] {
+                if y < 20.0 {
+                    continue;
+                }
+                assert_eq!(row_index_at(y, 20.0, 16.0, 3, 6.0), Some(r.idx), "y = {y}");
+            }
+        }
+        assert_eq!(row_index_at(19.0, 20.0, 16.0, 3, 6.0), None);
+        assert_eq!(row_index_at(30.0, 20.0, 0.0, 3, 6.0), None);
+    }
 
     #[test]
     fn layout_row_stack_fills_the_viewport_from_scroll_offset() {

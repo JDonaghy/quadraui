@@ -184,7 +184,7 @@ impl NamedKey {
     ///
     /// This is the **single** source of truth for stringifying a
     /// `NamedKey`: [`crate::accelerator::key_to_binding_name`],
-    /// `primitives::activity_bar::key_to_activity_bar_string`,
+    /// `primitives::list::key_to_event_string`,
     /// `quadraui-binding-core`'s `key_to_focus_string`, and
     /// `compose::form_controller::date_picker_key_name` all defer to it so
     /// a `Ctrl+F13` accelerator and a `KeyPressed { key: "F13", .. }` event
