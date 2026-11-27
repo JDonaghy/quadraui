@@ -16,11 +16,13 @@ from quadraui import QuiApp
 `run_native()` opens a real AppKit window on macOS, a real
 Direct2D/DirectWrite window on Windows, or a real GTK window on Linux, built
 from the same descriptors `run_tui()` reads headlessly or over a terminal.
-The prebuilt macOS and Windows wheels on PyPI ship `run_native()` built in —
-`pip install quadraui` is enough, no Rust toolchain needed. The prebuilt
-Linux wheel is TUI-only (see the *Wheels* section below for why); call
-`hasattr(QuiApp, "run_native")` to check at runtime, or use `run_tui()`,
-which every platform's wheel supports unchanged.
+The prebuilt wheels on PyPI ship `run_native()` built in — `pip install
+quadraui` is enough, no Rust toolchain needed. On Linux it needs the system
+GTK 4 (4.10 or newer) and glibc 2.39 or newer (Ubuntu 24.04, Fedora 40,
+Debian 13 and later); see the *Wheels* section below. Where those are
+missing, `import quadraui` and `run_tui()` still work and `run_native()`
+raises `UnsupportedError` explaining what is missing, so an app can catch
+that and fall back to `run_tui()`.
 
 Full docs, the primitive reference, and worked examples live on the project
 site: <https://jdonaghy.github.io/quadraui/>.
@@ -83,15 +85,21 @@ self-contained wheel:
 - **Windows** — built with the `win` feature (Direct2D/DirectWrite), which
   links only against system DLLs every Windows install already has.
   `run_native()` works out of the box.
-- **Linux** — built with neither `gtk` feature nor any other native
-  feature, so it stays TUI-only. `gtk` needs a real `libgtk-4` (plus its own
-  transitive GLib/Pango/Cairo stack) at both link and run time, and GTK is
-  not in the handful of C libraries `auditwheel`/manylinux knows how to
-  vendor into a portable wheel — there is no manylinux-compatible way to
-  ship it today. A Linux user who wants `run_native()` installs system GTK
-  development packages and builds from source with `maturin develop
-  --features gtk`; `run_tui()` needs none of that and works on the
-  published wheel as-is.
+- **Linux** — two wheels, and pip picks the newest one the host's glibc
+  allows:
+  - `manylinux_2_39` (glibc 2.39+: Ubuntu 24.04, Fedora 40, Debian 13 and
+    later) carries two builds of the extension: one with the `gtk` feature,
+    linking the system GTK 4 libraries, and one without. `import quadraui`
+    loads the GTK build when `libgtk-4.so.1` (4.10 or newer) is installed
+    and the GTK-free build otherwise, so `run_native()` opens a GTK window
+    with GTK present and raises `UnsupportedError` naming the missing
+    library without it. Install GTK with `sudo apt install libgtk-4-1`
+    (Ubuntu/Debian) or `sudo dnf install gtk4` (Fedora). Set
+    `QUADRAUI_DISABLE_GTK=1` to skip loading GTK in a process that never
+    opens a window.
+  - `manylinux_2_17` (older glibc, e.g. Ubuntu 22.04, Debian 12) is
+    TUI-only: those distributions ship GTK older than 4.10, which the GTK
+    backend needs. `run_native()` raises `UnsupportedError` there.
 
 ## License
 

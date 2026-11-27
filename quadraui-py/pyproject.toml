@@ -64,3 +64,10 @@ asyncio_default_fixture_loop_scope = "function"
 module-name = "quadraui._quadraui"
 python-source = "python"
 features = ["pyo3/extension-module"]
+# The Linux wheel's GTK-enabled extension variant, built by a separate
+# `cargo build --features gtk-ext` and copied here before `maturin build`
+# runs (see `.github/workflows/quadraui-py-wheels.yml`). maturin leaves a
+# prebuilt `.so` under `python-source` out of the wheel unless it is listed
+# here. A wheel built without that file present (macOS, Windows, a local
+# `maturin develop`) matches nothing.
+include = [{ path = "python/quadraui/_quadraui_gtk.abi3.so", format = "wheel" }]
