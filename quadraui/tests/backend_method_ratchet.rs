@@ -157,6 +157,19 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Chart", "chart_layout"),
     ("Canvas", "draw_canvas"),
     ("Canvas", "canvas_layout"),
+    ("BoardModel", "draw_board"),
+    ("BoardModel", "board_layout"),
+    ("DiffView", "draw_diff_view"),
+    ("DiffView", "diff_view_layout"),
+    ("MessageList", "draw_message_list"),
+    ("PipelineView", "draw_pipeline_view"),
+    ("PipelineView", "pipeline_view_layout"),
+    ("Split", "draw_split"),
+    ("Split", "split_layout"),
+    ("SplitTree", "draw_split"),
+    ("SplitTree", "split_layout"),
+    ("SplitTree", "draw_split_tree"),
+    ("SplitTree", "split_tree_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
