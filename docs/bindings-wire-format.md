@@ -1182,6 +1182,7 @@ A virtualised `{start, total}` window: `start` is the index, into the widget's t
 | `h_scroll` | `number` | no |  |
 | `max_content_width` | `number \| null` | no |  |
 | `show_v_scrollbar` | `boolean` | no |  |
+| `striped` | `boolean` | no |  |
 | `scroll_px` | `number` | no | binding-core extension key, lifted out by `scroll_px_from_value` -- not a `ListView` field. |
 | `items_window` | `ItemsWindow \| null` | no | binding-core extension key, lifted out by `items_window_from_value` -- not a `ListView` field. `items` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one. |
 
