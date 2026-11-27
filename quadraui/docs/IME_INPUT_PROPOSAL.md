@@ -167,8 +167,8 @@ story and point at it by number (`#481`, `#502`, `#415`).
    backend's job, exactly like `poll_events` already normalises
    crossterm/GDK/Cocoa/Win32 events into one `UiEvent` enum.
 4. **No silent no-op defaults that hide a real capability gap**
-   (`CLAUDE.md`'s portability commitment, `draw_terminal_divider`'s
-   precedent). `Backend::set_ime_cursor_area` returns `bool` so a
+   (`CLAUDE.md`'s *one implementation per widget* contract: a
+   capability gap is stated, never hidden behind a default). `Backend::set_ime_cursor_area` returns `bool` so a
    caller can tell "not supported on this backend" from "supported,
    applied" — same contract as `set_cursor`/`begin_window_resize`.
 5. **v1 does not attempt clause/attribute fidelity.** Real IMEs
@@ -414,10 +414,9 @@ arm is unreachable today either way).
 /// stale cached rect is a real, if minor, positioning bug, not merely
 /// a missed optimization).
 ///
-/// `area` is in the same absolute, window-native coordinate frame
-/// `Backend::text_input_layout` already returns (D-005: ABSOLUTE,
-/// screen/view-relative units — TUI cells, GTK/macOS points, Win
-/// DIPs). Apps that already resolve a caret rect for their own
+/// `area` is in the absolute, window-native coordinate frame a
+/// widget's `Primitive::layout` resolves in (TUI cells, GTK/macOS
+/// points, Win DIPs). Apps that already resolve a caret rect for their own
 /// text-input rendering (every text-input primitive's `layout()`
 /// already returns one) pass it through unchanged; no new coordinate
 /// math.
@@ -620,7 +619,7 @@ speculatively mutate with in-flight preedit.
 
 ## 11. Terminal / PTY interaction (#415)
 
-`Terminal`'s `draw_terminal` renders cells sourced from the child
+`Terminal`'s painter renders cells sourced from the child
 process's own screen state (`terminal_engine.rs`), not from
 quadraui-owned text like `TextInput`. This makes the correct behavior
 different in one crucial way from every other text-input primitive:
@@ -649,7 +648,8 @@ default to the wrong one without considering it.)
 composing, the terminal draws the current `preedit` string as an
 underlined overlay at the cursor cell (§10's inline convention,
 applied to `Terminal`'s own cell grid instead of a `TextInput`'s
-string buffer) — purely a rendering decision inside `draw_terminal`,
+string buffer) — purely a rendering decision inside `Terminal`'s
+`paint`/`paint_cells`,
 touching no PTY state. This matches xterm/alacritty/kitty's own
 behavior exactly: they all render preedit locally and only write bytes
 to the child on commit. Getting this wrong (writing preedit bytes
@@ -696,7 +696,7 @@ D-010's own "Follow-ups" section:
    scripting method §9 proposes.
 6. **Terminal PTY wiring (#415's remaining half)** — `CompositionCommitted`
    → `TerminalSession::paste`-or-sibling per §11, preedit overlay
-   rendering in `draw_terminal`. This is the issue that actually closes
+   rendering in `Terminal`'s painters. This is the issue that actually closes
    #415, which currently only has the clipboard-paste half done.
 7. **`TuiDriver::compose(...)` scripting method** (§9) — needed by
    issue 5 above's driver test; can land standalone or as part of it.

@@ -1,115 +1,79 @@
 # Backend implementation guide
 
-How to implement [`quadraui::Backend`] for a new platform.
-**Two reference backends exist today**:
+How the [`quadraui::Backend`] trait is implemented, for a contributor adding
+or changing one of the in-tree backends. Read [`../BACKEND.md`](../BACKEND.md)
+first: it covers the model (widgets paint themselves through the widget
+contract; a backend provides one paint target, text metrics, native event
+translation, platform services, a runner and a test driver) and the
+implementer's checklist. This page is the reference for the trait's
+event-loop shape, the state a backend owns, its four hook points, error
+reporting, and which `UiEvent` variants a backend must emit.
 
-- **`TuiBackend`** (`src/tui_main/backend.rs`, Phase B.4) — terminals
-  via crossterm. **Fully consuming the trait**: every native event
-  flows through `wait_events`; click dispatch goes through
-  `dispatch_mouse_*`; accelerator registry drives keybindings;
-  generic `paint::<B>` paths drive the quickfix panel and other
-  cross-backend primitives.
-- **`GtkBackend`** (`src/gtk/backend.rs`, Phase B.5) — desktop via
-  GTK4. **Plumbing in place; runtime migration tracked at vimcode
-  issue #249.** The trait surface, the `Rc<RefCell<VecDeque<UiEvent>>>`
-  event queue, the GDK→`UiEvent` translation helpers, the
-  accelerator registry, and `is_modal_open()` are all wired up. But
-  the running GTK app still routes events / clicks / keys through
-  Relm4 `Msg::*` flow — only the quickfix panel actually consumes
-  the trait. The B.5b stages in #249 finish the runtime port.
+Four backends implement the trait, each under `src/<platform>/`:
 
-After reading this guide and the existing TUI implementation you
-should be able to drop in a fresh `WinBackend` / `MacBackend` /
-`AndroidBackend` end-to-end. **Don't model your impl on `GtkBackend`
-yet** — its runtime side is mid-migration.
+| Backend | Platform | Paint target |
+|---|---|---|
+| `TuiBackend` | terminals, via ratatui + crossterm | `CellSurface` (`tui/cell_surface.rs`) |
+| `GtkBackend` | GTK4, Cairo + Pango | `PaintSurface` (`gtk/surface.rs`) |
+| `MacBackend` | macOS, Core Graphics + Core Text | `PaintSurface` (`macos/surface.rs`) |
+| `WinBackend` | Windows, Direct2D + DirectWrite | `PaintSurface` (`win/surface.rs`) |
 
-This doc is descriptive: the architectural rationale (why the trait
-looks the way it does, what gets normalised vs. left native) lives in
-`docs/decisions/BACKEND_TRAIT_PROPOSAL.md`. Read that first if you're writing a
-backend from scratch.
+`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` records the original design
+rationale for the trait's shape — what gets normalised and what is left
+native.
 
-## Event-loop shape: poll-driven trait, queue adapter for callback-driven backends
+## Event-loop shape
 
-The trait is **poll-driven**: backends implement
-[`Backend::wait_events`] / [`Backend::poll_events`] returning
-`Vec<UiEvent>`. TUI's crossterm fits this naturally — it has a
-synchronous poll API. Callback-driven backends (GTK, Win32 partial,
-Cocoa, Android, web) use the **option A event queue** adapter:
+The trait is **poll-driven**: [`Backend::wait_events`] blocks up to a
+timeout and [`Backend::poll_events`] drains without blocking, both returning
+`Vec<UiEvent>`. Native toolkits are not all poll-driven, so the four
+runners use two shapes:
 
-```rust
-struct GtkBackend {
-    events: Rc<RefCell<VecDeque<UiEvent>>>,
-    // ...
-}
-```
+- **TUI polls.** crossterm has a synchronous poll API, so `tui::run`'s
+  loop calls `wait_events`, which translates crossterm events with
+  `tui::events::crossterm_to_uievents`.
+- **GTK, macOS and Win dispatch directly.** Each toolkit input callback
+  (a GTK event controller, an `NSView` responder method, a `WndProc`
+  message) translates its native event and calls the runner's
+  `dispatch_event`, which runs `crate::runtime`'s shared preprocessing and
+  then the app.
 
-The intended pattern is: signal callbacks clone the queue handle
-into their captures and `events.borrow_mut().push_back(translated_event)`;
-`wait_events` drains the queue. **GtkBackend ships the API but the
-producer wiring is B.5b stage 1 work** (issue #249). When that lands,
-the GTK runtime fragments behind one queue and the TUI's
-synchronous `event_loop()` stays greppable end-to-end — same trait,
-same consumer code.
-
-**Forward-compatibility:** every callback-driven backend (Cocoa
-delegate methods, Android NDK ALooper, Win32 WindowProc, web JS event
-listeners) uses the same queue pattern. macOS may need its
-`NSApplication.run()` started on the main thread with delegate
-methods pushing to a `Mutex<VecDeque<UiEvent>>`; web pushes from
-JS event listeners and drives paint from `requestAnimationFrame`.
-
-**Landed so far:** `MacBackend` (`src/macos/backend.rs`) and
-`WinBackend` (`src/win/backend.rs`, quadraui#806) both ship this same
-`Rc<RefCell<VecDeque<UiEvent>>>` shape — a single-threaded `Rc<RefCell<>>`
-was enough for both in practice, not the `Mutex` sketched above. Both
-implement a real (non-`todo!()`) `poll_events`/`wait_events` drain with
-`apply_accelerators` run over the batch, matching `GtkBackend`'s shape.
-Producer wiring is partial for both: `macos::run` already feeds the
-queue for one real source — native menu-bar activations
-(`Backend::install_menu_bar`) `push_event` there, drained once per
-paint via `poll_events` (`macos::run`'s `paint` closure) — but mouse/
-keyboard/window events still go straight from each responder method to
-`AppLogic::handle`, bypassing the queue. `win::run`'s `WndProc` doesn't
-feed the queue at all yet; every translated event there still dispatches
-directly. Finishing either wiring is separate follow-up work; the queue
-exists today so a poll-style caller (a headless driver, a future shared
-`DriverCore`) has something real to drain instead of a panic.
+Each GUI backend also holds an `Rc<RefCell<VecDeque<UiEvent>>>` queue
+(`events_handle()` / `push_event`), drained by `poll_events`. It carries
+events that arrive outside an input callback — `waker()` payloads, tray
+clicks, macOS native-menu activations — and events a callback had to defer
+because the backend was already borrowed by an outer dispatch. A new
+callback-driven backend (a webview, an Android `ALooper`) uses the same
+pair: direct dispatch from callbacks, a queue for everything else.
 
 ## What the backend owns
 
-A backend struct holds the per-app state the trait requires:
-
-| Field | Why it lives on the backend |
+| State | Why it lives on the backend |
 |---|---|
-| Viewport (`width × height × scale`) | Backends measure the active drawing surface in their native units (TUI cells, GTK DIPs, Win-GUI DIPs, Cocoa points). The trait reports it via [`Backend::viewport`] so generic layout code can reach the active size without the trait knowing about pixels vs. cells. |
-| `quadraui::ModalStack` | Backends need to consult it on every mouse-down to decide whether the click hit a modal or fell through to the base layer. `quadraui::dispatch::dispatch_mouse_down` does the hit-test and emits the right `UiEvent` shape; the backend just hands it the stack reference. |
-| `quadraui::DragState` | Holds at most one in-flight scrollbar drag (`ScrollbarY`/`ScrollbarX` variants). Mouse-down on a scrollbar arms it; `dispatch_mouse_drag` reads it on every mouse-move to emit `ScrollOffsetChanged`; mouse-up clears it. |
-| Accelerator registry | A `HashMap<AcceleratorId, Accelerator>` populated via [`Backend::register_accelerator`]. The backend's event-poll path matches incoming key events against the registry and emits `UiEvent::Accelerator(id, mods)` instead of raw `KeyPressed` for matched keystrokes. |
-| `dyn PlatformServices` | Clipboard, file dialogs, notifications, URL opener — the things that genuinely differ across platforms. Wraps each backend's native API behind one trait-object surface. |
+| Viewport (`width × height × scale`) | Measured in the backend's native unit (TUI cells, GTK/Win DIPs, macOS points) and reported by [`Backend::viewport`], so layout code reaches the active size without knowing the unit. |
+| `ModalStack` (`modal_stack_handle()`) | The stack of open modals. While it is non-empty, the shared runtime suspends widget routing, so nothing behind a modal receives input. A modal's owner pushes its bounds when it opens and pops them when it closes. `quadraui::dispatch::dispatch_mouse_down` hit-tests a click against the stack for app or controller code that routes its own modal. |
+| `DragState` (`drag_state_handle()`) | At most one in-flight scrollbar drag (`DragTarget::ScrollbarY` / `ScrollbarX`). `quadraui::dispatch::dispatch_mouse_drag` reads it on each move to emit `ScrollOffsetChanged`; mouse-up clears it. |
+| `BackendCore` | The accelerator registry and the text-selection bookkeeping, shared code every backend embeds as one field (`src/backend_core.rs`). |
+| `dyn PlatformServices` (`services()`) | Clipboard, file dialogs, notifications, URL opener, trash, secrets and the rest: what genuinely differs across platforms, behind one trait object. |
 
 ## The four hooks
 
-Every backend implements these four-ish hook points; the rest of the
-trait's `draw_*` methods are mechanical. **Get these right and the rest
-falls into place.**
+Get these right and everything else in the trait is a thin accessor.
 
 ### 1. Frame ownership
 
-The backend owns whatever object its native API uses to mutate the
-screen during a paint pass: `&mut ratatui::Frame<'_>` for TUI,
-`&cairo::Context` for GTK, `&ID2D1RenderTarget` for Win-GUI,
-`&mut CGContext` for Cocoa.
+The native drawing handle — `&mut ratatui::Frame<'_>` for TUI,
+`&cairo::Context` for GTK, a `CGContextRef` for macOS, an
+`ID2D1RenderTarget` for Win — is only valid inside the scope the toolkit's
+draw API yields, so the backend cannot hold one across calls. The pattern:
+stash a type-erased pointer for the duration of a closure, and hand the
+paint target out only while it is set. `TuiBackend::enter_frame_scope`
+(excerpt; `src/tui/backend.rs` also captures a screenshot when frame
+capture is enabled):
 
-These are typically only valid inside a closure / scope yielded by the
-native draw API, so the backend can't hold one across method calls.
-The pattern is: stash a type-erased pointer in a `Cell<*mut ()>` set at
-scope entry, run the caller's painting code, clear the pointer on exit.
-Trait `draw_*` methods reach the frame via a safe accessor that returns
-`None` when the pointer is null (i.e., outside the scope).
-
-`TuiBackend`'s implementation:
-
-```rust
+```rust,ignore
+// Crate-internal excerpt: `current_frame_ptr` is a private
+// `Cell<*mut ()>` field of `TuiBackend`.
 pub fn enter_frame_scope<R>(
     &mut self,
     frame: &mut Frame<'_>,
@@ -123,284 +87,172 @@ pub fn enter_frame_scope<R>(
 }
 ```
 
-Each `draw_*` method then:
-
-```rust
-fn draw_palette(&mut self, rect: QRect, palette: &Palette) {
-    let area = q_rect_to_ratatui(rect);
-    let theme = self.current_theme;
-    let frame = self
-        .current_frame_mut()
-        .expect("draw_palette called outside enter_frame_scope");
-    quadraui::tui::draw_palette(frame.buffer_mut(), area, palette, &theme, …);
-}
-```
-
-The `expect` is a programmer-error tripwire — a misuse from app code,
-not a runtime input.
+[`Backend::cell_surface`] then wraps the stashed frame's buffer in a
+`CellSurface` while the pointer is set and returns `None` outside the
+scope; a pixel backend's [`Backend::paint_surface`] does the same for its
+`PaintSurface`. Widgets never see the native handle: `draw_dyn` and
+`draw_primitive` ask for the paint target and hand it to the widget's
+`paint` / `paint_cells`, and a call made outside the scope still resolves
+the widget's layout but paints nothing.
 
 ### 2. Event poll / wait
 
-The trait surfaces two methods. [`Backend::wait_events`] blocks up to
-`timeout` for the next native event and returns one or more `UiEvent`s.
-[`Backend::poll_events`] is the non-blocking variant — used in render
-loops that poll on every frame (GTK, Win-GUI, Cocoa) where `wait_events`
-on a vsync timer is the wrong shape.
+A `poll_events` / `wait_events` body:
 
-The body of either method is:
+1. Reads or drains the native event(s).
+2. Translates them to `UiEvent`s — with the shared constructors in
+   `crate::event` (`mouse_down`, `scroll`, `window_resized`, …), see
+   [`../BACKEND.md`](../BACKEND.md#use-the-shared-uievent-constructors).
+3. Runs the batch through `BackendCore::apply_accelerators`, so a
+   registered key binding arrives as `UiEvent::Accelerator(id, mods)`
+   instead of `UiEvent::KeyPressed`.
+4. Appends any queued `waker()` payloads, and returns the batch.
 
-1. Read the native event(s).
-2. Translate to one or more `UiEvent`s. (`TuiBackend` uses
-   [`super::events::crossterm_to_uievents`]; GTK will use
-   `gtk_event_to_uievents`; etc.)
-3. Run the resulting vec through the accelerator matcher so registered
-   key bindings surface as `UiEvent::Accelerator` instead of
-   `UiEvent::KeyPressed`.
-4. Return the vec.
+The runner then passes each event to the shared preprocessing, which does
+everything that is the same on every platform: hover/press tracking,
+double-click folding, routing into the frame's widgets, accelerator
+matching for directly-dispatched keys, Ctrl-C copy, Ctrl-V paste, Tab focus
+cycling. None of that belongs in a backend.
 
-```rust
-fn wait_events(&mut self, timeout: Duration) -> Vec<UiEvent> {
-    if let Ok(true) = ratatui::crossterm::event::poll(timeout) {
-        if let Ok(ev) = ratatui::crossterm::event::read() {
-            let mut out = super::events::crossterm_to_uievents(ev);
-            self.apply_accelerators(&mut out);
-            return out;
-        }
-    }
-    Vec::new()
-}
-```
+### 3. Modal stack and drag state
 
-`apply_accelerators` is an inherent helper on `TuiBackend`; the same
-shape will work on every backend. It iterates registered accelerators
-in insertion order, parses each binding into a `(modifiers, key_name)`
-pair via `quadraui::parse_key_binding`, and rewrites matching
-`UiEvent::KeyPressed` events to `UiEvent::Accelerator(id, mods)`.
-
-### 3. Modal stack + drag dispatch
-
-Mouse events go through three stages:
-
-1. The backend's native event-translation layer turns a click into
-   `UiEvent::MouseDown { widget: None, button, position, modifiers }`.
-2. The backend hands the modal stack and the mouse coords to
-   `quadraui::dispatch::dispatch_mouse_down(&stack, position, button, modifiers)`,
-   which returns the right `UiEvent` shape — either filling in
-   `widget: Some(modal_id)` if the click landed on a modal, or
-   emitting a `Closed` event when the click fell on the backdrop.
-3. The same applies for mouse-drag (consults `DragState` to emit
-   `ScrollOffsetChanged`) and mouse-up (clears the drag, fills in
-   `widget` from the stack).
-
-`TuiBackend` exposes `drag_and_modal_mut()` so the click handler can
-borrow both at once without conflicting `&mut self` calls.
+The backend's part is to own the two handles (`modal_stack_handle()`,
+`drag_state_handle()`, both `Rc<RefCell<…>>`) so the runtime, the compose
+controllers and app code can share them. It does not dispatch against them
+itself. A controller that opens a modal — `MessageDialogController`,
+`FormDialogController` — pushes its bounds onto the stack and pops them on
+close; see [`COMPOSE.md`](COMPOSE.md).
 
 ### 4. PlatformServices
 
-Wrap the platform's native API behind a small `Clipboard` /
-`FileDialog` / `Notification` / `URL opener` set of impls. The trait
-just hands them out via [`Backend::services`]; the `&dyn PlatformServices`
-return is an erased borrow so backends can mix-and-match (e.g. a TUI
-backend on macOS uses the same Cocoa clipboard impl the macOS native
-backend uses).
+Wrap the platform's native APIs behind [`PlatformServices`] and hand them
+out from [`Backend::services`]. Every method either does the real thing or
+returns `ServiceResult::Err(BackendError::Unsupported)` — never a faked
+success. `PlatformServices::supports(kind)` answers up front for a caller
+that wants to choose a degrade path before calling. `TuiBackend`'s
+`TuiPlatformServices` (`tui/services.rs`) is the reference for degrading
+honestly: in-canvas pickers and dialogs where a terminal has no native
+one.
 
-`TuiBackend`'s `TuiPlatformServices` lives in `services.rs` and is the
-minimal stub set; real backends will replace each method with a
-platform-native call.
+## Error reporting: `BackendError` + polled `last_error()`
 
-## Error reporting: `BackendError` + polled `last_error()` (issue #507/#805)
+`begin_frame`, `end_frame`, `poll_events`, `wait_events` and the four CSD
+`bool` methods (`begin_window_drag`, `toggle_window_maximize`,
+`begin_window_resize`, `set_cursor`) are infallible by design — see D-009 in
+[`decisions/DECISIONS.md`](decisions/DECISIONS.md) for why. Failure is
+reported through two additive seams:
 
-`begin_frame`, `poll_events`, `wait_events`, every `draw_*`, and the four
-CSD `bool` methods (`begin_window_drag`, `toggle_window_maximize`,
-`begin_window_resize`, `set_cursor`) stay exactly as designed in D-009
-(`docs/decisions/DECISIONS.md`) — infallible, by deliberate choice, not
-because nothing has landed yet. What *did* land, minimal and additive,
-per D-009's two seams:
+- **`BackendError`** (`src/backend.rs`) — a `Clone`, `PartialEq` enum:
+  `Unsupported` (this backend cannot service a request), `PlatformFailure
+  { context: String }` (a native call failed; `context` names it, e.g.
+  `"SetClipboardData"`), and `SurfaceLost` (the render surface or device was
+  lost mid-frame and must be recreated before the next `begin_frame`).
+- **`Backend::last_error(&mut self) -> Option<BackendError>`** — polled and
+  cleared on read; the default always answers `None`. `WinBackend`
+  overrides it: `end_frame` records `SurfaceLost` whenever
+  `ID2D1RenderTarget::EndDraw` fails and drops the render target, and
+  `WinBackend::ensure_surface` recreates it lazily before the next frame
+  (called from `win::run`'s `WM_PAINT`/`WM_SIZE` handlers and from
+  `WinDriver::render`). `end_frame` also reports the failure through
+  `crate::diagnostics::emit`, so a host with a diagnostics sink sees it
+  even if nothing polls `last_error()`. `TuiBackend`, `GtkBackend` and
+  `MacBackend` use the default.
+- **`Clipboard::write_text_result(&self, text) -> ServiceResult<()>`** —
+  the fallible twin of `write_text`. The default calls `write_text` and
+  returns `Ok(())`; `WinClipboard` overrides it with the real
+  `OpenClipboard`/`GlobalAlloc`/`SetClipboardData` failure.
 
-- **`BackendError`** (`src/backend.rs`) — a three-variant `Clone`,
-  `PartialEq` enum: `Unsupported` (this backend has no way to service a
-  request `BackendCaps` otherwise says it supports), `PlatformFailure {
-  context: String }` (a native call failed; `context` names it, e.g.
-  `"SetClipboardData"`), and `SurfaceLost` (the render surface/device
-  was lost mid-frame and must be recreated before the next
-  `begin_frame`).
-- **`Backend::last_error(&mut self) -> Option<BackendError>`** — a
-  polled, clear-on-read method, *not* a `Result`-returning
-  `begin_frame`/`end_frame`/`poll_events`/`wait_events`. Default: always
-  `None`. `TuiBackend`/`GtkBackend`/`MacBackend` all use the default —
-  none of them has a concrete producer yet. `WinBackend` overrides it:
-  `end_frame` sets an internal field to `Some(BackendError::SurfaceLost)`
-  whenever `ID2D1RenderTarget::EndDraw` fails (`D2DERR_RECREATE_TARGET`
-  or anything else — both are treated the same, since either way the
-  target must be rebuilt) and drops the render target; `last_error()`
-  hands that back to a caller and clears it. `end_frame` also routes the
-  same event through `crate::diagnostics::emit` so a host with a sink
-  installed sees it even if nothing ever calls `last_error()`.
-  Recreation itself isn't part of this method — `WinBackend::ensure_surface`
-  (called from `win::run`'s `WM_PAINT`/`WM_SIZE` handlers, and from
-  `WinDriver::render` in tests) lazily rebuilds the dropped surface
-  before the next frame paints, whether that surface was a real `HWND`
-  or (since #805) a headless `WinDriver` target.
-- **`Clipboard::write_text_result(&self, text: &str) -> ServiceResult<()>`**
-  — the one Seam-2-shaped twin that shipped so far (D-009's other two,
-  the three `PlatformServices` dialog `_result` methods, remain
-  follow-up scope — see below). Default body calls the existing
-  infallible `write_text` and returns `Ok(())`, so no implementor needed
-  to change to keep compiling. `WinClipboard` overrides it with the real
-  `OpenClipboard`/`GlobalAlloc`/`SetClipboardData` failure it can now
-  tell apart from success; `write_text` itself is unchanged and still
-  discards it, for callers that don't care.
+Not implemented: fallible `_result` twins of the `PlatformServices` dialog
+methods, and routing GTK's swallowed Cairo `fill().ok()` /
+`stroke().ok()` results through `last_error()`. D-009 lists both as
+follow-up.
 
-**What's still design-only, per D-009's follow-up list**: the three
-`PlatformServices::show_*_dialog_result` twins, and wiring GTK's ~25
-swallowed `cr.fill().ok()`/`cr.stroke().ok()` call sites
-(`gtk/activity_bar.rs`, `chart.rs`, `command_center.rs`, `panel.rs`,
-`status_bar.rs`) through `last_error()`. Neither exists in `src/` yet;
-don't assume either from this section without checking.
+## `UiEvent` emission matrix
 
-See D-009 for the full design rationale (why `begin_frame`/`end_frame`
-stay infallible instead of `Result`-returning, why `draw_*`/the CSD
-`bool`s were rejected for migration, the `BackendCaps`-vs-`BackendError`
-split) — this section only tracks what's actually in the tree.
+Not every `UiEvent` variant has to be emitted by every backend to be
+conformant. This table is the definition a new backend builds against;
+D-010 in [`decisions/DECISIONS.md`](decisions/DECISIONS.md) has the
+per-variant reasoning.
 
-## `UiEvent` emission matrix (issue #501)
-
-Not every `UiEvent` variant needs to be emitted by every backend to be
-conformant, and until this issue almost nothing said which was which —
-`docs/LESSONS.md`'s "all runners must fire all `UiEvent` variants the
-consumer pattern needs" rule was unenforceable without a definition of
-the required set. This table is that definition. `docs/decisions/DECISIONS.md`
-D-010 has the full per-variant reasoning and the grep evidence behind
-each disposition; this table is the quick-reference a new backend author
-should build against.
-
-**Required** — a conformant backend must emit this from real native
-input, or the variant is inapplicable to that backend class (TUI has no
-OS window: `WindowClose`/`DpiChanged`/`WindowFocused`/`WindowResized`'s
-"window" is the terminal's viewport, not an OS window it can close
+**Required** — a conformant backend emits this from real native input, or
+the variant is inapplicable to its class (TUI has no OS window it can close
 independently of the process).
 
 | Variant | TUI | GTK | macOS | Win | Note |
 |---|---|---|---|---|---|
-| `KeyPressed` | ✅ | ✅ | ✅ | ✅ | Canonical text-input path — see `CharTyped` below. |
+| `KeyPressed` | ✅ | ✅ | ✅ | ✅ | The text-input path — see `CharTyped` below. |
 | `MouseDown` / `MouseUp` / `MouseMoved` | ✅ | ✅ | ✅ | ✅ | |
 | `Scroll` | ✅ | ✅ | ✅ | ✅ | |
-| `DoubleClick` | ✅ | ✅ | ✅ (`MacBackend::fold_double_click`, #486) | ✅ (`WinBackend::fold_double_click`, #729) | Win: still *not* `WM_*BUTTONDBLCLK` — #729 folds two `MouseDown`s in `win::run::dispatch_event` via the shared `DoubleClickDetector`, the same pattern macOS uses. The `❌` here was stale as of quadraui#742. |
-| `WindowResized` | ✅ | ✅ | ✅ (`macos/run.rs:560`, #486) | ✅ | |
-| `WindowClose` | N/A (no OS window) | ✅ (this issue — `gtk::run::activate`'s `connect_close_request`) | ✅ (`macos/run.rs`'s `QuadraView`/`NSWindowDelegate::windowShouldClose:` + `QuadraAppDelegate::applicationShouldTerminate:`, issue #951) | ✅ (`WM_CLOSE`, pre-existing) | Veto mechanism: app returns `Reaction::Exit` to allow, anything else vetoes. macOS needs both hooks: `windowShouldClose:` covers the traffic-light button / Cmd-W / native "Close" menu item, but Cmd-Q and the auto-prepended app-menu's Quit item route to `applicationShouldTerminate:` instead and bypass `windowShouldClose:` entirely — `macos::run::window_close_tests` proves the `dispatch_event` funnel itself (shared by both hooks) is correct; the veto *decision* each hook applies is proven separately by the same module's pure `window_should_close_for_reaction`/`terminate_reply_for_reaction` unit tests, since neither hook itself can run outside a live `macos-latest` host. The GTK ✅ here is proven end-to-end for `gtk_terminal` only (`examples/common/terminal_app.rs`'s `WindowClose` arm); the rest of `examples/gtk_*` have no opinion on it yet, so their catch-all's `Reaction::Continue` vetoes their own "×" button until D-010 follow-up 5 lands — `gtk::run::window_close_tests` proves the `dispatch_event` funnel itself is correct regardless. |
-| `Accelerator` | ✅ | ✅ | ✅ (`MacBackend::match_keypress`, #486) | ✅ (`WinBackend::match_keypress`, #707) | Win: wired via `win::run::dispatch_event`'s global-accelerator rewrite (#707) — the "no accelerator matching wired yet" note here was stale as of quadraui#742. |
-| `ClipboardPaste` | ✅ | ✅ | ✅ (`macos/run.rs:266`, #486) | ✅ (`win::run::dispatch_event`'s Ctrl-V branch, #728) | Win: Ctrl-V reads `CF_UNICODETEXT` through `WinBackend::services` and delivers `ClipboardPaste` instead of the raw key event. The `❌` here was stale as of quadraui#742. |
-| `TextCopied` | ✅ | ✅ | ❌ | ❌ | Neither macOS nor Win wire a Ctrl-C-with-selection → `TextCopied` path yet. Out of this issue's scope. |
-| `OpenRequested` | N/A (not wired by issue #957 — `src/tui/run.rs` wasn't in that issue's file scope) | ✅ (`ApplicationFlags::HANDLES_OPEN` + `Application::connect_open`, argv-at-launch and single-instance forwarding both covered) | ✅ launch/runtime delegate methods (`application:openURLs:`/`application:openFiles:`); ❌ the `NSAppleEventManager`/`kAEGetURL` early-URL race (needs `objc2-core-services`, not added — no macOS host to verify against in the #957 pass) | ✅ (argv classified at startup unconditionally; `RunConfig::single_instance` additionally arms `CreateMutexW` + `WM_COPYDATA` forwarding) | Issue #957. Registering as the OS handler for a URL scheme/file extension is a packaging concern this crate does not do for you — see the variant's own doc. |
+| `WindowResized` | ✅ | ✅ | ✅ | ✅ | TUI's "window" is the terminal viewport. |
+| `DoubleClick` | ✅ | ✅ | ✅ | ✅ | Folded from two `MouseDown`s by the shared `DoubleClickDetector`, not translated from a native double-click message. The GUI backends fold in the shared preprocessing (`fold_double_click`); TUI folds once per batch of translated crossterm events, before preprocessing. |
+| `Accelerator` | ✅ | ✅ | ✅ | ✅ | A `KeyPressed` matching a registered binding, rewritten by `BackendCore` / the shared preprocessing. macOS maps the universal bindings to Cmd. |
+| `ClipboardPaste` | ✅ | ✅ | ✅ | ✅ | The paste keystroke is swallowed and the system clipboard read by the shared preprocessing. TUI also translates crossterm's bracketed paste (`Event::Paste`) directly. |
+| `WindowClose` | N/A | ✅ (`connect_close_request`) | ✅ (`windowShouldClose:` + `applicationShouldTerminate:`) | ✅ (`WM_CLOSE`) | The app returns `Reaction::Exit` to allow the close; anything else vetoes it. macOS needs both hooks: Cmd-Q and the app menu's Quit go to `applicationShouldTerminate:` and bypass `windowShouldClose:`. |
+| `OpenRequested` | N/A | ✅ (`HANDLES_OPEN` + `Application::connect_open`) | ✅ (`application:openURLs:` / `application:openFiles:`) | ✅ (argv at startup; `win::run::RunConfig::single_instance` adds `WM_COPYDATA` forwarding) | macOS gap: a URL that arrives before AppKit finishes launching needs an earlier `kAEGetURL` handler, not implemented. Registering as the OS handler for a scheme or extension is packaging, not something this crate does. |
 
-Verified directly against `quadraui/src/{tui,gtk,macos,win}` on this
-issue's branch, superseding `SMELL_AUDIT_2026-07.md`'s PORT-04 table
-(dated 2026-07-25) where they disagree — #486 landed most of the macOS
-column since that audit ran; re-verify before trusting either table
-against a much later `develop`.
-
-**Optional** (declare the gap via a doc comment / `BackendCaps` once one
-exists for it — do not silently no-op and do not fake it):
+**Optional** — declare the gap through `BackendCaps` or a doc comment; do
+not silently no-op and do not fake it.
 
 | Variant | Status | Note |
 |---|---|---|
-| `CharTyped` | Emitted by **no backend today** | Reserved exclusively for IME-committed composed text (epic #481, IME story #502) — **not** a second way to report a plain keystroke. `KeyPressed{Key::Char}` is the always-on text-input event every backend already emits; two in-tree consumers (`compose::sidebar_system`, `compose::tree_controller`) will double-insert a character if a future backend ever emits both for the same keystroke. See D-010. |
-| `MouseEntered` / `MouseLeft` | Emitted by no backend | Zero consumers anywhere today; kept for future hover-driven features (tooltip auto-show). See D-010. |
-| `FilesDropped` | GTK: ✅ (`gtk::DropTarget`). macOS: ✅ (`NSDraggingDestination` on `QuadraView`). Win: ✅ (`WM_DROPFILES`). TUI: N/A (no native drag-and-drop surface). | Wired by issue #834. Still zero in-tree consumers — no primitive reacts to the event yet, only the emission side is done. |
-| `DpiChanged` | Win: ✅ (`WM_DPICHANGED`, pre-existing). GTK: ✅ (`notify::scale-factor` on the `DrawingArea`). macOS: ✅ (`NSWindowDidChangeBackingPropertiesNotification`). TUI: N/A (`scale` is always `1.0`). | Wired by issue #834 (closing D-010 follow-up 2, and macOS's gap). `crate::runtime::preprocess_event` forces a redraw on this variant regardless of the app's own `Reaction`, so all three GUI backends re-measure on receipt without each runner needing its own eager-invalidate logic. |
-| Native menu events (`MenuActivated`, `ContextMenuItemActivated`, `ContextMenuDismissed`) | Backend-dependent, out of this table's scope | Only meaningful on a backend with `BackendCaps::native_menu`. |
-| `TrayClicked` | macOS: ✅ (`NSStatusItem` button click, no menu attached — `macos::tray`). Win: ✅ (`Shell_NotifyIconW` callback, no menu attached — `win::tray`). GTK: ✅ (`StatusNotifierItem`'s `Activate`/`SecondaryActivate`/`ContextMenu` D-Bus methods, no menu attached — `gtk::tray`). TUI: N/A permanently (`Backend::tray` doc). | Issue #953. Only meaningful on a backend with `BackendCaps::tray`; does not fire on macOS/Win/GTK while `TrayService::set_menu` has a non-empty menu attached — see `macos::tray`/`win::tray`/`gtk::tray`'s module docs for that trade-off and why `ContextMenuItemActivated`/`ContextMenuDismissed` take over instead. |
-
-`❓` = not verified as part of this pass (out of scope for issue #501;
-don't infer either way from this table). `❌` on a windowed backend for
-a **required** row is a tracked gap, not a design choice — every such
-cell above is either wired in this PR or has a named follow-up issue in
-D-010.
+| `TextCopied` | Every backend | Synthesised by the shared preprocessing: Ctrl-C with an active text selection writes the selection to the clipboard and delivers `TextCopied`. |
+| `CharTyped` | No backend emits it | Reserved for IME-committed composed text, **not** a second way to report a keystroke. `KeyPressed { key: Key::Char(_) }` is the text-input event; a consumer that also handled `CharTyped` for the same keystroke would insert twice. |
+| `MouseEntered` / `MouseLeft` | No backend emits them | Pointer enter/leave reaches widgets as `PointerKind::Enter` / `Leave` routed events from the runtime's hover tracking instead. |
+| `FilesDropped` | GTK ✅ (`DropTarget`), macOS ✅ (`NSDraggingDestination`), Win ✅ (`WM_DROPFILES`), TUI N/A | |
+| `DpiChanged` | GTK ✅ (`notify::scale-factor`), macOS ✅ (`NSWindowDidChangeBackingPropertiesNotification`), Win ✅ (`WM_DPICHANGED`), TUI N/A | The shared preprocessing forces a redraw on it, so every GUI backend re-measures. |
+| Native menu events (`MenuActivated`, `ContextMenuItemActivated`, `ContextMenuDismissed`) | Backends with `BackendCaps::native_menu` | |
+| `TrayClicked` | macOS ✅, Win ✅, GTK ✅ (`StatusNotifierItem`), TUI N/A | Only with `BackendCaps::tray`, and only while no menu is attached to the tray item; with a menu attached, `ContextMenuItemActivated` / `ContextMenuDismissed` arrive instead. |
 
 ### Conformance tier C2
 
-`quadraui/tests/conformance/c2.rs` (quadraui#501; Win column quadraui#742)
-is the executable half of this table: per-backend "native-injection
-recipes" that call each backend's real native→`UiEvent` translation
-function (not the Tier-1 scenario suite's higher-level `AppLogic`
-replay) with a synthetic native input and assert the resulting
-`UiEvent` has the expected shape. It covers the mouse/key/scroll/resize
-core on TUI+GTK+Win — `win::events`'s translators are plain
-host-independent functions (no WinAPI call in sight), so `win_case`/the
-`win` column run on the `ubuntu-latest --features win` leg with no live
-`HWND` required, unlike Tier C0/C1's `WinFactory` registration, which
-stays `target_os = "windows"`-gated.
+`tests/conformance/c2.rs` is the executable half of this table: per-backend
+native-injection recipes that call each backend's real native→`UiEvent`
+translation function with a synthetic native input and assert the resulting
+`UiEvent`'s shape. It covers the mouse/key/scroll/resize core on TUI, GTK
+and Win. `win::events`'s translators are plain functions with no WinAPI
+call, so the Win column runs on the `ubuntu-latest --features win` leg.
 
-Every **required** row of the table above appears in the printed matrix.
-Cells fall into three kinds, and the distinction matters when reading it:
+Every required row appears in the printed matrix, with one of three cell
+kinds:
 
 - `pass` — a real native-injection assertion ran.
-- `n/a` — the variant is *inapplicable* to that backend class
-  (`window_close` on TUI: no OS window, D-010).
-- `pass*` — declared but *unmeasurable at this tier*, with a footnote
-  naming the production wiring and where its real coverage lives. Two
-  groups: `window_close` on GTK/Win (needs a live window/`wndproc`), and
-  `c2.rs`'s `DISPATCH_ROWS` — `double_click`, `accelerator`,
-  `clipboard_paste` — which no backend produces from a native→`UiEvent`
-  translator at all. They're synthesised one layer up in each backend's
-  `pub(crate)` `dispatch_event` (fold two `MouseDown`s; rewrite a
-  `KeyPressed` against the accelerator registry; swallow Ctrl-V and read
-  the system clipboard), so they need a live backend + `AppLogic`, not a
-  translation-function call. TUI's `clipboard_paste` is the one
-  exception and is a real `pass`: crossterm surfaces bracketed paste as a
-  native `Event::Paste`, which `crossterm_to_uievents` translates
-  directly.
+- `n/a` — the variant is inapplicable to that backend class.
+- `pass*` — declared but not measurable at this tier, with a footnote
+  naming the production wiring. `window_close` on GTK/Win needs a live
+  window, and `c2.rs`'s `DISPATCH_ROWS` (`double_click`, `accelerator`,
+  `clipboard_paste`) are produced by the shared preprocessing, not by a
+  translator, so asserting them needs a live backend and `AppLogic`. TUI's
+  `clipboard_paste` is a real `pass`, from bracketed paste.
 
-`TextCopied` is not in the required set and has no row. Promoting any
-`pass*` to a real assertion is D-010 follow-up work, and needs a
-dispatch-level fixture — it is *not* blocked on production wiring, which
-has landed on every backend the table marks ✅. See `docs/TESTING.md`'s
-"Conformance tiers" section for how C2 relates to C0/C1/C3/C4.
+`TextCopied` is optional and has no row. See
+[`TESTING.md`](TESTING.md)'s conformance-tiers section for how C2 relates
+to the other tiers.
 
 ## Glossary
 
-- **Accelerator**: a stable `AcceleratorId` + `KeyBinding` registered
-  with the backend. The backend matches incoming key events against
-  the registry; the app dispatches on `id` instead of raw key strings.
-- **DragTarget**: what's being dragged. Today: `ScrollbarY` (vertical
-  scroll-thumb drag) and `ScrollbarX` (horizontal). Both carry the
-  track geometry, viewport size, total content size, and a
-  `grab_offset` (cursor's offset from the thumb start at click-down,
-  so the thumb doesn't snap out from under the cursor on grab).
-- **ModalStack**: the LIFO stack of currently-open modals (palette,
-  dialog, tooltip, completion popup, …). `dispatch_mouse_down` walks
-  it in reverse order on every click so events landing inside an
-  open modal can't fall through to widgets behind it.
-- **WidgetId**: a stable string identifier the app uses to route
-  primitive-specific events (`tui:terminal_scrollback`,
-  `tui:editor:3:vsb`, `picker`, `explorer:sb`). Convention: bin /
-  primitive-specific id namespaces, colon-separated.
+- **Accelerator** — a stable `AcceleratorId` + `KeyBinding` registered with
+  the backend. Matching key events arrive as `UiEvent::Accelerator`, so the
+  app dispatches on the id instead of raw key strings.
+- **DragTarget** — what a `DragState` drag is moving: `ScrollbarY` or
+  `ScrollbarX`, each carrying the track geometry, viewport and content
+  sizes, and a `grab_offset` (the cursor's offset from the thumb start at
+  press, so the thumb doesn't jump under the cursor).
+- **ModalStack** — the LIFO stack of open modals. While non-empty, widget
+  routing is suspended; `dispatch_mouse_down` walks it top-down for code
+  that routes a modal itself.
+- **Paint target** — the `PaintSurface` (pixel backends) or `CellSurface`
+  (TUI) a widget paints onto, handed out by `paint_surface()` /
+  `cell_surface()` inside the frame scope.
+- **WidgetId** — a stable string identifier the app uses to route a
+  widget's events and the runtime uses to key its persistent state.
+  Convention: colon-separated namespaces (`explorer:tree`,
+  `plugin:my-ext:send`).
 
-## Worked example: where `tui:editor:3:vsb` flows
-
-When a user clicks the vertical scrollbar of editor window id 3 in
-TuiBackend:
-
-1. Crossterm emits `MouseEvent { kind: Down(Left), col, row }`.
-2. `events::crossterm_mouse_to_uievent` translates to
-   `UiEvent::MouseDown { widget: None, button: Left, position, modifiers }`.
-3. The event loop pulls it from `backend.wait_events(timeout)` and feeds
-   the synthesised crossterm event back to the legacy mouse handler
-   via `events::uievent_to_crossterm`.
-4. `mouse.rs::handle_mouse` finds the click is on a window's rightmost
-   column (the v-scrollbar), arms the backend's drag state with
-   `DragTarget::ScrollbarY { widget: WidgetId::new("tui:editor:3:vsb"), … }`,
-   and immediately runs `dispatch_mouse_drag` against the click
-   position so the click-time offset uses the same thumb-aware math
-   subsequent drags will use (no thumb jump).
-5. The dispatch's `ScrollOffsetChanged` event is matched in
-   `apply_scrollbar_drag`'s `tui:editor:N:<axis>` arm; that calls
-   `engine.set_scroll_top_for_window(WindowId(3), new_offset)`.
-6. On every subsequent mouse-drag while the button stays down, the
-   same `apply_scrollbar_drag` call fires and updates the scroll.
-7. On mouse-up, the legacy handler calls `drag_state.end()` and the
-   drag is cleared.
-
-The same flow works for any scrollbar in any backend; the only piece a
-new backend implements is steps 1–2 (its native event → `UiEvent`
-translation). Steps 3–7 are app code that's already shared.
+[`quadraui::Backend`]: https://docs.rs/quadraui/latest/quadraui/trait.Backend.html
+[`Backend::wait_events`]: https://docs.rs/quadraui/latest/quadraui/trait.Backend.html#tymethod.wait_events
+[`Backend::poll_events`]: https://docs.rs/quadraui/latest/quadraui/trait.Backend.html#tymethod.poll_events
+[`Backend::viewport`]: https://docs.rs/quadraui/latest/quadraui/trait.Backend.html#tymethod.viewport
+[`Backend::services`]: https://docs.rs/quadraui/latest/quadraui/trait.Backend.html#tymethod.services
+[`Backend::cell_surface`]: https://docs.rs/quadraui/latest/quadraui/trait.Backend.html#method.cell_surface
+[`Backend::paint_surface`]: https://docs.rs/quadraui/latest/quadraui/trait.Backend.html#method.paint_surface
+[`PlatformServices`]: https://docs.rs/quadraui/latest/quadraui/trait.PlatformServices.html

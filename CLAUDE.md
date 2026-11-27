@@ -23,9 +23,11 @@ get its own copy of them.
   name the extraction in your final message.
 - **Copying more than ~20 lines from another primitive or backend is a review
   reject.** That includes "modelled on X" rewrites that reproduce X's logic.
-- **A combination widget must not grow `src/{tui,gtk,macos,win}`** beyond one-line
-  `Backend` forwards to a shared painter. If it needs more, the shared painter is
-  missing a hook, so add the hook.
+- **A combination widget adds nothing under `src/{tui,gtk,macos,win}`.** It
+  holds its children's descriptors and paints them through their own
+  `Primitive` painters, reading their hover through
+  `PaintEnv::child_interaction`. If a child's painter is missing a hook, add
+  the hook.
 - **If your briefing tells you to write a parallel copy**, say so in your final
   message. Don't follow it.
 
@@ -42,35 +44,53 @@ No reading chain is required at session start. The background docs (README,
 in `AGENT_REFERENCE.md`. **Exception:** read `quadraui/docs/PRIMITIVE_RULES.md`
 rule 8 before removing or renaming anything `pub`.
 
-## Cross-backend portability commitment
+## The widget contract
 
-Goal: a future agent can write a whole new backend (Windows, macOS) just by
-implementing the `Backend` trait — zero consumer-side changes, zero per-example
-rewrites. Non-negotiable:
+A widget has **one implementation**: a descriptor plus `Primitive`
+(+ `A11yPrimitive`) for layout and paint, and `Interactive` for behaviour
+(`non_interactive!` when it has none). A leaf widget lives in
+`quadraui/src/primitives/<name>.rs`; a composite built from other widgets (a
+dialog, a picker, an app shell) lives in `quadraui/src/compose/`. Backends are
+**platform services and rasterisers only**: GTK, macOS and Win implement
+`PaintSurface`, TUI implements `CellSurface`, and none of them knows any widget.
+A new backend therefore implements `Backend` (platform services) plus one of
+those two surfaces, and every widget paints on it with no further change. How to
+write a widget: `quadraui/docs/PRIMITIVE_RULES.md`. Non-negotiable:
 
-1. **A new widget implements `Primitive` (+ `A11yPrimitive`), not a new `Backend`
-   method.** `quadraui::primitive::Primitive` + `DrawsPrimitives::draw_primitive`
-   is the one portable seam: implement `layout()` + `paint()` once and every
-   backend that implements `PaintSurface` (GTK, macOS, Win) paints it, with a
-   `paint_cells` override for TUI — zero new `Backend` methods, zero per-backend
-   opt-in. An interactive widget also implements `Interactive` and reaches the
-   frame type-erased as `Surface::Widget` (via `DynWidget`), so input routing
-   goes through `FrameTree`, not a per-widget hit map. `Backend` is sealed and
-   `tests/backend_method_ratchet.rs` locks its method count at a frozen baseline
-   that may only shrink: adding a `Backend::draw_<name>`/`<name>_layout` pair for
-   a new widget fails that test. See `quadraui/src/primitive.rs`'s module doc and
-   `tests/primitive_public_api.rs` for the worked example, and
-   `quadraui/docs/PRIMITIVE_RULES.md`'s "Adding a widget" checklist for the full
-   list of what else ships with it.
-2. **Apps and examples go through `AppLogic` + `quadraui::{tui,gtk}::run`.** Render
-   code is backend-generic; one `AppLogic` impl drives every backend.
-3. **Examples are paired by shape, not backend:** one `AppLogic` in
+1. **A widget never gets a `Backend` method or a per-backend file.** `layout()`
+   resolves geometry once; `paint()` draws it through `&mut dyn PaintSurface`;
+   `paint_cells()` draws it through `&mut dyn CellSurface` for TUI. Hosts reach
+   it through `DrawsPrimitives::draw_dyn` (or `Surface::Widget` in a
+   `ScreenLayout`), never a widget-named `draw_*`. `Backend` is sealed;
+   `tests/backend_method_ratchet.rs` and `tests/per_backend_file_ratchet.rs`
+   only let `Backend` and the backend directories shrink.
+2. **Input routes through `FrameTree`.** An app returns its widgets from
+   `AppLogic::frame_tree`; the runtime hit-tests, focuses, and calls
+   `Interactive::handle` with a `RoutedEvent` in widget-local coordinates.
+   Persistent per-widget state is `Interactive::State`, kept by id in
+   `WidgetStateStore` and handed back at paint as `PaintEnv::widget_state`.
+   Visible state the app owns (selection, open, scroll) stays a descriptor
+   field the app sets from the widget's events.
+3. **Hover and press come from `PaintEnv`** (`env.is_hovered(id)`,
+   `env.pressed_sub(id)`, …), not from descriptor fields, hover trackers, or
+   a per-widget hit map.
+4. **One layout feeds paint, routing and hit-testing.** A host that hit-tests
+   outside the runtime resolves the same layout with
+   `DrawsPrimitives::layout_primitive`, or reads the frame's painted record
+   (`primitive::painted_hit`). It never re-derives geometry.
+5. **Apps and examples go through `AppLogic` + `quadraui::{tui,gtk,macos,win}::run`.**
+   Render code is backend-generic; one `AppLogic` drives every backend. An
+   example with its own event loop means the trait is missing something —
+   fix the trait. Examples pair by shape: one `AppLogic` in
    `examples/common/<shape>.rs`, one ~10-line runner per backend.
-4. **Bypassing the runner is a smell** — an example with its own event loop means
-   the trait is missing something. Fix the trait, not the example.
-5. **Layout helpers go through `Backend` too**; consumer click routers stay
-   backend-agnostic.
-6. **Events are unified at `UiEvent`** before reaching `AppLogic::handle`.
+6. **Events are unified at `UiEvent`** before reaching `AppLogic::handle`; a
+   widget's `Action` becomes one through `WidgetAction::into_ui_event`.
+
+<!-- TODO(0.12 final pass): after W9, confirm `trait Backend` declares no
+widget-named draw_*/ *_layout method (backend_method_ratchet baseline = 66),
+that no widget file is left under src/{tui,gtk,macos,win}, and that every
+widget reaches the frame as Surface::Widget (no per-widget Surface/FrameZone
+variant remains). If any survive, name them here as legacy, not as a path. -->
 
 **TUI is a first-class backend.** A user-facing capability (menus, pickers,
 dialogs, buttons, text boxes, lists) must *work* on TUI, not return
@@ -93,20 +113,21 @@ below — unless the linked issue's body carries an explicit operator-approved
 exemption:
 
 - adds a method to `trait Backend` in `quadraui/src/backend.rs`;
-- adds a non-test file under `quadraui/src/{tui,gtk,macos,win}/` that paints or
-  lays out a widget, rather than a platform-service capability (clipboard,
-  trash, secret store, dialogs, …) — a new widget's rasterisation belongs in
-  its `Primitive::paint`/`paint_cells` impl, not a new per-backend file;
-- adds a new widget type that does not implement `Primitive` (+ `A11yPrimitive`);
+- adds a non-test file under `quadraui/src/{tui,gtk,macos,win}/` that paints,
+  lays out or routes a widget, rather than a platform service (clipboard,
+  trash, secret store, dialogs, …) or a rasteriser verb;
+- adds a widget that does not implement `Primitive` + `A11yPrimitive` +
+  `Interactive` (or `non_interactive!`), or a `Surface`/`FrameZone` variant
+  for one widget instead of using `Surface::Widget`;
 - adds a second implementation of logic that already exists elsewhere —
-  navigation, scroll-into-view, hit-testing, focus, or painting the same widget
-  twice via two different call paths.
+  navigation, scroll-into-view, hit-testing, focus, hover tracking, or
+  painting the same widget twice via two different call paths.
 
 **Reviewers: grep the diff for `fn draw_` / `fn *_layout` inside `impl Backend`
-or `trait Backend`.** A hit is the signal this rule exists to catch — see
-*Cross-backend portability commitment* invariant 1 and
+or `trait Backend`, and for new files under the four backend directories.** A
+hit is the signal this rule exists to catch — see *The widget contract* and
 `quadraui/docs/PRIMITIVE_RULES.md`'s "Adding a widget" checklist for the path a
-new widget should take instead.
+new widget takes instead.
 
 ## Finish the issue — `partial` is not a scope choice
 
@@ -123,12 +144,12 @@ If the whole issue really is too big for one session, don't merge a slice. Say i
 
 ## Downstream consumers — READ BEFORE CHANGING ANY `pub` ITEM
 
-quadraui is **published on crates.io** (`quadraui/Cargo.toml` `version`, 0.1.x);
+quadraui is **published on crates.io** (`quadraui/Cargo.toml` `version`, `0.MINOR.x`);
 `release.yml` publishes when a `develop` → `main` promotion carries a version bump.
 
 | Consumer | Declaration | Breaks when |
 |---|---|---|
-| `vimcode` — `JDonaghy/vimcode` | `quadraui = { version = "0.1.x", … }` from crates.io | the next 0.1.x it `cargo update`s to — so **a breaking change in a 0.1.x release is a semver violation** |
+| `vimcode` — `JDonaghy/vimcode` | `quadraui = { version = "0.MINOR", … }` from crates.io | the next patch release it `cargo update`s to — so **a breaking change needs a minor bump; in a patch release it is a semver violation** |
 | `coord-tui` — `JDonaghy/coord-tui` | `quadraui = { git = …, rev = "<pinned sha>" }` | its next deliberate rev bump |
 
 `ci.yml`'s `downstream` job `cargo check --all-targets`s both consumers against the
@@ -143,22 +164,21 @@ three load-bearing properties** (`working-directory:` not `--manifest-path`,
    `grep -rn '<symbol>' ~/src/coord-tui/src ~/src/vimcode/src`. Zero hits and no
    in-tree use ⇒ free to remove. Any hit ⇒ breaking; rules 2–4 apply.
 2. **Prefer a non-breaking shape**, in order: a default impl on a trait consumers
-   implement (`ShellApp`, `AppLogic` — *not* `Backend`, which is in-tree-only and
-   deliberately has no defaults); `#[non_exhaustive]` on public structs/enums; a
-   new `Default` field or builder instead of a new required argument; a new
-   function alongside the old one instead of a rename.
+   implement (`ShellApp`, `AppLogic`, `Primitive`, `Interactive` — *not*
+   `Backend`, which is in-tree only); `#[non_exhaustive]` on public
+   structs/enums; a new `Default` field or builder instead of a new required
+   argument; a new function alongside the old one instead of a rename.
 
-   **Prefer descriptors with no renderer-derived state.** The declarative
-   descriptors (`primitives/*`) are built by consumers with full struct literals,
-   so a required-field add (#1451) or a field-type change (#1584) is *breaking*,
-   and it also breaks the in-repo sealed acceptance oracle — which a work leg
-   cannot edit. Breaking is allowed (consumers pin a release and adopt on their own
-   schedule), but it costs a same-PR sealed-oracle update (operator / test-author,
-   not a work leg) and a minor version bump at the develop→main promotion, enforced
-   by `cargo-semver-checks`. So default to additive: keep selection / scroll /
-   focus state the renderer derives in a controller (`compose/`), not on the
-   descriptor — selection in the app (#1451), the scroll fraction in the controller
-   (#1584) — and reserve a descriptor-shape break for when it earns those costs.
+   **Keep renderer-derived state off the descriptor.** Descriptors
+   (`primitives/*`) are built by consumers with full struct literals, so a
+   required-field add or a field-type change is *breaking*, and it also breaks
+   the in-repo sealed acceptance oracle — which a work leg cannot edit. Breaking
+   is allowed, but it costs a same-PR sealed-oracle update (operator /
+   test-author, not a work leg) and a minor version bump at the develop→main
+   promotion, enforced by `cargo-semver-checks`. So default to additive: state
+   the widget derives for itself (hover, press, a drag in progress) lives in
+   `Interactive::State` or comes from `PaintEnv`, not in a new descriptor
+   field. Descriptor fields are for state the app owns and sets.
 3. **If it must break, deprecate first — two PRs.** PR 1 adds the new shape and
    keeps the old one compiling behind `#[deprecated(since = "…", note = "use X
    instead")]` (alias / `From` / forwarding method), migrates every **in-repo**
@@ -223,8 +243,10 @@ The `--features win` lines above are a type-check on non-Windows hosts, not a te
 of Windows code. **Win-GUI milestone work runs for real on `dell64`**: build with
 `cargo xwin build` and test with `tools/win-test.sh` (playbook + traps in
 `quadraui/docs/TESTING.md` and `AGENT_REFERENCE.md`). Rasteriser issues there all
-edit `quadraui/src/win/backend.rs` — touch only the `draw_*` methods your issue
-names.
+edit `quadraui/src/win/backend.rs` — touch only the `PaintSurface` verbs
+(`surface_*`) or platform-service methods your issue names. A widget that paints
+wrong on one backend is fixed in its shared painter or in the verb, never with a
+per-backend branch.
 
 ## Code Style
 
@@ -262,9 +284,12 @@ headers`, `test(quadraui): TUI tree paint/click round-trip harness`. Scope is
   `tests/tui_example_driver.rs`: drive the real `event → handle → render` path on
   the headless backend and assert with `find()` + `screen_contains()` — **never
   hardcode coordinates** (`quadraui::tui::testing::{TuiDriver, driver_with_shell}`).
-  Primitive paint/click changes stay covered by the round-trip harness. GTK-example
-  coverage waits on `GtkDriver` — **TUI only for now**. The adversarial reviewer
-  rejects a `tui_*` example change without its driver test. Tier details:
+  A new or changed widget gets `tests/widget_contract_<name>.rs`: paint it as
+  `Surface::Widget`, route through `FrameTree`, assert the `UiEvent` the app
+  receives. GUI examples have the same harness per backend (`GtkDriver`,
+  `MacDriver`, `WinDriver` in `tests/{gtk,macos,win}_example_driver.rs`); use
+  the one for the backend your issue names. The adversarial reviewer rejects a
+  `tui_*` example or widget change without its driver test. Tier details:
   `quadraui/docs/TESTING.md`.
 
 ## Oracle acceptance suite (sealed — do not edit)

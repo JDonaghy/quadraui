@@ -14,7 +14,7 @@ event routing?
 **Status disclosure — corrected 2026-09-05 (issue #798).** This doc was
 written during quadraui's "Phase A" — when it was a catalog of purely
 declarative primitives with no unified backend surface — and said the
-more ambitious surface described in `UI_CRATE_DESIGN.md` §4.1 / §6
+more ambitious surface described in `UI_CRATE_DESIGN.md` (§3.4, §4)
 (`Window`, `Panel`, `Split`, `Tabs`, `MenuBar`, `Accelerator`, a unified
 `Backend` trait) was on the roadmap but had no code yet. **That is no
 longer true: `Panel`, `Split`/`SplitTree`, `TabBar`, `MenuBar`,
@@ -231,8 +231,8 @@ Before wiring any non-trivial feature:
 
 ## References
 
-- `quadraui/docs/UI_CRATE_DESIGN.md` — the vision (primitives +
-  backend trait + layout primitives, most of it still roadmapped)
+- `quadraui/docs/UI_CRATE_DESIGN.md` — goals, non-goals and the core
+  invariants (the widget contract, backends as platform services)
 - `quadraui/docs/decisions/DECISIONS.md` — primitive-distinctness decisions
   and the "One primitive per UX concept" principle
 - `docs/NATIVE_GUI_LESSONS.md` — backend-implementer counterpart to
