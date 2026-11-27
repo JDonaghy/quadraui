@@ -355,6 +355,42 @@ fn a_body_longer_than_ten_lines_paints_every_line() {
 }
 
 #[test]
+fn a_long_body_over_a_vertical_button_stack_keeps_its_title_and_every_button_on_screen() {
+    let lines: Vec<String> = (1..=30).map(|i| format!("body line {i:02}")).collect();
+    let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+    let mut app = DrawnDialogApp::new(&refs, 80, 24);
+    let labels = ["Alpha", "Bravo", "Charlie", "Delta", "Echo"];
+    app.dialog.vertical_buttons = true;
+    app.dialog.buttons = labels
+        .iter()
+        .map(|label| DialogButton {
+            id: WidgetId::new(format!("dialog:btn:{label}")),
+            label: (*label).into(),
+            is_default: false,
+            is_cancel: false,
+            tint: None,
+            spec: None,
+        })
+        .collect();
+
+    let layout = Primitive::layout(&app.dialog, &LayoutCtx::new(1.0, 1.0, false), app.area);
+    let bounds = layout.layout.bounds;
+    assert!(bounds.y >= 0.0, "{bounds:?}");
+    assert!(bounds.y + bounds.height <= 24.0, "{bounds:?}");
+
+    let mut driver = TuiDriver::new(app, 80, 24);
+    assert!(driver.screen_contains(TITLE), "{}", driver.screen());
+    for label in labels {
+        assert!(driver.screen_contains(label), "{label}: {}", driver.screen());
+    }
+    click_label_in(&mut driver, "Echo");
+    assert_eq!(
+        driver.app().resolved,
+        vec![WidgetId::new("dialog:btn:Echo")]
+    );
+}
+
+#[test]
 fn a_placed_dialog_paints_and_hit_tests_at_the_host_box() {
     let mut app = DrawnDialogApp::new(&[BODY], 80, 24);
     let host_box = Rect::new(0.0, 0.0, 40.0, 5.0);

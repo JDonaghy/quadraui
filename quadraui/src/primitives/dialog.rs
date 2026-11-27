@@ -1636,8 +1636,15 @@ pub(crate) fn cell_measure(dialog: &Dialog, viewport: Rect) -> DialogMeasure {
         0.0
     };
     // Title, table, input and button rows, plus the 1-row padding above
-    // and below; the body gets whatever of the viewport they leave.
-    let other_rows = title_h + table_h + input_h + 1.0 + 2.0;
+    // and below; the body gets whatever of the viewport they leave. A
+    // vertical button stack takes one row per button, as `Dialog::layout`
+    // reserves it.
+    let button_rows = if dialog.vertical_buttons {
+        dialog.buttons.len().max(1) as f32
+    } else {
+        1.0
+    };
+    let other_rows = title_h + table_h + input_h + button_rows + 2.0;
     let body_h = (dialog.body.len() as f32).min((viewport.height - other_rows).max(0.0));
 
     // Floored at an 8-cell estimate so a row of short labels ("OK" /
