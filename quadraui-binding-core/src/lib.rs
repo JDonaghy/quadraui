@@ -15,6 +15,7 @@
 //! inherits this engine's behavior (including its bug fixes) for free.
 #![allow(rustdoc::private_intra_doc_links)]
 
+pub mod deferred;
 pub mod drag;
 pub mod engine;
 pub mod extra_paint;
@@ -271,6 +272,7 @@ where
         .map_err(|err| DecodeError::borrow(what, format!("invalid descriptor: {err}")))
 }
 
+pub use deferred::{apply_deferred_action, DeferredAction, DeferredError};
 pub use drag::{find_split_layout, tab_bar_for_right_segment, tree_row_path, tree_scroll_state};
 pub use drag::{ActiveDrag, ScrollbarDrag};
 pub use engine::{

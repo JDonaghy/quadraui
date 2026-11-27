@@ -279,11 +279,12 @@ use quadraui::{
     A11yChild, A11yInfo, AppLogic, Backend, BackendCaps, BottomPanelEvent, CanvasRegion,
     ContextMenuItem, DialogButton, DrawOp, FloatMeasure, ImageSource, LayoutCtx, Notification,
     Point, PointerShape, Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext,
-    ShellEvent, ShellLayout, Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId,
+    ShellEvent, ShellLayout, Toast, UiEvent, UserPayload, WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
 use quadraui_binding_core::register_scripted_widget as core_register_scripted_widget;
+use quadraui_binding_core::{apply_deferred_action, DeferredAction, DeferredError};
 // Exactly the three conditions under which `LiveRunner::Gtk`/`Mac`/`Win`
 // below actually constructs a real runner (`not(feature = "gtk")`/
 // `not(feature = "macos")` excludes the higher-priority native backends the
@@ -605,85 +606,6 @@ fn request_exit_before_drop(live: &mut LiveRunner) {
     {
         let _ = live;
     }
-}
-
-/// One action a [`QuiAppActions`] method recorded, already decoded and
-/// validated, waiting for [`flush_deferred_actions`] to apply it -- the
-/// napi-rs analog of `quadraui-py`'s own `DeferredAction`. Each variant
-/// carries exactly the already-decoded arguments the matching
-/// [`QuiAppActions`] method passes to the same underlying
-/// `quadraui`/`quadraui_binding_core` call, so applying one in
-/// [`flush_deferred_actions`] is a direct Rust call with no further
-/// decoding or validation left to do -- except [`Self::SetDockMenu`]/
-/// [`Self::SetJumpList`], whose own `quadraui_binding_core::services` call
-/// still does its own items decode at flush time, same as every other
-/// variant's matching `QuiApp` method does synchronously -- see
-/// `quadraui-py`'s `test_deferred_actions.py` module doc for why that one
-/// exception exists.
-///
-/// `QuiAppActions::showOverlay` pushes one of [`Self::ContextMenu`]/
-/// [`Self::MessageDialog`]/[`Self::Toast`]/[`Self::Tooltip`]/
-/// [`Self::Completions`]/[`Self::Float`]/[`Self::RichTextPopup`]/
-/// [`Self::Popover`]/[`Self::LayoutDialog`], depending on its own `kind`
-/// argument -- the same nine-way split `QuiApp::show_overlay`'s own match
-/// (`quadraui-node/src/overlays.rs`) makes; `QuiAppActions::dismissOverlay`
-/// always pushes [`Self::DismissOverlay`]. [`Self::Popover`]/
-/// [`Self::LayoutDialog`] are a second exception to the "no further
-/// decoding left to do" rule above, for the same underlying reason
-/// `SetDockMenu`/`SetJumpList` are: decoding either one's `"content"`
-/// subtree needs the live backend's current theme that only exists once
-/// [`flush_deferred_actions`] runs, so each stores its raw [`JsonValue`]
-/// descriptor unchanged and `flush_deferred_actions` decodes it via
-/// [`decode_popover`]/[`decode_layout_dialog`] itself, surfacing a decode
-/// failure through `pending_error` the same way a failing `OpenPath`/
-/// `MoveToTrash` already is.
-enum DeferredAction {
-    MessageDialog(quadraui::MessageDialogOptions),
-    ContextMenu(Vec<ContextMenuItem>, Point),
-    Toast(Toast, ToastCorner),
-    Tooltip(Tooltip, Rect),
-    Completions(quadraui::Completions, Point),
-    Float(quadraui::Float, FloatMeasure),
-    RichTextPopup(quadraui::RichTextPopup, Point),
-    /// `descriptor, measure` for `QuiAppActions.showOverlay("popover", ...)`
-    /// -- unlike every other overlay kind, a popover's descriptor can only
-    /// be decoded once a live backend (for its current theme) and
-    /// `BindingHost::style_sets` are both in hand, so
-    /// [`flush_deferred_actions`] decodes `descriptor` via
-    /// [`decode_popover`] itself rather than at queue time, the same
-    /// reason `QuiApp::show_overlay`'s own `"popover"` arm defers its
-    /// decode to a live `self.driver` closure.
-    Popover(JsonValue, FloatMeasure),
-    /// `descriptor, size` for `QuiAppActions.showOverlay("layout_dialog", ...)`
-    /// -- [`Self::Popover`]'s own reason for deferring the decode applies
-    /// identically here.
-    LayoutDialog(JsonValue, DialogContentSize),
-    /// Queued by `QuiAppActions.dismissOverlay` -- same `id` vocabulary
-    /// (the six `showOverlay` sentinels, or any other string read as a
-    /// toast id) as `QuiApp.dismissOverlay`, applied via the identical
-    /// match [`flush_deferred_actions`] runs.
-    DismissOverlay(String),
-    Notification(Notification),
-    OpenPath(PathBuf),
-    RevealInFileManager(PathBuf),
-    MoveToTrash(PathBuf),
-    RestoreFromTrash(PathBuf),
-    ApplyUpdateOnQuit(u64),
-    EndPowerSaveBlock(u64),
-    SetLoginItem(bool, bool, Vec<String>),
-    SetAsDefaultProtocolClient(String),
-    RemoveAsDefaultProtocolClient(String),
-    BeginDragOut(Vec<String>, Option<String>),
-    AddRecentDocument(PathBuf),
-    ClearRecentDocuments,
-    SetDockMenu(JsonValue),
-    SetJumpList(JsonValue),
-    TrayIcon(ImageSource),
-    TrayTooltip(String),
-    TrayMenu(Vec<ContextMenuItem>),
-    DocumentEdited(bool),
-    RepresentedFilename(Option<PathBuf>),
-    Cursor(PointerShape),
 }
 
 /// The [`AppLogic`] a [`QuiApp`] drives: a thin napi-rs leaf around
@@ -1959,259 +1881,29 @@ fn flush_deferred_actions(backend: &mut dyn Backend, app: &mut NodeAppLogic) -> 
         let action = app.deferred_actions.borrow_mut().pop_front();
         let Some(action) = action else { break };
         applied = true;
-        match action {
-            DeferredAction::MessageDialog(opts) => {
-                app.engine.open_message_dialog(opts, backend);
-            }
-            DeferredAction::ContextMenu(items, position) => {
-                app.engine.open_context_menu(items, position, backend);
-            }
-            DeferredAction::Toast(toast, corner) => {
-                app.engine.show_toast(toast, corner);
-            }
-            DeferredAction::Tooltip(tooltip, anchor) => {
-                app.engine.show_tooltip(tooltip, anchor);
-            }
-            DeferredAction::Completions(completions, cursor) => {
-                app.engine.show_completions(completions, cursor);
-            }
-            DeferredAction::Float(float, measure) => {
-                app.engine.show_float(float, measure, backend);
-            }
-            DeferredAction::RichTextPopup(popup, anchor) => {
-                app.engine.show_rich_text_popup(popup, anchor);
-            }
-            DeferredAction::Popover(value, measure) => {
-                let decoded = {
-                    let theme = backend.theme();
-                    let styles = StyleContext::new(&app.host.style_sets, &theme);
-                    decode_popover("showOverlay", &value, styles, &app.host.wire_diagnostics)
-                };
-                match decoded {
-                    Ok(decoded) => {
-                        app.engine.show_popover_layout(
-                            decoded.chrome,
-                            measure,
-                            decoded.content,
-                            backend,
-                        );
-                    }
-                    Err(err) => record_error(&app.pending_error, decode_error_to_js(err)),
-                }
-            }
-            DeferredAction::LayoutDialog(value, size) => {
-                let decoded = {
-                    let theme = backend.theme();
-                    let styles = StyleContext::new(&app.host.style_sets, &theme);
-                    decode_layout_dialog("showOverlay", &value, styles, &app.host.wire_diagnostics)
-                };
-                match decoded {
-                    Ok(decoded) => {
-                        app.engine.open_layout_dialog(
-                            decoded.chrome,
-                            decoded.content,
-                            size,
-                            backend,
-                        );
-                    }
-                    Err(err) => record_error(&app.pending_error, decode_error_to_js(err)),
-                }
-            }
-            DeferredAction::DismissOverlay(id) => match id.as_str() {
-                "context_menu" => {
-                    app.engine.dismiss_context_menu(backend);
-                }
-                "message_dialog" => {
-                    app.engine.close_message_dialog(backend);
-                }
-                "tooltip" => {
-                    app.engine.hide_tooltip();
-                }
-                "completions" => {
-                    app.engine.dismiss_completions();
-                }
-                // A `"popover"` *is* a float (one this engine paints content
-                // into), so either sentinel closes it.
-                "float" | "popover" => {
-                    app.engine.dismiss_float(backend);
-                }
-                "layout_dialog" => {
-                    app.engine.close_layout_dialog(backend);
-                }
-                "rich_text_popup" => {
-                    app.engine.dismiss_rich_text_popup();
-                }
-                toast_id => {
-                    app.engine.dismiss_toast(WidgetId::new(toast_id));
-                }
-            },
-            DeferredAction::Notification(notification) => {
-                if let Err(err) = service_result(
-                    "send_notification",
-                    backend.services().send_notification(notification),
-                ) {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::OpenPath(path) => {
-                if let Err(err) = service_result("open_path", backend.services().open_path(&path)) {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::RevealInFileManager(path) => {
-                if let Err(err) = service_result(
-                    "reveal_in_file_manager",
-                    backend.services().reveal_in_file_manager(&path),
-                ) {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::MoveToTrash(path) => {
-                if let Err(err) =
-                    service_result("move_to_trash", backend.services().move_to_trash(&path))
-                {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::RestoreFromTrash(path) => {
-                if let Err(err) = service_result(
-                    "restore_from_trash",
-                    backend.services().restore_from_trash(&path),
-                ) {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::ApplyUpdateOnQuit(handle) => {
-                if let Err(err) = update_apply_on_quit(backend.services(), handle) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("apply_on_quit", err),
-                    );
-                }
-            }
-            DeferredAction::EndPowerSaveBlock(handle) => {
-                if let Err(err) = end_power_save_block(backend.services(), handle) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("end_power_save_block", err),
-                    );
-                }
-            }
-            DeferredAction::SetLoginItem(enabled, open_hidden, args) => {
-                if let Err(err) = set_login_item(backend.services(), enabled, open_hidden, args) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("set_login_item", err),
-                    );
-                }
-            }
-            DeferredAction::SetAsDefaultProtocolClient(scheme) => {
-                if let Err(err) = set_as_default_protocol_client(backend.services(), &scheme) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("set_as_default_protocol_client", err),
-                    );
-                }
-            }
-            DeferredAction::RemoveAsDefaultProtocolClient(scheme) => {
-                if let Err(err) = remove_as_default_protocol_client(backend.services(), &scheme) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("remove_as_default_protocol_client", err),
-                    );
-                }
-            }
-            DeferredAction::BeginDragOut(files, text) => {
-                if let Err(err) = begin_drag_out(backend.services(), files, text) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("begin_drag_out", err),
-                    );
-                }
-            }
-            DeferredAction::AddRecentDocument(path) => {
-                if let Err(err) = add_recent_document(backend.services(), &path.to_string_lossy()) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("add_recent_document", err),
-                    );
-                }
-            }
-            DeferredAction::ClearRecentDocuments => {
-                if let Err(err) = clear_recent_documents(backend.services()) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("clear_recent_documents", err),
-                    );
-                }
-            }
-            DeferredAction::SetDockMenu(items) => {
-                if let Err(err) = set_dock_menu(backend.services(), items) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("set_dock_menu", err),
-                    );
-                }
-            }
-            DeferredAction::SetJumpList(items) => {
-                if let Err(err) = set_jump_list(backend.services(), items) {
-                    record_error(
-                        &app.pending_error,
-                        service_error_to_napi("set_jump_list", err),
-                    );
-                }
-            }
-            DeferredAction::TrayIcon(icon) => {
-                if let Err(err) =
-                    service_result("set_tray_icon", with_tray(backend, |t| t.set_icon(icon)))
-                {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::TrayTooltip(tooltip) => {
-                if let Err(err) = service_result(
-                    "set_tray_tooltip",
-                    with_tray(backend, |t| t.set_tooltip(&tooltip)),
-                ) {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::TrayMenu(items) => {
-                let menu = menu_for_surface(WidgetId::new("qui-tray-menu"), items);
-                if let Err(err) =
-                    service_result("set_tray_menu", with_tray(backend, |t| t.set_menu(&menu)))
-                {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::DocumentEdited(edited) => {
-                if let Err(err) = service_result(
-                    "set_document_edited",
-                    with_window(backend, |w| w.set_document_edited(edited)),
-                ) {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::RepresentedFilename(path) => {
-                if let Err(err) = service_result(
-                    "set_represented_filename",
-                    with_window(backend, |w| w.set_represented_filename(path.as_deref())),
-                ) {
-                    record_error(&app.pending_error, err);
-                }
-            }
-            DeferredAction::Cursor(shape) => {
-                // Fire-and-forget, the same shape `quadraui-py`'s own
-                // `DeferredAction::Cursor` arm uses: whether the glyph was
-                // actually applied is only observable synchronously via
-                // `QuiApp::set_cursor`'s own return value, and a deferred
-                // action by definition isn't applied until after that
-                // return value would already be gone.
-                let _ = backend.set_cursor(shape);
-            }
+        if let Err(err) = apply_deferred_action(
+            action,
+            backend,
+            &mut app.engine,
+            &mut app.host,
+            "showOverlay",
+        ) {
+            record_error(&app.pending_error, deferred_error_to_napi(err));
         }
     }
     applied
+}
+
+/// Maps a queued action's [`DeferredError`] onto this binding's error
+/// taxonomy: a descriptor decode error through [`decode_error_to_js`], a
+/// backend call as [`service_result`] reports it, a service helper
+/// through [`service_error_to_napi`].
+fn deferred_error_to_napi(err: DeferredError) -> Error {
+    match err {
+        DeferredError::Decode(err) => decode_error_to_js(err),
+        DeferredError::Backend { op, error } => internal_error(format!("{op}: {error:?}")),
+        DeferredError::Service { op, error } => service_error_to_napi(op, error),
+    }
 }
 
 /// Rejects a zero `width`/`height`, otherwise narrows both to the `u16`
@@ -2796,11 +2488,11 @@ impl QuiAppActions {
     ) -> Result<()> {
         self.queue
             .borrow_mut()
-            .push_back(DeferredAction::SetLoginItem(
+            .push_back(DeferredAction::SetLoginItem {
                 enabled,
-                open_hidden.unwrap_or(false),
-                args.unwrap_or_default(),
-            ));
+                open_hidden: open_hidden.unwrap_or(false),
+                args: args.unwrap_or_default(),
+            });
         Ok(())
     }
 
@@ -2830,10 +2522,10 @@ impl QuiAppActions {
     pub fn begin_drag_out(&self, files: Option<Vec<String>>, text: Option<String>) -> Result<()> {
         self.queue
             .borrow_mut()
-            .push_back(DeferredAction::BeginDragOut(
-                files.unwrap_or_default(),
+            .push_back(DeferredAction::BeginDragOut {
+                files: files.unwrap_or_default(),
                 text,
-            ));
+            });
         Ok(())
     }
 
