@@ -8766,6 +8766,8 @@ mod tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let diff = chrome_font_diff_pixel_count(
             200,
@@ -9130,6 +9132,8 @@ mod tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let (small, big) = chrome_font_diff_layout(
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),

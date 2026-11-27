@@ -416,6 +416,8 @@ impl TreeTableController {
                 column_overrides: Vec::new(),
                 footer: None,
                 bordered: self.bordered,
+                striped: false,
+                glyphs: None,
             },
             tree,
         }
@@ -780,7 +782,9 @@ impl TreeTableController {
                     _ => TreeTableControllerEvent::Consumed,
                 }
             }
-            TreeTableHit::Footer | TreeTableHit::Empty => TreeTableControllerEvent::Consumed,
+            TreeTableHit::Footer | TreeTableHit::Scrollbar | TreeTableHit::Empty => {
+                TreeTableControllerEvent::Consumed
+            }
         }
     }
 

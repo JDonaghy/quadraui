@@ -172,6 +172,8 @@ fn sample_table() -> DataTable {
         column_overrides: vec![],
         footer: None,
         bordered: false,
+        striped: false,
+        glyphs: None,
     }
 }
 

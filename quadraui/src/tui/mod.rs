@@ -105,6 +105,7 @@ pub use cell_surface::BufferCellSurface;
 #[doc(hidden)]
 pub use chart::{draw_chart, tui_chart_layout};
 pub use data_table::draw_data_table;
+pub(crate) use data_table::draw_data_table_inner;
 #[doc(hidden)]
 pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_table_with_state};
 #[doc(hidden)]

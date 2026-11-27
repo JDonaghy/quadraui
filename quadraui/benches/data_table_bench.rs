@@ -70,6 +70,8 @@ fn build_table(nrows: usize, ncols: usize) -> DataTable {
         column_overrides: Vec::new(),
         footer: None,
         bordered: false,
+        striped: false,
+        glyphs: None,
     }
 }
 

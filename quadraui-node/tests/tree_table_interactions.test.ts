@@ -36,7 +36,7 @@ function treeTableDict() {
   return {
     table: {
       id: "files",
-      columns: [{ title: "Name", width: { Fixed: 20.0 } }],
+      columns: [{ title: "Name", width: { Native: 20.0 } }],
       rows: [row("src"), row("main.rs")],
       has_focus: true,
     },

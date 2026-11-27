@@ -744,13 +744,14 @@ pub fn schema() -> Vec<DefJson> {
     let column_width = b.define(flat_doc(
         "ColumnWidth",
         &[
+            ("Native", float_()),
             ("FixedCells", float_()),
             ("FixedPx", float_()),
             ("Flex", float_()),
             ("Content", column_width_content),
         ],
         vec![],
-        "Column sizing strategy, e.g. `{\"Flex\": 2.0}` -- the deprecated `\"Fixed\"` variant is omitted here; use `FixedCells`/`FixedPx` instead.",
+        "Column sizing strategy, e.g. `{\"Flex\": 2.0}`. `Native` is N in the backend's own unit (cells on TUI, pixels elsewhere); `FixedCells`/`FixedPx` keep one meaning on every backend.",
     ));
     let column_descriptor = b.define(obj(
         "ColumnDescriptor",
@@ -783,6 +784,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("column_overrides", list(nullable(float_()))),
             field_opt("footer", nullable(data_row_descriptor)),
             field_opt("bordered", bool_()),
+            field_opt("striped", bool_()),
             field_opt("scroll_px", float_()),
             with_doc(
                 field_opt("items_window", nullable(items_window.clone())),
@@ -3251,6 +3253,14 @@ pub fn schema() -> Vec<DefJson> {
         "_DataTableSelectionSetPayload",
         vec![field("indices", list(int_()))],
     ));
+    let data_table_scroll_changed_payload = b.define(obj(
+        "_DataTableScrollChangedPayload",
+        vec![field("scroll_offset", int_())],
+    ));
+    let data_table_context_menu_payload = b.define(obj(
+        "_DataTableContextMenuPayload",
+        vec![field("idx", int_()), field("position", re("Point"))],
+    ));
     b.define(flat(
         "DataTableEvent",
         &[
@@ -3261,6 +3271,9 @@ pub fn schema() -> Vec<DefJson> {
             ("Scroll", data_table_scroll_payload.clone()),
             ("ColumnResized", column_resized_payload.clone()),
             ("SelectionSet", data_table_selection_set_payload),
+            ("ScrollChanged", data_table_scroll_changed_payload),
+            ("ColumnFocused", col_payload.clone()),
+            ("ContextMenuRequested", data_table_context_menu_payload),
         ],
         vec![],
     ));
@@ -4396,6 +4409,12 @@ mod coverage {
             } => {}
             DataTableEvent::ColumnResized { col: _, width: _ } => {}
             DataTableEvent::SelectionSet { indices: _ } => {}
+            DataTableEvent::ScrollChanged { scroll_offset: _ } => {}
+            DataTableEvent::ColumnFocused { col: _ } => {}
+            DataTableEvent::ContextMenuRequested {
+                idx: _,
+                position: _,
+            } => {}
         }
     }
 
@@ -4698,14 +4717,9 @@ mod coverage {
         }
     }
 
-    #[allow(deprecated)] // `ColumnWidth::Fixed` is `#[deprecated]`; this arm is its own plumbing.
     fn assert_column_width(w: ColumnWidth) {
         match w {
-            // Deprecated in favour of `FixedCells`/`FixedPx` (ambiguous
-            // unit) -- `schema()`'s own `ColumnWidth` entry deliberately
-            // omits it; still named here so a field change to this variant
-            // still trips this guard.
-            ColumnWidth::Fixed(_) => {}
+            ColumnWidth::Native(_) => {}
             ColumnWidth::FixedCells(_) => {}
             ColumnWidth::FixedPx(_) => {}
             ColumnWidth::Flex(_) => {}
@@ -4916,6 +4930,9 @@ mod coverage {
             placeholder
         }
     );
+    // `glyphs` is `#[serde(default)]` descriptor state a host app sets
+    // through the Rust API: `DataTableDescriptor` declares no `glyphs`, so
+    // a binding's table paints each backend's default sort arrows.
     assert_fields!(
         assert_data_table_fields,
         DataTable {
@@ -4931,7 +4948,9 @@ mod coverage {
             h_scroll,
             column_overrides,
             footer,
-            bordered
+            bordered,
+            striped,
+            glyphs
         }
     );
     assert_fields!(

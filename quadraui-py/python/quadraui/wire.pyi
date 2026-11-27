@@ -250,7 +250,8 @@ class _ColumnWidthContent(TypedDict):
     max: float
 
 class ColumnWidth(TypedDict):
-    """Column sizing strategy, e.g. `{"Flex": 2.0}` -- the deprecated `"Fixed"` variant is omitted here; use `FixedCells`/`FixedPx` instead."""
+    """Column sizing strategy, e.g. `{"Flex": 2.0}`. `Native` is N in the backend's own unit (cells on TUI, pixels elsewhere); `FixedCells`/`FixedPx` keep one meaning on every backend."""
+    Native: NotRequired[float]
     FixedCells: NotRequired[float]
     FixedPx: NotRequired[float]
     Flex: NotRequired[float]
@@ -279,6 +280,7 @@ class DataTableDescriptor(TypedDict):
     column_overrides: NotRequired[List[Optional[float]]]
     footer: NotRequired[Optional[DataRowDescriptor]]
     bordered: NotRequired[bool]
+    striped: NotRequired[bool]
     scroll_px: NotRequired[float]
     items_window: NotRequired[Optional[ItemsWindow]]  # binding-core extension key, lifted out by `items_window_from_value` -- not a `DataTable` field. `rows` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 
@@ -2053,6 +2055,13 @@ class _ColumnResizedPayload(TypedDict):
 class _DataTableSelectionSetPayload(TypedDict):
     indices: List[int]
 
+class _DataTableScrollChangedPayload(TypedDict):
+    scroll_offset: int
+
+class _DataTableContextMenuPayload(TypedDict):
+    idx: int
+    position: Point
+
 class DataTableEvent(TypedDict):
     HeaderClicked: NotRequired[_ColPayload]
     RowActivated: NotRequired[_IdxPayload]
@@ -2061,6 +2070,9 @@ class DataTableEvent(TypedDict):
     Scroll: NotRequired[_DataTableScrollPayload]
     ColumnResized: NotRequired[_ColumnResizedPayload]
     SelectionSet: NotRequired[_DataTableSelectionSetPayload]
+    ScrollChanged: NotRequired[_DataTableScrollChangedPayload]
+    ColumnFocused: NotRequired[_ColPayload]
+    ContextMenuRequested: NotRequired[_DataTableContextMenuPayload]
 
 class _TreeTableIdxPathPayload(TypedDict):
     idx: int

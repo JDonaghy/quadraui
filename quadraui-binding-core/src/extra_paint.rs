@@ -3180,6 +3180,8 @@ mod tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let tree_table = TreeTable {
             table,

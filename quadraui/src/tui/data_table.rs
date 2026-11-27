@@ -383,7 +383,7 @@ pub(crate) fn draw_row(
     draw_band(buf, ctx, y, (row_fg, row_bg), true, paint);
 }
 
-fn draw_data_table_inner(
+pub(crate) fn draw_data_table_inner(
     buf: &mut Buffer,
     area: Rect,
     table: &DataTable,
@@ -442,6 +442,7 @@ fn draw_data_table_body(
     if table.bordered {
         draw_data_table_border(buf, area, theme);
     }
+    let glyphs = glyphs.or(table.glyphs.as_ref());
 
     // ── Header row ────────────────────────────────────────────────────
     draw_header(buf, area.y + oy, &ctx, glyphs, nerd_fonts_enabled);
@@ -456,20 +457,20 @@ fn draw_data_table_body(
         .visible_rows
         .min(table.rows.len().saturating_sub(scroll_offset));
     let body_y = (area.y + oy + 1) as f32;
-    let (hovered, striped) = (state.hovered_idx, state.striped);
+    let (hovered, striped) = (state.hovered_idx, state.striped || table.striped);
     for r in stack_rows_from(scroll_offset, 0.0, visible, 0.0, body_y, 0.0, |_| (1.0, ())) {
         body_row(buf, r.bounds.y as u16, &ctx, r.idx, hovered, striped);
     }
 
     // ── Scrollbar ──────────────────────────────────────────────────────
     let footer_h = layout.footer_height.round() as u16;
-    if table.show_scrollbar
-        && table.rows.len() > layout.visible_rows
-        && layout.scrollbar_width > 0.0
-    {
-        let sb_x = (area.x + area.width).saturating_sub(ox + layout.scrollbar_width.round() as u16);
-        let sb_h = area.height.saturating_sub(2 * oy + 1 + footer_h) as f32;
-        let sb_track = crate::event::Rect::new(sb_x as f32, (area.y + oy + 1) as f32, 1.0, sb_h);
+    if let Some(local) = layout.v_scrollbar_track {
+        let sb_track = crate::event::Rect::new(
+            area.x as f32 + local.x,
+            area.y as f32 + local.y,
+            local.width,
+            local.height,
+        );
         // `scroll_px: None`: `scroll_offset` is already quantised to a
         // whole row, and the thumb must not reintroduce a fractional part.
         let sb = crate::primitives::row_stack::vscrollbar_thumb(
@@ -825,6 +826,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -1063,6 +1066,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
@@ -1131,6 +1136,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let area = Rect::new(0, 0, 10, 10);
         let mut buf = Buffer::empty(area);
@@ -1559,6 +1566,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -1689,6 +1698,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -1969,6 +1980,8 @@ mod multi_select_driver_tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -2155,6 +2168,8 @@ mod tree_table_tests {
                 column_overrides: vec![],
                 footer: None,
                 bordered: false,
+                striped: false,
+                glyphs: None,
             },
             tree: vec![
                 TreeTableNode::new(vec![0], 0).with_expanded(true),

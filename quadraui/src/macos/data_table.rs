@@ -227,6 +227,8 @@ mod tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -682,6 +684,8 @@ mod multi_select_driver_tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 

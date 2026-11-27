@@ -690,6 +690,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_DataTableScrollPayload`](#wire-_datatablescrollpayload)
 - [`_ColumnResizedPayload`](#wire-_columnresizedpayload)
 - [`_DataTableSelectionSetPayload`](#wire-_datatableselectionsetpayload)
+- [`_DataTableScrollChangedPayload`](#wire-_datatablescrollchangedpayload)
+- [`_DataTableContextMenuPayload`](#wire-_datatablecontextmenupayload)
 - [`DataTableEvent`](#wire-datatableevent)
 - [`_TreeTableIdxPathPayload`](#wire-_treetableidxpathpayload)
 - [`_TreeTableSelectionSetPayload`](#wire-_treetableselectionsetpayload)
@@ -1237,12 +1239,13 @@ Alias for `"Ascending" | "Descending"`.
 <a id="wire-columnwidth"></a>
 #### `ColumnWidth`
 
-Column sizing strategy, e.g. `{"Flex": 2.0}` -- the deprecated `"Fixed"` variant is omitted here; use `FixedCells`/`FixedPx` instead.
+Column sizing strategy, e.g. `{"Flex": 2.0}`. `Native` is N in the backend's own unit (cells on TUI, pixels elsewhere); `FixedCells`/`FixedPx` keep one meaning on every backend.
 
 Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Tag | Payload type | Description |
 | --- | --- | --- |
+| `Native` | `number` |  |
 | `FixedCells` | `number` |  |
 | `FixedPx` | `number` |  |
 | `Flex` | `number` |  |
@@ -1283,6 +1286,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `column_overrides` | `(number \| null)[]` | no |  |
 | `footer` | `DataRowDescriptor \| null` | no |  |
 | `bordered` | `boolean` | no |  |
+| `striped` | `boolean` | no |  |
 | `scroll_px` | `number` | no |  |
 | `items_window` | `ItemsWindow \| null` | no | binding-core extension key, lifted out by `items_window_from_value` -- not a `DataTable` field. `rows` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one. |
 
@@ -4090,6 +4094,21 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- | --- |
 | `indices` | `number[]` | yes |  |
 
+<a id="wire-_datatablescrollchangedpayload"></a>
+#### `_DataTableScrollChangedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `scroll_offset` | `number` | yes |  |
+
+<a id="wire-_datatablecontextmenupayload"></a>
+#### `_DataTableContextMenuPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `idx` | `number` | yes |  |
+| `position` | `Point` | yes |  |
+
 <a id="wire-datatableevent"></a>
 #### `DataTableEvent`
 
@@ -4104,6 +4123,9 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `Scroll` | `_DataTableScrollPayload` |  |
 | `ColumnResized` | `_ColumnResizedPayload` |  |
 | `SelectionSet` | `_DataTableSelectionSetPayload` |  |
+| `ScrollChanged` | `_DataTableScrollChangedPayload` |  |
+| `ColumnFocused` | `_ColPayload` |  |
+| `ContextMenuRequested` | `_DataTableContextMenuPayload` |  |
 
 <a id="wire-_treetableidxpathpayload"></a>
 #### `_TreeTableIdxPathPayload`
