@@ -4098,6 +4098,9 @@ pub fn schema() -> Vec<DefJson> {
             // A multi-section view event rides as its own externally-tagged
             // serde shape.
             ("MultiSectionView", tup(vec![re("WidgetId"), any_()])),
+            // A tab group event rides as its own externally-tagged serde
+            // shape.
+            ("TabGroup", tup(vec![re("WidgetId"), any_()])),
             ("ScrollView", tup(vec![re("WidgetId"), re("ScrollViewEvent")])),
             ("HelpOverlay", tup(vec![re("WidgetId"), any_()])),
             ("PathPicker", tup(vec![re("WidgetId"), any_()])),
@@ -4307,6 +4310,7 @@ mod coverage {
             UiEvent::TreeTable(_, _) => {}
             UiEvent::CellGrid(_, _) => {}
             UiEvent::MultiSectionView(_, _) => {}
+            UiEvent::TabGroup(_, _) => {}
             UiEvent::ScrollView(_, _) => {}
             UiEvent::Toolbar(_, _) => {}
             UiEvent::Canvas(_, _) => {}
@@ -7101,6 +7105,7 @@ mod coverage {
                 "TreeTable",
                 "CellGrid",
                 "MultiSectionView",
+                "TabGroup",
                 "ScrollView",
                 "HelpOverlay",
                 "PathPicker",

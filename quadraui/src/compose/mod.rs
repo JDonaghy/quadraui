@@ -30,8 +30,9 @@
 //!   mode (free-text confirm) and list/search mode (item selection).
 //! - [`ChatController`] — chat overlay with scrollable transcript + multi-line
 //!   input + status strip.
-//! - [`TabGroupController`] — TabBar + Split + DropZone + FocusGroup wired into
-//!   editor-group-style tabbed split panes.
+//! - [`TabGroup`] / [`TabGroupController`] — editor-group-style tabbed
+//!   split panes: a `TabBar` per pane, `SplitTree` dividers and a
+//!   `DropOverlay` for tab drags.
 //! - [`HelpRegistry`] / [`HelpOverlayController`] — per-view help registry +
 //!   `?`-triggered cheatsheet overlay, plus helpers to feed registered
 //!   actions into the command palette.
@@ -69,7 +70,6 @@ pub mod app_shell;
 pub mod bottom_panel;
 pub mod chat_controller;
 pub mod context_menu_controller;
-mod divider_drag;
 pub mod dual_mode_palette;
 pub mod file_picker;
 pub mod focus_group;
@@ -189,7 +189,9 @@ pub use status_bar_interaction::StatusBarAction;
 pub use status_bar_interaction::StatusBarInteraction;
 pub use tab_drag::{resolve_tab_drop, TabDragSource, TabDropInstruction};
 pub use tab_group::{
-    GroupLayout, Pane, PaneDragRect, PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout,
+    GroupLayout, Pane, PaneDragRect, PaneTab, TabGroup, TabGroupController, TabGroupEvent,
+    TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
+    TabGroupSubPart, TabGroupTab,
 };
 pub use toast_stack::{ToastStackAction, ToastStackController};
 // `ToastStackEvent` is `#[deprecated]` (use `ToastStackController::handle_event`'s

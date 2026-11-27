@@ -2701,6 +2701,7 @@ class _UiEventDict(TypedDict):
     TreeTable: NotRequired[Tuple[WidgetId, TreeTableEvent]]
     CellGrid: NotRequired[Tuple[WidgetId, CellGridEvent]]
     MultiSectionView: NotRequired[Tuple[WidgetId, Any]]
+    TabGroup: NotRequired[Tuple[WidgetId, Any]]
     ScrollView: NotRequired[Tuple[WidgetId, ScrollViewEvent]]
     HelpOverlay: NotRequired[Tuple[WidgetId, Any]]
     PathPicker: NotRequired[Tuple[WidgetId, Any]]

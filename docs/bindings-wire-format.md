@@ -5326,6 +5326,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `TreeTable` | `[WidgetId, TreeTableEvent]` |  |
 | `CellGrid` | `[WidgetId, CellGridEvent]` |  |
 | `MultiSectionView` | `[WidgetId, unknown]` |  |
+| `TabGroup` | `[WidgetId, unknown]` |  |
 | `ScrollView` | `[WidgetId, ScrollViewEvent]` |  |
 | `HelpOverlay` | `[WidgetId, unknown]` |  |
 | `PathPicker` | `[WidgetId, unknown]` |  |

@@ -1186,6 +1186,9 @@ pub enum UiEvent {
         WidgetId,
         crate::primitives::multi_section_view::MultiSectionViewEvent,
     ),
+    /// A [`crate::TabGroup`] tab, divider or pane was used — see
+    /// [`crate::TabGroupEvent`].
+    TabGroup(WidgetId, crate::compose::tab_group::TabGroupEvent),
     /// A [`crate::ScrollView`] resolved a wheel, key or scrollbar gesture
     /// to a new offset — see [`crate::ScrollViewEvent`].
     ScrollView(WidgetId, crate::primitives::scroll_view::ScrollViewEvent),

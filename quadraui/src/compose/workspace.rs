@@ -463,7 +463,7 @@ impl Workspace {
     /// The tab strip's height for `ctx`: [`crate::Style::tab_height`] (or
     /// the chrome line height, when taller) on a pixel backend, one row on
     /// a cell grid.
-    fn strip_height(ctx: &LayoutCtx) -> f32 {
+    pub(crate) fn strip_height(ctx: &LayoutCtx) -> f32 {
         let lh = ctx.chrome_line_height();
         if lh > 1.0 {
             lh.max(ctx.style().tab_height)

@@ -1,18 +1,16 @@
 //! Tab drag-and-drop: the pure, position-based resolution logic behind
-//! [`crate::compose::TabGroupController`]'s tab drag gesture, plus the
-//! controller's own in-progress-drag bookkeeping.
+//! [`crate::compose::tab_group::TabGroup`]'s tab drag gesture.
 //!
 //! [`TabDragSource`]/[`TabDropInstruction`]/[`resolve_tab_drop`] take only
-//! caller-supplied geometry and drag-source identity — no
-//! `TabGroupController`, no owned `Vec<Pane>` — so a host with its own
-//! pane/tab model (vimcode's `Engine::editor_groups`) can drive tab
-//! drag-and-drop without mirroring that model into a second `Vec<Pane>`
-//! just to compute it. [`TabDragState`] is `TabGroupController`'s own
-//! private in-progress-drag record; it stays `pub(crate)` because nothing
-//! outside this crate constructs or reads it directly.
+//! caller-supplied geometry and drag-source identity — no `TabGroup`, no
+//! owned pane list — so a host with its own pane/tab model (vimcode's
+//! `Engine::editor_groups`) can drive tab drag-and-drop without mirroring
+//! that model into a `TabGroup` just to compute it.
+
+use serde::{Deserialize, Serialize};
 
 use crate::primitives::drop_zone::{
-    drop_zone_hit_test, DropEdge, DropGroupRect, DropZone, DropZoneHit, DropZoneKind,
+    drop_zone_hit_test, DropEdge, DropGroupRect, DropZoneHit, DropZoneKind,
 };
 use crate::primitives::split::SplitDirection;
 
@@ -20,10 +18,7 @@ use crate::primitives::split::SplitDirection;
 
 /// Identifies the tab being dragged, from the host's *own* pane/tab model.
 ///
-/// Input to [`resolve_tab_drop`]. Unlike
-/// [`TabGroupController::handle_tab_drop`](crate::compose::TabGroupController::handle_tab_drop),
-/// which resolves the dragged tab's current position by searching its own
-/// owned `Vec<Pane>`, `resolve_tab_drop` takes the position as given — the
+/// Input to [`resolve_tab_drop`]. The position is taken as given — the
 /// host already knows it, because the host owns the model.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TabDragSource {
@@ -37,18 +32,15 @@ pub struct TabDragSource {
 /// drag-and-drop gesture against pane geometry, expressed purely as indices
 /// and a split direction — never as a mutation applied to an owned model.
 ///
-/// Returned by [`resolve_tab_drop`]. The host translates each variant into
-/// its own mutation (e.g. `Engine::editor_groups[pane_idx].tabs.remove(...)`)
-/// instead of `TabGroupController` performing the mutation on a `Vec<Pane>`
-/// it would otherwise have to own.
-///
-/// Mirrors the shape of
-/// [`TabGroupEvent`](crate::compose::TabGroupEvent)'s cross-group-drag
-/// variants (`TabReordered`, `TabMovedToPane`, `TabSplitToNewPane`,
-/// `PaneCollapsed`) deliberately — those were already index/id-based, not
-/// `Pane`-object-based; `resolve_tab_drop` just makes it possible to
-/// compute them without a `TabGroupController` owning the panes at all.
-#[derive(Debug, Clone, PartialEq)]
+/// Returned by [`resolve_tab_drop`], and carried by
+/// [`TabGroupEvent::TabDropped`](crate::compose::TabGroupEvent::TabDropped).
+/// The host translates each variant into its own mutation (e.g.
+/// `Engine::editor_groups[pane_idx].tabs.remove(...)`);
+/// [`TabGroup::apply`](crate::compose::tab_group::TabGroup::apply) is the
+/// reference translation, into
+/// [`TabGroupEvent`](crate::compose::TabGroupEvent)'s `TabReordered`,
+/// `TabMovedToPane`, `TabSplitToNewPane` and `PaneCollapsed`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TabDropInstruction {
     /// The drop was a no-op: outside every pane, dropped back onto the
     /// source tab's own position, or (for `Split`) the only tab of the
@@ -97,13 +89,13 @@ pub enum TabDropInstruction {
 
 /// Resolve a tab drag-and-drop gesture into a [`TabDropInstruction`], using
 /// only caller-supplied geometry and drag-source identity — no
-/// `TabGroupController`, no owned `Vec<Pane>`.
+/// `TabGroup`, no owned pane list.
 ///
 /// This is the adoption path for a host that already owns its tab/pane
 /// model (e.g. vimcode's `Engine::editor_groups`, keyed by `GroupId`):
 /// build `groups` from your own layout each frame (or drag), and translate
 /// the returned instruction into your own mutations directly, without
-/// mirroring that model into a second `Vec<Pane>` just to drive drag/drop.
+/// mirroring that model into a `TabGroup` just to drive drag/drop.
 ///
 /// # Arguments
 ///
@@ -117,9 +109,8 @@ pub enum TabDropInstruction {
 /// * `cursor_x`, `cursor_y`, `groups`, `tab_bar_height` — forwarded to
 ///   [`drop_zone_hit_test`]; see that function's docs.
 ///
-/// [`TabGroupController::handle_tab_drop`](crate::compose::TabGroupController::handle_tab_drop)
-/// is itself implemented in terms of this function — it is the reference
-/// implementation, not a parallel reimplementation that could drift.
+/// [`TabGroup`](crate::compose::tab_group::TabGroup)'s own drop is
+/// resolved by this function, so the two adoption paths cannot drift.
 pub fn resolve_tab_drop(
     source: TabDragSource,
     pane_tab_counts: &[usize],
@@ -205,21 +196,4 @@ pub fn resolve_tab_drop(
             }
         }
     }
-}
-
-// ── Controller-owned in-progress drag ───────────────────────────────────
-
-/// `TabGroupController`'s own in-progress tab drag record — mutually
-/// exclusive with its `dragging_divider` field (a
-/// [`crate::compose::divider_drag::DividerDrag`]).
-pub(crate) struct TabDragState {
-    /// Index of the pane the drag started in.
-    pub(crate) source_pane_idx: usize,
-    /// Id of the tab being dragged.
-    pub(crate) tab_id: String,
-    /// Most recently computed drop zone, updated on every drag-move.
-    pub(crate) current_zone: Option<DropZone>,
-    /// Last known cursor position, used to paint the overlay on render.
-    pub(crate) cursor_x: f32,
-    pub(crate) cursor_y: f32,
 }
