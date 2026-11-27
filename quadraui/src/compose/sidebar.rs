@@ -35,9 +35,8 @@ use crate::compose::Handled;
 use crate::interactive::WidgetAction;
 use crate::primitives::form::{Form, FormEvent};
 use crate::{
-    MsvAxis, MultiSectionView, Point, Rect, ScrollMode, Section, SectionBody, SectionHeader,
-    SectionSize, SelectionMode, StyledText, TreePath, TreeRow, TreeRowEditState, TreeView, UiEvent,
-    WidgetId,
+    MsvAxis, MultiSectionView, Point, ScrollMode, Section, SectionBody, SectionHeader, SectionSize,
+    SelectionMode, StyledText, TreePath, TreeRow, TreeRowEditState, TreeView, UiEvent, WidgetId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -546,7 +545,7 @@ mod contract {
     };
     use crate::primitives::scrollbar::wheel_row_delta;
     use crate::primitives::tree::TreeEvent;
-    use crate::Backend;
+    use crate::{Backend, Rect};
     use crate::{MouseButton, NamedKey};
 
     /// The active-section marker a cell grid paints before the title.

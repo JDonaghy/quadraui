@@ -348,7 +348,7 @@ impl Demo for TreeDemo {
     fn data(&self, variant: usize) -> serde_json::Value {
         if variant == 0 {
             serde_json::json!({
-                "active_section": self.debug.active_section(),
+                "active_section": self.debug.active_section,
                 "last": self.debug_last,
             })
         } else {
@@ -393,7 +393,7 @@ mod tests {
     #[test]
     fn new_starts_with_the_first_debug_section_active() {
         let demo = TreeDemo::new();
-        assert_eq!(demo.debug.active_section(), Some(0));
+        assert_eq!(demo.debug.active_section, Some(0));
     }
 }
 
