@@ -28,16 +28,23 @@ pub(crate) struct Driven<A> {
 }
 
 /// The [`EventHost`] a controller drives its widget against. The widget
-/// is the controller's whole world, so it always holds focus; focus,
-/// capture and cursor requests have nowhere further to go.
+/// is the controller's whole world, so it holds focus — on every part,
+/// or only on `focused` when the controller names one; focus, capture
+/// and cursor requests have nowhere further to go.
 struct ControllerHost {
     units: Units,
+    /// `None` focuses every part; `Some(part)` only `part`, and
+    /// `Some(None)` no part at all.
+    focused: Option<Option<SubTarget>>,
     emitted: Vec<UiEvent>,
 }
 
 impl EventHost for ControllerHost {
-    fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
-        true
+    fn is_focused(&self, _id: &WidgetId, sub: Option<SubTarget>) -> bool {
+        match self.focused {
+            None => true,
+            Some(focused) => focused.is_some() && sub == focused,
+        }
     }
 
     fn request_focus(&mut self, _id: &WidgetId, _sub: Option<SubTarget>) {}
@@ -72,6 +79,30 @@ pub(crate) fn drive<W: Interactive>(
     Driven { handled, emitted }
 }
 
+/// [`drive`], with only the widget's `focused` part holding focus (no
+/// part, for `None`) — for a controller that tracks which of a
+/// composite's parts the keyboard addresses.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn drive_focused<W: Interactive>(
+    widget: &W,
+    id: WidgetId,
+    state: &mut W::State,
+    event: &RoutedEvent,
+    layout: &W::Layout,
+    units: Units,
+    focused: Option<SubTarget>,
+) -> Driven<W::Action> {
+    let (handled, emitted) = run(id, units, Some(focused), |cx| {
+        widget.handle(state, event, layout, cx)
+    });
+    Driven { handled, emitted }
+}
+
 /// Run `f` with an [`EventCx`] for `id` over a controller host, returning
 /// its answer and every [`UiEvent`] it emitted, in order — for a
 /// controller that drives a widget's behaviour functions directly rather
@@ -81,8 +112,18 @@ pub(crate) fn with_cx<R>(
     units: Units,
     f: impl FnOnce(&mut EventCx) -> R,
 ) -> (R, Vec<UiEvent>) {
+    run(id, units, None, f)
+}
+
+fn run<R>(
+    id: WidgetId,
+    units: Units,
+    focused: Option<Option<SubTarget>>,
+    f: impl FnOnce(&mut EventCx) -> R,
+) -> (R, Vec<UiEvent>) {
     let mut host = ControllerHost {
         units,
+        focused,
         emitted: Vec::new(),
     };
     let answer = {
@@ -90,6 +131,150 @@ pub(crate) fn with_cx<R>(
         f(&mut cx)
     };
     (answer, host.emitted)
+}
+
+/// The [`EventHost`] a composite widget's child handles an event
+/// against: every request goes to the composite's own [`EventCx`], with
+/// focus re-addressed to one of the composite's parts (or, for a child
+/// that shares the composite's id, passed through unchanged). A pointer
+/// capture or release is recorded so the composite keeps routing the
+/// gesture to the child, and emitted events can be collected for the
+/// composite to translate instead of forwarded.
+pub(crate) struct ChildHost<'a, 'b> {
+    parent: &'a mut EventCx<'b>,
+    /// `Some(part)` re-addresses focus to the composite's `part`; `None`
+    /// passes the child's own sub-target through.
+    part: Option<Option<SubTarget>>,
+    /// `Some(true)` once the child captured the pointer, `Some(false)`
+    /// once it released it.
+    pub(crate) captured: Option<bool>,
+    collected: Option<Vec<UiEvent>>,
+}
+
+impl<'a, 'b> ChildHost<'a, 'b> {
+    /// A host addressing `part` of the composite `parent` handles for.
+    pub(crate) fn new(parent: &'a mut EventCx<'b>, part: Option<SubTarget>) -> Self {
+        Self {
+            parent,
+            part: Some(part),
+            captured: None,
+            collected: None,
+        }
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    /// A host for a child that shares `parent`'s id, so its sub-targets
+    /// are the composite's own.
+    pub(crate) fn same(parent: &'a mut EventCx<'b>) -> Self {
+        Self {
+            parent,
+            part: None,
+            captured: None,
+            collected: None,
+        }
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    /// This host, keeping what the child emits for
+    /// [`Self::take_collected`] instead of forwarding it.
+    pub(crate) fn collecting(mut self) -> Self {
+        self.collected = Some(Vec::new());
+        self
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    /// The events the child emitted, in order.
+    pub(crate) fn take_collected(&mut self) -> Vec<UiEvent> {
+        self.collected.take().unwrap_or_default()
+    }
+}
+
+impl EventHost for ChildHost<'_, '_> {
+    fn is_focused(&self, _id: &WidgetId, sub: Option<SubTarget>) -> bool {
+        self.parent.is_focused(self.part.unwrap_or(sub))
+    }
+
+    fn request_focus(&mut self, _id: &WidgetId, sub: Option<SubTarget>) {
+        let part = self.part.unwrap_or(sub);
+        self.parent.request_focus(part);
+    }
+
+    fn capture_pointer(&mut self, _id: &WidgetId) {
+        self.parent.capture_pointer();
+        self.captured = Some(true);
+    }
+
+    fn release_pointer(&mut self) {
+        self.parent.release_pointer();
+        self.captured = Some(false);
+    }
+
+    fn set_cursor(&mut self, cursor: PointerShape) {
+        self.parent.set_cursor(cursor);
+    }
+
+    fn request_redraw(&mut self) {
+        self.parent.request_redraw();
+    }
+
+    fn emit(&mut self, event: UiEvent) {
+        match &mut self.collected {
+            Some(collected) => collected.push(event),
+            None => self.parent.emit(event),
+        }
+    }
+
+    fn units(&self) -> Units {
+        self.parent.units()
+    }
+}
+
+/// `event` moved into a child's local space: a pointer or wheel
+/// position shifted by `-delta` (the child's offset inside its parent),
+/// and a pointer's sub-target replaced by `sub`, the child's own part.
+pub(crate) fn child_event(
+    event: &RoutedEvent,
+    delta: Point,
+    sub: Option<SubTarget>,
+) -> RoutedEvent {
+    let shift = |p: &Point| Point::new(p.x - delta.x, p.y - delta.y);
+    match event {
+        RoutedEvent::Pointer {
+            kind, local, mods, ..
+        } => RoutedEvent::Pointer {
+            kind: *kind,
+            sub,
+            local: shift(local),
+            mods: *mods,
+        },
+        RoutedEvent::Wheel {
+            dx,
+            dy,
+            local,
+            mods,
+        } => RoutedEvent::Wheel {
+            dx: *dx,
+            dy: *dy,
+            local: shift(local),
+            mods: *mods,
+        },
+        other => other.clone(),
+    }
 }
 
 /// The [`RoutedEvent`] `event` becomes for a widget painted at `area`, or

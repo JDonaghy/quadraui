@@ -4098,6 +4098,10 @@ pub fn schema() -> Vec<DefJson> {
             // A multi-section view event rides as its own externally-tagged
             // serde shape.
             ("MultiSectionView", tup(vec![re("WidgetId"), any_()])),
+            // A chat or sidebar event rides as its own externally-tagged
+            // serde shape.
+            ("Chat", tup(vec![re("WidgetId"), any_()])),
+            ("Sidebar", tup(vec![re("WidgetId"), any_()])),
             ("ScrollView", tup(vec![re("WidgetId"), re("ScrollViewEvent")])),
             ("HelpOverlay", tup(vec![re("WidgetId"), any_()])),
             ("PathPicker", tup(vec![re("WidgetId"), any_()])),
@@ -4307,6 +4311,8 @@ mod coverage {
             UiEvent::TreeTable(_, _) => {}
             UiEvent::CellGrid(_, _) => {}
             UiEvent::MultiSectionView(_, _) => {}
+            UiEvent::Chat(_, _) => {}
+            UiEvent::Sidebar(_, _) => {}
             UiEvent::ScrollView(_, _) => {}
             UiEvent::Toolbar(_, _) => {}
             UiEvent::Canvas(_, _) => {}
@@ -7101,6 +7107,8 @@ mod coverage {
                 "TreeTable",
                 "CellGrid",
                 "MultiSectionView",
+                "Chat",
+                "Sidebar",
                 "ScrollView",
                 "HelpOverlay",
                 "PathPicker",

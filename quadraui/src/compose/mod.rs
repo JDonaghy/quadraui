@@ -87,6 +87,12 @@ mod path_picker;
 mod shell_layout;
 mod sidebar_edit;
 pub mod sidebar_panel_body;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 mod sidebar_scroll;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
@@ -108,7 +114,10 @@ pub use bottom_panel::{
     BottomPanelItem, BottomPanelLayout, BottomPanelPrimitiveLayout, BottomPanelState,
     BottomPanelTab,
 };
-pub use chat_controller::{ChatController, ChatControllerAction, ChatRole, ChatTurn};
+pub use chat_controller::{
+    Chat, ChatController, ChatControllerAction, ChatEvent, ChatLayout, ChatRole, ChatState,
+    ChatTurn, ChatZones,
+};
 // `ChatControllerEvent` is `#[deprecated]` (use `ChatController::handle_event`'s
 // `Handled<ChatControllerAction>` instead). Allow it here since `pub use` of a
 // deprecated item is itself a use site.
@@ -178,9 +187,18 @@ pub use message_dialog::MessageDialogEvent;
 pub use notification::notify_or_toast;
 pub use path_picker::{PathPickerAction, PathPickerState};
 pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use sidebar_system::SidebarLayout;
 pub use sidebar_system::{
-    NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
+    NavigationMode, SectionKind, Sidebar, SidebarAction, SidebarBody, SidebarSection,
+    SidebarSectionDef,
 };
+pub use sidebar_system::{SidebarEvent, SidebarState, SidebarSystem};
 // `StatusBarAction` is `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
 // `Handled<WidgetId>` instead). Allow it here since `pub use` of a deprecated
 // item is itself a use site.
