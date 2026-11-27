@@ -396,12 +396,7 @@ pub(crate) fn control_dispatch<A: AppLogic>(
 ) -> Reaction {
     let caret_visible = backend.caret_visible_handle();
     let caret_pause = backend.caret_blink_pause_handle();
-    match dispatch_event(event, backend, app, &caret_visible, &caret_pause) {
-        EventOutcome::Continue => Reaction::Continue,
-        EventOutcome::Redraw => Reaction::Redraw,
-        EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
-        EventOutcome::Exit => Reaction::Exit,
-    }
+    dispatch_event(event, backend, app, &caret_visible, &caret_pause)
 }
 
 /// Render one frame: `begin_frame` + [`MacBackend::enter_frame_scope`] +
@@ -638,7 +633,7 @@ pub(crate) struct QuadraViewIvars {
     /// never needs replacing on resize.
     cursor_tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
     /// A frame skipped under re-entrant borrow contention — see [`app_closures`].
-    paint_deferred: Cell<bool>,
+    paint_deferred: crate::desktop::DeferredPaint,
 }
 
 define_class!(
@@ -715,7 +710,7 @@ define_class!(
             match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 (self.ivars().paint)(viewport, cg_ref)
             })) {
-                Ok(painted) => self.ivars().paint_deferred.set(!painted),
+                Ok(painted) => self.ivars().paint_deferred.record(painted),
                 Err(payload) => crate::desktop::report_caught_panic_once(
                     "macos::run::QuadraView::draw_rect (paint)",
                     payload.as_ref(),
@@ -1388,7 +1383,7 @@ impl QuadraView {
             momentum_timer: RefCell::new(None),
             appearance_change_seen: Cell::new(false),
             cursor_tracking_area: RefCell::new(None),
-            paint_deferred: Cell::new(false),
+            paint_deferred: Default::default(),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1719,7 +1714,11 @@ impl QuadraView {
     /// [`ReactionSink`] impl below.
     fn apply_reaction(&self, reaction: Reaction) {
         runtime::apply_outcome(reaction, self);
-        if take_deferred_paint(&self.ivars().paint_deferred, &self.ivars().backend) {
+        if self
+            .ivars()
+            .paint_deferred
+            .take_if_free(&self.ivars().backend)
+        {
             self.setNeedsDisplay(true);
         }
     }
@@ -1774,7 +1773,7 @@ impl ReactionSink for QuadraView {
     fn request_frame_in(&self, delay: std::time::Duration) {
         match self.ivars().backend.try_borrow() {
             Ok(backend) => backend.request_frame_in(delay),
-            Err(_) => self.ivars().paint_deferred.set(true),
+            Err(_) => self.ivars().paint_deferred.defer(),
         }
     }
 }
@@ -2471,71 +2470,31 @@ struct ControlSlot {
 /// Build the `paint`/`handle`/`tick` closures. A modal service called from
 /// `tick`/`handle` (`NSAlert`, open/save panels, `NSMenu` popups) runs a nested
 /// loop that repaints and re-dispatches while `backend`/`app` are still held,
-/// so each closure `try_borrow`s and skips under contention: `paint` returns
-/// `false` (re-requested once the borrow ends), `handle`/`tick` `Continue`.
+/// so each closure skips under contention: `paint` returns `false`
+/// (re-requested once the borrow ends), `handle`/`tick` `Continue`.
 fn app_closures<A: AppLogic + 'static>(
     app: Rc<RefCell<A>>,
     backend: Rc<RefCell<MacBackend>>,
     caret_visible: Rc<Cell<bool>>,
     caret_pause: Rc<Cell<std::time::Instant>>,
 ) -> (PaintFn, HandleFn, TickFn) {
-    let paint: PaintFn = {
-        let app = app.clone();
-        let backend = backend.clone();
-        Box::new(move |viewport: Viewport, cg_ref: CGContextRef| {
-            let (Ok(mut backend_mut), Ok(app_ref)) = (backend.try_borrow_mut(), app.try_borrow())
-            else {
-                return false;
-            };
-            render_frame(&mut backend_mut, &*app_ref, viewport, cg_ref);
-            true
+    use crate::desktop::{try_with_both, try_with_both_ref};
+    let (b, a) = (backend.clone(), app.clone());
+    let paint: PaintFn = Box::new(move |viewport, cg| {
+        try_with_both_ref(&b, &a, |b, a| render_frame(b, a, viewport, cg)).is_some()
+    });
+    let (b, a) = (backend.clone(), app.clone());
+    let handle: HandleFn = Rc::new(move |ev| {
+        try_with_both(&b, &a, |b, a| {
+            dispatch_event(ev, b, a, &caret_visible, &caret_pause)
         })
-    };
-    let handle: HandleFn = {
-        let app = app.clone();
-        let backend = backend.clone();
-        Rc::new(move |ev: UiEvent| -> Reaction {
-            let (Ok(mut backend_mut), Ok(mut app_mut)) =
-                (backend.try_borrow_mut(), app.try_borrow_mut())
-            else {
-                return Reaction::Continue;
-            };
-            match dispatch_event(
-                ev,
-                &mut backend_mut,
-                &mut *app_mut,
-                &caret_visible,
-                &caret_pause,
-            ) {
-                EventOutcome::Continue => Reaction::Continue,
-                EventOutcome::Redraw => Reaction::Redraw,
-                // Pass the deadline through unchanged —
-                // `dispatch`/`apply_reaction` routes it to
-                // `ReactionSink::request_frame_in` exactly like any other
-                // `Reaction::RedrawAfter`.
-                EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
-                EventOutcome::Exit => Reaction::Exit,
-            }
-        })
-    };
-
-    // Bridges `QuadraView::dispatch_tick` to `AppLogic::tick` — see
-    // `TickFn`'s doc for what this closure does.
-    let tick: TickFn = Box::new(move || -> Reaction {
-        let (Ok(mut backend_mut), Ok(mut app_mut)) =
-            (backend.try_borrow_mut(), app.try_borrow_mut())
-        else {
-            return Reaction::Continue;
-        };
-        app_mut.tick(&mut *backend_mut)
+        .unwrap_or(Reaction::Continue)
+    });
+    // See `TickFn`'s doc for what this closure bridges.
+    let tick: TickFn = Box::new(move || {
+        try_with_both(&backend, &app, |b, a| a.tick(b)).unwrap_or(Reaction::Continue)
     });
     (paint, handle, tick)
-}
-
-/// Consume a deferred paint only once `backend` is free, so a nested loop
-/// doesn't spin `setNeedsDisplay` → skipped `drawRect:`.
-fn take_deferred_paint(deferred: &Cell<bool>, backend: &RefCell<MacBackend>) -> bool {
-    deferred.get() && backend.try_borrow_mut().is_ok() && deferred.replace(false)
 }
 
 fn bootstrap<A: AppLogic + 'static>(
@@ -4147,11 +4106,13 @@ mod tests {
         }
     }
 
-    fn closures() -> (
+    type Fixture = (
         Rc<RefCell<CountingApp>>,
         Rc<RefCell<MacBackend>>,
         (PaintFn, HandleFn, TickFn),
-    ) {
+    );
+
+    fn closures() -> Fixture {
         let app = Rc::new(RefCell::new(CountingApp::default()));
         let backend = Rc::new(RefCell::new(MacBackend::new()));
         let (visible, pause) = {
@@ -4197,20 +4158,5 @@ mod tests {
         let (app, _backend, (_paint, _handle, tick)) = closures();
         assert_eq!(tick(), Reaction::Redraw);
         assert_eq!(app.borrow().calls.get(), 1);
-    }
-
-    /// A skipped frame stays pending while the outer borrow is live and
-    /// is handed out exactly once after it ends.
-    #[test]
-    fn deferred_paint_is_released_once_the_outer_borrow_ends() {
-        let backend = RefCell::new(MacBackend::new());
-        let deferred = Cell::new(true);
-        {
-            let _outer = backend.borrow_mut();
-            assert!(!take_deferred_paint(&deferred, &backend));
-            assert!(deferred.get(), "still pending inside the nested loop");
-        }
-        assert!(take_deferred_paint(&deferred, &backend));
-        assert!(!take_deferred_paint(&deferred, &backend));
     }
 }

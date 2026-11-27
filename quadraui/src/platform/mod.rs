@@ -89,6 +89,8 @@
 //! One submodule per OS-service concern, grouping definitions with their
 //! own tests: [`window_drag`] (CSD drag-to-move/resize arming),
 //! [`modal_pump`] (nested native modal-loop re-entrancy guard),
+//! [`reentrancy`] (contention-skipping borrows of a runner's backend +
+//! app cells, and the deferred repaint a skipped frame leaves owed),
 //! [`trash`] (move/restore via the `trash` crate), [`open_with`] (the
 //! cross-platform "open with the default handler" opener, plus the
 //! shared UTF-16 wide-string framing Win32 callers need),
@@ -117,6 +119,7 @@ pub(crate) mod open_with;
 pub(crate) mod panic_report;
 pub(crate) mod paste;
 pub(crate) mod pointer_shape;
+pub(crate) mod reentrancy;
 pub(crate) mod reveal;
 pub(crate) mod smoke;
 pub(crate) mod trash;
@@ -144,6 +147,8 @@ pub(crate) use panic_report::*;
 pub(crate) use paste::*;
 #[allow(unused_imports)]
 pub(crate) use pointer_shape::*;
+#[allow(unused_imports)]
+pub(crate) use reentrancy::*;
 #[allow(unused_imports)]
 pub(crate) use reveal::*;
 #[allow(unused_imports)]
