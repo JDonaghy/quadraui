@@ -570,10 +570,6 @@ impl TreeView {
 /// rationale and the `scroll_px` resolution rule.
 pub type TreePaintState = RowPaintState;
 
-/// Tree cell: indent + chevron + icon, the column-0 content of a
-/// [`TreeView`] row and of a [`crate::TreeTable`] row. The geometry here
-/// is the one source both widgets, both unit systems and both layout and
-/// paint read; the pixel painter sits beside it.
 #[cfg(feature = "tui")]
 pub(crate) mod paint_cells;
 
@@ -589,6 +585,10 @@ impl crate::behaviour::nav::NavRow for TreeRow {
     }
 }
 
+/// Tree cell: indent + chevron + icon, the column-0 content of a
+/// [`TreeView`] row and of a [`crate::TreeTable`] row. The geometry here
+/// is the one source both widgets, both unit systems and both layout and
+/// paint read; the pixel painter sits beside it.
 pub(crate) mod tree_cell {
     // The cell-grid geometry and the floor are read only by the backends'
     // own layouts.

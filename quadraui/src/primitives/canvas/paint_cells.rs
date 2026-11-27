@@ -159,6 +159,67 @@ fn set_dot(
     cell_color[cell_y as usize][cell_x as usize] = Some(color);
 }
 
+/// `rect`'s whole-cell span `(x0, y0, x1, y1)` when all four of its edges
+/// sit on cell boundaries, else `None`.
+fn whole_cell_span(rect: Rect) -> Option<(i32, i32, i32, i32)> {
+    const EPS: f32 = 1e-3;
+    let edges = [rect.x, rect.y, rect.x + rect.width, rect.y + rect.height];
+    if rect.width <= 0.0 || rect.height <= 0.0 || edges.iter().any(|e| (e - e.round()).abs() > EPS)
+    {
+        return None;
+    }
+    let [x0, y0, x1, y1] = edges.map(|e| e.round() as i32);
+    Some((x0, y0, x1, y1))
+}
+
+/// Lay `color` over the solid fill already recorded for one cell. An
+/// opaque colour replaces it; a translucent one blends over an opaque
+/// fill, or composes with a translucent one by the usual "over" rule.
+fn compose_solid(under: Option<Color>, color: Color) -> Color {
+    match under {
+        Some(base) if color.a < 255 => {
+            let alpha = color.a as f64 / 255.0;
+            let mut out = base.blend(color, alpha);
+            let under_a = base.a as f64 / 255.0;
+            out.a = ((alpha + under_a * (1.0 - alpha)) * 255.0).round() as u8;
+            out
+        }
+        _ => color,
+    }
+}
+
+/// Fill the whole cells `span` covers with `color` as a solid cell
+/// fill, clearing any dots an earlier shape lit there, so a fill
+/// declared later covers what came before it.
+fn accumulate_solid(
+    dots: &mut [Vec<bool>],
+    cell_color: &mut [Vec<Option<Color>>],
+    solid: &mut [Vec<Option<Color>>],
+    clip: &CellClip,
+    span: (i32, i32, i32, i32),
+    color: Color,
+) {
+    let rows = solid.len() as i32;
+    let cols = solid.first().map(|r| r.len()).unwrap_or(0) as i32;
+    let (x0, y0, x1, y1) = span;
+    for cy in y0.max(0)..y1.min(rows) {
+        for cx in x0.max(0)..x1.min(cols) {
+            if !clip.contains_cell(cx, cy) {
+                continue;
+            }
+            let (ux, uy) = (cx as usize, cy as usize);
+            if color.a == 255 {
+                for row in &mut dots[uy * 4..uy * 4 + 4] {
+                    row[ux * 2] = false;
+                    row[ux * 2 + 1] = false;
+                }
+                cell_color[uy][ux] = None;
+            }
+            solid[uy][ux] = Some(compose_solid(solid[uy][ux], color));
+        }
+    }
+}
+
 fn accumulate_rect(
     dots: &mut [Vec<bool>],
     cell_color: &mut [Vec<Option<Color>>],
@@ -277,8 +338,19 @@ pub(crate) fn paint(
     // regardless of how they interleave with text/image ops below).
     let mut dots = vec![vec![false; dot_w as usize]; dot_h as usize];
     let mut cell_color: Vec<Vec<Option<Color>>> = vec![vec![None; cols as usize]; rows as usize];
+    let mut solid: Vec<Vec<Option<Color>>> = vec![vec![None; cols as usize]; rows as usize];
     for (op, clip) in canvas.ops.iter().zip(&clips) {
         match op {
+            DrawOp::Rect { rect, color } if whole_cell_span(*rect).is_some() => {
+                accumulate_solid(
+                    &mut dots,
+                    &mut cell_color,
+                    &mut solid,
+                    clip,
+                    whole_cell_span(*rect).unwrap_or_default(),
+                    *color,
+                );
+            }
             DrawOp::Rect { rect, color } | DrawOp::RoundedRect { rect, color, .. } => {
                 accumulate_rect(
                     &mut dots,
@@ -444,15 +516,18 @@ pub(crate) fn paint(
         }
     }
 
-    let bg = theme.background;
     for cell_row in 0..rows as usize {
         for cell_col in 0..cols as usize {
             let ch = pack_braille_cell(|dr, dc| dots[cell_row * 4 + dr][cell_col * 2 + dc]);
-            if ch != '\u{2800}' {
-                if let Some(color) = cell_color[cell_row][cell_col] {
-                    let x = ax + cell_col as u16;
-                    let y = ay + cell_row as u16;
-                    cells.put_char(x, y, ch, solid_style(color, bg));
+            let dot_color = cell_color[cell_row][cell_col].filter(|_| ch != '\u{2800}');
+            let x = ax + cell_col as u16;
+            let y = ay + cell_row as u16;
+            match solid[cell_row][cell_col] {
+                Some(fill) => paint_solid_cell(cells, x, y, fill, dot_color.map(|c| (ch, c))),
+                None => {
+                    if let Some(color) = dot_color {
+                        cells.put_char(x, y, ch, solid_style(color, theme.background));
+                    }
                 }
             }
         }
@@ -507,6 +582,36 @@ pub(crate) fn paint(
                 );
             }
             _ => {}
+        }
+    }
+}
+
+/// Paint one solid-filled cell. An opaque `fill` blanks the cell to
+/// `fill` (glyph cleared, foreground and background both `fill`), or
+/// sets it as the background under a later shape's braille `dots`. A
+/// translucent `fill` blends over the cell's current background and
+/// keeps its glyph and foreground ([`CellSurface::tint_bg`]), so text
+/// already painted there stays legible under a scrim; braille `dots`
+/// then paint on that blended background.
+fn paint_solid_cell(
+    cells: &mut dyn CellSurface,
+    x: u16,
+    y: u16,
+    fill: Color,
+    dots: Option<(char, Color)>,
+) {
+    if fill.a == 255 {
+        match dots {
+            Some((ch, fg)) => cells.put_char(x, y, ch, solid_style(fg, fill)),
+            None => cells.put_char(x, y, ' ', solid_style(fill, fill)),
+        }
+        return;
+    }
+    cells.tint_bg(x, y, fill);
+    if let Some((ch, fg)) = dots {
+        if let Some((_, mut style)) = cells.get(x, y) {
+            style.fg = Some(fg);
+            cells.put_char(x, y, ch, style);
         }
     }
 }
@@ -615,19 +720,107 @@ mod tests {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
     }
 
+    fn cell_bg(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)].bg
+    }
+
+    fn rgb(c: Color) -> ratatui::style::Color {
+        ratatui::style::Color::Rgb(c.r, c.g, c.b)
+    }
+
     #[test]
-    fn rect_op_paints_a_nonblank_braille_cell_inside_and_nothing_outside() {
+    fn whole_cell_rect_paints_solid_cells_inside_and_nothing_outside() {
         let area = RRect::new(0, 0, 10, 5);
         let mut buf = Buffer::empty(area);
+        let red = Color::rgb(200, 0, 0);
         let c = canvas(vec![DrawOp::Rect {
             rect: Rect::new(0.0, 0.0, 2.0, 2.0),
-            color: Color::rgb(200, 0, 0),
+            color: red,
         }]);
         paint_canvas(&mut buf, area, &c, &Theme::default());
 
-        assert_ne!(cell_char(&buf, 0, 0), ' ');
-        assert_ne!(cell_char(&buf, 1, 1), ' ');
-        assert_eq!(cell_char(&buf, 5, 3), ' ');
+        for (x, y) in [(0, 0), (1, 1)] {
+            assert_eq!(cell_char(&buf, x, y), ' ');
+            assert_eq!(cell_bg(&buf, x, y), rgb(red));
+            assert_eq!(buf[(x, y)].fg, rgb(red));
+        }
+        assert_ne!(cell_bg(&buf, 2, 0), rgb(red));
+        assert_ne!(cell_bg(&buf, 5, 3), rgb(red));
+    }
+
+    #[test]
+    fn fractional_rect_still_paints_braille() {
+        let area = RRect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+        let c = canvas(vec![DrawOp::Rect {
+            rect: Rect::new(0.0, 0.0, 1.5, 1.0),
+            color: Color::rgb(200, 0, 0),
+        }]);
+        paint_canvas(&mut buf, area, &c, &Theme::default());
+        assert_eq!(cell_char(&buf, 0, 0), '\u{28FF}');
+        assert_ne!(cell_char(&buf, 1, 0), ' ');
+    }
+
+    #[test]
+    fn translucent_whole_cell_rect_blends_the_background_and_keeps_the_text() {
+        let area = RRect::new(0, 0, 6, 1);
+        let mut buf = Buffer::empty(area);
+        let base = Color::rgb(100, 100, 100);
+        let fg = Color::rgb(250, 250, 250);
+        for (i, ch) in "TEXT".chars().enumerate() {
+            buf[(i as u16, 0)]
+                .set_char(ch)
+                .set_fg(rgb(fg))
+                .set_bg(rgb(base));
+        }
+        let scrim = Color::rgba(0, 0, 0, 128);
+        let c = canvas(vec![DrawOp::Rect {
+            rect: Rect::new(0.0, 0.0, 6.0, 1.0),
+            color: scrim,
+        }]);
+        paint_canvas(&mut buf, area, &c, &Theme::default());
+        let dimmed = base.blend(scrim, 128.0 / 255.0);
+        for (i, ch) in "TEXT".chars().enumerate() {
+            assert_eq!(cell_char(&buf, i as u16, 0), ch);
+            assert_eq!(buf[(i as u16, 0)].fg, rgb(fg));
+            assert_eq!(cell_bg(&buf, i as u16, 0), rgb(dimmed));
+        }
+    }
+
+    #[test]
+    fn opaque_whole_cell_rect_covers_an_earlier_shape_and_underlays_a_later_one() {
+        let area = RRect::new(0, 0, 4, 2);
+        let mut buf = Buffer::empty(area);
+        let fill = Color::rgb(10, 20, 30);
+        let line = Color::rgb(200, 200, 0);
+        let c = canvas(vec![
+            DrawOp::Line {
+                from: Point::new(0.0, 0.5),
+                to: Point::new(4.0, 0.5),
+                color: line,
+                stroke_width: 1.0,
+            },
+            DrawOp::Rect {
+                rect: Rect::new(0.0, 0.0, 4.0, 2.0),
+                color: fill,
+            },
+            DrawOp::Line {
+                from: Point::new(0.0, 1.5),
+                to: Point::new(4.0, 1.5),
+                color: line,
+                stroke_width: 1.0,
+            },
+        ]);
+        paint_canvas(&mut buf, area, &c, &Theme::default());
+        assert_eq!(cell_char(&buf, 1, 0), ' ', "the fill covers the first line");
+        assert_eq!(cell_bg(&buf, 1, 0), rgb(fill));
+        assert_ne!(
+            cell_char(&buf, 1, 1),
+            ' ',
+            "the second line paints on the fill"
+        );
+        assert_eq!(buf[(1, 1)].fg, rgb(line));
+        assert_eq!(cell_bg(&buf, 1, 1), rgb(fill));
     }
 
     #[test]
@@ -732,10 +925,11 @@ mod tests {
             DrawOp::PopClip,
         ]);
         paint_canvas(&mut buf, area, &c, &Theme::default());
-        assert_ne!(cell_char(&buf, 0, 0), ' ');
-        assert_eq!(
-            cell_char(&buf, 5, 5),
-            ' ',
+        let fill = rgb(Color::rgb(50, 50, 50));
+        assert_eq!(cell_bg(&buf, 1, 1), fill);
+        assert_ne!(
+            cell_bg(&buf, 5, 5),
+            fill,
             "the rect fill reaches cell (5, 5) but the pushed 2x2-cell clip must confine it"
         );
     }
@@ -881,8 +1075,8 @@ mod tests {
             color: Color::rgb(1, 2, 3),
         }]);
         paint_canvas(&mut buf, area, &c, &Theme::default());
-        assert_ne!(cell_char(&buf, 7, 3), ' ');
-        assert_eq!(cell_char(&buf, 0, 0), ' ');
+        assert_eq!(cell_bg(&buf, 7, 3), rgb(Color::rgb(1, 2, 3)));
+        assert_ne!(cell_bg(&buf, 0, 0), rgb(Color::rgb(1, 2, 3)));
     }
 
     #[test]

@@ -22,7 +22,7 @@
 //! * `spans.is_empty()` → render exactly as before (unchanged output on
 //!   every backend).
 //! * `spans` non-empty → render each span in its own fg / bold / italic;
-//!   apply `scale` (GTK `AttrFloat::new_scale`, TUI ignores it).
+//!   apply `scale` (pixel backends size the glyphs, TUI ignores it).
 
 use crate::event::Rect;
 use crate::primitives::row_stack;
@@ -54,8 +54,9 @@ pub struct MessageRow {
     #[serde(default)]
     pub spans: Vec<StyledSpan>,
     /// Font-scale multiplier (`1.0` = body, `2.0`/`1.5`/`1.2` for H1/H2/H3).
-    /// GTK applies this via `pango::AttrFloat::new_scale`; TUI ignores it
-    /// (terminal cells have no variable character size).
+    /// Pixel backends paint a styled row's glyphs at this multiple of the
+    /// chrome font's size; TUI ignores it (terminal cells have no
+    /// variable character size).
     #[serde(default = "MessageRow::default_scale")]
     pub scale: f32,
 }
@@ -428,13 +429,14 @@ impl crate::interactive::Interactive for MessageList {
 // - **Per-span italic / underline.** Passed through to
 //   `surface_draw_text_run_styled`; a surface adapter that does not wire
 //   an italic format or underline attribute drops them.
-// - **`MessageRow::scale`** (markdown heading rows). `PaintSurface` has
-//   no font-*size* verb (`surface_draw_text_run_styled`'s `scale_x` is a
-//   horizontal *stretch* of the same-size glyph, for the wide-CJK-glyph
-//   fix — see that verb's own doc — not a point-size change), so every
-//   row paints at its regular glyph size, matching
-//   `crate::primitives::rich_text_popup::native_surface_paint`'s gap for
-//   its own per-line font scale.
+// - **Underline on a scaled row.** A styled row whose `scale` is not
+//   `1.0` (a markdown heading) paints as one shaped line through
+//   [`PaintSurface::surface_draw_text_line`], with every span's run at
+//   `row.scale` times the chrome font's size, so the glyphs grow rather
+//   than stretch. [`crate::paint_surface::TextRunStyle`] has no
+//   underline, so an underlined span on such a row paints without it.
+//   The row keeps the list's uniform `line_height`; the enlarged line is
+//   centred on it, as a heading row always has been.
 //
 // **Zero-size guard**: `paint` takes no width and needs only
 // `line_height > 0.0`; `draw_primitive` clips the paint to the widget's
@@ -447,8 +449,8 @@ impl crate::interactive::Interactive for MessageList {
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::MessageList;
-    use crate::event::Rect;
-    use crate::paint_surface::PaintSurface;
+    use crate::event::{Point, Rect};
+    use crate::paint_surface::{PaintSurface, TextRunStyle};
 
     /// Paint a [`MessageList`] into `rect` on `surface` — see the comment
     /// above this module for what it carries. `rect.width` is unused (see the doc's "Zero-size
@@ -474,7 +476,28 @@ pub(crate) mod native_surface_paint {
                 break;
             }
 
-            if !row.spans.is_empty() {
+            if !row.spans.is_empty() && (row.scale - 1.0).abs() > f32::EPSILON {
+                // ── Scaled styled path (heading rows) ───────────────────
+                let mut text = String::new();
+                let mut runs = Vec::with_capacity(row.spans.len());
+                for span in &row.spans {
+                    let start = text.len();
+                    text.push_str(&span.text);
+                    let mut run = TextRunStyle::new(start..text.len(), span.fg.unwrap_or(row.fg))
+                        .with_scale(row.scale);
+                    run.bold = span.bold;
+                    run.italic = span.italic;
+                    runs.push(run);
+                }
+                let (_, sh) = surface.surface_measure_text(&text);
+                let sy = ry + (line_height - sh * row.scale) / 2.0;
+                surface.surface_draw_text_line(
+                    Point::new(rect.x + row.indent, sy),
+                    &text,
+                    &runs,
+                    crate::FontRole::Chrome,
+                );
+            } else if !row.spans.is_empty() {
                 // ── Styled path ─────────────────────────────────────────
                 let mut cursor_x = rect.x + row.indent;
                 for span in &row.spans {
@@ -520,6 +543,7 @@ pub(crate) mod native_surface_paint {
         struct RecordingSurface {
             text_runs: Vec<(Rect, String, Color)>,
             styled_runs: Vec<(Rect, String, Color, bool, bool, bool)>,
+            text_lines: Vec<(String, Vec<TextRunStyle>)>,
         }
 
         impl PaintSurface for RecordingSurface {
@@ -576,11 +600,56 @@ pub(crate) mod native_surface_paint {
                 _stroke_width: f32,
             ) {
             }
+            fn surface_draw_text_line(
+                &mut self,
+                _origin: crate::Point,
+                text: &str,
+                runs: &[TextRunStyle],
+                _role: crate::FontRole,
+            ) {
+                self.text_lines.push((text.to_string(), runs.to_vec()));
+            }
             fn surface_push_clip(&mut self, _rect: Rect) {}
             fn surface_pop_clip(&mut self) {}
             fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
                 ImagePaintResult::Unsupported
             }
+        }
+
+        #[test]
+        fn scaled_styled_row_paints_one_shaped_line_at_its_scale() {
+            let mut list = sample_list();
+            list.rows = vec![MessageRow {
+                text: "Title here".into(),
+                fg: Color::rgb(220, 220, 220),
+                indent: 0.0,
+                spans: vec![
+                    StyledSpan {
+                        text: "Title".into(),
+                        fg: Some(Color::rgb(255, 0, 0)),
+                        bg: None,
+                        bold: true,
+                        italic: false,
+                        underline: false,
+                    },
+                    StyledSpan::plain(" here"),
+                ],
+                scale: 2.0,
+            }];
+            let mut surface = RecordingSurface::default();
+            paint(&list, &mut surface, Rect::new(0.0, 0.0, 200.0, 100.0), 40.0);
+            assert!(surface.styled_runs.is_empty());
+            assert!(surface.text_runs.is_empty());
+            assert_eq!(surface.text_lines.len(), 1);
+            let (text, runs) = &surface.text_lines[0];
+            assert_eq!(text, "Title here");
+            assert_eq!(runs.len(), 2);
+            assert_eq!(runs[0].range, 0..5);
+            assert_eq!(runs[1].range, 5..10);
+            assert!(runs[0].bold);
+            assert_eq!(runs[0].fg, Color::rgb(255, 0, 0));
+            assert_eq!(runs[1].fg, Color::rgb(220, 220, 220));
+            assert!(runs.iter().all(|r| (r.scale - 2.0).abs() < f32::EPSILON));
         }
 
         fn sample_list() -> MessageList {

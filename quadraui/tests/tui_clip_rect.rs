@@ -18,9 +18,6 @@
 //! `AppLogic::render`, which is enough to exercise the frame-boundary
 //! invariant (`TuiBackend::begin_frame` clearing `clip_stack`) through
 //! the real `event -> handle -> render` path.
-//!
-//! A cell-grid `Canvas` paints its fill as braille glyphs, so every
-//! assertion reads a cell's glyph (foreground) colour.
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::tui::TuiBackend;
@@ -56,22 +53,22 @@ fn push_clip_confines_an_overflowing_fill_to_the_clipped_cells() {
     let buf = terminal.backend().buffer();
     let expected = ratatui::style::Color::Rgb(200, 0, 0);
     assert_eq!(
-        buf[(0, 0)].fg,
+        buf[(0, 0)].bg,
         expected,
         "a cell inside the pushed clip must keep the fill"
     );
     assert_eq!(
-        buf[(1, 1)].fg,
+        buf[(1, 1)].bg,
         expected,
         "the pushed clip's far corner (still inside its 2x2 cells) must keep the fill"
     );
     assert_eq!(
-        buf[(5, 5)].fg,
+        buf[(5, 5)].bg,
         RColor::Reset,
         "the fill reaches cell (5, 5), but the popped 2x2-cell clip must have rolled it back"
     );
     assert_eq!(
-        buf[(2, 2)].fg,
+        buf[(2, 2)].bg,
         RColor::Reset,
         "cell (2, 2) sits one cell past the clip's far edge and must not have been painted"
     );
@@ -114,18 +111,18 @@ fn nested_pop_restores_the_outer_clips_own_paint_not_the_pre_push_blank() {
     let red_rgb = ratatui::style::Color::Rgb(200, 0, 0);
 
     assert_eq!(
-        buf[(1, 1)].fg,
+        buf[(1, 1)].bg,
         red_rgb,
         "inside the inner clip, the red fill survives both pops"
     );
     assert_eq!(
-        buf[(4, 4)].fg,
+        buf[(4, 4)].bg,
         blue_rgb,
         "inside the outer clip but outside the inner one, the inner pop must restore blue \
          (the outer clip's own paint), not discard it"
     );
     assert_eq!(
-        buf[(8, 8)].fg,
+        buf[(8, 8)].bg,
         RColor::Reset,
         "outside the outer clip entirely, the outer pop must roll the red fill all the way \
          back to blank"
@@ -196,13 +193,13 @@ fn begin_frame_clears_an_unbalanced_push_before_the_next_frame() {
 
     let blue = RColor::Rgb(0, 0, 200);
     assert_eq!(
-        driver.style_at(5, 5).expect("in-bounds").fg,
+        driver.style_at(5, 5).expect("in-bounds").bg,
         blue,
         "frame 1's full-buffer push must not be narrowed by frame 0's leaked, \
          unbalanced push — begin_frame must clear clip_stack between frames"
     );
     assert_eq!(
-        driver.style_at(9, 9).expect("in-bounds").fg,
+        driver.style_at(9, 9).expect("in-bounds").bg,
         blue,
         "frame 1's fill reaches every corner of the 10x10 buffer, unclipped by \
          any stale frame-0 state"

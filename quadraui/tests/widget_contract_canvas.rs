@@ -1,7 +1,7 @@
 #![cfg(feature = "tui")]
 //! Black-box `TuiDriver` test for `Canvas` on the widget contract: the
 //! canvas reaches the frame as a `Surface::Widget`, paints its ops through
-//! the braille cell painter, and turns pointer gestures on its declared
+//! the cell painter, and turns pointer gestures on its declared
 //! regions into `UiEvent::Canvas` events.
 
 #[path = "common/one_widget.rs"]
@@ -70,17 +70,15 @@ fn cell(driver: &TuiDriver<CanvasApp>, x: u16, y: u16) -> char {
 }
 
 #[test]
-fn surface_widget_canvas_paints_shapes_as_braille_and_text_on_top() {
+fn surface_widget_canvas_paints_a_whole_cell_rect_solid_and_text_on_top() {
     let driver = driver();
     let (x0, y0) = (AREA.x as u16, AREA.y as u16);
-    assert_eq!(cell(&driver, x0, y0), '\u{28FF}', "{}", driver.screen());
-    assert_eq!(
-        cell(&driver, x0 + 3, y0 + 1),
-        '\u{28FF}',
-        "{}",
-        driver.screen()
-    );
-    assert_eq!(cell(&driver, x0 + 4, y0), ' ', "{}", driver.screen());
+    let red = ratatui::style::Color::Rgb(200, 0, 0);
+    for (x, y) in [(x0, y0), (x0 + 3, y0 + 1)] {
+        assert_eq!(cell(&driver, x, y), ' ', "{}", driver.screen());
+        assert_eq!(driver.style_at(x, y).expect("in-bounds").bg, red);
+    }
+    assert_ne!(driver.style_at(x0 + 4, y0).expect("in-bounds").bg, red);
     assert!(driver.screen_contains("label"), "{}", driver.screen());
 }
 

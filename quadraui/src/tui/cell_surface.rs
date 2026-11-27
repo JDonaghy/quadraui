@@ -383,6 +383,18 @@ impl CellSurface for BufferCellSurface<'_> {
         Some((ch, style))
     }
 
+    fn tint_bg(&mut self, x: u16, y: u16, color: Color) {
+        let buf = self.buf();
+        let area = buf.area;
+        if x < area.x || y < area.y || x >= area.x + area.width || y >= area.y + area.height {
+            return;
+        }
+        let cell = &mut buf[(x, y)];
+        if let Some(base) = color_from_ratatui(cell.bg) {
+            cell.set_bg(ratatui_color(base.blend(color, color.a as f64 / 255.0)));
+        }
+    }
+
     fn set_cursor(&mut self, x: u16, y: u16, shape: CursorShape) {
         // SAFETY: see the `cursor_sink` field's own doc — it points at a
         // `TuiBackend` field that outlives this call, and nothing else

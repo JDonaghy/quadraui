@@ -481,3 +481,54 @@ fn draw_message_list_paints_in_chrome_font() {
         b.draw_primitive(area, &list);
     });
 }
+
+/// A styled `MessageList` row with `scale` 2.0 (a markdown H1) paints its
+/// glyphs at twice the chrome font's size, so its run is wider and taller
+/// than an unscaled row of the same length.
+#[test]
+fn message_list_scaled_row_paints_larger_glyphs() {
+    let driver = GtkDriver::new(
+        PaintApp {
+            ui_font_desc: "Sans 10",
+            editor_pt: 10.0,
+            paint: |b: &mut dyn Backend, area: Rect| {
+                let list = MessageList {
+                    id: id("message-list-scale"),
+                    rows: vec![
+                        MessageRow::styled(
+                            StyledText {
+                                spans: vec![StyledSpan::plain("HEADINGX")],
+                            },
+                            Color::rgb(220, 220, 220),
+                            0.0,
+                            2.0,
+                        ),
+                        MessageRow::styled(
+                            StyledText {
+                                spans: vec![StyledSpan::plain("BODYTEXT")],
+                            },
+                            Color::rgb(220, 220, 220),
+                            0.0,
+                            1.0,
+                        ),
+                    ],
+                    scroll_top: 0,
+                };
+                b.draw_primitive(area, &list);
+            },
+        },
+        W,
+        H,
+    );
+    let heading = driver
+        .find_bounds("HEADINGX")
+        .unwrap_or_else(|| panic!("no heading run: {:?}", driver.painted_texts()));
+    let body = driver
+        .find_bounds("BODYTEXT")
+        .unwrap_or_else(|| panic!("no body run: {:?}", driver.painted_texts()));
+    assert!(
+        heading.width > body.width * 1.5 && heading.height > body.height * 1.5,
+        "a scale-2.0 row must paint larger glyphs than a scale-1.0 row: \
+         heading={heading:?}, body={body:?}"
+    );
+}

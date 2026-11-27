@@ -34,7 +34,8 @@
 //!
 //! | Op | TUI degrade |
 //! |---|---|
-//! | [`DrawOp::Rect`] / [`DrawOp::RoundedRect`] / [`DrawOp::Line`] / [`DrawOp::Path`] | **braille** — sub-cell dots, same packing as `Chart`'s line charts. `RoundedRect`'s `radius` is dropped (no sub-cell arc); `Line`/`Path`'s `stroke_width` is ignored entirely (a braille dot has no width to vary); the fill itself still renders. |
+//! | [`DrawOp::Rect`] on whole cells | **solid cells** — a `Rect` whose four edges all sit on cell boundaries fills those cells outright: an opaque colour blanks each cell (glyph cleared, foreground and background both the colour) and covers any shape declared before it; a translucent colour blends over each cell's current background and keeps the glyph and foreground already there, so a scrim dims what is under it. |
+//! | [`DrawOp::Rect`] (other) / [`DrawOp::RoundedRect`] / [`DrawOp::Line`] / [`DrawOp::Path`] | **braille** — sub-cell dots, same packing as `Chart`'s line charts. `RoundedRect`'s `radius` is dropped (no sub-cell arc); `Line`/`Path`'s `stroke_width` is ignored entirely (a braille dot has no width to vary); the fill itself still renders. |
 //! | [`DrawOp::TextRun`] | **cell-quantised** — text can't live inside a dot cell, so position snaps to the nearest whole cell. Its cell background always paints `theme.background`, never the colour of a shape underneath it — unlike a pixel backend, where `TextRun` paints transparently over whatever was already there. |
 //! | [`DrawOp::Image`] | **cell-quantised position, real pixels when possible** — on a terminal with confirmed Kitty-protocol graphics support (`tui-images` Cargo feature, truecolor), paints through the same Unicode-placeholder path the standalone `Image` widget's cell surface uses (`crate::tui::cell_surface::draw_image_kitty`), snapped to whole cells the same way `TextRun` is. Short of that, it paints [`crate::Image::fallback_text`] instead, same as the standalone `Image` widget's own cell-surface fallback. |
 //! | [`DrawOp::PushClip`] / [`DrawOp::PopClip`] | **cell-quantised** — the clip rect's edges round outward to whole cells; shape ops inside it still paint at full braille resolution, just bounded to those cells. A clipped `TextRun` is shifted to start at the clip edge rather than trimmed, so the characters that would have fallen outside the clip are not dropped — they are shown at the clip edge instead of hidden. |
@@ -55,10 +56,11 @@
 //! (`Color::with_alpha`) — every pixel backend's `surface_fill_rect`
 //! (and friends) already honours it with a real native alpha blend, the
 //! same way [`crate::paint_surface::PaintSurface::surface_fill_rect_alpha`]'s
-//! own doc describes; TUI's braille/cell degrade has no alpha channel to
-//! vary (a cell or dot is either lit or not), so it treats any `color.a`
-//! as fully opaque, which is the coarsest-but-still-correct answer D-014
-//! asks for.
+//! own doc describes. On TUI a whole-cell [`DrawOp::Rect`] honours
+//! `color.a` by blending the cell backgrounds (the degrade table above);
+//! every braille op has no alpha channel to vary (a dot is either lit or
+//! not), so it treats any `color.a` as fully opaque, which is the
+//! coarsest-but-still-correct answer D-014 asks for.
 //!
 //! [`DrawOp::StyledTextRun::size`] is the one deliberately inert field in
 //! this module: every backend accepts it but ignores it today (documented
