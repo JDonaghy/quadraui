@@ -27,7 +27,6 @@ pub mod scripted;
 pub mod semantic;
 pub mod services;
 pub mod text_input;
-pub mod widget_state;
 pub mod wire;
 
 pub use wire::WIRE_VERSION;
@@ -329,9 +328,10 @@ pub use render::{
     WindowedTreeExtent,
 };
 pub use scripted::{
-    register_scripted_widget, unregister_scripted_widget, ScriptWidget, ScriptedA11y,
-    ScriptedConstraints, ScriptedExtra, ScriptedInputEvent, ScriptedLayout, ScriptedPaint,
-    ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState, ScriptedWidgetDescriptor,
+    ensure_scripted_widget_kind, register_scripted_widget, unregister_scripted_widget,
+    ScriptWidget, ScriptedA11y, ScriptedConstraints, ScriptedInputEvent, ScriptedLayout,
+    ScriptedPaint, ScriptedPrimitive, ScriptedProps, ScriptedSize, ScriptedState,
+    ScriptedWidgetDescriptor, SCRIPTED_WIDGET_KIND,
 };
 pub use semantic::{focus_scoped_key_event, key_to_focus_string, semantic_event_for_hit};
 pub use services::{
@@ -344,7 +344,6 @@ pub use services::{
 };
 pub use text_input::{apply_text_input_edit, clamp_cursor, text_input_click_event};
 pub use text_input::{text_input_insert_event, text_input_key_event, TextEditorCache};
-pub use widget_state::WidgetState;
 pub use wire::{
     decode_layout_dialog, decode_layout_node, decode_layout_node_with_styles, decode_popover,
     decode_render_output, decode_render_output_with_styles, decode_shell_config,

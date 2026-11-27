@@ -5,8 +5,8 @@
 //! payload itself.
 
 use quadraui::{
-    CanvasEvent, DataTableEvent, EditOp, Key, ListViewEvent, Modifiers, MouseButton, NamedKey,
-    TabBar, TabBarEvent, TextDisplayEvent, TextInput, TreeEvent, UiEvent, WidgetId,
+    DataTableEvent, EditOp, Key, ListViewEvent, Modifiers, NamedKey, TabBar, TabBarEvent,
+    TextDisplayEvent, TextInput, TreeEvent, UiEvent, WidgetId,
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
@@ -58,7 +58,7 @@ fn data_table_key_event(
 /// `ListViewEvent::KeyPressed`. Every other key also returns `None` for the
 /// same fallthrough — in particular Up/Down/vim `j`/`k`, which move the
 /// `List`'s row cursor inside [`crate::host::apply_list_nav_key`]'s own
-/// `WidgetState` entry rather than through an event. A binding's handler
+/// `WidgetStateStore` entry rather than through an event. A binding's handler
 /// therefore keeps seeing navigation keys as `ListViewEvent::KeyPressed`,
 /// which is what an app that tracks its own `ListView::selected_idx`
 /// (the controlled shape, since `selected_idx` is a required descriptor
@@ -161,27 +161,14 @@ pub(crate) fn text_area_key_event(
 /// `MouseDown`/`DoubleClick` and its `"hit"` dict reach the binding's own
 /// event handler unchanged.
 /// [`HitDetail::ExtraBody`] resolves against the matched extra's own click
-/// semantics (currently [`Checkbox`]/[`Slider`]/[`Select`]); an extra with no
-/// recognized click behavior still falls through to the raw `MouseDown`. `point` is
-/// the absolute click position the caller already has (every caller is a
-/// `MouseDown`/`DoubleClick` branch, so it's always available) — only
-/// [`HitDetail::ExtraBody`]'s [`Slider`] arm and [`HitDetail::CanvasRegion`]'s
-/// own arm use it, the latter to translate it into the canvas's own LOCAL
-/// frame for [`quadraui::CanvasEvent`]'s `x`/`y` fields. `button` is the
-/// pressed mouse button the caller's raw `MouseDown` carried — a
-/// `DoubleClick` has no `button` field of its own, so every caller passes
-/// [`MouseButton::Left`] for one (matching `modifiers`' own
-/// `Modifiers::default()` fallback there); only
-/// [`HitDetail::CanvasRegion`]'s non-double-click arm reads it, for
-/// [`quadraui::CanvasEvent::RegionClicked`]'s own `button` field.
+/// semantics; an extra with no recognized click behavior still falls
+/// through to the raw `MouseDown`.
 pub fn semantic_event_for_hit(
     id: WidgetId,
     detail: &HitDetail,
-    button: MouseButton,
     modifiers: Modifiers,
     double_click: bool,
     hit_map: &[PaintedHit],
-    point: quadraui::Point,
 ) -> Option<UiEvent> {
     match detail {
         HitDetail::TabBarTab { tab } => Some(UiEvent::TabBar(
@@ -257,41 +244,6 @@ pub fn semantic_event_for_hit(
                 area,
                 ..
             } if *hit_id == id => None,
-            _ => None,
-        }),
-        // Translates the absolute `point` into the canvas's own LOCAL frame
-        // (looked up from the matched `PaintedHit::Extra`'s own `area`,
-        // the same "every `DrawOp`/`CanvasRegion::rect` coordinate" frame
-        // `quadraui::Canvas`'s module doc describes) for
-        // `CanvasEvent::RegionClicked`/`RegionDoubleClicked`'s own `x`/`y`
-        // fields — a region's own rect is authored in that frame, so this
-        // lets an app compare the two without re-deriving the canvas's
-        // absolute paint position itself.
-        HitDetail::CanvasRegion { region } => hit_map.iter().find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hit_id, area, ..
-            } if *hit_id == id => {
-                let x = point.x - area.x;
-                let y = point.y - area.y;
-                Some(UiEvent::Canvas(
-                    id,
-                    if double_click {
-                        CanvasEvent::RegionDoubleClicked {
-                            region: *region,
-                            x,
-                            y,
-                        }
-                    } else {
-                        CanvasEvent::RegionClicked {
-                            region: *region,
-                            button,
-                            modifiers,
-                            x,
-                            y,
-                        }
-                    },
-                ))
-            }
             _ => None,
         }),
         _ => None,
@@ -500,79 +452,8 @@ pub fn focus_scoped_key_event(
         .unwrap_or(fallback)
 }
 
-/// Forwards a resolved [`HitDetail::CanvasRegion`] click to the matched
-/// leaf's own [`crate::scripted::ScriptedExtra`] facet, if it has one —
-/// the counterpart, for a script-defined widget, of
-/// [`semantic_event_for_hit`]'s own `CanvasRegion` arm (which only builds
-/// the `UiEvent::Canvas` an app's own handler sees; a `Canvas` descriptor
-/// has no `on_event` of its own for anything to call). `crate::engine`
-/// calls both at the same site, on every click [`HitDetail::CanvasRegion`]
-/// resolves — see that call site's own comment. `point` is ABSOLUTE
-/// (the same frame `semantic_event_for_hit`'s own `point` parameter takes),
-/// translated into the leaf's own LOCAL frame here via the matched
-/// [`PaintedHit::Extra`]'s `area`, the same translation that other
-/// function's `CanvasRegion` arm already does for
-/// [`CanvasEvent::RegionClicked`]'s own `x`/`y` fields.
-///
-/// Returns `false` (nothing to forward, and so nothing for the caller to
-/// force a redraw over) whenever no leaf named `id` is an `Extra` with a
-/// [`crate::scripted::ScriptedExtra`] facet — true for every hit this
-/// isn't called for as much as for a genuine miss, so a caller is free to
-/// call this unconditionally on a `CanvasRegion` hit without checking the
-/// matched descriptor's own kind first.
-pub fn scripted_region_click(
-    hit_map: &[PaintedHit],
-    id: WidgetId,
-    region: WidgetId,
-    button: MouseButton,
-    modifiers: Modifiers,
-    double_click: bool,
-    point: quadraui::Point,
-) -> bool {
-    hit_map
-        .iter()
-        .find_map(|hit| match hit {
-            PaintedHit::Extra {
-                id: hit_id,
-                extra,
-                area,
-                ..
-            } if *hit_id == id => {
-                let scripted = extra.as_scripted()?;
-                let local = quadraui::Point::new(point.x - area.x, point.y - area.y);
-                Some(scripted.scripted_click_region(region, button, modifiers, local, double_click))
-            }
-            _ => None,
-        })
-        .unwrap_or(false)
-}
-
-/// Forwards a focused key press to whichever leaf [`FocusTree`][quadraui::FocusTree]
-/// names as focused, if it is an `Extra` with a
-/// [`crate::scripted::ScriptedExtra`] facet — the key-press counterpart of
-/// [`scripted_region_click`] above, called alongside
-/// [`focus_scoped_key_event`] rather than from inside it, for the same
-/// reason: that function's return type has no room for the `bool` a
-/// script's own `on_event` answers with, only a `UiEvent` for the app's
-/// own handler to see.
-pub fn scripted_key_press(hit_map: &[PaintedHit], focused: WidgetId, key: &Key) -> bool {
-    hit_map
-        .iter()
-        .find_map(|hit| match hit {
-            PaintedHit::Extra { id, extra, .. } if *id == focused => {
-                let scripted = extra.as_scripted()?;
-                Some(scripted.scripted_key_pressed(key.clone()))
-            }
-            _ => None,
-        })
-        .unwrap_or(false)
-}
-
 #[cfg(test)]
 mod tests {
-    use std::cell::RefCell;
-    use std::rc::Rc;
-
     use super::*;
 
     fn rename_session(text: &str, cursor: usize) -> quadraui::TreeRowEditState {
@@ -778,143 +659,5 @@ mod tests {
                 }
             )
         );
-    }
-
-    /// A `ScriptWidget` built directly in Rust test code, recording every
-    /// `on_event` call it receives into `log` (shared externally, since
-    /// [`crate::scripted::ScriptedPrimitive`] owns the widget by value) —
-    /// enough to prove [`scripted_region_click`]/[`scripted_key_press`]
-    /// forward the right data, with no real binding callback object in
-    /// scope.
-    struct RecordingWidget {
-        log: Rc<RefCell<Vec<String>>>,
-    }
-
-    impl crate::scripted::ScriptWidget for RecordingWidget {
-        fn measure(
-            &self,
-            _ctx: &quadraui::primitive::LayoutCtx,
-            _constraints: crate::scripted::ScriptedConstraints,
-        ) -> crate::scripted::ScriptedSize {
-            crate::scripted::ScriptedSize::default()
-        }
-
-        fn paint(
-            &self,
-            _ctx: &quadraui::primitive::LayoutCtx,
-            _props: &crate::scripted::ScriptedProps,
-            _rect: Rect,
-        ) -> crate::scripted::ScriptedPaint {
-            crate::scripted::ScriptedPaint::default()
-        }
-
-        fn on_event(
-            &self,
-            event: &crate::scripted::ScriptedInputEvent,
-            _props: &crate::scripted::ScriptedProps,
-            _state: &crate::scripted::ScriptedState,
-        ) -> bool {
-            match event {
-                crate::scripted::ScriptedInputEvent::Canvas(CanvasEvent::RegionClicked {
-                    region,
-                    x,
-                    y,
-                    ..
-                }) => {
-                    self.log
-                        .borrow_mut()
-                        .push(format!("click:{}:{x},{y}", region.as_str()));
-                    true
-                }
-                crate::scripted::ScriptedInputEvent::Key(key) => {
-                    self.log
-                        .borrow_mut()
-                        .push(format!("key:{}", key_to_focus_string(key)));
-                    true
-                }
-                _ => false,
-            }
-        }
-    }
-
-    /// Wraps a [`RecordingWidget`] in a [`PaintedHit::Extra`] at `area` —
-    /// the shape [`scripted_region_click`]/[`scripted_key_press`] both
-    /// scan `hit_map` for.
-    fn recording_scripted_extra_hit(
-        id: WidgetId,
-        area: Rect,
-        log: Rc<RefCell<Vec<String>>>,
-    ) -> PaintedHit {
-        let primitive = crate::scripted::ScriptedPrimitive::new(id, RecordingWidget { log }, true);
-        PaintedHit::Extra {
-            id,
-            area,
-            extra: Rc::new(primitive) as Rc<dyn crate::extra_paint::ExtraPaint>,
-        }
-    }
-
-    /// [`scripted_region_click`] translates `point` into the leaf's own
-    /// LOCAL frame (via the matched hit's `area`) before forwarding to
-    /// `on_event`, the same translation [`semantic_event_for_hit`]'s own
-    /// `CanvasRegion` arm does for `CanvasEvent::RegionClicked`'s `x`/`y`
-    /// — and reports the script's own `true` (consumed) back to the
-    /// caller.
-    #[test]
-    fn scripted_region_click_translates_to_local_and_reports_consumed() {
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let hit_map = vec![recording_scripted_extra_hit(
-            WidgetId::new("w"),
-            Rect::new(10.0, 20.0, 10.0, 4.0),
-            log.clone(),
-        )];
-
-        let handled = scripted_region_click(
-            &hit_map,
-            WidgetId::new("w"),
-            WidgetId::new("w:region"),
-            MouseButton::Left,
-            Modifiers::default(),
-            false,
-            quadraui::Point::new(18.0, 22.0),
-        );
-
-        assert!(handled, "the script's own on_event reported true");
-        assert_eq!(log.borrow().as_slice(), ["click:w:region:8,2"]);
-    }
-
-    /// With no leaf named `id` at all — or one with no
-    /// [`crate::scripted::ScriptedExtra`] facet — [`scripted_region_click`]
-    /// is a safe no-op reporting `false`, never a panic.
-    #[test]
-    fn scripted_region_click_is_false_when_nothing_matches() {
-        let hit_map: Vec<PaintedHit> = Vec::new();
-        assert!(!scripted_region_click(
-            &hit_map,
-            WidgetId::new("missing"),
-            WidgetId::new("missing:region"),
-            MouseButton::Left,
-            Modifiers::default(),
-            false,
-            quadraui::Point::new(0.0, 0.0),
-        ));
-    }
-
-    /// [`scripted_key_press`] forwards a focused key press to the
-    /// matching leaf's own `on_event`, reporting its `true` (consumed)
-    /// back to the caller.
-    #[test]
-    fn scripted_key_press_forwards_the_key_and_reports_consumed() {
-        let log = Rc::new(RefCell::new(Vec::new()));
-        let hit_map = vec![recording_scripted_extra_hit(
-            WidgetId::new("w"),
-            Rect::new(0.0, 0.0, 10.0, 4.0),
-            log.clone(),
-        )];
-
-        let handled =
-            scripted_key_press(&hit_map, WidgetId::new("w"), &Key::Named(NamedKey::Enter));
-
-        assert!(handled, "the script's own on_event reported true");
-        assert_eq!(log.borrow().as_slice(), ["key:Enter"]);
     }
 }

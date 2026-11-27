@@ -1,10 +1,12 @@
-//! [`ScriptedPrimitive`]: a [`quadraui::primitive::Primitive`] backed by a
-//! script-side widget definition — `measure`/`paint`/`on_event`/`a11y`
-//! callbacks a binding forwards into its host language's script runtime,
-//! instead of Rust code — so a script-authored widget is drawn through
-//! [`quadraui::backend::DrawsPrimitives::draw_primitive`], the exact seam a
-//! hand-written Rust [`quadraui::primitive::Primitive`] impl already uses,
-//! on every backend.
+//! [`ScriptedPrimitive`]: a widget backed by a script-side widget
+//! definition — `measure`/`paint`/`on_event`/`a11y` callbacks a binding
+//! forwards into its host language's script runtime, instead of Rust code.
+//! It implements [`quadraui::primitive::Primitive`] and
+//! [`quadraui::Interactive`], so it is an ordinary
+//! [`quadraui::primitive::DynWidget`]: it decodes as a generic
+//! [`crate::layout::LeafDescriptor::Widget`] leaf, paints through
+//! [`quadraui::DrawsPrimitives::draw_dyn`] and receives input through the
+//! engine's generic widget routing, exactly like a built-in kind.
 //!
 //! # Display-list reuse — no new op set
 //!
@@ -12,11 +14,13 @@
 //! [`quadraui::CanvasRegion`] vocabulary a [`quadraui::Canvas`] descriptor
 //! already carries. [`ScriptedPrimitive`] builds a `Canvas` from that
 //! answer and paints it through the identical code every built-in `Canvas`
-//! leaf already paints through:
+//! leaf paints through:
 //! [`quadraui::primitives::canvas::native_surface_paint::paint`] on a
 //! pixel backend's [`quadraui::PaintSurface`], `Canvas`'s own
-//! `Primitive::paint_cells` on TUI's cell grid. Region hit-testing reuses
-//! [`quadraui::CanvasLayout::region_hit_test`] the same way.
+//! `Primitive::paint_cells` on TUI's cell grid. A press is resolved to a
+//! region by `Canvas`'s own [`quadraui::Interactive::handle`] the same way,
+//! so a script-defined widget reports the same
+//! [`quadraui::UiEvent::Canvas`] a `Canvas` leaf does.
 //!
 //! # Caching — one FFI round trip per widget per frame at most
 //!
@@ -25,188 +29,158 @@
 //! per frame per cache key. [`quadraui::primitive::Primitive::layout`]
 //! caches `measure`'s answer keyed on `(ctx, rect)`;
 //! [`quadraui::primitive::Primitive::paint`]/`paint_cells` cache `paint`'s
-//! answer keyed on `(props, rect, theme)`; [`crate::extra_paint::ExtraPaint::natural_size`]
-//! caches `measure`'s unconstrained answer keyed on `ctx` alone (it runs
-//! once per layout/paint pass, before any rect exists to key on) — all
-//! three skip the script call entirely when a later frame's key matches
-//! the cached one. [`ScriptedPrimitive::call_count`] reports the running
-//! total, for a test to assert a repeated frame with an unchanged key made
-//! no further calls.
-//!
-//! # Why no central engine/render dispatch hook
-//!
-//! [`ScriptedPrimitive`] implements [`crate::extra_paint::ExtraPaint`]
-//! directly (see the `impl` below), the existing additive-primitive seam
-//! [`crate::render::RenderFrame::extra`] already paints/hit-tests through
-//! generically — [`crate::extra_paint`]'s own module doc: "no enum
-//! variant, no central match arm". That covers paint and whole-area click
-//! routing for free; nothing in `render.rs` needs to change. Resolving a
-//! click to a *specific* [`quadraui::CanvasRegion`] (rather than "hit this
-//! widget at all") goes through [`ScriptedPrimitive::hit_test`]/
-//! [`ScriptedPrimitive::click_region`] directly, reached generically (no
-//! `W: ScriptWidget` type parameter in `hit.rs`/`semantic.rs`/`engine.rs`
-//! itself) through the object-safe [`ScriptedExtra`] facet below —
-//! [`crate::extra_paint::ExtraPaint::as_scripted`] is this type's one
-//! `None`-by-default extension point, the same shape
-//! [`crate::extra_paint::ExtraPaint::hit_test`]/`tab_stop` already use for
-//! "most extras don't need this".
+//! answer keyed on `(props, rect, theme)`;
+//! [`quadraui::primitive::Primitive::measure`] caches `measure`'s
+//! unconstrained answer keyed on `ctx` alone (it runs once per
+//! layout/paint pass, before any rect exists to key on) — all three skip
+//! the script call entirely when a later frame's key matches the cached
+//! one. [`ScriptedPrimitive::call_count`] reports the running total, for a
+//! test to assert a repeated frame with an unchanged key made no further
+//! calls.
 //!
 //! # Splicing into a decoded tree without a `Deserialize` impl
 //!
 //! A real [`ScriptWidget`] wraps a live host-language callback object —
 //! there is no sensible `Deserialize` for that, so a `"scripted_widget"`
-//! layout-tree leaf can't decode one from scratch the way every other
-//! [`crate::extra_paint::EXTRA_PRIMITIVE_KINDS`] leaf does.
+//! leaf can't build one from its payload the way a built-in kind does.
 //! [`register_scripted_widget`] is the side channel instead: a binding
 //! builds its [`ScriptedPrimitive<W>`] once (wrapping its own live
-//! callback object), registers it against the leaf id its decoded tree
-//! will name, then calls [`crate::wire::decode_render_output_with_styles`]/
-//! [`crate::wire::decode_layout_node_with_styles`] as usual.
-//! `crate::wire::leaf::layout_leaf_from_value`'s own `"scripted_widget"`
-//! arm looks the registration back up by the leaf's id, applies that
-//! frame's `"props"` onto it, and splices the SAME `Rc` into the decoded
-//! tree — never a fresh instance, so a binding's own `extra_as::<ScriptedPrimitive<W>>`
-//! downcast (for whatever it still needs direct access to beyond the
-//! generic [`ScriptedExtra`] facet) recovers the exact object it
-//! registered.
+//! callback object) and registers it under its own id. The
+//! `"scripted_widget"` kind itself is registered in core's runtime kind
+//! registry ([`quadraui::register_widget_kind`]); its decoder reads the
+//! payload's `"id"`, looks the registration up, applies that frame's
+//! `"props"` and hands back a handle to the SAME widget — never a fresh
+//! instance, so its caches and the callback object it wraps survive every
+//! frame's decode.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use quadraui::primitive::{LayoutCtx, Primitive};
+use quadraui::primitive::{DynWidget, LayoutCtx, Primitive, Size};
 use quadraui::primitives::canvas::native_surface_paint;
 use quadraui::{
-    A11yChild, A11yInfo, A11yPrimitive, Backend, Canvas, CanvasEvent, CanvasHit, CanvasLayout,
-    CanvasRegion, DrawOp, DrawsPrimitives, Key, Modifiers, MouseButton, NaturalSize, PaintSurface,
-    Point, Rect, Theme, WidgetId,
+    A11yChild, A11yInfo, A11yPrimitive, Canvas, CanvasEvent, CanvasHit, CanvasLayout, CanvasRegion,
+    CanvasState, DrawOp, EventCx, FocusSpec, Handled, Interactive, Key, KeyEvent, NaturalSize,
+    PaintSurface, Point, PointerKind, Rect, RoutedEvent, Theme, WidgetId,
 };
 
-use crate::extra_paint::ExtraPaint;
+/// The widget kind a `"scripted_widget"` layout-tree leaf names. Registered
+/// in core's runtime kind registry by [`ensure_scripted_widget_kind`].
+pub const SCRIPTED_WIDGET_KIND: &str = "scripted_widget";
 
 // ─── The scripted-widget registry ──────────────────────────────────────────
 //
 // A side channel from a binding's own callback-object wrapping (see module
-// doc, "Splicing into a decoded tree without a `Deserialize` impl") to
-// `crate::wire::leaf::layout_leaf_from_value`'s `"scripted_widget"` decode
-// arm. `thread_local!`, not a `static`-plus-`Mutex` the way
-// `crate::services`'s own id-keyed registries are: a `Rc<dyn ExtraPaint>`
-// is neither `Send` nor `Sync` (every `ScriptedPrimitive<W>` holds its
-// callback object and caches behind plain `RefCell`s, never a `Mutex`), and
-// a binding's render pass — the only code that ever registers or looks one
-// of these up — runs on a single OS thread in every binding today (the
-// GTK/TUI event loop's own thread; a Python render callback runs under the
-// GIL, which already serializes it onto whichever thread called in).
+// doc, "Splicing into a decoded tree without a `Deserialize` impl") to the
+// `"scripted_widget"` kind's decoder. `thread_local!`, not a
+// `static`-plus-`Mutex`: a `ScriptedPrimitive<W>` is neither `Send` nor
+// `Sync` (it holds its callback object and caches behind `Rc`/`RefCell`),
+// and a binding's render pass — the only code that registers or decodes
+// one — runs on a single OS thread in every binding (the GTK/TUI event
+// loop's own thread; a Python render callback runs under the GIL, which
+// serializes it onto whichever thread called in).
+
+/// Applies one frame's props to a registered widget and hands back a handle
+/// to it.
+type ScriptedFactory = Rc<dyn Fn(ScriptedProps) -> Box<dyn DynWidget>>;
+
 thread_local! {
-    static SCRIPTED_WIDGETS: RefCell<HashMap<String, Rc<dyn ExtraPaint>>> =
+    static SCRIPTED_WIDGETS: RefCell<HashMap<String, ScriptedFactory>> =
         RefCell::new(HashMap::new());
 }
 
-/// Registers (replacing any previous registration under the same `id`)
-/// `extra` — typically a freshly built `Rc<ScriptedPrimitive<W>>` coerced
-/// to `Rc<dyn ExtraPaint>` — against `id`, for
-/// `crate::wire::leaf::layout_leaf_from_value` to splice into a
-/// `"scripted_widget"` leaf naming that same `id` the next time (and every
-/// subsequent time, until [`unregister_scripted_widget`] or another
-/// [`register_scripted_widget`] call replaces it) a tree containing one is
-/// decoded. Call this on the same thread the decode itself runs on — see
-/// this module's "The scripted-widget registry" doc above.
-pub fn register_scripted_widget(id: impl Into<String>, extra: Rc<dyn ExtraPaint>) {
+/// Registers the `"scripted_widget"` kind in core's runtime kind registry,
+/// once per process. Every binding-core entry point that decodes or names
+/// leaf kinds calls this first, so the kind is always decodable and never
+/// claimable by a host's own [`crate::register_widget_kind`].
+pub fn ensure_scripted_widget_kind() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        #[cfg(feature = "schema")]
+        let registered = quadraui::register_widget_kind_with_schema(
+            SCRIPTED_WIDGET_KIND,
+            decode_scripted_widget,
+            scripted_widget_schema,
+        );
+        #[cfg(not(feature = "schema"))]
+        let registered =
+            quadraui::register_widget_kind(SCRIPTED_WIDGET_KIND, decode_scripted_widget);
+        if let Err(err) = registered {
+            panic!("{SCRIPTED_WIDGET_KIND:?} must be free in the kind registry: {err}");
+        }
+    });
+}
+
+/// The `"scripted_widget"` kind's decoder: looks the payload's `"id"` up in
+/// this thread's registrations and returns the registered widget with
+/// `"props"` applied.
+fn decode_scripted_widget(
+    _kind: &str,
+    value: serde_json::Value,
+) -> Result<Box<dyn DynWidget>, serde_json::Error> {
+    let descriptor: ScriptedWidgetDescriptor = serde_json::from_value(value)?;
+    let factory = SCRIPTED_WIDGETS
+        .with(|registry| registry.borrow().get(&descriptor.id).cloned())
+        .ok_or_else(|| {
+            <serde_json::Error as serde::de::Error>::custom(format!(
+                "no scripted widget is registered for id {:?} — the binding must call \
+                 quadraui_binding_core::register_scripted_widget before decoding a tree \
+                 containing it",
+                descriptor.id
+            ))
+        })?;
+    Ok(factory(descriptor.props))
+}
+
+#[cfg(feature = "schema")]
+fn scripted_widget_schema() -> serde_json::Value {
+    serde_json::to_value(schemars::schema_for!(ScriptedWidgetDescriptor))
+        .expect("a derived schema serializes")
+}
+
+/// Registers (replacing any previous registration under the same id)
+/// `widget` under its own [`WidgetId`], for a `"scripted_widget"` leaf whose
+/// payload names that id to decode into — on this and every later decode,
+/// until [`unregister_scripted_widget`] or another registration under the
+/// same id replaces it. Call this on the same thread the decode itself runs
+/// on — see this module's "The scripted-widget registry" note.
+pub fn register_scripted_widget<W: ScriptWidget + 'static>(widget: ScriptedPrimitive<W>) {
+    ensure_scripted_widget_kind();
+    let id = widget.inner.id.as_str().to_string();
+    let factory: ScriptedFactory = Rc::new(move |props| {
+        widget.set_props(props);
+        Box::new(widget.clone())
+    });
     SCRIPTED_WIDGETS.with(|registry| {
-        registry.borrow_mut().insert(id.into(), extra);
+        registry.borrow_mut().insert(id, factory);
     });
 }
 
 /// Drops `id`'s registration, if any — a binding calls this once the
 /// script-authored widget it wraps is torn down, so a later
-/// `"scripted_widget"` leaf that (incorrectly) still names `id` fails
-/// decode with a clear "not registered" [`crate::DecodeError`] instead of
-/// resurrecting a stale, logically-dead widget.
+/// `"scripted_widget"` leaf that still names `id` fails decode with a clear
+/// "not registered" [`crate::DecodeError`] instead of resurrecting a stale,
+/// logically-dead widget.
 pub fn unregister_scripted_widget(id: &str) {
     SCRIPTED_WIDGETS.with(|registry| {
         registry.borrow_mut().remove(id);
     });
 }
 
-/// Looks up `id`'s registration without consuming it — called once per
-/// decode of a `"scripted_widget"` leaf naming `id`,
-/// by `crate::wire::leaf::layout_leaf_from_value`.
-pub(crate) fn lookup_scripted_widget(id: &str) -> Option<Rc<dyn ExtraPaint>> {
-    SCRIPTED_WIDGETS.with(|registry| registry.borrow().get(id).cloned())
-}
-
-/// The wire shape a `"scripted_widget"` layout-tree leaf's own descriptor
-/// dict carries: just this frame's `"props"`, defaulting to `Value::Null`
-/// when absent (so a bare `{}` descriptor, for a widget with no props of
-/// its own, decodes cleanly) — no `measure`/`paint`/`on_event`/`a11y`
-/// shape of its own, since those live on the [`ScriptWidget`] object a
-/// binding already registered against this leaf's id via
-/// [`register_scripted_widget`] before the tree containing it was decoded
-/// (see this module's own doc, "Splicing into a decoded tree without a
-/// `Deserialize` impl").
+/// The payload of a `"scripted_widget"` layout-tree leaf: the id the widget
+/// was registered under through [`register_scripted_widget`] and this
+/// frame's `"props"`, defaulting to `Value::Null` when absent. The
+/// `measure`/`paint`/`on_event`/`a11y` callbacks live on the registered
+/// [`ScriptWidget`] object, not here (see this module's doc, "Splicing into
+/// a decoded tree without a `Deserialize` impl").
 #[derive(Debug, Clone, Default, serde::Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct ScriptedWidgetDescriptor {
+    pub id: String,
     #[serde(default)]
     pub props: ScriptedProps,
-}
-
-/// Object-safe facet of a [`ScriptedPrimitive<W>`] the generic engine calls
-/// without ever naming `W` — [`crate::extra_paint::ExtraPaint::as_scripted`]
-/// is the one `None`-by-default extension point every other
-/// [`crate::extra_paint::ExtraPaint`] impl leaves alone, the same shape
-/// that trait's `hit_test`/`tab_stop` already use for "most extras don't
-/// need this". `hit.rs`'s region resolution and `semantic.rs`'s
-/// `scripted_region_click`/`scripted_key_press` are the two call sites —
-/// see each of their own docs.
-pub trait ScriptedExtra {
-    /// Replaces this frame's script-side props — the `"scripted_widget"`
-    /// leaf decode's own counterpart of [`ScriptedPrimitive::set_props`],
-    /// called through this facet since the decode site has no `W` in
-    /// scope to call the inherent method directly.
-    fn set_scripted_props(&self, props: ScriptedProps);
-
-    /// Same contract as [`ScriptedPrimitive::hit_test`].
-    fn scripted_hit_test(&self, point: Point) -> CanvasHit;
-
-    /// Same contract as [`ScriptedPrimitive::click_region`].
-    fn scripted_click_region(
-        &self,
-        region: WidgetId,
-        button: MouseButton,
-        modifiers: Modifiers,
-        local: Point,
-        double: bool,
-    ) -> bool;
-
-    /// Same contract as [`ScriptedPrimitive::key_pressed`].
-    fn scripted_key_pressed(&self, key: Key) -> bool;
-}
-
-impl<W: ScriptWidget + 'static> ScriptedExtra for ScriptedPrimitive<W> {
-    fn set_scripted_props(&self, props: ScriptedProps) {
-        self.set_props(props);
-    }
-
-    fn scripted_hit_test(&self, point: Point) -> CanvasHit {
-        self.hit_test(point)
-    }
-
-    fn scripted_click_region(
-        &self,
-        region: WidgetId,
-        button: MouseButton,
-        modifiers: Modifiers,
-        local: Point,
-        double: bool,
-    ) -> bool {
-        self.click_region(region, button, modifiers, local, double)
-    }
-
-    fn scripted_key_pressed(&self, key: Key) -> bool {
-        self.key_pressed(key)
-    }
 }
 
 /// Script-side widget-definition data, round-tripped unchanged through
@@ -221,7 +195,7 @@ pub type ScriptedProps = serde_json::Value;
 /// same shape/rationale as [`ScriptedProps`], kept as a separate type alias
 /// since a binding's props (what the script declared) and state (what the
 /// script is tracking internally, e.g. a drag-in-progress) are logically
-/// distinct even though both are just a `serde_json::Value` today.
+/// distinct even though both are just a `serde_json::Value`.
 pub type ScriptedState = serde_json::Value;
 
 /// Available space [`ScriptWidget::measure`] sizes into — the layout
@@ -276,19 +250,15 @@ pub struct ScriptedA11y {
     pub children: Vec<A11yChild>,
 }
 
-/// A pointer/key input routed to [`ScriptWidget::on_event`] — resolved by
-/// a host from a real `quadraui::UiEvent` plus [`ScriptedPrimitive`]'s own
-/// region hit-testing ([`ScriptedPrimitive::hit_test`]), the "host derives
-/// these" contract [`quadraui::primitive::Primitive::Event`]'s own doc
-/// describes. Wraps [`CanvasEvent`] for the pointer cases rather than
-/// re-declaring `RegionClicked`/`RegionDoubleClicked`/`RegionHovered` —
-/// the same region-click vocabulary a real `Canvas` leaf's
-/// `UiEvent::Canvas` already carries.
+/// A press/key input routed to [`ScriptWidget::on_event`] by
+/// [`ScriptedPrimitive`]'s [`Interactive::handle`]. Wraps [`CanvasEvent`]
+/// for the pointer cases rather than re-declaring
+/// `RegionClicked`/`RegionDoubleClicked` — the same region-click
+/// vocabulary a real `Canvas` leaf's `UiEvent::Canvas` already carries.
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ScriptedInputEvent {
-    /// A declared region was clicked, double-clicked, or changed hover
-    /// state.
+    /// A declared region was clicked or double-clicked.
     Canvas(CanvasEvent),
     /// A key was pressed while this widget held focus.
     Key(Key),
@@ -326,9 +296,8 @@ pub trait ScriptWidget {
 
 /// The fully-resolved layout [`ScriptedPrimitive`] produces — just the
 /// absolute area and the script's measured size, per
-/// [`quadraui::primitive::Primitive`]'s own
-/// "layout bakes in what paint needs" design (module doc, "Design"
-/// section). Region hit-testing lives on [`ScriptedPrimitive`] itself
+/// [`quadraui::primitive::Primitive`]'s own "layout bakes in what paint
+/// needs" design. Region hit-testing lives on [`ScriptedPrimitive`] itself
 /// instead of here, since it depends on `paint`'s answer, not `measure`'s
 /// — see [`ScriptedPrimitive::hit_test`].
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -351,7 +320,7 @@ struct MeasureCacheKey {
 /// That measurer-blindness is also the cache's one staleness window: a
 /// script widget that sizes text through [`LayoutCtx::text_width`] keeps
 /// hitting this cache across a font change that leaves the three scalars
-/// untouched. No scripted widget measures text today.
+/// untouched. No scripted widget measures text.
 fn cache_key_ctx(ctx: &LayoutCtx) -> LayoutCtx<'static> {
     LayoutCtx::new(ctx.line_height, ctx.char_width, ctx.nerd_fonts_enabled)
 }
@@ -366,18 +335,15 @@ struct PaintCacheKey {
 struct PaintCacheEntry {
     key: PaintCacheKey,
     paint: ScriptedPaint,
-    /// Absolute layout the cached `paint` was resolved against — needed
-    /// by [`ScriptedPrimitive::hit_test`]/[`ScriptedPrimitive::canvas`] to
-    /// rebuild the same [`CanvasLayout`] `paint`/`paint_cells` last used,
-    /// without re-deriving it from `key.rect` (which is LOCAL-origin-free,
-    /// same value, but spelling it out once here avoids two sources of
-    /// truth for "what layout did we last paint into").
+    /// Absolute layout the cached `paint` was resolved against, so
+    /// [`ScriptedPrimitive::hit_test`] resolves against the same
+    /// [`CanvasLayout`] `paint`/`paint_cells` last used.
     layout: CanvasLayout,
 }
 
-/// A [`quadraui::primitive::Primitive`] backed by a [`ScriptWidget`]. See
-/// the module doc for the full contract.
-pub struct ScriptedPrimitive<W: ScriptWidget> {
+/// The shared body of a [`ScriptedPrimitive`]: every clone of one handle
+/// reads and writes the same props, state and caches.
+struct ScriptedInner<W> {
     id: WidgetId,
     widget: W,
     focusable: bool,
@@ -392,24 +358,40 @@ pub struct ScriptedPrimitive<W: ScriptWidget> {
     call_count: AtomicU64,
 }
 
+/// A widget backed by a [`ScriptWidget`]. See the module doc for the full
+/// contract. Cloning yields another handle to the same widget: props,
+/// script state, caches and the call count are shared.
+pub struct ScriptedPrimitive<W: ScriptWidget> {
+    inner: Rc<ScriptedInner<W>>,
+}
+
+impl<W: ScriptWidget> Clone for ScriptedPrimitive<W> {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Rc::clone(&self.inner),
+        }
+    }
+}
+
 impl<W: ScriptWidget> ScriptedPrimitive<W> {
     /// Builds a primitive around `widget`, with no props/state set yet
     /// (both start as `serde_json::Value::Null`) and `focusable` matching
-    /// [`quadraui::Canvas::focusable`]'s own "declarative flag the app
-    /// reads back" contract — [`ScriptedPrimitive`] never computes a
-    /// tab-stop list itself.
+    /// [`quadraui::Canvas::focusable`]'s own "declarative flag" contract:
+    /// a focusable scripted widget is one tab stop.
     pub fn new(id: WidgetId, widget: W, focusable: bool) -> Self {
         ScriptedPrimitive {
-            id,
-            widget,
-            focusable,
-            props: RefCell::new(serde_json::Value::Null),
-            state: RefCell::new(serde_json::Value::Null),
-            measure_cache: RefCell::new(None),
-            paint_cache: RefCell::new(None),
-            natural_size_cache: RefCell::new(None),
-            a11y_cache: RefCell::new(None),
-            call_count: AtomicU64::new(0),
+            inner: Rc::new(ScriptedInner {
+                id,
+                widget,
+                focusable,
+                props: RefCell::new(serde_json::Value::Null),
+                state: RefCell::new(serde_json::Value::Null),
+                measure_cache: RefCell::new(None),
+                paint_cache: RefCell::new(None),
+                natural_size_cache: RefCell::new(None),
+                a11y_cache: RefCell::new(None),
+                call_count: AtomicU64::new(0),
+            }),
         }
     }
 
@@ -417,29 +399,28 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
     /// Does not itself call into the script — a later `layout`/`paint`
     /// call does that, and only on a cache miss (module doc, "Caching").
     pub fn set_props(&self, props: ScriptedProps) {
-        *self.props.borrow_mut() = props;
+        *self.inner.props.borrow_mut() = props;
     }
 
     /// The props last set via [`Self::set_props`] (`Value::Null` until the
     /// first call) — read back by a host that needs to confirm what a
-    /// wire decode applied, e.g. `crate::wire::leaf::layout_leaf_from_value`'s
-    /// own `"scripted_widget"` arm (see its `#[cfg(test)]` coverage).
+    /// wire decode applied.
     pub fn props(&self) -> ScriptedProps {
-        self.props.borrow().clone()
+        self.inner.props.borrow().clone()
     }
 
     /// Updates the widget state [`ScriptWidget::on_event`] reads back.
     pub fn set_state(&self, state: ScriptedState) {
-        *self.state.borrow_mut() = state;
+        *self.inner.state.borrow_mut() = state;
     }
 
     /// Total script calls made so far — see module doc "Caching".
     pub fn call_count(&self) -> u64 {
-        self.call_count.load(Ordering::Relaxed)
+        self.inner.call_count.load(Ordering::Relaxed)
     }
 
     fn record_call(&self) {
-        self.call_count.fetch_add(1, Ordering::Relaxed);
+        self.inner.call_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// The [`Canvas`] + [`CanvasLayout`] `paint`/`paint_cells` last
@@ -447,10 +428,12 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
     /// the display list (and so the regions a click can resolve against)
     /// doesn't exist before that.
     fn canvas(&self) -> Option<(Canvas, CanvasLayout)> {
-        self.paint_cache
-            .borrow()
-            .as_ref()
-            .map(|entry| (entry.paint.as_canvas(self.id, self.focusable), entry.layout))
+        self.inner.paint_cache.borrow().as_ref().map(|entry| {
+            (
+                entry.paint.as_canvas(self.inner.id, self.inner.focusable),
+                entry.layout,
+            )
+        })
     }
 
     /// Resolves `point` (ABSOLUTE — same frame as the `rect` last passed
@@ -466,60 +449,32 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
         }
     }
 
-    /// Routes a resolved region click to [`ScriptWidget::on_event`],
-    /// always a real script call (never cached — each dispatched event is
-    /// its own round trip, unlike the per-frame display list). Returns
-    /// whether the script consumed it.
-    pub fn click_region(
-        &self,
-        region: WidgetId,
-        button: MouseButton,
-        modifiers: Modifiers,
-        local: Point,
-        double: bool,
-    ) -> bool {
-        let event = if double {
-            ScriptedInputEvent::Canvas(CanvasEvent::RegionDoubleClicked {
-                region,
-                x: local.x,
-                y: local.y,
-            })
-        } else {
-            ScriptedInputEvent::Canvas(CanvasEvent::RegionClicked {
-                region,
-                button,
-                modifiers,
-                x: local.x,
-                y: local.y,
-            })
-        };
+    /// Hands `event` to [`ScriptWidget::on_event`] — always a real script
+    /// call, never cached: each dispatched event is its own round trip,
+    /// unlike the per-frame display list. Returns whether the script
+    /// consumed it.
+    fn deliver(&self, event: ScriptedInputEvent) -> bool {
         self.record_call();
-        self.widget
-            .on_event(&event, &self.props.borrow(), &self.state.borrow())
-    }
-
-    /// Routes a focused key press to [`ScriptWidget::on_event`]. Always a
-    /// real script call, same reasoning as [`Self::click_region`].
-    pub fn key_pressed(&self, key: Key) -> bool {
-        let event = ScriptedInputEvent::Key(key);
-        self.record_call();
-        self.widget
-            .on_event(&event, &self.props.borrow(), &self.state.borrow())
+        self.inner.widget.on_event(
+            &event,
+            &self.inner.props.borrow(),
+            &self.inner.state.borrow(),
+        )
     }
 
     /// The script's accessibility node for the current props, calling
     /// [`ScriptWidget::a11y`] only when `props` has changed since the last
     /// call (module doc, "Caching").
     fn resolve_a11y(&self) -> Option<ScriptedA11y> {
-        let props = self.props.borrow().clone();
-        if let Some((cached_props, cached)) = self.a11y_cache.borrow().as_ref() {
+        let props = self.inner.props.borrow().clone();
+        if let Some((cached_props, cached)) = self.inner.a11y_cache.borrow().as_ref() {
             if *cached_props == props {
                 return cached.clone();
             }
         }
         self.record_call();
-        let result = self.widget.a11y(&props);
-        *self.a11y_cache.borrow_mut() = Some((props, result.clone()));
+        let result = self.inner.widget.a11y(&props);
+        *self.inner.a11y_cache.borrow_mut() = Some((props, result.clone()));
         result
     }
 
@@ -530,7 +485,7 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
             ctx: cache_key_ctx(ctx),
             rect,
         };
-        if let Some((cached_key, cached_size)) = self.measure_cache.borrow().as_ref() {
+        if let Some((cached_key, cached_size)) = self.inner.measure_cache.borrow().as_ref() {
             if *cached_key == key {
                 return *cached_size;
             }
@@ -540,32 +495,29 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
             max_height: Some(rect.height),
         };
         self.record_call();
-        let size = self.widget.measure(ctx, constraints);
-        *self.measure_cache.borrow_mut() = Some((key, size));
+        let size = self.inner.widget.measure(ctx, constraints);
+        *self.inner.measure_cache.borrow_mut() = Some((key, size));
         size
     }
 
-    /// [`ExtraPaint::natural_size`]'s answer for `ctx`, calling
-    /// [`ScriptWidget::measure`] only on a cache miss. Keyed on `ctx` alone
-    /// (no `rect` — [`ExtraPaint::natural_size`] has none, since it runs
-    /// before any rect is resolved) because `measure` itself takes only
-    /// `(ctx, constraints)`, and `constraints` is always
-    /// [`ScriptedConstraints::default`] (unconstrained) here, so `ctx` is
-    /// the whole key. This is a *separate* cache from
-    /// [`Self::measure_cache`]/[`Self::resolve_size`]'s `(ctx, rect)` key,
-    /// since `crate::render::layout_container_rects` calls
-    /// [`ExtraPaint::natural_size`] once per layout/paint pass for every
-    /// `SectionSize::Content` child — once per frame, the same budget as
-    /// `paint` — so this answer must be cached exactly like `paint`'s is.
+    /// [`Primitive::measure`]'s answer for `ctx`, calling
+    /// [`ScriptWidget::measure`] unconstrained only on a cache miss. Keyed
+    /// on `ctx` alone — the layout solver measures a content-sized leaf once
+    /// per layout/paint pass, before any rect is resolved, so this answer
+    /// is cached exactly like `paint`'s is, in a cache separate from
+    /// [`Self::resolve_size`]'s `(ctx, rect)` one.
     fn resolve_natural_size(&self, ctx: &LayoutCtx) -> ScriptedSize {
-        if let Some((cached_ctx, cached_size)) = self.natural_size_cache.borrow().as_ref() {
+        if let Some((cached_ctx, cached_size)) = self.inner.natural_size_cache.borrow().as_ref() {
             if *cached_ctx == *ctx {
                 return *cached_size;
             }
         }
         self.record_call();
-        let size = self.widget.measure(ctx, ScriptedConstraints::default());
-        *self.natural_size_cache.borrow_mut() = Some((cache_key_ctx(ctx), size));
+        let size = self
+            .inner
+            .widget
+            .measure(ctx, ScriptedConstraints::default());
+        *self.inner.natural_size_cache.borrow_mut() = Some((cache_key_ctx(ctx), size));
         size
     }
 
@@ -574,25 +526,28 @@ impl<W: ScriptWidget> ScriptedPrimitive<W> {
     /// [`Canvas`]/[`CanvasLayout`] pair the pixel/TUI paint paths both
     /// replay unchanged.
     fn resolve_paint(&self, ctx: &LayoutCtx, rect: Rect, theme: &Theme) -> (Canvas, CanvasLayout) {
-        let props = self.props.borrow().clone();
+        let props = self.inner.props.borrow().clone();
         let key = PaintCacheKey {
             props,
             rect,
             theme: *theme,
         };
         {
-            let cache = self.paint_cache.borrow();
+            let cache = self.inner.paint_cache.borrow();
             if let Some(entry) = cache.as_ref() {
                 if entry.key == key {
-                    return (entry.paint.as_canvas(self.id, self.focusable), entry.layout);
+                    return (
+                        entry.paint.as_canvas(self.inner.id, self.inner.focusable),
+                        entry.layout,
+                    );
                 }
             }
         }
         self.record_call();
-        let paint = self.widget.paint(ctx, &key.props, rect);
-        let canvas = paint.as_canvas(self.id, self.focusable);
+        let paint = self.inner.widget.paint(ctx, &key.props, rect);
+        let canvas = paint.as_canvas(self.inner.id, self.inner.focusable);
         let layout = canvas.layout(rect);
-        *self.paint_cache.borrow_mut() = Some(PaintCacheEntry { key, paint, layout });
+        *self.inner.paint_cache.borrow_mut() = Some(PaintCacheEntry { key, paint, layout });
         (canvas, layout)
     }
 }
@@ -610,6 +565,18 @@ impl<W: ScriptWidget> A11yPrimitive for ScriptedPrimitive<W> {
 impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
     type Layout = ScriptedLayout;
     type Event = ScriptedInputEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.inner.id)
+    }
+
+    /// The script's unconstrained size, through
+    /// [`Self::resolve_natural_size`]'s `ctx`-keyed cache, so an unchanged
+    /// `ctx` never re-enters the script.
+    fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> NaturalSize {
+        let size = self.resolve_natural_size(ctx);
+        NaturalSize::new(Some(size.width), Some(size.height))
+    }
 
     fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> ScriptedLayout {
         let size = self.resolve_size(ctx, rect);
@@ -635,10 +602,9 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
 
     // No `#[cfg(feature = "tui")]` here: unlike `quadraui`'s own
     // `Primitive::paint_cells` (cfg'd because `quadraui` builds with or
-    // without its `tui` cargo feature), this crate's own
-    // `Cargo.toml` turns `quadraui`'s `tui` feature on unconditionally, so
-    // the trait method this overrides always exists when this crate
-    // compiles at all.
+    // without its `tui` cargo feature), this crate's own `Cargo.toml` turns
+    // `quadraui`'s `tui` feature on unconditionally, so the trait method
+    // this overrides always exists when this crate compiles at all.
     fn paint_cells(
         &self,
         layout: &ScriptedLayout,
@@ -651,55 +617,70 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
     }
 }
 
-/// Lets [`ScriptedPrimitive`] sit directly in [`crate::render::RenderFrame::extra`]
-/// — the existing additive-primitive seam — with no central match arm (see
-/// module doc, "Why no central engine/render dispatch hook").
-impl<W: ScriptWidget + 'static> ExtraPaint for ScriptedPrimitive<W> {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let _ = backend.draw_primitive(area, self);
+impl<W: ScriptWidget + 'static> Interactive for ScriptedPrimitive<W> {
+    /// The painted canvas's own gesture state.
+    type State = CanvasState;
+    /// The region event the painted canvas reports, delivered to the app
+    /// as the same [`quadraui::UiEvent::Canvas`] a `Canvas` leaf produces.
+    type Action = CanvasEvent;
+
+    /// Every move inside the widget reaches [`Self::handle`], so the
+    /// hovered region follows the pointer.
+    const RECEIVES_HOVER_MOVES: bool = true;
+
+    /// One tab stop when built `focusable`; otherwise none.
+    fn focus(&self) -> FocusSpec {
+        if self.inner.focusable {
+            FocusSpec::Stop
+        } else {
+            FocusSpec::None
+        }
     }
 
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-widget bounds check — `true` whenever the point lands
-    /// anywhere inside the widget's own body, including outside every
-    /// declared region (same posture [`CanvasHit::Inside`] already has for
-    /// a real `Canvas` leaf). Resolving a click to a *specific* region is
-    /// [`Self::hit_test`]'s job, not this trait's `bool`-only answer.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        let _ = area;
-        ScriptedPrimitive::hit_test(self, point) != CanvasHit::Outside
-    }
-
-    fn tab_stop(&self) -> bool {
-        self.focusable
-    }
-
-    /// Calls [`ScriptWidget::measure`] with no size constraint on either
-    /// axis, through [`Self::resolve_natural_size`]'s `ctx`-keyed cache —
-    /// unlike [`Primitive::layout`]'s `(ctx, rect)` key, there is no real
-    /// `rect` here (`crate::render::layout_container_rects` calls this
-    /// before any rect is resolved, to decide how much space to give this
-    /// leaf in the first place), but it is still called once per
-    /// layout/paint pass, so an unchanged `ctx` must not re-enter the
-    /// script.
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let ctx = LayoutCtx::new(
-            backend.line_height(),
-            backend.char_width(),
-            backend.nerd_fonts_enabled(),
-        );
-        let size = self.resolve_natural_size(&ctx);
-        NaturalSize::new(Some(size.width), Some(size.height))
-    }
-
-    /// Exposes the [`ScriptedExtra`] facet — see that trait's own doc for
-    /// why `hit.rs`/`semantic.rs` go through this rather than a
-    /// `W`-generic downcast.
-    fn as_scripted(&self) -> Option<&dyn ScriptedExtra> {
-        Some(self)
+    /// - **Press** / **double-click** resolves through the last-painted
+    ///   [`Canvas`]'s own [`Interactive::handle`]: on a declared region it
+    ///   reports [`CanvasEvent::RegionClicked`] /
+    ///   [`CanvasEvent::RegionDoubleClicked`] and hands that same event to
+    ///   [`ScriptWidget::on_event`]; on bare canvas it is ignored and never
+    ///   reaches the script.
+    /// - **Hover** resolves through the same canvas, which reports
+    ///   [`CanvasEvent::RegionHovered`] whenever the region under the
+    ///   pointer changes. Hover never reaches the script.
+    /// - **Key** (routed only while this widget holds focus) goes to
+    ///   [`ScriptWidget::on_event`] and is otherwise left to travel on, so
+    ///   the app still sees the key press.
+    ///
+    /// Whenever the script reports an event consumed, the host repaints.
+    fn handle(
+        &self,
+        state: &mut CanvasState,
+        event: &RoutedEvent,
+        layout: &ScriptedLayout,
+        cx: &mut EventCx,
+    ) -> Handled<CanvasEvent> {
+        match event {
+            RoutedEvent::Pointer { kind, .. } => {
+                let Some((canvas, _)) = self.canvas() else {
+                    return Handled::Ignored;
+                };
+                let canvas_layout = canvas.layout(layout.rect);
+                let handled = Interactive::handle(&canvas, state, event, &canvas_layout, cx);
+                let press = matches!(kind, PointerKind::Down(_) | PointerKind::DoubleClick(_));
+                if let (true, Handled::Event(region_event)) = (press, &handled) {
+                    if self.deliver(ScriptedInputEvent::Canvas(region_event.clone())) {
+                        cx.request_redraw();
+                    }
+                }
+                handled
+            }
+            RoutedEvent::Key(KeyEvent { key, .. }) => {
+                if self.deliver(ScriptedInputEvent::Key(key.clone())) {
+                    cx.request_redraw();
+                }
+                Handled::Ignored
+            }
+            _ => Handled::Ignored,
+        }
     }
 }
 
@@ -707,7 +688,39 @@ impl<W: ScriptWidget + 'static> ExtraPaint for ScriptedPrimitive<W> {
 mod tests {
     use super::*;
     use quadraui::event::Viewport;
-    use quadraui::{A11yRole, Color, FontRole, Style};
+    use quadraui::{A11yRole, Color, EventHost, FontRole, Modifiers, MouseButton, Style};
+
+    /// Records the repaint request a widget makes through its [`EventCx`].
+    #[derive(Default)]
+    struct TestHost {
+        redraw: bool,
+    }
+
+    impl EventHost for TestHost {
+        fn is_focused(
+            &self,
+            _id: &WidgetId,
+            _sub: Option<quadraui::interactive::SubTarget>,
+        ) -> bool {
+            true
+        }
+        fn request_focus(
+            &mut self,
+            _id: &WidgetId,
+            _sub: Option<quadraui::interactive::SubTarget>,
+        ) {
+        }
+        fn capture_pointer(&mut self, _id: &WidgetId) {}
+        fn release_pointer(&mut self) {}
+        fn set_cursor(&mut self, _cursor: quadraui::PointerShape) {}
+        fn request_redraw(&mut self) {
+            self.redraw = true;
+        }
+        fn emit(&mut self, _event: quadraui::UiEvent) {}
+        fn units(&self) -> quadraui::primitive::Units {
+            quadraui::primitive::Units::Pixels
+        }
+    }
 
     /// A scripted widget built directly in Rust test code, the way a
     /// binding would build one from its script runtime — a single
@@ -833,7 +846,7 @@ mod tests {
     fn paints_the_scripts_ops_onto_a_paint_surface() {
         let primitive = swatch();
         let rect = Rect::new(0.0, 0.0, 10.0, 4.0);
-        let layout = primitive.layout(&ctx(), rect);
+        let layout = Primitive::layout(&primitive, &ctx(), rect);
         let mut surface = RecordingSurface::default();
         Primitive::paint(
             &primitive,
@@ -851,7 +864,7 @@ mod tests {
     fn paints_the_scripts_ops_onto_a_tui_cell_buffer() {
         let primitive = swatch();
         let rect = Rect::new(0.0, 0.0, 10.0, 4.0);
-        let layout = primitive.layout(&ctx(), rect);
+        let layout = Primitive::layout(&primitive, &ctx(), rect);
         let area = ratatui::layout::Rect::new(0, 0, 10, 4);
         let mut buf = ratatui::buffer::Buffer::empty(area);
         primitive.paint_cells(
@@ -868,7 +881,7 @@ mod tests {
         let primitive = swatch();
         let rect = Rect::new(0.0, 0.0, 10.0, 4.0);
         let mut surface = RecordingSurface::default();
-        let layout = primitive.layout(&ctx(), rect);
+        let layout = Primitive::layout(&primitive, &ctx(), rect);
         Primitive::paint(
             &primitive,
             &layout,
@@ -886,14 +899,93 @@ mod tests {
         );
         assert_eq!(primitive.hit_test(Point::new(1.0, 2.0)), CanvasHit::Inside);
 
-        let handled = primitive.click_region(
-            WidgetId::new("swatch:button"),
-            MouseButton::Left,
-            Modifiers::default(),
-            Point::new(8.0, 2.0),
-            false,
+        let mut host = TestHost::default();
+        let mut cx = EventCx::new(WidgetId::new("swatch"), &mut host);
+        let mut state = CanvasState::default();
+        let handled = Interactive::handle(
+            &primitive,
+            &mut state,
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(8.0, 2.0),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
         );
-        assert!(handled);
+        assert_eq!(
+            handled,
+            Handled::Event(CanvasEvent::RegionClicked {
+                region: WidgetId::new("swatch:button"),
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                x: 8.0,
+                y: 2.0,
+            })
+        );
+        assert!(
+            host.redraw,
+            "the script consumed the click, so the host repaints"
+        );
+    }
+
+    /// A press on bare canvas, outside every declared region, is ignored
+    /// and never reaches the script.
+    #[test]
+    fn a_press_outside_every_region_never_reaches_the_script() {
+        let primitive = swatch();
+        let rect = Rect::new(0.0, 0.0, 10.0, 4.0);
+        let layout = Primitive::layout(&primitive, &ctx(), rect);
+        Primitive::paint(
+            &primitive,
+            &layout,
+            &mut RecordingSurface::default(),
+            &quadraui::PaintEnv::new(&Theme::default(), &Style::default()),
+        );
+        let before = primitive.call_count();
+        let mut host = TestHost::default();
+        let mut cx = EventCx::new(WidgetId::new("swatch"), &mut host);
+        let handled = Interactive::handle(
+            &primitive,
+            &mut CanvasState::default(),
+            &RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                sub: None,
+                local: Point::new(1.0, 2.0),
+                mods: Modifiers::default(),
+            },
+            &layout,
+            &mut cx,
+        );
+        assert_eq!(handled, Handled::Ignored);
+        assert_eq!(primitive.call_count(), before);
+    }
+
+    /// The `"scripted_widget"` kind decodes through core's generic
+    /// `decode_widget`, into a handle to the very widget the binding
+    /// registered, with that frame's props applied.
+    #[test]
+    fn a_registered_scripted_widget_decodes_through_the_core_kind_registry() {
+        let primitive = ScriptedPrimitive::new(WidgetId::new("decoded-swatch"), Swatch, true);
+        register_scripted_widget(primitive.clone());
+        let decoded = quadraui::decode_widget(
+            SCRIPTED_WIDGET_KIND,
+            serde_json::json!({ "id": "decoded-swatch", "props": { "color": "blue" } }),
+        )
+        .expect("a registered scripted widget decodes");
+        let decoded = decoded
+            .as_any()
+            .downcast_ref::<ScriptedPrimitive<Swatch>>()
+            .expect("the decode hands back the registered widget type");
+        assert_eq!(primitive.props(), serde_json::json!({ "color": "blue" }));
+        assert!(Rc::ptr_eq(&decoded.inner, &primitive.inner));
+        unregister_scripted_widget("decoded-swatch");
+        assert!(quadraui::decode_widget(
+            SCRIPTED_WIDGET_KIND,
+            serde_json::json!({ "id": "decoded-swatch" }),
+        )
+        .is_err());
     }
 
     #[test]
@@ -906,14 +998,11 @@ mod tests {
 
     #[test]
     fn unchanged_props_make_zero_script_calls_on_a_second_frame() {
-        use quadraui::tui::TuiBackend;
-
         let primitive = swatch();
         let rect = Rect::new(0.0, 0.0, 10.0, 4.0);
         let mut surface = RecordingSurface::default();
-        let mut backend = TuiBackend::new();
 
-        let layout = primitive.layout(&ctx(), rect);
+        let layout = Primitive::layout(&primitive, &ctx(), rect);
         Primitive::paint(
             &primitive,
             &layout,
@@ -921,12 +1010,12 @@ mod tests {
             &quadraui::PaintEnv::new(&Theme::default(), &Style::default()),
         );
         let _ = primitive.a11y_info();
-        let _ = ExtraPaint::natural_size(&primitive, &mut backend);
+        let _ = Primitive::measure(&primitive, &ctx(), Size::new(10.0, 4.0));
         let after_first_frame = primitive.call_count();
         assert!(after_first_frame > 0, "first frame should call the script");
 
         // Second frame: identical ctx/rect/theme/props.
-        let layout = primitive.layout(&ctx(), rect);
+        let layout = Primitive::layout(&primitive, &ctx(), rect);
         Primitive::paint(
             &primitive,
             &layout,
@@ -934,7 +1023,7 @@ mod tests {
             &quadraui::PaintEnv::new(&Theme::default(), &Style::default()),
         );
         let _ = primitive.a11y_info();
-        let _ = ExtraPaint::natural_size(&primitive, &mut backend);
+        let _ = Primitive::measure(&primitive, &ctx(), Size::new(10.0, 4.0));
 
         assert_eq!(
             primitive.call_count(),
@@ -949,7 +1038,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 10.0, 4.0);
         let mut surface = RecordingSurface::default();
 
-        let layout = primitive.layout(&ctx(), rect);
+        let layout = Primitive::layout(&primitive, &ctx(), rect);
         Primitive::paint(
             &primitive,
             &layout,
@@ -959,7 +1048,7 @@ mod tests {
         let after_first_frame = primitive.call_count();
 
         primitive.set_props(serde_json::json!({ "color": "red" }));
-        let layout = primitive.layout(&ctx(), rect);
+        let layout = Primitive::layout(&primitive, &ctx(), rect);
         Primitive::paint(
             &primitive,
             &layout,

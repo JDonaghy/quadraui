@@ -9,7 +9,6 @@ use crate::extra_paint::{
     decode_extra_primitive_checked, decode_widget_leaf, widget_leaf_kinds, EXTRA_PRIMITIVE_KINDS,
 };
 use crate::layout::{LayoutLeaf, LeafDescriptor, LEAF_KIND_KEYS};
-use crate::scripted::{lookup_scripted_widget, ScriptedWidgetDescriptor};
 use crate::DecodeError;
 
 use super::value::{
@@ -149,31 +148,6 @@ pub(super) fn layout_leaf_from_value(
                 value_dict,
                 &[],
             )?),
-            // No `Deserialize` impl constructs this one from scratch — see
-            // `crate::scripted`'s own module doc, "Splicing into a decoded
-            // tree without a `Deserialize` impl". The dict carries only
-            // this frame's `"props"`; the live widget itself is recovered
-            // from whatever `crate::scripted::register_scripted_widget`
-            // call already registered it under this leaf's own `id`.
-            "scripted_widget" => {
-                let descriptor: ScriptedWidgetDescriptor =
-                    decode_value_checked(diagnostics, &context, key, value_dict, &[])?;
-                let extra = lookup_scripted_widget(&id).ok_or_else(|| {
-                    DecodeError::borrow(
-                        &context,
-                        format!(
-                            "no scripted widget is registered for leaf id {id:?} — \
-                             the binding must call \
-                             quadraui_binding_core::scripted::register_scripted_widget \
-                             before decoding a tree containing it"
-                        ),
-                    )
-                })?;
-                if let Some(scripted) = extra.as_scripted() {
-                    scripted.set_scripted_props(descriptor.props);
-                }
-                LeafDescriptor::Extra(extra)
-            }
             _ => unreachable!("LEAF_KIND_KEYS is exhaustive"),
         });
     }
@@ -291,40 +265,39 @@ mod tests {
         }
     }
 
-    /// A `"scripted_widget"` leaf naming an id with a live registration
-    /// (via [`crate::scripted::register_scripted_widget`]) decodes into
-    /// the exact `Rc` that was registered — never a fresh instance, the
-    /// whole point of this kind not going through
-    /// `extra_primitives!`'s `Deserialize`-and-construct dispatch (see
-    /// `crate::scripted`'s own module doc) — with this frame's `"props"`
-    /// applied onto it.
+    /// A `"scripted_widget"` leaf whose payload names a registered id
+    /// decodes, through the core kind registry, into a generic widget
+    /// leaf wrapping the very widget that was registered — never a fresh
+    /// instance — with this frame's `"props"` applied onto it.
     #[test]
     fn scripted_widget_leaf_decodes_the_registered_primitive_and_applies_props() {
-        use crate::extra_paint::ExtraPaint;
         use crate::scripted::{register_scripted_widget, unregister_scripted_widget};
-        use std::rc::Rc;
 
-        let primitive = Rc::new(crate::scripted::ScriptedPrimitive::new(
+        let primitive = crate::scripted::ScriptedPrimitive::new(
             quadraui::WidgetId::new("sw"),
             TestWidget,
             false,
-        ));
-        register_scripted_widget("sw", primitive.clone() as Rc<dyn ExtraPaint>);
+        );
+        register_scripted_widget(primitive.clone());
 
         let value = json!({
             "id": "sw",
-            "scripted_widget": { "props": { "color": "blue" } },
+            "scripted_widget": { "id": "sw", "props": { "color": "blue" } },
         });
         let node = decode(&value).expect("a registered scripted_widget leaf decodes");
         let crate::layout::LayoutNode::Leaf(leaf) = node else {
             panic!("expected a leaf node");
         };
-        let LeafDescriptor::Extra(extra) = leaf.descriptor else {
-            panic!("expected an Extra descriptor");
+        let LeafDescriptor::Widget { kind, widget } = leaf.descriptor else {
+            panic!("expected a generic widget descriptor");
         };
+        assert_eq!(kind, "scripted_widget");
         assert!(
-            Rc::ptr_eq(&extra, &(primitive.clone() as Rc<dyn ExtraPaint>)),
-            "the decoded leaf must wrap the exact Rc that was registered, not a fresh instance"
+            widget
+                .as_any()
+                .downcast_ref::<crate::scripted::ScriptedPrimitive<TestWidget>>()
+                .is_some(),
+            "the decoded leaf must wrap the registered scripted widget"
         );
         assert_eq!(primitive.props(), json!({"color": "blue"}));
 
@@ -337,7 +310,7 @@ mod tests {
     fn scripted_widget_leaf_with_no_registration_is_a_decode_error() {
         let value = json!({
             "id": "unregistered",
-            "scripted_widget": {},
+            "scripted_widget": { "id": "unregistered" },
         });
         let error = err(decode(&value));
         assert!(

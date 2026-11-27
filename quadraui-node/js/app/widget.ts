@@ -150,9 +150,9 @@ export type WidgetOptions<P> = P & WidgetFrameworkOptions;
  * Builds the `Node` `view(state)` returns: `build(resolvedId, ...)`
  * registers this frame's four callbacks (closing over `props`/`state`
  * directly -- see this module's own header doc) against `resolvedId` and
- * returns the `"scripted_widget"` wire leaf
- * `quadraui_binding_core::scripted`'s own `"scripted_widget"` decode arm
- * resolves back into the `ScriptedPrimitive` this call just registered.
+ * returns the `"scripted_widget"` wire leaf, whose payload names the same
+ * id, so `quadraui_binding_core::scripted`'s `"scripted_widget"` kind
+ * decodes it back into the `ScriptedPrimitive` this call just registered.
  */
 function buildWidgetNode<P, S>(
   id: string | undefined,
@@ -194,7 +194,7 @@ function buildWidgetNode<P, S>(
         },
         focusable,
       );
-      return { id: resolvedId, scripted_widget: {} };
+      return { id: resolvedId, scripted_widget: { id: resolvedId } };
     },
   };
 }

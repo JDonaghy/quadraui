@@ -828,7 +828,7 @@ fn pop_styled_scope(backend: &mut dyn Backend, pushes: Vec<StyledPush>) {
 /// `Backend::draw_scrollbar`, the same geometry
 /// `crate::extra_paint`'s standalone `ScrollView` leaf paints into its own
 /// fixed `line_height`-wide track). `scroll_node.offset` is read as-is —
-/// already resolved against [`crate::widget_state::WidgetState`] by
+/// already resolved against [`quadraui::WidgetStateStore`] by
 /// [`crate::host::resolve_layout_node`], which must run on this tree before
 /// this function does (same ordering [`crate::layout`]'s own `Split`/
 /// `Tabs` resolution already requires).
@@ -1300,7 +1300,7 @@ pub(crate) enum ScrollSlots {
 /// painting/recursing/resolving it entirely, which is this container's
 /// whole mechanism for "no cell or pixel outside the viewport is painted"
 /// and "anything scrolled out of view gets no hits": an invisible slot
-/// never gets a [`PaintedHit`] (or a resolved `WidgetState` entry) in the
+/// never gets a [`PaintedHit`] (or a resolved `WidgetStateStore` entry) in the
 /// first place, rather than one that exists and is masked out afterwards.
 /// `start`/`len` are this slot's own main-axis span within the scroll's
 /// content, BEFORE `offset` is subtracted and before a cell-grid backend's
@@ -5037,7 +5037,7 @@ mod tests {
                 .expect("a data_table leaf with items_window must decode");
                 // Resolves the uncontrolled cursor/scroll this frame's
                 // keyboard navigation already moved in `self.engine`'s own
-                // `WidgetState` -- the same call a binding's render loop
+                // `WidgetStateStore` -- the same call a binding's render loop
                 // makes before `paint_layout_windowed`, unmodified by
                 // windowing.
                 crate::host::resolve_layout_node(

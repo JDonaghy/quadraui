@@ -82,18 +82,6 @@ pub trait ExtraPaint: std::any::Any {
         let _ = backend;
         NaturalSize::NONE
     }
-
-    /// This descriptor's [`crate::scripted::ScriptedExtra`] facet, for an
-    /// extra that is a script-defined widget — `None` by default, correct
-    /// for every hand-built extra above, which has no script-side
-    /// `on_event` for `hit.rs`/`semantic.rs` to forward a resolved region
-    /// click or a focused key press to. Only
-    /// `crate::scripted::ScriptedPrimitive<W>` overrides this, and does so
-    /// generically (no `W` type parameter escapes that one `impl`) — see
-    /// that type's own doc.
-    fn as_scripted(&self) -> Option<&dyn crate::scripted::ScriptedExtra> {
-        None
-    }
 }
 
 /// Recovers the concrete descriptor (`Switch`, `TextInput`, ...) kept alive
@@ -840,6 +828,7 @@ pub const WIDGET_KINDS: [&str; 36] = [
 /// this one) that registers a kind through [`register_widget_kind`] gets it
 /// decoded, painted and routed with no table edit here.
 pub fn widget_leaf_kinds() -> Vec<&'static str> {
+    crate::scripted::ensure_scripted_widget_kind();
     let mut kinds = WIDGET_KINDS.to_vec();
     kinds.extend(
         quadraui::widget_kinds::runtime_widget_kinds()
@@ -879,6 +868,7 @@ pub fn register_widget_kind_with_schema(
 }
 
 fn reject_reserved_kind(kind: &str) -> Result<(), quadraui::widget_kinds::KindError> {
+    crate::scripted::ensure_scripted_widget_kind();
     if crate::wire::is_reserved_node_key(kind) {
         return Err(quadraui::widget_kinds::KindError::Duplicate(
             kind.to_string(),

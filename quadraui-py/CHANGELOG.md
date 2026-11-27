@@ -68,6 +68,13 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Changed
 
+- A `quadraui.app.widget.Widget` is now an ordinary generic widget leaf
+  (binding-core's `ScriptedPrimitive` implements the widget contract): a
+  pointer that enters or leaves it reports `MouseEntered`/`MouseLeft` with
+  hit detail `"WidgetBody"` rather than `{"CanvasRegion": {"region": ..}}`;
+  the region's own `{"Canvas": (id, {"RegionHovered": ..})}` events are
+  unchanged.
+
 - A `"completions"` overlay (`show_overlay("completions", ...)`) now routes
   pointer input through `quadraui.Completions`' own event handling: a click
   on a row reports `{"List": (id, {"SelectionChanged": {"idx": n}})}` and
@@ -199,6 +206,10 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Removed
 
+- The `{"CanvasRegion": {"region": ..}}` hit detail (#2978): a
+  script-defined `Widget` reports `"WidgetBody"` like every other generic
+  widget, and its region events arrive as `{"Canvas": (id, ..)}`.
+
 - `QuiApp.list_char_width()` and `QuiApp.scrollbar_reserve()` (#2979,
   0.12 rec 14), part of the 0.12 binding API cleanup. Budget row text
   with `char_width()` or `measure_text()` instead.
@@ -230,6 +241,12 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   | `dismiss_rich_text_popup()` | `dismiss_overlay("rich_text_popup")` | n/a (`QuiAppActions` never had one) |
 
 ### Fixed
+
+- A double-click or a wheel notch on an open `"completions"` list or
+  `"rich_text_popup"` that the overlay itself ignores no longer reaches the
+  handler or the widget painted beneath it: an overlay swallows every
+  press, double-click and wheel notch that lands on it (#2978). A press on
+  a completions list outside its rows no longer dismisses it.
 
 - A layout-tree render resolves stored cursor, scroll, split-ratio and
   active-tab state through binding-core's shared resolvers, the same ones

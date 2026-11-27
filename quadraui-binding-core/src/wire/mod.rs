@@ -33,14 +33,14 @@
 //! reachable today as `quadraui_binding_core::wire::X` still resolves,
 //! through this module's own re-exports below.
 //!
-//! [`leaf`]'s dispatch includes one kind with no `Deserialize` shape of
-//! its own: a `"scripted_widget"` leaf carries only an id and this frame's
-//! JSON props, and is spliced in from whatever live
-//! [`crate::scripted::ScriptedPrimitive<W>`] a binding already registered
-//! against that id via [`crate::scripted::register_scripted_widget`] —
-//! see that function's own doc, and `crate::scripted`'s module doc
-//! ("Splicing into a decoded tree without a `Deserialize` impl"), for the
-//! full contract.
+//! [`leaf`]'s generic widget dispatch includes one runtime-registered kind
+//! with no `Deserialize` shape of its own: a `"scripted_widget"` leaf's
+//! payload carries only an id and this frame's JSON props, and decodes to
+//! whatever live [`crate::scripted::ScriptedPrimitive<W>`] a binding
+//! already registered under that id via
+//! [`crate::scripted::register_scripted_widget`] — see `crate::scripted`'s
+//! module doc ("Splicing into a decoded tree without a `Deserialize`
+//! impl") for the full contract.
 
 use serde::Deserializer;
 
