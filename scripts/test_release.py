@@ -247,6 +247,34 @@ class ReleaseFixtureRepo:
             'quadraui = { version = "0.1", features = ["tui", "gtk"] }\n'
             "```\n"
         )
+        (self.root / "quadraui" / "docs").mkdir()
+        (self.root / "quadraui" / "docs" / "INSTALL.md").write_text(
+            "# Install\n"
+            "\n"
+            "```toml\n"
+            'quadraui = { version = "0.1", features = ["tui"] }\n'
+            "```\n"
+            "\n"
+            "```toml\n"
+            'quadraui = { version = "0.1", features = ["tui", "gtk"] }\n'
+            "```\n"
+        )
+        (self.root / "quadraui" / "docs" / "GUIDE.md").write_text(
+            "# Guide\n"
+            "\n"
+            "```toml\n"
+            'quadraui = { version = "0.1", features = ["tui"] }\n'
+            "```\n"
+        )
+        (self.root / "templates" / "app").mkdir(parents=True)
+        (self.root / "templates" / "app" / "Cargo.toml.liquid").write_text(
+            "[package]\n"
+            'name = "{{project-name}}"\n'
+            'version = "0.1.0"\n'
+            "\n"
+            "[dependencies]\n"
+            'quadraui = { version = "0.1" }\n'
+        )
         (self.root / "CHANGELOG.md").write_text(
             CHANGELOG_TEMPLATE.format(unreleased_body=unreleased_body)
         )
@@ -281,6 +309,9 @@ class ReleaseFixtureRepo:
 
     def readme_text(self) -> str:
         return (self.root / "README.md").read_text(encoding="utf-8")
+
+    def text(self, rel_path: str) -> str:
+        return (self.root / rel_path).read_text(encoding="utf-8")
 
     def lib_rs_text(self) -> str:
         return (self.root / "quadraui" / "src" / "lib.rs").read_text(encoding="utf-8")
@@ -635,6 +666,41 @@ class PrepareCommandTests(unittest.TestCase):
             self.assertIn("git push -u origin release-0.2.0", result.stdout)
             self.assertIn("gh pr create --base develop", result.stdout)
 
+    def test_prepare_rewrites_every_dependency_snippet_and_commits_it(self):
+        with ReleaseFixtureRepo() as repo:
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root), "--date", "2026-10-11"],
+                repo.root,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+
+            install = repo.text("quadraui/docs/INSTALL.md")
+            self.assertEqual(install.count('quadraui = { version = "0.2"'), 2)
+            self.assertNotIn('version = "0.1"', install)
+            guide = repo.text("quadraui/docs/GUIDE.md")
+            self.assertIn('quadraui = { version = "0.2", features = ["tui"] }', guide)
+            self.assertNotIn('version = "0.1"', guide)
+            template = repo.text("templates/app/Cargo.toml.liquid")
+            self.assertIn('quadraui = { version = "0.2" }', template)
+            self.assertIn('version = "0.1.0"', template)
+
+            committed = run_git(
+                ["show", "--name-only", "--format=", "HEAD"], repo.root
+            ).stdout.split()
+            for rel_path in release.DEPENDENCY_SNIPPET_PATHS:
+                self.assertIn(rel_path, committed)
+            self.assertEqual(run_git(["status", "--porcelain"], repo.root).stdout, "")
+
+    def test_prepare_refuses_a_doc_without_a_dependency_snippet(self):
+        with ReleaseFixtureRepo() as repo:
+            (repo.root / "quadraui" / "docs" / "GUIDE.md").write_text("# Guide\n")
+            run_git(["commit", "-qam", "drop the snippet"], repo.root)
+            result = run_release(
+                ["prepare", "0.2.0", "--repo-dir", str(repo.root)], repo.root
+            )
+            self.assertEqual(result.returncode, 1)
+            self.assertIn("quadraui/docs/GUIDE.md", result.stderr)
+
     def test_prepare_refuses_dirty_tree(self):
         with ReleaseFixtureRepo() as repo:
             (repo.root / "quadraui" / "src" / "lib.rs").write_text("// dirty\n")
@@ -798,6 +864,33 @@ class PrepareCommandTests(unittest.TestCase):
             self.assertEqual(result.returncode, 1)
             self.assertIn("already exists", result.stderr)
             self.assertIn("0.3.0", result.stderr)
+
+
+class RepoTreeTests(unittest.TestCase):
+    """Invariants on this checkout itself, not a fixture."""
+
+    REPO_ROOT = Path(__file__).resolve().parent.parent
+
+    def test_template_pin_matches_the_crate_major_minor(self):
+        crate_version = release.read_package_version(
+            (self.REPO_ROOT / "quadraui" / "Cargo.toml").read_text(encoding="utf-8")
+        )
+        template = (self.REPO_ROOT / "templates" / "app" / "Cargo.toml.liquid").read_text(
+            encoding="utf-8"
+        )
+        pins = release.DEPENDENCY_SNIPPET_RE.findall(template)
+        self.assertEqual(len(pins), 1, "the template should pin quadraui exactly once")
+        expected = f'quadraui = {{ version = "{release.published_dependency_version(crate_version)}"'
+        self.assertIn(
+            expected,
+            template,
+            "templates/app/Cargo.toml.liquid's quadraui pin must equal the crate's "
+            f"major.minor ({crate_version}); `release.py prepare` keeps them in step",
+        )
+
+    def test_every_dependency_snippet_path_exists(self):
+        for rel_path in release.DEPENDENCY_SNIPPET_PATHS:
+            self.assertTrue((self.REPO_ROOT / rel_path).is_file(), rel_path)
 
 
 class PrepareWithPyTests(unittest.TestCase):

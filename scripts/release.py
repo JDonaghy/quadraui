@@ -40,9 +40,12 @@ Two subcommands:
      line in the lockfile;
   7. rewrites README.md's Status section (`` `X.Y.x` ``) and
      getting-started dependency snippet (`quadraui = { version = "X.Y"`),
-     and `quadraui/src/lib.rs`'s crate-doc `## Status` section
-     (`` `X.Y.x` ``), to match the new version — the exact strings
-     `tests/readme_truth.rs` cross-checks against `CARGO_PKG_VERSION`;
+     the same snippet in `quadraui/docs/INSTALL.md` and
+     `quadraui/docs/GUIDE.md`, and `quadraui/src/lib.rs`'s crate-doc
+     `## Status` section (`` `X.Y.x` ``), to match the new version — the
+     exact strings `tests/readme_truth.rs` cross-checks against
+     `CARGO_PKG_VERSION` — plus the `cargo generate` starter template's
+     `quadraui` pin (`templates/app/Cargo.toml.liquid`);
   8. assembles every `changelog.d/*.md` fragment into `[Unreleased]`'s own
      body (grouped by `### Kind` heading in Keep-a-Changelog order, sorted
      by issue number within each heading, appended below whatever bullets
@@ -131,6 +134,17 @@ PRE_1_0_STATUS_RE = re.compile(r"`\d+\.\d+\.x`")
 # leads with, e.g. `quadraui = { version = "0.3"`. Matches
 # `tests/readme_truth.rs`'s `major_minor()`.
 DEPENDENCY_SNIPPET_RE = re.compile(r'(quadraui = \{ version = )"\d+\.\d+"')
+
+# Every file `prepare` rewrites the dependency snippet in, besides
+# README.md: the install and guide docs `tests/readme_truth.rs` also
+# cross-checks against `major_minor()`, and the `cargo generate` starter
+# template, whose `quadraui` pin must match the release's major.minor so a
+# freshly generated app depends on the release it was generated from.
+DEPENDENCY_SNIPPET_PATHS = (
+    "quadraui/docs/INSTALL.md",
+    "quadraui/docs/GUIDE.md",
+    "templates/app/Cargo.toml.liquid",
+)
 
 # -- changelog.d/ fragments (#2419) ------------------------------------
 #
@@ -433,8 +447,8 @@ def set_pre_1_0_status_string(text: str, version: str, *, label: str) -> str:
 
 
 def set_dependency_snippet_version(text: str, version: str, *, label: str) -> str:
-    """Rewrite README.md's `quadraui = { version = "X.Y"` getting-started
-    snippet to match `version`."""
+    """Rewrite every `quadraui = { version = "X.Y"` dependency snippet in
+    `text` to match `version`."""
     new_text, count = DEPENDENCY_SNIPPET_RE.subn(
         rf'\1"{published_dependency_version(version)}"', text
     )
@@ -801,6 +815,17 @@ def cmd_prepare(args: argparse.Namespace) -> int:
         )
         readme_path.write_text(readme_text, encoding="utf-8")
 
+        for rel_path in DEPENDENCY_SNIPPET_PATHS:
+            snippet_path = repo_dir / rel_path
+            snippet_path.write_text(
+                set_dependency_snippet_version(
+                    snippet_path.read_text(encoding="utf-8"),
+                    args.version,
+                    label=rel_path,
+                ),
+                encoding="utf-8",
+            )
+
         lib_rs_text = lib_rs_path.read_text(encoding="utf-8")
         lib_rs_text = set_pre_1_0_status_string(
             lib_rs_text, args.version, label="quadraui/src/lib.rs's crate doc"
@@ -827,6 +852,7 @@ def cmd_prepare(args: argparse.Namespace) -> int:
             "quadraui/Cargo.toml",
             "Cargo.lock",
             "README.md",
+            *DEPENDENCY_SNIPPET_PATHS,
             "quadraui/src/lib.rs",
             "CHANGELOG.md",
             *fragment_rel_paths,

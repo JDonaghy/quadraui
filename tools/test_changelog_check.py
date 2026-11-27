@@ -557,6 +557,31 @@ class IsReleaseBumpPrTest(unittest.TestCase):
                 changelog_check.is_release_bump_pr(base, head, repo.root)
             )
 
+    def test_bump_that_also_rewrites_the_docs_and_template_pins_is_bump_shaped(self):
+        with TempGitRepo() as repo:
+            for rel_path in (
+                "quadraui/docs/INSTALL.md",
+                "quadraui/docs/GUIDE.md",
+                "templates/app/Cargo.toml.liquid",
+            ):
+                path = repo.root / rel_path
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text('quadraui = { version = "0.1" }\n', encoding="utf-8")
+            base = repo.commit("base")
+            for rel_path in (
+                "quadraui/docs/INSTALL.md",
+                "quadraui/docs/GUIDE.md",
+                "templates/app/Cargo.toml.liquid",
+            ):
+                (repo.root / rel_path).write_text(
+                    'quadraui = { version = "0.2" }\n', encoding="utf-8"
+                )
+            head = self._bump_commit(repo)
+
+            self.assertTrue(
+                changelog_check.is_release_bump_pr(base, head, repo.root)
+            )
+
     def test_bump_plus_an_unrelated_file_is_not_bump_shaped(self):
         with TempGitRepo() as repo:
             base = repo.commit("base")
