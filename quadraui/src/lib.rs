@@ -16,7 +16,7 @@
 //!
 //! ## What's in the box
 //!
-//! 53 primitive modules (one each under `src/primitives/`) — widgets,
+//! 59 primitive modules (one each under `src/primitives/`) — widgets,
 //! each declarative + serde-friendly so apps and Lua plugins can
 //! describe UI as data, plus the `layout_metrics` and `row_stack`
 //! shared-math helpers the widget modules reuse. A representative
@@ -117,7 +117,7 @@
 //! `0.11.x` — pre-1.0, published on crates.io. Breaking changes are
 //! grouped into scheduled minor releases and recorded in `CHANGELOG.md`;
 //! what a `0.x` release may change is D-019 in
-//! `quadraui/docs/decisions/DECISIONS.md`. 53 primitive modules
+//! `quadraui/docs/decisions/DECISIONS.md`. 59 primitive modules
 //! shipped. The TUI and GTK backends have full feature parity and are
 //! battle-tested by vimcode (5000+ tests). The macOS backend
 //! implements the whole `Backend` trait and is built/tested for real
@@ -615,13 +615,16 @@ pub use primitives::button::{
     Button, ButtonEvent, ButtonHit, ButtonIconPosition, ButtonLayout, ButtonMetrics, ButtonSpec,
     ButtonVariant,
 };
-pub use primitives::canvas::{Canvas, CanvasCursor, CanvasHit, CanvasLayout, CanvasRegion, DrawOp};
+pub use primitives::canvas::{
+    Canvas, CanvasCursor, CanvasHit, CanvasLayout, CanvasRegion, CanvasState, DrawOp,
+};
 pub use primitives::cell_grid::{
     column_letters, Cell, CellAlign, CellGrid, CellGridEvent, CellGridHit, CellGridLayout,
     CellGridPrimitiveLayout, CellGridState, CellStyle, CellsWindow, ResolvedSpan,
 };
 pub use primitives::chart::{
-    Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
+    Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, ChartPrimitiveLayout,
+    ChartState, Series,
 };
 pub use primitives::combo_box::{ComboBox, ComboBoxEvent};
 pub use primitives::command_center::{
@@ -652,8 +655,8 @@ pub use primitives::dialog::{
 };
 pub use primitives::diff_view::{
     DiffDisplayLine, DiffEditability, DiffHeaderGeometry, DiffHunk, DiffLineContent, DiffMode,
-    DiffPane, DiffPaneGeometry, DiffRow, DiffRowKind, DiffView, DiffViewGeometry, DiffViewHit,
-    DiffViewLayout,
+    DiffPane, DiffPaneGeometry, DiffRow, DiffRowKind, DiffView, DiffViewEvent, DiffViewGeometry,
+    DiffViewHit, DiffViewLayout,
 };
 pub use primitives::drop_zone::{
     compute_drop_zone, drop_zone_hit_test, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay,
@@ -672,9 +675,9 @@ pub use primitives::find_replace::{
 };
 pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{
-    ButtonRowItem, ControlWidth, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
-    FormItemMeasure, FormLayout, FormSpacing, LabelAlign, LabelPosition, RowAlign, ToggleGroupItem,
-    ValidationState, VisibleFormField,
+    BareFieldLayout, ButtonRowItem, ControlWidth, FieldKind, Form, FormEvent, FormField,
+    FormFieldMeasure, FormHit, FormItemMeasure, FormLayout, FormSpacing, LabelAlign, LabelPosition,
+    RowAlign, ToggleGroupItem, ValidationState, VisibleFormField,
 };
 pub use primitives::icon_grid::{
     icon_grid_move_selection, IconGrid, IconGridEvent, IconGridHit, IconGridItem, IconGridLayout,
@@ -700,6 +703,7 @@ pub use primitives::list::{
 // pilot `impl Primitive for ListView` itself is (see that impl's own
 // `cfg`): the three pixel backends via `native_surface_paint`, plus
 // `tui` via `Primitive::paint_cells`/`crate::tui::draw_list`.
+pub use primitives::checkbox::{Checkbox, CheckboxAction};
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
@@ -707,13 +711,14 @@ pub use primitives::list::{
     all(feature = "macos", target_os = "macos")
 ))]
 pub use primitives::list::ListViewPrimitiveLayout;
+pub use primitives::markdown::{Markdown, MarkdownAction, MarkdownLayout, MarkdownLink};
 pub use primitives::menu_bar::{
     resolve_bar_height, MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout,
     VisibleMenuBarItem, BAR_HEIGHT,
 };
 pub use primitives::message_list::{
-    MessageList, MessageListHit, MessageListLayout, MessageListMeasure, MessageRow,
-    VisibleMessageRow,
+    MessageList, MessageListEvent, MessageListHit, MessageListLayout, MessageListMeasure,
+    MessageRow, VisibleMessageRow,
 };
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_blocks, sample_window, window_start_line, Minimap,
@@ -733,9 +738,10 @@ pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout, PaletteMode,
     PalettePreview, PaletteScrollbar, VisiblePaletteItem,
 };
+pub use primitives::password_input::{PasswordInput, PasswordInputAction};
 pub use primitives::pipeline_view::{
     PipelineEvent, PipelineHit, PipelineStage, PipelineView, PipelineViewLayout,
-    PipelineViewMeasure, StageBounds, StageStatus,
+    PipelineViewMeasure, PipelineViewPrimitiveLayout, StageBounds, StageStatus,
 };
 pub use primitives::progress::{
     ProgressBar, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
@@ -747,17 +753,22 @@ pub use primitives::rich_text_popup::{
     PopupPlacement, PopupScrollbar, RichTextLink, RichTextPopup, RichTextPopupHit,
     RichTextPopupLayout, RichTextPopupMeasure, TextSelection, VisibleRichTextLine,
 };
-pub use primitives::scroll_view::{ScrollView, ScrollViewEvent};
+pub use primitives::scroll_view::{ScrollView, ScrollViewEvent, ScrollViewLayout, ScrollViewState};
 pub use primitives::scrollbar::{
     clamp_scroll_offset_f32, fit_thumb, scroll_by_clamped_f32, scroll_rows, wheel_delta,
     wheel_row_delta, PressZone, ScrollAxis, Scrollbar, ScrollbarEvent, ScrollbarLayout,
     ScrollbarState, SCROLLBAR_WHEEL_VIEWPORTS_PER_NOTCH,
 };
+pub use primitives::select::{Select, SelectAction};
 pub use primitives::sidebar_panel::{
     SidebarPanel, SidebarPanelAction, SidebarPanelHit, SidebarPanelLayout, SidebarPanelState,
 };
+pub use primitives::slider::{Slider, SliderAction, SliderState};
 pub use primitives::spinner::{Spinner, SpinnerHit, SpinnerLayout, SpinnerMeasure};
-pub use primitives::split::{Split, SplitDirection, SplitHit, SplitLayout, SplitMeasure};
+pub use primitives::split::{
+    Split, SplitDirection, SplitDividerDrag, SplitHit, SplitLayout, SplitMeasure, SplitState,
+    SplitTreeState,
+};
 pub use primitives::split_tree::{
     SplitTree, SplitTreeDivider, SplitTreeLayout, SplitTreeMeasure,
     MAX_RATIO as SPLIT_TREE_MAX_RATIO, MIN_RATIO as SPLIT_TREE_MIN_RATIO,
@@ -768,6 +779,7 @@ pub use primitives::status_bar::{
     VisibleStatusSegment,
 };
 pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
+pub use primitives::text_area::{TextArea, TextAreaAction};
 // `TabBarHits` is deprecated (D-6 pre-refactor hit struct; `TabBarLayout` with
 // `Rect` is the replacement). Allow it here since `pub use` of a deprecated
 // item is itself a use site. Removal is blocked on the six-method/four-backend
@@ -829,8 +841,8 @@ pub use text_util::{
 pub use theme::Theme;
 pub use transition::{lerp, lerp_rect, Transition};
 pub use types::{
-    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, SelectionGesture,
-    SelectionMode, StyledSpan, StyledText, TreePath, TreeStyle, WidgetId,
+    apply_selection_gesture, Badge, Color, Decoration, Icon, Modifiers, SelectionCore,
+    SelectionGesture, SelectionMode, StyledSpan, StyledText, TreePath, TreeStyle, WidgetId,
 };
 pub use undo::UndoStack;
 

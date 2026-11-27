@@ -6923,6 +6923,8 @@ mod tests {
             y_ticks: Some(0),
             x_ticks: Some(0),
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -7025,6 +7027,8 @@ mod tests {
             y_ticks: Some(0),
             x_ticks: Some(0),
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -7181,6 +7185,8 @@ mod tests {
             y_ticks: Some(2),
             x_ticks: Some(2),
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         };
 
         let surface = BitmapSurface::new(CW, CH);

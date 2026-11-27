@@ -745,13 +745,14 @@ pub fn schema() -> Vec<DefJson> {
     let column_width = b.define(flat_doc(
         "ColumnWidth",
         &[
+            ("Native", float_()),
             ("FixedCells", float_()),
             ("FixedPx", float_()),
             ("Flex", float_()),
             ("Content", column_width_content),
         ],
         vec![],
-        "Column sizing strategy, e.g. `{\"Flex\": 2.0}` -- the deprecated `\"Fixed\"` variant is omitted here; use `FixedCells`/`FixedPx` instead.",
+        "Column sizing strategy, e.g. `{\"Flex\": 2.0}`. `Native` is N in the backend's own unit (cells on TUI, pixels elsewhere); `FixedCells`/`FixedPx` keep one meaning on every backend.",
     ));
     let column_descriptor = b.define(obj(
         "ColumnDescriptor",
@@ -784,6 +785,7 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("column_overrides", list(nullable(float_()))),
             field_opt("footer", nullable(data_row_descriptor)),
             field_opt("bordered", bool_()),
+            field_opt("striped", bool_()),
             field_opt("scroll_px", float_()),
             with_doc(
                 field_opt("items_window", nullable(items_window.clone())),
@@ -1817,6 +1819,8 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("y_ticks", nullable(int_())),
             field_opt("x_ticks", nullable(int_())),
             field_opt("show_grid", bool_()),
+            field_opt("hovered_point", nullable(tup(vec![int_(), int_()]))),
+            field_opt("crosshair_x", nullable(float_())),
         ],
     ));
     let stage_status = b.define(alias(
@@ -2940,25 +2944,16 @@ pub fn schema() -> Vec<DefJson> {
             "number_input" => number_input_descriptor.clone(),
             "combo_box" => combo_box_descriptor.clone(),
             "date_picker" => date_picker_descriptor.clone(),
-            "chart" => chart_descriptor.clone(),
             "message_list" => message_list_descriptor.clone(),
-            "board" => board_model_descriptor.clone(),
-            "pipeline_view" => pipeline_view_descriptor.clone(),
             "multi_section_view" => multi_section_view_descriptor.clone(),
-            "diff_view" => diff_view_descriptor.clone(),
             "toolbar" => toolbar_descriptor.clone(),
             "menu_bar" => menu_bar_descriptor.clone(),
             "command_line" => command_line_descriptor.clone(),
             "scrollbar" => scrollbar_descriptor.clone(),
             "canvas" => canvas_descriptor.clone(),
-            "scroll_view" => scroll_view_descriptor.clone(),
             "find_replace" => find_replace_panel_descriptor.clone(),
-            "checkbox" => checkbox_descriptor.clone(),
-            "slider" => slider_descriptor.clone(),
-            "select" => select_descriptor.clone(),
             "password" => password_descriptor.clone(),
             "textarea" => textarea_descriptor.clone(),
-            "markdown" => markdown_descriptor.clone(),
             "tree_table" => tree_table_descriptor.clone(),
             "tree_table_controller" => tree_table_controller_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
@@ -2990,6 +2985,15 @@ pub fn schema() -> Vec<DefJson> {
             "editor" => editor_descriptor.clone(),
             "minimap" => minimap_descriptor.clone(),
             "image" => image_descriptor.clone(),
+            "chart" => chart_descriptor.clone(),
+            "scroll_view" => scroll_view_descriptor.clone(),
+            "board" => board_model_descriptor.clone(),
+            "pipeline_view" => pipeline_view_descriptor.clone(),
+            "diff_view" => diff_view_descriptor.clone(),
+            "checkbox" => checkbox_descriptor.clone(),
+            "slider" => slider_descriptor.clone(),
+            "select" => select_descriptor.clone(),
+            "markdown" => markdown_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3255,6 +3259,14 @@ pub fn schema() -> Vec<DefJson> {
         "_DataTableSelectionSetPayload",
         vec![field("indices", list(int_()))],
     ));
+    let data_table_scroll_changed_payload = b.define(obj(
+        "_DataTableScrollChangedPayload",
+        vec![field("scroll_offset", int_())],
+    ));
+    let data_table_context_menu_payload = b.define(obj(
+        "_DataTableContextMenuPayload",
+        vec![field("idx", int_()), field("position", re("Point"))],
+    ));
     b.define(flat(
         "DataTableEvent",
         &[
@@ -3265,6 +3277,9 @@ pub fn schema() -> Vec<DefJson> {
             ("Scroll", data_table_scroll_payload.clone()),
             ("ColumnResized", column_resized_payload.clone()),
             ("SelectionSet", data_table_selection_set_payload),
+            ("ScrollChanged", data_table_scroll_changed_payload),
+            ("ColumnFocused", col_payload.clone()),
+            ("ContextMenuRequested", data_table_context_menu_payload),
         ],
         vec![],
     ));
@@ -3525,6 +3540,16 @@ pub fn schema() -> Vec<DefJson> {
         vec![],
     ));
 
+    let scroll_view_scrolled_payload = b.define(obj(
+        "_ScrollViewScrolledPayload",
+        vec![field("offset", float_())],
+    ));
+    b.define(flat(
+        "ScrollViewEvent",
+        &[("Scrolled", scroll_view_scrolled_payload)],
+        vec![],
+    ));
+
     let data_point_clicked_payload = b.define(obj(
         "_DataPointClickedPayload",
         vec![
@@ -3537,9 +3562,17 @@ pub fn schema() -> Vec<DefJson> {
         "_LegendClickedPayload",
         vec![field("id", re("WidgetId")), field("series_idx", int_())],
     ));
+    let data_point_hovered_payload = b.define(obj(
+        "_DataPointHoveredPayload",
+        vec![
+            field("id", re("WidgetId")),
+            field("point", nullable(tup(vec![int_(), int_()]))),
+        ],
+    ));
     b.define(flat(
         "ChartEvent",
         &[
+            ("DataPointHovered", data_point_hovered_payload),
             ("Clicked", id_payload.clone()),
             ("DataPointClicked", data_point_clicked_payload),
             ("LegendClicked", legend_clicked_payload),
@@ -4051,11 +4084,18 @@ pub fn schema() -> Vec<DefJson> {
             ("Terminal", tup(vec![re("WidgetId"), re("TerminalEvent")])),
             ("Editor", tup(vec![re("WidgetId"), re("EditorEvent")])),
             ("Minimap", tup(vec![re("WidgetId"), re("MinimapEvent")])),
+            // A board, pipeline, diff or message-list event rides as its
+            // own externally-tagged serde shape.
+            ("Board", tup(vec![re("WidgetId"), any_()])),
+            ("PipelineView", tup(vec![re("WidgetId"), any_()])),
+            ("DiffView", tup(vec![re("WidgetId"), any_()])),
+            ("MessageList", tup(vec![re("WidgetId"), any_()])),
             ("TextDisplay", tup(vec![re("WidgetId"), re("TextDisplayEvent")])),
             ("Chart", tup(vec![re("WidgetId"), re("ChartEvent")])),
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
             ("TreeTable", tup(vec![re("WidgetId"), re("TreeTableEvent")])),
             ("CellGrid", tup(vec![re("WidgetId"), re("CellGridEvent")])),
+            ("ScrollView", tup(vec![re("WidgetId"), re("ScrollViewEvent")])),
             ("HelpOverlay", tup(vec![re("WidgetId"), any_()])),
             ("PathPicker", tup(vec![re("WidgetId"), any_()])),
             ("DualModePalette", tup(vec![re("WidgetId"), any_()])),
@@ -4263,6 +4303,7 @@ mod coverage {
             UiEvent::DataTable(_, _) => {}
             UiEvent::TreeTable(_, _) => {}
             UiEvent::CellGrid(_, _) => {}
+            UiEvent::ScrollView(_, _) => {}
             UiEvent::Toolbar(_, _) => {}
             UiEvent::Canvas(_, _) => {}
             UiEvent::BackendNative(_) => {}
@@ -4400,6 +4441,12 @@ mod coverage {
             } => {}
             DataTableEvent::ColumnResized { col: _, width: _ } => {}
             DataTableEvent::SelectionSet { indices: _ } => {}
+            DataTableEvent::ScrollChanged { scroll_offset: _ } => {}
+            DataTableEvent::ColumnFocused { col: _ } => {}
+            DataTableEvent::ContextMenuRequested {
+                idx: _,
+                position: _,
+            } => {}
         }
     }
 
@@ -4527,6 +4574,7 @@ mod coverage {
 
     fn assert_chart_event(e: ChartEvent) {
         match e {
+            ChartEvent::DataPointHovered { id: _, point: _ } => {}
             ChartEvent::Clicked { id: _ } => {}
             ChartEvent::DataPointClicked {
                 id: _,
@@ -4702,14 +4750,9 @@ mod coverage {
         }
     }
 
-    #[allow(deprecated)] // `ColumnWidth::Fixed` is `#[deprecated]`; this arm is its own plumbing.
     fn assert_column_width(w: ColumnWidth) {
         match w {
-            // Deprecated in favour of `FixedCells`/`FixedPx` (ambiguous
-            // unit) -- `schema()`'s own `ColumnWidth` entry deliberately
-            // omits it; still named here so a field change to this variant
-            // still trips this guard.
-            ColumnWidth::Fixed(_) => {}
+            ColumnWidth::Native(_) => {}
             ColumnWidth::FixedCells(_) => {}
             ColumnWidth::FixedPx(_) => {}
             ColumnWidth::Flex(_) => {}
@@ -4920,6 +4963,9 @@ mod coverage {
             placeholder
         }
     );
+    // `glyphs` is `#[serde(default)]` descriptor state a host app sets
+    // through the Rust API: `DataTableDescriptor` declares no `glyphs`, so
+    // a binding's table paints each backend's default sort arrows.
     assert_fields!(
         assert_data_table_fields,
         DataTable {
@@ -4935,7 +4981,9 @@ mod coverage {
             h_scroll,
             column_overrides,
             footer,
-            bordered
+            bordered,
+            striped,
+            glyphs
         }
     );
     assert_fields!(
@@ -5488,7 +5536,9 @@ mod coverage {
             show_legend,
             y_ticks,
             x_ticks,
-            show_grid
+            show_grid,
+            hovered_point,
+            crosshair_x
         }
     );
     fn assert_stage_status(s: StageStatus) {
@@ -7037,11 +7087,16 @@ mod coverage {
                 "Terminal",
                 "Editor",
                 "Minimap",
+                "Board",
+                "PipelineView",
+                "DiffView",
+                "MessageList",
                 "TextDisplay",
                 "Chart",
                 "DataTable",
                 "TreeTable",
                 "CellGrid",
+                "ScrollView",
                 "HelpOverlay",
                 "PathPicker",
                 "DualModePalette",

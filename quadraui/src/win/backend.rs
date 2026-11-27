@@ -38,7 +38,7 @@ use crate::{Accelerator, AcceleratorId, Key, ListView, Modifiers, TreeView, User
 // tests.
 #[cfg(all(test, target_os = "windows"))]
 use crate::ContextMenu;
-#[cfg(target_os = "windows")]
+#[cfg(all(test, target_os = "windows"))]
 use crate::Theme;
 #[cfg(test)]
 use crate::{ActivityBar, MenuBar, StatusBar, TabBar};
@@ -3794,12 +3794,8 @@ impl Backend for WinBackend {
     /// See [`Self::draw_tree`]'s doc for the "surface not attached
     /// yet" fallback posture.
     ///
-    /// Shared chart painting lives in [`crate::primitives::chart::paint`]
-    /// now — see that fn's doc for the divergences (the quadraui clip,
-    /// most notably — Windows never had one before this) resolved while
-    /// unifying `gtk::chart::draw_chart`, `macos::chart::draw_chart` and
-    /// `win::chart::draw_chart` into one implementation. Keeps
-    /// `Theme::default()` rather than `self.current_theme`.
+    /// Paints through the shared [`crate::primitives::chart::paint`] in
+    /// the backend's current theme.
     fn draw_chart(
         &mut self,
         rect: Rect,
@@ -3810,7 +3806,7 @@ impl Backend for WinBackend {
         #[cfg(target_os = "windows")]
         if self.surface.is_some() {
             let layout = self.chart_layout(rect, chart);
-            let theme = Theme::default();
+            let theme = self.current_theme;
             crate::primitives::chart::paint(
                 chart,
                 &layout,
@@ -3838,15 +3834,7 @@ impl Backend for WinBackend {
         rect: Rect,
         chart: &crate::primitives::chart::Chart,
     ) -> crate::primitives::chart::ChartLayout {
-        crate::primitives::layout_metrics::pixel_chart_layout(
-            chart,
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            self.current_line_height,
-            self.current_char_width,
-        )
+        chart.layout_in(rect, self.current_char_width, self.current_line_height)
     }
 }
 
@@ -8759,6 +8747,8 @@ mod tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let diff = chrome_font_diff_pixel_count(
             200,
@@ -9123,6 +9113,8 @@ mod tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let (small, big) = chrome_font_diff_layout(
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
@@ -9673,6 +9665,8 @@ mod tests {
             y_ticks: Some(0),
             x_ticks: Some(0),
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -9772,6 +9766,8 @@ mod tests {
             y_ticks: Some(0),
             x_ticks: Some(0),
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         };
 
         const CANVAS_W: u32 = 40;

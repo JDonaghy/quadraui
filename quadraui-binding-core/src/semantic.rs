@@ -12,9 +12,7 @@ use quadraui::{
 };
 
 use crate::drag::{tab_bar_for_right_segment, tree_row_path};
-use crate::extra_paint::{
-    extra_as, extra_as_toolbar, Checkbox, Markdown, PasswordInput, Select, Slider, TextArea,
-};
+use crate::extra_paint::{extra_as, extra_as_toolbar, PasswordInput, TextArea};
 use crate::hit::{HitDetail, PaintedHit};
 use crate::text_input::{apply_text_input_edit, text_input_key_event, TextEditorCache};
 use crate::tree_edit::tree_row_rename_key_event;
@@ -245,163 +243,11 @@ fn date_picker_key_event(id: WidgetId, picker: &DatePicker, key: &str) -> Option
     }
 }
 
-/// Flips a standalone [`Checkbox`] leaf's `value` — the click half of the
-/// Space/Enter semantics [`checkbox_key_event`] gives it below. `None`
-/// when disabled, mirroring [`quadraui::Switch::click`]'s own disabled guard (a
-/// disabled extra is inert, not hidden).
-pub(crate) fn checkbox_click_event(id: WidgetId, checkbox: &Checkbox) -> Option<UiEvent> {
-    if checkbox.disabled {
-        return None;
-    }
-    Some(UiEvent::Form(
-        id,
-        FormEvent::ToggleChanged {
-            id,
-            value: !checkbox.value,
-        },
-    ))
-}
-
-/// Space/Enter equivalent of [`checkbox_click_event`] — the keyboard
-/// operability a standalone, layout-tree-leaf `Checkbox` needs since it
-/// has no embedding `FormController` of its own to supply it. `None` for
-/// every other key, leaving [`focus_scoped_key_event`] to fall through to
-/// the raw `KeyPressed`.
-pub(crate) fn checkbox_key_event(id: WidgetId, checkbox: &Checkbox, key: &Key) -> Option<UiEvent> {
-    if !matches!(key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
-        return None;
-    }
-    checkbox_click_event(id, checkbox)
-}
-
-/// Maps a click at absolute `point` within the slider's absolute `area`
-/// straight to a track position — `FieldKind::Slider`'s own doc
-/// ("click-and-drag on the track updates value") means where on the track
-/// the click lands, not a fixed one-`step` nudge regardless of position.
-/// `None` when disabled, the area has no width to map against, or the
-/// mapped value doesn't actually move `slider.value`.
-pub(crate) fn slider_click_event(
-    id: WidgetId,
-    slider: &Slider,
-    area: quadraui::Rect,
-    point: quadraui::Point,
-) -> Option<UiEvent> {
-    if slider.disabled || area.width <= 0.0 {
-        return None;
-    }
-    let fraction = ((point.x - area.x) / area.width).clamp(0.0, 1.0);
-    let value = slider.clamp(slider.min + fraction * (slider.max - slider.min));
-    if value == slider.value {
-        return None;
-    }
-    Some(UiEvent::Form(id, FormEvent::SliderChanged { id, value }))
-}
-
-/// Shared by [`slider_key_event`]: clamps
-/// `slider.value + delta` to `[slider.min, slider.max]` via
-/// [`Slider::clamp`] and returns `None` when that doesn't actually move
-/// the value (already at the bound `delta` pushes toward).
-fn slider_step(id: WidgetId, slider: &Slider, delta: f32) -> Option<UiEvent> {
-    if slider.disabled {
-        return None;
-    }
-    let value = slider.clamp(slider.value + delta);
-    if value == slider.value {
-        return None;
-    }
-    Some(UiEvent::Form(id, FormEvent::SliderChanged { id, value }))
-}
-
-/// Left/Down step the value down by `step`, Right/Up step it up,
-/// Home/End jump straight to `min`/`max` — the keyboard operability
-/// [`FieldKind::Slider`](quadraui::FieldKind::Slider) has no generic
-/// `FormController` arm for today (only mouse drag/click). `None` for
-/// every other key or a step that doesn't move the clamped value, leaving
-/// [`focus_scoped_key_event`] to fall through to the raw `KeyPressed`.
-pub(crate) fn slider_key_event(id: WidgetId, slider: &Slider, key: &Key) -> Option<UiEvent> {
-    if slider.disabled {
-        return None;
-    }
-    match key {
-        Key::Named(NamedKey::Left) | Key::Named(NamedKey::Down) => {
-            slider_step(id, slider, -slider.step)
-        }
-        Key::Named(NamedKey::Right) | Key::Named(NamedKey::Up) => {
-            slider_step(id, slider, slider.step)
-        }
-        Key::Named(NamedKey::Home) if slider.value != slider.min => Some(UiEvent::Form(
-            id,
-            FormEvent::SliderChanged {
-                id,
-                value: slider.min,
-            },
-        )),
-        Key::Named(NamedKey::End) if slider.value != slider.max => Some(UiEvent::Form(
-            id,
-            FormEvent::SliderChanged {
-                id,
-                value: slider.max,
-            },
-        )),
-        _ => None,
-    }
-}
-
-/// Moves a standalone [`Select`] leaf's `selected_idx` by `delta` options
-/// (clamped, never wrapping), committing immediately — mirrors
-/// `FieldKind::Dropdown`'s own "no separate open step; a move commits"
-/// contract. `None` when disabled, empty, or `delta` doesn't actually
-/// move the clamped index (already at the bound it pushes toward).
-fn select_step(id: WidgetId, select: &Select, delta: isize) -> Option<UiEvent> {
-    if select.disabled || select.options.is_empty() {
-        return None;
-    }
-    let len = select.options.len();
-    let idx = if delta < 0 {
-        select.selected_idx.saturating_sub(delta.unsigned_abs())
-    } else {
-        (select.selected_idx + delta as usize).min(len - 1)
-    };
-    if idx == select.selected_idx {
-        return None;
-    }
-    Some(UiEvent::Form(
-        id,
-        FormEvent::DropdownChanged {
-            id,
-            selected_idx: idx,
-        },
-    ))
-}
-
-/// Clicking the body advances to the next option (wraps never —
-/// clicking past the last option is a no-op), the mouse half of
-/// [`select_key_event`]'s Up/Down/Enter/Space.
-pub(crate) fn select_click_event(id: WidgetId, select: &Select) -> Option<UiEvent> {
-    select_step(id, select, 1)
-}
-
-/// Up moves to the previous option, Down to the next one — the same two
-/// keys and only those two that `FormController`'s private
-/// `handle_dropdown_key` claims for a `Form`-embedded `FieldKind::Dropdown`
-/// field, so a focused standalone `select` leaf keeps the same key
-/// contract. Enter and Space are deliberately left unclaimed (`None`): they
-/// *open* a select, they don't mutate its selection, and leaving them
-/// unclaimed here lets an app-level Enter/submit handler still see the
-/// keypress.
-pub(crate) fn select_key_event(id: WidgetId, select: &Select, key: &Key) -> Option<UiEvent> {
-    match key {
-        Key::Named(NamedKey::Up) => select_step(id, select, -1),
-        Key::Named(NamedKey::Down) => select_step(id, select, 1),
-        _ => None,
-    }
-}
-
 /// Resolves a key focused on a standalone [`PasswordInput`] leaf by
 /// forwarding to [`text_input_key_event`] on its plaintext `inner` —
 /// identical typing/cursor/selection/commit semantics to a bare
 /// standalone `TextInput`, the only difference being what
-/// [`PasswordInput::as_form`](crate::extra_paint::PasswordInput::as_form)
+/// [`PasswordInput::as_widget`](crate::extra_paint::PasswordInput::as_widget)
 /// paints, which never sees this function at all.
 pub(crate) fn password_key_event(
     id: WidgetId,
@@ -568,18 +414,7 @@ pub fn semantic_event_for_hit(
                 extra,
                 area,
                 ..
-            } if *hit_id == id => {
-                if let Some(checkbox) = extra_as::<Checkbox>(extra) {
-                    return checkbox_click_event(id, checkbox);
-                }
-                if let Some(slider) = extra_as::<Slider>(extra) {
-                    return slider_click_event(id, slider, *area, point);
-                }
-                if let Some(select) = extra_as::<Select>(extra) {
-                    return select_click_event(id, select);
-                }
-                None
-            }
+            } if *hit_id == id => None,
             _ => None,
         }),
         // Translates the absolute `point` into the canvas's own LOCAL frame
@@ -621,17 +456,8 @@ pub fn semantic_event_for_hit(
             PaintedHit::Extra {
                 id: hit_id, extra, ..
             } if *hit_id == *bar => {
-                if let Some(markdown) = extra_as::<Markdown>(extra) {
-                    // `id` is the per-link chrome-hit id `Markdown::paint_chrome`
-                    // pushed, not `bar` (the leaf's own id) — mirrors
-                    // `Toolbar::click`'s own "look up the clicked child, not the
-                    // bar" resolution just below.
-                    let url = markdown.link_url_for_child(id)?;
-                    Some(UiEvent::RichTextLinkClicked(*bar, url))
-                } else {
-                    let toolbar = extra_as_toolbar(extra)?;
-                    Some(UiEvent::Toolbar(*bar, toolbar.click(id)?))
-                }
+                let toolbar = extra_as_toolbar(extra)?;
+                Some(UiEvent::Toolbar(*bar, toolbar.click(id)?))
             }
             _ => None,
         }),
@@ -819,15 +645,6 @@ pub fn focus_scoped_key_event(
                         return Some(UiEvent::Toolbar(*id, toolbar.activate_focused()?));
                     }
                     return None;
-                }
-                if let Some(checkbox) = extra_as::<Checkbox>(extra) {
-                    return checkbox_key_event(*id, checkbox, raw_key);
-                }
-                if let Some(slider) = extra_as::<Slider>(extra) {
-                    return slider_key_event(*id, slider, raw_key);
-                }
-                if let Some(select) = extra_as::<Select>(extra) {
-                    return select_key_event(*id, select, raw_key);
                 }
                 if let Some(password) = extra_as::<PasswordInput>(extra) {
                     return password_key_event(*id, password, raw_key, modifiers, text_editors);

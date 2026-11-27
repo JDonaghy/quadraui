@@ -15,10 +15,18 @@
 //! app updates `ratio` on the primitive for the next frame. Clicks on
 //! either pane resolve as `SplitHit::FirstPane` / `SplitHit::SecondPane`.
 
-use crate::event::Rect;
+use crate::event::{Point, Rect};
 use crate::primitives::split_tree::{SplitTree, SplitTreeMeasure};
 use crate::types::WidgetId;
 use serde::{Deserialize, Serialize};
+
+mod contract;
+#[cfg(feature = "tui")]
+pub(crate) mod junction;
+
+#[cfg(feature = "tui")]
+pub(crate) use contract::paint_tree_cells;
+pub use contract::{SplitDividerDrag, SplitState, SplitTreeState};
 
 /// Declarative description of a split container.
 ///
@@ -141,6 +149,58 @@ impl SplitLayout {
     pub fn divider_hit_bounds(&self) -> Rect {
         self.hit_regions[0].0
     }
+
+    /// The ratio that places the divider's leading edge at `point` (same
+    /// frame as this layout), clamped to `0.0..=1.0` — the exact inverse
+    /// of [`Split::layout`]'s placement (see
+    /// [`crate::SplitTreeDivider::ratio_at`], which this shares). Falls
+    /// back to [`Self::resolved_ratio`] when the container leaves no room
+    /// to move the divider in.
+    pub fn ratio_at(&self, point: Point) -> f32 {
+        self.divider()
+            .ratio_at(point)
+            .unwrap_or(self.resolved_ratio)
+    }
+
+    /// This layout's divider as the one divider of the equivalent
+    /// two-leaf [`SplitTree`], at its unsnapped position — what a host
+    /// hands [`crate::DragTarget::SplitDivider`] to drag it.
+    pub fn divider(&self) -> crate::SplitTreeDivider {
+        let d = self.divider_bounds;
+        let b = self.bounds;
+        let (direction, position, axis_start, axis_size, cross_start, cross_size, thickness) =
+            if d.width <= d.height {
+                (
+                    SplitDirection::Horizontal,
+                    d.x,
+                    b.x,
+                    b.width,
+                    d.y,
+                    d.height,
+                    d.width,
+                )
+            } else {
+                (
+                    SplitDirection::Vertical,
+                    d.y,
+                    b.y,
+                    b.height,
+                    d.x,
+                    d.width,
+                    d.height,
+                )
+            };
+        crate::SplitTreeDivider {
+            split_index: 0,
+            direction,
+            position,
+            axis_start,
+            axis_size,
+            cross_start,
+            cross_size,
+            thickness,
+        }
+    }
 }
 
 impl Split {
@@ -162,19 +222,9 @@ impl Split {
     /// `SplitTree::Split`, so the two primitives share one relax
     /// formula and can never drift apart.
     pub fn layout(&self, bounds: Rect, measure: SplitMeasure) -> SplitLayout {
-        // Both leaves share `self.id` — this transient tree is never
-        // inspected by id (only `leaves[0]`/`leaves[1]`/`dividers[0]`,
-        // read positionally below), so `SplitTree::leaf_ids()`'s
-        // identity invariant doesn't apply here. Don't "fix" this by
-        // minting distinct ids; `Split` has exactly one id to give both.
-        let tree = SplitTree::split(
-            self.direction,
-            self.ratio,
-            SplitTree::leaf(self.id),
-            SplitTree::leaf(self.id),
-        )
-        .with_min_sizes(self.first_min, self.second_min);
-        let tl = tree.layout(bounds, SplitTreeMeasure::new(measure.divider_thickness));
+        let tl = self
+            .as_tree()
+            .layout(bounds, SplitTreeMeasure::new(measure.divider_thickness));
 
         let first_bounds = tl.leaves[0].1;
         let second_bounds = tl.leaves[1].1;
@@ -211,38 +261,84 @@ impl Split {
             resolved_ratio,
         }
     }
+
+    /// [`Self::layout`] on a cell grid: the panes and the divider's hit
+    /// region come from [`SplitTree::cell_layout`], so the first pane
+    /// ends exactly at the whole cell the divider paints at and the
+    /// second starts right after it. `divider_bounds` and
+    /// `resolved_ratio` keep [`Self::layout`]'s precise values, for a host
+    /// that positions content off the unrounded divider or writes the
+    /// ratio back.
+    pub fn cell_layout(&self, bounds: Rect) -> SplitLayout {
+        let mut layout = self.layout(
+            bounds,
+            SplitMeasure::new(crate::primitives::split_tree::CELL_DIVIDER_THICKNESS),
+        );
+        let cells = self.as_tree().cell_layout(bounds);
+        layout.first_bounds = cells.leaves[0].1;
+        layout.second_bounds = cells.leaves[1].1;
+        layout.hit_regions = vec![
+            (cells.dividers[0].band(), SplitHit::Divider(self.id)),
+            (layout.first_bounds, SplitHit::FirstPane(self.id)),
+            (layout.second_bounds, SplitHit::SecondPane(self.id)),
+        ];
+        layout
+    }
+
+    /// This split as the two-leaf [`SplitTree`] it is, so both widgets
+    /// share one layout, one relax formula and one cell painter.
+    ///
+    /// Both leaves carry `self.id`: the tree is only ever read
+    /// positionally (`leaves[0]`, `leaves[1]`, `dividers[0]`), never by
+    /// leaf id, since `Split` has exactly one id to give both.
+    pub(crate) fn as_tree(&self) -> SplitTree {
+        SplitTree::split(
+            self.direction,
+            self.ratio,
+            SplitTree::leaf(self.id),
+            SplitTree::leaf(self.id),
+        )
+        .with_min_sizes(self.first_min, self.second_min)
+    }
 }
 
-// Unified paint implementation for split dividers, replacing
-// three independent backend-specific versions (Cairo, Core Graphics,
-// Direct2D). Each originally painted only `layout.divider_bounds` in
-// `theme.separator` with that backend's drawing API.
-//
-// All three painted exactly one filled rectangle and nothing else
-// (pane content is the host's job, not the rasteriser's).
-//
-// **Note: GTK alpha handling changed.** The old `gtk::draw_split`
-// used `set_source` (drops alpha), while macOS's `CGContextSetRGBFillColor`
-// and Windows's `ID2D1SolidColorBrush` honour real alpha. This code uses
-// `surface_fill_rect`, which calls `gtk::set_source_rgba` on GTK, so GTK
-// now respects alpha in translucent `theme.separator` values (which can
-// occur when `Theme::from_vscode_json` parses an 8-digit `#rrggbbaa` VS Code
-// `editorGroup.border` value). This brings GTK in line with macOS/Windows.
-// The deprecated free-function shim keeps calling opaque `set_source` for
-// backwards compatibility.
-//
-// Windows: `Backend::draw_split` passes `Theme::default()` since
-// `WinBackend` does not carry a live theme to chrome rasterisers.
-//
-// Geometry (split layout, divider placement) was already unified in
-// [`Split::layout`] before this change; only the *paint* half was
-// triplicated. `paint` takes the resolved [`SplitLayout`], not the raw
-// `Split` + bounds, so callers compute layout once and reuse it for both
-// paint and hit-test.
-//
-// `#[allow(dead_code)]`: only called when a pixel backend is compiled in,
-// exercised by each backend's `Backend::draw_split` and this module's
-// `RecordingSurface` tests.
+/// Visual width of a painted sash line, in the same units as the band it
+/// sits in — VS Code's single-pixel resize affordance. A divider's
+/// hit-testable band stays its full thickness so a drag target is wider
+/// than one pixel; only the painted line is thinned to this.
+pub(crate) const SASH_PAINT_WIDTH: f32 = 1.0;
+
+/// The thin line a pixel backend paints for a divider whose hit-testable
+/// band is `band`: [`SASH_PAINT_WIDTH`] across the divider's thickness
+/// axis (x for a [`SplitDirection::Horizontal`] split's vertical divider,
+/// y for a [`SplitDirection::Vertical`] one), centred in the band and
+/// snapped to a whole device pixel so it renders crisp rather than as an
+/// anti-aliased straddle, then clamped back into the band. The full
+/// cross-axis extent is kept.
+pub(crate) fn sash_paint_rect(band: Rect, direction: SplitDirection) -> Rect {
+    let line = |start: f32, len: f32| {
+        let width = SASH_PAINT_WIDTH.min(len.max(0.0));
+        let aligned = (start + len / 2.0 - width / 2.0).round();
+        (
+            aligned.clamp(start, (start + len - width).max(start)),
+            width,
+        )
+    };
+    match direction {
+        SplitDirection::Horizontal => {
+            let (x, width) = line(band.x, band.width);
+            Rect::new(x, band.y, width, band.height)
+        }
+        SplitDirection::Vertical => {
+            let (y, height) = line(band.y, band.height);
+            Rect::new(band.x, y, band.width, height)
+        }
+    }
+}
+
+// The one pixel painter for split dividers, written against
+// `PaintSurface`: it fills the divider's thin sash in `theme.separator`
+// and nothing else — pane content is the host's.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -250,64 +346,21 @@ impl Split {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::SplitLayout;
+    use super::{sash_paint_rect, SplitLayout};
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
-    use crate::Rect;
 
-    /// Visual width of the painted sash line, in the same units as
-    /// `divider_bounds` — VS Code's single-pixel resize affordance.
-    /// [`SplitLayout::divider_bounds`]/[`SplitLayout::divider_hit_bounds`]
-    /// stay the full [`super::SplitMeasure::divider_thickness`]-wide band
-    /// (so a drag target is wider than one pixel); only the painted line
-    /// is thinned to this and centred within that band. Mirrors
-    /// [`crate::primitives::split_tree::native_surface_paint::SASH_PAINT_WIDTH`]
-    /// so the two primitives read as the same visual weight.
-    pub(crate) const SASH_PAINT_WIDTH: f32 = 1.0;
-
-    /// Paint a [`SplitLayout`]'s divider onto `surface` as a filled
-    /// rectangle in `theme.separator`. `layout` must be the same
-    /// [`SplitLayout`] the caller uses for hit-testing (typically
-    /// `Backend::split_layout`'s return value, or the value this fn's
-    /// own caller — `Backend::draw_split` — returns) so paint and
-    /// hit-test can never disagree. Pane content is NOT painted —
-    /// every backend leaves `first_bounds`/`second_bounds` to the host,
-    /// same contract as before this migration. The painted rect is
-    /// [`SASH_PAINT_WIDTH`] wide, centred within `layout.divider_bounds`
-    /// — narrower than the hit-testable band so the sash reads as a thin
-    /// line while the drag target stays wide (see [`sash_rect`]).
+    /// Paint a [`SplitLayout`]'s divider onto `surface`: the thin sash
+    /// [`sash_paint_rect`] centres in `layout.divider_bounds`, in
+    /// `theme.separator`. `layout` must be the one the caller hit-tests
+    /// against, so paint and hit-test can never disagree. The panes are
+    /// not painted.
     pub(crate) fn paint(layout: &SplitLayout, surface: &mut dyn PaintSurface, theme: &Theme) {
-        surface.surface_fill_rect(sash_rect(layout.divider_bounds), theme.separator);
-    }
-
-    /// Centre a [`SASH_PAINT_WIDTH`]-thick line inside `divider_bounds`
-    /// along whichever axis is the divider's thickness. [`super::Split::layout`]
-    /// always builds `divider_bounds` with `divider_thickness` on one
-    /// axis and the full cross-axis span (container width/height) on the
-    /// other, so the thickness axis is reliably the shorter of the two —
-    /// no need to thread `SplitDirection` through just for this.
-    fn sash_rect(divider_bounds: Rect) -> Rect {
-        if divider_bounds.width <= divider_bounds.height {
-            let width = SASH_PAINT_WIDTH.min(divider_bounds.width.max(0.0));
-            let x = centered_pixel_aligned(divider_bounds.x, divider_bounds.width, width);
-            Rect::new(x, divider_bounds.y, width, divider_bounds.height)
-        } else {
-            let height = SASH_PAINT_WIDTH.min(divider_bounds.height.max(0.0));
-            let y = centered_pixel_aligned(divider_bounds.y, divider_bounds.height, height);
-            Rect::new(divider_bounds.x, y, divider_bounds.width, height)
-        }
-    }
-
-    /// Resolve the leading edge of a `width`-wide line centred inside
-    /// `[band_start, band_start + band_len)`, snapped to the nearest
-    /// whole device pixel so a 1px sash renders as a crisp line rather
-    /// than a blurred, anti-aliased straddle across two pixels — then
-    /// clamped back into the band so the snap can never push the line
-    /// outside the hit-testable area it's meant to sit inside.
-    fn centered_pixel_aligned(band_start: f32, band_len: f32, width: f32) -> f32 {
-        let center = band_start + band_len / 2.0;
-        let aligned = (center - width / 2.0).round();
-        aligned.clamp(band_start, (band_start + band_len - width).max(band_start))
+        let band = layout.divider_bounds;
+        surface.surface_fill_rect(
+            sash_paint_rect(band, layout.divider().direction),
+            theme.separator,
+        );
     }
 
     #[cfg(test)]
@@ -315,7 +368,7 @@ pub(crate) mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::{Rect as QRect, Viewport};
-        use crate::primitives::split::{Split, SplitDirection, SplitMeasure};
+        use crate::primitives::split::{Split, SplitDirection, SplitMeasure, SASH_PAINT_WIDTH};
         use crate::types::{Color, WidgetId};
         use crate::Image;
 

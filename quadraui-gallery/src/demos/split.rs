@@ -209,10 +209,7 @@ impl Demo for SplitDemo {
                         {
                             self.tree_drag.begin(DragTarget::SplitDivider {
                                 tree: WidgetId::new("gallery:split-tree"),
-                                split_index,
-                                direction: div.direction,
-                                axis_start: div.axis_start,
-                                axis_size: div.axis_size,
+                                divider: *div,
                             });
                         }
                     }

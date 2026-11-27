@@ -3060,6 +3060,8 @@ mod tests {
                 decoration: Decoration::default(),
             }),
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let frame = frame_with(vec![Surface::DataTable {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
@@ -3112,6 +3114,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let frame = frame_with(vec![Surface::DataTable {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
@@ -3458,6 +3462,8 @@ mod tests {
                         y_ticks: None,
                         x_ticks: None,
                         show_grid: false,
+                        hovered_point: None,
+                        crosshair_x: None,
                     }),
                     aux: None,
                     size: SectionSize::Weight(1.0),

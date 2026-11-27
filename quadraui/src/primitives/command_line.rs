@@ -744,19 +744,21 @@ impl crate::primitive::Primitive for CommandLine {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
+        let painted = self.with_painted_caret(env.widget_state_as::<CommandLineState>());
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
+            let selection = painted.selection;
             native_surface_paint::paint(
-                self,
+                &painted,
                 surface,
                 theme,
                 layout.area,
                 layout.layout.char_width,
-                layout.selection,
+                selection,
             );
         }
         #[cfg(not(any(
@@ -765,7 +767,7 @@ impl crate::primitive::Primitive for CommandLine {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme);
+            let _ = (&painted, layout, surface, theme);
         }
     }
 
@@ -783,30 +785,25 @@ impl crate::primitive::Primitive for CommandLine {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        cell_paint::paint(self, &layout.layout, cells, theme, layout.selection);
+        let painted = self.with_painted_caret(env.widget_state_as::<CommandLineState>());
+        let selection = painted.selection;
+        cell_paint::paint(&painted, &layout.layout, cells, theme, selection);
     }
 }
 
 /// [`crate::interactive::Interactive::State`] for [`CommandLine`]: the
-/// caret and selection anchor this widget's own key handling moves, as
-/// byte offsets into [`CommandLine::text`].
+/// shared flat-value editing state (caret, selection anchor and
+/// drag-select flag, as byte offsets into [`CommandLine::text`]).
 ///
 /// Same division of labour as
 /// [`crate::primitives::text_input::TextInputState`] — see that type's
 /// doc for why the caret is interaction state rather than something read
 /// back off the descriptor.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct CommandLineState {
-    /// The caret byte offset this widget's own editing has moved to, or
-    /// `None` while it still follows [`CommandLine::cursor_offset`].
-    pub cursor: Option<usize>,
-    /// The selection's fixed end, as a byte offset.
-    pub anchor: Option<usize>,
-}
+pub type CommandLineState = crate::behaviour::text_edit::FlatEditState;
 
 /// What a [`CommandLine`]'s own
-/// [`crate::interactive::Interactive::handle`] resolves one gesture to.
+/// [`crate::interactive::Interactive::handle`] resolves one gesture to. A
+/// copy reaches the host as [`crate::UiEvent::TextCopied`] directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandLineAction {
     /// The text changed — a keystroke or a cut. Carries the whole new
@@ -818,9 +815,6 @@ pub enum CommandLineAction {
     Submitted(String),
     /// Escape abandoned the command.
     Cancelled,
-    /// Ctrl-C (or the copy half of Ctrl-X) put the selection on the
-    /// clipboard.
-    Copied(String),
 }
 
 impl crate::interactive::WidgetAction for CommandLineAction {
@@ -846,113 +840,27 @@ impl crate::interactive::WidgetAction for CommandLineAction {
                     modifiers: crate::types::Modifiers::default(),
                 },
             ),
-            CommandLineAction::Copied(text) => crate::UiEvent::TextCopied(text),
         }
     }
 }
 
 impl CommandLine {
-    /// The caret one `handle` call starts from: whatever this widget's
-    /// own state has walked to, else [`Self::cursor_offset`], else the
-    /// end of the text — snapped to a char boundary either way.
-    fn effective_cursor(&self, state: &CommandLineState) -> usize {
-        crate::behaviour::text_edit::effective_flat_cursor(
-            &self.text,
-            state.cursor,
-            self.cursor_offset,
-        )
-    }
-
-    /// Apply one [`crate::EditOp`] against this bar's text and the
-    /// caret/anchor in `state`, writing the resulting caret back.
-    ///
-    /// Returns the new text when it changed, `None` when the op only
-    /// moved the caret or the selection.
-    fn apply_op(&self, state: &mut CommandLineState, op: crate::EditOp) -> Option<String> {
-        let (text, cursor, anchor) = crate::behaviour::text_edit::apply_flat_edit_op(
-            &self.text,
-            self.effective_cursor(state),
-            state.anchor,
-            op,
-        );
-        state.cursor = Some(cursor);
-        state.anchor = anchor;
-        (text != self.text).then_some(text)
-    }
-
-    /// The selected text, as the shared flat-value selection span
-    /// resolves it against this bar's text and `state`'s caret/anchor.
-    fn selection_text(&self, state: &CommandLineState) -> Option<String> {
-        crate::behaviour::text_edit::flat_selected_text(
-            &self.text,
-            self.effective_cursor(state),
-            state.anchor,
-        )
-    }
-
-    /// Apply `op` and report it: a text change as
-    /// [`CommandLineAction::Changed`], a caret-only move as
-    /// [`Handled::Consumed`] plus a redraw request.
-    fn commit(
-        &self,
-        state: &mut CommandLineState,
-        op: crate::EditOp,
-        cx: &mut crate::interactive::EventCx,
-    ) -> Handled<CommandLineAction> {
-        match self.apply_op(state, op) {
-            Some(text) => Handled::Event(CommandLineAction::Changed(text)),
-            None => {
-                cx.request_redraw();
-                Handled::Consumed
-            }
-        }
-    }
-
-    /// One keystroke, with Enter/Escape claimed ahead of the shared chord
-    /// vocabulary (which maps Enter to a newline) and the Ctrl-chorded
-    /// clipboard / select-all keys resolved by
-    /// [`EditIntent::from_key`](crate::behaviour::text_edit::EditIntent::from_key).
-    fn handle_key(
-        &self,
-        state: &mut CommandLineState,
-        key: &crate::event::Key,
-        modifiers: crate::types::Modifiers,
-        cx: &mut crate::interactive::EventCx,
-    ) -> Handled<CommandLineAction> {
-        use crate::behaviour::text_edit::EditIntent;
-        use crate::event::{Key, NamedKey};
-        use crate::EditOp;
-
-        match key {
-            // A command bar is one line: Enter submits rather than
-            // splitting the text, so the newline `EditOp::from_key`
-            // would resolve never reaches the buffer.
-            Key::Named(NamedKey::Enter) => {
-                return Handled::Event(CommandLineAction::Submitted(self.text.clone()));
-            }
-            Key::Named(NamedKey::Escape) => return Handled::Event(CommandLineAction::Cancelled),
-            _ => {}
-        }
-        match EditIntent::from_key(key, modifiers) {
-            Some(EditIntent::SelectAll) => self.commit(state, EditOp::SelectAll, cx),
-            Some(EditIntent::Copy) => match self.selection_text(state) {
-                Some(text) => Handled::Event(CommandLineAction::Copied(text)),
-                None => Handled::Consumed,
-            },
-            Some(EditIntent::Cut) => match self.selection_text(state) {
-                Some(text) => {
-                    cx.emit(crate::UiEvent::TextCopied(text));
-                    self.commit(state, EditOp::DeleteSelection, cx)
-                }
-                None => Handled::Consumed,
-            },
-            // Paste is the host's: the clipboard text arrives as
-            // `UiEvent::ClipboardPaste`, which a host feeds back in as
-            // `RoutedEvent::Text`.
-            Some(EditIntent::Paste) => Handled::Ignored,
-            Some(EditIntent::Op(op)) => self.commit(state, op, cx),
-            None => Handled::Ignored,
-        }
+    /// This bar with the caret and selection its own editing has walked
+    /// to, for a painter — the descriptor's own when `state` has not
+    /// moved the caret.
+    fn with_painted_caret(&self, state: Option<&CommandLineState>) -> std::borrow::Cow<'_, Self> {
+        let Some(CommandLineState {
+            cursor: Some(cursor),
+            anchor,
+            ..
+        }) = state
+        else {
+            return std::borrow::Cow::Borrowed(self);
+        };
+        let mut painted = self.clone();
+        painted.cursor_offset = Some(*cursor);
+        painted.selection = anchor.map(|a| (a, *cursor));
+        std::borrow::Cow::Owned(painted)
     }
 }
 
@@ -974,12 +882,10 @@ impl crate::interactive::Interactive for CommandLine {
         ]
     }
 
-    /// Keystrokes go through [`crate::EditOp::from_key`] and the shared
-    /// flat-value bridge, so this bar, [`crate::TextField`] and
-    /// [`crate::TextEditor`] can never disagree about what a key means.
-    /// Enter submits, Escape cancels, Ctrl-A/C/X select-all/copy/cut, a
-    /// click parks the caret at the clicked character and a shift-click
-    /// (or a drag) extends the selection to it.
+    /// Enter submits and Escape cancels; every other event goes through
+    /// the shared flat-value editing handler, so this bar,
+    /// [`crate::TextField`] and the palette query can never disagree
+    /// about what a key, a click or a drag means.
     fn handle(
         &self,
         state: &mut CommandLineState,
@@ -987,83 +893,37 @@ impl crate::interactive::Interactive for CommandLine {
         layout: &CommandLinePrimitiveLayout,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<CommandLineAction> {
-        use crate::interactive::{PointerKind, RoutedEvent};
+        use crate::behaviour::text_edit::{handle_flat_edit_event, FlatEditOutcome};
+        use crate::event::{Key, NamedKey};
+        use crate::interactive::RoutedEvent;
 
-        match event {
-            RoutedEvent::Key(key) => self.handle_key(state, &key.key, key.modifiers, cx),
-            RoutedEvent::Text(text) => {
-                self.commit(state, crate::EditOp::InsertText(text.clone()), cx)
+        if let RoutedEvent::Key(key) = event {
+            match key.key {
+                // A command bar is one line: Enter submits rather than
+                // splitting the text.
+                Key::Named(NamedKey::Enter) => {
+                    return Handled::Event(CommandLineAction::Submitted(self.text.clone()));
+                }
+                Key::Named(NamedKey::Escape) => {
+                    return Handled::Event(CommandLineAction::Cancelled)
+                }
+                _ => {}
             }
-            RoutedEvent::Pointer {
-                kind: PointerKind::Down(crate::event::MouseButton::Left),
-                local,
-                mods,
-                ..
-            } => {
-                cx.request_focus(None);
-                cx.capture_pointer();
-                let offset = layout.hit_test(layout.area.x + local.x);
-                self.move_caret_to(state, offset, mods.shift, cx)
-            }
-            RoutedEvent::Pointer {
-                kind: PointerKind::Move,
-                local,
-                ..
-            } if cx.is_focused(None) => {
-                // A drag with the button still down extends the
-                // selection; the engine only routes a move here while
-                // this widget holds the pointer capture taken above.
-                let offset = layout.hit_test(layout.area.x + local.x);
-                self.move_caret_to(state, offset, true, cx)
-            }
-            RoutedEvent::Pointer {
-                kind: PointerKind::Up(crate::event::MouseButton::Left),
-                ..
-            } => {
-                cx.release_pointer();
-                Handled::Consumed
-            }
-            RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
-                cx.request_focus(None);
-                Handled::Consumed
-            }
-            RoutedEvent::FocusIn(_) => {
-                // Re-seed from the descriptor: the host may have moved
-                // the caret while this bar was unfocused.
-                state.cursor = Some(self.cursor_offset.unwrap_or(self.text.len()));
-                state.anchor = None;
-                Handled::Consumed
-            }
-            RoutedEvent::FocusOut => {
-                state.cursor = None;
-                state.anchor = None;
-                Handled::Consumed
-            }
-            _ => Handled::Ignored,
         }
-    }
-}
-
-impl CommandLine {
-    /// Park the caret at byte offset `offset`, extending the selection
-    /// when `extend`.
-    fn move_caret_to(
-        &self,
-        state: &mut CommandLineState,
-        offset: usize,
-        extend: bool,
-        cx: &mut crate::interactive::EventCx,
-    ) -> Handled<CommandLineAction> {
-        let (_, col) = crate::behaviour::text_edit::byte_offset_to_line_col(&self.text, offset);
-        self.commit(
+        let offset_at = |local: crate::event::Point| Some(layout.hit_test(layout.area.x + local.x));
+        match handle_flat_edit_event(
+            &self.text,
+            self.cursor_offset,
+            None,
             state,
-            crate::EditOp::SetCursor {
-                line: 0,
-                col,
-                extend,
-            },
+            event,
+            &offset_at,
             cx,
-        )
+        ) {
+            FlatEditOutcome::Changed(text) => Handled::Event(CommandLineAction::Changed(text)),
+            FlatEditOutcome::Consumed => Handled::Consumed,
+            FlatEditOutcome::Ignored => Handled::Ignored,
+        }
     }
 }
 
@@ -1332,6 +1192,7 @@ mod interactive_tests {
         let mut state = CommandLineState {
             cursor: Some(3),
             anchor: Some(2),
+            ..CommandLineState::default()
         };
         let mut cx = EventCx::new(cmd.id, &mut host);
         assert_eq!(

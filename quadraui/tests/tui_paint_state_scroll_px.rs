@@ -232,6 +232,8 @@ fn data_table(n: usize) -> DataTable {
         column_overrides: Vec::new(),
         footer: None,
         bordered: false,
+        striped: false,
+        glyphs: None,
     }
 }
 

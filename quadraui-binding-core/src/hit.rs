@@ -731,7 +731,7 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                         return Some((*id, HitDetail::DataTableRow { row: idx }))
                     }
                     DataTableHit::Footer => return Some((*id, HitDetail::DataTableFooter)),
-                    DataTableHit::Empty => {}
+                    DataTableHit::Scrollbar | DataTableHit::Empty => {}
                 }
             }
             PaintedHit::TabBar {

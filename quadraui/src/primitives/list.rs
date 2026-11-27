@@ -355,6 +355,73 @@ mod paint_state_tests {
 }
 
 impl ListView {
+    /// The one list layout resolver every backend and
+    /// [`crate::primitive::Primitive::layout`] go through: reserve the
+    /// title row and the horizontal scrollbar's row, then lay the items
+    /// out over what is left, in `units`' own scale.
+    ///
+    /// - [`crate::primitive::Units::Cells`]: one-cell rows and title, and
+    ///   the rightmost column taken from the rows when a vertical
+    ///   scrollbar shows. `scroll_px` is floored to a whole row first, so
+    ///   a terminal never paints a partial row. `line_height`,
+    ///   `char_width` and `border_inset` are ignored.
+    /// - [`crate::primitive::Units::Pixels`]: `line_height` rows and title
+    ///   inside a `border_inset` margin on every edge; the horizontal
+    ///   scrollbar reserves a row when `max_content_width` characters of
+    ///   `char_width` overflow the interior. The vertical scrollbar
+    ///   overlays the rows and reserves nothing.
+    ///
+    /// `size` is the list's `(width, height)`. The result is list-local:
+    /// relative to `(0, 0)`, before any border inset a caller paints.
+    pub fn resolve_layout(
+        &self,
+        units: crate::primitive::Units,
+        size: (f32, f32),
+        line_height: f32,
+        char_width: f32,
+        border_inset: f32,
+        scroll_px: Option<f32>,
+    ) -> ListViewLayout {
+        let (w, h) = size;
+        if units == crate::primitive::Units::Cells {
+            let scroll_px = scroll_px.map(f32::floor);
+            let area = Rect::new(0.0, 0.0, w, h);
+            let needs_hscrollbar = self.hscrollbar(area, 1.0).is_some();
+            let viewport_h = if needs_hscrollbar {
+                (h - 1.0).max(0.0)
+            } else {
+                h
+            };
+            let v_area = Rect::new(0.0, 0.0, w, viewport_h);
+            let viewport_w = if self.vscrollbar(v_area, 1.0).is_some() {
+                (w - 1.0).max(0.0)
+            } else {
+                w
+            };
+            let title_h = if self.title.is_some() { 1.0 } else { 0.0 };
+            return self.layout_with_scroll_px(viewport_w, viewport_h, title_h, scroll_px, |_| {
+                ListItemMeasure::new(1.0)
+            });
+        }
+        let (w, h, line_height, border_inset) =
+            (w as f64, h as f64, line_height as f64, border_inset as f64);
+        let visible_px = (w - border_inset * 2.0).max(0.0);
+        let needs_hscrollbar = self
+            .max_content_width
+            .is_some_and(|n| n as f64 * char_width as f64 > visible_px);
+        let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
+        let title_h = if self.title.is_some() {
+            line_height as f32
+        } else {
+            0.0
+        };
+        let layout_w = (w - border_inset * 2.0) as f32;
+        let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
+        self.layout_with_scroll_px(layout_w, layout_h, title_h, scroll_px, |_| {
+            ListItemMeasure::new(line_height as f32)
+        })
+    }
+
     /// Compute the full rendering + hit-test layout for this list.
     ///
     /// Per D6: layout decisions live here; backends iterate
@@ -2322,6 +2389,15 @@ pub struct ListViewPrimitiveLayout {
     pub nerd_fonts_enabled: bool,
     /// The list-local layout itself.
     pub layout: ListViewLayout,
+    /// The vertical scrollbar, in absolute coordinates, exactly where the
+    /// painter draws it: the rightmost cell column on a cell grid, an
+    /// overlay track [`crate::Style::scrollbar_width`] wide on a pixel
+    /// surface. `None` when the items fit or `show_v_scrollbar` is off.
+    pub vscrollbar: Option<Scrollbar>,
+    /// [`Self::vscrollbar`]'s own resolved [`Primitive`] layout.
+    ///
+    /// [`Primitive`]: crate::primitive::Primitive
+    pub vscrollbar_layout: Option<crate::primitives::scrollbar::ScrollbarLayout>,
 }
 
 #[cfg(any(
@@ -2366,49 +2442,47 @@ impl crate::primitive::Primitive for ListView {
     }
 
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
-        // `ctx.units()` is a reliable *runtime* discriminator between a
-        // TUI caller and a pixel-backend one even when both features are
-        // compiled into the same binary (`cargo build --features
-        // gtk,tui`), where a compile-time `cfg` alone could not tell
-        // them apart.
-        #[cfg(feature = "tui")]
-        {
-            if matches!(ctx.units(), crate::primitive::Units::Cells) {
-                // Route through the exact resolver `crate::tui::draw_list`
-                // itself calls (`tui_list_layout`) so this layout can
-                // never drift from what TUI actually paints —
-                // `Self::paint_cells` below makes the matching
-                // paint-side guarantee.
-                let area = crate::tui::backend::q_rect_to_ratatui(rect);
-                let layout = crate::tui::tui_list_layout(area, self);
-                return ListViewPrimitiveLayout {
-                    area: rect,
-                    line_height: ctx.line_height,
-                    nerd_fonts_enabled: ctx.nerd_fonts_enabled,
-                    layout,
-                };
-            }
-        }
-        // `Self::paint`'s shared `native_surface_paint::paint_with_state`
-        // call strokes no frame of its own (see that module's doc, "Note:
-        // `bordered`'s frame stroke remains backend-specific") — each
-        // backend's thin wrapper strokes its own frame around this call
-        // instead. `border_inset` therefore stays `0.0` here regardless
-        // of `self.bordered`, matching `supports_border: false` below.
-        let border_inset: f64 = 0.0;
-        let layout = crate::primitives::layout_metrics::list_layout(
-            self,
-            rect.width as f64,
-            rect.height as f64,
-            ctx.line_height as f64,
-            ctx.char_width as f64,
-            border_inset,
-        );
+        let size = (rect.width, rect.height);
+        let (layout, vscrollbar) = if ctx.units() == crate::primitive::Units::Cells {
+            // The vertical scrollbar takes the column the resolver kept
+            // from the rows, above the horizontal scrollbar's row.
+            let layout = self.resolve_layout(ctx.units(), size, 1.0, 1.0, 0.0, None);
+            let hsb_h = if self.hscrollbar(rect, 1.0).is_some() {
+                1.0
+            } else {
+                0.0
+            };
+            let v_area = Rect::new(rect.x, rect.y, rect.width, (rect.height - hsb_h).max(0.0));
+            (layout, self.vscrollbar(v_area, 1.0))
+        } else {
+            // The shared pixel painter strokes no frame of its own, so no
+            // border is reserved here; each backend's wrapper strokes its
+            // own frame around it.
+            let layout = self.resolve_layout(
+                ctx.units(),
+                size,
+                ctx.line_height,
+                ctx.char_width,
+                0.0,
+                None,
+            );
+            let vscrollbar = self.vscrollbar_with_track_width(
+                rect,
+                ctx.line_height,
+                ctx.style().scrollbar_width,
+            );
+            (layout, vscrollbar)
+        };
+        let vscrollbar_layout = vscrollbar
+            .as_ref()
+            .map(|sb| crate::primitive::Primitive::layout(sb, ctx, sb.track));
         ListViewPrimitiveLayout {
             area: rect,
             line_height: ctx.line_height,
             nerd_fonts_enabled: ctx.nerd_fonts_enabled,
             layout,
+            vscrollbar,
+            vscrollbar_layout,
         }
     }
 
@@ -2426,22 +2500,10 @@ impl crate::primitive::Primitive for ListView {
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            use crate::primitive::PaintState;
-
-            // No per-call interaction-state channel reaches this far —
-            // `Primitive::paint`'s fixed signature carries none (see
-            // that trait's own doc) — so this reads the "no such state"
-            // defaults every `PaintState` method already falls back to,
-            // naming the gap through the shared trait rather than a
-            // bare `None`/`None`/`false`/`false` literal tuple.
-            //
-            // `supports_border: false` below: this shared paint strokes
-            // no frame of its own (see `native_surface_paint`'s module
-            // doc, "Note: `bordered`'s frame stroke remains
-            // backend-specific") — only a backend wrapper that strokes
-            // its own frame around this call should pass `true`, and
-            // none of them do yet through this `Primitive` seam.
-            let paint_state = ListPaintState::default();
+            // `supports_border: false`: this shared paint strokes no
+            // frame of its own; a backend wrapper strokes its own frame
+            // around it.
+            let paint_state = env.state;
             native_surface_paint::paint_with_state(
                 self,
                 layout.area,
@@ -2497,13 +2559,11 @@ impl crate::primitive::Primitive for ListView {
             .ratatui_buffer()
             .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-        // `ListPaintState::default()` is the "no such state" value
-        // [`crate::primitive::PaintState`]'s own defaults describe —
-        // routed through [`crate::tui::draw_list_with_state`] (which
-        // takes a real [`ListPaintState`]), so this path is visibly
-        // state-shaped even though `Primitive::paint_cells`'s fixed
-        // signature has no live interaction state to put in it.
-        let paint_state = ListPaintState::default();
+        let paint_state = ListPaintState::default()
+            .with_hovered_idx(env.state.hovered_idx())
+            .with_pressed_idx(env.state.pressed_idx())
+            .with_scroll_px(env.state.scroll_px())
+            .with_striped(env.state.striped());
         crate::tui::draw_list_with_state(
             buf,
             area,
@@ -2665,17 +2725,6 @@ impl ListView {
         }
     }
 
-    /// Clamp `delta` applied to [`Self::current_idx`] into `[0,
-    /// items.len())`, saturating at either edge rather than wrapping —
-    /// the keyboard-navigation counterpart of
-    /// [`ListViewLayout::hit_test`]'s mouse-side row resolution.
-    fn clamped_target(&self, state: &ListViewState, delta: isize) -> usize {
-        let last = self.items.len().saturating_sub(1);
-        self.current_idx(state)
-            .saturating_add_signed(delta)
-            .min(last)
-    }
-
     /// Dispatch one idle (no active gesture) keystroke: `j`/Down and
     /// `k`/Up move the selection by one row, Home/End jump to either
     /// edge, Page Up/Down move by one viewport page (`layout.visible_items`'s
@@ -2695,39 +2744,29 @@ impl ListView {
         layout: &ListViewPrimitiveLayout,
         cx: &mut EventCx,
     ) -> Handled<ListViewEvent> {
+        use crate::behaviour::nav::{FlatNav, NavKey};
         let extend = modifiers.shift;
-        let page = layout.layout.visible_items.len().max(1) as isize;
+        let page = layout.layout.visible_items.len().max(1);
         let no_accel = !(modifiers.ctrl || modifiers.alt || modifiers.cmd);
+        let nav = match key {
+            Key::Named(NamedKey::Down) => Some(NavKey::Down),
+            Key::Char('j') if no_accel => Some(NavKey::Down),
+            Key::Named(NamedKey::Up) => Some(NavKey::Up),
+            Key::Char('k') if no_accel => Some(NavKey::Up),
+            Key::Named(NamedKey::Home) => Some(NavKey::Home),
+            Key::Named(NamedKey::End) => Some(NavKey::End),
+            Key::Named(NamedKey::PageDown) => Some(NavKey::PageDown(page)),
+            Key::Named(NamedKey::PageUp) => Some(NavKey::PageUp(page)),
+            _ => None,
+        };
+        if let Some(nav) = nav {
+            let current = Some(self.current_idx(state));
+            return match FlatNav::mv(self.items.len(), current, nav, false, |_| true) {
+                Some(target) => self.navigate(state, target, extend),
+                None => Handled::Ignored,
+            };
+        }
         match key {
-            Key::Named(NamedKey::Down) => {
-                let target = self.clamped_target(state, 1);
-                self.navigate(state, target, extend)
-            }
-            Key::Char('j') if no_accel => {
-                let target = self.clamped_target(state, 1);
-                self.navigate(state, target, extend)
-            }
-            Key::Named(NamedKey::Up) => {
-                let target = self.clamped_target(state, -1);
-                self.navigate(state, target, extend)
-            }
-            Key::Char('k') if no_accel => {
-                let target = self.clamped_target(state, -1);
-                self.navigate(state, target, extend)
-            }
-            Key::Named(NamedKey::Home) => self.navigate(state, 0, extend),
-            Key::Named(NamedKey::End) => {
-                let target = self.items.len().saturating_sub(1);
-                self.navigate(state, target, extend)
-            }
-            Key::Named(NamedKey::PageDown) => {
-                let target = self.clamped_target(state, page);
-                self.navigate(state, target, extend)
-            }
-            Key::Named(NamedKey::PageUp) => {
-                let target = self.clamped_target(state, -page);
-                self.navigate(state, target, extend)
-            }
             Key::Named(NamedKey::Enter) | Key::Char(' ') => {
                 if self.items.is_empty() {
                     Handled::Ignored
@@ -2817,18 +2856,16 @@ impl ListView {
     }
 }
 
-/// Canonical key string for [`ListViewEvent::KeyPressed`] — the same
-/// spelling [`NamedKey::name`] already promises as the single source of
-/// truth, so this fallback agrees with every other backend's own
-/// `KeyPressed` event instead of carrying a `Debug`-derived string no
-/// other producer uses.
+/// Canonical key string for a widget's `KeyPressed` event — a printable
+/// character as itself, a named key in [`NamedKey::name`]'s spelling — so
+/// every widget and backend reports the same key the same way.
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-fn key_to_event_string(key: &Key) -> String {
+pub(crate) fn key_to_event_string(key: &Key) -> String {
     match key {
         Key::Char(c) => c.to_string(),
         Key::Named(named) => named.name().into_owned(),
@@ -2977,6 +3014,49 @@ mod interactive_tests {
             max_content_width: None,
             show_v_scrollbar: false,
         }
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn cell_layout_vscrollbar_is_the_column_paint_cells_draws() {
+        let mut l = list(30, 0);
+        l.show_v_scrollbar = true;
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let rect = Rect::new(2.0, 1.0, 20.0, 10.0);
+        let layout = Primitive::layout(&l, &ctx, rect);
+        let sb = layout.vscrollbar.clone().expect("30 rows overflow 10");
+        assert_eq!(sb.track, Rect::new(21.0, 1.0, 1.0, 10.0));
+        assert!(
+            layout
+                .layout
+                .visible_items
+                .iter()
+                .all(|r| r.bounds.width <= 19.0),
+            "rows give up the scrollbar column"
+        );
+
+        let area = ratatui::layout::Rect::new(0, 0, 24, 12);
+        let theme = crate::Theme::default();
+        let style = crate::Style::default();
+        let mut painted = ratatui::buffer::Buffer::empty(area);
+        Primitive::paint_cells(
+            &l,
+            &layout,
+            &mut crate::tui::BufferCellSurface::new(&mut painted),
+            &crate::PaintEnv::new(&theme, &style),
+        );
+        let mut alone = ratatui::buffer::Buffer::empty(area);
+        crate::tui::draw_scrollbar(&mut alone, &sb, &theme, theme.background);
+        for y in 1..11u16 {
+            assert_eq!(
+                painted[(21, y)].symbol(),
+                alone[(21, y)].symbol(),
+                "row {y} of the scrollbar column"
+            );
+        }
+
+        l.items.truncate(3);
+        assert_eq!(Primitive::layout(&l, &ctx, rect).vscrollbar, None);
     }
 
     fn layout_for(list: &ListView) -> ListViewPrimitiveLayout {
@@ -3806,6 +3886,55 @@ mod primitive_parity_tests {
             max_content_width: Some(60),
             show_v_scrollbar: false,
         }
+    }
+
+    /// The pixel layout's vertical scrollbar is the track `paint` draws:
+    /// painting it alone logs a run of verbs that appears verbatim in the
+    /// whole list's paint log.
+    #[test]
+    fn primitive_layout_vscrollbar_is_the_track_paint_draws() {
+        let mut list = sample_list();
+        list.show_v_scrollbar = true;
+        list.max_content_width = None;
+        list.items = (0..40)
+            .map(|i| ListItem {
+                text: StyledText::plain(format!("row {i}")),
+                icon: None,
+                detail: None,
+                decoration: Decoration::default(),
+            })
+            .collect();
+        let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
+        let ctx = LayoutCtx::new(16.0, 8.0, true);
+        let theme = Theme::default();
+        let style = Style::default();
+        let layout = Primitive::layout(&list, &ctx, rect);
+        let sb = layout.vscrollbar.clone().expect("40 rows overflow 80px");
+        assert_eq!(sb.track.x, rect.x + rect.width - style.scrollbar_width);
+        assert!(layout.vscrollbar_layout.is_some());
+
+        let mut whole = LogSurface::default();
+        Primitive::paint(
+            &list,
+            &layout,
+            &mut whole,
+            &crate::PaintEnv::new(&theme, &style),
+        );
+        let mut alone = LogSurface::default();
+        crate::primitives::scrollbar::native_surface_paint::paint(&sb, &mut alone, &theme);
+        assert!(!alone.calls.is_empty());
+        assert!(
+            whole
+                .calls
+                .windows(alone.calls.len())
+                .any(|w| w == alone.calls.as_slice()),
+            "the list paints the layout's scrollbar:\n{:#?}\n---\n{:#?}",
+            alone.calls,
+            whole.calls
+        );
+
+        list.items.truncate(2);
+        assert_eq!(Primitive::layout(&list, &ctx, rect).vscrollbar, None);
     }
 
     /// The acceptance criterion: `ListView`'s [`Primitive::layout`] +

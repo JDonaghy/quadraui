@@ -785,8 +785,7 @@ impl WidgetAction for ContextMenuEvent {
 
 /// [`ContextMenu`]'s own interaction state: the debounced typeahead
 /// buffer that lets a few quick keystrokes jump the highlight to the
-/// best prefix match, plus the monotonic origin its 500ms debounce window
-/// is measured from.
+/// best prefix match.
 ///
 /// Everything else a popup renders — its items, the highlight, the
 /// background override — lives on the descriptor, which the host updates
@@ -795,17 +794,6 @@ impl WidgetAction for ContextMenuEvent {
 #[derive(Debug, Default)]
 pub struct ContextMenuState {
     typeahead: Typeahead,
-    origin: Option<std::time::Instant>,
-}
-
-impl ContextMenuState {
-    /// Milliseconds since this state's first keystroke — the clock
-    /// [`Typeahead::push`]'s debounce window reads. Seeded on first use,
-    /// so a state that never sees a keystroke never reads a clock.
-    fn now_ms(&mut self) -> u64 {
-        let origin = *self.origin.get_or_insert_with(std::time::Instant::now);
-        origin.elapsed().as_millis() as u64
-    }
 }
 
 /// [`ContextMenu`]'s fully-resolved widget-contract layout: the absolute
@@ -993,11 +981,10 @@ impl ContextMenu {
             // (Ctrl/Alt/Super) are accelerators the host owns, not
             // typeahead.
             Key::Char(ch) if !key.modifiers.ctrl && !key.modifiers.alt && !key.modifiers.cmd => {
-                let now_ms = state.now_ms();
                 let len = self.items.len();
                 match state
                     .typeahead
-                    .push(ch, now_ms, |i| self.typeahead_text(i), len, current)
+                    .push_now(ch, |i| self.typeahead_text(i), len, current)
                 {
                     Some(idx) if idx != current => {
                         Handled::Event(ContextMenuEvent::SelectionChanged { idx })

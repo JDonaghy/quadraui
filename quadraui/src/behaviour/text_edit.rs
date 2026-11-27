@@ -230,13 +230,21 @@ impl EditIntent {
     /// [`EditOp::from_key`] resolves the key to (`None` for keys neither
     /// layer interprets — function keys, Escape, Tab, a bare Enter a
     /// single-line widget means to claim itself, …).
+    ///
+    /// Every other Ctrl/Cmd-chorded character is `None`: backends deliver
+    /// a chorded letter as a plain [`Key::Char`] with the modifier set, so
+    /// reading it as typing would put a literal `z` in the buffer on
+    /// Ctrl+Z and swallow the app's own accelerator. Ctrl+Alt without Cmd
+    /// stays typing, since that is how AltGr arrives on Windows layouts.
     pub fn from_key(key: &Key, modifiers: Modifiers) -> Option<EditIntent> {
-        if modifiers.ctrl || modifiers.cmd {
+        let alt_gr = modifiers.ctrl && modifiers.alt && !modifiers.cmd;
+        if (modifiers.ctrl || modifiers.cmd) && !alt_gr {
             match key {
                 Key::Char('a') | Key::Char('A') => return Some(EditIntent::SelectAll),
                 Key::Char('c') | Key::Char('C') => return Some(EditIntent::Copy),
                 Key::Char('x') | Key::Char('X') => return Some(EditIntent::Cut),
                 Key::Char('v') | Key::Char('V') => return Some(EditIntent::Paste),
+                Key::Char(_) => return None,
                 _ => {}
             }
         }
@@ -846,6 +854,374 @@ pub fn flat_selection_range(
     Some((anchor.min(cursor), anchor.max(cursor)))
 }
 
+// ── Routed-event handling ──────────────────────────────────────────────
+//
+// Every editable text widget answers the same routed events the same way:
+// keys through `EditIntent`, committed text as an insert, a press parks
+// the caret and starts a drag-select, a captured move extends it, focus
+// in/out reseeds and drops the caret. `handle_flat_edit_event` (a flat
+// `String` with byte offsets) and `handle_lines_edit_event` (a
+// `Vec<String>` with `(line, col)` carets) are two views over that one
+// event flow, `handle_edit_event`, so a widget only claims its own keys
+// (Enter, Escape, list navigation) and its own sub-regions first.
+
+/// Per-focus editing state for a widget whose value is one flat `String`
+/// with byte-offset positions: the caret and anchor its own editing has
+/// walked to, and whether a press is dragging a selection.
+///
+/// `cursor` is `None` while the widget still follows its descriptor's own
+/// caret; [`painted_flat_caret`] gives a painter the caret and anchor to
+/// show either way.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FlatEditState {
+    /// The caret byte offset, once editing has moved it.
+    pub cursor: Option<usize>,
+    /// The selection's fixed end, as a byte offset.
+    pub anchor: Option<usize>,
+    /// Whether a left press on the text is still held, so pointer moves
+    /// extend the selection.
+    pub dragging: bool,
+}
+
+/// Per-focus editing state for a multi-line widget whose value is a
+/// `Vec<String>` with `(line, char_column)` carets — the
+/// [`handle_lines_edit_event`] counterpart of [`FlatEditState`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LinesEditState {
+    /// The caret, once editing has moved it.
+    pub caret: Option<Caret>,
+    /// The selection's fixed end.
+    pub anchor: Option<Caret>,
+    /// Whether a left press on the text is still held, so pointer moves
+    /// extend the selection.
+    pub dragging: bool,
+}
+
+/// What [`handle_flat_edit_event`] / [`handle_lines_edit_event`] resolved
+/// one routed event to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlatEditOutcome {
+    /// The value changed; carries the whole new value (lines joined with
+    /// `'\n'` for the multi-line view).
+    Changed(String),
+    /// The event was this widget's — a caret or selection move, a copy,
+    /// a focus change — with no new value to report. A redraw has been
+    /// requested where anything visible moved.
+    Consumed,
+    /// Not an editing event: the caller's to handle or bubble.
+    Ignored,
+}
+
+/// The caret and selection anchor a flat-value painter shows: `state`'s
+/// own once editing has moved the caret, else the descriptor's
+/// `cursor`/`anchor`.
+pub fn painted_flat_caret(
+    state: Option<&FlatEditState>,
+    cursor: Option<usize>,
+    anchor: Option<usize>,
+) -> (Option<usize>, Option<usize>) {
+    match state {
+        Some(FlatEditState {
+            cursor: Some(c),
+            anchor: a,
+            ..
+        }) => (Some(*c), *a),
+        _ => (cursor, anchor),
+    }
+}
+
+/// The two value shapes [`handle_edit_event`] edits through.
+trait EditTarget {
+    /// Apply `op`; the new value when content changed.
+    fn apply(&mut self, op: &EditOp) -> Option<String>;
+    /// The selected text, if a selection is active.
+    fn selected_text(&self) -> Option<String>;
+    /// Reseed the caret and anchor from the descriptor.
+    fn focus_in(&mut self);
+    /// Drop the caret, anchor and any drag.
+    fn focus_out(&mut self);
+    /// Whether a press is dragging a selection.
+    fn is_dragging(&self) -> bool;
+    /// Start or end a drag-select.
+    fn set_dragging(&mut self, dragging: bool);
+}
+
+struct FlatTarget<'a> {
+    value: &'a str,
+    cursor: Option<usize>,
+    anchor: Option<usize>,
+    state: &'a mut FlatEditState,
+}
+
+impl FlatTarget<'_> {
+    fn caret_and_anchor(&self) -> (usize, Option<usize>) {
+        let cursor = effective_flat_cursor(self.value, self.state.cursor, self.cursor);
+        let anchor = if self.state.cursor.is_some() {
+            self.state.anchor
+        } else {
+            self.anchor
+        };
+        (cursor, anchor)
+    }
+}
+
+impl EditTarget for FlatTarget<'_> {
+    fn apply(&mut self, op: &EditOp) -> Option<String> {
+        let (cursor, anchor) = self.caret_and_anchor();
+        let (value, cursor, anchor) = apply_flat_edit_op(self.value, cursor, anchor, op.clone());
+        self.state.cursor = Some(cursor);
+        // A no-op extend (Shift+Left at offset 0, a drag that has not
+        // left its press point) leaves `anchor == cursor`; keeping it
+        // would read as a zero-width selection the next keystroke eats.
+        self.state.anchor = anchor.filter(|a| *a != cursor);
+        (value != self.value).then_some(value)
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (cursor, anchor) = self.caret_and_anchor();
+        flat_selected_text(self.value, cursor, anchor)
+    }
+
+    fn focus_in(&mut self) {
+        self.state.cursor = Some(
+            self.cursor
+                .unwrap_or(self.value.len())
+                .min(self.value.len()),
+        );
+        self.state.anchor = self.anchor;
+    }
+
+    fn focus_out(&mut self) {
+        *self.state = FlatEditState::default();
+    }
+
+    fn is_dragging(&self) -> bool {
+        self.state.dragging
+    }
+
+    fn set_dragging(&mut self, dragging: bool) {
+        self.state.dragging = dragging;
+    }
+}
+
+struct LinesTarget<'a> {
+    lines: &'a [String],
+    seed: Caret,
+    state: &'a mut LinesEditState,
+}
+
+impl LinesTarget<'_> {
+    fn caret(&self) -> Caret {
+        let (line, col) = self.state.caret.unwrap_or(self.seed);
+        let line = line.min(self.lines.len().saturating_sub(1));
+        let col = col.min(self.lines.get(line).map_or(0, |l| l.chars().count()));
+        (line, col)
+    }
+}
+
+impl EditTarget for LinesTarget<'_> {
+    fn apply(&mut self, op: &EditOp) -> Option<String> {
+        let mut lines = if self.lines.is_empty() {
+            vec![String::new()]
+        } else {
+            self.lines.to_vec()
+        };
+        let (mut line, mut col) = self.caret();
+        let mut anchor = self.state.anchor;
+        let changed = EditView {
+            lines: &mut lines,
+            cursor_line: &mut line,
+            cursor_col: &mut col,
+            anchor: &mut anchor,
+        }
+        .apply(op);
+        self.state.caret = Some((line, col));
+        self.state.anchor = anchor.filter(|a| *a != (line, col));
+        (changed && lines != self.lines).then(|| lines.join("\n"))
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (start, end) = selection_range(self.caret(), self.state.anchor)?;
+        Some(text_in_range(self.lines, start, end))
+    }
+
+    fn focus_in(&mut self) {
+        self.state.caret = Some(self.seed);
+        self.state.anchor = None;
+    }
+
+    fn focus_out(&mut self) {
+        *self.state = LinesEditState::default();
+    }
+
+    fn is_dragging(&self) -> bool {
+        self.state.dragging
+    }
+
+    fn set_dragging(&mut self, dragging: bool) {
+        self.state.dragging = dragging;
+    }
+}
+
+/// Resolve one routed event against a flat `value`.
+///
+/// `cursor`/`anchor` are the descriptor's own caret and selection anchor
+/// (byte offsets), which seed `state` on focus-in and stand in for it
+/// until editing moves the caret. `offset_at` maps a widget-local point
+/// to the byte offset under it, or `None` when the point is not on the
+/// text (a press there only takes focus).
+///
+/// Ctrl/Cmd+C and the copy half of Ctrl/Cmd+X emit
+/// [`crate::UiEvent::TextCopied`] through `cx`; paste is the host's (its
+/// text arrives back as [`crate::interactive::RoutedEvent::Text`]), so
+/// Ctrl/Cmd+V is [`FlatEditOutcome::Ignored`]. Callers claim Enter
+/// before calling when it means commit rather than a newline.
+pub fn handle_flat_edit_event(
+    value: &str,
+    cursor: Option<usize>,
+    anchor: Option<usize>,
+    state: &mut FlatEditState,
+    event: &crate::interactive::RoutedEvent,
+    offset_at: &dyn Fn(crate::event::Point) -> Option<usize>,
+    cx: &mut crate::interactive::EventCx,
+) -> FlatEditOutcome {
+    let caret_at = |p| offset_at(p).map(|off| byte_offset_to_line_col(value, off));
+    let mut target = FlatTarget {
+        value,
+        cursor,
+        anchor,
+        state,
+    };
+    handle_edit_event(&mut target, event, &caret_at, cx)
+}
+
+/// [`handle_flat_edit_event`] for a multi-line `lines` buffer, with
+/// `seed` the descriptor's own caret and `caret_at` mapping a
+/// widget-local point to the `(line, char_column)` under it.
+pub fn handle_lines_edit_event(
+    lines: &[String],
+    seed: Caret,
+    state: &mut LinesEditState,
+    event: &crate::interactive::RoutedEvent,
+    caret_at: &dyn Fn(crate::event::Point) -> Option<Caret>,
+    cx: &mut crate::interactive::EventCx,
+) -> FlatEditOutcome {
+    let mut target = LinesTarget { lines, seed, state };
+    handle_edit_event(&mut target, event, caret_at, cx)
+}
+
+fn handle_edit_event(
+    target: &mut dyn EditTarget,
+    event: &crate::interactive::RoutedEvent,
+    caret_at: &dyn Fn(crate::event::Point) -> Option<Caret>,
+    cx: &mut crate::interactive::EventCx,
+) -> FlatEditOutcome {
+    use crate::event::MouseButton;
+    use crate::interactive::{PointerKind, RoutedEvent};
+
+    match event {
+        RoutedEvent::Key(key) => match EditIntent::from_key(&key.key, key.modifiers) {
+            Some(EditIntent::SelectAll) => commit(target, &EditOp::SelectAll, cx),
+            Some(EditIntent::Copy) => {
+                if let Some(text) = target.selected_text() {
+                    cx.emit(crate::UiEvent::TextCopied(text));
+                }
+                FlatEditOutcome::Consumed
+            }
+            Some(EditIntent::Cut) => match target.selected_text() {
+                Some(text) => {
+                    cx.emit(crate::UiEvent::TextCopied(text));
+                    commit(target, &EditOp::DeleteSelection, cx)
+                }
+                None => FlatEditOutcome::Consumed,
+            },
+            Some(EditIntent::Paste) | None => FlatEditOutcome::Ignored,
+            Some(EditIntent::Op(op)) => commit(target, &op, cx),
+        },
+        RoutedEvent::Text(text) => commit(target, &EditOp::InsertText(text.clone()), cx),
+        RoutedEvent::Pointer {
+            kind: PointerKind::Down(MouseButton::Left),
+            local,
+            mods,
+            ..
+        } => {
+            cx.request_focus(None);
+            match caret_at(*local) {
+                Some((line, col)) => {
+                    cx.capture_pointer();
+                    target.set_dragging(true);
+                    commit(
+                        target,
+                        &EditOp::SetCursor {
+                            line,
+                            col,
+                            extend: mods.shift,
+                        },
+                        cx,
+                    )
+                }
+                None => FlatEditOutcome::Consumed,
+            }
+        }
+        RoutedEvent::Pointer {
+            kind: PointerKind::Move,
+            local,
+            ..
+        } if target.is_dragging() => match caret_at(*local) {
+            Some((line, col)) => commit(
+                target,
+                &EditOp::SetCursor {
+                    line,
+                    col,
+                    extend: true,
+                },
+                cx,
+            ),
+            None => FlatEditOutcome::Consumed,
+        },
+        RoutedEvent::Pointer {
+            kind: PointerKind::Up(MouseButton::Left),
+            ..
+        } if target.is_dragging() => {
+            target.set_dragging(false);
+            cx.release_pointer();
+            FlatEditOutcome::Consumed
+        }
+        RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
+            cx.request_focus(None);
+            FlatEditOutcome::Consumed
+        }
+        RoutedEvent::FocusIn(_) => {
+            target.focus_in();
+            FlatEditOutcome::Consumed
+        }
+        RoutedEvent::FocusOut => {
+            target.focus_out();
+            FlatEditOutcome::Consumed
+        }
+        _ => FlatEditOutcome::Ignored,
+    }
+}
+
+/// Apply `op` and report it: a content change as
+/// [`FlatEditOutcome::Changed`], anything else as a redraw plus
+/// [`FlatEditOutcome::Consumed`].
+fn commit(
+    target: &mut dyn EditTarget,
+    op: &EditOp,
+    cx: &mut crate::interactive::EventCx,
+) -> FlatEditOutcome {
+    match target.apply(op) {
+        Some(value) => FlatEditOutcome::Changed(value),
+        None => {
+            cx.request_redraw();
+            FlatEditOutcome::Consumed
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1068,5 +1444,58 @@ mod tests {
         assert_eq!(lines, vec!["a".to_string()]);
         assert_eq!(caret, (0, 1));
         assert_eq!(anchor, None);
+    }
+
+    #[test]
+    fn edit_intent_refuses_a_chorded_letter_that_is_not_a_clipboard_chord() {
+        let ctrl = Modifiers {
+            ctrl: true,
+            ..Default::default()
+        };
+        let cmd = Modifiers {
+            cmd: true,
+            ..Default::default()
+        };
+        assert_eq!(EditIntent::from_key(&Key::Char('z'), ctrl), None);
+        assert_eq!(EditIntent::from_key(&Key::Char('s'), cmd), None);
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('c'), ctrl),
+            Some(EditIntent::Copy)
+        );
+        assert_eq!(
+            EditIntent::from_key(&Key::Named(NamedKey::Left), ctrl),
+            Some(EditIntent::Op(EditOp::MoveWordLeft { extend: false }))
+        );
+    }
+
+    #[test]
+    fn edit_intent_types_an_alt_gr_character() {
+        let alt_gr = Modifiers {
+            ctrl: true,
+            alt: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            EditIntent::from_key(&Key::Char('@'), alt_gr),
+            Some(EditIntent::Op(EditOp::InsertChar('@')))
+        );
+    }
+
+    #[test]
+    fn painted_flat_caret_prefers_the_state_once_editing_moved_it() {
+        let moved = FlatEditState {
+            cursor: Some(4),
+            anchor: Some(1),
+            dragging: false,
+        };
+        assert_eq!(
+            painted_flat_caret(Some(&moved), Some(0), None),
+            (Some(4), Some(1))
+        );
+        assert_eq!(
+            painted_flat_caret(Some(&FlatEditState::default()), Some(2), Some(0)),
+            (Some(2), Some(0))
+        );
+        assert_eq!(painted_flat_caret(None, None, None), (None, None));
     }
 }

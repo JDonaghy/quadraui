@@ -21,11 +21,11 @@ const assert = require("node:assert/strict");
 
 const { QuiApp } = require("../js/index.ts");
 
-// Two `Fixed(8.0)` columns keep every coordinate below exact: the header
+// Two `Native(8.0)` columns keep every coordinate below exact: the header
 // occupies row 0 (TUI header height is one cell); body rows start at row 1.
 const COLUMNS = [
-  { title: "Name", width: { Fixed: 8.0 } },
-  { title: "Age", width: { Fixed: 8.0 } },
+  { title: "Name", width: { Native: 8.0 } },
+  { title: "Age", width: { Native: 8.0 } },
 ];
 
 function cell(text: string) {
@@ -215,4 +215,33 @@ test("enter on a focused list item emits the semantic ItemActivated, not ItemDou
     ),
     `expected a List ItemActivated{idx: 0}, got: ${JSON.stringify(received)}`,
   );
+});
+
+function stripedRowBackgrounds(striped: boolean): string[] {
+  const app = new QuiApp(24, 8);
+  app.setRender(() => ({
+    data_table: {
+      id: "table",
+      columns: COLUMNS,
+      rows: [row("Alice", "30"), row("Bob", "40"), row("Cleo", "50")],
+      striped,
+    },
+  }));
+  app.screen();
+  return [1, 2, 3].map((y) => {
+    const [, bg] = app.cellColors(2, y) as [number[], number[]];
+    return JSON.stringify(bg);
+  });
+}
+
+test("a striped data table tints every other row", () => {
+  const [first, second, third] = stripedRowBackgrounds(true);
+  assert.equal(first, third);
+  assert.notEqual(second, first);
+});
+
+test("an unstriped data table paints every row on one background", () => {
+  const [first, second, third] = stripedRowBackgrounds(false);
+  assert.equal(first, second);
+  assert.equal(second, third);
 });

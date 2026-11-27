@@ -1,0 +1,1760 @@
+//! The cell painter for every [`Chart`] kind.
+//!
+//! Sparklines use Unicode block elements (`▁▂▃▄▅▆▇█`). Line charts use
+//! braille dots for sub-cell resolution ([`crate::tui::braille`]), with a
+//! [`crate::primitives::chart::Series::fill`] series lighting every dot
+//! below its line. Bar charts stack whole block cells. The grid is painted
+//! right after the plot is cleared, so data and axes sit on top of it.
+
+use super::{Chart, ChartKind, ChartLayout};
+use crate::cell_surface::{solid_style, CellSurface};
+use crate::theme::Theme;
+use crate::tui::braille::{interpolate_dots, pack_braille_cell};
+
+const SPARK_BLOCKS: [char; 8] = ['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+
+/// Paint `chart` at `layout` onto `cells`, with `hovered_point` marked
+/// and a crosshair at data index `crosshair_x`.
+pub(crate) fn paint(
+    chart: &Chart,
+    layout: &ChartLayout,
+    cells: &mut dyn CellSurface,
+    theme: &Theme,
+    hovered_point: Option<(usize, usize)>,
+    crosshair_x: Option<f64>,
+) {
+    if layout.bounds.width < 1.0 || layout.bounds.height < 1.0 {
+        return;
+    }
+
+    match chart.kind {
+        ChartKind::Sparkline => paint_sparkline(cells, layout, chart, theme),
+        ChartKind::Line => paint_line(cells, layout, chart, theme),
+        ChartKind::Bar | ChartKind::BarGrouped => paint_bar(cells, layout, chart, theme),
+    }
+
+    if let Some(data_x) = crosshair_x {
+        paint_crosshair(cells, layout, chart, theme, data_x);
+    }
+
+    if let Some((si, di)) = hovered_point {
+        paint_hover_marker(cells, layout, si, di, chart, theme);
+    }
+}
+
+fn paint_sparkline(
+    cells: &mut dyn CellSurface,
+    layout: &ChartLayout,
+    chart: &Chart,
+    theme: &Theme,
+) {
+    let pa = &layout.plot_area;
+    let px = pa.x.round() as u16;
+    let py = pa.y.round() as u16;
+    let pw = pa.width.round() as u16;
+
+    let bg = theme.background;
+
+    if let Some(s) = chart.series.first() {
+        if s.data.is_empty() || pw == 0 {
+            return;
+        }
+        let (y_min, y_max) = chart.effective_y_range();
+        let range = y_max - y_min;
+        let fg = chart.series_color(0, theme);
+        let n = s.data.len();
+
+        for col_idx in 0..pw as usize {
+            let frac = col_idx as f64 / (pw as usize).saturating_sub(1).max(1) as f64;
+            let data_pos = frac * (n - 1) as f64;
+            let lo = (data_pos.floor() as usize).min(n - 1);
+            let hi = (lo + 1).min(n - 1);
+            let t = data_pos - lo as f64;
+            let val = s.data[lo] * (1.0 - t) + s.data[hi] * t;
+
+            let norm = if range > 0.0 {
+                ((val - y_min) / range).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let idx = ((norm * 7.0).round() as usize).min(7);
+            cells.put_char(
+                px + col_idx as u16,
+                py,
+                SPARK_BLOCKS[idx],
+                solid_style(fg, bg),
+            );
+        }
+    }
+}
+
+fn paint_line(cells: &mut dyn CellSurface, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
+    let pa = &layout.plot_area;
+    let px = pa.x.round() as u16;
+    let py = pa.y.round() as u16;
+    let pw = pa.width.round() as u16;
+    let ph = pa.height.round() as u16;
+
+    if pw == 0 || ph == 0 {
+        return;
+    }
+
+    let bg = theme.background;
+    let dim = theme.muted_fg;
+
+    // Clear plot area.
+    for row in py..py + ph {
+        for col in px..px + pw {
+            cells.put_char(col, row, ' ', solid_style(dim, bg));
+        }
+    }
+
+    // Grid is background: paint it before axes and series so data and
+    // axes are drawn on top of it, not cut by it.
+    paint_grid(cells, layout, chart, theme);
+
+    // Axes: left edge and bottom edge.
+    for row in py..py + ph {
+        cells.put_char(px, row, '│', solid_style(dim, bg));
+    }
+    for col in px..px + pw {
+        cells.put_char(col, py + ph - 1, '─', solid_style(dim, bg));
+    }
+    cells.put_char(px, py + ph - 1, '└', solid_style(dim, bg));
+
+    let (y_min, y_max) = chart.effective_y_range();
+    let range = y_max - y_min;
+    let plot_cols = (pw.saturating_sub(1)) as usize;
+    let plot_rows = (ph.saturating_sub(1)) as usize;
+
+    if plot_cols == 0 || plot_rows == 0 {
+        return;
+    }
+
+    // Braille plotting: each cell is 2 dots wide × 4 dots tall.
+    let dot_w = plot_cols * 2;
+    let dot_h = plot_rows * 4;
+
+    for (si, s) in chart.series.iter().enumerate() {
+        if s.data.is_empty() {
+            continue;
+        }
+        let fg = chart.series_color(si, theme);
+
+        let mut grid = vec![vec![false; dot_w]; dot_h];
+
+        for (i, &val) in s.data.iter().enumerate() {
+            let norm = if range > 0.0 {
+                ((val - y_min) / range).clamp(0.0, 1.0)
+            } else {
+                0.5
+            };
+            let dx = if s.data.len() <= 1 {
+                0
+            } else {
+                (i * (dot_w.saturating_sub(1))) / (s.data.len() - 1)
+            };
+            let dy = ((1.0 - norm) * (dot_h.saturating_sub(1)) as f64).round() as usize;
+            let dx = dx.min(dot_w.saturating_sub(1));
+            let dy = dy.min(dot_h.saturating_sub(1));
+            grid[dy][dx] = true;
+
+            // Connect consecutive points with intermediate dots.
+            if i > 0 {
+                let prev_norm = if range > 0.0 {
+                    ((s.data[i - 1] - y_min) / range).clamp(0.0, 1.0)
+                } else {
+                    0.5
+                };
+                let prev_dx = if s.data.len() <= 1 {
+                    0
+                } else {
+                    ((i - 1) * (dot_w.saturating_sub(1))) / (s.data.len() - 1)
+                };
+                let prev_dy =
+                    ((1.0 - prev_norm) * (dot_h.saturating_sub(1)) as f64).round() as usize;
+                interpolate_dots(&mut grid, prev_dx, prev_dy, dx, dy);
+            }
+        }
+
+        if s.fill {
+            fill_below_line(&mut grid);
+        }
+
+        // Render braille grid to buffer.
+        for cell_row in 0..plot_rows {
+            for cell_col in 0..plot_cols {
+                let ch = pack_braille_cell(|dr, dc| {
+                    let gy = cell_row * 4 + dr;
+                    let gx = cell_col * 2 + dc;
+                    gy < dot_h && gx < dot_w && grid[gy][gx]
+                });
+                if ch != '\u{2800}' {
+                    let bx = px + 1 + cell_col as u16;
+                    let by = py + cell_row as u16;
+                    if bx < px + pw && by < py + ph - 1 {
+                        cells.put_char(bx, by, ch, solid_style(fg, bg));
+                    }
+                }
+            }
+        }
+    }
+
+    paint_legend(cells, layout, chart, theme);
+    paint_axis_labels(cells, layout, chart, theme);
+}
+
+fn paint_bar(cells: &mut dyn CellSurface, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
+    let pa = &layout.plot_area;
+    let px = pa.x.round() as u16;
+    let py = pa.y.round() as u16;
+    let pw = pa.width.round() as u16;
+    let ph = pa.height.round() as u16;
+
+    if pw == 0 || ph == 0 {
+        return;
+    }
+
+    let bg = theme.background;
+    let dim = theme.muted_fg;
+
+    // Clear plot area.
+    for row in py..py + ph {
+        for col in px..px + pw {
+            cells.put_char(col, row, ' ', solid_style(dim, bg));
+        }
+    }
+
+    // Grid is background: paint it before any bars are drawn so bars sit
+    // on top of it, not cut by it. Painted even for an empty
+    // chart (below) so the grid stays consistent regardless of data.
+    paint_grid(cells, layout, chart, theme);
+
+    let n = chart.max_data_len();
+    if n == 0 {
+        // Nothing to plot: still paint the legend and axis labels so an
+        // empty bar chart reads as an empty chart, matching the GTK and
+        // macOS painters.
+        paint_legend(cells, layout, chart, theme);
+        paint_axis_labels(cells, layout, chart, theme);
+        return;
+    }
+
+    // Cell-quantised bar geometry. Each slot's edges are computed
+    // independently as `di*pw/n` .. `(di+1)*pw/n` rather than a single
+    // floored `pw/n` width stepped by `di`: the latter drops
+    // `pw % n` cells at the right edge (e.g. plot=108, n=28 -> slot=3,
+    // 84 cells painted, 24 left blank) because the same floored width
+    // is reused for every slot instead of letting later slots absorb
+    // the remainder. Per-slot edges tile the full plot width exactly —
+    // `slot_x1` of the last slot always equals `pw` — and this also
+    // matches the continuous (unquantised) slot centres
+    // `primitives::chart::Chart::layout` already uses for
+    // `data_point_positions`, so hit-testing drifts by at most a
+    // rounding cell instead of up to a whole slot near the right edge.
+    let pw_cells = pw as usize;
+    let plot_h = ph.saturating_sub(1) as usize;
+    let stacked = chart.kind.is_stacked_bar();
+    let series_count = chart.series.len().max(1);
+    // Row 0 of a bar is the row directly above the axis row.
+    let base_row = (py + ph).saturating_sub(2);
+
+    for (di, column) in chart.bar_column_spans_all().into_iter().enumerate() {
+        let slot_x0 = di * pw_cells / n;
+        let slot_x1 = (di + 1) * pw_cells / n;
+        if slot_x0 >= pw_cells {
+            break;
+        }
+        let slot_cells = slot_x1 - slot_x0;
+        if slot_cells == 0 {
+            // Narrower than one cell per bucket (pw < n): nothing to
+            // paint distinctly for this column.
+            continue;
+        }
+
+        for (si, bottom, top) in column {
+            // Stacked segments span the whole slot; grouped series each
+            // take a sub-slot beside the previous one.
+            let (cell_off, cell_w) = if stacked {
+                (0, slot_cells)
+            } else {
+                let sub_w = (slot_cells / series_count).max(1);
+                let off = si * sub_w;
+                if off >= slot_cells {
+                    // Slot too narrow for the remaining series.
+                    break;
+                }
+                (off, sub_w.min(slot_cells - off))
+            };
+
+            let row_bottom = (bottom * plot_h as f64).round() as usize;
+            let row_top = (top * plot_h as f64).round() as usize;
+            if row_top <= row_bottom || plot_h == 0 {
+                continue;
+            }
+
+            let fg = chart.series_color(si, theme);
+            for r in row_bottom..row_top.min(plot_h) {
+                let by = base_row.saturating_sub(r as u16);
+                if by < py {
+                    break;
+                }
+                for c in 0..cell_w {
+                    cells.put_char(
+                        px + (slot_x0 + cell_off + c) as u16,
+                        by,
+                        '█',
+                        solid_style(fg, bg),
+                    );
+                }
+            }
+        }
+    }
+
+    // Bottom axis.
+    for col in px..px + pw {
+        cells.put_char(col, py + ph - 1, '─', solid_style(dim, bg));
+    }
+
+    paint_legend(cells, layout, chart, theme);
+    paint_axis_labels(cells, layout, chart, theme);
+}
+
+fn paint_legend(cells: &mut dyn CellSurface, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
+    if let Some(lb) = &layout.legend_bounds {
+        let ly = lb.y.round() as u16;
+        let lx = lb.x.round() as u16;
+        let lw = lb.width.round() as u16;
+        let bg = theme.background;
+        let fg = theme.foreground;
+
+        // Clear legend row.
+        for col in lx..lx + lw {
+            cells.put_char(col, ly, ' ', solid_style(fg, bg));
+        }
+
+        let mut col = lx;
+        for (i, s) in chart.series.iter().enumerate() {
+            if col >= lx + lw {
+                break;
+            }
+            let sc = chart.series_color(i, theme);
+            cells.put_char(col, ly, '■', solid_style(sc, bg));
+            col += 1;
+
+            for ch in s.label.chars() {
+                if col >= lx + lw {
+                    break;
+                }
+                cells.put_char(col, ly, ch, solid_style(fg, bg));
+                col += 1;
+            }
+            col += 1; // gap between entries
+        }
+    }
+}
+
+/// Paint the horizontal grid rules at each y-tick row. Background layer:
+/// must run *before* axes and series are painted so data sits on top of
+/// the grid rather than being cut by it. Mirrors the macOS
+/// rasteriser's grid-then-series ordering (`macos/chart.rs`).
+fn paint_grid(cells: &mut dyn CellSurface, layout: &ChartLayout, chart: &Chart, theme: &Theme) {
+    if !chart.show_grid {
+        return;
+    }
+    let bg = theme.background;
+    let dim = theme.muted_fg;
+    let pa = &layout.plot_area;
+    let px = pa.x.round() as u16;
+    let pw = pa.width.round() as u16;
+
+    for &(sy, _val) in &layout.y_tick_positions {
+        let row = sy.round() as u16;
+        if row > pa.y.round() as u16 && row < (pa.y + pa.height).round() as u16 {
+            for col in (px + 1)..(px + pw) {
+                cells.put_char(col, row, '┄', solid_style(dim, bg));
+            }
+        }
+    }
+}
+
+fn paint_axis_labels(
+    cells: &mut dyn CellSurface,
+    layout: &ChartLayout,
+    chart: &Chart,
+    theme: &Theme,
+) {
+    let bg = theme.background;
+    let fg = theme.foreground;
+    let dim = theme.muted_fg;
+    let pa = &layout.plot_area;
+    let px = pa.x.round() as u16;
+    let pw = pa.width.round() as u16;
+
+    // Right-align each label against the gutter's right edge, but never
+    // let it start left of the chart's own bounds: a label wider
+    // than the gutter has its leading characters dropped instead of
+    // spilling onto whatever the enclosing panel painted there.
+    let bounds_x = layout.bounds.x.round() as u16;
+    for &(sy, val) in &layout.y_tick_positions {
+        let row = sy.round() as u16;
+        let label = crate::primitives::chart::format_tick_value(val);
+        let gutter_end = px.saturating_sub(1);
+        let desired_start = gutter_end.saturating_sub(label.len() as u16);
+        let label_start = desired_start.max(bounds_x);
+        let skip = (label_start - desired_start) as usize;
+        for (i, ch) in label.chars().skip(skip).enumerate() {
+            let col = label_start + i as u16;
+            if col < gutter_end {
+                cells.put_char(col, row, ch, solid_style(dim, bg));
+            }
+        }
+    }
+
+    // X-axis ticks: one row directly below the plot, centred
+    // under each tick's screen x but clamped to stay inside the chart's
+    // own bounds — the same "clamp, don't let it spill" shape the
+    // y-axis labels already use, since a tick at `frac == 1.0`
+    // sits exactly on `bounds_right` and a naive centred label there
+    // would always run past the edge. A label that still collides with
+    // the previous (already-clamped) one after that is dropped rather
+    // than painted overlapping — narrow charts read as sparser rather
+    // than garbled. `x_tick_positions` is only ever non-empty when
+    // `Chart::layout` also reserved this row's height (`chart.x_ticks`
+    // is `Some(n > 0)`), so the two stay in sync without threading the
+    // reservation flag through separately.
+    let ticks_row = (pa.y + pa.height).round() as u16;
+    let bounds_right = (layout.bounds.x + layout.bounds.width).round() as u16;
+    let mut prev_label_end: Option<u16> = None;
+    for &(sx, val) in &layout.x_tick_positions {
+        let label = crate::primitives::chart::format_tick_value(val);
+        let label_len = label.len() as u16;
+        if label.is_empty() || bounds_x + label_len > bounds_right {
+            // No room anywhere in bounds for this label.
+            continue;
+        }
+        let half = label_len / 2;
+        let center = sx.round() as u16;
+        let max_start = bounds_right - label_len;
+        let label_start = center.saturating_sub(half).clamp(bounds_x, max_start);
+        let label_end = label_start + label_len;
+        if let Some(prev_end) = prev_label_end {
+            if label_start <= prev_end {
+                continue;
+            }
+        }
+        for (i, ch) in label.chars().enumerate() {
+            cells.put_char(label_start + i as u16, ticks_row, ch, solid_style(dim, bg));
+        }
+        prev_label_end = Some(label_end + 1); // 1-cell gap before the next label
+    }
+
+    let x_label_row = if layout.x_tick_positions.is_empty() {
+        ticks_row
+    } else {
+        ticks_row + 1
+    };
+
+    if let Some(label) = &chart.x_label {
+        let label_x = px + pw.saturating_sub(label.len() as u16) / 2;
+        for (i, ch) in label.chars().enumerate() {
+            let col = label_x + i as u16;
+            if col < bounds_right {
+                cells.put_char(col, x_label_row, ch, solid_style(fg, bg));
+            }
+        }
+    }
+
+    if let Some(label) = &chart.y_label {
+        let label_x = layout.bounds.x.round() as u16;
+        let label_y = pa.y.round() as u16;
+        for (i, ch) in label.chars().enumerate() {
+            let col = label_x + i as u16;
+            if col < px {
+                cells.put_char(col, label_y, ch, solid_style(fg, bg));
+            }
+        }
+    }
+}
+
+fn paint_crosshair(
+    cells: &mut dyn CellSurface,
+    layout: &ChartLayout,
+    chart: &Chart,
+    theme: &Theme,
+    data_x: f64,
+) {
+    let data_len = chart.max_data_len();
+    let screen_x = layout.data_to_screen_x(data_x, data_len);
+    let col = screen_x.round() as u16;
+    let pa = &layout.plot_area;
+    let py = pa.y.round() as u16;
+    let ph = pa.height.round() as u16;
+    let px = pa.x.round() as u16;
+    let pw = pa.width.round() as u16;
+
+    if col <= px || col >= px + pw || ph == 0 {
+        return;
+    }
+
+    let dim = theme.muted_fg;
+    let bg = theme.background;
+    for row in py..py + ph.saturating_sub(1) {
+        cells.put_char(col, row, '│', solid_style(dim, bg));
+    }
+}
+
+fn paint_hover_marker(
+    cells: &mut dyn CellSurface,
+    layout: &ChartLayout,
+    series_idx: usize,
+    data_idx: usize,
+    chart: &Chart,
+    theme: &Theme,
+) {
+    let pa = &layout.plot_area;
+    let px = pa.x.round() as u16;
+    let py = pa.y.round() as u16;
+    let pw = pa.width.round() as u16;
+    let ph = pa.height.round() as u16;
+
+    let s = match chart.series.get(series_idx) {
+        Some(s) if data_idx < s.data.len() => s,
+        _ => return,
+    };
+    let val = s.data[data_idx];
+    let (y_min, y_max) = chart.effective_y_range();
+    let range = y_max - y_min;
+    let norm = if range > 0.0 {
+        ((val - y_min) / range).clamp(0.0, 1.0)
+    } else {
+        0.5
+    };
+    let n = s.data.len();
+
+    let fg = chart.series_color(series_idx, theme);
+    let bg = theme.background;
+
+    let (col, row) = match chart.kind {
+        ChartKind::Sparkline => {
+            let frac = if pw <= 1 {
+                0.0
+            } else {
+                data_idx as f32 / (n - 1).max(1) as f32
+            };
+            (px + (frac * (pw - 1) as f32).round() as u16, py)
+        }
+        ChartKind::Bar | ChartKind::BarGrouped => {
+            // Bars anchor on their own rectangle, so reuse the layout's
+            // per-segment positions rather than the line/braille math —
+            // the marker lands on the hovered stack segment.
+            let pos = layout
+                .data_point_positions
+                .iter()
+                .find(|&&(s, d, _, _)| s == series_idx && d == data_idx);
+            let &(_, _, sx, sy) = match pos {
+                Some(p) => p,
+                None => return,
+            };
+            if pw == 0 || ph == 0 {
+                return;
+            }
+            let col = (sx.round() as u16).clamp(px, px + pw - 1);
+            let row = (sy.round() as u16).clamp(py, py + ph.saturating_sub(2));
+            (col, row)
+        }
+        ChartKind::Line => {
+            let plot_cols = pw.saturating_sub(1) as usize;
+            let plot_rows = ph.saturating_sub(1) as usize;
+            if plot_cols == 0 || plot_rows == 0 {
+                return;
+            }
+            let dot_w = plot_cols * 2;
+            let dot_h = plot_rows * 4;
+            let dx = if n <= 1 {
+                0
+            } else {
+                (data_idx * dot_w.saturating_sub(1)) / (n - 1)
+            };
+            let dy = ((1.0 - norm) * dot_h.saturating_sub(1) as f64).round() as usize;
+            let cell_col = dx / 2;
+            let cell_row = dy / 4;
+            (px + 1 + cell_col as u16, py + cell_row as u16)
+        }
+    };
+
+    cells.put_char(col, row, '●', solid_style(fg, bg));
+}
+
+/// Light every dot below the topmost lit dot of each dot column — the
+/// braille degrade of [`crate::primitives::chart::Series::fill`]'s area
+/// under the line, down to the plot floor.
+fn fill_below_line(grid: &mut [Vec<bool>]) {
+    let width = grid.first().map_or(0, Vec::len);
+    for gx in 0..width {
+        if let Some(top) = grid.iter().position(|row| row[gx]) {
+            for row in grid.iter_mut().skip(top) {
+                row[gx] = true;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::chart::{ChartHit, Series};
+    use crate::tui::{ratatui_color, BufferCellSurface};
+    use crate::types::{Color, WidgetId};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
+
+    fn tui_chart_layout(chart: &Chart, area: Rect) -> ChartLayout {
+        chart.layout_in(
+            crate::Rect::new(
+                area.x as f32,
+                area.y as f32,
+                area.width as f32,
+                area.height as f32,
+            ),
+            1.0,
+            1.0,
+        )
+    }
+
+    /// Lay `chart` out over `area` and paint it into `buf`, the way the
+    /// TUI backend does.
+    fn draw_chart(
+        buf: &mut Buffer,
+        area: Rect,
+        chart: &Chart,
+        theme: &Theme,
+        hovered_point: Option<(usize, usize)>,
+        crosshair_x: Option<f64>,
+    ) -> ChartLayout {
+        let layout = tui_chart_layout(chart, area);
+        paint(
+            chart,
+            &layout,
+            &mut BufferCellSurface::new(buf),
+            theme,
+            hovered_point,
+            crosshair_x,
+        );
+        layout
+    }
+
+    fn spark(data: Vec<f64>) -> Chart {
+        Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Sparkline,
+            series: vec![Series {
+                label: String::new(),
+                data,
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: None,
+            x_range: None,
+            show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        }
+    }
+
+    fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
+        buf[(x, y)].symbol().chars().next().unwrap_or(' ')
+    }
+
+    /// Shared body for `sparkline_paint_and_click_round_trip[_at_nonzero_origin]`:
+    /// `tui_chart_layout` bakes `area.x`/`area.y` into `Chart::layout`'s
+    /// `origin_x`/`origin_y` (absolute frame), so paint + click must agree
+    /// at a non-zero origin too, per LESSONS.md's "layout helpers must
+    /// return coords in the same frame across backends".
+    fn sparkline_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 5, 1);
+        let mut buf = Buffer::empty(area);
+        let chart = spark(vec![0.0, 0.25, 0.5, 0.75, 1.0]);
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        assert_eq!(cell_char(&buf, origin_x, origin_y), '▁');
+        assert_eq!(cell_char(&buf, origin_x + 4, origin_y), '█');
+
+        let (ox, oy) = (origin_x as f32, origin_y as f32);
+        assert_eq!(
+            layout.hit_test(ox + 2.5, oy + 0.5),
+            ChartHit::Body(WidgetId::new("c"))
+        );
+        assert_eq!(layout.hit_test(ox + 10.0, oy + 0.5), ChartHit::Empty);
+    }
+
+    #[test]
+    fn sparkline_paint_and_click_round_trip() {
+        sparkline_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn sparkline_paint_and_click_round_trip_at_nonzero_origin() {
+        sparkline_paint_and_click_round_trip_at(7, 13);
+    }
+
+    #[test]
+    fn sparkline_max_value_gets_full_block() {
+        let area = Rect::new(0, 0, 3, 1);
+        let mut buf = Buffer::empty(area);
+        let chart = spark(vec![10.0, 10.0, 10.0]);
+        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        // Flat data: all mid-height.
+        for col in 0..3 {
+            assert_ne!(cell_char(&buf, col, 0), ' ');
+        }
+    }
+
+    /// A series with no explicit `color` resolves through
+    /// [`Theme::chart_series`], ensuring consistency with the pixel
+    /// backends that share the same palette in `primitives::chart`.
+    #[test]
+    fn sparkline_with_no_explicit_color_paints_with_the_themes_chart_series() {
+        let area = Rect::new(0, 0, 3, 1);
+        let mut buf = Buffer::empty(area);
+        let chart = spark(vec![5.0, 5.0, 5.0]);
+        let theme = Theme::default();
+
+        let _layout = draw_chart(&mut buf, area, &chart, &theme, None, None);
+
+        assert_eq!(
+            fg_at(&buf, 0, 0),
+            ratatui_color(theme.chart_series()[0]),
+            "sparkline should paint with the theme's chart_series[0]:\n{:?}",
+            grid(&buf, area)
+        );
+    }
+
+    /// With more series than the palette has entries, series `i`
+    /// takes `chart_series()[i % 6]` — the legend swatches make the
+    /// cycle directly observable, and the 7th series must reuse entry 0
+    /// rather than panic or paint an off-palette colour.
+    #[test]
+    fn legend_swatches_cycle_through_the_themes_chart_series_palette() {
+        let area = Rect::new(0, 0, 40, 8);
+        let mut buf = Buffer::empty(area);
+        let mut chart = bar_chart_of(
+            ChartKind::Bar,
+            (0..7)
+                .map(|i| Series {
+                    label: i.to_string(),
+                    data: vec![1.0],
+                    color: None,
+                    fill: false,
+                })
+                .collect(),
+            Some((0.0, 3.0)),
+        );
+        chart.show_legend = true;
+        let theme = Theme::default();
+        let palette = theme.chart_series();
+
+        let layout = draw_chart(&mut buf, area, &chart, &theme, None, None);
+
+        let lb = layout.legend_bounds.expect("bar charts get a legend row");
+        let row_y = lb.y.round() as u16;
+        let swatch_colors: Vec<ratatui::style::Color> = (lb.x.round() as u16
+            ..(lb.x + lb.width).round() as u16)
+            .filter(|&x| cell_char(&buf, x, row_y) == '■')
+            .map(|x| fg_at(&buf, x, row_y))
+            .collect();
+
+        let expected: Vec<ratatui::style::Color> = (0..7)
+            .map(|i| ratatui_color(palette[i % palette.len()]))
+            .collect();
+        assert_eq!(
+            swatch_colors,
+            expected,
+            "legend swatches should cycle through chart_series, wrapping the 7th back to entry 0:\n{:?}",
+            grid(&buf, area)
+        );
+    }
+
+    #[test]
+    fn sparkline_empty_data_no_crash() {
+        let area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(area);
+        let chart = spark(vec![]);
+        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    #[test]
+    fn line_chart_paints_braille() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+        let chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "A".into(),
+                data: vec![0.0, 5.0, 10.0, 5.0, 0.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: None,
+            x_range: None,
+            show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        };
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        assert!(layout.plot_area.width > 0.0);
+        assert!(layout.plot_area.height > 0.0);
+        assert_eq!(
+            layout.hit_test(5.0, 5.0),
+            ChartHit::Body(WidgetId::new("c"))
+        );
+    }
+
+    /// Shared body for `bar_chart_paint_and_click_round_trip[_at_nonzero_origin]`
+    /// — see `sparkline_paint_and_click_round_trip_at` for the non-zero-origin
+    /// rationale.
+    fn bar_chart_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 10, 5);
+        // Y-axis tick-label painting is clamped to `bounds.x` and
+        let mut buf = Buffer::empty(area);
+        let chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Bar,
+            series: vec![Series {
+                label: "B".into(),
+                data: vec![1.0, 3.0, 2.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: None,
+            x_range: None,
+            show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        };
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        // Bar for max value (3.0) should have filled cells.
+        let pa = &layout.plot_area;
+        let bar_x = pa.x.round() as u16 + 3; // second bar starts around col 3
+        let bar_y = pa.y.round() as u16 + (pa.height.round() as u16) - 2;
+        assert_eq!(cell_char(&buf, bar_x, bar_y), '█');
+
+        // No y_label/legend, so the plot area's origin equals `area`'s.
+        let (ox, oy) = (origin_x as f32, origin_y as f32);
+        assert_eq!(
+            layout.hit_test(ox + 5.0, oy + 2.0),
+            ChartHit::Body(WidgetId::new("c"))
+        );
+    }
+
+    #[test]
+    fn bar_chart_paint_and_click_round_trip() {
+        bar_chart_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn bar_chart_paint_and_click_round_trip_at_nonzero_origin() {
+        bar_chart_paint_and_click_round_trip_at(7, 13);
+    }
+
+    /// Y-range `0..18` over the default 5 ticks formats
+    /// the interior ticks as `3.6`, `7.2`, `10.8`, `14.4` — 4 characters,
+    /// wider than either endpoint (`0`/`18`). Pre-fix, the gutter was
+    /// sized from the endpoints alone and these interior labels spilled
+    /// left of `area.x` onto whatever the host buffer held there. The
+    /// buffer here starts at the screen's own origin (not `area`'s), the
+    /// same shape the pre-fix `bar_chart_paint_and_click_round_trip_at`
+    /// and `legend_paint_and_click_round_trip_at` needed to tolerate the
+    /// spill — this is the direct inverse: it now asserts nothing left
+    /// of `area.x` was ever painted.
+    #[test]
+    fn y_axis_tick_labels_never_paint_left_of_area_bounds() {
+        let origin_x = 5u16;
+        let origin_y = 2u16;
+        let area = Rect::new(origin_x, origin_y, 20, 8);
+        let mut buf = Buffer::empty(Rect::new(
+            0,
+            0,
+            origin_x + area.width,
+            origin_y + area.height,
+        ));
+        let chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Bar,
+            series: vec![Series {
+                label: "B".into(),
+                data: vec![1.0, 5.0, 9.0, 13.0, 17.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some((0.0, 18.0)),
+            x_range: None,
+            show_legend: false,
+            y_ticks: None, // default 5
+            x_ticks: None,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        };
+        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        for y in 0..buf.area.height {
+            for x in 0..origin_x {
+                assert_eq!(
+                    cell_char(&buf, x, y),
+                    ' ',
+                    "cell ({x},{y}) left of area.x={origin_x} was painted"
+                );
+            }
+        }
+    }
+
+    /// Shared body for `legend_paint_and_click_round_trip[_at_nonzero_origin]`
+    /// — see `sparkline_paint_and_click_round_trip_at` for the non-zero-origin
+    /// rationale.
+    fn legend_paint_and_click_round_trip_at(origin_x: u16, origin_y: u16) {
+        let area = Rect::new(origin_x, origin_y, 30, 10);
+        // Axis-label painting is clamped to `area.x`, so a buffer
+        let mut buf = Buffer::empty(area);
+        let chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Line,
+            series: vec![
+                Series {
+                    label: "CPU".into(),
+                    data: vec![1.0, 2.0],
+                    color: None,
+                    fill: false,
+                },
+                Series {
+                    label: "Mem".into(),
+                    data: vec![3.0, 4.0],
+                    color: None,
+                    fill: false,
+                },
+            ],
+            x_label: None,
+            y_label: None,
+            y_range: None,
+            x_range: None,
+            show_legend: true,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        };
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        let lb = layout.legend_bounds.unwrap();
+        assert_eq!(
+            cell_char(&buf, lb.x.round() as u16, lb.y.round() as u16),
+            '■'
+        );
+
+        let mid = lb.x + lb.width / 4.0;
+        assert_eq!(
+            layout.hit_test(mid, lb.y + 0.5),
+            ChartHit::Legend(WidgetId::new("c"), 0)
+        );
+    }
+
+    #[test]
+    fn legend_paint_and_click_round_trip() {
+        legend_paint_and_click_round_trip_at(0, 0);
+    }
+
+    #[test]
+    fn legend_paint_and_click_round_trip_at_nonzero_origin() {
+        legend_paint_and_click_round_trip_at(7, 13);
+    }
+
+    // ── Multi-series bars ───────────────────────────────────────────────
+
+    fn series_of(label: &str, data: Vec<f64>, color: Color) -> Series {
+        Series {
+            label: label.into(),
+            data,
+            color: Some(color),
+            fill: false,
+        }
+    }
+
+    fn bar_chart_of(kind: ChartKind, series: Vec<Series>, y_range: Option<(f64, f64)>) -> Chart {
+        Chart {
+            id: WidgetId::new("c"),
+            kind,
+            series,
+            x_label: None,
+            y_label: None,
+            y_range,
+            x_range: None,
+            show_legend: false,
+            y_ticks: None,
+            x_ticks: None,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        }
+    }
+
+    /// The painted grid as one string per row, `.` for blank cells.
+    fn grid(buf: &Buffer, area: Rect) -> Vec<String> {
+        (area.y..area.y + area.height)
+            .map(|y| {
+                (area.x..area.x + area.width)
+                    .map(|x| match cell_char(buf, x, y) {
+                        ' ' => '.',
+                        c => c,
+                    })
+                    .collect()
+            })
+            .collect()
+    }
+
+    fn fg_at(buf: &Buffer, x: u16, y: u16) -> ratatui::style::Color {
+        buf[(x, y)].fg
+    }
+
+    /// A single-series `Bar` must paint exactly what it painted
+    /// before stacking existed. The grid below (y-tick gutter on the
+    /// left, bars floored at the auto-range minimum, slot width
+    /// `pw / n` floored) is pinned as the baseline for this case.
+    #[test]
+    fn single_series_bar_grid_is_pinned() {
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![series_of("B", vec![1.0, 3.0, 2.0], Color::rgb(1, 2, 3))],
+            None,
+        );
+        let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        // The gutter is now sized from the widest *interior* tick
+        // label ("1.4"/"1.8"/"2.2"/"2.6", 3 chars) rather than just the
+        // endpoints ("1"/"3", 1 char), so it's a column wider than
+        // pre-fix and every column below shifts right to match.
+        assert_eq!(
+            grid(&buf, area),
+            vec![
+                "..3...██..",
+                "2.6...██..",
+                "2.2...████",
+                "1.8...████",
+                "1.4.──────",
+            ]
+        );
+    }
+
+    /// A single-series `Bar` whose data is all negative auto-derives
+    /// the range (-5, -1), where `norm(0.0)` clamps to the plot
+    /// *ceiling*. Bars must still rise from the floor at 0% / 50% / 100%.
+    #[test]
+    fn single_series_bar_with_negative_data_still_paints() {
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![series_of("B", vec![-5.0, -3.0, -1.0], Color::rgb(1, 2, 3))],
+            None,
+        );
+        let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        // The gutter now reserves room for the widest interior
+        // tick label ("-4.2", 4 chars) rather than just the endpoints
+        // ("-5"/"-1", 2 chars), shifting every column right by 1. That
+        // leaves a 5-cell plot for 3 buckets: edge-based slots
+        // are 1/2/2 cells wide (`di*pw/n .. (di+1)*pw/n`) rather than
+        // every slot flooring to 1 and leaving the last 2 plot columns
+        // permanently blank, so the tallest bar (index 2) now spans 2
+        // columns instead of 1.
+        assert_eq!(
+            grid(&buf, area),
+            vec![
+                "..-1....██",
+                "-1.8....██",
+                "-2.6..████",
+                "-3.4..████",
+                "-4.2.─────",
+            ]
+        );
+    }
+
+    #[test]
+    fn stacked_bar_paints_every_series_with_its_own_colour() {
+        // 3 series × 1.0 over an explicit 0..3 range ⇒ each owns two of
+        // the six plot rows, bottom-up in `series` order.
+        let (red, green, blue) = (
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 255, 0),
+            Color::rgb(0, 0, 255),
+        );
+        let area = Rect::new(0, 0, 12, 7);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![
+                series_of("a", vec![1.0], red),
+                series_of("b", vec![1.0], green),
+                series_of("c", vec![1.0], blue),
+            ],
+            Some((0.0, 3.0)),
+        );
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let px = layout.plot_area.x.round() as u16;
+        let py = layout.plot_area.y.round() as u16;
+        let ph = layout.plot_area.height.round() as u16;
+
+        // Six stacked rows above the axis row, two per series.
+        let expected = [
+            (py + ph - 2, red),
+            (py + ph - 3, red),
+            (py + ph - 4, green),
+            (py + ph - 5, green),
+            (py + ph - 6, blue),
+            (py + ph - 7, blue),
+        ];
+        for (row, color) in expected {
+            assert_eq!(
+                cell_char(&buf, px, row),
+                '█',
+                "row {row} of the stack should be filled:\n{:?}",
+                grid(&buf, area)
+            );
+            assert_eq!(
+                fg_at(&buf, px, row),
+                ratatui_color(color),
+                "row {row} should carry its own series colour:\n{:?}",
+                grid(&buf, area)
+            );
+        }
+    }
+
+    #[test]
+    fn stacked_bar_ceiling_is_the_column_total() {
+        // Auto-range: totals are 3.0, so the tallest stack fills the
+        // plot and no segment is clipped off the top.
+        let area = Rect::new(0, 0, 12, 7);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![
+                series_of("a", vec![1.0], Color::rgb(255, 0, 0)),
+                series_of("b", vec![1.0], Color::rgb(0, 255, 0)),
+                series_of("c", vec![1.0, 0.0], Color::rgb(0, 0, 255)),
+            ],
+            None,
+        );
+        assert_eq!(chart.effective_y_range(), (0.0, 3.0));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let px = layout.plot_area.x.round() as u16;
+        let py = layout.plot_area.y.round() as u16;
+        // Topmost plot row of the first column is painted by series 2.
+        assert_eq!(cell_char(&buf, px, py), '█');
+        assert_eq!(fg_at(&buf, px, py), ratatui_color(Color::rgb(0, 0, 255)));
+    }
+
+    #[test]
+    fn stacked_bar_all_zero_series_does_not_shift_the_others() {
+        let (red, blue) = (Color::rgb(255, 0, 0), Color::rgb(0, 0, 255));
+        let area = Rect::new(0, 0, 12, 7);
+        let render = |series: Vec<Series>| {
+            let mut buf = Buffer::empty(area);
+            let chart = bar_chart_of(ChartKind::Bar, series, Some((0.0, 3.0)));
+            let _ = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+            grid(&buf, area)
+        };
+
+        let without_zeros = render(vec![
+            series_of("a", vec![2.0, 1.0], red),
+            series_of("c", vec![1.0, 2.0], blue),
+        ]);
+        let with_zeros = render(vec![
+            series_of("a", vec![2.0, 1.0], red),
+            series_of("zero", vec![0.0, 0.0], Color::rgb(9, 9, 9)),
+            series_of("c", vec![1.0, 2.0], blue),
+        ]);
+        assert_eq!(
+            with_zeros, without_zeros,
+            "an all-zero series must occupy no rows and move nothing"
+        );
+    }
+
+    #[test]
+    fn grouped_bar_paints_series_side_by_side() {
+        let (red, green, blue) = (
+            Color::rgb(255, 0, 0),
+            Color::rgb(0, 255, 0),
+            Color::rgb(0, 0, 255),
+        );
+        // Plot is 12 wide → one 12-cell slot split into three 4-cell
+        // sub-bars, each with its own height.
+        let area = Rect::new(0, 0, 14, 7);
+        let mut buf = Buffer::empty(area);
+        let chart = bar_chart_of(
+            ChartKind::BarGrouped,
+            vec![
+                series_of("a", vec![1.0], red),
+                series_of("b", vec![2.0], green),
+                series_of("c", vec![3.0], blue),
+            ],
+            Some((0.0, 3.0)),
+        );
+        // Grouped mode keeps the single-value ceiling.
+        assert_eq!(chart.effective_y_range(), (0.0, 3.0));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let px = layout.plot_area.x.round() as u16;
+        let py = layout.plot_area.y.round() as u16;
+        let ph = layout.plot_area.height.round() as u16;
+        let pw = layout.plot_area.width.round() as u16;
+        let sub_w = pw / 3;
+
+        let bottom = py + ph - 2;
+        for (i, color) in [red, green, blue].into_iter().enumerate() {
+            let col = px + sub_w * i as u16;
+            assert_eq!(
+                fg_at(&buf, col, bottom),
+                ratatui_color(color),
+                "sub-bar {i} owns its own columns:\n{:?}",
+                grid(&buf, area)
+            );
+        }
+        // Heights rise 1 → 2 → 3 across the sub-bars: the shortest does
+        // not reach the row the tallest does.
+        let top = py;
+        assert_eq!(cell_char(&buf, px + sub_w * 2, top), '█');
+        assert_eq!(cell_char(&buf, px, top), ' ');
+    }
+
+    #[test]
+    fn bar_hover_marker_lands_on_the_hovered_stack_segment() {
+        let area = Rect::new(0, 0, 12, 7);
+        let chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![
+                series_of("a", vec![1.0], Color::rgb(255, 0, 0)),
+                series_of("b", vec![1.0], Color::rgb(0, 255, 0)),
+                series_of("c", vec![1.0], Color::rgb(0, 0, 255)),
+            ],
+            Some((0.0, 3.0)),
+        );
+        let marker_row = |hovered: (usize, usize)| {
+            let mut buf = Buffer::empty(area);
+            let layout = draw_chart(
+                &mut buf,
+                area,
+                &chart,
+                &Theme::default(),
+                Some(hovered),
+                None,
+            );
+            let px = layout.plot_area.x.round() as u16;
+            let pw = layout.plot_area.width.round() as u16;
+            let py = layout.plot_area.y.round() as u16;
+            let ph = layout.plot_area.height.round() as u16;
+            let row = (py..py + ph)
+                .find(|&row| (px..px + pw).any(|col| cell_char(&buf, col, row) == '●'))
+                .unwrap_or_else(|| panic!("no hover marker painted:\n{:?}", grid(&buf, area)));
+            (row, py, ph)
+        };
+
+        // Six plot rows, two per segment: hovering the bottom series
+        let (bottom_row, py, ph) = marker_row((0, 0));
+        assert!(
+            bottom_row >= py + ph - 3,
+            "bottom segment marker at {bottom_row}, plot rows {py}..{}",
+            py + ph
+        );
+        let (top_row, py, ph) = marker_row((2, 0));
+        assert!(
+            top_row <= py + 1,
+            "top segment marker at {top_row}, plot rows {py}..{}",
+            py + ph
+        );
+    }
+
+    #[test]
+    fn multi_series_bar_legend_labels_every_series() {
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        let mut chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![
+                series_of("OK", vec![1.0], Color::rgb(255, 0, 0)),
+                series_of("Slow", vec![1.0], Color::rgb(0, 255, 0)),
+                series_of("Fail", vec![1.0], Color::rgb(0, 0, 255)),
+            ],
+            Some((0.0, 3.0)),
+        );
+        chart.show_legend = true;
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let lb = layout.legend_bounds.expect("bar charts get a legend row");
+        let row: String = (lb.x.round() as u16..(lb.x + lb.width).round() as u16)
+            .map(|x| cell_char(&buf, x, lb.y.round() as u16))
+            .collect();
+        assert!(
+            row.contains("OK") && row.contains("Slow") && row.contains("Fail"),
+            "every bar series should be named in the legend: {row:?}"
+        );
+    }
+
+    #[test]
+    fn zero_size_is_no_op() {
+        let buf_area = Rect::new(0, 0, 10, 1);
+        let mut buf = Buffer::empty(buf_area);
+        let area = Rect::new(0, 0, 0, 0);
+        let chart = spark(vec![1.0, 2.0]);
+        let _layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        assert_eq!(cell_char(&buf, 0, 0), ' ');
+    }
+
+    // ── Grid paints under data, not over it ─────────────────────────────
+
+    /// A tall bar and an empty (zero-height) bar share a y-tick row: the
+    /// tall bar's cell must stay `█` (data wins) while the empty bar's
+    /// cell on the same row must still show the grid dash — proving the
+    /// grid is painted *underneath* the data rather than deleted
+    /// outright (deleting the grid would also make this pass if we only
+    /// asserted the bar cell).
+    #[test]
+    fn bar_chart_grid_paints_under_bars_not_over_them() {
+        let area = Rect::new(0, 0, 12, 9);
+        let mut buf = Buffer::empty(area);
+        let mut chart = bar_chart_of(
+            ChartKind::Bar,
+            vec![series_of("B", vec![3.0, 0.0], Color::rgb(1, 2, 3))],
+            Some((0.0, 4.0)),
+        );
+        chart.show_grid = true;
+        chart.y_ticks = Some(4);
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        let pa = &layout.plot_area;
+        let px = pa.x.round() as u16;
+        let py = pa.y.round() as u16;
+        let ph = pa.height.round() as u16;
+        let pw = pa.width.round() as u16;
+        let slot_w = (pw / 2).max(1);
+
+        let bar_col = px; // first data point: value 3.0, a tall bar
+        let empty_col = px + slot_w; // second data point: value 0.0, no bar
+
+        let tick_row_in_bar = layout
+            .y_tick_positions
+            .iter()
+            .map(|&(sy, _)| sy.round() as u16)
+            .filter(|&row| row > py && row < py + ph)
+            .find(|&row| cell_char(&buf, bar_col, row) == '█')
+            .unwrap_or_else(|| {
+                panic!(
+                    "no tick row landed inside the bar for this fixture:\n{:?}",
+                    grid(&buf, area)
+                )
+            });
+
+        assert_eq!(cell_char(&buf, bar_col, tick_row_in_bar), '█');
+        assert_eq!(
+            cell_char(&buf, empty_col, tick_row_in_bar),
+            '┄',
+            "grid should still show through cells the data does not occupy:\n{:?}",
+            grid(&buf, area)
+        );
+    }
+
+    /// A line chart's braille line crosses several y-tick rows; the
+    /// braille glyph at the crossing must survive, not be replaced by
+    /// the grid dash.
+    #[test]
+    fn line_chart_grid_paints_under_braille_not_over_it() {
+        let area = Rect::new(0, 0, 20, 10);
+        let mut buf = Buffer::empty(area);
+        let chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "A".into(),
+                data: vec![0.0, 2.5, 5.0, 7.5, 10.0, 7.5, 5.0, 2.5, 0.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some((0.0, 10.0)),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(5),
+            x_ticks: None,
+            show_grid: true,
+            hovered_point: None,
+            crosshair_x: None,
+        };
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        let pa = &layout.plot_area;
+        let px = pa.x.round() as u16;
+        let py = pa.y.round() as u16;
+        let ph = pa.height.round() as u16;
+        let pw = pa.width.round() as u16;
+
+        // A tick row strictly inside the plot (excluding the axis border
+        // rows) where the line's braille dots cross should still show a
+        // braille glyph somewhere along the row.
+        let tick_row = layout
+            .y_tick_positions
+            .iter()
+            .map(|&(sy, _)| sy.round() as u16)
+            .find(|&row| row > py && row < py + ph.saturating_sub(1))
+            .expect("fixture should have an interior tick row");
+
+        let braille_survives = (px + 1..px + pw).any(|col| {
+            let ch = cell_char(&buf, col, tick_row);
+            ('\u{2800}'..='\u{28ff}').contains(&ch)
+        });
+        assert!(
+            braille_survives,
+            "expected a braille dot to survive on tick row {tick_row}:\n{:?}",
+            grid(&buf, area)
+        );
+    }
+
+    // ── Bar slots tile the full plot width ──────────────────────────────
+
+    /// Bar slots must tile the full plot width even when it doesn't
+    /// divide evenly by the bucket count. With a 10-cell plot and 3
+    /// buckets, edge-based slots (`di*pw/n .. (di+1)*pw/n`) give slot
+    /// widths 3/3/4, ensuring the tallest bucket's bar reaches the
+    /// plot's final column instead of leaving it blank.
+    #[test]
+    fn bar_slots_tile_the_full_plot_width_with_no_blank_remainder() {
+        let area = Rect::new(0, 0, 10, 5);
+        let mut buf = Buffer::empty(area);
+        let chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Bar,
+            series: vec![Series {
+                label: "B".into(),
+                data: vec![1.0, 1.0, 3.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some((0.0, 3.0)),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: None,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        };
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        let pa = &layout.plot_area;
+        assert_eq!(
+            (pa.x, pa.width),
+            (0.0, 10.0),
+            "test fixture assumes a zero-gutter, 10-cell plot"
+        );
+
+        // The tallest (last) bucket reaches full height; its bottom-most
+        // bar row must include the plot's very last column.
+        let last_col = pa.x.round() as u16 + pa.width.round() as u16 - 1;
+        let bottom_bar_row = (pa.y + pa.height).round() as u16 - 2; // row just above the axis line
+        assert_eq!(
+            cell_char(&buf, last_col, bottom_bar_row),
+            '█',
+            "last plot column should be part of the tallest bucket's bar, not left blank:\n{:?}",
+            grid(&buf, area)
+        );
+    }
+
+    // ── X-axis ticks are painted ────────────────────────────────────────
+
+    fn line_chart_with_x_axis(
+        data: Vec<f64>,
+        x_range: Option<(f64, f64)>,
+        x_ticks: Option<usize>,
+    ) -> Chart {
+        Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "A".into(),
+                data,
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: None,
+            x_range,
+            show_legend: false,
+            y_ticks: Some(0), // zero-width gutter: plot_area == area
+            x_ticks,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        }
+    }
+
+    fn row_string(buf: &Buffer, area: Rect, row: u16) -> String {
+        (area.x..area.x + area.width)
+            .map(|x| cell_char(buf, x, row))
+            .collect()
+    }
+
+    /// X-axis ticks are painted below the plot based on
+    #[test]
+    fn x_axis_ticks_are_painted_below_the_plot() {
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        // 3 ticks at fracs 0, 0.5, 1 over 5 data points -> index values 0, 2, 4.
+        let chart = line_chart_with_x_axis(vec![1.0, 2.0, 3.0, 4.0, 5.0], None, Some(2));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        assert_eq!(layout.x_tick_positions.len(), 3);
+
+        let pa = &layout.plot_area;
+        let ticks_row = (pa.y + pa.height).round() as u16;
+        let row = row_string(&buf, area, ticks_row);
+        assert!(
+            row.contains('0') && row.contains('2') && row.contains('4'),
+            "expected x-tick labels 0, 2, 4 on row {ticks_row}, got {row:?}"
+        );
+    }
+
+    /// An explicit `x_range` drives tick *values*, labelling ticks by
+    /// the range rather than by data index.
+    #[test]
+    fn x_axis_tick_values_honour_x_range() {
+        let area = Rect::new(0, 0, 30, 8);
+        let mut buf = Buffer::empty(area);
+        let chart = line_chart_with_x_axis(vec![1.0, 2.0, 3.0], Some((100.0, 300.0)), Some(1));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        let values: Vec<f64> = layout.x_tick_positions.iter().map(|&(_, v)| v).collect();
+        assert_eq!(
+            values,
+            vec![100.0, 300.0],
+            "tick values should come from x_range (100, 300), not the data index (0, 2)"
+        );
+
+        let pa = &layout.plot_area;
+        let ticks_row = (pa.y + pa.height).round() as u16;
+        let row = row_string(&buf, area, ticks_row);
+        assert!(
+            row.contains("100") && row.contains("300"),
+            "expected the x_range-derived labels on row {ticks_row}, got {row:?}"
+        );
+    }
+
+    /// A label that would overlap the previous one is dropped
+    /// rather than painted on top of it. An 8-cell plot with ticks at
+    /// each edge and 4-char labels leaves no room for both once the
+    /// right-edge label is clamped inside bounds.
+    #[test]
+    fn x_axis_tick_labels_drop_on_collision_at_narrow_width() {
+        let area = Rect::new(0, 0, 8, 8);
+        let mut buf = Buffer::empty(area);
+        let chart = line_chart_with_x_axis(vec![1.0, 2.0], Some((1000.0, 2000.0)), Some(1));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+        assert_eq!(
+            layout.plot_area.width, 8.0,
+            "test fixture assumes a zero-gutter, 8-cell plot"
+        );
+
+        let pa = &layout.plot_area;
+        let ticks_row = (pa.y + pa.height).round() as u16;
+        let row = row_string(&buf, area, ticks_row);
+        assert!(
+            row.contains("1000"),
+            "left-edge tick should paint its label: {row:?}"
+        );
+        assert!(
+            !row.contains("2000"),
+            "right-edge tick's 4-char label has nowhere to go without overlapping the \
+             left tick's label in an 8-cell plot, and must be dropped rather than \
+             painted over it: {row:?}"
+        );
+    }
+
+    /// A tick at `frac == 1.0` sits exactly on the chart's own
+    /// right edge, so a naive centred label there would always spill
+    /// past it. It must clamp inward instead — mirroring the y-axis's
+    /// existing #647 clamp — never painting outside the chart's bounds.
+    #[test]
+    fn x_axis_tick_label_clamps_to_bounds_instead_of_spilling() {
+        let origin_x = 3u16;
+        let origin_y = 2u16;
+        let area = Rect::new(origin_x, origin_y, 20, 6);
+        let mut buf = Buffer::empty(Rect::new(
+            0,
+            0,
+            origin_x + area.width + 10,
+            origin_y + area.height,
+        ));
+        let chart = line_chart_with_x_axis(vec![1.0, 2.0, 3.0], Some((1000.0, 2000.0)), Some(1));
+        let layout = draw_chart(&mut buf, area, &chart, &Theme::default(), None, None);
+
+        let pa = &layout.plot_area;
+        let ticks_row = (pa.y + pa.height).round() as u16;
+        let bounds_right = origin_x + area.width;
+
+        for x in 0..origin_x {
+            assert_eq!(
+                cell_char(&buf, x, ticks_row),
+                ' ',
+                "cell ({x},{ticks_row}) left of bounds.x={origin_x} was painted"
+            );
+        }
+        for x in bounds_right..buf.area.width {
+            assert_eq!(
+                cell_char(&buf, x, ticks_row),
+                ' ',
+                "cell ({x},{ticks_row}) right of bounds_right={bounds_right} was painted"
+            );
+        }
+        let row = row_string(
+            &buf,
+            Rect::new(origin_x, ticks_row, area.width, 1),
+            ticks_row,
+        );
+        assert!(
+            row.contains("1000") && row.contains("2000"),
+            "both labels should still be painted, just clamped inward: {row:?}"
+        );
+    }
+
+    /// Reserving the x-ticks row must push `x_label` down by one
+    /// more row than when there's no tick row at all — otherwise the
+    /// caption would paint into the same row as the tick values.
+    #[test]
+    fn x_label_row_shifts_down_when_x_ticks_reserve_a_row() {
+        let area = Rect::new(0, 0, 20, 8);
+        let make = |x_ticks: Option<usize>| Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "A".into(),
+                data: vec![1.0, 2.0, 3.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: Some("Time".into()),
+            y_label: None,
+            y_range: None,
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        };
+        let find_label_row = |buf: &Buffer| -> u16 {
+            (area.y..area.y + area.height)
+                .find(|&y| row_string(buf, area, y).contains("Time"))
+                .unwrap_or_else(|| panic!("label 'Time' not painted anywhere in the buffer"))
+        };
+
+        let mut buf_without = Buffer::empty(area);
+        let layout_without = draw_chart(
+            &mut buf_without,
+            area,
+            &make(None),
+            &Theme::default(),
+            None,
+            None,
+        );
+        let plot_bottom_without =
+            (layout_without.plot_area.y + layout_without.plot_area.height).round() as u16;
+        assert_eq!(
+            find_label_row(&buf_without),
+            plot_bottom_without,
+            "with no x-ticks reserved, x_label sits directly below the plot"
+        );
+
+        let mut buf_with = Buffer::empty(area);
+        let layout_with = draw_chart(
+            &mut buf_with,
+            area,
+            &make(Some(2)),
+            &Theme::default(),
+            None,
+            None,
+        );
+        let plot_bottom_with =
+            (layout_with.plot_area.y + layout_with.plot_area.height).round() as u16;
+        assert_eq!(
+            find_label_row(&buf_with),
+            plot_bottom_with + 1,
+            "with an x-ticks row reserved, x_label must shift one row further down"
+        );
+    }
+
+    /// A `fill` series lights every braille dot down to the plot floor;
+    /// the same series unfilled leaves the rows under its line blank.
+    #[test]
+    fn fill_series_lights_braille_down_to_the_plot_floor() {
+        let area = Rect::new(0, 0, 12, 6);
+        let mut chart = Chart {
+            id: WidgetId::new("c"),
+            kind: ChartKind::Line,
+            series: vec![Series {
+                label: "A".into(),
+                data: vec![4.0, 4.0, 4.0],
+                color: None,
+                fill: false,
+            }],
+            x_label: None,
+            y_label: None,
+            y_range: Some((0.0, 4.0)),
+            x_range: None,
+            show_legend: false,
+            y_ticks: Some(0),
+            x_ticks: None,
+            show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
+        };
+        let theme = Theme::default();
+        // The row directly above the bottom axis, one column into the plot.
+        let (col, row) = (3, area.height - 2);
+
+        let mut buf = Buffer::empty(area);
+        draw_chart(&mut buf, area, &chart, &theme, None, None);
+        assert_eq!(
+            buf[(col, row)].symbol(),
+            " ",
+            "an unfilled line leaves its floor blank"
+        );
+
+        chart.series[0].fill = true;
+        let mut buf = Buffer::empty(area);
+        draw_chart(&mut buf, area, &chart, &theme, None, None);
+        assert_eq!(
+            buf[(col, row)].symbol(),
+            "\u{28FF}",
+            "a filled line lights the whole cell"
+        );
+    }
+}

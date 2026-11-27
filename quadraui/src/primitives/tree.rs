@@ -641,21 +641,16 @@ pub(crate) mod native_surface_paint {
             } else if is_expanded.is_none() {
                 cursor_x += leaf_gap;
             }
-            if let Some(icon) = icon {
-                let glyph = if nerd_fonts_enabled {
-                    icon.glyph.as_str()
-                } else {
-                    icon.fallback.as_str()
-                };
-                let (iw, ih) = surface.surface_measure_text(glyph);
-                let iy = row_rect.y + (row_rect.height - ih) / 2.0;
-                surface.surface_draw_text_run(
-                    Rect::new(cursor_x, iy, iw, ih),
-                    glyph,
-                    icon.color.unwrap_or(fg),
-                );
-                cursor_x += iw + 6.0;
-            }
+            cursor_x = crate::primitives::row_stack::row_content_paint::paint_row_icon(
+                surface,
+                icon,
+                nerd_fonts_enabled,
+                fg,
+                row_rect.y,
+                row_rect.height,
+                cursor_x,
+                |s, r, g, c| s.surface_draw_text_run(r, g, c),
+            );
             // Measured, not `surface_char_width()` — GTK's `CairoSurface`
             // panics on that call (no fixed-width font assumption on a
             // Pango surface).
@@ -2479,24 +2474,6 @@ impl TreeViewState {
     }
 }
 
-/// Milliseconds on a monotonic clock, for [`crate::behaviour::typeahead`]'s
-/// debounce — only differences between two readings matter.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-fn typeahead_now_ms() -> u64 {
-    use std::sync::OnceLock;
-    use std::time::Instant;
-    static EPOCH: OnceLock<Instant> = OnceLock::new();
-    let epoch = *EPOCH.get_or_init(Instant::now);
-    // Offset past the debounce window so the very first keystroke never
-    // reads as a continuation of the empty buffer's zero timestamp.
-    epoch.elapsed().as_millis() as u64 + 1_000
-}
-
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
@@ -2654,13 +2631,9 @@ impl TreeView {
                     .iter()
                     .map(|r| r.text.spans.iter().map(|s| s.text.as_str()).collect())
                     .collect();
-                let hit = state.typeahead.push(
-                    *c,
-                    typeahead_now_ms(),
-                    |i| labels[i].as_str(),
-                    labels.len(),
-                    from,
-                );
+                let hit = state
+                    .typeahead
+                    .push_now(*c, |i| labels[i].as_str(), labels.len(), from);
                 match hit {
                     Some(idx) if Some(idx) != state.nav.selected_row_index(&self.rows) => {
                         self.select_path(state, self.rows[idx].path.clone(), layout)
@@ -2672,10 +2645,7 @@ impl TreeView {
             key => {
                 cx.emit(
                     TreeEvent::KeyPressed {
-                        key: match key {
-                            Key::Char(c) => c.to_string(),
-                            Key::Named(named) => named.name().into_owned(),
-                        },
+                        key: crate::primitives::list::key_to_event_string(key),
                         modifiers: event.modifiers,
                     }
                     .into_ui_event(cx.id),

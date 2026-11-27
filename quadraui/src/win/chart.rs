@@ -1,34 +1,15 @@
-//! Direct2D / DirectWrite layout helper for
-//! [`crate::primitives::chart::Chart`].
-//!
-//! This module provides [`win_chart_layout`], the DIP-unit layout query
-//! used for both hit-testing (`WinBackend::chart_layout`) and painting
-//! (`WinBackend::draw_chart`). Painting is implemented in the shared
-//! [`crate::primitives::chart::paint`].
-//!
-//! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod chart;` and `backend.rs`'s module
-//! docs.
+//! Direct2D entry point for [`crate::Chart`]'s DIP layout; layout and
+//! painting both live with the widget (`primitives::chart`).
 
 use crate::event::Rect;
 use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::layout_metrics::pixel_chart_layout;
 
-/// Compute a [`Chart`]'s layout without painting — the DirectWrite twin
-/// of `gtk_chart_layout`/`mac_chart_layout`, via [`pixel_chart_layout`]
+/// Compute a [`Chart`]'s layout without painting.
 pub fn win_chart_layout(
     chart: &Chart,
     rect: Rect,
     char_width: f32,
     line_height: f32,
 ) -> ChartLayout {
-    pixel_chart_layout(
-        chart,
-        rect.x,
-        rect.y,
-        rect.width,
-        rect.height,
-        line_height,
-        char_width,
-    )
+    chart.layout_in(rect, char_width, line_height)
 }

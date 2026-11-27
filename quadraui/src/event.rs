@@ -184,7 +184,7 @@ impl NamedKey {
     ///
     /// This is the **single** source of truth for stringifying a
     /// `NamedKey`: [`crate::accelerator::key_to_binding_name`],
-    /// `primitives::activity_bar::key_to_activity_bar_string`,
+    /// `primitives::list::key_to_event_string`,
     /// `quadraui-binding-core`'s `key_to_focus_string`, and
     /// `compose::form_controller::date_picker_key_name` all defer to it so
     /// a `Ctrl+F13` accelerator and a `KeyPressed { key: "F13", .. }` event
@@ -1179,12 +1179,27 @@ pub enum UiEvent {
     /// from [`crate::CellGrid::cells_requested`] once per frame rather
     /// than from any particular `UiEvent` — see that method's doc.
     CellGrid(WidgetId, CellGridEvent),
+    /// A [`crate::ScrollView`] resolved a wheel, key or scrollbar gesture
+    /// to a new offset — see [`crate::ScrollViewEvent`].
+    ScrollView(WidgetId, crate::primitives::scroll_view::ScrollViewEvent),
     /// A pointer or wheel gesture on a [`crate::Editor`], resolved against
     /// its layout — see [`crate::EditorEvent`].
     Editor(WidgetId, crate::primitives::editor::EditorEvent),
     /// A click or drag on a [`crate::Minimap`] — see
     /// [`crate::MinimapEvent`].
     Minimap(WidgetId, crate::primitives::minimap::MinimapEvent),
+    /// A key, click or context-menu request on a [`crate::BoardModel`] —
+    /// see [`crate::BoardAction`].
+    Board(WidgetId, crate::primitives::board::BoardAction),
+    /// A stage of a [`crate::PipelineView`] was focused, selected or
+    /// activated — see [`crate::PipelineEvent`].
+    PipelineView(WidgetId, crate::primitives::pipeline_view::PipelineEvent),
+    /// A [`crate::DiffView`] scrolled or moved focus between its panes —
+    /// see [`crate::DiffViewEvent`].
+    DiffView(WidgetId, crate::primitives::diff_view::DiffViewEvent),
+    /// A [`crate::MessageList`] scrolled — see
+    /// [`crate::MessageListEvent`].
+    MessageList(WidgetId, crate::primitives::message_list::MessageListEvent),
     /// A [`crate::compose::HelpOverlay`] cheatsheet asked to open or
     /// close; the host writes it onto the overlay's `open`.
     HelpOverlay(WidgetId, crate::compose::HelpOverlayAction),

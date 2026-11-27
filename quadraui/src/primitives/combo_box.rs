@@ -473,8 +473,7 @@ impl Primitive for ComboBox {
 
 /// [`ComboBox`]'s own interaction state: the debounced typeahead buffer
 /// that lets a few quick keystrokes jump the dropdown highlight to the
-/// best prefix match, plus the monotonic origin its 500ms debounce
-/// window is measured from.
+/// best prefix match.
 ///
 /// Everything else a `ComboBox` renders — `text`, `committed`, `open`,
 /// `highlighted` — lives on the descriptor, which the host updates from
@@ -483,17 +482,6 @@ impl Primitive for ComboBox {
 #[derive(Debug, Default)]
 pub struct ComboBoxState {
     typeahead: Typeahead,
-    origin: Option<std::time::Instant>,
-}
-
-impl ComboBoxState {
-    /// Milliseconds since this state's first keystroke — the clock
-    /// [`Typeahead::push`]'s debounce window reads. Seeded on first use,
-    /// so a state that never sees a keystroke never reads a clock.
-    fn now_ms(&mut self) -> u64 {
-        let origin = *self.origin.get_or_insert_with(std::time::Instant::now);
-        origin.elapsed().as_millis() as u64
-    }
 }
 
 impl ComboBox {
@@ -690,7 +678,7 @@ impl ComboBox {
                 return Handled::Ignored;
             };
             let edited = self.with_text(text.clone());
-            let now_ms = state.now_ms();
+            let now_ms = crate::behaviour::typeahead::monotonic_now_ms();
             if let Some(index) = edited.typeahead_highlight(&mut state.typeahead, ch, now_ms) {
                 if self.highlighted != Some(index) {
                     cx.emit(

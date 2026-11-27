@@ -75,9 +75,9 @@ The full version is `quadraui/examples/hello.rs`:
   `Interactive` (focus, input, popups). The same code paints on all four
   backends; a backend supplies drawing verbs and platform services and
   holds no per-widget code.
-  <!-- TODO(0.12 final pass): true once W5-W9 land. On develop at 94f45833
-  eleven primitive modules have no Primitive impl and paint through legacy
-  Backend methods (split, split_tree, chart, board, canvas, diff_view, pipeline_view, message_list, multi_section_view, find_replace and scroll_view), and the backends
+  <!-- TODO(0.12 final pass): true once W6-W9 land. After W5 two
+  primitive modules have no Primitive impl and paint through legacy
+  Backend methods (multi_section_view and find_replace), and the backends
   still hold their rasterisers. After W9 confirm both. -->
 - **Paint and click share one layout.** A widget's `layout(...)` result
   is what it paints from and what its event handler hit-tests against.
@@ -95,7 +95,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 8,700 tests, including headless
+- **Heavily tested.** Around 8,800 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -310,7 +310,7 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**53 primitive modules**, one each under `quadraui/src/primitives/`.
+**59 primitive modules**, one each under `quadraui/src/primitives/`.
 Each is a widget: a declarative description that implements `Primitive`
 and `Interactive`, painted on every backend by that one implementation.
 The exceptions are the two shared-math modules `layout_metrics` and
@@ -319,8 +319,8 @@ widget of their own. Among them:
 
 <!-- TODO(0.12 final pass): the claim above that every module except
 layout_metrics and row_stack implements Primitive and Interactive holds once
-W5 (#2966-#2974, including FindReplace split off F5) and W6 (#2971
-MultiSectionView) land. Today these lack it: split, split_tree, chart, board, canvas, diff_view, pipeline_view, message_list, multi_section_view, find_replace and scroll_view. After W9 re-run
+W6 (#2971 MultiSectionView, and FindReplace split off F5) lands. Today
+these lack it: multi_section_view and find_replace. After W9 re-run
 `git grep -n "Primitive for"` over src/primitives and confirm none is missing;
 recount the modules against readme_truth. -->
 

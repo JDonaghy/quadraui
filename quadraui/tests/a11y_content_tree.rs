@@ -721,6 +721,8 @@ fn chart_with_no_app_label_is_unlabelled() {
         y_ticks: None,
         x_ticks: None,
         show_grid: false,
+        hovered_point: None,
+        crosshair_x: None,
     };
 
     let mut scenario = A11yScenario::new();
@@ -770,6 +772,8 @@ fn chart_with_legend_shown_uses_series_labels_as_name() {
         y_ticks: None,
         x_ticks: None,
         show_grid: false,
+        hovered_point: None,
+        crosshair_x: None,
     };
 
     let mut scenario = A11yScenario::new();
@@ -808,6 +812,8 @@ fn chart_with_axis_label_prefers_it_over_legend() {
         y_ticks: None,
         x_ticks: None,
         show_grid: false,
+        hovered_point: None,
+        crosshair_x: None,
     };
 
     let mut scenario = A11yScenario::new();
@@ -846,6 +852,8 @@ fn chart_falls_back_to_x_label_when_no_y_label() {
         y_ticks: None,
         x_ticks: None,
         show_grid: false,
+        hovered_point: None,
+        crosshair_x: None,
     };
 
     let mut scenario = A11yScenario::new();
@@ -885,6 +893,8 @@ fn chart_with_legend_but_blank_series_labels_is_unlabelled() {
         y_ticks: None,
         x_ticks: None,
         show_grid: false,
+        hovered_point: None,
+        crosshair_x: None,
     };
 
     let mut scenario = A11yScenario::new();

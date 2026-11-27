@@ -431,7 +431,7 @@ where
     } = event
     {
         if let Some(bar_id) = backend.focused_activity_bar_id().cloned() {
-            let key_str = crate::primitives::activity_bar::key_to_activity_bar_string(key);
+            let key_str = crate::primitives::list::key_to_event_string(key);
             let bar_ev = UiEvent::ActivityBar(
                 bar_id,
                 ActivityBarEvent::KeyPressed {

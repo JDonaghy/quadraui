@@ -157,7 +157,7 @@ pub fn decode_render_output_with_styles<'de, D: Deserializer<'de>>(
     if is_layout_tree(&value) {
         let node = layout_node_from_value(what, &value, styles, diagnostics)?;
         crate::layout::validate_unique_leaf_ids(what, &node)?;
-        Ok(RenderOutput::Tree(node))
+        Ok(RenderOutput::Tree(Box::new(node)))
     } else {
         Ok(RenderOutput::Flat(Box::new(render_frame_from_value(
             what,

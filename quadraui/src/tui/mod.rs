@@ -73,7 +73,6 @@ pub mod shell_runner;
 mod solid_fill;
 mod spinner;
 mod split;
-mod split_junction;
 mod split_tree;
 pub mod testing;
 pub mod text;
@@ -105,6 +104,7 @@ pub use cell_surface::BufferCellSurface;
 #[doc(hidden)]
 pub use chart::{draw_chart, tui_chart_layout};
 pub use data_table::draw_data_table;
+pub(crate) use data_table::draw_data_table_inner;
 #[doc(hidden)]
 pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_table_with_state};
 #[doc(hidden)]
@@ -355,12 +355,7 @@ pub(crate) fn align_offset(
 /// highlight, and (when `text` is empty) a dim placeholder — starting at
 /// `start_col` cells into `area`, on row `y`, clipped to `area.width`.
 ///
-/// Shared by every TUI inline-editing surface so there is exactly one
-/// cursor/selection/placeholder rasteriser rather than a per-primitive
-/// copy: [`crate::tui::tree::paint_edit_input`] (tree row rename) and
-/// [`crate::tui::cell_grid::draw_cell_grid`]'s cell editor overlay both
-/// call this directly instead of re-deriving the same multibyte-aware
-/// cursor/selection arithmetic.
+/// Used by [`crate::tui::tree::paint_edit_input`] (tree row rename).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_inline_text_editor(
     buf: &mut Buffer,

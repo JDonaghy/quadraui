@@ -198,6 +198,17 @@ impl A11yPrimitive for TextField {
     }
 }
 
+/// The composed [`TextDisplay`]'s document role and line children.
+impl A11yPrimitive for crate::primitives::markdown::Markdown {
+    fn a11y_info(&self) -> A11yInfo {
+        self.display(&crate::Theme::default()).0.a11y_info()
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        self.display(&crate::Theme::default()).0.a11y_children()
+    }
+}
+
 impl A11yPrimitive for TextDisplay {
     fn a11y_info(&self) -> A11yInfo {
         let info = A11yInfo::new().with_role(A11yRole::Document);

@@ -1,62 +1,18 @@
-//! TUI rasteriser for [`crate::primitives::diff_view::DiffView`].
-//!
-//! Paints a two-pane (side-by-side) or single-column (unified) diff onto a
-//! [`ratatui::buffer::Buffer`]. Row/pane geometry and the scroll-clamped
-//! visible-line window come from [`DiffView::layout`] — the shared layout
-//! API lifted out of three near-identical backend copies.
-//! This module only converts the resulting DIP-agnostic `f32` geometry to
-//! cell coordinates and paints; it does not re-derive positions.
-//!
-//! Row backgrounds are driven by [`DiffRowKind`] via
-//! [`crate::primitives::diff_view::row_colors`] (side-by-side) /
-//! [`crate::primitives::diff_view::unified_row_style`] (unified) — also
-//! shared, not a third copy of the colour table:
-//!
-//! | Kind      | Left bg             | Right bg            |
-//! |-----------|---------------------|---------------------|
-//! | Same      | `theme.background`  | `theme.background`  |
-//! | Changed   | `diff_removed_bg`   | `diff_added_bg`     |
-//! | Removed   | `diff_removed_bg`   | `diff_padding_bg`   |
-//! | Added     | `diff_padding_bg`   | `diff_added_bg`     |
-//!
-//! The divider column (`│`) is drawn in `theme.border_fg`.
-//!
-//! # Unified mode
-//!
-//! A `@@ -l,n +r,m @@` header is drawn before each hunk using
-//! `theme.accent_fg`. Removed lines get a `-` prefix in `theme.git_deleted`;
-//! added lines a `+` prefix in `theme.git_added`; same lines a ` ` prefix in
-//! `theme.muted_fg`.
+//! TUI entry point for [`crate::primitives::diff_view::DiffView`]: lays
+//! the view out at one cell per row and paints it through the widget's
+//! own cell painter over a [`ratatui::buffer::Buffer`].
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
-use super::{qc, set_cell};
+use super::BufferCellSurface;
 use crate::event::Rect as ERect;
-use crate::primitives::diff_view::{
-    row_colors, unified_hunk_header, unified_row_style, unified_row_text, DiffLineContent,
-    DiffMode, DiffView, DiffViewGeometry, DiffViewLayout,
-};
+#[cfg(test)]
+use crate::primitives::diff_view::DiffMode;
+use crate::primitives::diff_view::{DiffView, DiffViewLayout};
 use crate::theme::Theme;
 
-/// Convert an `f32` DIP-agnostic rect from [`DiffView::layout`] to cell
-/// coordinates. Every input is exact-integer-valued by construction
-/// (`line_height` is always `1.0` on TUI and every viewport dimension
-/// starts as a whole cell count), so truncating casts never lose
-/// precision.
-fn cell_rect(r: ERect) -> Rect {
-    Rect::new(r.x as u16, r.y as u16, r.width as u16, r.height as u16)
-}
-
-/// Draw a [`DiffView`] into `area` on `buf`.
-///
-/// Returns [`DiffViewLayout`] so the caller can clamp `scroll_offset` after
-/// a resize:
-/// ```ignore
-/// let layout = backend.draw_diff_view(rect, &view);
-/// view.scroll_offset = view.scroll_offset
-///     .min(layout.total_rows.saturating_sub(layout.visible_rows));
-/// ```
+/// Paints `view` into `area` and returns its layout.
 pub fn draw_diff_view(
     buf: &mut Buffer,
     area: Rect,
@@ -69,7 +25,6 @@ pub fn draw_diff_view(
             total_rows: view.total_rows(),
         };
     }
-
     let viewport = ERect::new(
         area.x as f32,
         area.y as f32,
@@ -77,228 +32,13 @@ pub fn draw_diff_view(
         area.height as f32,
     );
     let geometry = view.layout(viewport, 1.0);
-
-    match view.mode {
-        DiffMode::SideBySide => draw_side_by_side(buf, area, view, theme, &geometry),
-        DiffMode::Unified => draw_unified(buf, area, view, theme, &geometry),
-    }
-
+    crate::primitives::diff_view::paint_cells::paint(
+        &mut BufferCellSurface::new(buf),
+        view,
+        &geometry,
+        theme,
+    );
     geometry.as_layout()
-}
-
-// ── Side-by-side ─────────────────────────────────────────────────────────────
-
-fn draw_side_by_side(
-    buf: &mut Buffer,
-    area: Rect,
-    view: &DiffView,
-    theme: &Theme,
-    geometry: &DiffViewGeometry,
-) {
-    let flat = view.flat_rows();
-
-    // Header row.
-    if let Some(header) = &geometry.header {
-        let hdr_bg = qc(theme.header_bg);
-        let hdr_fg = qc(theme.header_fg);
-
-        let left_r = cell_rect(header.left);
-        let right_r = cell_rect(header.right);
-        let divider_r = cell_rect(header.divider);
-
-        for col in 0..left_r.width {
-            set_cell(buf, left_r.x + col, left_r.y, ' ', hdr_fg, hdr_bg);
-        }
-        for col in 0..right_r.width {
-            set_cell(buf, right_r.x + col, right_r.y, ' ', hdr_fg, hdr_bg);
-        }
-        set_cell(
-            buf,
-            divider_r.x,
-            divider_r.y,
-            '│',
-            qc(theme.border_fg),
-            hdr_bg,
-        );
-
-        if let Some(label) = &view.left_label {
-            draw_text_in(buf, left_r.x, left_r.y, left_r.width, label, hdr_fg, hdr_bg);
-        }
-        if let Some(label) = &view.right_label {
-            draw_text_in(
-                buf,
-                right_r.x,
-                right_r.y,
-                right_r.width,
-                label,
-                hdr_fg,
-                hdr_bg,
-            );
-        }
-    }
-
-    for line in &geometry.lines {
-        let DiffLineContent::Row { row_idx } = line.content else {
-            continue;
-        };
-        let row = flat[row_idx];
-        let (left_fg, left_bg, right_fg, right_bg) = row_colors(row.kind, theme);
-        let (left_fg, left_bg, right_fg, right_bg) =
-            (qc(left_fg), qc(left_bg), qc(right_fg), qc(right_bg));
-
-        let left_r = cell_rect(line.left.expect("side-by-side row has left bounds"));
-        let right_r = cell_rect(line.right.expect("side-by-side row has right bounds"));
-        let divider_r = cell_rect(line.divider.expect("side-by-side row has divider bounds"));
-
-        for col in 0..left_r.width {
-            set_cell(buf, left_r.x + col, left_r.y, ' ', left_fg, left_bg);
-        }
-        for col in 0..right_r.width {
-            set_cell(buf, right_r.x + col, right_r.y, ' ', right_fg, right_bg);
-        }
-        set_cell(
-            buf,
-            divider_r.x,
-            divider_r.y,
-            '│',
-            qc(theme.border_fg),
-            left_bg,
-        );
-
-        if let Some(text) = &row.left {
-            draw_text_in(
-                buf,
-                left_r.x,
-                left_r.y,
-                left_r.width,
-                text,
-                left_fg,
-                left_bg,
-            );
-        }
-        if let Some(text) = &row.right {
-            draw_text_in(
-                buf,
-                right_r.x,
-                right_r.y,
-                right_r.width,
-                text,
-                right_fg,
-                right_bg,
-            );
-        }
-    }
-
-    // Fill any trailing empty rows (fewer display rows than fit on screen).
-    if let Some(panes) = &geometry.panes {
-        let header_rows: u16 = if geometry.header.is_some() { 1 } else { 0 };
-        let content_area_h = area.height.saturating_sub(header_rows);
-        let divider_x = panes.divider_x as u16;
-        let left_w = panes.left_w as u16;
-        let right_w = panes.right_w as u16;
-        let rows_drawn = geometry.lines.len() as u16;
-        for blank_row in rows_drawn..content_area_h {
-            let screen_y = area.y + header_rows + blank_row;
-            let bg = qc(theme.background);
-            let fg = qc(theme.muted_fg);
-            for col in 0..left_w {
-                set_cell(buf, area.x + col, screen_y, ' ', fg, bg);
-            }
-            set_cell(buf, divider_x, screen_y, '│', qc(theme.border_fg), bg);
-            for col in 0..right_w {
-                set_cell(buf, divider_x + 1 + col, screen_y, ' ', fg, bg);
-            }
-        }
-    }
-}
-
-// ── Unified ───────────────────────────────────────────────────────────────────
-
-fn draw_unified(
-    buf: &mut Buffer,
-    area: Rect,
-    view: &DiffView,
-    theme: &Theme,
-    geometry: &DiffViewGeometry,
-) {
-    let flat = view.flat_rows();
-
-    for line in &geometry.lines {
-        let screen = cell_rect(line.bounds);
-
-        match line.content {
-            DiffLineContent::UnifiedHeader { hunk_idx } => {
-                let header_text = unified_hunk_header(&view.hunks[hunk_idx]);
-                let bg = qc(theme.background);
-                let fg = qc(theme.accent_fg);
-                for col in 0..screen.width {
-                    set_cell(buf, screen.x + col, screen.y, ' ', fg, bg);
-                }
-                draw_text_in(buf, screen.x, screen.y, screen.width, &header_text, fg, bg);
-            }
-            DiffLineContent::Row { row_idx } => {
-                let row = flat[row_idx];
-                let (prefix, fg, bg) = unified_row_style(row.kind, theme);
-                let (fg, bg) = (qc(fg), qc(bg));
-
-                // Fill row background.
-                for col in 0..screen.width {
-                    set_cell(buf, screen.x + col, screen.y, ' ', fg, bg);
-                }
-
-                // Prefix character.
-                if screen.width > 0 {
-                    set_cell(buf, screen.x, screen.y, prefix, fg, bg);
-                }
-
-                // Content text (shifted right by 1 for the prefix).
-                let text = unified_row_text(row);
-                if screen.width > 1 {
-                    draw_text_in(
-                        buf,
-                        screen.x + 1,
-                        screen.y,
-                        screen.width.saturating_sub(1),
-                        text,
-                        fg,
-                        bg,
-                    );
-                }
-            }
-        }
-    }
-
-    // Fill trailing blank rows.
-    let rows_drawn = geometry.lines.len() as u16;
-    for blank in rows_drawn..area.height {
-        let screen_y = area.y + blank;
-        let bg = qc(theme.background);
-        let fg = qc(theme.muted_fg);
-        for col in 0..area.width {
-            set_cell(buf, area.x + col, screen_y, ' ', fg, bg);
-        }
-    }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/// Write `text` into `buf` starting at `(x, y)`, limited to `max_width`
-/// cells.  Characters beyond the limit are silently dropped.
-fn draw_text_in(
-    buf: &mut Buffer,
-    x: u16,
-    y: u16,
-    max_width: u16,
-    text: &str,
-    fg: ratatui::style::Color,
-    bg: ratatui::style::Color,
-) {
-    for (col, ch) in (0_u16..).zip(text.chars()) {
-        if col >= max_width {
-            break;
-        }
-        set_cell(buf, x + col, y, ch, fg, bg);
-    }
 }
 
 #[cfg(test)]
@@ -534,5 +274,59 @@ mod tests {
             !row0.contains("@@ -5,3 +7,3 @@"),
             "header still reports raw row count: {row0:?}"
         );
+    }
+
+    /// The widget's contract cell paint reaches the buffer through the
+    /// `CellSurface` verbs alone and paints what the TUI entry point does.
+    #[test]
+    fn contract_cell_paint_needs_only_the_verbs_side_by_side() {
+        use crate::primitive::{LayoutCtx, Primitive};
+        let w = make_view(DiffMode::SideBySide);
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let area = Rect::new(0, 0, 72, 14);
+        let mut legacy = Buffer::empty(area);
+        draw_diff_view(&mut legacy, area, &w, &theme);
+        let mut buf = Buffer::empty(area);
+        let rect = crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        );
+        let layout = Primitive::layout(&w, &LayoutCtx::new(1.0, 1.0, false), rect);
+        w.paint_cells(
+            &layout,
+            &mut crate::tui::cell_surface::VerbsOnly(super::BufferCellSurface::new(&mut buf)),
+            &crate::PaintEnv::new(&theme, &style),
+        );
+        assert_eq!(buf, legacy);
+    }
+
+    /// The widget's contract cell paint reaches the buffer through the
+    /// `CellSurface` verbs alone and paints what the TUI entry point does.
+    #[test]
+    fn contract_cell_paint_needs_only_the_verbs_unified() {
+        use crate::primitive::{LayoutCtx, Primitive};
+        let w = make_view(DiffMode::Unified);
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let area = Rect::new(0, 0, 72, 14);
+        let mut legacy = Buffer::empty(area);
+        draw_diff_view(&mut legacy, area, &w, &theme);
+        let mut buf = Buffer::empty(area);
+        let rect = crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        );
+        let layout = Primitive::layout(&w, &LayoutCtx::new(1.0, 1.0, false), rect);
+        w.paint_cells(
+            &layout,
+            &mut crate::tui::cell_surface::VerbsOnly(super::BufferCellSurface::new(&mut buf)),
+            &crate::PaintEnv::new(&theme, &style),
+        );
+        assert_eq!(buf, legacy);
     }
 }
