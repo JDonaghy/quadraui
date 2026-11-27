@@ -2087,7 +2087,7 @@ impl CellGrid {
             anchor: edit.selection_anchor,
             ..Default::default()
         };
-        let before = flat;
+        let before = flat.clone();
         let text = match handle_flat_edit_event(
             &edit.text,
             Some(edit.cursor),

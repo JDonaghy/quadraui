@@ -193,6 +193,16 @@ impl crate::interactive::Interactive for PasswordInput {
     ) -> Handled<PasswordInputAction> {
         use crate::interactive::RoutedEvent;
 
+        // One line by construction: a pasted or IME-committed line break
+        // is dropped rather than splitting the value.
+        let single_line;
+        let event = match event {
+            RoutedEvent::Text(text) if text.contains(['\n', '\r']) => {
+                single_line = RoutedEvent::Text(text.replace(['\n', '\r'], ""));
+                &single_line
+            }
+            _ => event,
+        };
         if let RoutedEvent::Key(key) = event {
             if matches!(key.key, Key::Named(NamedKey::Enter)) {
                 return Handled::Event(PasswordInputAction::Committed(self.value.clone()));
@@ -286,5 +296,17 @@ mod tests {
             assert_eq!(handled, Handled::Consumed, "{chord}");
             assert!(emitted.is_empty(), "{chord}: {emitted:?}");
         }
+    }
+
+    #[test]
+    fn a_pasted_line_break_is_dropped_from_the_single_line_value() {
+        let mut input = PasswordInput::new(WidgetId::new("pw"));
+        input.value = "hi".into();
+        let mut state = FlatEditState::default();
+        let (handled, _) = run(&input, &mut state, RoutedEvent::Text("yo\r\nthere".into()));
+        assert_eq!(
+            handled,
+            Handled::Event(PasswordInputAction::Changed("hiyothere".into()))
+        );
     }
 }

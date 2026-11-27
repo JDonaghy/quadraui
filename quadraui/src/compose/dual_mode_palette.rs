@@ -118,7 +118,7 @@ pub struct DualModePalette {
 /// [`Interactive::State`] for [`DualModePalette`]: the composed palette's
 /// own editing state (the live caret and selection anchor).
 #[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DualModePaletteState {
     /// The composed palette's state.
     pub palette: PaletteState,

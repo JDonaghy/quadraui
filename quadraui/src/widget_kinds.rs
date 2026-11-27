@@ -515,6 +515,8 @@ widget_kinds! {
     "message_list" => crate::MessageList,
     "password" => crate::PasswordInput,
     "textarea" => crate::TextArea,
+    "text_input" => crate::TextInput,
+    "text_field" => crate::TextField,
     // Ungated like `MessageList`: `FindReplacePanel`'s
     // `Primitive`/`Interactive` impls carry no feature gate.
     "find_replace" => crate::FindReplacePanel,
@@ -790,6 +792,18 @@ mod tests {
                 serde_json::to_value(crate::TextArea::new("notes".into()))
                     .expect("textarea serializes"),
                 "notes",
+            ),
+            (
+                "text_input",
+                serde_json::to_value(crate::TextInput::new("ti".into()))
+                    .expect("text_input serializes"),
+                "ti",
+            ),
+            (
+                "text_field",
+                serde_json::to_value(crate::TextField::new("tf".into()))
+                    .expect("text_field serializes"),
+                "tf",
             ),
         ];
         for (kind, payload, id) in cases {

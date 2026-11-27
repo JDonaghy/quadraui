@@ -794,7 +794,7 @@ mod tests {
             with_widget_states(|s| {
                 s.get(&crate::WidgetId::new("caret_store"))
                     .and_then(|s| s.downcast_ref::<PathPickerEditState>())
-                    .copied()
+                    .cloned()
             })
         };
         let _ = drive(&mut picker, &key(Key::Char('a')), 10);
