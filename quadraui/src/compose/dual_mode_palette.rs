@@ -1,6 +1,5 @@
 //! [`DualModePalette`] — a palette with two interaction modes on the
-//! widget contract, plus [`DualModePaletteController`], its thin
-//! event-driven wrapper.
+//! widget contract.
 //!
 //! - **List mode** — the standard search-and-select behaviour: typing
 //!   filters the item list; `Enter` confirms the selected row.
@@ -11,39 +10,35 @@
 //! query text.
 //!
 //! The widget composes [`Palette`]: it paints through the palette's own
-//! [`Primitive`] and routes input through the palette's [`Interactive`],
-//! which owns the query editor (caret, selection, word moves) and the
-//! list navigation. What it adds is the mode switch and what Enter
-//! confirms in each mode.
+//! [`Primitive`] and routes input through the palette-host key prelude
+//! every palette host shares, which hands query editing and list
+//! navigation to the palette's own [`Interactive`]. What it adds is the
+//! mode switch and what Enter confirms in each mode.
 //!
 //! # Usage pattern
 //!
 //! ```rust,ignore
-//! // Instantiate when the palette should open:
-//! let mut pal = DualModePaletteController::new(
-//!     "Branches",          // palette title
-//!     "New branch name:",  // input-mode label (shown in title bar)
-//!     branches,            // Vec<PaletteItem>
-//! );
+//! // In AppLogic::render / frame_tree: paint and register the palette.
+//! frame.push(Surface::Widget { rect, widget: Box::new(palette.clone()) });
+//! tree.push(palette.id, rect, Box::new(palette.clone()));
 //!
-//! // In AppLogic::render:
-//! pal.render(popup_rect, backend);
-//!
-//! // In AppLogic::handle:
-//! match pal.handle_event(&event, visible_rows) {
-//!     Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => { /* switch to branch */ }
-//!     Handled::Event(DualModePaletteAction::TextConfirmed { value }) => { /* create branch */ }
-//!     Handled::Event(DualModePaletteAction::QueryChanged { value }) => { /* refilter items */ }
-//!     Handled::Event(DualModePaletteAction::ModeToggled { new_mode }) => { /* update hint */ }
-//!     Handled::Event(DualModePaletteAction::Cancelled) => { /* close */ }
-//!     _ => {}
+//! // In AppLogic::handle: store the change, act on the confirmations.
+//! if let UiEvent::DualModePalette(_, action) = event {
+//!     palette.apply(&action, visible_rows);
+//!     match action {
+//!         DualModePaletteAction::ItemConfirmed { idx } => { /* switch to branch */ }
+//!         DualModePaletteAction::TextConfirmed { value } => { /* create branch */ }
+//!         DualModePaletteAction::QueryChanged { value } => { /* refilter items */ }
+//!         DualModePaletteAction::Cancelled => { /* close */ }
+//!         _ => {}
+//!     }
 //! }
 //! ```
 
 use serde::{Deserialize, Serialize};
 
 use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
-use crate::compose::widget_host;
+use crate::compose::palette_host::{route_palette_host, PaletteHostInput};
 use crate::compose::Handled;
 use crate::interactive::{
     EventCx, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget, WidgetAction,
@@ -51,13 +46,12 @@ use crate::interactive::{
 use crate::primitive::{LayoutCtx, Primitive, Size};
 use crate::primitives::palette::{PalettePrimitiveLayout, PaletteState};
 use crate::{
-    Backend, Key, MouseButton, NamedKey, Palette, PaletteEvent, PaletteHit, PaletteItem,
-    PaletteMode, Rect, UiEvent, WidgetId,
+    Key, NamedKey, Palette, PaletteHit, PaletteItem, PaletteMode, Rect, UiEvent, WidgetId,
 };
 
-/// What a [`DualModePalette`] reports, and the semantic payload of
-/// [`Handled::Event`] returned by [`DualModePaletteController::handle_event`]
-/// / `handle_mouse_event`.
+/// What a [`DualModePalette`] reports. [`DualModePalette::apply`] stores
+/// the query, mode and highlight changes; the confirmations and the
+/// dismissal are the host's to act on.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum DualModePaletteAction {
@@ -67,16 +61,15 @@ pub enum DualModePaletteAction {
     /// In Input mode: the user pressed `Enter` to confirm the free-text
     /// value. `value` is the current query string.
     TextConfirmed { value: String },
-    /// The query text changed. The app should refilter its source list and
-    /// replace the items (the controller's
-    /// [`DualModePaletteController::set_items`]).
+    /// The query text changed. The app refilters its source list and
+    /// replaces the items ([`DualModePalette::set_items`]).
     QueryChanged { value: String },
     /// The active mode toggled between `List` and `Input`.
     ModeToggled { new_mode: PaletteMode },
     /// The palette was dismissed (`Escape`).
     Cancelled,
     /// The highlight moved to item `idx`. The host writes it onto
-    /// [`DualModePalette::selected`]; the controller applies it itself.
+    /// [`DualModePalette::selected`].
     SelectionChanged { idx: usize },
 }
 
@@ -84,57 +77,6 @@ impl WidgetAction for DualModePaletteAction {
     /// Rides [`UiEvent::DualModePalette`] under the palette's own id.
     fn into_ui_event(self, id: WidgetId) -> UiEvent {
         UiEvent::DualModePalette(id, self)
-    }
-}
-
-/// What happened after [`DualModePaletteController::handle`] processed an
-/// event.
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[deprecated(
-    since = "0.9.0",
-    note = "use `DualModePaletteController::handle_event`'s `Handled<DualModePaletteAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, the other variants move to `DualModePaletteAction` under `Handled::Event`"
-)]
-pub enum DualModePaletteEvent {
-    /// In List mode: the user confirmed the highlighted item. `idx` is the
-    /// index into the `items` slice supplied to the controller.
-    ItemConfirmed { idx: usize },
-    /// In Input mode: the user pressed `Enter` to confirm the free-text
-    /// value. `value` is the current query string.
-    TextConfirmed { value: String },
-    /// The query text changed. The app should refilter its source list and
-    /// call [`DualModePaletteController::set_items`] with the new results.
-    QueryChanged { value: String },
-    /// The active mode toggled between `List` and `Input`.
-    ModeToggled { new_mode: PaletteMode },
-    /// The palette was dismissed (`Escape`).
-    Cancelled,
-    /// An event was consumed (internal state changed, caller should redraw).
-    Consumed,
-    /// The event was not relevant to this controller.
-    Ignored,
-}
-
-/// Adapts a [`Handled<DualModePaletteAction>`] back to the deprecated
-/// [`DualModePaletteEvent`] shape — shared by `handle`/`handle_mouse`'s
-/// own thin-adapter bodies.
-#[allow(deprecated)] // `DualModePaletteEvent` is `#[deprecated]`; this helper is its own shim.
-fn handled_to_event(handled: Handled<DualModePaletteAction>) -> DualModePaletteEvent {
-    match handled {
-        Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => {
-            DualModePaletteEvent::ItemConfirmed { idx }
-        }
-        Handled::Event(DualModePaletteAction::TextConfirmed { value }) => {
-            DualModePaletteEvent::TextConfirmed { value }
-        }
-        Handled::Event(DualModePaletteAction::QueryChanged { value }) => {
-            DualModePaletteEvent::QueryChanged { value }
-        }
-        Handled::Event(DualModePaletteAction::ModeToggled { new_mode }) => {
-            DualModePaletteEvent::ModeToggled { new_mode }
-        }
-        Handled::Event(DualModePaletteAction::Cancelled) => DualModePaletteEvent::Cancelled,
-        Handled::Event(_) | Handled::Consumed => DualModePaletteEvent::Consumed,
-        Handled::Ignored => DualModePaletteEvent::Ignored,
     }
 }
 
@@ -166,6 +108,10 @@ pub struct DualModePalette {
     pub selected: usize,
     /// First visible row (scroll offset into `items`).
     pub scroll_top: usize,
+    /// Whether an unmodified `j`/`k` moves the highlight in `List` mode
+    /// instead of typing into the query. Off by default, so every letter
+    /// can be typed into a search.
+    pub vim_keys: bool,
 }
 
 /// [`Interactive::State`] for [`DualModePalette`]: the composed palette's
@@ -195,7 +141,63 @@ impl DualModePalette {
             items,
             selected: 0,
             scroll_top: 0,
+            vim_keys: false,
         }
+    }
+
+    /// This palette starting in `mode`.
+    pub fn with_mode(mut self, mode: PaletteMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    /// This palette with vim-style `j`/`k` highlight moves on or off
+    /// ([`Self::vim_keys`]).
+    pub fn with_vim_keys(mut self, vim_keys: bool) -> Self {
+        self.vim_keys = vim_keys;
+        self
+    }
+
+    /// Replace the items (after refiltering the source list on a
+    /// [`DualModePaletteAction::QueryChanged`]); the highlight and scroll
+    /// return to the top.
+    pub fn set_items(&mut self, items: Vec<PaletteItem>) {
+        self.items = items;
+        self.selected = 0;
+        self.scroll_top = 0;
+    }
+
+    /// Store a change this palette reported: a highlight move scrolls it
+    /// into a `visible_rows`-tall list, a query edit moves the caret to
+    /// the query's end and, in `List` mode, the highlight back to the top,
+    /// and a mode toggle switches the mode. A confirmation or a dismissal
+    /// changes nothing here.
+    pub fn apply(&mut self, action: &DualModePaletteAction, visible_rows: usize) {
+        match action {
+            DualModePaletteAction::SelectionChanged { idx } => {
+                self.selected = *idx;
+                self.scroll_top =
+                    crate::behaviour::scroll::ensure_visible(self.scroll_top, visible_rows, *idx);
+            }
+            DualModePaletteAction::QueryChanged { value } => {
+                self.query = value.clone();
+                self.query_cursor = value.len();
+                if self.mode == PaletteMode::List {
+                    self.selected = 0;
+                    self.scroll_top = 0;
+                }
+            }
+            DualModePaletteAction::ModeToggled { new_mode } => self.mode = *new_mode,
+            _ => {}
+        }
+    }
+
+    /// Move [`Self::query_cursor`] to `state`'s live caret — for a host
+    /// that keeps the palette's state itself
+    /// ([`crate::compose::drive_ui_event`]) and so paints without the
+    /// runtime handing that state to the paint.
+    pub fn sync_caret(&mut self, state: &DualModePaletteState) {
+        self.query_cursor = self.caret(Some(&state.palette)).min(self.query.len());
     }
 
     /// The other mode.
@@ -323,11 +325,11 @@ impl Interactive for DualModePalette {
     }
 
     /// Tab toggles the mode, Escape cancels, and Enter confirms the
-    /// highlighted item (List) or the typed text (Input). In List mode an
-    /// unmodified `j`/`k` moves the highlight, and the pointer hovering a
-    /// row highlights it. Everything else is the palette's own input —
-    /// query editing and list navigation — reported as the change it
-    /// names.
+    /// highlighted item (List) or the typed text (Input). With
+    /// [`Self::vim_keys`], an unmodified `j`/`k` moves the highlight in
+    /// List mode; the pointer hovering a row highlights it. Everything
+    /// else is the palette's own input — query editing and list
+    /// navigation — reported as the change it names.
     fn handle(
         &self,
         state: &mut DualModePaletteState,
@@ -339,37 +341,10 @@ impl Interactive for DualModePalette {
         match event {
             RoutedEvent::Key(key) => {
                 let modified = key.modifiers.ctrl || key.modifiers.cmd || key.modifiers.alt;
-                match key.key {
-                    Key::Named(NamedKey::Tab | NamedKey::BackTab) if !modified => {
-                        return Handled::Event(DualModePaletteAction::ModeToggled {
-                            new_mode: self.toggled(),
-                        });
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        return Handled::Event(DualModePaletteAction::Cancelled);
-                    }
-                    Key::Named(NamedKey::Enter) if list => {
-                        return if self.items.is_empty() {
-                            Handled::Consumed
-                        } else {
-                            Handled::Event(DualModePaletteAction::ItemConfirmed {
-                                idx: self.selected,
-                            })
-                        };
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        return Handled::Event(DualModePaletteAction::TextConfirmed {
-                            value: self.query.clone(),
-                        });
-                    }
-                    Key::Char('k') if list && !modified => {
-                        return self.select(self.selected.saturating_sub(1));
-                    }
-                    Key::Char('j') if list && !modified => {
-                        let last = self.items.len().saturating_sub(1);
-                        return self.select((self.selected + 1).min(last));
-                    }
-                    _ => {}
+                if matches!(key.key, Key::Named(NamedKey::Tab | NamedKey::BackTab)) && !modified {
+                    return Handled::Event(DualModePaletteAction::ModeToggled {
+                        new_mode: self.toggled(),
+                    });
                 }
             }
             RoutedEvent::Pointer {
@@ -387,306 +362,35 @@ impl Interactive for DualModePalette {
             _ => {}
         }
         let palette = self.palette(self.caret(Some(&state.palette)));
-        match Interactive::handle(&palette, &mut state.palette, event, layout, cx) {
-            Handled::Event(PaletteEvent::QueryChanged { value }) => {
-                Handled::Event(DualModePaletteAction::QueryChanged { value })
-            }
-            Handled::Event(PaletteEvent::SelectionChanged { idx }) => self.select(idx),
-            Handled::Event(PaletteEvent::ItemConfirmed { idx }) if list => {
-                Handled::Event(DualModePaletteAction::ItemConfirmed { idx })
-            }
-            Handled::Event(PaletteEvent::Closed) => {
-                Handled::Event(DualModePaletteAction::Cancelled)
-            }
-            Handled::Event(_) | Handled::Consumed => Handled::Consumed,
-            Handled::Ignored => Handled::Ignored,
-        }
-    }
-}
-
-// ── Controller ────────────────────────────────────────────────────────────
-
-/// Event-driven wrapper over a [`DualModePalette`] and its state, for a
-/// host that calls it with raw [`UiEvent`]s. It applies the highlight,
-/// mode and query changes itself, and still reports the query and mode
-/// changes so the app can refilter and update hints.
-pub struct DualModePaletteController {
-    widget: DualModePalette,
-    state: DualModePaletteState,
-}
-
-impl DualModePaletteController {
-    /// Create a new controller in `List` mode.
-    ///
-    /// - `title` — palette title string (shown in the title chrome).
-    /// - `input_label` — optional label appended to the title bar when in
-    ///   `Input` mode (e.g. `"New branch:"`). Pass `None` to keep the same
-    ///   title in both modes.
-    /// - `items` — initial item list (may be empty; replace with
-    ///   [`set_items`](Self::set_items) as the app filters its source).
-    pub fn new(
-        title: impl Into<String>,
-        input_label: impl Into<Option<String>>,
-        items: Vec<PaletteItem>,
-    ) -> Self {
-        Self {
-            widget: DualModePalette::new(
-                WidgetId::new("dual_mode_palette"),
-                title,
-                input_label.into(),
-                items,
-            ),
-            state: DualModePaletteState::default(),
-        }
-    }
-
-    // ── Builder setters ───────────────────────────────────────────────
-
-    /// Override the `WidgetId` used for the rendered `Palette`.
-    pub fn with_id(mut self, id: impl Into<String>) -> Self {
-        self.widget.id = WidgetId::new(id.into());
-        self
-    }
-
-    /// Start in `Input` mode instead of `List` mode.
-    pub fn with_mode(mut self, mode: PaletteMode) -> Self {
-        self.widget.mode = mode;
-        self
-    }
-
-    /// The [`DualModePalette`] widget this controller drives.
-    pub fn widget(&self) -> &DualModePalette {
-        &self.widget
-    }
-
-    // ── State accessors ───────────────────────────────────────────────
-
-    /// Current interaction mode.
-    pub fn mode(&self) -> PaletteMode {
-        self.widget.mode
-    }
-
-    /// Current query / input text.
-    pub fn query(&self) -> &str {
-        &self.widget.query
-    }
-
-    /// Index of the highlighted item in the current `items` slice.
-    pub fn selected(&self) -> usize {
-        self.widget.selected
-    }
-
-    // ── Mutators ──────────────────────────────────────────────────────
-
-    /// Replace the item list (call this after refiltering the source list
-    /// in response to a [`DualModePaletteAction::QueryChanged`]).
-    ///
-    /// Selection and scroll offset are reset to 0 on each call.
-    pub fn set_items(&mut self, items: Vec<PaletteItem>) {
-        self.widget.items = items;
-        self.widget.selected = 0;
-        self.widget.scroll_top = 0;
-    }
-
-    /// Toggle between `List` and `Input` modes without clearing the query.
-    pub fn toggle_mode(&mut self) -> PaletteMode {
-        self.widget.mode = self.widget.toggled();
-        self.widget.mode
-    }
-
-    // ── Render ────────────────────────────────────────────────────────
-
-    /// The palette as painted, with the live caret.
-    fn build_palette(&self) -> Palette {
-        self.widget
-            .palette(self.widget.caret(Some(&self.state.palette)))
-    }
-
-    /// Paint the palette modal inside `rect`.
-    ///
-    /// Call this from `AppLogic::render` while the controller is open.
-    pub fn render(&self, rect: Rect, backend: &mut dyn Backend) {
-        crate::backend::DrawsPrimitives::draw_primitive(backend, rect, &self.build_palette());
-    }
-
-    // ── Handle ────────────────────────────────────────────────────────
-
-    /// Apply one widget answer: the highlight, mode and query land on the
-    /// stored palette; the highlight is the controller's alone, the query
-    /// and mode changes are still reported.
-    fn settle(
-        &mut self,
-        handled: Handled<DualModePaletteAction>,
-        visible_rows: usize,
-    ) -> Handled<DualModePaletteAction> {
-        match handled {
-            Handled::Event(DualModePaletteAction::SelectionChanged { idx }) => {
-                self.widget.selected = idx;
-                self.widget.scroll_top = crate::behaviour::scroll::ensure_visible(
-                    self.widget.scroll_top,
-                    visible_rows,
-                    idx,
-                );
-                Handled::Consumed
-            }
-            Handled::Event(DualModePaletteAction::QueryChanged { value }) => {
-                self.widget.query = value.clone();
-                self.widget.query_cursor = self
-                    .state
-                    .palette
-                    .cursor
-                    .unwrap_or(value.len())
-                    .min(value.len());
-                if self.widget.mode == PaletteMode::List {
-                    self.widget.selected = 0;
-                    self.widget.scroll_top = 0;
-                }
-                Handled::Event(DualModePaletteAction::QueryChanged { value })
-            }
-            Handled::Event(DualModePaletteAction::ModeToggled { new_mode }) => {
-                self.widget.mode = new_mode;
-                Handled::Event(DualModePaletteAction::ModeToggled { new_mode })
-            }
-            other => other,
-        }
-    }
-
-    /// Drive the palette with a backend-neutral `UiEvent`: keystrokes, and
-    /// a bracketed paste while in `Input` mode.
-    ///
-    /// `visible_rows` is the number of list rows that fit inside the
-    /// palette chrome; compute it as
-    /// `popup_height.saturating_sub(PALETTE_CHROME_ROWS)`.
-    pub fn handle_event(
-        &mut self,
-        event: &UiEvent,
-        visible_rows: usize,
-    ) -> Handled<DualModePaletteAction> {
-        let routed = match event {
-            UiEvent::KeyPressed { .. } => true,
-            UiEvent::ClipboardPaste(_) => self.widget.mode == PaletteMode::Input,
-            _ => false,
-        };
-        if !routed {
-            return Handled::Ignored;
-        }
-        let rect = Rect::new(
-            0.0,
-            0.0,
-            80.0,
-            (visible_rows + crate::compose::PALETTE_CHROME_ROWS) as f32,
-        );
-        let handled = widget_host::drive_in_cells(&self.widget, &mut self.state, event, rect)
-            .map_or(Handled::Ignored, |driven| driven.handled);
-        self.settle(handled, visible_rows)
-    }
-
-    /// Drive the state machine with a backend-neutral `UiEvent`.
-    #[deprecated(
-        since = "0.9.0",
-        note = "use `handle_event`, which returns `Handled<DualModePaletteAction>` instead of `DualModePaletteEvent`"
-    )]
-    #[allow(deprecated)] // `DualModePaletteEvent` is `#[deprecated]`; this method is its own shim.
-    pub fn handle(&mut self, event: &UiEvent, visible_rows: usize) -> DualModePaletteEvent {
-        handled_to_event(self.handle_event(event, visible_rows))
-    }
-
-    /// Route one pointer event through the widget at `rect`, reporting
-    /// [`Handled::Consumed`] only when it landed on an item row.
-    fn handle_pointer(
-        &mut self,
-        event: &UiEvent,
-        backend: &dyn Backend,
-        rect: Rect,
-        visible_rows: usize,
-    ) -> Handled<DualModePaletteAction> {
-        let layout = crate::backend::DrawsPrimitives::layout_primitive(backend, rect, &self.widget);
-        let Some(routed) = widget_host::routed_event(event, rect, &[]) else {
-            return Handled::Ignored;
-        };
-        let RoutedEvent::Pointer { local, .. } = &routed else {
-            return Handled::Ignored;
-        };
-        if !matches!(layout.hit_test_local(local.x, local.y), PaletteHit::Item(idx) if idx < self.widget.items.len())
-        {
-            return Handled::Ignored;
-        }
-        let units = crate::backend::primitive_layout_ctx(backend).units();
-        let driven = widget_host::drive(
-            &self.widget,
-            self.widget.id,
-            &mut self.state,
-            &routed,
-            &layout,
-            units,
-        );
-        self.settle(driven.handled, visible_rows)
-    }
-
-    /// Drive the palette with a left `MouseDown` — the click-routing twin
-    /// of [`Self::handle_event`], which only understands keyboard and
-    /// paste events. A click on an item row selects it (it does not
-    /// confirm it — that still takes `Enter`); every other event, or a
-    /// press that misses every item row, is [`Handled::Ignored`].
-    ///
-    /// `rect` must be the same popup rect passed to [`Self::render`] this
-    /// frame, and `backend` supplies the same metrics `render` painted
-    /// with. `position` is **absolute**; the palette's layout is local to
-    /// `rect`.
-    pub fn handle_mouse_event(
-        &mut self,
-        event: &UiEvent,
-        backend: &dyn Backend,
-        rect: Rect,
-        visible_rows: usize,
-    ) -> Handled<DualModePaletteAction> {
-        if !matches!(
+        route_palette_host(
+            &palette,
+            &mut state.palette,
             event,
-            UiEvent::MouseDown {
-                button: MouseButton::Left,
-                ..
-            }
-        ) {
-            return Handled::Ignored;
-        }
-        self.handle_pointer(event, backend, rect, visible_rows)
-    }
-
-    /// Drive the palette with a `MouseMoved` — the hover-tracking twin of
-    /// [`Self::handle_mouse_event`]. Moving the pointer over an item row
-    /// highlights it the same way a click does; a move that misses every
-    /// row, or re-hits the already-highlighted one, is
-    /// [`Handled::Ignored`], so a stationary pointer doesn't churn a
-    /// redraw every frame.
-    ///
-    /// Same `rect`/`backend` contract as [`Self::handle_mouse_event`].
-    pub fn handle_mouse_move_event(
-        &mut self,
-        event: &UiEvent,
-        backend: &dyn Backend,
-        rect: Rect,
-        visible_rows: usize,
-    ) -> Handled<DualModePaletteAction> {
-        if !matches!(event, UiEvent::MouseMoved { .. }) {
-            return Handled::Ignored;
-        }
-        self.handle_pointer(event, backend, rect, visible_rows)
-    }
-
-    /// Drive the state machine with a mouse `UiEvent`.
-    #[deprecated(
-        since = "0.9.0",
-        note = "use `handle_mouse_event`, which returns `Handled<DualModePaletteAction>` instead of `DualModePaletteEvent`"
-    )]
-    #[allow(deprecated)] // `DualModePaletteEvent` is `#[deprecated]`; this method is its own shim.
-    pub fn handle_mouse(
-        &mut self,
-        event: &UiEvent,
-        backend: &dyn Backend,
-        rect: Rect,
-        visible_rows: usize,
-    ) -> DualModePaletteEvent {
-        handled_to_event(self.handle_mouse_event(event, backend, rect, visible_rows))
+            layout,
+            cx,
+            (self.items.len(), self.selected),
+            list && self.vim_keys,
+            |input| match input {
+                PaletteHostInput::Cancel => Handled::Event(DualModePaletteAction::Cancelled),
+                PaletteHostInput::Confirm(None) if !list => {
+                    Handled::Event(DualModePaletteAction::TextConfirmed {
+                        value: self.query.clone(),
+                    })
+                }
+                PaletteHostInput::Confirm(None) if self.items.is_empty() => Handled::Consumed,
+                PaletteHostInput::Confirm(None) => {
+                    Handled::Event(DualModePaletteAction::ItemConfirmed { idx: self.selected })
+                }
+                PaletteHostInput::Confirm(Some(idx)) if list => {
+                    Handled::Event(DualModePaletteAction::ItemConfirmed { idx })
+                }
+                PaletteHostInput::Confirm(Some(_)) => Handled::Consumed,
+                PaletteHostInput::Select(idx) => self.select(idx),
+                PaletteHostInput::QueryChanged(value) => {
+                    Handled::Event(DualModePaletteAction::QueryChanged { value })
+                }
+            },
+        )
     }
 }
 
@@ -695,8 +399,75 @@ impl DualModePaletteController {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Modifiers;
+    use crate::compose::{drive_ui_event, widget_host};
+    use crate::{Backend, Modifiers, MouseButton, PALETTE_CHROME_ROWS};
     use crate::{StyledSpan, StyledText};
+
+    /// List rows the tests' palette shows.
+    const VISIBLE_ROWS: usize = 10;
+
+    /// A host that keeps a [`DualModePalette`] and its state, drives it
+    /// through its own [`Interactive`] and applies what it reports, the
+    /// way an app does. Highlight moves are stored and answer
+    /// [`Handled::Consumed`]; every other report is returned.
+    struct Host {
+        palette: DualModePalette,
+        state: DualModePaletteState,
+    }
+
+    impl Host {
+        fn new(input_label: Option<String>, items: Vec<PaletteItem>) -> Self {
+            Self {
+                palette: DualModePalette::new(WidgetId::new("dual"), "T", input_label, items),
+                state: DualModePaletteState::default(),
+            }
+        }
+
+        fn with_mode(mut self, mode: PaletteMode) -> Self {
+            self.palette = self.palette.with_mode(mode);
+            self
+        }
+
+        fn with_vim_keys(mut self) -> Self {
+            self.palette = self.palette.with_vim_keys(true);
+            self
+        }
+
+        /// A keystroke or paste, on a cell grid tall enough for
+        /// [`VISIBLE_ROWS`] rows.
+        fn key(&mut self, event: &UiEvent) -> Handled<DualModePaletteAction> {
+            let rect = Rect::new(0.0, 0.0, 80.0, (VISIBLE_ROWS + PALETTE_CHROME_ROWS) as f32);
+            let handled = widget_host::drive_in_cells(&self.palette, &mut self.state, event, rect)
+                .map_or(Handled::Ignored, |driven| driven.handled);
+            self.settle(handled)
+        }
+
+        /// A pointer event against the palette laid out at `rect`.
+        fn pointer(
+            &mut self,
+            event: &UiEvent,
+            backend: &dyn Backend,
+            rect: Rect,
+        ) -> Handled<DualModePaletteAction> {
+            let handled = drive_ui_event(&self.palette, &mut self.state, event, backend, rect)
+                .map_or(Handled::Ignored, |driven| driven.handled);
+            self.settle(handled)
+        }
+
+        fn settle(
+            &mut self,
+            handled: Handled<DualModePaletteAction>,
+        ) -> Handled<DualModePaletteAction> {
+            if let Handled::Event(action) = &handled {
+                self.palette.apply(action, VISIBLE_ROWS);
+                self.palette.sync_caret(&self.state);
+            }
+            match handled {
+                Handled::Event(DualModePaletteAction::SelectionChanged { .. }) => Handled::Consumed,
+                other => other,
+            }
+        }
+    }
 
     fn item(text: &str) -> PaletteItem {
         PaletteItem {
@@ -746,23 +517,23 @@ mod tests {
 
     #[test]
     fn starts_in_list_mode() {
-        let ctrl = DualModePaletteController::new("T", None, vec![]);
-        assert_eq!(ctrl.mode(), PaletteMode::List);
+        let ctrl = Host::new(None, vec![]);
+        assert_eq!(ctrl.palette.mode, PaletteMode::List);
     }
 
     #[test]
     fn with_mode_overrides_initial_mode() {
-        let ctrl = DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        assert_eq!(ctrl.mode(), PaletteMode::Input);
+        let ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        assert_eq!(ctrl.palette.mode, PaletteMode::Input);
     }
 
     // ── Tab toggles mode ──────────────────────────────────────────────
 
     #[test]
     fn tab_toggles_list_to_input() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let ev = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Tab)), 10);
-        assert_eq!(ctrl.mode(), PaletteMode::Input);
+        let mut ctrl = Host::new(None, vec![]);
+        let ev = ctrl.key(&key_ev(Key::Named(NamedKey::Tab)));
+        assert_eq!(ctrl.palette.mode, PaletteMode::Input);
         assert_eq!(
             ev,
             Handled::Event(DualModePaletteAction::ModeToggled {
@@ -773,10 +544,9 @@ mod tests {
 
     #[test]
     fn tab_toggles_input_to_list() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        let ev = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Tab)), 10);
-        assert_eq!(ctrl.mode(), PaletteMode::List);
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        let ev = ctrl.key(&key_ev(Key::Named(NamedKey::Tab)));
+        assert_eq!(ctrl.palette.mode, PaletteMode::List);
         assert_eq!(
             ev,
             Handled::Event(DualModePaletteAction::ModeToggled {
@@ -787,34 +557,34 @@ mod tests {
 
     #[test]
     fn tab_preserves_query_text() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('a')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('b')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Tab)), 10); // → Input
-        assert_eq!(ctrl.query(), "ab");
+        let mut ctrl = Host::new(None, vec![]);
+        let _ = ctrl.key(&key_ev(Key::Char('a')));
+        let _ = ctrl.key(&key_ev(Key::Char('b')));
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Tab))); // → Input
+        assert_eq!(ctrl.palette.query, "ab");
     }
 
     // ── List mode key dispatch ────────────────────────────────────────
 
     #[test]
     fn escape_in_list_mode_cancels() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let ev = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Escape)), 10);
+        let mut ctrl = Host::new(None, vec![]);
+        let ev = ctrl.key(&key_ev(Key::Named(NamedKey::Escape)));
         assert_eq!(ev, Handled::Event(DualModePaletteAction::Cancelled));
     }
 
     #[test]
     fn char_in_list_mode_appends_to_query() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('f')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('o')), 10);
-        assert_eq!(ctrl.query(), "fo");
+        let mut ctrl = Host::new(None, vec![]);
+        let _ = ctrl.key(&key_ev(Key::Char('f')));
+        let _ = ctrl.key(&key_ev(Key::Char('o')));
+        assert_eq!(ctrl.palette.query, "fo");
     }
 
     #[test]
     fn char_in_list_mode_emits_query_changed() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let ev = ctrl.handle_event(&key_ev(Key::Char('x')), 10);
+        let mut ctrl = Host::new(None, vec![]);
+        let ev = ctrl.key(&key_ev(Key::Char('x')));
         assert_eq!(
             ev,
             Handled::Event(DualModePaletteAction::QueryChanged { value: "x".into() })
@@ -823,35 +593,35 @@ mod tests {
 
     #[test]
     fn backspace_in_list_mode_removes_last_char() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('h')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('i')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Backspace)), 10);
-        assert_eq!(ctrl.query(), "h");
+        let mut ctrl = Host::new(None, vec![]);
+        let _ = ctrl.key(&key_ev(Key::Char('h')));
+        let _ = ctrl.key(&key_ev(Key::Char('i')));
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Backspace)));
+        assert_eq!(ctrl.palette.query, "h");
     }
 
     #[test]
     fn down_moves_selection() {
         let items = vec![item("a"), item("b"), item("c")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Down)), 10);
-        assert_eq!(ctrl.selected(), 1);
+        let mut ctrl = Host::new(None, items);
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Down)));
+        assert_eq!(ctrl.palette.selected, 1);
     }
 
     #[test]
     fn up_clamps_at_zero() {
         let items = vec![item("a"), item("b")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Up)), 10);
-        assert_eq!(ctrl.selected(), 0);
+        let mut ctrl = Host::new(None, items);
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Up)));
+        assert_eq!(ctrl.palette.selected, 0);
     }
 
     #[test]
     fn enter_in_list_mode_confirms_item() {
         let items = vec![item("a"), item("b")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Down)), 10);
-        let ev = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Enter)), 10);
+        let mut ctrl = Host::new(None, items);
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Down)));
+        let ev = ctrl.key(&key_ev(Key::Named(NamedKey::Enter)));
         assert_eq!(
             ev,
             Handled::Event(DualModePaletteAction::ItemConfirmed { idx: 1 })
@@ -860,15 +630,15 @@ mod tests {
 
     #[test]
     fn enter_on_empty_list_is_consumed() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let ev = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Enter)), 10);
+        let mut ctrl = Host::new(None, vec![]);
+        let ev = ctrl.key(&key_ev(Key::Named(NamedKey::Enter)));
         assert_eq!(ev, Handled::Consumed);
     }
 
     #[test]
     fn ctrl_char_is_ignored_in_list_mode() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let ev = ctrl.handle_event(&ctrl_ev(Key::Char('w')), 10);
+        let mut ctrl = Host::new(None, vec![]);
+        let ev = ctrl.key(&ctrl_ev(Key::Char('w')));
         assert_eq!(ev, Handled::Ignored);
     }
 
@@ -877,8 +647,8 @@ mod tests {
     // backend, so it must be ignored the same way.
     #[test]
     fn cmd_char_is_ignored_in_list_mode() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let ev = ctrl.handle_event(&cmd_ev(Key::Char('w')), 10);
+        let mut ctrl = Host::new(None, vec![]);
+        let ev = ctrl.key(&cmd_ev(Key::Char('w')));
         assert_eq!(ev, Handled::Ignored);
     }
 
@@ -886,19 +656,17 @@ mod tests {
 
     #[test]
     fn escape_in_input_mode_cancels() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        let ev = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Escape)), 10);
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        let ev = ctrl.key(&key_ev(Key::Named(NamedKey::Escape)));
         assert_eq!(ev, Handled::Event(DualModePaletteAction::Cancelled));
     }
 
     #[test]
     fn enter_in_input_mode_confirms_text() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('m')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('y')), 10);
-        let ev = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Enter)), 10);
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        let _ = ctrl.key(&key_ev(Key::Char('m')));
+        let _ = ctrl.key(&key_ev(Key::Char('y')));
+        let ev = ctrl.key(&key_ev(Key::Named(NamedKey::Enter)));
         assert_eq!(
             ev,
             Handled::Event(DualModePaletteAction::TextConfirmed { value: "my".into() })
@@ -907,14 +675,13 @@ mod tests {
 
     #[test]
     fn char_in_input_mode_inserts_at_cursor() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('a')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('c')), 10);
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        let _ = ctrl.key(&key_ev(Key::Char('a')));
+        let _ = ctrl.key(&key_ev(Key::Char('c')));
         // Move cursor left (between 'a' and 'c'), then insert 'b'.
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Left)), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('b')), 10);
-        assert_eq!(ctrl.query(), "abc");
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Left)));
+        let _ = ctrl.key(&key_ev(Key::Char('b')));
+        assert_eq!(ctrl.palette.query, "abc");
     }
 
     // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
@@ -922,44 +689,40 @@ mod tests {
     // backend, so it must not be inserted into the query in Input mode.
     #[test]
     fn cmd_char_is_ignored_in_input_mode() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        let ev = ctrl.handle_event(&cmd_ev(Key::Char('f')), 10);
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        let ev = ctrl.key(&cmd_ev(Key::Char('f')));
         assert_eq!(ev, Handled::Ignored);
-        assert_eq!(ctrl.query(), "");
+        assert_eq!(ctrl.palette.query, "");
     }
 
     #[test]
     fn backspace_in_input_mode_removes_char_before_cursor() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('a')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('b')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Backspace)), 10);
-        assert_eq!(ctrl.query(), "a");
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        let _ = ctrl.key(&key_ev(Key::Char('a')));
+        let _ = ctrl.key(&key_ev(Key::Char('b')));
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Backspace)));
+        assert_eq!(ctrl.palette.query, "a");
     }
 
     #[test]
     fn home_moves_cursor_to_start() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('a')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('b')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Home)), 10);
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        let _ = ctrl.key(&key_ev(Key::Char('a')));
+        let _ = ctrl.key(&key_ev(Key::Char('b')));
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Home)));
         // Insert at start.
-        let _ = ctrl.handle_event(&key_ev(Key::Char('x')), 10);
-        assert_eq!(ctrl.query(), "xab");
+        let _ = ctrl.key(&key_ev(Key::Char('x')));
+        assert_eq!(ctrl.palette.query, "xab");
     }
 
     #[test]
     fn end_moves_cursor_to_end() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('a')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Home)), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::End)), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('z')), 10);
-        assert_eq!(ctrl.query(), "az");
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        let _ = ctrl.key(&key_ev(Key::Char('a')));
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Home)));
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::End)));
+        let _ = ctrl.key(&key_ev(Key::Char('z')));
+        assert_eq!(ctrl.palette.query, "az");
     }
 
     // ── build_palette ─────────────────────────────────────────────────
@@ -967,8 +730,8 @@ mod tests {
     #[test]
     fn build_palette_list_mode_includes_items() {
         let items = vec![item("foo"), item("bar")];
-        let ctrl = DualModePaletteController::new("T", None, items);
-        let pal = ctrl.build_palette();
+        let ctrl = Host::new(None, items);
+        let pal = ctrl.palette.palette(ctrl.palette.query_cursor);
         assert_eq!(pal.mode, PaletteMode::List);
         assert_eq!(pal.items.len(), 2);
     }
@@ -976,17 +739,16 @@ mod tests {
     #[test]
     fn build_palette_input_mode_hides_items() {
         let items = vec![item("foo"), item("bar")];
-        let ctrl = DualModePaletteController::new("T", None, items).with_mode(PaletteMode::Input);
-        let pal = ctrl.build_palette();
+        let ctrl = Host::new(None, items).with_mode(PaletteMode::Input);
+        let pal = ctrl.palette.palette(ctrl.palette.query_cursor);
         assert_eq!(pal.mode, PaletteMode::Input);
         assert!(pal.items.is_empty(), "items should be hidden in Input mode");
     }
 
     #[test]
     fn build_palette_input_mode_augments_title_with_label() {
-        let ctrl = DualModePaletteController::new("Branches", Some("New branch:".into()), vec![])
-            .with_mode(PaletteMode::Input);
-        let pal = ctrl.build_palette();
+        let ctrl = Host::new(Some("New branch:".into()), vec![]).with_mode(PaletteMode::Input);
+        let pal = ctrl.palette.palette(ctrl.palette.query_cursor);
         assert!(
             pal.title.contains("New branch:"),
             "input label should appear in title: {:?}",
@@ -998,14 +760,13 @@ mod tests {
 
     #[test]
     fn clipboard_paste_in_input_mode_inserts_at_cursor() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
         // Type "ac", move cursor left, then paste "b" — result should be "abc".
-        let _ = ctrl.handle_event(&key_ev(Key::Char('a')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('c')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Left)), 10);
-        let ev = ctrl.handle_event(&UiEvent::ClipboardPaste("b".into()), 10);
-        assert_eq!(ctrl.query(), "abc");
+        let _ = ctrl.key(&key_ev(Key::Char('a')));
+        let _ = ctrl.key(&key_ev(Key::Char('c')));
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Left)));
+        let ev = ctrl.key(&UiEvent::ClipboardPaste("b".into()));
+        assert_eq!(ctrl.palette.query, "abc");
         assert_eq!(
             ev,
             Handled::Event(DualModePaletteAction::QueryChanged {
@@ -1016,12 +777,11 @@ mod tests {
 
     #[test]
     fn clipboard_paste_appends_when_cursor_at_end() {
-        let mut ctrl =
-            DualModePaletteController::new("T", None, vec![]).with_mode(PaletteMode::Input);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('h')), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Char('i')), 10);
-        let ev = ctrl.handle_event(&UiEvent::ClipboardPaste("!".into()), 10);
-        assert_eq!(ctrl.query(), "hi!");
+        let mut ctrl = Host::new(None, vec![]).with_mode(PaletteMode::Input);
+        let _ = ctrl.key(&key_ev(Key::Char('h')));
+        let _ = ctrl.key(&key_ev(Key::Char('i')));
+        let ev = ctrl.key(&UiEvent::ClipboardPaste("!".into()));
+        assert_eq!(ctrl.palette.query, "hi!");
         assert_eq!(
             ev,
             Handled::Event(DualModePaletteAction::QueryChanged {
@@ -1031,23 +791,27 @@ mod tests {
     }
 
     #[test]
-    fn clipboard_paste_ignored_in_list_mode() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        // List mode — paste should be ignored (not the focused text input path).
-        let ev = ctrl.handle_event(&UiEvent::ClipboardPaste("xyz".into()), 10);
-        assert_eq!(ev, Handled::Ignored);
-        assert_eq!(ctrl.query(), "");
+    fn clipboard_paste_in_list_mode_refilters() {
+        let mut ctrl = Host::new(None, vec![]);
+        let ev = ctrl.key(&UiEvent::ClipboardPaste("xyz".into()));
+        assert_eq!(ctrl.palette.query, "xyz");
+        assert_eq!(
+            ev,
+            Handled::Event(DualModePaletteAction::QueryChanged {
+                value: "xyz".into()
+            })
+        );
     }
 
     #[test]
     fn set_items_resets_selection_and_scroll() {
         let items = vec![item("a"), item("b"), item("c")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Down)), 10);
-        let _ = ctrl.handle_event(&key_ev(Key::Named(NamedKey::Down)), 10);
-        assert_eq!(ctrl.selected(), 2);
-        ctrl.set_items(vec![item("x")]);
-        assert_eq!(ctrl.selected(), 0);
+        let mut ctrl = Host::new(None, items);
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Down)));
+        let _ = ctrl.key(&key_ev(Key::Named(NamedKey::Down)));
+        assert_eq!(ctrl.palette.selected, 2);
+        ctrl.palette.set_items(vec![item("x")]);
+        assert_eq!(ctrl.palette.selected, 0);
     }
 
     fn mouse_down(x: f32, y: f32) -> UiEvent {
@@ -1076,19 +840,18 @@ mod tests {
     #[test]
     fn mouse_click_on_item_selects_it() {
         let items = vec![item("a"), item("b"), item("c")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
-        assert_eq!(ctrl.selected(), 0);
+        let mut ctrl = Host::new(None, items);
+        assert_eq!(ctrl.palette.selected, 0);
 
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
         // title(row 0) + query(row 1) + separator(row 2) -> items start
         // at row 3; item 2 is at row 5.
-        let ev = ctrl.handle_mouse_event(&mouse_down(5.0, 5.5), &backend, rect, 10);
+        let ev = ctrl.pointer(&mouse_down(5.0, 5.5), &backend, rect);
 
         assert_eq!(ev, Handled::Consumed);
         assert_eq!(
-            ctrl.selected(),
-            2,
+            ctrl.palette.selected, 2,
             "clicking item 2's row must update the selection"
         );
     }
@@ -1100,46 +863,46 @@ mod tests {
         // starts elsewhere so a missing `rect.x`/`rect.y` subtraction
         // would fail it.
         let items = vec![item("a"), item("b"), item("c")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
+        let mut ctrl = Host::new(None, items);
 
         let backend = recording_backend();
         let rect = Rect::new(5.0, 3.0, 40.0, 20.0);
         // Item 2's row is local y=5, so absolute y = rect.y + 5 = 8.
-        let ev = ctrl.handle_mouse_event(&mouse_down(10.0, 8.5), &backend, rect, 10);
+        let ev = ctrl.pointer(&mouse_down(10.0, 8.5), &backend, rect);
 
         assert_eq!(ev, Handled::Consumed);
-        assert_eq!(ctrl.selected(), 2);
+        assert_eq!(ctrl.palette.selected, 2);
     }
 
     #[test]
-    fn mouse_click_outside_any_region_is_ignored() {
+    fn mouse_click_outside_every_row_leaves_the_highlight() {
         let items = vec![item("a"), item("b")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
+        let mut ctrl = Host::new(None, items);
 
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
-        let ev = ctrl.handle_mouse_event(&mouse_down(5.0, 99.0), &backend, rect, 10);
+        let ev = ctrl.pointer(&mouse_down(5.0, 99.0), &backend, rect);
 
-        assert_eq!(ev, Handled::Ignored);
-        assert_eq!(ctrl.selected(), 0);
+        // The palette is modal: it swallows the press without a change.
+        assert_eq!(ev, Handled::Consumed);
+        assert_eq!(ctrl.palette.selected, 0);
     }
 
     #[test]
     fn mouse_moved_over_item_selects_it() {
         let items = vec![item("a"), item("b"), item("c")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
-        assert_eq!(ctrl.selected(), 0);
+        let mut ctrl = Host::new(None, items);
+        assert_eq!(ctrl.palette.selected, 0);
 
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
         // Same row geometry as `mouse_click_on_item_selects_it`: item 2
         // sits at row 5.
-        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 5.5), &backend, rect, 10);
+        let ev = ctrl.pointer(&mouse_moved(5.0, 5.5), &backend, rect);
 
         assert_eq!(ev, Handled::Consumed);
         assert_eq!(
-            ctrl.selected(),
-            2,
+            ctrl.palette.selected, 2,
             "hovering item 2's row must update the selection, same as a click"
         );
     }
@@ -1149,55 +912,37 @@ mod tests {
         // A stationary pointer must not churn `Handled::Consumed` (and so
         // a redraw) every frame it's polled.
         let items = vec![item("a"), item("b"), item("c")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
-        assert_eq!(ctrl.selected(), 0);
+        let mut ctrl = Host::new(None, items);
+        assert_eq!(ctrl.palette.selected, 0);
 
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
         // Item 0's row is at local y=2 (title + query rows above it).
-        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 2.5), &backend, rect, 10);
+        let ev = ctrl.pointer(&mouse_moved(5.0, 2.5), &backend, rect);
 
         assert_eq!(ev, Handled::Ignored);
-        assert_eq!(ctrl.selected(), 0);
+        assert_eq!(ctrl.palette.selected, 0);
     }
 
     #[test]
     fn mouse_moved_outside_any_item_row_is_ignored() {
         let items = vec![item("a"), item("b")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
+        let mut ctrl = Host::new(None, items);
 
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
-        let ev = ctrl.handle_mouse_move_event(&mouse_moved(5.0, 99.0), &backend, rect, 10);
+        let ev = ctrl.pointer(&mouse_moved(5.0, 99.0), &backend, rect);
 
         assert_eq!(ev, Handled::Ignored);
-        assert_eq!(ctrl.selected(), 0);
-    }
-
-    #[test]
-    fn non_mouse_moved_event_is_ignored_by_handle_mouse_move() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![item("a")]);
-        let backend = recording_backend();
-        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
-        let ev = ctrl.handle_mouse_move_event(&mouse_down(5.0, 4.5), &backend, rect, 10);
-        assert_eq!(ev, Handled::Ignored);
-    }
-
-    #[test]
-    fn non_mouse_event_is_ignored_by_handle_mouse() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![item("a")]);
-        let backend = recording_backend();
-        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
-        let ev = ctrl.handle_mouse_event(&key_ev(Key::Char('a')), &backend, rect, 10);
-        assert_eq!(ev, Handled::Ignored);
+        assert_eq!(ctrl.palette.selected, 0);
     }
 
     #[test]
     fn right_click_is_ignored() {
-        let mut ctrl = DualModePaletteController::new("T", None, vec![item("a")]);
+        let mut ctrl = Host::new(None, vec![item("a")]);
         let backend = recording_backend();
         let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
-        let ev = ctrl.handle_mouse_event(
+        let ev = ctrl.pointer(
             &UiEvent::MouseDown {
                 widget: None,
                 button: MouseButton::Right,
@@ -1206,30 +951,87 @@ mod tests {
             },
             &backend,
             rect,
-            10,
         );
         assert_eq!(ev, Handled::Ignored);
     }
 
-    #[test]
-    #[allow(deprecated)] // covers the `handle`/`handle_mouse` shims kept for pre-`Handled` callers.
-    fn deprecated_methods_still_adapt_to_dual_mode_palette_event() {
-        let items = vec![item("a"), item("b")];
-        let mut ctrl = DualModePaletteController::new("T", None, items);
-        assert_eq!(
-            ctrl.handle(&key_ev(Key::Named(NamedKey::Down)), 10),
-            DualModePaletteEvent::Consumed
-        );
-        assert_eq!(
-            ctrl.handle(&key_ev(Key::Named(NamedKey::Enter)), 10),
-            DualModePaletteEvent::ItemConfirmed { idx: 1 }
-        );
+    // ── vim-style j/k ─────────────────────────────────────────────────
 
-        let backend = recording_backend();
-        let rect = Rect::new(0.0, 0.0, 40.0, 20.0);
+    #[test]
+    fn j_and_k_type_into_the_list_query_by_default() {
+        let items = vec![item("a"), item("b"), item("c")];
+        let mut ctrl = Host::new(None, items);
+        let _ = ctrl.key(&key_ev(Key::Char('j')));
+        let ev = ctrl.key(&key_ev(Key::Char('k')));
+        assert_eq!(ctrl.palette.query, "jk");
+        assert_eq!(ctrl.palette.selected, 0);
         assert_eq!(
-            ctrl.handle_mouse(&mouse_down(5.0, 99.0), &backend, rect, 10),
-            DualModePaletteEvent::Ignored
+            ev,
+            Handled::Event(DualModePaletteAction::QueryChanged { value: "jk".into() })
         );
+    }
+
+    #[test]
+    fn vim_keys_j_and_k_move_the_highlight_in_list_mode() {
+        let items = vec![item("a"), item("b"), item("c")];
+        let mut ctrl = Host::new(None, items).with_vim_keys();
+        let _ = ctrl.key(&key_ev(Key::Char('j')));
+        let _ = ctrl.key(&key_ev(Key::Char('j')));
+        assert_eq!(ctrl.palette.selected, 2);
+        let _ = ctrl.key(&key_ev(Key::Char('j')));
+        assert_eq!(ctrl.palette.selected, 2, "j clamps at the last row");
+        let _ = ctrl.key(&key_ev(Key::Char('k')));
+        assert_eq!(ctrl.palette.selected, 1);
+        assert_eq!(ctrl.palette.query, "");
+    }
+
+    #[test]
+    fn vim_keys_type_in_input_mode() {
+        let mut ctrl = Host::new(None, vec![item("a"), item("b")])
+            .with_vim_keys()
+            .with_mode(PaletteMode::Input);
+        let _ = ctrl.key(&key_ev(Key::Char('j')));
+        let _ = ctrl.key(&key_ev(Key::Char('k')));
+        assert_eq!(ctrl.palette.query, "jk");
+    }
+
+    #[test]
+    fn modified_j_never_moves_the_highlight() {
+        let mut ctrl = Host::new(None, vec![item("a"), item("b")]).with_vim_keys();
+        let ev = ctrl.key(&ctrl_ev(Key::Char('j')));
+        assert_eq!(ev, Handled::Ignored);
+        assert_eq!(ctrl.palette.selected, 0);
+    }
+
+    // ── apply ─────────────────────────────────────────────────────────
+
+    #[test]
+    fn apply_scrolls_a_highlight_move_into_view() {
+        let items = (0..30).map(|i| item(&format!("row{i}"))).collect();
+        let mut palette = DualModePalette::new(WidgetId::new("p"), "T", None, items);
+        palette.apply(&DualModePaletteAction::SelectionChanged { idx: 12 }, 5);
+        assert_eq!(palette.selected, 12);
+        assert_eq!(palette.scroll_top, 8);
+    }
+
+    #[test]
+    fn apply_query_change_resets_the_list_highlight_only_in_list_mode() {
+        let items = vec![item("a"), item("b")];
+        let mut palette = DualModePalette::new(WidgetId::new("p"), "T", None, items);
+        palette.selected = 1;
+        palette.apply(
+            &DualModePaletteAction::QueryChanged { value: "ab".into() },
+            5,
+        );
+        assert_eq!((palette.query.as_str(), palette.query_cursor), ("ab", 2));
+        assert_eq!(palette.selected, 0);
+
+        palette.mode = PaletteMode::Input;
+        palette.selected = 1;
+        palette.apply(
+            &DualModePaletteAction::QueryChanged { value: "x".into() },
+            5,
+        );
+        assert_eq!(palette.selected, 1);
     }
 }

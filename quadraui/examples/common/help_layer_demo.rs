@@ -7,7 +7,7 @@
 //! - `?` opens a cheatsheet overlay ([`quadraui::HelpOverlay`])
 //!   showing the **active panel's** registered notes + actions — switch
 //!   panels, reopen `?`, and the content changes.
-//! - `p` opens a command palette ([`quadraui::DualModePaletteController`])
+//! - `p` opens a command palette ([`quadraui::DualModePalette`])
 //!   populated from the active panel's registered actions via
 //!   [`quadraui::help_actions_to_palette_items`]; typing filters by label
 //!   **and** description via [`quadraui::filter_help_actions`].
@@ -23,13 +23,13 @@
 //! - `q` / `Esc`          quit (when no overlay is open)
 
 use quadraui::compose::app_shell::{PanelDefinition, ShellEvent, ShellLayout};
-use quadraui::compose::{DualModePaletteAction, Handled};
+use quadraui::compose::Handled;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    filter_help_actions, help_actions_to_palette_items, Backend, Color, DualModePaletteController,
-    HelpAction, HelpNote, HelpOverlay, HelpOverlayAction, HelpRegistry, Key, NamedKey, Reaction,
-    Rect, ShellApp, ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, ViewHelp,
-    WidgetId,
+    drive_ui_event, filter_help_actions, help_actions_to_palette_items, Backend, Color,
+    DualModePalette, DualModePaletteAction, DualModePaletteState, HelpAction, HelpNote,
+    HelpOverlay, HelpOverlayAction, HelpRegistry, Key, NamedKey, Reaction, Rect, ShellApp,
+    ShellConfig, ShellContext, StatusBar, StatusBarSegment, UiEvent, ViewHelp, WidgetId,
 };
 
 const EXPLORER_PANEL: &str = "panel:explorer";
@@ -39,7 +39,8 @@ const SETTINGS_PANEL: &str = "panel:settings";
 pub struct HelpLayerDemo {
     registry: HelpRegistry,
     help_overlay: HelpOverlay,
-    palette: Option<DualModePaletteController>,
+    /// The command palette and the state it routes through, while open.
+    palette: Option<(DualModePalette, DualModePaletteState)>,
     active_panel: WidgetId,
     last_message: String,
 }
@@ -133,7 +134,8 @@ impl HelpLayerDemo {
 
     fn open_palette(&mut self) {
         let items = help_actions_to_palette_items(self.filtered_actions(""), "");
-        self.palette = Some(DualModePaletteController::new("Commands", None, items));
+        let palette = DualModePalette::new(WidgetId::new("commands"), "Commands", None, items);
+        self.palette = Some((palette, DualModePaletteState::default()));
         self.last_message =
             "Command palette open — type to search, Enter to run, Esc to cancel".into();
     }
@@ -174,9 +176,9 @@ impl ShellApp for HelpLayerDemo {
         );
         backend.draw_dyn(rect, &hint, &());
 
-        if let Some(palette) = &self.palette {
+        if let Some((palette, _)) = &self.palette {
             let popup = popup_rect(layout.window_bounds, backend);
-            palette.render(popup, backend);
+            backend.draw_dyn(popup, palette, &());
         } else {
             // `active_view_help()` is `None` for the Settings panel — the
             // overlay's own fallback (a visible "no help available"
@@ -198,7 +200,7 @@ impl ShellApp for HelpLayerDemo {
         // Palette open → it owns every key until it closes. `.take()` so
         // `self.filtered_actions()` below can borrow `self` immutably
         // without conflicting with an outstanding `&mut self.palette`.
-        if let Some(mut palette) = self.palette.take() {
+        if let Some((mut palette, mut state)) = self.palette.take() {
             let popup = popup_rect(ctx.window_bounds(), backend);
             let lh = backend.line_height();
             let visible_rows = if lh > 0.0 {
@@ -206,39 +208,50 @@ impl ShellApp for HelpLayerDemo {
             } else {
                 10
             };
-            let reaction = match palette.handle_event(&event, visible_rows) {
+            // Keys always reach the palette, a paste only while it takes
+            // free text; pointer events stay the shell's.
+            let routed = match &event {
+                UiEvent::KeyPressed { .. } => true,
+                UiEvent::ClipboardPaste(_) => palette.mode == quadraui::PaletteMode::Input,
+                _ => false,
+            };
+            let handled = if routed {
+                drive_ui_event(&palette, &mut state, &event, backend, popup)
+                    .map_or(Handled::Ignored, |driven| driven.handled)
+            } else {
+                Handled::Ignored
+            };
+            if let Handled::Event(action) = &handled {
+                palette.apply(action, visible_rows);
+                palette.sync_caret(&state);
+            }
+            match handled {
                 Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => {
-                    let query = palette.query().to_string();
-                    let matched = self.filtered_actions(&query);
+                    let matched = self.filtered_actions(&palette.query);
                     if let Some(action) = matched.get(idx) {
                         self.last_message = format!("Ran: {}", action.label);
                     }
-                    Reaction::Redraw
-                }
-                Handled::Event(DualModePaletteAction::QueryChanged { value }) => {
-                    let matched = self.filtered_actions(&value);
-                    palette.set_items(help_actions_to_palette_items(matched, &value));
-                    self.palette = Some(palette);
                     return Reaction::Redraw;
                 }
                 Handled::Event(DualModePaletteAction::Cancelled) => {
                     self.last_message = "Command palette closed".into();
-                    Reaction::Redraw
+                    return Reaction::Redraw;
                 }
-                Handled::Event(DualModePaletteAction::TextConfirmed { .. })
-                | Handled::Event(DualModePaletteAction::ModeToggled { .. })
-                | Handled::Event(_)
-                | Handled::Consumed => {
-                    self.palette = Some(palette);
+                Handled::Event(DualModePaletteAction::QueryChanged { value }) => {
+                    let matched = self.filtered_actions(&value);
+                    palette.set_items(help_actions_to_palette_items(matched, &value));
+                    self.palette = Some((palette, state));
+                    return Reaction::Redraw;
+                }
+                Handled::Event(_) | Handled::Consumed => {
+                    self.palette = Some((palette, state));
                     return Reaction::Redraw;
                 }
                 Handled::Ignored => {
-                    self.palette = Some(palette);
+                    self.palette = Some((palette, state));
                     return Reaction::Continue;
                 }
-            };
-            // Reached only for ItemConfirmed / Cancelled — palette closes.
-            return reaction;
+            }
         }
 
         // Help overlay: `?` opens/closes when relevant, swallows keys

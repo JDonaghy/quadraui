@@ -1,6 +1,7 @@
 //! [`PathPickerState`] — the browsing model shared by
 //! [`FolderPicker`] and [`FilePicker`], and the input handling both
-//! pickers route through [`Palette`]'s own [`Interactive`].
+//! pickers route through [`Palette`]'s own
+//! [`Interactive`](crate::interactive::Interactive).
 //!
 //! Both pickers browse a filesystem tree with the same query/list/
 //! selection/scroll mechanics and the same key map; they differ only in
@@ -22,11 +23,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::behaviour::nav::{FlatNav, NavKey as FlatNavKey};
 use crate::behaviour::scroll::ensure_visible;
+use crate::compose::palette_host::{route_palette_host, PaletteHostInput};
 use crate::compose::Handled;
-use crate::interactive::{EventCx, Interactive, RoutedEvent, WidgetAction};
-use crate::primitives::palette::{Palette, PaletteEvent, PalettePrimitiveLayout, PaletteState};
+use crate::interactive::{EventCx, RoutedEvent, WidgetAction};
+use crate::primitives::palette::{Palette, PalettePrimitiveLayout, PaletteState};
 use crate::types::WidgetId;
-use crate::{Key, NamedKey, UiEvent};
+use crate::{Key, UiEvent};
 
 /// What a path picker reports: a confirmed path or a dismissal, plus the
 /// browsing changes the host applies onto the picker's
@@ -331,10 +333,10 @@ pub(crate) fn painted_caret(query: &str, state: Option<&PaletteState>) -> usize 
 /// One routed event, resolved for a picker showing `paths` through
 /// `palette`.
 ///
-/// Escape cancels and Enter resolves through `confirm`; with `vim_keys`,
-/// an unmodified `k`/`j`/`-` moves the highlight or browses up instead of
-/// typing. Everything else is the palette's own input: its query editing
-/// and list navigation, reported as the browsing change it names.
+/// The shared palette-host prelude ([`route_palette_host`]) resolves
+/// Escape, Enter, the palette's own input and, with `vim_keys`, an
+/// unmodified `k`/`j`; Enter resolves through `confirm`. With `vim_keys`,
+/// an unmodified `-` browses up to the root's parent instead of typing.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_picker_event(
     paths: &PathPickerState,
@@ -348,30 +350,30 @@ pub(crate) fn handle_picker_event(
 ) -> Handled<PathPickerAction> {
     if let RoutedEvent::Key(key) = event {
         let modified = key.modifiers.ctrl || key.modifiers.cmd || key.modifiers.alt;
-        match key.key {
-            Key::Named(NamedKey::Escape) => return Handled::Event(PathPickerAction::Cancelled),
-            Key::Named(NamedKey::Enter) => return confirm(),
-            Key::Char('k') if vim_keys && !modified => return select(paths, paths.row_above()),
-            Key::Char('j') if vim_keys && !modified => return select(paths, paths.row_below()),
-            Key::Char('-') if vim_keys && !modified => {
-                return match paths.parent() {
-                    Some(root) => Handled::Event(PathPickerAction::Navigated { root }),
-                    None => Handled::Consumed,
-                };
+        if key.key == Key::Char('-') && vim_keys && !modified {
+            return match paths.parent() {
+                Some(root) => Handled::Event(PathPickerAction::Navigated { root }),
+                None => Handled::Consumed,
+            };
+        }
+    }
+    route_palette_host(
+        palette,
+        state,
+        event,
+        layout,
+        cx,
+        (paths.filtered.len(), paths.selected),
+        vim_keys,
+        |input| match input {
+            PaletteHostInput::Cancel => Handled::Event(PathPickerAction::Cancelled),
+            PaletteHostInput::Confirm(_) => confirm(),
+            PaletteHostInput::Select(idx) => select(paths, idx),
+            PaletteHostInput::QueryChanged(query) => {
+                Handled::Event(PathPickerAction::QueryChanged { query })
             }
-            _ => {}
-        }
-    }
-    match Interactive::handle(palette, state, event, layout, cx) {
-        Handled::Event(PaletteEvent::QueryChanged { value }) => {
-            Handled::Event(PathPickerAction::QueryChanged { query: value })
-        }
-        Handled::Event(PaletteEvent::SelectionChanged { idx }) => select(paths, idx),
-        Handled::Event(PaletteEvent::ItemConfirmed { .. }) => confirm(),
-        Handled::Event(PaletteEvent::Closed) => Handled::Event(PathPickerAction::Cancelled),
-        Handled::Event(_) | Handled::Consumed => Handled::Consumed,
-        Handled::Ignored => Handled::Ignored,
-    }
+        },
+    )
 }
 
 /// Report a move of the highlight to `idx`, or nothing when it is

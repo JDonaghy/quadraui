@@ -398,7 +398,7 @@ fn capture_opens_the_context_menu_demo_instead_of_leaving_it_idle() {
 /// different screen than its base `capture_action` row, for every demo
 /// that defines one — proving the hover/selection affordance actually
 /// repaints something (a `ContextMenuController`/`MenuSystem` hover
-/// tint, a submenu cascade, a different `DualModePaletteController` row
+/// tint, a submenu cascade, a different `DualModePalette` row
 /// highlighted), not just that the same screenshot got a second name.
 #[test]
 fn hover_captures_differ_from_their_base_capture() {

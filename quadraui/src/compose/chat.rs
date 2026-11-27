@@ -1,5 +1,5 @@
 //! Chat: a transcript, a status strip and a multi-line input, as one
-//! composite widget ([`Chat`]) and its controller ([`ChatController`]).
+//! composite widget ([`Chat`]).
 //!
 //! [`Chat`] is a controlled descriptor: the transcript, the status strip,
 //! the input buffer and caret, the transcript scroll position, the
@@ -14,13 +14,9 @@
 //! the transcript scrollbar a [`Scrollbar`], the input a [`TextInput`]
 //! and the Send/Stop segment a [`Button`].
 //!
-//! [`ChatController`] holds a [`Chat`] plus its [`ChatState`], applies
-//! the write-back events itself, and answers [`ChatControllerAction`]s.
-//!
 //! # Keyboard behaviour
 //!
-//! By default (`submit_on_enter == false`, see
-//! [`set_submit_on_enter`](ChatController::set_submit_on_enter)):
+//! By default ([`Chat::submit_on_enter`] unset):
 //!
 //! - `Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter` — submit the current input.
 //!   `Ctrl+S` and `Alt+Enter` work on most terminals; `Ctrl+Enter` requires Kitty
@@ -30,7 +26,7 @@
 //!   to freeze the terminal, run `stty -ixon` or use `Alt+Enter` instead.
 //! - `Enter` — insert a newline in the input.
 //!
-//! When `submit_on_enter == true` (Enter sends by default):
+//! With [`Chat::submit_on_enter`] set (Enter sends):
 //!
 //! - `Enter` (no modifiers) — submit the current input.
 //! - `Shift+Enter` — insert a newline. `Alt+Enter` is accepted as a
@@ -124,12 +120,11 @@ use crate::text_util::{wrap_spans, WrapPolicy};
 use crate::theme::Theme;
 use crate::types::StyledSpan;
 use crate::{
-    Backend, Color, EditOp, Key, MessageList, MessageListHit, MessageListMeasure, MessageRow,
-    Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar, Spinner, StyledText, TextInput,
-    UiEvent, WidgetId,
+    Color, EditOp, Key, MessageList, MessageListHit, MessageListMeasure, MessageRow, Modifiers,
+    MouseButton, NamedKey, Point, Rect, Scrollbar, Spinner, StyledText, TextInput, UiEvent,
+    WidgetId,
 };
 use serde::{Deserialize, Serialize};
-use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 
 // ── Public types ───────────────────────────────────────────────────────────────
@@ -220,52 +215,6 @@ impl WidgetAction for ChatEvent {
     }
 }
 
-/// What [`ChatController::handle_event`] answers under
-/// [`Handled::Event`]: [`ChatEvent`]'s semantic cases. The write-backs
-/// are applied by the controller and answer [`Handled::Consumed`].
-#[derive(Debug, Clone, PartialEq)]
-pub enum ChatControllerAction {
-    /// See [`ChatEvent::Submit`]. Apps call
-    /// [`ChatController::clear_input`] after handling it.
-    Submit { text: String },
-    /// See [`ChatEvent::StreamChunk`].
-    StreamChunk { text: String },
-    /// See [`ChatEvent::Cancelled`].
-    Cancelled,
-    /// See [`ChatEvent::StopRequested`].
-    StopRequested,
-    /// See [`ChatEvent::KeyPressed`].
-    KeyPressed { key: String, modifiers: Modifiers },
-    /// See [`ChatEvent::TurnClicked`]. The controller has already moved
-    /// [`ChatController::focused_turn`] onto the turn.
-    TurnClicked { turn_idx: usize, row_in_turn: usize },
-}
-
-/// Events emitted by [`ChatController::handle`].
-#[deprecated(
-    since = "0.9.0",
-    note = "use `ChatController::handle_event`, which returns `Handled<ChatControllerAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, every other payload moves to `ChatControllerAction` under `Handled::Event`"
-)]
-#[derive(Debug, Clone, PartialEq)]
-pub enum ChatControllerEvent {
-    /// See [`ChatControllerAction::Submit`].
-    Submit { text: String },
-    /// See [`ChatControllerAction::StreamChunk`].
-    StreamChunk { text: String },
-    /// See [`ChatControllerAction::Cancelled`].
-    Cancelled,
-    /// See [`ChatControllerAction::StopRequested`].
-    StopRequested,
-    /// See [`ChatControllerAction::KeyPressed`].
-    KeyPressed { key: String, modifiers: Modifiers },
-    /// See [`ChatControllerAction::TurnClicked`].
-    TurnClicked { turn_idx: usize, row_in_turn: usize },
-    /// Event was consumed (state changed, caller should redraw).
-    Consumed,
-    /// Event was not handled by the controller.
-    Ignored,
-}
-
 // ── Descriptor ─────────────────────────────────────────────────────────────────
 
 /// A chat overlay: a 1-row status strip at the top, a scrollable
@@ -330,7 +279,8 @@ pub struct Chat {
     pub transcript_scroll_top: usize,
     /// Whether the transcript follows its tail.
     pub stuck_to_bottom: bool,
-    /// The input box's auto-grow `(min, max)` visual row clamp.
+    /// The input box's auto-grow `(min, max)` visual row clamp. `min` is
+    /// floored to `1` and `max` to `min`.
     pub input_rows: (usize, usize),
     /// Fixed scrollbar track width, or `None` for one line height.
     pub scrollbar_width: Option<f32>,
@@ -447,6 +397,33 @@ impl Chat {
     /// out-of-range index.
     pub fn is_turn_collapsed(&self, turn_idx: usize) -> bool {
         turn_idx < self.transcript.len() && self.collapsed_turns.contains(&turn_idx)
+    }
+
+    /// Override `transcript[turn_idx]`'s summary line; `None` falls back to
+    /// its first non-blank line.
+    pub fn set_turn_summary(&mut self, turn_idx: usize, summary: Option<String>) {
+        match summary {
+            Some(s) => {
+                self.turn_summaries.insert(turn_idx, s);
+            }
+            None => {
+                self.turn_summaries.remove(&turn_idx);
+            }
+        }
+    }
+
+    /// Flip `transcript[turn_idx]` between collapsed and expanded; a no-op
+    /// out of range.
+    pub fn toggle_turn_collapsed(&mut self, turn_idx: usize) {
+        self.set_turn_collapsed(turn_idx, !self.is_turn_collapsed(turn_idx));
+    }
+
+    /// Empty the input: no text, the caret at the start, no selection and
+    /// the box scrolled to its top. Apps call this after handling a
+    /// [`ChatEvent::Submit`].
+    pub fn clear_input(&mut self) {
+        self.apply(&self.set_input("", None));
+        self.input_scroll_offset = 0;
     }
 
     /// Collapse or expand `transcript[turn_idx]`; a no-op out of range.
@@ -849,7 +826,8 @@ impl Primitive for Chat {
         let col_budget = TextInput::content_cols(input_row_w, char_w);
         let input_rows = wrap_input_rows(&self.input_lines, col_budget);
         let (min_rows, max_rows) = self.input_rows;
-        let shown_rows = input_rows.len().max(1).clamp(min_rows, max_rows);
+        let min_rows = min_rows.max(1);
+        let shown_rows = input_rows.len().clamp(min_rows, max_rows.max(min_rows));
         let input_h = shown_rows as f32 * ctx.line_height.max(1.0) + 2.0;
         let hint_h = if self.hint.is_some() { lh } else { 0.0 };
         let middle_h = (rect.height - status_h - input_h - hint_h).max(0.0);
@@ -1510,361 +1488,6 @@ impl Interactive for Chat {
     }
 }
 
-// ── Controller ─────────────────────────────────────────────────────────────────
-
-/// A [`Chat`] plus its [`ChatState`], driven by raw [`UiEvent`]s and
-/// painted through a [`Backend`]. The controller applies every
-/// write-back event itself and answers the semantic ones as
-/// [`ChatControllerAction`]s.
-pub struct ChatController {
-    chat: Chat,
-    state: ChatState,
-    /// The input as one string, kept in step with [`Chat::input_lines`]
-    /// so [`Self::input_text`] can lend a `&str`.
-    input_buf: String,
-    /// The transcript row last painted, for [`Self::transcript_scroll_top`]
-    /// while the transcript follows its tail.
-    painted_scroll_top: Cell<usize>,
-}
-
-#[allow(deprecated)]
-impl ChatController {
-    /// A controller over an empty [`Chat`] with id `id`.
-    pub fn new(id: impl Into<String>) -> Self {
-        Self {
-            chat: Chat::new(WidgetId::new(id)),
-            state: ChatState::default(),
-            input_buf: String::new(),
-            painted_scroll_top: Cell::new(0),
-        }
-    }
-
-    /// The descriptor this controller paints and drives.
-    pub fn chat(&self) -> &Chat {
-        &self.chat
-    }
-
-    /// The widget state this controller drives the descriptor with.
-    pub fn state(&self) -> &ChatState {
-        &self.state
-    }
-
-    /// Store a [`ChatEvent`]'s write-back on the descriptor.
-    fn apply(&mut self, event: &ChatEvent) {
-        self.chat.apply(event);
-        if matches!(event, ChatEvent::InputChanged { .. }) {
-            self.input_buf = self.chat.input_text();
-        }
-    }
-
-    // ── Per-frame data setters ────────────────────────────────────────
-
-    /// Replace the transcript for the next render pass.
-    pub fn set_transcript(&mut self, turns: Vec<ChatTurn>) {
-        self.chat.transcript = turns;
-    }
-
-    /// Set the status-strip context label (e.g. `"Refining issue #N"`).
-    pub fn set_status(&mut self, label: StyledText) {
-        self.chat.status = label;
-    }
-
-    /// Enable or disable the busy spinner in the status strip.
-    pub fn set_busy(&mut self, busy: bool) {
-        self.chat.busy = busy;
-    }
-
-    /// Set the model chip label in the status strip (e.g. `"claude-opus-4-5"`).
-    pub fn set_model_label(&mut self, label: &str) {
-        self.chat.model_label = label.to_string();
-    }
-
-    /// Advance the spinner animation frame.
-    pub fn set_spinner_frame(&mut self, frame: usize) {
-        self.chat.spinner_frame = frame;
-    }
-
-    // ── Input accessors ───────────────────────────────────────────────
-
-    /// The current input buffer text, with `\n` separating lines.
-    pub fn input_text(&self) -> &str {
-        &self.input_buf
-    }
-
-    /// Clear the input buffer, caret, selection, scroll and history
-    /// navigation. Apps call this after handling a submit.
-    pub fn clear_input(&mut self) {
-        let cleared = self.chat.set_input("", None);
-        self.apply(&cleared);
-        self.chat.input_scroll_offset = 0;
-        self.state.reset_history_navigation();
-    }
-
-    /// Whether the input area currently has keyboard focus.
-    pub fn input_has_focus(&self) -> bool {
-        self.chat.input_has_focus
-    }
-
-    /// Set keyboard focus on the input area.
-    pub fn set_input_has_focus(&mut self, focus: bool) {
-        self.chat.input_has_focus = focus;
-    }
-
-    /// Configure the input area's auto-grow row-count clamp. `min` is
-    /// floored to `1`; `max` is floored to `min`. Default: `1..=8`.
-    pub fn set_input_height_range(&mut self, min: usize, max: usize) {
-        let min = min.max(1);
-        self.chat.input_rows = (min, max.max(min));
-    }
-
-    /// Override the scrollbar track width; `None` (default) is one line
-    /// height.
-    pub fn set_scrollbar_width(&mut self, width: Option<f32>) {
-        self.chat.scrollbar_width = width;
-    }
-
-    /// Toggle "Enter to send": `true` — `Enter` submits,
-    /// `Shift+Enter`/`Alt+Enter` insert a newline. `false` (default) —
-    /// `Enter` inserts a newline.
-    pub fn set_submit_on_enter(&mut self, submit_on_enter: bool) {
-        self.chat.submit_on_enter = submit_on_enter;
-    }
-
-    /// Whether `Enter` currently submits.
-    pub fn submit_on_enter(&self) -> bool {
-        self.chat.submit_on_enter
-    }
-
-    /// Set (or clear) the persistent hint row painted above the input box.
-    pub fn set_hint(&mut self, hint: Option<StyledText>) {
-        self.chat.hint = hint;
-    }
-
-    // ── Transcript push helpers ───────────────────────────────────────
-
-    /// Append a pre-styled turn. Do not mix with [`Self::set_transcript`].
-    pub fn push_turn(&mut self, role: ChatRole, text: StyledText) {
-        self.chat.push_turn(role, text);
-    }
-
-    /// Append a turn whose body is markdown — see
-    /// [`Chat::push_turn_markdown`].
-    pub fn push_turn_markdown(&mut self, role: ChatRole, markdown: &str, theme: &Theme) {
-        self.chat.push_turn_markdown(role, markdown, theme);
-    }
-
-    /// Current transcript scroll offset (first visible wrapped row) —
-    /// the row last painted while the transcript follows its tail.
-    pub fn transcript_scroll_top(&self) -> usize {
-        if self.chat.stuck_to_bottom {
-            self.painted_scroll_top.get()
-        } else {
-            self.chat.transcript_scroll_top
-        }
-    }
-
-    /// Programmatically override the transcript scroll position. This
-    /// stops following the tail; scrolling back to the last page
-    /// re-engages it.
-    pub fn set_transcript_scroll_top(&mut self, top: usize) {
-        self.chat.transcript_scroll_top = top;
-        self.chat.stuck_to_bottom = false;
-        self.painted_scroll_top.set(top);
-    }
-
-    /// Scroll the transcript by `delta` wrapped rows, clamped; reaching
-    /// the last page re-engages following the tail, scrolling up from it
-    /// disengages it.
-    pub fn scroll_transcript_by(&mut self, delta: isize, total_rows: usize, visible_rows: usize) {
-        let from = self.transcript_scroll_top();
-        let mut probe = self.chat.clone();
-        probe.stuck_to_bottom = false;
-        probe.transcript_scroll_top = from;
-        let event = probe.scroll_transcript_by(delta, total_rows, visible_rows);
-        self.apply(&event);
-        if let ChatEvent::TranscriptScrolled { scroll_top, .. } = event {
-            self.painted_scroll_top.set(scroll_top);
-        }
-    }
-
-    // ── Collapsible turns ─────────────────────────────────────────────
-
-    /// Whether `transcript[turn_idx]` is collapsed.
-    pub fn is_turn_collapsed(&self, turn_idx: usize) -> bool {
-        self.chat.is_turn_collapsed(turn_idx)
-    }
-
-    /// Set `transcript[turn_idx]`'s collapsed state; a no-op out of range.
-    pub fn set_turn_collapsed(&mut self, turn_idx: usize, collapsed: bool) {
-        self.chat.set_turn_collapsed(turn_idx, collapsed);
-    }
-
-    /// Flip `transcript[turn_idx]`'s collapsed state; a no-op out of range.
-    pub fn toggle_turn_collapsed(&mut self, turn_idx: usize) {
-        let collapsed = self.chat.is_turn_collapsed(turn_idx);
-        self.chat.set_turn_collapsed(turn_idx, !collapsed);
-    }
-
-    /// Override `transcript[turn_idx]`'s summary line; `None` falls back
-    /// to its first non-blank line.
-    pub fn set_turn_summary(&mut self, turn_idx: usize, summary: Option<String>) {
-        match summary {
-            Some(s) => {
-                self.chat.turn_summaries.insert(turn_idx, s);
-            }
-            None => {
-                self.chat.turn_summaries.remove(&turn_idx);
-            }
-        }
-    }
-
-    /// The line a collapsed `transcript[turn_idx]` shows — see
-    /// [`Chat::turn_summary_line`].
-    pub fn turn_summary_line(&self, turn_idx: usize) -> String {
-        self.chat.turn_summary_line(turn_idx)
-    }
-
-    /// The transcript's keyboard focus cursor.
-    pub fn focused_turn(&self) -> Option<usize> {
-        self.chat.focused_turn
-    }
-
-    /// Set the transcript's keyboard focus cursor; `None` returns focus to
-    /// the input.
-    pub fn set_focused_turn(&mut self, turn: Option<usize>) {
-        self.chat.focused_turn = turn;
-        if turn.is_some() {
-            self.chat.input_has_focus = false;
-        }
-    }
-
-    // ── Render ────────────────────────────────────────────────────────
-
-    /// Paint the chat into `rect` through `backend`.
-    pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        use crate::backend::DrawsPrimitives;
-        let layout = backend.draw_dyn(rect, &self.chat, &());
-        if let Some(layout) = layout.downcast_ref::<ChatLayout>() {
-            self.painted_scroll_top.set(layout.transcript_scroll_top());
-        }
-    }
-
-    // ── Handle ────────────────────────────────────────────────────────
-
-    /// Drive the chat with a [`UiEvent`], laid out at `rect` the way
-    /// [`Self::render`] paints it.
-    pub fn handle_event(
-        &mut self,
-        event: &UiEvent,
-        backend: &dyn Backend,
-        rect: Rect,
-    ) -> Handled<ChatControllerAction> {
-        use crate::backend::DrawsPrimitives;
-        let layout = backend.layout_primitive(rect, &self.chat);
-        let subs = Interactive::sub_regions(&self.chat, &layout);
-        let Some(routed) = widget_host::routed_event(event, rect, &subs) else {
-            return Handled::Ignored;
-        };
-        let units = crate::backend::primitive_layout_ctx(backend).units();
-        let driven = widget_host::drive(
-            &self.chat,
-            self.chat.id,
-            &mut self.state,
-            &routed,
-            &layout,
-            units,
-        );
-        for emitted in &driven.emitted {
-            if let UiEvent::Chat(id, event) = emitted {
-                if *id == self.chat.id {
-                    self.apply(event);
-                }
-            }
-        }
-        match driven.handled {
-            Handled::Event(event) => {
-                self.apply(&event);
-                match event {
-                    ChatEvent::Submit { text } => {
-                        Handled::Event(ChatControllerAction::Submit { text })
-                    }
-                    ChatEvent::StreamChunk { text } => {
-                        Handled::Event(ChatControllerAction::StreamChunk { text })
-                    }
-                    ChatEvent::Cancelled => Handled::Event(ChatControllerAction::Cancelled),
-                    ChatEvent::StopRequested => Handled::Event(ChatControllerAction::StopRequested),
-                    ChatEvent::KeyPressed { key, modifiers } => {
-                        Handled::Event(ChatControllerAction::KeyPressed { key, modifiers })
-                    }
-                    ChatEvent::TurnClicked {
-                        turn_idx,
-                        row_in_turn,
-                    } => Handled::Event(ChatControllerAction::TurnClicked {
-                        turn_idx,
-                        row_in_turn,
-                    }),
-                    _ => Handled::Consumed,
-                }
-            }
-            Handled::Consumed => Handled::Consumed,
-            Handled::Ignored => Handled::Ignored,
-        }
-    }
-
-    /// Drive the chat with a [`UiEvent`].
-    #[deprecated(
-        since = "0.9.0",
-        note = "use `handle_event`, which returns `Handled<ChatControllerAction>` instead of `ChatControllerEvent`"
-    )]
-    pub fn handle(
-        &mut self,
-        event: &UiEvent,
-        backend: &dyn Backend,
-        rect: Rect,
-    ) -> ChatControllerEvent {
-        match self.handle_event(event, backend, rect) {
-            Handled::Event(ChatControllerAction::Submit { text }) => {
-                ChatControllerEvent::Submit { text }
-            }
-            Handled::Event(ChatControllerAction::StreamChunk { text }) => {
-                ChatControllerEvent::StreamChunk { text }
-            }
-            Handled::Event(ChatControllerAction::Cancelled) => ChatControllerEvent::Cancelled,
-            Handled::Event(ChatControllerAction::StopRequested) => {
-                ChatControllerEvent::StopRequested
-            }
-            Handled::Event(ChatControllerAction::KeyPressed { key, modifiers }) => {
-                ChatControllerEvent::KeyPressed { key, modifiers }
-            }
-            Handled::Event(ChatControllerAction::TurnClicked {
-                turn_idx,
-                row_in_turn,
-            }) => ChatControllerEvent::TurnClicked {
-                turn_idx,
-                row_in_turn,
-            },
-            Handled::Consumed => ChatControllerEvent::Consumed,
-            Handled::Ignored => ChatControllerEvent::Ignored,
-        }
-    }
-
-    // ── Input editing ─────────────────────────────────────────────────
-
-    /// Insert a single character at the cursor.
-    pub fn input_insert_char(&mut self, ch: char) {
-        if let Some(event) = self.chat.edit_input(&EditOp::InsertChar(ch)) {
-            self.apply(&event);
-        }
-    }
-
-    /// Insert a string at the cursor (e.g. for clipboard paste).
-    pub fn input_insert_str(&mut self, s: &str) {
-        if let Some(event) = self.chat.edit_input(&EditOp::InsertText(s.to_string())) {
-            self.apply(&event);
-        }
-    }
-}
-
 // ── Module-level helpers ───────────────────────────────────────────────────────
 
 /// Last valid transcript scroll offset for `total_rows` wrapped rows in a
@@ -2055,9 +1678,88 @@ fn input_visual_to_logical(rows: &[InputRow], row_idx: usize, col: usize) -> (us
     (r.logical_line, r.col_offset + col.min(len))
 }
 
+// ── Tests ──────────────────────────────────────────────────────────────────────
+
+/// A host that keeps a [`Chat`] and its [`ChatState`], drives the chat
+/// through its own [`Interactive`] with raw [`UiEvent`]s, and applies
+/// every write-back the chat reports, the way an app does. A write-back
+/// answers [`Handled::Consumed`]; the semantic events are returned.
 #[cfg(test)]
-#[allow(deprecated)]
-impl ChatController {
+use crate::Backend;
+
+#[cfg(test)]
+struct TestHost {
+    chat: Chat,
+    state: ChatState,
+    /// The transcript row last painted.
+    painted_scroll_top: std::cell::Cell<usize>,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for TestHost {
+    type Target = Chat;
+
+    fn deref(&self) -> &Chat {
+        &self.chat
+    }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for TestHost {
+    fn deref_mut(&mut self) -> &mut Chat {
+        &mut self.chat
+    }
+}
+
+#[cfg(test)]
+impl TestHost {
+    fn new(id: &str) -> Self {
+        Self {
+            chat: Chat::new(WidgetId::new(id)),
+            state: ChatState::default(),
+            painted_scroll_top: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Store `event`'s write-back; a semantic event is returned instead.
+    fn settle(&mut self, event: ChatEvent) -> Handled<ChatEvent> {
+        self.chat.apply(&event);
+        match event {
+            ChatEvent::InputChanged { .. }
+            | ChatEvent::TranscriptScrolled { .. }
+            | ChatEvent::FocusedTurnChanged { .. }
+            | ChatEvent::TurnCollapsed { .. } => Handled::Consumed,
+            semantic => Handled::Event(semantic),
+        }
+    }
+
+    fn handle(&mut self, event: &UiEvent, backend: &dyn Backend, rect: Rect) -> Handled<ChatEvent> {
+        let Some(driven) =
+            crate::compose::drive_ui_event(&self.chat, &mut self.state, event, backend, rect)
+        else {
+            return Handled::Ignored;
+        };
+        for emitted in driven.emitted {
+            if let UiEvent::Chat(id, event) = emitted {
+                if id == self.chat.id {
+                    self.chat.apply(&event);
+                }
+            }
+        }
+        match driven.handled {
+            Handled::Event(event) => self.settle(event),
+            other => other,
+        }
+    }
+
+    fn render(&self, backend: &mut dyn Backend, rect: Rect) {
+        use crate::backend::DrawsPrimitives;
+        let layout = backend.draw_dyn(rect, &self.chat, &());
+        if let Some(layout) = layout.downcast_ref::<ChatLayout>() {
+            self.painted_scroll_top.set(layout.transcript_scroll_top());
+        }
+    }
+
     fn compute_layout(&self, backend: &dyn Backend, rect: Rect) -> ChatZones {
         use crate::backend::DrawsPrimitives;
         backend.layout_primitive(rect, &self.chat).zones
@@ -2069,32 +1771,37 @@ impl ChatController {
 
     fn apply_input_op(&mut self, op: EditOp) {
         if let Some(event) = self.chat.edit_input(&op) {
-            self.apply(&event);
+            self.chat.apply(&event);
         }
     }
 
-    fn walk_history(&mut self, up: bool) -> ChatControllerEvent {
-        let handled = if up {
-            self.chat.history_prev(&mut self.state)
-        } else {
-            self.chat.history_next(&mut self.state)
-        };
-        match handled {
-            Handled::Event(event) => {
-                self.apply(&event);
-                ChatControllerEvent::Consumed
-            }
-            Handled::Consumed => ChatControllerEvent::Consumed,
-            Handled::Ignored => ChatControllerEvent::Ignored,
+    fn input_insert_char(&mut self, ch: char) {
+        self.apply_input_op(EditOp::InsertChar(ch));
+    }
+
+    fn input_insert_str(&mut self, s: &str) {
+        self.apply_input_op(EditOp::InsertText(s.to_string()));
+    }
+
+    /// The app's clear after a submit: the descriptor's input, plus the
+    /// widget state's history cursor.
+    fn clear_input(&mut self) {
+        self.chat.clear_input();
+        self.state.reset_history_navigation();
+    }
+
+    fn history_prev(&mut self) -> Handled<ChatEvent> {
+        match self.chat.history_prev(&mut self.state) {
+            Handled::Event(event) => self.settle(event),
+            other => other,
         }
     }
 
-    fn history_prev(&mut self) -> ChatControllerEvent {
-        self.walk_history(true)
-    }
-
-    fn history_next(&mut self) -> ChatControllerEvent {
-        self.walk_history(false)
+    fn history_next(&mut self) -> Handled<ChatEvent> {
+        match self.chat.history_next(&mut self.state) {
+            Handled::Event(event) => self.settle(event),
+            other => other,
+        }
     }
 
     fn selection_range(&self) -> Option<(Caret, Caret)> {
@@ -2109,18 +1816,57 @@ impl ChatController {
             end,
         ))
     }
+
+    /// The first transcript row shown: the row last painted while the
+    /// transcript follows its tail.
+    fn transcript_scroll_top(&self) -> usize {
+        if self.chat.stuck_to_bottom {
+            self.painted_scroll_top.get()
+        } else {
+            self.chat.transcript_scroll_top
+        }
+    }
+
+    fn set_transcript_scroll_top(&mut self, top: usize) {
+        self.chat.transcript_scroll_top = top;
+        self.chat.stuck_to_bottom = false;
+        self.painted_scroll_top.set(top);
+    }
+
+    /// Scroll from the row shown, the way the chat's own scroll gestures
+    /// do.
+    fn scroll_transcript_by(&mut self, delta: isize, total_rows: usize, visible_rows: usize) {
+        let mut probe = self.chat.clone();
+        probe.stuck_to_bottom = false;
+        probe.transcript_scroll_top = self.transcript_scroll_top();
+        let event = probe.scroll_transcript_by(delta, total_rows, visible_rows);
+        if let ChatEvent::TranscriptScrolled { scroll_top, .. } = event {
+            self.painted_scroll_top.set(scroll_top);
+        }
+        self.chat.apply(&event);
+    }
+
+    fn set_focused_turn(&mut self, turn: Option<usize>) {
+        self.chat.focused_turn = turn;
+        if turn.is_some() {
+            self.chat.input_has_focus = false;
+        }
+    }
+
+    fn focused_turn(&self) -> Option<usize> {
+        self.chat.focused_turn
+    }
+
+    fn input_has_focus(&self) -> bool {
+        self.chat.input_has_focus
+    }
 }
 
-// ── Tests ──────────────────────────────────────────────────────────────────────
-
-// The existing test suite exercises `handle`/`ChatControllerEvent` directly
-// (`handle_event` is a thin wrapper proven correct separately, below); kept
-// on the deprecated API rather than rewritten wholesale.
-#[allow(deprecated)]
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::RecordingBackend;
+    use crate::Backend;
 
     // Tests use `RecordingBackend` for its `draw_text_input`/`text_input_layout`
     // and `draw_spinner`/`spinner_layout` implementations, which return real layouts
@@ -2143,7 +1889,7 @@ mod tests {
 
     #[test]
     fn new_starts_empty() {
-        let cc = ChatController::new("chat");
+        let cc = TestHost::new("chat");
         assert_eq!(cc.input_text(), "");
         assert_eq!(cc.transcript_scroll_top(), 0);
         assert!(cc.input_has_focus());
@@ -2153,7 +1899,7 @@ mod tests {
 
     #[test]
     fn input_insert_char_appends() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_char('h');
         cc.input_insert_char('i');
         assert_eq!(cc.input_text(), "hi");
@@ -2161,14 +1907,14 @@ mod tests {
 
     #[test]
     fn input_insert_str_paste() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello\nworld");
         assert_eq!(cc.input_text(), "hello\nworld");
     }
 
     #[test]
     fn clear_input_resets_state() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello\nworld");
         cc.clear_input();
         assert_eq!(cc.input_text(), "");
@@ -2180,7 +1926,7 @@ mod tests {
 
     #[test]
     fn ctrl_enter_submits_and_emits_event() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
@@ -2194,15 +1940,15 @@ mod tests {
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(
             ev,
-            ChatControllerEvent::Submit {
+            Handled::Event(ChatEvent::Submit {
                 text: "hello".into()
-            }
+            })
         );
     }
 
     #[test]
     fn alt_enter_submits_and_emits_event() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
@@ -2216,15 +1962,15 @@ mod tests {
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(
             ev,
-            ChatControllerEvent::Submit {
+            Handled::Event(ChatEvent::Submit {
                 text: "hello".into()
-            }
+            })
         );
     }
 
     #[test]
     fn ctrl_enter_on_empty_input_ignored() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
@@ -2235,12 +1981,12 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(ev, ChatControllerEvent::Ignored);
+        assert_eq!(ev, Handled::Ignored);
     }
 
     #[test]
     fn ctrl_s_submits_and_emits_event() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
@@ -2254,15 +2000,15 @@ mod tests {
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(
             ev,
-            ChatControllerEvent::Submit {
+            Handled::Event(ChatEvent::Submit {
                 text: "hello".into()
-            }
+            })
         );
     }
 
     #[test]
     fn ctrl_s_on_empty_input_ignored() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
             key: Key::Char('s'),
@@ -2273,12 +2019,12 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(ev, ChatControllerEvent::Ignored);
+        assert_eq!(ev, Handled::Ignored);
     }
 
     #[test]
     fn submit_adds_to_history() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
@@ -2289,7 +2035,7 @@ mod tests {
             },
             repeat: false,
         };
-        cc.handle(&event, &RecordingBackend::new(), rect);
+        let _ = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(cc.state.history.len(), 1);
         assert_eq!(cc.state.history[0], "hello");
     }
@@ -2309,20 +2055,20 @@ mod tests {
 
     #[test]
     fn ctrl_a_selects_the_whole_input() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello\nworld");
         let ev = cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.selected_text().as_deref(), Some("hello\nworld"));
     }
 
     #[test]
     fn ctrl_e_passes_through_as_key_pressed() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
         let ev = cc.handle(&ctrl_key('e'), &RecordingBackend::new(), make_rect());
         match ev {
-            ChatControllerEvent::KeyPressed { key, modifiers } => {
+            Handled::Event(ChatEvent::KeyPressed { key, modifiers }) => {
                 assert_eq!(key, "Char('e')");
                 assert!(modifiers.ctrl);
             }
@@ -2333,7 +2079,7 @@ mod tests {
 
     #[test]
     fn ctrl_backspace_stops_at_punctuation_like_every_text_widget() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("path.to_file");
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Backspace),
@@ -2343,15 +2089,15 @@ mod tests {
             },
             repeat: false,
         };
-        cc.handle(&event, &RecordingBackend::new(), make_rect());
+        let _ = cc.handle(&event, &RecordingBackend::new(), make_rect());
         assert_eq!(cc.input_text(), "path.");
     }
 
     #[test]
     fn ctrl_c_with_a_selection_copies_it() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
-        cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
+        let _ = cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
         let probe = cc.chat.clone();
         let layout = {
             use crate::backend::DrawsPrimitives;
@@ -2386,7 +2132,7 @@ mod tests {
     // hotkey dispatch rather than being typed into the input buffer.
     #[test]
     fn cmd_char_is_not_inserted_and_passes_through_as_key_pressed() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let event = UiEvent::KeyPressed {
             key: Key::Char('x'),
             modifiers: Modifiers {
@@ -2398,7 +2144,7 @@ mod tests {
         let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
         assert_eq!(cc.input_text(), "");
         match ev {
-            ChatControllerEvent::KeyPressed { key, modifiers } => {
+            Handled::Event(ChatEvent::KeyPressed { key, modifiers }) => {
                 assert_eq!(key, "Char('x')");
                 assert!(modifiers.cmd);
             }
@@ -2436,7 +2182,7 @@ mod tests {
 
     #[test]
     fn esc_emits_cancelled() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Escape),
@@ -2444,14 +2190,14 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(ev, ChatControllerEvent::Cancelled);
+        assert_eq!(ev, Handled::Event(ChatEvent::Cancelled));
     }
 
     // ── Keyboard: enter inserts newline ───────────────────────────────
 
     #[test]
     fn plain_enter_inserts_newline() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
@@ -2460,7 +2206,7 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "hello\n");
     }
 
@@ -2468,14 +2214,14 @@ mod tests {
 
     #[test]
     fn submit_on_enter_defaults_to_false() {
-        let cc = ChatController::new("c");
-        assert!(!cc.submit_on_enter());
+        let cc = TestHost::new("c");
+        assert!(!cc.submit_on_enter);
     }
 
     #[test]
     fn submit_on_enter_plain_enter_submits() {
-        let mut cc = ChatController::new("c");
-        cc.set_submit_on_enter(true);
+        let mut cc = TestHost::new("c");
+        cc.submit_on_enter = true;
         cc.input_insert_str("hello");
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
@@ -2485,16 +2231,16 @@ mod tests {
         let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
         assert_eq!(
             ev,
-            ChatControllerEvent::Submit {
+            Handled::Event(ChatEvent::Submit {
                 text: "hello".into()
-            }
+            })
         );
     }
 
     #[test]
     fn submit_on_enter_shift_enter_inserts_newline() {
-        let mut cc = ChatController::new("c");
-        cc.set_submit_on_enter(true);
+        let mut cc = TestHost::new("c");
+        cc.submit_on_enter = true;
         cc.input_insert_str("hello");
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
@@ -2505,7 +2251,7 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "hello\n");
     }
 
@@ -2514,8 +2260,8 @@ mod tests {
         // Alt+Enter is the fallback for terminals that can't report
         // Shift+Enter — it must insert a newline in submit_on_enter mode,
         // the opposite of its meaning in the default mode.
-        let mut cc = ChatController::new("c");
-        cc.set_submit_on_enter(true);
+        let mut cc = TestHost::new("c");
+        cc.submit_on_enter = true;
         cc.input_insert_str("hello");
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
@@ -2526,14 +2272,14 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "hello\n");
     }
 
     #[test]
     fn submit_on_enter_ctrl_enter_still_submits() {
-        let mut cc = ChatController::new("c");
-        cc.set_submit_on_enter(true);
+        let mut cc = TestHost::new("c");
+        cc.submit_on_enter = true;
         cc.input_insert_str("hello");
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
@@ -2546,94 +2292,94 @@ mod tests {
         let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
         assert_eq!(
             ev,
-            ChatControllerEvent::Submit {
+            Handled::Event(ChatEvent::Submit {
                 text: "hello".into()
-            }
+            })
         );
     }
 
     #[test]
     fn submit_on_enter_plain_enter_on_empty_input_ignored() {
-        let mut cc = ChatController::new("c");
-        cc.set_submit_on_enter(true);
+        let mut cc = TestHost::new("c");
+        cc.submit_on_enter = true;
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Enter),
             modifiers: Modifiers::default(),
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), make_rect());
-        assert_eq!(ev, ChatControllerEvent::Ignored);
+        assert_eq!(ev, Handled::Ignored);
     }
 
     // ── History navigation ────────────────────────────────────────────
 
     #[test]
     fn up_on_empty_history_returns_ignored() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let ev = cc.history_prev();
-        assert_eq!(ev, ChatControllerEvent::Ignored);
+        assert_eq!(ev, Handled::Ignored);
     }
 
     #[test]
     fn up_enters_history_with_newest_entry() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.state.history.push("first".into());
         cc.state.history.push("second".into());
         let ev = cc.history_prev();
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "second");
         assert_eq!(cc.state.history_pos, Some(1));
     }
 
     #[test]
     fn up_twice_goes_to_older_entry() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.state.history.push("first".into());
         cc.state.history.push("second".into());
-        cc.history_prev(); // → "second"
+        let _ = cc.history_prev(); // → "second"
         let ev = cc.history_prev();
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "first");
         assert_eq!(cc.state.history_pos, Some(0));
     }
 
     #[test]
     fn up_at_oldest_entry_stays() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.state.history.push("only".into());
-        cc.history_prev(); // at idx 0
+        let _ = cc.history_prev(); // at idx 0
         let ev = cc.history_prev(); // already at oldest
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "only"); // unchanged
     }
 
     #[test]
     fn down_after_history_nav_restores_saved_input() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("draft");
         cc.state.history.push("first".into());
         cc.state.history.push("second".into());
-        cc.history_prev(); // → "second"
-        cc.history_prev(); // → "first"
-        cc.history_next(); // → "second"
+        let _ = cc.history_prev(); // → "second"
+        let _ = cc.history_prev(); // → "first"
+        let _ = cc.history_next(); // → "second"
         let ev = cc.history_next(); // → restore "draft"
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "draft");
         assert_eq!(cc.state.history_pos, None);
     }
 
     #[test]
     fn down_when_not_navigating_returns_ignored() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let ev = cc.history_next();
-        assert_eq!(ev, ChatControllerEvent::Ignored);
+        assert_eq!(ev, Handled::Ignored);
     }
 
     // ── History navigation via Up key (cursor on line 0) ─────────────
 
     #[test]
     fn up_key_on_line_0_enters_history() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.state.history.push("prev".into());
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
@@ -2642,13 +2388,13 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "prev");
     }
 
     #[test]
     fn up_key_on_line_1_moves_cursor_up() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("line0\nline1");
         // Cursor is on line 1 after insert.
         assert_eq!(cc.chat.input_cursor.0, 1);
@@ -2659,7 +2405,7 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.chat.input_cursor.0, 0);
         // History should NOT have been entered.
         assert_eq!(cc.state.history_pos, None);
@@ -2687,7 +2433,7 @@ mod tests {
 
     #[test]
     fn scroll_transcript_clamps_to_bounds() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.scroll_transcript_by(100, 10, 5); // total=10, visible=5, max=5
         assert_eq!(cc.transcript_scroll_top(), 5);
         cc.scroll_transcript_by(-100, 10, 5);
@@ -2696,7 +2442,7 @@ mod tests {
 
     #[test]
     fn page_up_scrolls_transcript() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.set_transcript_scroll_top(10);
         cc.scroll_transcript_by(-5, 20, 5);
         assert_eq!(cc.transcript_scroll_top(), 5);
@@ -2706,12 +2452,10 @@ mod tests {
     /// the handler consumes the delta's magnitude, not only its sign.
     #[test]
     fn wheel_scroll_consumes_the_delta_magnitude_not_just_its_sign() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(
-            (0..60)
-                .map(|i| make_turn(ChatRole::User, &format!("line {i}")))
-                .collect(),
-        );
+        let mut cc = TestHost::new("c");
+        cc.transcript = (0..60)
+            .map(|i| make_turn(ChatRole::User, &format!("line {i}")))
+            .collect();
         cc.set_transcript_scroll_top(40);
 
         let ev = UiEvent::Scroll {
@@ -2721,7 +2465,7 @@ mod tests {
         };
         assert_eq!(
             cc.handle(&ev, &RecordingBackend::new(), make_rect()),
-            ChatControllerEvent::Consumed
+            Handled::Consumed
         );
         assert_eq!(
             cc.transcript_scroll_top(),
@@ -2734,12 +2478,10 @@ mod tests {
     /// magnitude must never swallow a slow gesture entirely.
     #[test]
     fn wheel_scroll_still_moves_for_a_sub_notch_gesture() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(
-            (0..60)
-                .map(|i| make_turn(ChatRole::User, &format!("line {i}")))
-                .collect(),
-        );
+        let mut cc = TestHost::new("c");
+        cc.transcript = (0..60)
+            .map(|i| make_turn(ChatRole::User, &format!("line {i}")))
+            .collect();
         cc.set_transcript_scroll_top(40);
 
         let ev = UiEvent::Scroll {
@@ -2747,7 +2489,7 @@ mod tests {
             delta: crate::ScrollDelta::new(0.0, 0.1),
             position: crate::Point::new(5.0, 5.0),
         };
-        cc.handle(&ev, &RecordingBackend::new(), make_rect());
+        let _ = cc.handle(&ev, &RecordingBackend::new(), make_rect());
         assert!(
             cc.transcript_scroll_top() < 40,
             "a sub-notch gesture still scrolls at least one row"
@@ -2756,14 +2498,14 @@ mod tests {
 
     // ── Follow-tail (stick-to-bottom) ─────────────────────────────────
 
-    /// A brand-new controller must start stuck to the bottom so the first
+    /// A brand-new chat must start stuck to the bottom so the first
     /// streamed reply is visible without the user having to scroll.
     #[test]
-    fn new_controller_is_stuck_to_bottom() {
-        let cc = ChatController::new("c");
+    fn new_chat_is_stuck_to_bottom() {
+        let cc = TestHost::new("c");
         assert!(
             cc.chat.stuck_to_bottom,
-            "new controller must start stuck_to_bottom=true"
+            "new chat must start stuck_to_bottom=true"
         );
     }
 
@@ -2781,7 +2523,7 @@ mod tests {
     /// 7 turns → 21 rows.  max_scroll = 21 − 17 = 4.
     #[test]
     fn follow_tail_advances_scroll_top_on_new_content() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         for i in 0..7 {
             cc.push_turn(ChatRole::User, StyledText::plain(&format!("m{i}")));
         }
@@ -2799,7 +2541,7 @@ mod tests {
     /// content must NOT yank the viewport to the bottom.
     #[test]
     fn scrolled_up_position_preserved_across_new_content() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         // Scroll up from 0 → disengages follow-tail (max = 20−5 = 15; 0 < 15).
         cc.scroll_transcript_by(-5, 20, 5); // clamped to 0, stuck=false
                                             // Scroll to a mid position.
@@ -2826,7 +2568,7 @@ mod tests {
     /// last page must re-engage follow-tail automatically.
     #[test]
     fn scroll_to_bottom_reengages_follow_tail() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         // Disengage by scrolling up.
         cc.scroll_transcript_by(-5, 20, 5); // clamped to 0, max=15, stuck=false
         cc.scroll_transcript_by(3, 20, 5); // scroll_top=3, stuck=false
@@ -2843,7 +2585,7 @@ mod tests {
 
     #[test]
     fn push_turn_appends_turn_to_transcript() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.push_turn(ChatRole::User, StyledText::plain("hello"));
         assert_eq!(cc.chat.transcript.len(), 1);
         assert_eq!(cc.chat.transcript[0].role, ChatRole::User);
@@ -2858,7 +2600,7 @@ mod tests {
 
     #[test]
     fn push_turn_multiple_turns_accumulate() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.push_turn(ChatRole::User, StyledText::plain("first"));
         cc.push_turn(ChatRole::Assistant, StyledText::plain("second"));
         assert_eq!(cc.chat.transcript.len(), 2);
@@ -2868,7 +2610,7 @@ mod tests {
 
     #[test]
     fn push_turn_markdown_joins_lines_with_newline() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::Assistant, "line one\nline two", &theme);
         assert_eq!(cc.chat.transcript.len(), 1);
@@ -2896,10 +2638,10 @@ mod tests {
 
     #[test]
     fn push_turn_markdown_structural_glyphs_survive_in_plain_text() {
-        // The ChatController renders transcript rows by concatenating span
+        // The chat renders transcript rows by concatenating span
         // text — structural glyphs (bullets, blockquote bars) must survive
         // so they appear as text cues in the rendered transcript.
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::Assistant, "- item one\n- item two", &theme);
         let text: String = cc.chat.transcript[0]
@@ -2920,7 +2662,7 @@ mod tests {
 
     #[test]
     fn push_turn_markdown_empty_string_produces_one_turn_no_panic() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let theme = crate::Theme::default();
         // Empty markdown must not panic and must append exactly one turn.
         cc.push_turn_markdown(ChatRole::System, "", &theme);
@@ -2931,8 +2673,8 @@ mod tests {
 
     #[test]
     fn build_transcript_rows_includes_role_header() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::User, "hi")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::User, "hi")];
         let rows = cc.build_transcript_rows(80);
         // Should have: role header ("You"), content row ("hi"), blank separator.
         assert!(rows.len() >= 3);
@@ -2942,10 +2684,10 @@ mod tests {
 
     #[test]
     fn build_transcript_rows_wraps_long_line() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         // A 10-char line. col_budget=7 → effective content budget=5 (after the
         // 2-unit indent subtract) → "12345" + "67890" = 2 content rows.
-        cc.set_transcript(vec![make_turn(ChatRole::Assistant, "1234567890")]);
+        cc.transcript = vec![make_turn(ChatRole::Assistant, "1234567890")];
         let rows = cc.build_transcript_rows(7);
         let content: Vec<_> = rows
             .iter()
@@ -2958,7 +2700,7 @@ mod tests {
 
     #[test]
     fn push_turn_markdown_stores_line_scales() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::Assistant, "# Heading\nbody", &theme);
         let turn = &cc.chat.transcript[0];
@@ -2987,7 +2729,7 @@ mod tests {
     fn push_turn_has_empty_line_scales() {
         // Turns created via push_turn must have empty line_scales so the
         // flat render path is used — invariant for existing callers.
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.push_turn(ChatRole::User, StyledText::plain("plain text"));
         assert!(
             cc.chat.transcript[0].line_scales.is_empty(),
@@ -2999,8 +2741,8 @@ mod tests {
     fn build_transcript_rows_flat_path_unchanged() {
         // Turns with empty line_scales must produce rows with empty spans
         // — bit-for-bit identical to the pre-styled-row behaviour.
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::User, "hello")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::User, "hello")];
         let rows = cc.build_transcript_rows(80);
         // Content row at index 1 (after the "You" header).
         let content_row = rows.iter().find(|r| r.text == "hello").unwrap();
@@ -3019,7 +2761,7 @@ mod tests {
     fn build_transcript_rows_styled_path_produces_spans() {
         // Turns created by push_turn_markdown must produce rows with non-empty
         // spans so rasterisers can apply per-span styling.
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::Assistant, "**bold** text", &theme);
         let rows = cc.build_transcript_rows(80);
@@ -3046,7 +2788,7 @@ mod tests {
     #[test]
     fn build_transcript_rows_heading_carries_scale() {
         // H1 markdown line → content rows must have scale 2.0.
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::Assistant, "# Title", &theme);
         let rows = cc.build_transcript_rows(80);
@@ -3063,8 +2805,8 @@ mod tests {
     #[test]
     fn build_transcript_rows_plain_role_header_has_no_spans() {
         // Role headers ("You", "AI", "System") must always be flat rows —
-        // they are inserted by the controller, not from user content.
-        let mut cc = ChatController::new("c");
+        // they are inserted by the chat, not from user content.
+        let mut cc = TestHost::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::User, "**bold**", &theme);
         let rows = cc.build_transcript_rows(80);
@@ -3079,7 +2821,7 @@ mod tests {
     #[test]
     fn build_transcript_rows_styled_wraps_across_budget() {
         // A styled turn wider than the column budget must produce multiple rows.
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let theme = crate::Theme::default();
         // 10 plain chars; col_budget=7 → content_budget=5 → 2 rows.
         cc.push_turn_markdown(ChatRole::Assistant, "1234567890", &theme);
@@ -3101,7 +2843,7 @@ mod tests {
         // `chars().count()`-based budget would wrongly let them all
         // through on one row at content_budget=6; the display-width-aware
         // wrapper must split after 3 characters (6 cells).
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::Assistant, "**中文中文中文**", &theme);
         let rows = cc.build_transcript_rows(8); // content_budget = 8 - 2 = 6
@@ -3298,8 +3040,8 @@ mod tests {
 
     #[test]
     fn up_within_wrapped_paragraph_moves_cursor_not_history() {
-        let mut cc = ChatController::new("c");
-        cc.set_input_height_range(1, 8);
+        let mut cc = TestHost::new("c");
+        cc.input_rows = (1, 8);
         cc.input_insert_str("hello world this wraps");
         cc.state.history.push("prev".into());
         // Narrow rect forces wrapping: content width well under the text length.
@@ -3310,7 +3052,7 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         // History must NOT have been entered — the cursor started on a
         // later visual row of the wrapped paragraph, not the first one.
         assert_eq!(cc.state.history_pos, None);
@@ -3319,7 +3061,7 @@ mod tests {
 
     #[test]
     fn up_on_first_visual_row_of_wrapped_paragraph_enters_history() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello world this wraps");
         cc.chat.input_cursor.1 = 3; // still within the first wrapped row
         cc.state.history.push("prev".into());
@@ -3330,13 +3072,13 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "prev", "should have entered history");
     }
 
     #[test]
     fn down_on_last_visual_row_of_wrapped_paragraph_enters_history_next() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         // A wrapped paragraph sitting in `saved_input`, restored once Down
         // walks off the newest history entry.
         cc.input_insert_str("hello world this wraps");
@@ -3345,7 +3087,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, 12.0, 24.0);
         // Drive `history_prev` directly (bypassing the Up key) to reach a
         // deterministic "navigating the newest entry" state.
-        cc.history_prev();
+        let _ = cc.history_prev();
         assert_eq!(cc.input_text(), "second");
 
         let event = UiEvent::KeyPressed {
@@ -3354,7 +3096,7 @@ mod tests {
             repeat: false,
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         // "second" fits on one visual row even at width 12, so Down from
         // its only (first==last) row walks off the newest history entry
         // and restores the saved wrapped paragraph.
@@ -3366,7 +3108,7 @@ mod tests {
 
     #[test]
     fn backspace_deletes_previous_char() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hi");
         cc.apply_input_op(EditOp::DeleteBackward);
         assert_eq!(cc.input_text(), "h");
@@ -3375,7 +3117,7 @@ mod tests {
 
     #[test]
     fn backspace_at_start_is_noop() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("x");
         cc.chat.input_cursor.1 = 0;
         cc.apply_input_op(EditOp::DeleteBackward);
@@ -3384,7 +3126,7 @@ mod tests {
 
     #[test]
     fn delete_removes_char_at_cursor() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("ab");
         cc.chat.input_cursor.1 = 0;
         cc.apply_input_op(EditOp::DeleteForward);
@@ -3410,15 +3152,15 @@ mod tests {
 
     #[test]
     fn shift_left_extends_selection() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
         // Cursor is at the end (col 5); two Shift+Left presses select "lo".
-        cc.handle(
+        let _ = cc.handle(
             &named_key(NamedKey::Left, shift()),
             &RecordingBackend::new(),
             make_rect(),
         );
-        cc.handle(
+        let _ = cc.handle(
             &named_key(NamedKey::Left, shift()),
             &RecordingBackend::new(),
             make_rect(),
@@ -3428,14 +3170,14 @@ mod tests {
 
     #[test]
     fn typing_over_a_selection_replaces_it() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
-        cc.handle(
+        let _ = cc.handle(
             &named_key(NamedKey::Left, shift()),
             &RecordingBackend::new(),
             make_rect(),
         );
-        cc.handle(
+        let _ = cc.handle(
             &named_key(NamedKey::Left, shift()),
             &RecordingBackend::new(),
             make_rect(),
@@ -3449,14 +3191,14 @@ mod tests {
         // An unmodified arrow after a selection collapses to the
         // selection's near edge instead of also taking a step — see
         // `EditOp::MoveLeft`'s own doc.
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
-        cc.handle(
+        let _ = cc.handle(
             &named_key(NamedKey::Left, shift()),
             &RecordingBackend::new(),
             make_rect(),
         );
-        cc.handle(
+        let _ = cc.handle(
             &named_key(NamedKey::Left, Modifiers::default()),
             &RecordingBackend::new(),
             make_rect(),
@@ -3471,7 +3213,7 @@ mod tests {
 
     #[test]
     fn ctrl_backspace_deletes_previous_word() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello world");
         let ev = cc.handle(
             &named_key(
@@ -3484,16 +3226,16 @@ mod tests {
             &RecordingBackend::new(),
             make_rect(),
         );
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert_eq!(cc.input_text(), "hello ");
     }
 
     #[test]
     fn ctrl_backspace_at_line_start_merges_with_previous_line() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello\nworld");
         cc.apply_input_op(EditOp::MoveLineStart { extend: false });
-        cc.handle(
+        let _ = cc.handle(
             &named_key(
                 NamedKey::Backspace,
                 Modifiers {
@@ -3509,19 +3251,19 @@ mod tests {
 
     #[test]
     fn ctrl_backspace_with_active_selection_deletes_only_the_selection() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello world");
-        cc.handle(
+        let _ = cc.handle(
             &named_key(NamedKey::Left, shift()),
             &RecordingBackend::new(),
             make_rect(),
         );
-        cc.handle(
+        let _ = cc.handle(
             &named_key(NamedKey::Left, shift()),
             &RecordingBackend::new(),
             make_rect(),
         ); // "ld" selected.
-        cc.handle(
+        let _ = cc.handle(
             &named_key(
                 NamedKey::Backspace,
                 Modifiers {
@@ -3537,9 +3279,9 @@ mod tests {
 
     #[test]
     fn ctrl_left_moves_cursor_to_previous_word_start() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello world");
-        cc.handle(
+        let _ = cc.handle(
             &named_key(
                 NamedKey::Left,
                 Modifiers {
@@ -3555,9 +3297,9 @@ mod tests {
 
     #[test]
     fn ctrl_shift_left_selects_the_previous_word() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello world");
-        cc.handle(
+        let _ = cc.handle(
             &named_key(
                 NamedKey::Left,
                 Modifiers {
@@ -3576,7 +3318,7 @@ mod tests {
 
     #[test]
     fn layout_status_at_top() {
-        let cc = ChatController::new("c");
+        let cc = TestHost::new("c");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert_eq!(layout.status.y, 0.0);
         assert_eq!(layout.status.height, 1.0); // line_height = 1.0
@@ -3584,7 +3326,7 @@ mod tests {
 
     #[test]
     fn layout_input_at_bottom() {
-        let cc = ChatController::new("c");
+        let cc = TestHost::new("c");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         // Auto-grow: empty input wraps to 1 visual row, clamped
         // to the default input_min_rows=1. lh=1, border=2 → input_h = 3.
@@ -3594,7 +3336,7 @@ mod tests {
 
     #[test]
     fn layout_input_grows_with_wrapped_row_count() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("line one\nline two\nline three");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         // 3 short logical lines, wide rect → 3 visual rows, no wrapping.
@@ -3605,7 +3347,7 @@ mod tests {
 
     #[test]
     fn layout_input_clamps_to_max_rows() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         for _ in 0..20 {
             cc.input_insert_char('\n');
         }
@@ -3617,9 +3359,9 @@ mod tests {
     }
 
     #[test]
-    fn set_input_height_range_overrides_default_clamp() {
-        let mut cc = ChatController::new("c");
-        cc.set_input_height_range(2, 3);
+    fn input_rows_override_the_default_clamp() {
+        let mut cc = TestHost::new("c");
+        cc.input_rows = (2, 3);
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         // Empty input wraps to 1 visual row, clamped up to the new min=2.
         let expected_input_y = make_rect().height - (2.0 * 1.0 + 2.0);
@@ -3627,24 +3369,34 @@ mod tests {
     }
 
     #[test]
-    fn set_input_height_range_floors_max_to_min() {
-        let mut cc = ChatController::new("c");
-        cc.set_input_height_range(5, 2); // max < min — max floored up to min.
-        assert_eq!(cc.chat.input_rows.0, 5);
-        assert_eq!(cc.chat.input_rows.1, 5);
+    fn input_rows_floor_max_to_min() {
+        let mut cc = TestHost::new("c");
+        cc.input_rows = (5, 2); // max < min — max floored up to min.
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        let expected_input_y = make_rect().height - (5.0 * 1.0 + 2.0);
+        assert_eq!(layout.input.y, expected_input_y);
+    }
+
+    #[test]
+    fn input_rows_floor_min_to_one() {
+        let mut cc = TestHost::new("c");
+        cc.input_rows = (0, 0);
+        let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
+        let expected_input_y = make_rect().height - (1.0 * 1.0 + 2.0);
+        assert_eq!(layout.input.y, expected_input_y);
     }
 
     #[test]
     fn layout_no_scrollbar_when_transcript_empty() {
-        let cc = ChatController::new("c");
+        let cc = TestHost::new("c");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.scrollbar.is_none());
     }
 
     #[test]
     fn layout_scrollbar_present_when_transcript_nonempty() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::User, "hello")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::User, "hello")];
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.scrollbar.is_some());
         // Transcript rect should be narrower than full width.
@@ -3653,15 +3405,15 @@ mod tests {
 
     #[test]
     fn layout_spinner_present_when_busy() {
-        let mut cc = ChatController::new("c");
-        cc.set_busy(true);
+        let mut cc = TestHost::new("c");
+        cc.busy = true;
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.spinner.is_some());
     }
 
     #[test]
     fn layout_spinner_absent_when_not_busy() {
-        let cc = ChatController::new("c");
+        let cc = TestHost::new("c");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.spinner.is_none());
     }
@@ -3670,7 +3422,7 @@ mod tests {
 
     #[test]
     fn layout_send_segment_present_when_row_wide_enough() {
-        let cc = ChatController::new("c");
+        let cc = TestHost::new("c");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.send.is_some());
         // The TextInput's own rect should be narrower than the full row
@@ -3680,7 +3432,7 @@ mod tests {
 
     #[test]
     fn layout_send_segment_absent_when_row_too_narrow() {
-        let cc = ChatController::new("c");
+        let cc = TestHost::new("c");
         let narrow = Rect::new(0.0, 0.0, 10.0, 24.0);
         let layout = cc.compute_layout(&RecordingBackend::new(), narrow);
         assert!(layout.send.is_none());
@@ -3690,7 +3442,7 @@ mod tests {
 
     #[test]
     fn layout_send_segment_spans_full_input_height() {
-        let cc = ChatController::new("c");
+        let cc = TestHost::new("c");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         let send = layout.send.expect("send segment present");
         assert_eq!(send.y, layout.input.y);
@@ -3699,17 +3451,15 @@ mod tests {
 
     #[test]
     fn layout_hint_absent_by_default() {
-        let cc = ChatController::new("c");
+        let cc = TestHost::new("c");
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.hint.is_none());
     }
 
     #[test]
     fn layout_hint_present_when_set() {
-        let mut cc = ChatController::new("c");
-        cc.set_hint(Some(StyledText::plain(
-            "Enter to send, Shift+Enter for newline",
-        )));
+        let mut cc = TestHost::new("c");
+        cc.hint = Some(StyledText::plain("Enter to send, Shift+Enter for newline"));
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         let hint = layout.hint.expect("hint row present");
         // The hint row sits directly above the input box.
@@ -3718,23 +3468,23 @@ mod tests {
 
     #[test]
     fn layout_hint_cleared_by_set_hint_none() {
-        let mut cc = ChatController::new("c");
-        cc.set_hint(Some(StyledText::plain("hint")));
-        cc.set_hint(None);
+        let mut cc = TestHost::new("c");
+        cc.hint = Some(StyledText::plain("hint"));
+        cc.hint = None;
         let layout = cc.compute_layout(&RecordingBackend::new(), make_rect());
         assert!(layout.hint.is_none());
     }
 
     // ── Send/Stop segment click routing ────────────────────────────────
 
-    fn click_at(cc: &mut ChatController, rect: Rect, x: f32, y: f32) -> ChatControllerEvent {
+    fn click_at(cc: &mut TestHost, rect: Rect, x: f32, y: f32) -> Handled<ChatEvent> {
         let event = crate::mouse_down(MouseButton::Left, x, y, Modifiers::default());
         cc.handle(&event, &RecordingBackend::new(), rect)
     }
 
     #[test]
     fn click_send_segment_while_idle_submits() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
         let rect = make_rect();
         let send = cc
@@ -3744,36 +3494,36 @@ mod tests {
         let ev = click_at(&mut cc, rect, send.x + 1.0, send.y + 1.0);
         assert_eq!(
             ev,
-            ChatControllerEvent::Submit {
+            Handled::Event(ChatEvent::Submit {
                 text: "hello".into()
-            }
+            })
         );
     }
 
     #[test]
     fn click_send_segment_while_idle_and_empty_is_ignored() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let rect = make_rect();
         let send = cc
             .compute_layout(&RecordingBackend::new(), rect)
             .send
             .expect("send segment present");
         let ev = click_at(&mut cc, rect, send.x + 1.0, send.y + 1.0);
-        assert_eq!(ev, ChatControllerEvent::Ignored);
+        assert_eq!(ev, Handled::Ignored);
     }
 
     #[test]
     fn click_send_segment_while_busy_emits_stop_requested() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
-        cc.set_busy(true);
+        cc.busy = true;
         let rect = make_rect();
         let send = cc
             .compute_layout(&RecordingBackend::new(), rect)
             .send
             .expect("send segment present");
         let ev = click_at(&mut cc, rect, send.x + 1.0, send.y + 1.0);
-        assert_eq!(ev, ChatControllerEvent::StopRequested);
+        assert_eq!(ev, Handled::Event(ChatEvent::StopRequested));
         // The input buffer is left untouched by a stop request.
         assert_eq!(cc.input_text(), "hello");
     }
@@ -3782,39 +3532,36 @@ mod tests {
 
     #[test]
     fn turn_summary_line_defaults_to_first_nonblank_line() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(
-            ChatRole::Assistant,
-            "\n  \nreal content\nmore",
-        )]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::Assistant, "\n  \nreal content\nmore")];
         assert_eq!(cc.turn_summary_line(0), "real content");
     }
 
     #[test]
     fn turn_summary_line_prefers_explicit_summary() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::Assistant, "full body text")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::Assistant, "full body text")];
         cc.set_turn_summary(0, Some("custom summary".to_string()));
         assert_eq!(cc.turn_summary_line(0), "custom summary");
     }
 
     #[test]
     fn turn_summary_line_empty_for_turn_with_no_content() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::Assistant, "")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::Assistant, "")];
         assert_eq!(cc.turn_summary_line(0), "");
     }
 
     #[test]
     fn turn_summary_line_empty_for_out_of_range_turn_idx() {
-        let cc = ChatController::new("c");
+        let cc = TestHost::new("c");
         assert_eq!(cc.turn_summary_line(0), "");
     }
 
     #[test]
     fn set_turn_summary_none_clears_the_override() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::Assistant, "fallback line")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::Assistant, "fallback line")];
         cc.set_turn_summary(0, Some("override".to_string()));
         assert_eq!(cc.turn_summary_line(0), "override");
         cc.set_turn_summary(0, None);
@@ -3823,15 +3570,15 @@ mod tests {
 
     #[test]
     fn new_turns_start_expanded() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::User, "hi")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::User, "hi")];
         assert!(!cc.is_turn_collapsed(0));
     }
 
     #[test]
     fn toggle_turn_collapsed_flips_state() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::User, "hi")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::User, "hi")];
         cc.toggle_turn_collapsed(0);
         assert!(cc.is_turn_collapsed(0));
         cc.toggle_turn_collapsed(0);
@@ -3840,7 +3587,7 @@ mod tests {
 
     #[test]
     fn set_turn_collapsed_out_of_range_is_a_noop() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         cc.set_turn_collapsed(5, true);
         cc.toggle_turn_collapsed(5);
         assert!(!cc.is_turn_collapsed(5));
@@ -3848,11 +3595,8 @@ mod tests {
 
     #[test]
     fn build_transcript_rows_collapsed_turn_emits_header_and_summary_only() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(
-            ChatRole::Assistant,
-            "first line\nsecond line",
-        )]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::Assistant, "first line\nsecond line")];
         cc.set_turn_collapsed(0, true);
 
         let rows = cc.build_transcript_rows(80);
@@ -3871,8 +3615,8 @@ mod tests {
     fn build_transcript_rows_expanded_turn_unchanged_by_collapsed_field() {
         // `collapsed` defaulting to `false` must not perturb the existing
         // flat-path row output at all.
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::User, "hello")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::User, "hello")];
         let rows = cc.build_transcript_rows(80);
         assert_eq!(rows[0].text, "You");
         assert_eq!(rows[1].text, "hello");
@@ -3882,11 +3626,11 @@ mod tests {
 
     #[test]
     fn transcript_click_on_first_turn_header_returns_turn_clicked() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![
             make_turn(ChatRole::User, "Hello"),
             make_turn(ChatRole::Assistant, "Hi"),
-        ]);
+        ];
         let rect = make_rect();
         let t = cc.compute_layout(&RecordingBackend::new(), rect).transcript;
         // Row 0 (turn 0's header row) sits at the very top of the
@@ -3894,10 +3638,10 @@ mod tests {
         let ev = click_at(&mut cc, rect, t.x + 1.0, t.y + 0.5);
         assert_eq!(
             ev,
-            ChatControllerEvent::TurnClicked {
+            Handled::Event(ChatEvent::TurnClicked {
                 turn_idx: 0,
                 row_in_turn: 0
-            }
+            })
         );
         // A click also moves the keyboard cursor onto the clicked turn so
         // mouse and keyboard interactions stay in sync.
@@ -3906,11 +3650,11 @@ mod tests {
 
     #[test]
     fn transcript_click_on_second_turn_resolves_its_turn_idx() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![
             make_turn(ChatRole::User, "Hello"),
             make_turn(ChatRole::Assistant, "Hi"),
-        ]);
+        ];
         let rect = make_rect();
         let t = cc.compute_layout(&RecordingBackend::new(), rect).transcript;
         // Turn 0 occupies rows 0-2 (header, content, blank separator);
@@ -3918,10 +3662,10 @@ mod tests {
         let ev = click_at(&mut cc, rect, t.x + 1.0, t.y + 3.5);
         assert_eq!(
             ev,
-            ChatControllerEvent::TurnClicked {
+            Handled::Event(ChatEvent::TurnClicked {
                 turn_idx: 1,
                 row_in_turn: 0
-            }
+            })
         );
         assert_eq!(cc.focused_turn(), Some(1));
     }
@@ -3930,36 +3674,36 @@ mod tests {
     fn click_then_enter_toggles_the_clicked_turn_not_a_stale_focus() {
         // Pressing `Enter` after a mouse click must toggle the clicked turn,
         // using the focused_turn set by the click.
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![
             make_turn(ChatRole::User, "Hello"),
             make_turn(ChatRole::Assistant, "Hi"),
-        ]);
+        ];
         let rect = make_rect();
         let backend = RecordingBackend::new();
         let t = cc.compute_layout(&backend, rect).transcript;
 
-        click_at(&mut cc, rect, t.x + 1.0, t.y + 3.5);
+        let _ = click_at(&mut cc, rect, t.x + 1.0, t.y + 3.5);
         assert_eq!(cc.focused_turn(), Some(1));
         assert!(!cc.is_turn_collapsed(1));
 
         let enter = key_event(Key::Named(NamedKey::Enter), Modifiers::default());
         let ev = cc.handle(&enter, &backend, rect);
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert!(cc.is_turn_collapsed(1));
         assert!(!cc.is_turn_collapsed(0));
     }
 
     #[test]
     fn transcript_click_below_last_row_is_consumed_not_turn_clicked() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::User, "Hi")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::User, "Hi")];
         let rect = make_rect();
         let t = cc.compute_layout(&RecordingBackend::new(), rect).transcript;
         // Far below the 3 painted rows, but still inside the transcript
         // rect's blank tail.
         let ev = click_at(&mut cc, rect, t.x + 1.0, t.y + t.height - 0.5);
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
     }
 
     // ── Focused-turn keyboard cursor ─────────────────────────────────────
@@ -3974,11 +3718,11 @@ mod tests {
 
     #[test]
     fn tab_cycles_focused_turn_then_back_to_input() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![
             make_turn(ChatRole::User, "one"),
             make_turn(ChatRole::Assistant, "two"),
-        ]);
+        ];
         let rect = make_rect();
         let backend = RecordingBackend::new();
         let tab = key_event(Key::Named(NamedKey::Tab), Modifiers::default());
@@ -3986,25 +3730,25 @@ mod tests {
         assert_eq!(cc.focused_turn(), None);
         assert!(cc.input_has_focus());
 
-        cc.handle(&tab, &backend, rect);
+        let _ = cc.handle(&tab, &backend, rect);
         assert_eq!(cc.focused_turn(), Some(0));
         assert!(!cc.input_has_focus());
 
-        cc.handle(&tab, &backend, rect);
+        let _ = cc.handle(&tab, &backend, rect);
         assert_eq!(cc.focused_turn(), Some(1));
 
-        cc.handle(&tab, &backend, rect);
+        let _ = cc.handle(&tab, &backend, rect);
         assert_eq!(cc.focused_turn(), None);
         assert!(cc.input_has_focus());
     }
 
     #[test]
     fn shift_tab_cycles_focused_turn_backward() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![
             make_turn(ChatRole::User, "one"),
             make_turn(ChatRole::Assistant, "two"),
-        ]);
+        ];
         let rect = make_rect();
         let backend = RecordingBackend::new();
         let shift_tab = key_event(
@@ -4015,29 +3759,29 @@ mod tests {
             },
         );
 
-        cc.handle(&shift_tab, &backend, rect);
+        let _ = cc.handle(&shift_tab, &backend, rect);
         assert_eq!(cc.focused_turn(), Some(1));
-        cc.handle(&shift_tab, &backend, rect);
+        let _ = cc.handle(&shift_tab, &backend, rect);
         assert_eq!(cc.focused_turn(), Some(0));
-        cc.handle(&shift_tab, &backend, rect);
+        let _ = cc.handle(&shift_tab, &backend, rect);
         assert_eq!(cc.focused_turn(), None);
     }
 
     #[test]
     fn tab_with_empty_transcript_is_a_noop() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let rect = make_rect();
         let backend = RecordingBackend::new();
         let tab = key_event(Key::Named(NamedKey::Tab), Modifiers::default());
-        cc.handle(&tab, &backend, rect);
+        let _ = cc.handle(&tab, &backend, rect);
         assert_eq!(cc.focused_turn(), None);
         assert!(cc.input_has_focus());
     }
 
     #[test]
     fn enter_while_turn_focused_toggles_collapsed_instead_of_submitting() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::Assistant, "body")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::Assistant, "body")];
         cc.set_focused_turn(Some(0));
         let rect = make_rect();
         let backend = RecordingBackend::new();
@@ -4045,19 +3789,19 @@ mod tests {
 
         assert!(!cc.is_turn_collapsed(0));
         let ev = cc.handle(&enter, &backend, rect);
-        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(ev, Handled::Consumed);
         assert!(cc.is_turn_collapsed(0));
 
         // Pressing Enter again expands it back.
         let ev2 = cc.handle(&enter, &backend, rect);
-        assert_eq!(ev2, ChatControllerEvent::Consumed);
+        assert_eq!(ev2, Handled::Consumed);
         assert!(!cc.is_turn_collapsed(0));
     }
 
     #[test]
     fn ctrl_enter_still_submits_while_a_turn_is_focused() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::Assistant, "body")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::Assistant, "body")];
         cc.set_focused_turn(Some(0));
         cc.input_insert_str("hello");
         let rect = make_rect();
@@ -4072,9 +3816,9 @@ mod tests {
         let ev = cc.handle(&ctrl_enter, &backend, rect);
         assert_eq!(
             ev,
-            ChatControllerEvent::Submit {
+            Handled::Event(ChatEvent::Submit {
                 text: "hello".into()
-            }
+            })
         );
         // The universal submit chord bypasses the toggle — the turn stays
         // expanded.
@@ -4083,14 +3827,14 @@ mod tests {
 
     #[test]
     fn typing_returns_focus_to_input_from_a_focused_turn() {
-        let mut cc = ChatController::new("c");
-        cc.set_transcript(vec![make_turn(ChatRole::User, "one")]);
+        let mut cc = TestHost::new("c");
+        cc.transcript = vec![make_turn(ChatRole::User, "one")];
         cc.set_focused_turn(Some(0));
         assert!(!cc.input_has_focus());
 
         let rect = make_rect();
         let backend = RecordingBackend::new();
-        cc.handle(&UiEvent::CharTyped('x'), &backend, rect);
+        let _ = cc.handle(&UiEvent::CharTyped('x'), &backend, rect);
 
         assert_eq!(cc.focused_turn(), None);
         assert!(cc.input_has_focus());
@@ -4100,7 +3844,7 @@ mod tests {
     // ── Backend rendering tests ───────────────────────────────────────
     //
     // The tests above exercise state/layout against a `RecordingBackend` whose
-    // draw calls are no-ops. These two paint the controller through the
+    // draw calls are no-ops. These two paint the chat through the
     // real `TuiBackend` / `GtkBackend` trait impls into a backend-owned
     // headless surface (a `ratatui::Buffer` / `cairo::ImageSurface`) and
     // assert that the message list, text input, scrollbar and spinner
@@ -4108,7 +3852,7 @@ mod tests {
     // is the golden-style coverage required by the issue acceptance
     // criteria (TESTING.md "coordinate drift" row).
 
-    /// TUI: paint a populated controller into a `ratatui::Buffer` via the
+    /// TUI: paint a populated chat into a `ratatui::Buffer` via the
     /// `TuiBackend` trait path and assert the painted cells contain the
     /// expected glyphs — the status label + model chip, the user role
     /// header `"You"`, an assistant content row, and the input
@@ -4123,13 +3867,13 @@ mod tests {
         const W: u16 = 48;
         const H: u16 = 14;
 
-        let mut cc = ChatController::new("chat");
-        cc.set_status(StyledText::plain("Refining issue #264"));
-        cc.set_model_label("claude-opus-4-5");
-        cc.set_transcript(vec![
+        let mut cc = TestHost::new("chat");
+        cc.status = StyledText::plain("Refining issue #264");
+        cc.model_label = "claude-opus-4-5".to_string();
+        cc.transcript = vec![
             make_turn(ChatRole::User, "Hello there"),
             make_turn(ChatRole::Assistant, "General Kenobi"),
-        ]);
+        ];
 
         let mut terminal = Terminal::new(TestBackend::new(W, H)).expect("construct test terminal");
         let mut backend = TuiBackend::new();
@@ -4195,7 +3939,7 @@ mod tests {
         const W: u16 = 48;
         const H: u16 = 14;
 
-        fn paint(cc: &ChatController) -> String {
+        fn paint(cc: &TestHost) -> String {
             let mut terminal =
                 Terminal::new(TestBackend::new(W, H)).expect("construct test terminal");
             let mut backend = TuiBackend::new();
@@ -4223,8 +3967,8 @@ mod tests {
             painted
         }
 
-        let mut cc = ChatController::new("chat");
-        cc.set_hint(Some(StyledText::plain("Enter to send")));
+        let mut cc = TestHost::new("chat");
+        cc.hint = Some(StyledText::plain("Enter to send"));
 
         let idle = paint(&cc);
         assert!(idle.contains("Send"), "Send label not painted:\n{idle}");
@@ -4233,7 +3977,7 @@ mod tests {
             "hint row not painted:\n{idle}"
         );
 
-        cc.set_busy(true);
+        cc.busy = true;
         let busy = paint(&cc);
         assert!(busy.contains("Stop"), "Stop label not painted:\n{busy}");
     }
@@ -4258,7 +4002,7 @@ mod tests {
         const W: u16 = 110;
         const H: u16 = 14;
 
-        fn paint(cc: &ChatController) -> String {
+        fn paint(cc: &TestHost) -> String {
             let mut terminal =
                 Terminal::new(TestBackend::new(W, H)).expect("construct test terminal");
             let mut backend = TuiBackend::new();
@@ -4287,7 +4031,7 @@ mod tests {
         }
 
         // Default mode: Alt+Enter sends, plain Enter breaks the line.
-        let mut cc = ChatController::new("chat");
+        let mut cc = TestHost::new("chat");
         let default_mode = paint(&cc);
         assert!(
             default_mode.contains("Alt+Enter to send"),
@@ -4299,7 +4043,7 @@ mod tests {
         );
 
         // submit_on_enter: the two bindings swap, and so must the hint.
-        cc.set_submit_on_enter(true);
+        cc.submit_on_enter = true;
         let enter_mode = paint(&cc);
         assert!(
             enter_mode.contains("Enter to send"),
@@ -4316,7 +4060,7 @@ mod tests {
         );
     }
 
-    /// GTK: paint a populated controller into a `cairo::ImageSurface` via
+    /// GTK: paint a populated chat into a `cairo::ImageSurface` via
     /// the `GtkBackend` trait path against a white background, then assert
     /// (a) the render inked at least one non-white pixel — proving the GTK
     /// rasterisers actually drew — and (b) the backend's
@@ -4331,17 +4075,17 @@ mod tests {
         const W: i32 = 360;
         const H: i32 = 220;
 
-        let mut cc = ChatController::new("chat");
-        cc.set_status(StyledText::plain("Plan review for #264"));
-        cc.set_model_label("claude-opus-4-5");
-        cc.set_transcript(vec![
+        let mut cc = TestHost::new("chat");
+        cc.status = StyledText::plain("Plan review for #264");
+        cc.model_label = "claude-opus-4-5".to_string();
+        cc.transcript = vec![
             make_turn(ChatRole::User, "Hello there"),
             make_turn(ChatRole::Assistant, "General Kenobi"),
-        ]);
+        ];
 
         let mut backend = GtkBackend::new();
         // White background: any non-white pixel must have come from the
-        // controller's foreground ink (text / borders / scrollbar).
+        // chat's foreground ink (text / borders / scrollbar).
         backend.set_theme(crate::Theme {
             background: crate::Color::rgb(255, 255, 255),
             ..crate::Theme::default()
@@ -4377,10 +4121,7 @@ mod tests {
             }
             found
         };
-        assert!(
-            inked,
-            "controller.render painted nothing into the GTK surface"
-        );
+        assert!(inked, "the chat painted nothing into the GTK surface");
 
         // (b) the input zone's widget-contract layout yields usable rows.
         let mut ti = TextInput::new(WidgetId::new("probe-input"));
@@ -4406,8 +4147,8 @@ mod handle_event_tests {
     }
 
     #[test]
-    fn deprecated_handle_still_adapts_to_chat_controller_event() {
-        let mut cc = ChatController::new("c");
+    fn handle_reports_submit_as_its_semantic_event() {
+        let mut cc = TestHost::new("c");
         cc.input_insert_str("hello");
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
@@ -4418,10 +4159,10 @@ mod handle_event_tests {
             },
             repeat: false,
         };
-        let outcome = cc.handle_event(&event, &RecordingBackend::new(), rect);
+        let outcome = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(
             outcome,
-            Handled::Event(ChatControllerAction::Submit {
+            Handled::Event(ChatEvent::Submit {
                 text: "hello".into()
             })
         );
@@ -4429,22 +4170,22 @@ mod handle_event_tests {
 
     #[test]
     fn handle_event_returns_consumed_for_a_typed_char() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let rect = make_rect();
-        let outcome = cc.handle_event(&UiEvent::CharTyped('x'), &RecordingBackend::new(), rect);
+        let outcome = cc.handle(&UiEvent::CharTyped('x'), &RecordingBackend::new(), rect);
         assert_eq!(outcome, Handled::Consumed);
     }
 
     #[test]
     fn handle_event_returns_ignored_for_an_unrelated_mouse_up() {
-        let mut cc = ChatController::new("c");
+        let mut cc = TestHost::new("c");
         let rect = make_rect();
         let event = UiEvent::MouseUp {
             widget: None,
             button: MouseButton::Left,
             position: Point::new(0.0, 0.0),
         };
-        let outcome = cc.handle_event(&event, &RecordingBackend::new(), rect);
+        let outcome = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(outcome, Handled::Ignored);
     }
 }

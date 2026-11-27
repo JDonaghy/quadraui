@@ -1,14 +1,16 @@
 //! Driving a contract widget from a compose controller.
 //!
-//! A controller such as [`crate::compose::MessageDialogController`] holds
-//! a widget descriptor plus its [`Interactive::State`] and is called with
-//! raw [`UiEvent`]s, outside the runtime's routing engine. This module is
-//! the small piece of that engine a controller needs: it turns one
+//! A controller such as [`crate::compose::MessageDialogController`], or a
+//! host whose events do not pass through the runtime's routing engine
+//! ([`drive_ui_event`]), holds a widget descriptor plus its
+//! [`Interactive::State`] and is called with raw [`UiEvent`]s. This module
+//! is the small piece of that engine such a host needs: it turns one
 //! `UiEvent` into the [`RoutedEvent`] the widget's
 //! [`Interactive::handle`] takes, resolved against the layout the
 //! controller paints, and runs `handle` against a host that records what
 //! the widget asked for.
 
+use crate::backend::{Backend, DrawsPrimitives};
 use crate::compose::Handled;
 use crate::event::{Point, Rect, UiEvent};
 use crate::interactive::{
@@ -18,13 +20,15 @@ use crate::primitive::Units;
 use crate::types::WidgetId;
 use crate::{MouseButton, PointerShape};
 
-/// What one [`drive`] call produced: the widget's own answer plus every
-/// [`UiEvent`] it handed to [`EventCx::emit`] along the way, in order.
-pub(crate) struct Driven<A> {
+/// What one [`drive_ui_event`] call produced: the widget's own answer
+/// plus every [`UiEvent`] it handed to [`EventCx::emit`] along the way,
+/// in order.
+#[derive(Debug)]
+pub struct Driven<A> {
     /// The widget's answer.
-    pub(crate) handled: Handled<A>,
+    pub handled: Handled<A>,
     /// Events the widget emitted besides its answer.
-    pub(crate) emitted: Vec<UiEvent>,
+    pub emitted: Vec<UiEvent>,
 }
 
 /// The [`EventHost`] a controller drives its widget against. The widget
@@ -77,6 +81,32 @@ pub(crate) fn drive<W: Interactive>(
 ) -> Driven<W::Action> {
     let (handled, emitted) = with_cx(id, units, |cx| widget.handle(state, event, layout, cx));
     Driven { handled, emitted }
+}
+
+/// Drive `widget` with one raw [`UiEvent`], laid out at `rect` through
+/// `backend` exactly as [`DrawsPrimitives::draw_dyn`] paints it there —
+/// for a host whose events do not reach the widget through
+/// [`crate::runner::AppLogic::frame_tree`], such as a
+/// [`crate::shell::ShellApp`] or a gallery demo. The host keeps the
+/// widget's [`Interactive::State`] and applies what it reports.
+///
+/// The widget is the host's whole world here, so every part of it holds
+/// focus. `None` for an event no widget handles (a window or app event).
+pub fn drive_ui_event<W: Interactive>(
+    widget: &W,
+    state: &mut W::State,
+    event: &UiEvent,
+    backend: &dyn Backend,
+    rect: Rect,
+) -> Option<Driven<W::Action>> {
+    let layout = backend.layout_primitive(rect, widget);
+    let subs = Interactive::sub_regions(widget, &layout);
+    let routed = routed_event(event, rect, &subs)?;
+    let id = crate::primitive::Primitive::id(widget)
+        .copied()
+        .unwrap_or_else(|| WidgetId::new("widget"));
+    let units = crate::backend::primitive_layout_ctx(backend).units();
+    Some(drive(widget, id, state, &routed, &layout, units))
 }
 
 /// [`drive`], with only the widget's `focused` part holding focus (no

@@ -21,9 +21,9 @@
 //!   hosting a multi-field [`crate::primitives::form::Form`]
 //!   (`DialogInput::Form`), with Tab/Shift+Tab handed off between the
 //!   form's fields and the dialog's buttons.
-//! - [`DualModePaletteController`] — Palette that toggles between text-input
+//! - [`DualModePalette`] — Palette that toggles between text-input
 //!   mode (free-text confirm) and list/search mode (item selection).
-//! - [`ChatController`] — chat overlay with scrollable transcript + multi-line
+//! - [`Chat`] — chat overlay with scrollable transcript + multi-line
 //!   input + status strip.
 //! - [`TabGroup`] / [`TabGroupController`] — editor-group-style tabbed
 //!   split panes: a `TabBar` per pane, `SplitTree` dividers and a
@@ -55,7 +55,7 @@
 //!
 //! [`crate::ScrollView`] is a `primitives` type, not a controller here —
 //! it is the generic seam for a host that scrolls content it lays out
-//! itself. [`FormController`] and [`ChatController`] keep their own
+//! itself. [`FormController`] and [`Chat`] keep their own
 //! row-indexed scroll state unchanged; a future controller
 //! for scrolling arbitrary child content (a help panel, a form section)
 //! composes [`crate::ScrollView`] the same way these compose their own
@@ -63,7 +63,7 @@
 
 pub mod app_shell;
 pub mod bottom_panel;
-pub mod chat_controller;
+pub mod chat;
 pub mod context_menu_controller;
 pub mod dual_mode_palette;
 pub mod file_picker;
@@ -77,6 +77,7 @@ pub mod markdown;
 pub mod menu_system;
 pub mod message_dialog;
 pub mod notification;
+mod palette_host;
 mod path_picker;
 mod shell_layout;
 mod sidebar_edit;
@@ -104,6 +105,7 @@ pub mod toolbar_hover_tracker;
 ))]
 pub mod tree_table_controller;
 pub(crate) mod widget_host;
+pub use widget_host::{drive_ui_event, Driven};
 pub mod workspace;
 
 pub use app_shell::{
@@ -114,25 +116,9 @@ pub use bottom_panel::{
     BackendWidget, BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelItem,
     BottomPanelPrimitiveLayout, BottomPanelState, BottomPanelTab,
 };
-pub use chat_controller::{
-    Chat, ChatController, ChatControllerAction, ChatEvent, ChatLayout, ChatRole, ChatState,
-    ChatTurn, ChatZones,
-};
-// `ChatControllerEvent` is `#[deprecated]` (use `ChatController::handle_event`'s
-// `Handled<ChatControllerAction>` instead). Allow it here since `pub use` of a
-// deprecated item is itself a use site.
-#[allow(deprecated)]
-pub use chat_controller::ChatControllerEvent;
+pub use chat::{Chat, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn, ChatZones};
 pub use context_menu_controller::{ContextMenuController, ContextMenuOutcome};
-pub use dual_mode_palette::{
-    DualModePalette, DualModePaletteAction, DualModePaletteController, DualModePaletteState,
-};
-// `DualModePaletteEvent` is `#[deprecated]` (use
-// `DualModePaletteController::handle_event`'s `Handled<DualModePaletteAction>`
-// instead). Allow it here since `pub use` of a deprecated item is itself a
-// use site.
-#[allow(deprecated)]
-pub use dual_mode_palette::DualModePaletteEvent;
+pub use dual_mode_palette::{DualModePalette, DualModePaletteAction, DualModePaletteState};
 pub use file_picker::{FilePicker, FilePickerController, FilePickerMode, FilePickerState};
 // `FilePickerEvent` is `#[deprecated]` (use `FilePickerController::handle_event`'s
 // `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a

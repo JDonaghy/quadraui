@@ -297,7 +297,7 @@ mod tests {
     /// seam `KubeApp::with_state` + `KubeApp::state` unlock — to pin
     /// the issue's own acceptance example end to end: opening the
     /// namespace picker and typing `"kbs"` (including the two
-    /// characters a `DualModePaletteController`-backed picker could
+    /// characters a vim-keyed `DualModePalette` picker could
     /// never receive as query text) fuzzy-matches and selects
     /// `kube-system`.
     #[test]

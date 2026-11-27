@@ -1,6 +1,6 @@
 //! TUI runner for the dual-mode palette demo.
 //!
-//! Demonstrates [`quadraui::DualModePaletteController`] — a palette that
+//! Demonstrates [`quadraui::DualModePalette`] — a palette that
 //! toggles between:
 //!
 //! - **List mode** (default): fuzzy-search existing Git branches, `Enter` to switch.

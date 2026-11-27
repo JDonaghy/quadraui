@@ -133,7 +133,7 @@ pub enum PickerOutcome {
 
 /// Modal namespace/kind picker.
 ///
-/// `quadraui::DualModePaletteController` can't back this: its `List`
+/// A `quadraui::DualModePalette` with `vim_keys` on can't back this: its `List`
 /// mode reserves `j`/`k` for vim-style selection *before* the
 /// generic "append to query" arm ever sees them, so a fuzzy filter
 /// over names that contain `j`/`k` (every `kube-*` namespace, the
@@ -468,7 +468,7 @@ mod tests {
 
     /// Reproduces the issue's own acceptance example: typing the
     /// literal characters `k`, `b`, `s` — including the two vim-nav
-    /// letters `DualModePaletteController`'s List mode would have
+    /// letters a vim-keyed `DualModePalette`'s List mode would have
     /// swallowed as selection moves — must land in the query text
     /// verbatim and fuzzy-match `kube-system`.
     #[test]

@@ -5297,14 +5297,13 @@ fn modal_occlusion_q_exits() {
     assert!(driver.exited());
 }
 
-// ─── ChatDemo: ChatController submit round-trip ─────────────────────────────
+// ─── ChatDemo: Chat submit round-trip ─────────────────────────────
 //
-// `ChatDemo` wraps a `ChatController`; typing goes through
-// `ChatController::handle`'s `Key::Char(c) if !ctrl && !alt` arm (character
-// insertion). `ChatDemo` opts into `submit_on_enter`, so plain
-// `Enter` submits — `Ctrl+S` remains a working alternative in both modes.
-// A missed `ChatDemo::sync_controller()` call or a dropped
-// `Reaction::Redraw` on `ChatControllerEvent::Submit` would leave the typed
+// `ChatDemo` owns a `Chat`; typing goes through the chat's shared
+// text-edit core (character insertion). `ChatDemo` opts into
+// `submit_on_enter`, so plain `Enter` submits — `Ctrl+S` remains a
+// working alternative in both modes. A dropped transcript push or a dropped
+// `Reaction::Redraw` on `ChatEvent::Submit` would leave the typed
 // text stuck in the input box and never reach the transcript — exactly
 // what this test would catch.
 
@@ -5342,9 +5341,9 @@ fn chat_typing_and_ctrl_s_submits_message_into_transcript() {
 // ─── ChatDemo: submit_on_enter, hint line, Send/Stop segment ────────────────
 //
 // `ChatDemo::new` opts into `set_submit_on_enter(true)` and a persistent
-// hint line via `set_hint`, and `ChatController::render` always paints the
+// hint line via `set_hint`, and `Chat`'s paint always paints the
 // Send/Stop segment when the row is wide enough. These drive the real
-// `ChatController::handle`/`render` path through those affordances.
+// `Chat`'s `Interactive::handle`/paint path through those affordances.
 
 #[test]
 fn chat_plain_enter_submits_when_submit_on_enter_is_set() {
@@ -5480,7 +5479,7 @@ fn chat_clicking_stop_segment_while_busy_cancels_the_reply() {
 
 // ─── ChatDemo: input soft-wrap + auto-grow ──────────────────────────────────
 //
-// `ChatController::build_text_input` pre-wraps to `TextInput::content_cols`,
+// `Chat`'s input layout pre-wraps to `TextInput::content_cols`,
 // so a long message's words all paint across multiple visual rows inside the
 // (now auto-grown) box, rather than scrolling horizontally off-screen.
 
@@ -5551,7 +5550,7 @@ fn chat_input_box_grows_taller_as_wrapped_row_count_increases() {
 
 // ─── ChatDemo: the "thinking" spinner schedules its own frames ─
 //
-// `ChatController` must call `Backend::request_frame_in` to animate the
+// `ChatDemo` must call `Backend::request_frame_in` to animate the
 // thinking spinner — without it, the spinner freezes on macOS/Windows (no
 // idle poll) and stutters at 250ms on TUI/GTK (coarse fallback ceiling).
 
@@ -5634,8 +5633,8 @@ fn chat_thinking_countdown_rearms_a_frame_per_tick_and_stops_when_the_reply_land
 
 // ─── ChatDemo: per-turn hit regions + collapsible turns ─────────────────────
 //
-// `ChatDemo::handle` wires `ChatControllerEvent::TurnClicked { row_in_turn: 0,
-// .. }` to `ChatController::toggle_turn_collapsed` (the demo's own choice —
+// `ChatDemo::handle` wires `ChatEvent::TurnClicked { row_in_turn: 0,
+// .. }` to `Chat::toggle_turn_collapsed` (the demo's own choice —
 // the controller never toggles this itself). These drive the real
 // click → handle → render path, exercising both the mouse (click the role
 // header) and keyboard (`Tab` to focus, `Enter` to toggle) affordances the
@@ -5646,7 +5645,7 @@ fn chat_click_turn_header_collapses_then_reexpands_via_click() {
     let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
     // Two deliberate, separate single clicks on the same spot — without
     // this they'd fold into a `DoubleClick`, which
-    // `ChatController::handle` doesn't special-case for the transcript.
+    // `Chat`'s `Interactive::handle` doesn't special-case for the transcript.
     driver.set_double_click_folding(false);
 
     for c in "hello world".chars() {
@@ -5697,7 +5696,7 @@ fn chat_click_turn_header_collapses_then_reexpands_via_click() {
 
 #[test]
 fn chat_click_then_enter_toggles_the_same_turn_the_mouse_focused() {
-    // A click must move `ChatController::focused_turn` onto the clicked turn
+    // A click must move `Chat::focused_turn` onto the clicked turn
     // so a following `Enter` (no mouse involved) acts on it.
     let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
 
@@ -5742,9 +5741,9 @@ fn chat_tab_then_enter_toggles_focused_turn_without_a_mouse() {
     assert!(driver.screen_contains("keyboard only"));
 
     // `Tab` from the input moves focus onto turn 0 (the just-submitted
-    // turn) — see `ChatController::focus_next_turn`'s cycle order.
-    // `ChatController::handle` reports this as `Consumed`, which
-    // `ChatDemo::handle` maps to `Reaction::Redraw`.
+    // turn) — see `Chat`'s Tab cycle order.
+    // The chat reports this as `ChatEvent::FocusedTurnChanged`, which
+    // `ChatDemo::handle` applies and answers with `Reaction::Redraw`.
     let reaction = driver.press_named(NamedKey::Tab);
     assert_eq!(reaction, Reaction::Redraw);
 
@@ -7467,9 +7466,9 @@ fn tooltip_demo_key_t_toggles_the_title_independently_of_the_border() {
 
 // ─── AiTranscript: appended turn renders below prior turns ─────────────────
 //
-// `AiTranscript::send_next` (invoked on `ChatControllerEvent::Submit`)
+// `AiTranscript::send_next` (invoked on `ChatEvent::Submit`)
 // pushes a user turn followed by a markdown-rendered assistant turn onto
-// the `ChatController`'s transcript, on top of the seeded system greeting.
+// the `Chat`'s transcript, on top of the seeded system greeting.
 // This is the "append a turn, assert it renders below prior turns"
 // scenario named in the issue: the seeded greeting must still be present
 // (prior turns aren't clobbered) and the new turns' text must appear after
@@ -7477,7 +7476,7 @@ fn tooltip_demo_key_t_toggles_the_title_independently_of_the_border() {
 // `push_turn`/`push_turn_markdown` call that overwrote instead of
 // appended would leave this failing.
 //
-// `ChatController::handle_key`'s Ctrl+S arm is a no-op on an empty
+// `Chat`'s Ctrl+S submit is a no-op on an empty
 // `input_buf` (`ctrl_s_on_empty_input_ignored`, chat_controller.rs), even
 // though `AiTranscript::send_next` ignores the *typed* text and always
 // sends the next canned `EXCHANGES` entry — so a character has to be
