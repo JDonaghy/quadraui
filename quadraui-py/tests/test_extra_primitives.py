@@ -1625,7 +1625,7 @@ def test_tab_cycles_focus_across_every_newly_wired_extra_in_paint_order():
     # registration order (`form` < `number_input` < `combo_box` <
     # `date_picker`), must focus it -- plus one extra `Tab` for `form`
     # itself: a render callback's `frame` is resynced against the engine's
-    # own tracked state every frame (`resolve_render_frame_state`), so once
+    # own tracked state every frame (`resolve_render_refs`), so once
     # `settings` has engine focus, the next `Tab` moves `FormController`'s
     # own cursor onto its first field before a further `Tab` yields back to
     # the engine's cycle. A sixth `Tab` then wraps the whole lap back to

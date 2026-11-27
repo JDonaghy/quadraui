@@ -9,7 +9,7 @@ moving: a wheel notch over its own body/scrollbar (or a page key on a
 focused child) must both dispatch `ScrollOffsetChanged` through the
 handler *and* show up in the next render -- the two are driven by separate
 code paths (`InteractionEngine::handle`'s own wheel/key translation writes
-the new offset into `WidgetState`; `resolve_layout_node_state`'s own
+the new offset into `WidgetState`; `resolve_layout_node_windowed`'s own
 `LayoutNode::Scroll` arm has to read it back before the next
 `paint_layout`), so a test asserting only the dispatched event, or only
 the resulting screen, would each miss half of the round trip.
@@ -838,7 +838,7 @@ def test_scroll_page_down_on_a_focused_child_scrolls_the_whole_container():
 def test_scroll_with_a_controlled_offset_pins_it_from_the_very_first_paint():
     # A controlled `Scroll` (`offset` set on every render) must paint
     # pinned on the FIRST frame, before this id has ever appeared in the
-    # hit map -- `resolve_layout_node_state`'s `Scroll` arm has no prior
+    # hit map -- `resolve_layout_node_windowed`'s `Scroll` arm has no prior
     # frame's `ScrollView` to measure a real `max_offset` from yet, and a
     # `0.0` fallback there would clamp the controlled 15.0 straight back
     # down to the top, exactly the frame this mode exists to pin.

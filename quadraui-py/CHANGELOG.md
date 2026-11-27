@@ -231,6 +231,14 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Fixed
 
+- A layout-tree render resolves stored cursor, scroll, split-ratio and
+  active-tab state through binding-core's shared resolvers, the same ones
+  `quadraui-node` uses: a `"tree"`/`"list"`/`"data_table"`/`"tab_bar"`
+  leaf's state is keyed by the leaf's own `"id"` even when its descriptor
+  carries a different `"id"` (a tree leaf in that shape used to snap its
+  keyboard cursor back to the first row), and a leaf's first-frame scroll
+  is sized against the rect it is about to paint into.
+
 - `QuiApp.show_overlay`/`dismiss_overlay`, called reentrantly from inside
   the registered event handler or render callback, now raise
   `ReentrantCallError` -- the same restricted-method contract every other

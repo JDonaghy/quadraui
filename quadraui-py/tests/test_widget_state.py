@@ -10,9 +10,9 @@ doesn't itself need (it keeps its own cursor via `selected_path`, only
 Exercises both render-callback shapes a binding decodes
 (`quadraui_binding_core::wire::RenderOutput`): a bare flat `{"tree": ...}`
 dict (`RenderOutput::Flat`) and a layout tree wrapping the same leaf in a
-`"row"` (`RenderOutput::Tree`) -- `resolve_render_frame_state`/
-`resolve_layout_node_state` are two separate call sites in
-`quadraui-py/src/lib.rs`, so each needs its own coverage.
+`"row"` (`RenderOutput::Tree`) -- `quadraui_binding_core::resolve_render_refs`
+and `resolve_layout_node_windowed` are two separate resolvers, so each
+needs its own coverage.
 """
 
 import pytest
@@ -100,7 +100,7 @@ def test_uncontrolled_tree_cursor_moves_and_scrolls_via_the_layout_tree_path():
     """A layout-tree render callback (`RenderOutput::Tree`) that never sets
     `selected_path`/`scroll_offset` still has arrow keys move the cursor
     and the view scroll to keep it visible -- with no app code tracking
-    either, purely via `resolve_layout_node_state`."""
+    either, purely via `resolve_layout_node_windowed`."""
     rows = _tree_rows(30)
 
     def render():
@@ -128,7 +128,7 @@ def test_uncontrolled_tree_cursor_moves_and_scrolls_via_the_layout_tree_path():
 def test_uncontrolled_tree_cursor_moves_and_scrolls_via_the_flat_frame_path():
     """The same behavior as the layout-tree test above, through the flat
     six-slot render shape (`RenderOutput::Flat`) instead --
-    `resolve_render_frame_state`'s own call site."""
+    `resolve_render_refs`'s own call site."""
     rows = _tree_rows(30)
 
     def render():
@@ -184,7 +184,7 @@ def test_uncontrolled_tree_expansion_toggles_via_the_layout_tree_path():
 def test_uncontrolled_tree_expansion_toggles_via_the_flat_frame_path():
     """The same behavior as the layout-tree test above, through the flat
     six-slot render shape (`RenderOutput::Flat`) instead --
-    `resolve_render_frame_state`'s own call site."""
+    `resolve_render_refs`'s own call site."""
     rows = _branch_tree_rows(3)
 
     def render():
@@ -256,3 +256,20 @@ def test_split_ratio_drag_persists_with_no_app_code():
 
     state = app.widget_state("widget-state-test:split")
     assert state["ratio"] == pytest.approx(0.7)
+
+
+def test_a_tree_leaf_keeps_its_cursor_when_its_descriptor_id_differs_from_the_leaf_id():
+    """A layout-tree leaf's cursor is stored under the leaf's own id, the
+    id its painted hit and the engine's arrow-key navigation use, even when
+    the tree descriptor inside it carries a different `id` of its own."""
+    rows = _tree_rows(30)
+
+    def render():
+        return {"row": [{"id": "files", "tree": _tree_descriptor(rows)}]}
+
+    app = QuiApp(20, 6, render=render, on_event=_NOOP_HANDLER)
+    _press(app, _TAB)
+    for _ in range(4):
+        _press(app, _DOWN)
+
+    assert app.widget_state("files")["selected_path"] == [3]
