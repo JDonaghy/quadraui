@@ -1116,6 +1116,7 @@ impl Interactive for AppMenuLevel {
 pub struct MenuSystem {
     menu: AppMenu,
     state: AppMenuState,
+    view_changed: bool,
 }
 
 /// An empty menu bar with nothing registered — equivalent to
@@ -1132,6 +1133,7 @@ impl MenuSystem {
         Self {
             menu: AppMenu::new(WidgetId::new("menu-system-bar"), menus),
             state: AppMenuState::default(),
+            view_changed: false,
         }
     }
 
@@ -1375,15 +1377,15 @@ impl MenuSystem {
     ///
     /// While no dropdown is open, a pointer event on the strip outside its
     /// labels is [`MenuEvent::Ignored`], so the host's own chrome in that
-    /// band receives it. A move there still clears the label hover; a host
-    /// that repaints only on a handled event compares
-    /// [`Self::menu_bar`]'s `focused_item` across the call.
+    /// band receives it. A move there still clears the label hover, which
+    /// [`Self::view_changed`] reports so the host repaints the bar.
     pub fn handle(
         &mut self,
         event: &UiEvent,
         backend: &mut dyn Backend,
         bar_rect: Rect,
     ) -> MenuEvent {
+        self.view_changed = false;
         if let UiEvent::MenuActivated(id) = event {
             return MenuEvent::Activated(*id);
         }
@@ -1425,8 +1427,18 @@ impl MenuSystem {
             Handled::Consumed => MenuEvent::Consumed,
             Handled::Ignored => MenuEvent::Ignored,
         };
+        self.view_changed = was != self.menu.view;
         self.sync_modal(&was, backend, bar_rect);
         result
+    }
+
+    /// Whether the last [`Self::handle`] call changed what the menu paints
+    /// — an open, close or highlight move, or a hover cleared by an event
+    /// the call still reported [`MenuEvent::Ignored`] so the host could
+    /// route it on. A host that repaints only for a handled event also
+    /// repaints when this is set.
+    pub fn view_changed(&self) -> bool {
+        self.view_changed
     }
 }
 
@@ -2534,6 +2546,11 @@ mod tests {
         let off = ms.handle(&mouse_moved_ev(x, 0.0), &mut backend, bar_rect());
         assert_eq!(off, MenuEvent::Ignored);
         assert_eq!(ms.menu_bar().focused_item, None);
+        assert!(ms.view_changed(), "clearing the hover asks for a repaint");
+
+        let again = ms.handle(&mouse_moved_ev(x, 0.0), &mut backend, bar_rect());
+        assert_eq!(again, MenuEvent::Ignored);
+        assert!(!ms.view_changed(), "a no-op move asks for nothing");
     }
 
     #[test]
