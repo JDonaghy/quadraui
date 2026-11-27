@@ -344,3 +344,46 @@ fn a_wheel_notch_over_the_editor_reports_a_wheel_event() {
         driver.app().events
     );
 }
+
+/// A wide glyph spans two cells, so a click on either of them resolves to
+/// the glyph's own column, the glyphs after it keep their columns, and
+/// the caret sits where the row painted each column.
+#[test]
+fn wide_glyphs_resolve_by_display_width_for_clicks_and_the_caret() {
+    let text = "a\u{2705}b\u{4e2d}x";
+    // The text column under each cell, then the cell each column's
+    // caret sits on, both counted from the first text cell.
+    let col_under_cell = [0, 1, 1, 2, 3, 3, 4];
+    let cell_of_col = [0, 1, 3, 4, 6, 7];
+
+    let mut driver = driver(EditorCursorShape::Bar);
+    driver.app_mut().editor.lines[1] = line(SCROLL_TOP + 1, text);
+    driver.render();
+    let row: Vec<char> = row_text(&driver, AREA.y as u16 + 1).chars().collect();
+    let first = TEXT_X as usize;
+    assert_eq!(row[first + 3], 'b', "{}", driver.screen());
+    assert_eq!(row[first + 6], 'x', "{}", driver.screen());
+
+    for (cell, &want) in col_under_cell.iter().enumerate() {
+        driver.click(TEXT_X + cell as f32, AREA.y + 1.0);
+        let (_, col, _) = *driver
+            .app()
+            .pointer_events()
+            .last()
+            .expect("a pointer event");
+        assert_eq!(col, want, "click on text cell {cell}");
+    }
+
+    for (col, &cell) in cell_of_col.iter().enumerate() {
+        driver.app_mut().editor.cursor = Some(EditorCursor {
+            pos: EditorCursorPos { view_line: 1, col },
+            shape: EditorCursorShape::Bar,
+        });
+        driver.render();
+        assert_eq!(
+            driver.terminal_cursor_position(),
+            Some((TEXT_X as u16 + cell, AREA.y as u16 + 1)),
+            "caret at column {col}"
+        );
+    }
+}

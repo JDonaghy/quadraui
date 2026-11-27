@@ -27,12 +27,13 @@
 //! The per-window status line is not painted here: the host reserves a
 //! row below the editor for it.
 
+use super::layout::line_runs;
 use super::EditorPaintOptions;
 use super::{CursorShape, DiagnosticSeverity, DiffLine, Editor, EditorLayout, EditorLine};
 use super::{EditorSelection, GitLineStatus, SelectionKind};
 use crate::paint_surface::{PaintSurface, PathVerb, TextRunStyle};
 use crate::primitives::scrollbar::{native_surface_paint as scrollbar_paint, Scrollbar};
-use crate::text_util::{char_to_byte_idx, next_char_boundary, snap_to_char_boundary};
+use crate::text_util::{char_to_byte_idx, next_char_boundary};
 use crate::theme::Theme;
 use crate::types::Color;
 use crate::{FontRole, Point, Rect};
@@ -389,38 +390,6 @@ fn severity_color(severity: DiagnosticSeverity, theme: &Theme) -> Color {
 }
 
 // ── Row text ────────────────────────────────────────────────────────────
-
-/// `rl.raw_text` partitioned into runs: each byte takes the last span
-/// covering it (colour, weight, slant and font scale), gaps take
-/// `default_fg` unscaled.
-fn line_runs(rl: &EditorLine, default_fg: Color) -> Vec<TextRunStyle> {
-    let text = rl.raw_text.as_str();
-    let mut byte_style: Vec<(Color, bool, bool, f32)> =
-        vec![(default_fg, false, false, 1.0); text.len()];
-    for span in &rl.spans {
-        let start = snap_to_char_boundary(text, span.start_byte);
-        let end = snap_to_char_boundary(text, span.end_byte);
-        let st = &span.style;
-        for b in byte_style.iter_mut().take(end).skip(start) {
-            *b = (st.fg, st.bold, st.italic, st.font_scale);
-        }
-    }
-    let mut runs: Vec<TextRunStyle> = Vec::new();
-    let mut start = 0usize;
-    for i in 1..=text.len() {
-        if i == text.len() || (text.is_char_boundary(i) && byte_style[i] != byte_style[start]) {
-            let (fg, bold, italic, scale) = byte_style[start];
-            runs.push(
-                TextRunStyle::new(start..i, fg)
-                    .with_bold(bold)
-                    .with_italic(italic)
-                    .with_scale(scale),
-            );
-            start = i;
-        }
-    }
-    runs
-}
 
 /// Span backgrounds, the syntax-highlighted text, a ghost continuation
 /// row's suggestion, and the inline annotation after the text.

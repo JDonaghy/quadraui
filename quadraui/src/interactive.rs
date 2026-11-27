@@ -251,6 +251,14 @@ pub trait EventHost {
     /// Which unit system this host's layouts are expressed in — see
     /// [`Units`].
     fn units(&self) -> Units;
+    /// The pixel surface this host paints on, for a widget that measures
+    /// its painted text to resolve a pointer position to a text position
+    /// (the [`crate::PaintSurface`] text verbs shape exactly as paint
+    /// does). `None` on a cell grid or with no surface in reach, where
+    /// the widget measures in display cells. Defaults to `None`.
+    fn text_surface(&mut self) -> Option<&mut dyn crate::PaintSurface> {
+        None
+    }
 }
 
 /// [`Interactive::handle`]'s narrow view of the live [`EventHost`], bound
@@ -280,6 +288,12 @@ impl<'a> EventCx<'a> {
     /// part) — see [`EventHost::request_focus`].
     pub fn request_focus(&mut self, sub: Option<SubTarget>) {
         self.host.request_focus(&self.id, sub);
+    }
+
+    /// The host's pixel surface for measuring painted text — see
+    /// [`EventHost::text_surface`].
+    pub fn text_surface(&mut self) -> Option<&mut dyn crate::PaintSurface> {
+        self.host.text_surface()
     }
 
     /// Capture the pointer for this widget — see
