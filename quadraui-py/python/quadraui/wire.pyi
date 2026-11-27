@@ -826,7 +826,7 @@ HeaderHit = Union[Literal['Chevron', 'TitleArea'], _HeaderHitDict]
 HelpOverlayAction = Literal['Opened', 'Closed']
 
 # The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself.
-HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 # `Icon`'s two accepted wire shapes. `serde` tries an `#[serde(untagged)]` enum's variants in declaration order, so `Codicon` (the only shape with a `codicon` field) is listed first.
 Icon = Union[_Icon1, _Icon2]
@@ -981,7 +981,7 @@ LayoutLeafNode = TypedDict(
         "pipeline_view": NotRequired[PipelineView],
         "progress": NotRequired[ProgressBar],
         "radio_group": NotRequired[RadioGroup],
-        "scripted_widget": NotRequired[ScriptedWidgetDescriptor],
+        "scripted_widget": NotRequired[_LayoutLeafNodeScriptedWidget],  # The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent.
         "scroll_view": NotRequired[ScrollView],
         "scrollbar": NotRequired[Scrollbar],
         "select": NotRequired[Select],
@@ -1528,10 +1528,6 @@ class RowsRequestedEvent(TypedDict):
     count: int
     id: WidgetId
     start: int
-
-class ScriptedWidgetDescriptor(TypedDict):
-    """The wire shape a `"scripted_widget"` layout-tree leaf's own descriptor dict carries: just this frame's `"props"`, defaulting to `Value::Null` when absent (so a bare `{}` descriptor, for a widget with no props of its own, decodes cleanly) — no `measure`/`paint`/`on_event`/`a11y` shape of its own, since those live on the `ScriptWidget` object a binding already registered against this leaf's id via `register_scripted_widget` before the tree containing it was decoded (see this module's own doc, "Splicing into a decoded tree without a `Deserialize` impl")."""
-    props: NotRequired[Any]
 
 # Orientation of a scrollbar.
 ScrollAxis = Literal['Vertical', 'Horizontal']
@@ -2264,7 +2260,7 @@ WidgetId = str
 WidgetKind = Literal['activity_bar', 'board', 'button', 'canvas', 'cell_grid', 'chart', 'checkbox', 'combo_box', 'command_center', 'command_line', 'context_menu', 'data_table', 'date_picker', 'diff_view', 'editor', 'find_replace', 'form', 'icon_grid', 'image', 'list', 'markdown', 'menu_bar', 'message_list', 'minimap', 'multi_section_view', 'number_input', 'palette', 'password', 'pipeline_view', 'progress', 'radio_group', 'scripted_widget', 'scroll_view', 'scrollbar', 'select', 'slider', 'spinner', 'status_bar', 'switch', 'tab_bar', 'terminal', 'text_display', 'text_field', 'text_input', 'textarea', 'toolbar', 'tree', 'tree_table', 'tree_table_controller']
 
 class WidgetStateSnapshot(TypedDict):
-    """A read-only merge of whatever `WidgetState` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once."""
+    """A read-only merge of whatever `quadraui::WidgetStateStore` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once."""
     active_tab: NotRequired[Optional[int]]  # A `TabBar`/`LayoutTabs`' stored active tab index, if `id` is one being tracked by `resolve_tab_bar_active`/ `resolve_layout_tabs_active`.
     expanded: NotRequired[Optional[List[List[int]]]]  # A `Tree`'s stored set of currently-expanded row paths, if `id` is one being tracked by `resolve_tree_expansion` — sorted for a deterministic read, since the underlying store is a `HashMap`.
     ratio: NotRequired[Optional[float]]  # A `Split`'s stored divider ratio, if `id` is one being tracked by `resolve_split_ratio`.
@@ -2817,11 +2813,6 @@ class _FormEventToolbarButtonClicked(TypedDict):
 class _HeaderHitDict(TypedDict):
     Action: str  # Right-aligned action button.
 
-class _HitDetailCanvasRegion(TypedDict):
-    """Landed on a declared region of a script-defined widget — `region` is that region's own `WidgetId`, resolved through `crate::scripted::ScriptedExtra::scripted_hit_test` ahead of `Self::ExtraBody`'s coarser "landed somewhere on the widget" answer. A point in no region still falls back to `ExtraBody`. A `"canvas"` leaf resolves its regions through `Canvas`'s own `Interactive` instead."""
-    kind: Literal['canvas_region']
-    region: WidgetId
-
 class _HitDetailDataTableFooter(TypedDict):
     kind: Literal['data_table_footer']
 
@@ -2944,6 +2935,11 @@ class _Icon2(TypedDict):
 
 class _KeyBindingDict(TypedDict):
     Literal: str  # App-specific binding.
+
+class _LayoutLeafNodeScriptedWidget(TypedDict):
+    """The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent. The `measure`/`paint`/`on_event`/`a11y` callbacks live on the registered `ScriptWidget` object, not here (see this module's doc, "Splicing into a decoded tree without a `Deserialize` impl")."""
+    id: str
+    props: NotRequired[Any]
 
 class _ListViewEventItemActivated(TypedDict):
     idx: int

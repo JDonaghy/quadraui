@@ -573,7 +573,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`RenderOutput`](#wire-renderoutput)
 - [`RowAlign`](#wire-rowalign)
 - [`RowsRequestedEvent`](#wire-rowsrequestedevent)
-- [`ScriptedWidgetDescriptor`](#wire-scriptedwidgetdescriptor)
 - [`ScrollAxis`](#wire-scrollaxis)
 - [`ScrollAxisValue`](#wire-scrollaxisvalue)
 - [`ScrollDelta`](#wire-scrolldelta)
@@ -783,7 +782,6 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_FormEventToggleChanged`](#wire-_formeventtogglechanged)
 - [`_FormEventToolbarButtonClicked`](#wire-_formeventtoolbarbuttonclicked)
 - [`_HeaderHitDict`](#wire-_headerhitdict)
-- [`_HitDetailCanvasRegion`](#wire-_hitdetailcanvasregion)
 - [`_HitDetailDataTableFooter`](#wire-_hitdetaildatatablefooter)
 - [`_HitDetailDataTableHeader`](#wire-_hitdetaildatatableheader)
 - [`_HitDetailDataTableHeaderDivider`](#wire-_hitdetaildatatableheaderdivider)
@@ -817,6 +815,7 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_Icon1`](#wire-_icon1)
 - [`_Icon2`](#wire-_icon2)
 - [`_KeyBindingDict`](#wire-_keybindingdict)
+- [`_LayoutLeafNodeScriptedWidget`](#wire-_layoutleafnodescriptedwidget)
 - [`_ListViewEventItemActivated`](#wire-_listvieweventitemactivated)
 - [`_ListViewEventItemDoubleClicked`](#wire-_listvieweventitemdoubleclicked)
 - [`_ListViewEventKeyPressed`](#wire-_listvieweventkeypressed)
@@ -2363,7 +2362,7 @@ Alias for `"Opened" | "Closed"`.
 
 The sub-region of a primitive an incoming pointer event landed on, attached to the enriched event's `"hit"` key (alongside `widget`, the primitive's own id) so the binding's own event handler can react to "row 3" or "the divider" without re-deriving hit geometry itself.
 
-Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
+Alias for `_HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter`.
 
 <a id="wire-icon"></a>
 #### `Icon`
@@ -2595,7 +2594,7 @@ A widget leaf: an `id` plus exactly one widget-kind key holding that kind's desc
 | `pipeline_view` | `PipelineView` | no |  |
 | `progress` | `ProgressBar` | no |  |
 | `radio_group` | `RadioGroup` | no |  |
-| `scripted_widget` | `ScriptedWidgetDescriptor` | no |  |
+| `scripted_widget` | `_LayoutLeafNodeScriptedWidget` | no | The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent. |
 | `scroll_view` | `ScrollView` | no |  |
 | `scrollbar` | `Scrollbar` | no |  |
 | `select` | `Select` | no |  |
@@ -3425,15 +3424,6 @@ The `{id, start, count}` a binding should ask its app's render callback for next
 | `count` | `number` | yes |  |
 | `id` | `WidgetId` | yes |  |
 | `start` | `number` | yes |  |
-
-<a id="wire-scriptedwidgetdescriptor"></a>
-#### `ScriptedWidgetDescriptor`
-
-The wire shape a `"scripted_widget"` layout-tree leaf's own descriptor dict carries: just this frame's `"props"`, defaulting to `Value::Null` when absent (so a bare `{}` descriptor, for a widget with no props of its own, decodes cleanly) — no `measure`/`paint`/`on_event`/`a11y` shape of its own, since those live on the `ScriptWidget` object a binding already registered against this leaf's id via `register_scripted_widget` before the tree containing it was decoded (see this module's own doc, "Splicing into a decoded tree without a `Deserialize` impl").
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `props` | `unknown` | no |  |
 
 <a id="wire-scrollaxis"></a>
 #### `ScrollAxis`
@@ -4626,7 +4616,7 @@ Alias for `"activity_bar" | "board" | "button" | "canvas" | "cell_grid" | "chart
 <a id="wire-widgetstatesnapshot"></a>
 #### `WidgetStateSnapshot`
 
-A read-only merge of whatever `WidgetState` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once.
+A read-only merge of whatever `quadraui::WidgetStateStore` currently holds for one id, across every shape this module tracks — `resolve_tree_cursor`/ `resolve_list_cursor`/`resolve_data_table_cursor`'s cursor + scroll, `resolve_split_ratio`'s ratio, `resolve_tab_bar_active`/ `resolve_layout_tabs_active`'s active tab, and `resolve_tree_expansion`'s per-row expand set — for a binding's own introspection surface (`quadraui-py`'s `QuiApp.widget_state`) rather than for resolving a frame's descriptor. Each field is independently `None` when that shape isn't what `id` (or, for `expanded`, `id`'s derived expansion key — see `expanded_state_id`) is storing; a tree widget populates `selected_path`/`scroll_offset` from its own id and `expanded` from the derived one in the same snapshot, since both can be live for the same tree at once.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -5662,16 +5652,6 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- |
 | `Action` | `string` | Right-aligned action button. |
 
-<a id="wire-_hitdetailcanvasregion"></a>
-#### `_HitDetailCanvasRegion`
-
-Landed on a declared region of a script-defined widget — `region` is that region's own `WidgetId`, resolved through `crate::scripted::ScriptedExtra::scripted_hit_test` ahead of `Self::ExtraBody`'s coarser "landed somewhere on the widget" answer. A point in no region still falls back to `ExtraBody`. A `"canvas"` leaf resolves its regions through `Canvas`'s own `Interactive` instead.
-
-| Field | Type | Required | Description |
-| --- | --- | --- | --- |
-| `kind` | `"canvas_region"` | yes |  |
-| `region` | `WidgetId` | yes |  |
-
 <a id="wire-_hitdetaildatatablefooter"></a>
 #### `_HitDetailDataTableFooter`
 
@@ -5938,6 +5918,16 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | Tag | Payload type | Description |
 | --- | --- | --- |
 | `Literal` | `string` | App-specific binding. |
+
+<a id="wire-_layoutleafnodescriptedwidget"></a>
+#### `_LayoutLeafNodeScriptedWidget`
+
+The payload of a `"scripted_widget"` layout-tree leaf: the id the widget was registered under through `register_scripted_widget` and this frame's `"props"`, defaulting to `Value::Null` when absent. The `measure`/`paint`/`on_event`/`a11y` callbacks live on the registered `ScriptWidget` object, not here (see this module's doc, "Splicing into a decoded tree without a `Deserialize` impl").
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `string` | yes |  |
+| `props` | `unknown` | no |  |
 
 <a id="wire-_listvieweventitemactivated"></a>
 #### `_ListViewEventItemActivated`

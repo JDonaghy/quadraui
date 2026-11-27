@@ -71,9 +71,11 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 - A `quadraui.app.widget.Widget` is now an ordinary generic widget leaf
   (binding-core's `ScriptedPrimitive` implements the widget contract): a
   pointer that enters or leaves it reports `MouseEntered`/`MouseLeft` with
-  hit detail `"WidgetBody"` rather than `{"CanvasRegion": {"region": ..}}`;
-  the region's own `{"Canvas": (id, {"RegionHovered": ..})}` events are
-  unchanged.
+  hit detail `{"kind": "widget_body"}` rather than
+  `{"kind": "canvas_region", "region": ..}`; the region's own
+  `{"Canvas": (id, {"RegionHovered": ..})}` events are unchanged. The
+  leaf payload's generated type is no longer named
+  `ScriptedWidgetDescriptor` in `wire.pyi`.
 
 - A `"completions"` overlay (`show_overlay("completions", ...)`) now routes
   pointer input through `quadraui.Completions`' own event handling: a click
@@ -206,9 +208,9 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Removed
 
-- The `{"CanvasRegion": {"region": ..}}` hit detail (#2978): a
-  script-defined `Widget` reports `"WidgetBody"` like every other generic
-  widget, and its region events arrive as `{"Canvas": (id, ..)}`.
+- The `"canvas_region"` hit detail (#2978): a script-defined `Widget`
+  reports `"widget_body"` like every other generic widget, and its region
+  events arrive as `{"Canvas": (id, ..)}`.
 
 - `QuiApp.list_char_width()` and `QuiApp.scrollbar_reserve()` (#2979,
   0.12 rec 14), part of the 0.12 binding API cleanup. Budget row text

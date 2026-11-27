@@ -108,8 +108,10 @@ fragment step for this package (that mechanism, and
   `defineWidget` builds this shape; a raw `registerScriptedWidget` caller
   must add `id` to the leaf it returns. A pointer that enters or leaves a
   script widget reports `MouseEntered`/`MouseLeft` with hit detail
-  `"WidgetBody"` rather than `{ CanvasRegion: { region } }`; its
-  `{ Canvas: [id, { RegionHovered }] }` events are unchanged.
+  `{ kind: "widget_body" }` rather than `{ kind: "canvas_region", region }`;
+  its `{ Canvas: [id, { RegionHovered }] }` events are unchanged. The
+  payload's generated type is no longer named `ScriptedWidgetDescriptor`
+  in `wire.d.ts`.
 
 - A `"completions"` overlay (`showOverlay("completions", ...)`) now routes
   pointer input through core `Completions`' own event handling: a click
@@ -190,9 +192,9 @@ fragment step for this package (that mechanism, and
 
 ### Removed
 
-- The `{ CanvasRegion: { region } }` hit detail (#2978): a script widget
-  reports `"WidgetBody"` like every other generic widget, and its region
-  events arrive as `{ Canvas: [id, ...] }`.
+- The `"canvas_region"` hit detail (#2978): a script widget reports
+  `"widget_body"` like every other generic widget, and its region events
+  arrive as `{ Canvas: [id, ...] }`.
 
 - `QuiApp.listCharWidth()` and `QuiApp.scrollbarReserve()` (#2979, 0.12
   rec 14), part of the 0.12 binding API cleanup. Budget row text with
