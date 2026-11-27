@@ -253,12 +253,16 @@ widget_kinds! {
     "editor" => crate::Editor,
     "minimap" => crate::Minimap,
     "image" => crate::Image,
-    // Ungated: the `Primitive`/`Interactive` impls of `Chart`, `Canvas`
-    // and `ScrollView` carry no feature gate. The kind strings are the
-    // ones the wire schema already publishes for them.
+    // Ungated: the `Primitive`/`Interactive` impls of `Chart`, `Canvas`,
+    // `ScrollView`, `BoardModel`, `PipelineView` and `DiffView` carry no
+    // feature gate. The kind strings are the ones the wire schema already
+    // publishes for them.
     "chart" => crate::Chart,
     "canvas" => crate::Canvas,
     "scroll_view" => crate::ScrollView,
+    "board" => crate::BoardModel,
+    "pipeline_view" => crate::PipelineView,
+    "diff_view" => crate::DiffView,
 }
 
 #[cfg(test)]

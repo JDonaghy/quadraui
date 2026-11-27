@@ -4078,20 +4078,7 @@ mod tests {
             r: QRect,
             model: &crate::primitives::board::BoardModel,
         ) -> crate::primitives::board::BoardLayout {
-            crate::primitives::board::board_layout(
-                model,
-                r.x,
-                r.y,
-                r.width,
-                r.height,
-                crate::primitives::board::BoardMeasure::new(
-                    crate::tui::board::TUI_BOARD_COL_MIN_CELLS,
-                    1.0,
-                    1.0,
-                    crate::tui::board::TUI_BOARD_CARD_H,
-                    0.0,
-                ),
-            )
+            model.cell_layout(r)
         }
 
         fn board_layout(
@@ -4099,20 +4086,7 @@ mod tests {
             r: QRect,
             model: &crate::primitives::board::BoardModel,
         ) -> crate::primitives::board::BoardLayout {
-            crate::primitives::board::board_layout(
-                model,
-                r.x,
-                r.y,
-                r.width,
-                r.height,
-                crate::primitives::board::BoardMeasure::new(
-                    crate::tui::board::TUI_BOARD_COL_MIN_CELLS,
-                    1.0,
-                    1.0,
-                    crate::tui::board::TUI_BOARD_CARD_H,
-                    0.0,
-                ),
-            )
+            model.cell_layout(r)
         }
     }
 

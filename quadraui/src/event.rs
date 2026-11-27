@@ -1188,6 +1188,18 @@ pub enum UiEvent {
     /// A click or drag on a [`crate::Minimap`] — see
     /// [`crate::MinimapEvent`].
     Minimap(WidgetId, crate::primitives::minimap::MinimapEvent),
+    /// A key, click or context-menu request on a [`crate::BoardModel`] —
+    /// see [`crate::BoardAction`].
+    Board(WidgetId, crate::primitives::board::BoardAction),
+    /// A stage of a [`crate::PipelineView`] was focused, selected or
+    /// activated — see [`crate::PipelineEvent`].
+    PipelineView(WidgetId, crate::primitives::pipeline_view::PipelineEvent),
+    /// A [`crate::DiffView`] scrolled or moved focus between its panes —
+    /// see [`crate::DiffViewEvent`].
+    DiffView(WidgetId, crate::primitives::diff_view::DiffViewEvent),
+    /// A [`crate::MessageList`] scrolled — see
+    /// [`crate::MessageListEvent`].
+    MessageList(WidgetId, crate::primitives::message_list::MessageListEvent),
     /// A [`crate::compose::HelpOverlay`] cheatsheet asked to open or
     /// close; the host writes it onto the overlay's `open`.
     HelpOverlay(WidgetId, crate::compose::HelpOverlayAction),

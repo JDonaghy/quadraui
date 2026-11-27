@@ -212,7 +212,9 @@ def test_dragging_a_split_tree_divider_changes_the_ratio():
     app.run(2)
 
     dragged = [event["SplitDividerDragged"] for event in received if "SplitDividerDragged" in event]
-    expected_ratio = (divider_column + 10.0) / 40.0
+    # The exact inverse of the layout: the pointer's offset over the 39
+    # cells the one-cell divider leaves to share.
+    expected_ratio = (divider_column + 10.0) / 39.0
     assert len(dragged) == 1, received
     assert dragged[0]["tree"] == "tree:1"
     assert dragged[0]["split_index"] == 0
