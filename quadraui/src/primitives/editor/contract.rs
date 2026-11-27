@@ -447,9 +447,6 @@ mod pixel_driver_tests {
     use super::*;
     use crate::{AppLogic, Backend, FrameTree, Reaction, ScreenLayout, Surface, UiEvent};
 
-    /// Glyph ink colour: far from the caret's, so a caret pixel is never
-    /// mistaken for antialiased text.
-    const INK: crate::Color = crate::Color::rgb(200, 40, 40);
     const RECT: Rect = Rect::new(12.0, 6.0, 560.0, 60.0);
 
     /// One editor with a one-line buffer, recording each pointer column.
@@ -459,14 +456,13 @@ mod pixel_driver_tests {
         cols: Vec<usize>,
     }
 
-    /// `(start, end, bold, italic, scale)` styles over byte ranges; every
-    /// byte paints in [`INK`].
+    /// `(start, end, bold, italic, scale)` styles over byte ranges.
     type Spans<'a> = &'a [(usize, usize, bool, bool, f32)];
 
     impl ClickApp {
         pub(super) fn new(text: &str, spans: Spans, font: Option<&'static str>) -> Self {
             let style = |bold, italic, font_scale| Style {
-                fg: INK,
+                fg: crate::Color::rgb(200, 40, 40),
                 bg: None,
                 bold,
                 italic,
@@ -515,8 +511,8 @@ mod pixel_driver_tests {
             }
         }
 
-        fn set_caret(&mut self, col: usize) {
-            self.editor.cursor = Some(EditorCursor {
+        fn set_caret(&mut self, col: Option<usize>) {
+            self.editor.cursor = col.map(|col| EditorCursor {
                 pos: CursorPos { view_line: 0, col },
                 shape: CursorShape::Bar,
             });
@@ -560,18 +556,28 @@ mod pixel_driver_tests {
         fn app(&mut self) -> &mut ClickApp;
         fn repaint(&mut self);
         fn click_at(&mut self, x: f32, y: f32);
-        /// Whether the pixel at `(x, y)` is the caret's colour.
-        fn is_caret(&mut self, x: u32, y: u32) -> bool;
+        /// The painted RGB at `(x, y)`.
+        fn rgb(&mut self, x: u32, y: u32) -> (u8, u8, u8);
         /// `col`'s x through the host API, outside any frame.
         fn host_x_at_col(&mut self, col: usize) -> f32;
     }
 
-    /// The painted caret's left edge on the editor's row, in whole pixels.
-    fn painted_caret_x(d: &mut dyn ClickDriver) -> u32 {
-        let y = (RECT.y + 3.0) as u32;
+    /// The editor row's pixels along `y`, as last painted.
+    fn row(d: &mut dyn ClickDriver, y: u32) -> Vec<(u8, u8, u8)> {
         (RECT.x as u32..(RECT.x + RECT.width) as u32)
-            .find(|&x| d.is_caret(x, y))
-            .expect("the bar caret paints on the row")
+            .map(|x| d.rgb(x, y))
+            .collect()
+    }
+
+    /// The painted caret's left edge, in whole pixels: the first pixel
+    /// along `y` that differs from `bare`, the row painted with no caret.
+    fn painted_caret_x(d: &mut dyn ClickDriver, y: u32, bare: &[(u8, u8, u8)]) -> f32 {
+        let at = row(d, y)
+            .iter()
+            .zip(bare)
+            .position(|(a, b)| a != b)
+            .expect("the bar caret paints on the row");
+        RECT.x + at as f32
     }
 
     /// Every column of the app's line: the caret paints where the host
@@ -579,11 +585,15 @@ mod pixel_driver_tests {
     pub(super) fn assert_columns_follow_glyphs(d: &mut dyn ClickDriver, case: &str) {
         let text = d.app().editor.lines[0].raw_text.clone();
         let n = text.chars().count();
+        let caret_y = (RECT.y + 3.0) as u32;
+        d.app().set_caret(None);
+        d.repaint();
+        let bare = row(d, caret_y);
         let xs: Vec<f32> = (0..=n)
             .map(|col| {
-                d.app().set_caret(col);
+                d.app().set_caret(Some(col));
                 d.repaint();
-                let painted = painted_caret_x(d) as f32;
+                let painted = painted_caret_x(d, caret_y, &bare);
                 let host = d.host_x_at_col(col);
                 assert!(
                     (painted - host).abs() <= 1.0,
@@ -644,9 +654,9 @@ mod pixel_driver_tests {
     }
 
     /// Implements [`ClickDriver`] for a driver type whose `pixel` read is
-    /// adapted by `$caret`.
+    /// adapted by `$rgb`.
     macro_rules! click_driver {
-        ($driver:ty, $caret:expr) => {
+        ($driver:ty, $rgb:expr) => {
             impl ClickDriver for $driver {
                 fn app(&mut self) -> &mut ClickApp {
                     self.app_mut()
@@ -657,9 +667,9 @@ mod pixel_driver_tests {
                 fn click_at(&mut self, x: f32, y: f32) {
                     self.click(x, y);
                 }
-                fn is_caret(&mut self, x: u32, y: u32) -> bool {
-                    let caret: fn(&mut $driver, u32, u32) -> bool = $caret;
-                    caret(self, x, y)
+                fn rgb(&mut self, x: u32, y: u32) -> (u8, u8, u8) {
+                    let rgb: fn(&mut $driver, u32, u32) -> (u8, u8, u8) = $rgb;
+                    rgb(self, x, y)
                 }
                 fn host_x_at_col(&mut self, col: usize) -> f32 {
                     use crate::backend::DrawsPrimitives;
@@ -671,17 +681,9 @@ mod pixel_driver_tests {
         };
     }
 
-    /// Light enough in every channel to be the default theme's caret, not
-    /// [`INK`] or the background.
-    fn light(r: u8, g: u8, b: u8) -> bool {
-        r >= 200 && g >= 200 && b >= 200
-    }
-
     #[cfg(feature = "gtk")]
-    click_driver!(crate::gtk::testing::GtkDriver<ClickApp>, |d, x, y| {
-        let (r, g, b) = d.pixel(x as i32, y as i32);
-        light(r, g, b)
-    });
+    click_driver!(crate::gtk::testing::GtkDriver<ClickApp>, |d, x, y| d
+        .pixel(x as i32, y as i32));
 
     #[cfg(feature = "gtk")]
     #[test]
@@ -696,7 +698,7 @@ mod pixel_driver_tests {
     #[cfg(all(feature = "macos", target_os = "macos"))]
     click_driver!(crate::macos::testing::MacDriver<ClickApp>, |d, x, y| {
         let (r, g, b, _) = d.pixel(x, y);
-        light(r, g, b)
+        (r, g, b)
     });
 
     #[cfg(all(feature = "macos", target_os = "macos"))]
@@ -708,7 +710,7 @@ mod pixel_driver_tests {
     #[cfg(all(feature = "win", target_os = "windows"))]
     click_driver!(crate::win::testing::WinDriver<ClickApp>, |d, x, y| {
         let c = d.pixel(x, y);
-        light(c.r, c.g, c.b)
+        (c.r, c.g, c.b)
     });
 
     #[cfg(all(feature = "win", target_os = "windows"))]
