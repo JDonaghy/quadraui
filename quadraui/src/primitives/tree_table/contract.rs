@@ -282,7 +282,7 @@ impl TreeTableState {
             .selected_idx
             .and_then(|idx| tt.tree.get(idx))
             .map(|n| n.path.clone());
-        if selected.is_some() && self.nav.selected_path() != selected.as_ref() {
+        if self.nav.selected_path() != selected.as_ref() {
             self.nav.set_selected_path(selected);
         }
         if self.nav.scroll_offset() != tt.table.scroll_offset && !self.nav.is_dragging() {

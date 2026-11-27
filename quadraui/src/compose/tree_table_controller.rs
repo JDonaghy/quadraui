@@ -46,7 +46,7 @@
 use std::cmp::Ordering;
 use std::collections::HashSet;
 
-use crate::behaviour::nav::{Edge, HorizontalDir, HorizontalNav, NavOutcome, NavRow};
+use crate::behaviour::nav::{Edge, HorizontalDir, HorizontalNav, NavOutcome, NavRow, TreeNavCore};
 use crate::compose::widget_host;
 use crate::interactive::{Interactive, PointerKind, RoutedEvent};
 use crate::primitives::data_table::{Column, DataRow, DataTable, SortDirection};
@@ -477,6 +477,14 @@ impl TreeTableController {
                 }
             }
         };
+        // The controller claims the tree's navigation keys only; the
+        // wrapped table's type-to-jump and select-all keys stay the app's
+        // shortcuts.
+        if let RoutedEvent::Key(key) = &routed {
+            if !TreeNavCore::claims_key(key, table.vim_keys) {
+                return TreeTableControllerEvent::Ignored;
+            }
+        }
         let units = crate::backend::primitive_layout_ctx(backend).units();
         let driven = widget_host::drive(
             &table,
@@ -1398,6 +1406,82 @@ mod tests {
             // `TreeController::handle`'s identical `tree_scroll_row_height`
             // rule.
             assert_eq!(c.scroll_offset(), 3);
+        }
+
+        fn key_with(key: crate::Key, modifiers: Modifiers) -> UiEvent {
+            UiEvent::KeyPressed {
+                key,
+                modifiers,
+                repeat: false,
+            }
+        }
+
+        fn press_key(c: &mut TreeTableController, key: crate::Key) -> TreeTableControllerEvent {
+            let mut backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 30.0, 12.0);
+            c.handle(
+                &key_with(key, Modifiers::default()),
+                &mut backend,
+                rect,
+                columns(),
+            )
+        }
+
+        fn down(c: &mut TreeTableController) -> TreeTableControllerEvent {
+            press_key(c, crate::Key::Named(crate::NamedKey::Down))
+        }
+
+        #[test]
+        fn letters_and_select_all_stay_the_apps_keys() {
+            let mut c = controller(vec![leaf("alpha", "alpha"), leaf("beta", "beta")]);
+            assert_eq!(
+                press_key(&mut c, crate::Key::Char('q')),
+                TreeTableControllerEvent::Ignored
+            );
+            // A letter that would type-ahead to a row is not claimed either.
+            assert_eq!(
+                press_key(&mut c, crate::Key::Char('b')),
+                TreeTableControllerEvent::Ignored
+            );
+            assert_eq!(c.selected_id(), None);
+            let mut backend = TuiBackend::new();
+            let ctrl_a = key_with(
+                crate::Key::Char('a'),
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                c.handle(
+                    &ctrl_a,
+                    &mut backend,
+                    Rect::new(0.0, 0.0, 30.0, 12.0),
+                    columns()
+                ),
+                TreeTableControllerEvent::Ignored
+            );
+            assert_eq!(
+                down(&mut c),
+                TreeTableControllerEvent::RowSelected {
+                    id: "alpha".to_string()
+                }
+            );
+        }
+
+        #[test]
+        fn down_after_clearing_the_selection_starts_at_the_first_row() {
+            let mut c = controller(vec![leaf("a", "a"), leaf("b", "b"), leaf("c", "c")]);
+            down(&mut c);
+            down(&mut c);
+            assert_eq!(c.selected_id(), Some(&"b".to_string()));
+            c.set_selected_id(None);
+            assert_eq!(
+                down(&mut c),
+                TreeTableControllerEvent::RowSelected {
+                    id: "a".to_string()
+                }
+            );
         }
     }
 }

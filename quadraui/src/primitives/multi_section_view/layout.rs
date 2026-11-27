@@ -1074,6 +1074,15 @@ mod contract_layout {
         pub fn body(&self, idx: usize) -> Option<&SectionBodyView> {
             self.bodies.get(idx).and_then(Option::as_ref)
         }
+
+        /// Total main-axis content height of the panel and the largest
+        /// panel scroll it allows.
+        pub(crate) fn panel_extent(&self) -> (f32, f32) {
+            let chrome = &self.chrome;
+            let total: f32 = chrome.sections.iter().map(|s| s.resolved_size).sum::<f32>()
+                + chrome.dividers.iter().map(|d| d.bounds.height).sum::<f32>();
+            (total, (total - chrome.bounds.height).max(0.0))
+        }
     }
 
     /// One visible section body: where its widget was laid out, what part

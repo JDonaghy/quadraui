@@ -501,6 +501,13 @@ impl TreeNavCore {
 
     // ── Key dispatch ─────────────────────────────────────────────────
 
+    /// Whether [`Self::handle_key`] resolves `event` to a navigation
+    /// intent rather than [`TreeKey::Unhandled`]: the keys a tree claims
+    /// for itself, leaving every other key to its host.
+    pub fn claims_key(event: &KeyEvent, vim_keys: bool) -> bool {
+        TreeKeyIntent::of(event, vim_keys).is_some()
+    }
+
     /// One keystroke against a tree-shaped row list: the arrow, page and
     /// edge keys (plus `j`/`k` when `vim_keys` is on and no Ctrl/Alt/Cmd
     /// is held) move the selection, a page being one viewport less one
@@ -517,6 +524,36 @@ impl TreeNavCore {
     ) -> TreeKey {
         let vr = viewport_rows.max(1);
         let page = (vr - 1).max(1) as isize;
+        match TreeKeyIntent::of(event, vim_keys) {
+            Some(TreeKeyIntent::Move(nav_key)) => TreeKey::Moved(match nav_key {
+                NavKey::Up => self.move_selection_by(rows, -1, vr),
+                NavKey::Down => self.move_selection_by(rows, 1, vr),
+                NavKey::PageUp(_) => self.move_selection_by(rows, -page, vr),
+                NavKey::PageDown(_) => self.move_selection_by(rows, page, vr),
+                NavKey::Home => self.move_selection_to_edge(rows, Edge::Start, vr),
+                NavKey::End => self.move_selection_to_edge(rows, Edge::End, vr),
+            }),
+            Some(TreeKeyIntent::Horizontal(dir)) => {
+                TreeKey::Horizontal(self.horizontal_nav(rows, dir))
+            }
+            Some(TreeKeyIntent::Activate) => TreeKey::Activate(self.activate()),
+            Some(TreeKeyIntent::ToggleExpand) => TreeKey::ToggleExpand(self.toggle_expand(rows)),
+            None => TreeKey::Unhandled,
+        }
+    }
+}
+
+/// The navigation intent a keystroke carries for a tree, before it is
+/// resolved against the rows.
+enum TreeKeyIntent {
+    Move(NavKey),
+    Horizontal(HorizontalDir),
+    Activate,
+    ToggleExpand,
+}
+
+impl TreeKeyIntent {
+    fn of(event: &KeyEvent, vim_keys: bool) -> Option<Self> {
         let no_accel = !(event.modifiers.ctrl || event.modifiers.alt || event.modifiers.cmd);
         let vim = no_accel && vim_keys;
         let nav_key = NavKey::from_key(event).or(match event.key {
@@ -525,25 +562,14 @@ impl TreeNavCore {
             _ => None,
         });
         if let Some(nav_key) = nav_key {
-            return TreeKey::Moved(match nav_key {
-                NavKey::Up => self.move_selection_by(rows, -1, vr),
-                NavKey::Down => self.move_selection_by(rows, 1, vr),
-                NavKey::PageUp(_) => self.move_selection_by(rows, -page, vr),
-                NavKey::PageDown(_) => self.move_selection_by(rows, page, vr),
-                NavKey::Home => self.move_selection_to_edge(rows, Edge::Start, vr),
-                NavKey::End => self.move_selection_to_edge(rows, Edge::End, vr),
-            });
+            return Some(Self::Move(nav_key));
         }
         match event.key {
-            Key::Named(NamedKey::Left) => {
-                TreeKey::Horizontal(self.horizontal_nav(rows, HorizontalDir::Left))
-            }
-            Key::Named(NamedKey::Right) => {
-                TreeKey::Horizontal(self.horizontal_nav(rows, HorizontalDir::Right))
-            }
-            Key::Named(NamedKey::Enter) => TreeKey::Activate(self.activate()),
-            Key::Char(' ') => TreeKey::ToggleExpand(self.toggle_expand(rows)),
-            _ => TreeKey::Unhandled,
+            Key::Named(NamedKey::Left) => Some(Self::Horizontal(HorizontalDir::Left)),
+            Key::Named(NamedKey::Right) => Some(Self::Horizontal(HorizontalDir::Right)),
+            Key::Named(NamedKey::Enter) => Some(Self::Activate),
+            Key::Char(' ') => Some(Self::ToggleExpand),
+            _ => None,
         }
     }
 }

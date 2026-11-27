@@ -553,15 +553,6 @@ impl MultiSectionView {
         Some((rows, visible, offset))
     }
 
-    /// Total main-axis content height of the panel and the largest panel
-    /// scroll it allows.
-    fn panel_extent(&self, layout: &MultiSectionViewPrimitiveLayout) -> (f32, f32) {
-        let chrome = &layout.chrome;
-        let total: f32 = chrome.sections.iter().map(|s| s.resolved_size).sum::<f32>()
-            + chrome.dividers.iter().map(|d| d.bounds.height).sum::<f32>();
-        (total, (total - chrome.bounds.height).max(0.0))
-    }
-
     fn scroll_section_to(
         &self,
         idx: usize,
@@ -673,7 +664,7 @@ impl MultiSectionView {
                 }
             }
             MultiSectionViewHit::PanelScrollbar { kind } => {
-                let (_, max) = self.panel_extent(layout);
+                let (_, max) = layout.panel_extent();
                 let page = layout.chrome.bounds.height;
                 match kind {
                     ScrollbarHit::Thumb => {
@@ -1075,7 +1066,7 @@ impl Interactive for MultiSectionView {
             }
             RoutedEvent::Wheel { dy, local, .. } => {
                 if self.scroll_mode == ScrollMode::WholePanel {
-                    let (_, max) = self.panel_extent(layout);
+                    let (_, max) = layout.panel_extent();
                     let delta = wheel_delta(*dy, layout.line_height);
                     return self.scroll_panel_to((self.panel_scroll + delta).clamp(0.0, max));
                 }

@@ -33,7 +33,7 @@ impl Sidebar {
         delta: f32,
         layout: &SidebarLayout,
     ) -> Handled<SidebarAction> {
-        let (_, max) = layout.panel_extent();
+        let (_, max) = layout.msv.panel_extent();
         let offset = (self.panel_scroll + delta).clamp(0.0, max);
         if (offset - self.panel_scroll).abs() < f32::EPSILON {
             return Handled::Consumed;
@@ -50,7 +50,7 @@ impl Sidebar {
     ) -> Option<f32> {
         let s = layout.msv.section(layout.view_index(section)?)?;
         let bounds = layout.msv.chrome.bounds;
-        let (_, max) = layout.panel_extent();
+        let (_, max) = layout.msv.panel_extent();
         let top = s.header_bounds.y - bounds.y + self.panel_scroll;
         let bottom = top + s.resolved_size;
         if top < self.panel_scroll {

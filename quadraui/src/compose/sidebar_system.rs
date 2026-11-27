@@ -415,10 +415,10 @@ impl Sidebar {
     all(feature = "macos", target_os = "macos")
 ))]
 mod contract {
-    use super::super::tree_controller::classify_tree_nav_key;
     use super::super::widget_host::{self, ChildHost};
     use super::*;
     use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
+    use crate::behaviour::nav::TreeNavCore;
     use crate::event::Key;
     use crate::interactive::{
         EventCx, FocusSpec, FocusStop, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
@@ -428,7 +428,7 @@ mod contract {
         MultiSectionViewEvent, MultiSectionViewPrimitiveLayout, MultiSectionViewSubPart,
         SectionBodyLayout,
     };
-    use crate::primitives::scrollbar::{wheel_delta, wheel_row_delta};
+    use crate::primitives::scrollbar::wheel_row_delta;
     use crate::primitives::tree::TreeEvent;
     use crate::{MouseButton, NamedKey};
 
@@ -501,14 +501,6 @@ mod contract {
                 Some(SectionBodyLayout::Tree(l)) => l.viewport_rows,
                 _ => 0,
             }
-        }
-
-        /// The panel's total content height and the largest panel scroll.
-        pub(crate) fn panel_extent(&self) -> (f32, f32) {
-            let chrome = &self.msv.chrome;
-            let total: f32 = chrome.sections.iter().map(|s| s.resolved_size).sum::<f32>()
-                + chrome.dividers.iter().map(|d| d.bounds.height).sum::<f32>();
-            (total, (total - chrome.bounds.height).max(0.0))
         }
     }
 
@@ -860,9 +852,10 @@ mod contract {
                         .active_section
                         .and_then(|s| self.tree(s))
                         .is_some_and(|t| t.style.vim_keys);
-                    // The tree claims its own navigation keys only; every
-                    // other key stays the app's.
-                    if classify_tree_nav_key(&key.key, vim).is_none() {
+                    // The tree body claims its navigation keys, Left/Right
+                    // included; every other key, type-ahead letters among
+                    // them, stays the app's shortcut.
+                    if !TreeNavCore::claims_key(key, vim) {
                         return Handled::Ignored;
                     }
                     self.handle_view(state, event, layout, cx)
@@ -934,9 +927,6 @@ mod contract {
                             }
                             None => Handled::Ignored,
                         }
-                    }
-                    Handled::Ignored => {
-                        self.scroll_panel(wheel_delta(*dy, layout.msv.line_height), layout)
                     }
                     handled => handled,
                 },
@@ -1512,6 +1502,37 @@ mod contract {
             assert_eq!(
                 ss.handle_cached(&key(Key::Char('q')), RECT),
                 SidebarEvent::Ignored
+            );
+            // A letter that would type-ahead to a row is still the app's.
+            assert_eq!(
+                ss.handle_cached(&key(Key::Char('v')), RECT),
+                SidebarEvent::Ignored
+            );
+            assert_eq!(ss.selected_path(0), None);
+        }
+
+        #[test]
+        fn selection_left_and_right_fold_the_selected_branch() {
+            let mut ss = SidebarSystem::new(sample_defs());
+            cells(&mut ss);
+            ss.set_rows(0, branch_rows());
+            ss.set_navigation_mode(NavigationMode::Selection);
+            ss.set_active_section(Some(0));
+            ss.set_selected_path(0, Some(vec![1]));
+            assert_eq!(
+                ss.handle_cached(&named(NamedKey::Right), RECT),
+                SidebarEvent::RowToggleExpand {
+                    section: 0,
+                    path: vec![1]
+                }
+            );
+            ss.set_selected_path(0, Some(vec![0]));
+            assert_eq!(
+                ss.handle_cached(&named(NamedKey::Left), RECT),
+                SidebarEvent::RowToggleExpand {
+                    section: 0,
+                    path: vec![0]
+                }
             );
         }
 
