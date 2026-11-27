@@ -2,5 +2,10 @@
 # No custom `[placeholders]`: this template only uses cargo-generate's
 # built-in `{{project-name}}` / `{{crate_name}}`, so `--name <name>` on the
 # command line (or the interactive prompt) is all a caller needs to supply.
+#
+# The manifest is checked in as `Cargo.toml.liquid` so cargo never parses
+# its placeholder package name; cargo-generate strips the `.liquid` suffix
+# when rendering, and 0.23.4 is the first release that does so reliably for
+# `--git` templates as well as `--path` ones.
 [template]
-cargo_generate_version = ">=0.17.0"
+cargo_generate_version = ">=0.23.4"
