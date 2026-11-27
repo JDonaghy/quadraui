@@ -601,6 +601,11 @@ mod text_selection;
 ))]
 mod backend_core;
 
+/// Routes an assistive-technology action straight to a live
+/// `Surface::Widget`'s `Interactive::handle`, so a widget defined outside
+/// this crate answers assistive technology through the same `handle` its
+/// mouse and keyboard input reach.
+pub use a11y::route_widget_action;
 pub use a11y::{
     backend_a11y_tree, frame_to_tree, frame_to_tree_with_modal, markdown_a11y_children, A11yAction,
     A11yActionValue, A11yChecked, A11yChild, A11yInfo, A11yLive, A11yNodeId, A11yPrimitive,

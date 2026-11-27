@@ -21,17 +21,17 @@
 //! 3. [`surface_has_exactly_widget_and_opaque`] — `frame::Surface` has
 //!    exactly the `Widget` and `Opaque` variants.
 //!
-//! 4. [`primitive_coverage_gap_is_zero`] — no `frame::Surface` variant
-//!    names a widget type without an `impl Primitive`.
+//! `tests/widget_contract_coverage.rs` checks that every widget type has
+//! both `Primitive` and `Interactive`.
 //!
 //! See `docs/PRIMITIVE_RULES.md` for the widget-authoring rules these
 //! pins enforce.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use syn::spanned::Spanned;
-use syn::{Fields, Item, ItemEnum, Type};
+use syn::{Item, ItemEnum};
 
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -370,137 +370,6 @@ fn per_backend_line_count_may_only_shrink() {
     }
 }
 
-/// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
-/// its identifier, or `None` for anything more exotic (a reference, a
-/// generic like `Option<T>` whose own segment ident is the outer `Option`,
-/// a path with multiple segments, …) — mirrors
-/// `backend_method_ratchet.rs`'s `bare_type_ident`.
-fn bare_type_ident(ty: &Type) -> Option<String> {
-    match ty {
-        Type::Path(p) if p.qself.is_none() => {
-            p.path.segments.last().map(|seg| seg.ident.to_string())
-        }
-        _ => None,
-    }
-}
-
-/// Whether `ty` is a smart pointer wrapping a trait object
-/// (`Box<dyn DynWidget>`) — the shape a type-erased `Surface` variant
-/// carries in place of a concrete widget type.
-fn wraps_trait_object(ty: &Type) -> bool {
-    let Type::Path(p) = ty else {
-        return false;
-    };
-    if p.qself.is_some() {
-        return false;
-    }
-    let Some(seg) = p.path.segments.last() else {
-        return false;
-    };
-    let syn::PathArguments::AngleBracketed(args) = &seg.arguments else {
-        return false;
-    };
-    args.args
-        .iter()
-        .any(|arg| matches!(arg, syn::GenericArgument::Type(Type::TraitObject(_))))
-}
-
-/// Find the one field in a `Surface` variant whose type is its actual
-/// widget (as opposed to `rect: Rect`, a `*Layout` the variant carries
-/// instead of a bare `rect`, or a plain `Option<...>`/`usize` piece of
-/// paint state): the field whose bare type ident contains the variant's
-/// own name, or vice versa (`Tree { tree: TreeView }`, `FindReplace {
-/// panel: FindReplacePanel }`), after dropping any candidate whose type
-/// name ends in `Layout` (every transient-overlay variant also carries its
-/// own resolved `*Layout`, which otherwise also matches this substring
-/// rule and makes the match ambiguous).
-///
-/// `None` for a variant with no widget at all (`Opaque { rect }`, only
-/// `Rect` fields), and for a type-erased variant — one carrying a trait
-/// object (`Box<dyn DynWidget>`) instead of a named widget type. Such a variant
-/// has no single widget to resolve: it stands in for every widget reached
-/// through `DrawsPrimitives::draw_dyn`, which is the dispatch path the
-/// coverage census below exists to push widgets onto, so it is counted
-/// neither as covered nor as a gap.
-///
-/// Panics if zero or more than one *named* field matches — every concrete
-/// `Surface` variant has exactly one widget field today; an enum shape
-/// this can't resolve needs a human to extend the rule, not a silent
-/// guess.
-fn surface_widget_type(variant: &syn::Variant) -> Option<String> {
-    let Fields::Named(fields) = &variant.fields else {
-        panic!(
-            "Surface::{} has no named fields — this ratchet only knows how to resolve the \
-             widget type of a named-field variant",
-            variant.ident
-        );
-    };
-    if fields.named.iter().any(|f| wraps_trait_object(&f.ty)) {
-        return None;
-    }
-    if fields
-        .named
-        .iter()
-        .all(|f| bare_type_ident(&f.ty).as_deref() == Some("Rect"))
-    {
-        return None;
-    }
-    let variant_name = variant.ident.to_string();
-    let candidates: Vec<String> = fields
-        .named
-        .iter()
-        .filter_map(|f| bare_type_ident(&f.ty))
-        .filter(|ident| ident != "Rect" && !ident.ends_with("Layout"))
-        .filter(|ident| ident.contains(&variant_name) || variant_name.contains(ident.as_str()))
-        .collect();
-    match candidates.as_slice() {
-        [one] => Some(one.clone()),
-        [] => panic!(
-            "Surface::{variant_name} has no field whose type name relates to its own — extend \
-             `surface_widget_type` in tests/per_backend_file_ratchet.rs to resolve it"
-        ),
-        many => panic!(
-            "Surface::{variant_name} has {} candidate widget fields ({:?}) — extend \
-             `surface_widget_type` in tests/per_backend_file_ratchet.rs to disambiguate",
-            many.len(),
-            many
-        ),
-    }
-}
-
-/// Every type name with a top-level `impl (crate::primitive::)?Primitive
-/// for <Type>` anywhere under `src/`.
-fn primitive_impl_type_names(root: &Path) -> std::collections::HashSet<String> {
-    let mut files = Vec::new();
-    collect_rs_files(&root.join("src"), &mut files);
-
-    let mut names = std::collections::HashSet::new();
-    for path in &files {
-        let file = parse_rust_file(path);
-        for item in &file.items {
-            if let Item::Impl(imp) = item {
-                let is_primitive = imp
-                    .trait_
-                    .as_ref()
-                    .and_then(|(_, path, _)| path.segments.last())
-                    .map(|seg| seg.ident == "Primitive")
-                    .unwrap_or(false);
-                if is_primitive {
-                    if let Some(name) = bare_type_ident(&imp.self_ty) {
-                        names.insert(name);
-                    }
-                }
-            }
-        }
-    }
-    names
-}
-
-/// How many `frame::Surface` variants name a widget type with no `impl
-/// Primitive`: none. Every widget reaches every backend through
-/// `DrawsPrimitives::draw_dyn`.
-const PRIMITIVE_COVERAGE_GAP_BASELINE: usize = 0;
-
 /// The top-level `enum Surface` in `src/frame.rs`.
 fn surface_enum(root: &Path) -> ItemEnum {
     parse_rust_file(&root.join("src/frame.rs"))
@@ -532,32 +401,6 @@ fn surface_has_exactly_widget_and_opaque() {
     );
 }
 
-#[test]
-fn primitive_coverage_gap_is_zero() {
-    let root = repo_root();
-    let surface_enum = surface_enum(&root);
-
-    let primitive_types = primitive_impl_type_names(&root);
-
-    let mut gaps: BTreeMap<String, String> = BTreeMap::new();
-    for variant in &surface_enum.variants {
-        let Some(widget_type) = surface_widget_type(variant) else {
-            continue;
-        };
-        if !primitive_types.contains(&widget_type) {
-            gaps.insert(variant.ident.to_string(), widget_type);
-        }
-    }
-
-    assert_eq!(
-        gaps.len(),
-        PRIMITIVE_COVERAGE_GAP_BASELINE,
-        "frame::Surface has variant(s) naming a widget with no `Primitive` impl: {gaps:#?}. A \
-         widget implements `quadraui::Primitive` (src/primitive.rs) and is pushed as \
-         `Surface::Widget`. See docs/PRIMITIVE_RULES.md."
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -581,77 +424,5 @@ mod tests {
             syn::parse_quote!(#[cfg(all(target_os = "windows", feature = "tui-images"))]);
         assert!(is_cfg_test(&win_test));
         assert!(!is_cfg_test(&no_test));
-    }
-
-    #[test]
-    fn surface_widget_type_resolves_a_plain_variant() {
-        let variant: syn::Variant = syn::parse_quote!(Tree {
-            rect: Rect,
-            tree: TreeView
-        });
-        assert_eq!(surface_widget_type(&variant).as_deref(), Some("TreeView"));
-    }
-
-    #[test]
-    fn surface_widget_type_drops_the_sibling_layout_field() {
-        let variant: syn::Variant = syn::parse_quote!(Tooltip {
-            tooltip: Tooltip,
-            layout: TooltipLayout
-        });
-        assert_eq!(surface_widget_type(&variant).as_deref(), Some("Tooltip"));
-    }
-
-    #[test]
-    fn surface_widget_type_matches_when_the_type_name_is_longer() {
-        let variant: syn::Variant = syn::parse_quote!(FindReplace {
-            rect: Rect,
-            panel: FindReplacePanel
-        });
-        assert_eq!(
-            surface_widget_type(&variant).as_deref(),
-            Some("FindReplacePanel")
-        );
-    }
-
-    /// The type-erased variant resolves to no widget type at all, so the
-    /// coverage census skips it instead of panicking on a `Box<dyn …>`
-    /// field it cannot name.
-    #[test]
-    fn surface_widget_type_skips_a_type_erased_variant() {
-        let variant: syn::Variant = syn::parse_quote!(Widget {
-            rect: Rect,
-            widget: Box<dyn DynWidget>
-        });
-        assert_eq!(surface_widget_type(&variant), None);
-    }
-
-    /// A concrete widget behind a smart pointer is still a named widget
-    /// type — only a trait object makes the variant type-erased.
-    #[test]
-    fn surface_widget_type_resolves_a_boxed_concrete_widget() {
-        let variant: syn::Variant = syn::parse_quote!(Tree {
-            rect: Rect,
-            tree: TreeView
-        });
-        assert_eq!(surface_widget_type(&variant).as_deref(), Some("TreeView"));
-        assert!(!wraps_trait_object(
-            &syn::parse_quote!(Box<TreeView>) as &Type
-        ));
-    }
-
-    #[test]
-    fn surface_widget_type_skips_a_rect_only_variant() {
-        let variant: syn::Variant = syn::parse_quote!(Opaque { rect: Rect });
-        assert_eq!(surface_widget_type(&variant), None);
-    }
-
-    #[test]
-    #[should_panic(expected = "has no field whose type name relates to its own")]
-    fn surface_widget_type_panics_with_no_candidate() {
-        let variant: syn::Variant = syn::parse_quote!(Spinner {
-            rect: Rect,
-            hovered: bool
-        });
-        let _ = surface_widget_type(&variant);
     }
 }
