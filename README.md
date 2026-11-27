@@ -304,6 +304,11 @@ Pick the backends you ship; `terminal` is independent of them.
   actions/keys against a running app, whichever backend is driving it. No
   extra dependency (`std::sync::mpsc` plus the existing `Backend::waker`
   seam); pairs with any backend above, or none.
+- `schema` — derives [schemars](https://github.com/GREsau/schemars)
+  `JsonSchema` on every wire-facing descriptor and `UiEvent`, so a binding
+  can export a JSON Schema of its wire format (`quadraui-binding-core`'s
+  `export_wire_schema`). No runtime effect; pairs with any backend above,
+  or none.
 
 ## What's in the box
 

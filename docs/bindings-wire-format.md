@@ -8,10 +8,11 @@ two shapes a `UiEvent` can take on the wire, the controlled/uncontrolled
 resolution rule that applies to several descriptor fields, and the
 `wire_version` compatibility policy.
 
-The per-kind field tables below (*Generated reference*) are rendered
-straight from `quadraui-binding-core/src/wire/schema.rs` by
-`scripts/gen_wire_types.py`'s Markdown renderer -- the same Rust-side schema
-that produces `quadraui-py/python/quadraui/wire.pyi` and
+The per-kind field tables below (*Generated reference*) are rendered by
+`scripts/gen_wire_types.py`'s Markdown renderer from the JSON Schema that
+`quadraui-binding-core`'s `export_wire_schema` derives from the Rust wire
+types (`quadraui-binding-core/src/wire/schema.rs`) -- the same schema that
+produces `quadraui-py/python/quadraui/wire.pyi` and
 `quadraui-node/js/wire.d.ts`. A hand-edit to the generated section is
 overwritten the next time the script runs, and `scripts/gen_wire_types.py
 --check` (wired into CI's `wire-types-check` job) fails if the committed
