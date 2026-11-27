@@ -440,7 +440,8 @@ impl StatusBar {
     /// on top of both insets — unchanged from `layout`.
     ///
     /// [`Self::natural_width`] is the narrowest `bar_width` this lays
-    /// every segment out at in full.
+    /// every segment out at in full with the whole `min_gap` between the
+    /// groups.
     pub fn layout_padded<F>(
         &self,
         bar_width: f32,
@@ -614,9 +615,10 @@ impl StatusBar {
 
 impl StatusBar {
     /// The narrowest bar [`Self::layout_padded`] lays every segment out
-    /// in at its full measured width: both edge insets, every segment's
-    /// text plus `segment_padding` on each side, and `min_gap` between
-    /// the groups when both have segments. All in `measure`'s unit.
+    /// in at its full measured width with the whole `min_gap` kept
+    /// between the groups: both edge insets, every segment's text plus
+    /// `segment_padding` on each side, and `min_gap` when both groups
+    /// have segments. All in `measure`'s unit.
     pub fn natural_width<F>(
         &self,
         min_gap: f32,
@@ -3326,7 +3328,8 @@ mod cell_paint_tests {
 #[cfg(test)]
 mod widget_contract_tests {
     use super::{
-        StatusBar, StatusBarSegment, StatusBarSegmentAction, StatusBarState, PIXEL_EDGE_INSET,
+        cell_layout, StatusBar, StatusBarSegment, StatusBarSegmentAction, StatusBarState,
+        StatusSegmentMeasure, StatusSegmentSide, PIXEL_EDGE_INSET,
     };
     use crate::compose::Handled;
     use crate::event::{MouseButton, Point};
@@ -3467,8 +3470,48 @@ mod widget_contract_tests {
         let bar = bar();
         let natural =
             Primitive::measure(&bar, &cell_ctx(), crate::primitive::Size::new(40.0, 10.0));
-        assert_eq!(natural.width, None, "a status bar stretches horizontally");
         assert_eq!(natural.height, Some(1.0));
+        let width = natural.width.expect("a natural width");
+        let at = |w: f32| cell_layout(&bar, Rect::new(0.0, 0.0, w, 1.0), &crate::Style::default());
+        assert!(
+            !at(width).visible_segments.is_empty(),
+            "the natural width lays the bar out"
+        );
+        assert_eq!(
+            width,
+            bar.natural_width(
+                crate::primitives::status_bar::MIN_GAP_CELLS,
+                0.0,
+                0.0,
+                |seg| { StatusSegmentMeasure::new(seg.text.chars().count() as f32) }
+            ),
+            "every segment's cells plus the default gap"
+        );
+    }
+
+    /// At its natural width every segment gets its full measured width;
+    /// one unit narrower, some segment is squeezed or dropped.
+    #[test]
+    fn natural_width_is_the_narrowest_width_that_fits_every_segment() {
+        let bar = StatusBar {
+            right_segments: vec![],
+            ..bar()
+        };
+        let measure = |seg: &StatusBarSegment| StatusSegmentMeasure::new(seg.text.len() as f32);
+        let natural = bar.natural_width(3.0, 2.0, 1.0, measure);
+        let full = |w: f32| {
+            let l = bar.layout_padded(w, 1.0, 3.0, 2.0, 1.0, measure);
+            l.visible_segments.len() == bar.left_segments.len() + bar.right_segments.len()
+                && l.visible_segments.iter().all(|v| {
+                    let seg = match v.side {
+                        StatusSegmentSide::Left => &bar.left_segments[v.segment_idx],
+                        StatusSegmentSide::Right => &bar.right_segments[v.segment_idx],
+                    };
+                    v.bounds.width >= seg.text.len() as f32 + 2.0 - 0.01
+                })
+        };
+        assert!(full(natural));
+        assert!(!full(natural - 1.0));
     }
 
     #[test]

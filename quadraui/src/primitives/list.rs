@@ -4243,9 +4243,11 @@ mod primitive_parity_tests {
         let rect = Rect::new(10.0, 20.0, 200.0, 80.0);
         let ctx = LayoutCtx::new(16.0, 8.0, false);
         let layout = Primitive::layout(&list, &ctx, rect);
+        let first = layout.layout.visible_items[0].bounds;
+        let first_end = rect.y + layout.border_inset + first.y + first.height;
         let x = rect.x + 20.0;
-        assert_eq!(layout.hit_test(x, rect.y + 16.5), ListViewHit::Item(0));
-        assert_eq!(layout.hit_test(x, rect.y + 17.5), ListViewHit::Item(1));
+        assert_eq!(layout.hit_test(x, first_end - 0.5), ListViewHit::Item(0));
+        assert_eq!(layout.hit_test(x, first_end + 0.5), ListViewHit::Item(1));
     }
 
     /// [`ListViewPrimitiveLayout::hit_test`] subtracts the area's
