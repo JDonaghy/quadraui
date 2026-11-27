@@ -1804,10 +1804,7 @@ LayoutLeafNode = TypedDict(
         "combo_box": NotRequired[ComboBoxDescriptor],
         "date_picker": NotRequired[DatePickerDescriptor],
         "message_list": NotRequired[MessageListDescriptor],
-        "board": NotRequired[BoardModelDescriptor],
-        "pipeline_view": NotRequired[PipelineViewDescriptor],
         "multi_section_view": NotRequired[MultiSectionViewDescriptor],
-        "diff_view": NotRequired[DiffViewDescriptor],
         "tree_table": NotRequired[TreeTableDescriptor],
         "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
         "toolbar": NotRequired[ToolbarDescriptor],
@@ -1816,12 +1813,8 @@ LayoutLeafNode = TypedDict(
         "scrollbar": NotRequired[ScrollbarDescriptor],
         "canvas": NotRequired[CanvasDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
-        "checkbox": NotRequired[CheckboxDescriptor],
-        "slider": NotRequired[SliderDescriptor],
-        "select": NotRequired[SelectDescriptor],
         "password": NotRequired[PasswordDescriptor],
         "textarea": NotRequired[TextAreaDescriptor],
-        "markdown": NotRequired[MarkdownDescriptor],
         "icon_grid": NotRequired[IconGridDescriptor],
         "cell_grid": NotRequired[CellGridDescriptor],
         "switch": NotRequired[SwitchDescriptor],
@@ -1838,6 +1831,13 @@ LayoutLeafNode = TypedDict(
         "image": NotRequired[ImageDescriptor],
         "chart": NotRequired[ChartDescriptor],
         "scroll_view": NotRequired[ScrollViewDescriptor],
+        "board": NotRequired[BoardModelDescriptor],
+        "pipeline_view": NotRequired[PipelineViewDescriptor],
+        "diff_view": NotRequired[DiffViewDescriptor],
+        "checkbox": NotRequired[CheckboxDescriptor],
+        "slider": NotRequired[SliderDescriptor],
+        "select": NotRequired[SelectDescriptor],
+        "markdown": NotRequired[MarkdownDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1867,10 +1867,7 @@ class RenderFrameDict(TypedDict):
     combo_box: NotRequired[Optional[ComboBoxDescriptor]]
     date_picker: NotRequired[Optional[DatePickerDescriptor]]
     message_list: NotRequired[Optional[MessageListDescriptor]]
-    board: NotRequired[Optional[BoardModelDescriptor]]
-    pipeline_view: NotRequired[Optional[PipelineViewDescriptor]]
     multi_section_view: NotRequired[Optional[MultiSectionViewDescriptor]]
-    diff_view: NotRequired[Optional[DiffViewDescriptor]]
     tree_table: NotRequired[Optional[TreeTableDescriptor]]
     tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
@@ -1879,12 +1876,8 @@ class RenderFrameDict(TypedDict):
     scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
     canvas: NotRequired[Optional[CanvasDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
-    checkbox: NotRequired[Optional[CheckboxDescriptor]]
-    slider: NotRequired[Optional[SliderDescriptor]]
-    select: NotRequired[Optional[SelectDescriptor]]
     password: NotRequired[Optional[PasswordDescriptor]]
     textarea: NotRequired[Optional[TextAreaDescriptor]]
-    markdown: NotRequired[Optional[MarkdownDescriptor]]
     icon_grid: NotRequired[Optional[IconGridDescriptor]]
     cell_grid: NotRequired[Optional[CellGridDescriptor]]
     switch: NotRequired[Optional[SwitchDescriptor]]
@@ -1901,6 +1894,13 @@ class RenderFrameDict(TypedDict):
     image: NotRequired[Optional[ImageDescriptor]]
     chart: NotRequired[Optional[ChartDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
+    board: NotRequired[Optional[BoardModelDescriptor]]
+    pipeline_view: NotRequired[Optional[PipelineViewDescriptor]]
+    diff_view: NotRequired[Optional[DiffViewDescriptor]]
+    checkbox: NotRequired[Optional[CheckboxDescriptor]]
+    slider: NotRequired[Optional[SliderDescriptor]]
+    select: NotRequired[Optional[SelectDescriptor]]
+    markdown: NotRequired[Optional[MarkdownDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
@@ -2688,6 +2688,10 @@ class _UiEventDict(TypedDict):
     Terminal: NotRequired[Tuple[WidgetId, TerminalEvent]]
     Editor: NotRequired[Tuple[WidgetId, EditorEvent]]
     Minimap: NotRequired[Tuple[WidgetId, MinimapEvent]]
+    Board: NotRequired[Tuple[WidgetId, Any]]
+    PipelineView: NotRequired[Tuple[WidgetId, Any]]
+    DiffView: NotRequired[Tuple[WidgetId, Any]]
+    MessageList: NotRequired[Tuple[WidgetId, Any]]
     TextDisplay: NotRequired[Tuple[WidgetId, TextDisplayEvent]]
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]
