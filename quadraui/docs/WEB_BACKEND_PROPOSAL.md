@@ -10,6 +10,13 @@ viewable and usable from a phone browser over Tailscale (no TLS, no
 external hosting).
 
 Status: **shelved** (2026-10-01, D-015 in `docs/decisions/DECISIONS.md`).
+
+This proposal is written against per-widget `Backend` paint methods,
+which the 0.12 widget contract (D-021) does not have: a widget paints
+itself through `PaintSurface` / `CellSurface` and a backend knows no
+widget. A revival re-derives §4 against that contract — a web backend
+is a paint surface plus platform services, and the id → rect map comes
+from the runtime's painted-widget record, not from per-widget methods.
 The phone use case is covered by code-coordinator's React web app, and
 the quadraweb issues (#314–#318, #320–#324) are closed. If revived, the
 semantic-HTML choice below must be re-decided against a `NativeSurface`

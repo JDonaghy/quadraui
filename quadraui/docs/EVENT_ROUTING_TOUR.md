@@ -1,8 +1,9 @@
 # How vimcode's backends route mouse events through quadraui — a code tour
 
-Companion to [`TUI_CONSUMER_TOUR.md`](TUI_CONSUMER_TOUR.md). That
-document covers D6 rendering — how primitives decide layouts and
-backends paint them. This one covers **events** — how clicks,
+Companion to [`TUI_CONSUMER_TOUR.md`](TUI_CONSUMER_TOUR.md), which
+tours how a widget paints itself and how the runtime routes input to
+it through `AppLogic::frame_tree`. This one covers the app-level
+routing vimcode does on top of that — how clicks,
 drags, and modal dismissals route through a single cross-platform
 code path so both TUI and GTK (and, eventually, Win-GUI / macOS)
 share the same decisions.

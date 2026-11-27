@@ -28,7 +28,7 @@ impl ShellApp for Hello {
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
         // The shell already computed where the status bar goes —
         // no viewport arithmetic here. Describe the UI as plain data;
-        // the backend rasterises it natively.
+        // the widget paints itself on whichever backend is running.
         let Some(rect) = layout.status_bar_bounds else { return };
         let bar = StatusBar {
             id: WidgetId::new("status:bar"),
@@ -55,8 +55,8 @@ impl ShellApp for Hello {
     }
 }
 
-fn main() {
-    quadraui::tui::shell_runner::run_with_shell(Hello { keys_pressed: 0 }, Hello::config());
+fn main() -> Result<(), quadraui::RunError> {
+    quadraui::tui::shell_runner::run_with_shell(Hello { keys_pressed: 0 }, Hello::config())
     // quadraui::gtk::shell_runner::run_with_shell(...), quadraui::macos::... or
     // quadraui::win::... for a native window: same `Hello`.
 }
@@ -70,18 +70,27 @@ The full version is `quadraui/examples/hello.rs`:
 - **Terminal and native from one codebase.** Ratatui and Textual have no
   native backend; egui, iced and Slint have no terminal backend. quadraui
   has both, behind one trait.
-- **Paint and click share one layout.** Every primitive exposes a
-  `layout(...)` that the rasteriser paints from and the host hit-tests
-  against. Mouse clicks cannot drift from what is on screen, because both
-  read the same computed rectangles.
+- **One implementation per widget.** A widget is one Rust type that
+  implements two traits: `Primitive` (lay out and paint) and
+  `Interactive` (focus, input, popups). The same code paints on all four
+  backends; a backend supplies drawing verbs and platform services and
+  holds no per-widget code.
+  <!-- TODO(0.12 final pass): true once W5-W9 land. On develop at 94f45833
+  eleven primitive modules have no Primitive impl and paint through legacy
+  Backend methods (split, split_tree, chart, board, canvas, diff_view, pipeline_view, message_list, multi_section_view, find_replace and scroll_view), and the backends
+  still hold their rasterisers. After W9 confirm both. -->
+- **Paint and click share one layout.** A widget's `layout(...)` result
+  is what it paints from and what its event handler hit-tests against.
+  Mouse clicks cannot drift from what is on screen, because both read the
+  same computed rectangles.
 - **Small, and idle when idle.** A macOS release binary measured 0.7–2.0 MB
   in the 2026-09-26 audit. The runtime is event-driven: an app with
   nothing to do renders nothing.
-- **Declarative, serialisable widgets.** Primitives are plain data
+- **Declarative, serialisable widgets.** Widgets are plain data
   (`Serialize`), events are plain data routed by `WidgetId`, and no
   closures cross the API. That is what makes scripting practical (vimcode
-  lets Lua extensions declare quadraui views), and later, language
-  bindings.
+  lets Lua extensions declare quadraui views) and what the Python and
+  Node.js bindings are built on.
 - **Honest about capabilities.** `BackendCaps` tells an app what the
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
@@ -110,8 +119,7 @@ comfortable with a pre-1.0 API.
   quadraui#900.
 - **Right-to-left text.** East-Asian character width is handled; RTL,
   bidi and complex shaping are not, and are out of scope.
-- **Multiple windows** (quadraui#1120), and **languages other than Rust**
-  (bindings are a later phase, quadraui#1096).
+- **Multiple windows** (quadraui#1120).
 
 ## Status
 
@@ -123,10 +131,10 @@ the release order and the 1.0 bar are in [`ROADMAP.md`](ROADMAP.md).
 
 | Backend | State |
 |---|---|
-| TUI | In production use in vimcode and coord-tui. Every rasteriser shipped. |
-| GTK4 (Linux) | In production use in vimcode. Every rasteriser shipped. |
+| TUI | In production use in vimcode and coord-tui. Widgets paint onto the cell grid through `CellSurface`. |
+| GTK4 (Linux) | In production use in vimcode. Widgets paint through `PaintSurface` over Cairo + Pango. |
 | macOS | Implements the whole `Backend` trait, including native menus, file dialogs and a client-side title bar. Built and tested on `macos-latest` CI for every PR that touches `quadraui/src`. |
-| Windows | Every rasteriser shipped, with no `todo!()` left in `src/win/backend.rs`. Builds, tests and the cross-backend conformance matrix are all blocking on `windows-latest` CI. |
+| Windows | Implements the whole `Backend` trait, with no `todo!()` left in `src/win/backend.rs`. Builds, tests and the cross-backend conformance matrix are all blocking on `windows-latest` CI. |
 
 The real consumers are [vimcode](https://github.com/JDonaghy/vimcode), a
 Vim-compatible editor that runs on all four backends, and
@@ -162,10 +170,14 @@ tracker.
 quadraui = { version = "0.11", features = ["tui", "gtk"] }
 ```
 
-**Python** — quadraui has PyO3 bindings (`quadraui-py`): build descriptors from
-Python and have quadraui render them. The Python getting-started lives on the
-[docs site](https://jdonaghy.github.io/quadraui); see also `quadraui-py/` in this
-repo.
+**Python and Node.js** — `quadraui-py` (PyO3) and `quadraui-node` (napi-rs)
+build widget descriptors from Python or JavaScript/TypeScript and have quadraui
+render them, headlessly or in a real terminal. The Python getting-started lives
+on the [docs site](https://jdonaghy.github.io/quadraui); see also `quadraui-py/`
+and `quadraui-node/` in this repo.
+<!-- TODO(0.12 final pass): after W8 (binding-core collapse, #2976-#2979), check
+this paragraph against the final py/node wire surface and say which widget
+kinds the bindings can build. -->
 
 Feature flags, the system packages each backend needs, and every
 platform combination CI verifies are in
@@ -187,10 +199,81 @@ Then:
   backend features and a `TuiDriver` test, with no edits needed to build
   and run `--features tui`.
 - Read [`quadraui/docs/GUIDE.md`](quadraui/docs/GUIDE.md) for the app
-  model and [`quadraui/docs/APP_ARCHITECTURE.md`](quadraui/docs/APP_ARCHITECTURE.md)
-  for how a larger app is put together.
+  model, [`quadraui/docs/COMPOSE.md`](quadraui/docs/COMPOSE.md) for the
+  controllers a larger app is assembled from, and the host section of
+  [`quadraui/docs/PRIMITIVE_RULES.md`](quadraui/docs/PRIMITIVE_RULES.md)
+  for how an app paints, routes and tests its widgets.
+- Read [`quadraui/docs/TUI_CONSUMER_TOUR.md`](quadraui/docs/TUI_CONSUMER_TOUR.md)
+  for a short code tour of one widget, from descriptor to click.
 - Browse `quadraui/examples/`. Most examples come in `tui_*` / `gtk_*`
   pairs (some also `macos_*` / `win_*`), so you can compare backends.
+
+## Your own widget
+
+A widget is a type that implements `Primitive` and `Interactive`. This
+one paints a block of colour and has no behaviour, so `non_interactive!`
+supplies its `Interactive` impl:
+
+```rust
+use quadraui::prelude::*;
+use quadraui::{
+    A11yInfo, A11yPrimitive, CellSurface, CellSurfaceStyle, LayoutCtx, PaintEnv, PaintSurface,
+    Primitive,
+};
+
+struct Swatch {
+    id: WidgetId,
+    color: Color,
+}
+
+impl A11yPrimitive for Swatch {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::default()
+    }
+}
+
+impl Primitive for Swatch {
+    // The resolved geometry that paint, and any hit-test, read.
+    type Layout = Rect;
+    type Event = ();
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+        rect
+    }
+
+    // GTK, macOS and Windows.
+    fn paint(&self, layout: &Rect, surface: &mut dyn PaintSurface, _env: &PaintEnv) {
+        surface.surface_fill_rect(*layout, self.color);
+    }
+
+    // The terminal (needs the `tui` feature).
+    fn paint_cells(&self, layout: &Rect, cells: &mut dyn CellSurface, _env: &PaintEnv) {
+        let style = CellSurfaceStyle { bg: Some(self.color), ..Default::default() };
+        cells.fill(*layout, style);
+    }
+}
+
+quadraui::non_interactive!(Swatch);
+
+fn paint_swatch(frame: &mut ScreenLayout, rect: Rect) {
+    let swatch = Swatch { id: WidgetId::new("swatch"), color: Color::rgb(200, 60, 60) };
+    frame.push(Surface::Widget { rect, widget: Box::new(swatch) });
+}
+```
+
+`Surface::Widget` paints any widget through `DrawsPrimitives::draw_dyn`,
+on every backend. A widget that reacts to input implements `Interactive`
+itself: it declares its focus stops and sub-regions, handles each
+`RoutedEvent` against its own layout, and keeps whatever it must remember
+between events in its `State`, which the runtime stores per `WidgetId`.
+An app hands the frame's widgets to the runtime through
+`AppLogic::frame_tree`, and the runtime routes pointer, keyboard and
+popup events to them. The rules every widget follows are in
+[`quadraui/docs/PRIMITIVE_RULES.md`](quadraui/docs/PRIMITIVE_RULES.md).
 
 ## Features
 
@@ -227,11 +310,19 @@ Pick the backends you ship; `terminal` is independent of them.
 
 ## What's in the box
 
-**53 primitive modules**, one each under `quadraui/src/primitives/`: a
-declarative description and a shared layout, each with a rasteriser per
-backend — except the two shared-math modules `layout_metrics` and
-`row_stack`, which hold arithmetic several primitives reuse rather than
-a widget of their own. Among them:
+**53 primitive modules**, one each under `quadraui/src/primitives/`.
+Each is a widget: a declarative description that implements `Primitive`
+and `Interactive`, painted on every backend by that one implementation.
+The exceptions are the two shared-math modules `layout_metrics` and
+`row_stack`, which hold arithmetic several widgets reuse rather than a
+widget of their own. Among them:
+
+<!-- TODO(0.12 final pass): the claim above that every module except
+layout_metrics and row_stack implements Primitive and Interactive holds once
+W5 (#2966-#2974, including FindReplace split off F5) and W6 (#2971
+MultiSectionView) land. Today these lack it: split, split_tree, chart, board, canvas, diff_view, pipeline_view, message_list, multi_section_view, find_replace and scroll_view. After W9 re-run
+`git grep -n "Primitive for"` over src/primitives and confirm none is missing;
+recount the modules against readme_truth. -->
 
 - Content: `TreeView`, `ListView`, `IconGrid`, `DataTable`, `TreeTable`,
   `Form`, `Editor`,
@@ -248,16 +339,24 @@ a widget of their own. Among them:
   with focus vs. non-focus floats), `Completions`, `FindReplace`,
   `Toast`, plus `ProgressBar` and `Spinner`.
 
-**Compose controllers** in `quadraui::compose` own the interaction state
-machines, so an app matches on semantic events (`MenuEvent::Activated`,
-`SidebarEvent::RowSelected`) instead of raw mouse coordinates:
+**Compose controllers** in `quadraui::compose` coordinate several widgets
+or a whole app-level flow (a shell, a menu system, a form dialog), so an
+app matches on semantic events (`MenuEvent::Activated`,
+`SidebarEvent::RowSelected`) instead of raw mouse coordinates. A single
+widget's own input handling lives in its `Interactive` impl, not here:
+<!-- TODO(0.12 final pass): after W7 (#2957, #2975, #2958) and W8 (#2976-#2979),
+re-derive this table from src/compose/mod.rs. AppShell becomes ShellView
+(DC2); FocusGroup and the divider_drag module go in W6; TreeHoverTracker goes
+in W7 DC1 (ToolbarHoverTracker stays); FormController goes in W8.
+readme_truth's readme_compose_table_names_every_compose_controller checks
+the table against the module list. -->
 
 | Controller | What it handles |
 |---|---|
-| `AppShell` | Activity bar + sidebar + editor area: the VS Code-style application frame. |
+| `AppShell` | Activity bar + sidebar + editor area: the VS Code-style application frame. Owns a `ShellView` widget and its state. |
 | `BottomPanel` | A tabbed, dockable panel along the bottom of an `AppShell`. |
 | `WorkspaceController` | Many open documents, one visible: open, switch, close. |
-| `TabGroup` | Tabbed split panes. |
+| `TabGroupController` | Tabbed split panes. |
 | `MenuSystem` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
 | `ContextMenuController` | One call for a context menu, native or painted per platform. |
 | `SidebarSystem` | Multi-section sidebar: per-section scroll and selection, Tab cycling, scrollbar drag. |
@@ -271,7 +370,7 @@ machines, so an app matches on semantic events (`MenuEvent::Activated`,
 | `FilePickerController` / `FolderPickerController` | In-app file and folder pickers for backends without a native dialog. |
 | `MessageDialogController` | Message and confirmation boxes. |
 | `ToastStackController` | Keyboard focus for actionable notifications. |
-| `FocusRing` / `FocusGroup` | Tab / Shift+Tab focus cycling. |
+| `FocusGroup` | Tab / Shift+Tab cycling between a controller's own regions, by index. |
 | `HelpOverlayController` | A context-sensitive key-binding help overlay. |
 | `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |
 | `HoverTooltipTracker` | When a hover tooltip shows: hover delay, dismiss and auto-dismiss. |
@@ -302,9 +401,13 @@ terminal.
 
 ## Testing
 
-- **Paint-then-click round trips.** Paint a primitive into a headless
+- **Paint-then-click round trips.** Paint a widget into a headless
   surface, find the painted glyphs, click those exact coordinates, and
   assert paint and click identify the same widget.
+- **Widgets addressed by id.** Every identified widget painted through
+  `draw_dyn` records its rect and sub-regions for the frame, so a test
+  targets a widget, or one part of it, by `WidgetId` instead of by
+  coordinates (for example `TuiDriver::tab_center(&bar_id, 2)`).
 - **Conformance matrix.** `quadraui/tests/conformance.rs` runs the same
   scenarios against every backend and reports a per-primitive matrix.
 - **End-to-end drivers.** `quadraui::tui::testing::TuiDriver` runs a real
@@ -357,7 +460,8 @@ for how to regenerate it.
 
 - [`quadraui/docs/UI_CRATE_DESIGN.md`](quadraui/docs/UI_CRATE_DESIGN.md) — goals, non-goals and the core invariants.
 - [`quadraui/docs/COMPOSE.md`](quadraui/docs/COMPOSE.md) — every compose controller: what it owns, the events it emits, the smallest wiring example, and which example file shows it.
-- [`quadraui/docs/PRIMITIVE_RULES.md`](quadraui/docs/PRIMITIVE_RULES.md) — the rules every primitive follows, including the public-API lifecycle.
+- [`quadraui/docs/PRIMITIVE_RULES.md`](quadraui/docs/PRIMITIVE_RULES.md) — the rules every widget follows, including the public-API lifecycle.
+- [`quadraui/docs/TUI_CONSUMER_TOUR.md`](quadraui/docs/TUI_CONSUMER_TOUR.md) — a code tour of one widget in a TUI app: descriptor, paint, click routing and the test that drives it.
 - [`quadraui/docs/decisions/DECISIONS.md`](quadraui/docs/decisions/DECISIONS.md) — architectural decision log.
 - [`quadraui/docs/NATIVE_GUI_LESSONS.md`](quadraui/docs/NATIVE_GUI_LESSONS.md) — pitfalls found building the native backends.
 - [`quadraui/docs/CLIPBOARD.md`](quadraui/docs/CLIPBOARD.md) — how terminal copy reaches the system clipboard, including tmux setup.
