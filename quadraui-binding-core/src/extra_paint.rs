@@ -833,6 +833,26 @@ pub const WIDGET_KINDS: [&str; 36] = [
     "markdown",
 ];
 
+/// Every kind a layout leaf or a flat render dict decodes into a generic
+/// [`crate::layout::LeafDescriptor::Widget`]: [`WIDGET_KINDS`], then every
+/// kind registered at runtime through [`quadraui::register_widget_kind`]
+/// whose name no fixed leaf key or [`EXTRA_PRIMITIVE_KINDS`] entry already
+/// claims. A binding (or any crate linking this one) that registers a kind
+/// gets it decoded, painted and routed with no table edit here.
+pub fn widget_leaf_kinds() -> Vec<&'static str> {
+    let mut kinds = WIDGET_KINDS.to_vec();
+    kinds.extend(
+        quadraui::widget_kinds::runtime_widget_kinds()
+            .into_iter()
+            .filter(|kind| {
+                !crate::layout::LEAF_KIND_KEYS.contains(kind)
+                    && !EXTRA_PRIMITIVE_KINDS.contains(kind)
+                    && !WIDGET_KINDS.contains(kind)
+            }),
+    );
+    kinds
+}
+
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
 /// [`DynWidget`] — the `Widget` counterpart of
 /// [`decode_extra_primitive_checked`], and like it routed through

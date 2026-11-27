@@ -11,8 +11,8 @@ use serde_json::Value;
 use quadraui::primitive::DynWidget;
 
 use crate::extra_paint::{
-    decode_extra_primitive_checked, decode_widget_leaf, ExtraPaint, EXTRA_PRIMITIVE_KINDS,
-    WIDGET_KINDS,
+    decode_extra_primitive_checked, decode_widget_leaf, widget_leaf_kinds, ExtraPaint,
+    EXTRA_PRIMITIVE_KINDS,
 };
 use crate::layout::{LayoutNode, LEAF_KIND_KEYS};
 use crate::render::RenderFrame;
@@ -62,14 +62,14 @@ pub(super) fn is_layout_tree(value: &Value) -> bool {
 /// kind on: every [`LAYOUT_NODE_KEYS`] container, every fixed
 /// [`crate::layout::LEAF_KIND_KEYS`] leaf, every additive
 /// [`EXTRA_PRIMITIVE_KINDS`] leaf, and every generic
-/// [`crate::extra_paint::WIDGET_KINDS`] leaf.
+/// [`crate::extra_paint::widget_leaf_kinds`] leaf.
 pub(super) fn all_node_kind_keys() -> Vec<&'static str> {
     LAYOUT_NODE_KEYS
         .iter()
         .chain(LEAF_KIND_KEYS.iter())
         .chain(EXTRA_PRIMITIVE_KINDS.iter())
-        .chain(WIDGET_KINDS.iter())
         .copied()
+        .chain(widget_leaf_kinds())
         .collect()
 }
 
@@ -85,11 +85,12 @@ pub(super) fn all_node_kind_keys() -> Vec<&'static str> {
 /// becoming an [`DecodeError::UnknownVariant`] here).
 pub(super) fn unknown_node_kind_key(value: &Value) -> Option<&str> {
     let obj = value.as_object()?;
+    let widget_kinds = widget_leaf_kinds();
     let has_recognized_kind = obj.keys().any(|k| {
         LAYOUT_NODE_KEYS.contains(&k.as_str())
             || LEAF_KIND_KEYS.contains(&k.as_str())
             || EXTRA_PRIMITIVE_KINDS.contains(&k.as_str())
-            || WIDGET_KINDS.contains(&k.as_str())
+            || widget_kinds.contains(&k.as_str())
     });
     if has_recognized_kind {
         return None;
@@ -187,12 +188,12 @@ fn extra_slot_entry(
 }
 
 /// Reads and decodes one optional generic-widget slot entry, keyed by
-/// `kind` (one of [`crate::extra_paint::WIDGET_KINDS`]), from a render
+/// `kind` (one of [`crate::extra_paint::widget_leaf_kinds`]), from a render
 /// callback's returned `dict`. Mirrors [`extra_slot_entry`]'s missing/
 /// `null`/dict-or-error shape, dispatching the decode through
 /// [`decode_widget_leaf`] instead of [`decode_extra_primitive_checked`] —
 /// the flat-frame counterpart of [`crate::wire::leaf::layout_leaf_from_value`]'s
-/// own `WIDGET_KINDS` loop.
+/// own `widget_leaf_kinds()` loop.
 fn widget_slot_entry(
     diagnostics: &DecodeDiagnostics,
     what: &str,
@@ -218,6 +219,7 @@ pub(crate) fn render_frame_from_value(
     value: &Value,
     diagnostics: &DecodeDiagnostics,
 ) -> Result<RenderFrame, DecodeError> {
+    let widget_kinds = widget_leaf_kinds();
     let known_keys: Vec<&str> = [
         "text_display",
         "list",
@@ -228,7 +230,7 @@ pub(crate) fn render_frame_from_value(
     ]
     .into_iter()
     .chain(EXTRA_PRIMITIVE_KINDS.iter().copied())
-    .chain(WIDGET_KINDS.iter().copied())
+    .chain(widget_kinds.iter().copied())
     .collect();
     check_unknown_keys(diagnostics, what, "render output", value, &known_keys)?;
     let mut extra = HashMap::new();
@@ -238,7 +240,7 @@ pub(crate) fn render_frame_from_value(
         }
     }
     let mut widgets = HashMap::new();
-    for kind in WIDGET_KINDS {
+    for kind in widget_kinds {
         if let Some(v) = widget_slot_entry(diagnostics, what, value, kind)? {
             widgets.insert(kind.to_string(), v);
         }

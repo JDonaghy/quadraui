@@ -279,6 +279,7 @@ pub use engine::{
     message_dialog_options_from_buttons, style_token, theme_token, DialogContentSize, EventSink,
     InteractionEngine, TreeTableControllerWireEvent,
 };
+pub use extra_paint::widget_leaf_kinds;
 pub use extra_paint::{
     decode_extra_primitive, extra_as, ExtraPaint, TreeTableControllerDescriptor,
     TreeTableControllerNode, EXTRA_PRIMITIVE_KINDS, WIDGET_KINDS,

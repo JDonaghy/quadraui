@@ -398,7 +398,7 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     // own id field (see `quadraui::primitive::Primitive::id`'s own doc);
     // falling back to the slot's own `kind` string keeps this painted hit
     // addressable either way, rather than needing a sentinel id of its own.
-    for kind in crate::extra_paint::WIDGET_KINDS {
+    for kind in crate::extra_paint::widget_leaf_kinds() {
         if let Some(widget) = refs.widgets.get(kind) {
             if let Some(rect) = band(3.0) {
                 backend.draw_dyn(rect, widget.as_ref(), &());
