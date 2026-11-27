@@ -291,8 +291,7 @@ impl SidebarPanelBody {
     ///
     /// `body` must be [`BackendWidget`], i.e. `Send + 'static` — that
     /// bound exists so *owned* content can live inside `ShellAdapter`
-    /// (`BottomPanelConfig`, `TabGroupController`'s `PaneTab::content`)
-    /// and cross into the runner thread. A body that only *borrows* the
+    /// (`BottomPanelConfig`) and cross into the runner thread. A body that only *borrows* the
     /// host's app state for one frame — `Rc<RefCell<_>>`-backed
     /// controllers like `FormController`, or anything
     /// tied to a `!Send` engine — can never satisfy it. Use

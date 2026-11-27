@@ -188,6 +188,10 @@ pub struct GalleryApp {
     /// against the cached value spots both directions of the transition
     /// (pointer entering an icon, and pointer leaving the bar).
     hovered_activity_idx: Option<usize>,
+    /// The rect the last frame painted the selected demo's Demo-tab
+    /// content into, which [`ShellApp::frame_tree`] lays the demo's
+    /// routed widgets out in. `None` while no demo content is showing.
+    demo_rect: std::cell::Cell<Option<Rect>>,
 }
 
 impl GalleryApp {
@@ -215,6 +219,7 @@ impl GalleryApp {
             log: vec!["Gallery ready — click a group, then a demo.".into()],
             theme: quadraui::Theme::default(),
             hovered_activity_idx: None,
+            demo_rect: std::cell::Cell::new(None),
         }
     }
 
@@ -452,9 +457,21 @@ impl ShellApp for GalleryApp {
         backend.set_theme(self.theme);
     }
 
+    /// The selected demo's own routed widgets, laid out in the rect its
+    /// Demo-tab content painted into last frame.
+    fn frame_tree(&self) -> quadraui::FrameTree {
+        match (self.selected, self.demo_rect.get()) {
+            (Some(idx), Some(rect)) if self.active_tab == MainTab::Demo => {
+                self.demos[idx].frame_tree(self.active_variant, rect)
+            }
+            _ => quadraui::FrameTree::new(),
+        }
+    }
+
     #[allow(deprecated)]
     fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let lh = Self::demo_header_row_height(backend);
+        self.demo_rect.set(None);
 
         // ── Sidebar: demos in the active group ──────────────────────
         //
@@ -587,6 +604,7 @@ impl ShellApp for GalleryApp {
                             );
                         }
                         let demo_rect = self.demo_content_rect(idx, backend, body);
+                        self.demo_rect.set(Some(demo_rect));
                         self.demos[idx].render(self.active_variant, backend, demo_rect);
                     }
                     MainTab::Code => {

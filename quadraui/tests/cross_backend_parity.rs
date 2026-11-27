@@ -1111,8 +1111,8 @@ impl AppLogic for TooltipBorderFixture {
         tooltip.chrome.title = self.title.clone();
         let layout = tooltip.layout(anchor, viewport, measure, lh);
         backend.draw_dyn(layout.bounds, &tooltip, &());
-        // The host registers the zone it painted into, the same way
-        // `TabGroupController::render` does for its drop overlay: the
+        // The host registers the zone it painted into, the same way a
+        // dragging `TabGroup`'s host does for its drop overlay: the
         // widget-contract paint path records a `PaintedWidget`, not a
         // frame zone, so a structural-parity observer
         // (`ConformanceDriver::inventory().zones()`) only sees the

@@ -94,6 +94,16 @@ pub trait Demo {
         area: Rect,
     ) -> quadraui::Reaction;
 
+    /// The demo's own routed widgets for `variant`, laid out in `area` —
+    /// the gallery's [`quadraui::ShellApp::frame_tree`] for the Demo tab,
+    /// whose widgets the runtime routes input to before [`Self::handle`]
+    /// sees it, delivering what they report to [`Self::handle`] as a
+    /// `UiEvent`. Default: an empty tree.
+    fn frame_tree(&self, variant: usize, area: Rect) -> quadraui::FrameTree {
+        let _ = (variant, area);
+        quadraui::FrameTree::new()
+    }
+
     /// This module's own source, trimmed to the `// gallery:begin` /
     /// `// gallery:end` region (see [`extract_region`]). Implementors
     /// store `const SOURCE: &str = include_str!("this_module.rs");` at

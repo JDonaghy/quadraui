@@ -3079,14 +3079,14 @@ fn toolbar_overflow_menu_hit_tests_overflow_and_lists_dropped_items() {
     );
 }
 
-/// Pressing `f` rebuilds the controller via `from_layout`, producing a
+/// Pressing `f` rebuilds the group via `from_layout`, producing a
 /// 3-pane mixed H/V tree (left | top-right / bottom-right).
 ///
 /// Verifies that after pressing 'f':
 /// - All three pane tab labels are visible on screen.
 /// - The pane count shown in the status bar reflects 3 panes.
 ///
-/// This is the primary smoke-test for `TabGroupController::from_layout`.
+/// This is the primary smoke-test for `TabGroup::from_layout`.
 #[test]
 fn tab_group_f_key_switches_to_from_layout_3_pane() {
     let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
@@ -3203,12 +3203,10 @@ fn tab_group_drag_start_does_not_panic() {
 /// The default two-pane layout's root divider lands on a half-cell
 /// position at this driver width: `content width = 120`, divider
 /// thickness 1 → `available = 119`, `ratio = 0.5` → `position = 59.5`,
-/// which the split's cell paint lands on the truncated cell `59`.
-/// `TabGroupController::handle_drag_start` hit-tests
-/// `DividerInfo::divider_bounds` by hand (not through
-/// `SplitLayout::hit_test`), so it must use the backend's snapped click
-/// target rather than the raw unsnapped `59.5` position, or clicking the
-/// visible divider glyph at cell 59 would silently miss.
+/// which the split's cell paint lands on the truncated cell `59`. A press
+/// on that painted cell must start the drag — the group hit-tests the
+/// divider's snapped band, not the raw unsnapped `59.5` position — so
+/// dragging from it resizes the divider.
 #[test]
 fn tab_group_divider_drag_starts_at_the_half_cell_divider_s_painted_cell() {
     let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
@@ -3219,13 +3217,40 @@ fn tab_group_divider_drag_starts_at_the_half_cell_divider_s_painted_cell() {
     let y = 10.0;
 
     driver.mouse_down(divider_cell_x, y);
+    driver.mouse_move(70.0, y);
     let after = driver.screen();
     assert!(
-        after.contains("divider drag start"),
-        "clicking the painted divider cell (59) must start a drag:\n{after}"
+        after.contains("divider 0 resized"),
+        "pressing the painted divider cell (59) must start a drag:\n{after}"
     );
+    driver.mouse_up(70.0, y);
+    assert_eq!(
+        driver.styled_row(y as u16)[70].0,
+        '│',
+        "the divider paints where it was dropped:\n{}",
+        driver.screen()
+    );
+}
 
-    driver.mouse_up(divider_cell_x, y);
+/// A press in the body of a pane moves keyboard focus there, so Ctrl-W
+/// closes that pane's active tab.
+#[test]
+fn tab_group_clicking_a_pane_body_focuses_it_for_ctrl_w() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+    assert!(driver.screen_contains("focus: 0"), "{}", driver.screen());
+    driver.click(90.0, 10.0);
+    assert!(
+        driver.screen_contains("focus: 1"),
+        "a body press focuses the right pane:\n{}",
+        driver.screen()
+    );
+    driver.ctrl_char('w');
+    assert!(
+        !driver.screen_contains("Cargo.toml"),
+        "Ctrl-W closes the focused pane's tab:\n{}",
+        driver.screen()
+    );
+    assert!(driver.screen_contains("main.rs"), "{}", driver.screen());
 }
 
 #[test]
@@ -10055,16 +10080,16 @@ fn float_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the float demo");
 }
 
-// ─── WorkspaceDemo: `WorkspaceController` inside a ShellView panel ──────────
+// ─── WorkspaceDemo: a `Workspace` strip inside a ShellView panel ───────────
 //
 // An ordered set of opaque document ids with one active, rendered through
 // `TabBar` into the sidebar panel's content rect, with the active document's
 // body painted by the app into the main content area. These drive the shipping
 // example end-to-end through `driver_with_shell`, so the whole event →
-// ShellAdapter → WorkspaceController → render path is real.
+// ShellAdapter → frame-tree routing → `Workspace` → apply path is real.
 //
 // Tab targets come from `tab_center` / `tab_close_center` against the
-// controller's bar id — never hardcoded columns — because every tab paints
+// workspace's bar id — never hardcoded columns — because every tab paints
 // the same close glyph and `find()` cannot disambiguate them.
 
 fn workspace_bar_id() -> quadraui::WidgetId {
@@ -10076,7 +10101,7 @@ fn workspace_driver() -> TuiDriver<impl quadraui::AppLogic> {
 }
 
 /// Deliver `key` with Ctrl (and optionally Shift) held. `TuiDriver` has
-/// `ctrl_char` but no named-key equivalent, and `WorkspaceController`'s
+/// `ctrl_char` but no named-key equivalent, and the workspace's cycle
 /// bindings are all on named keys (Tab / PageUp / PageDown).
 fn press_ctrl_named<A: quadraui::AppLogic>(driver: &mut TuiDriver<A>, key: NamedKey, shift: bool) {
     driver.dispatch(UiEvent::KeyPressed {
@@ -10257,7 +10282,7 @@ fn workspace_demo_overflowing_strip_keeps_the_active_tab_visible() {
     // until the strip cannot show them all. The newly-opened document is
     // the active one, so it must be on screen on the *same* frame — the
     // scroll offset is resolved before the strip paints, not one frame
-    // late (see `WorkspaceController::render`).
+    // late (see `Workspace`'s `Primitive::layout`).
     let mut driver = workspace_driver();
     for _ in 0..workspace_demo::BACKLOG.len() {
         driver.type_char('o');
@@ -10309,7 +10334,7 @@ fn workspace_demo_q_exits() {
 //
 // `p` opens the next backlog document as the workspace's single preview;
 // `m` promotes the active document explicitly. These drive the same
-// `WorkspaceController` through the shipping example, end to end.
+// `Workspace` through the shipping example, end to end.
 
 #[test]
 fn workspace_demo_p_opens_a_preview_tab_that_paints_italic() {
@@ -10406,7 +10431,7 @@ fn workspace_demo_clicking_the_preview_tab_promotes_it() {
     assert!(
         driver.screen_contains("promoted doc:delta"),
         "selecting the preview tab promotes it — the deliberate VS Code \
-         divergence documented on WorkspaceController:\n{}",
+         divergence documented on `compose::workspace`:\n{}",
         driver.screen()
     );
     let label_after = driver

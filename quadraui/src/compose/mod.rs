@@ -25,16 +25,14 @@
 //!   mode (free-text confirm) and list/search mode (item selection).
 //! - [`ChatController`] — chat overlay with scrollable transcript + multi-line
 //!   input + status strip.
-//! - [`TabGroup`] / [`TabGroupController`] — editor-group-style tabbed
-//!   split panes: a `TabBar` per pane, `SplitTree` dividers and a
-//!   `DropOverlay` for tab drags.
+//! - [`TabGroup`] — editor-group-style tabbed split panes: a `TabBar` per
+//!   pane, `SplitTree` dividers and a `DropOverlay` for tab drags.
 //! - [`HelpRegistry`] / [`HelpOverlay`] — per-view help registry +
 //!   `?`-triggered cheatsheet overlay, plus helpers to feed registered
 //!   actions into the command palette.
-//! - [`WorkspaceController`] — open-N-view-one document set (ordered
-//!   opaque ids, one active) rendered through the `TabBar` primitive.
-//!   Unlike [`TabGroupController`] it owns no content, so the host can
-//!   paint a body that borrows app state.
+//! - [`Workspace`] — open-N-view-one document set (ordered opaque ids,
+//!   one active, an optional preview) painted through a `TabBar` child;
+//!   the host paints the body, which can borrow app state.
 //! - [`notify_or_toast`] — send a [`crate::backend::Notification`]
 //!   natively where the backend supports it, degrade to the in-canvas
 //!   `Toast` primitive where it doesn't.
@@ -200,9 +198,8 @@ pub use status_bar_interaction::StatusBarAction;
 pub use status_bar_interaction::StatusBarInteraction;
 pub use tab_drag::{resolve_tab_drop, TabDragSource, TabDropInstruction};
 pub use tab_group::{
-    GroupLayout, Pane, PaneDragRect, PaneTab, TabGroup, TabGroupController, TabGroupEvent,
-    TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
-    TabGroupSubPart, TabGroupTab,
+    GroupLayout, TabGroup, TabGroupEvent, TabGroupPane, TabGroupPaneLayout,
+    TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart, TabGroupTab,
 };
 pub use toast_stack::{ToastStackAction, ToastStackController};
 // `ToastStackEvent` is `#[deprecated]` (use `ToastStackController::handle_event`'s
@@ -222,6 +219,5 @@ pub use tree_table_controller::{
     NodeId, TreeTableController, TreeTableControllerEvent, TreeTableNodeData,
 };
 pub use workspace::{
-    Workspace, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
-    WorkspacePrimitiveLayout, WorkspaceState,
+    Workspace, WorkspaceDoc, WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState,
 };

@@ -30,7 +30,7 @@
 //!   composing a background fill + cyclable header/search chrome + a
 //!   raw `TreeView` body + a hand-built scrollbar. Used by
 //!   `tui_sidebar_panel_body` / `gtk_sidebar_panel_body`.
-//! - [`WorkspaceDemo`] (in [`workspace_demo`]) — `WorkspaceController`
+//! - [`WorkspaceDemo`] (in [`workspace_demo`]) — a `Workspace` strip
 //!   mounted inside a `ShellView` panel: open-N-view-one document
 //!   tabs in the panel's rect, body painted by the app. Used by
 //!   `tui_workspace` / `gtk_workspace`.

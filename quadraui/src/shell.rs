@@ -810,6 +810,20 @@ pub trait ShellApp {
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend, ctx: &ShellContext)
         -> Reaction;
 
+    /// The app's own routed widgets, as a [`crate::frame_tree::FrameTree`]
+    /// — [`crate::runner::AppLogic::frame_tree`] for a shell-hosted app.
+    /// The runtime delivers pointer input over these widgets, and keys
+    /// while one holds focus, to their own
+    /// [`crate::interactive::Interactive::handle`] ahead of the shell, and
+    /// hands what they report to [`Self::handle`] as a `UiEvent`. Called
+    /// `&self`-only, once per routed event, so it returns the rects the
+    /// last [`Self::render_content`] painted the widgets into.
+    ///
+    /// Default: an empty tree — the app routes no widgets of its own.
+    fn frame_tree(&self) -> crate::frame_tree::FrameTree {
+        crate::frame_tree::FrameTree::new()
+    }
+
     /// Called once after the shell is built. Optional.
     fn setup(&mut self, _backend: &mut dyn Backend) {}
 

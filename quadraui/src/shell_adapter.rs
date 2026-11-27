@@ -591,6 +591,10 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         reaction
     }
 
+    fn frame_tree(&self, _area: ()) -> crate::frame_tree::FrameTree {
+        self.app.frame_tree()
+    }
+
     fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
         let mut reaction = self.app.tick(backend);
         // Timer-driven work (background poll completing, a queued command
@@ -715,6 +719,45 @@ mod tests {
         ) -> Reaction {
             Reaction::Continue
         }
+    }
+
+    /// A shell-hosted app's own routed widgets reach the runtime: the
+    /// adapter's frame tree is the app's.
+    #[test]
+    fn the_adapter_routes_the_app_s_own_frame_tree() {
+        struct RoutedApp;
+
+        impl ShellApp for RoutedApp {
+            fn render_content(&self, _backend: &mut dyn Backend, _layout: &ShellLayout) {}
+
+            fn handle(
+                &mut self,
+                _event: UiEvent,
+                _backend: &mut dyn Backend,
+                _ctx: &ShellContext,
+            ) -> Reaction {
+                Reaction::Continue
+            }
+
+            fn frame_tree(&self) -> crate::frame_tree::FrameTree {
+                let mut tree = crate::frame_tree::FrameTree::new();
+                let strip = crate::compose::workspace::Workspace::new(WidgetId::new("docs"));
+                tree.push(strip.id, Rect::new(2.0, 3.0, 40.0, 1.0), Box::new(strip));
+                tree
+            }
+        }
+
+        let adapter = build_shell_adapter(RoutedApp, ShellConfig::new("t", Vec::new()));
+        let tree = AppLogic::frame_tree(&adapter, ());
+        let node = tree
+            .find(&WidgetId::new("docs"))
+            .expect("the app's widget is routed");
+        assert_eq!(node.rect, Rect::new(2.0, 3.0, 40.0, 1.0));
+        assert!(AppLogic::frame_tree(
+            &build_shell_adapter(NoopApp, ShellConfig::new("t", Vec::new())),
+            ()
+        )
+        .is_empty());
     }
 
     /// `title_bar_height_lh` must survive a start-hidden title bar.

@@ -342,7 +342,7 @@ pub(crate) trait PreprocessBackend {
 ///    plain `NamedKey::Tab` advances), then deliver
 ///    `UiEvent::FocusChanged` instead of the raw key press. Ctrl/Alt/Cmd
 ///    held is left alone (reserved for app-level chords like
-///    `TabGroupController`'s Ctrl-Tab pane switching). While it stays
+///    `Workspace`'s Ctrl-Tab document cycling). While it stays
 ///    empty — the default — this step never fires and Tab/Shift+Tab pass
 ///    through unchanged, exactly as before. When the currently-focused id
 ///    is focused but deliberately absent from the list (e.g. a

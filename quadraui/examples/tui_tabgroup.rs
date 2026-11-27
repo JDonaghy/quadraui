@@ -1,4 +1,4 @@
-//! `TabGroupController` demo (TUI backend).
+//! `TabGroup` demo (TUI backend).
 //!
 //! Two split panes, each with its own tab bar. Demonstrates tab
 //! switching, closing, new-tab, pane focus, divider dragging, and

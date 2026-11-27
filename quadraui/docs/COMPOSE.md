@@ -819,46 +819,54 @@ its title bar).
 
 ---
 
-## `TabGroupController` — `src/compose/tab_group.rs`
+## `TabGroup` — `src/compose/tab_group.rs`
 
-**Owns:** an editor-group-style tabbed split layout — `TabBar` + `Split` +
-`DropZone` wired into N panes in an arbitrary nested horizontal/vertical
-split tree, each pane with its own scrollable tab bar. Tab activation,
-closing, new-tab, pane focus, divider drag and drag-a-tab-to-another-pane
-all go through one controller.
+**Owns:** an editor-group-style tabbed split layout — a `TabBar` per pane,
+one `SplitTree` for the dividers and a `DropOverlay` popup for tab drags —
+over N panes in an arbitrary nested horizontal/vertical split tree, each
+pane with its own scrollable tab strip. Tab activation, closing, new-tab,
+pane focus, divider drag and drag-a-tab-to-another-pane all route through
+the widget's own `Interactive`.
 
-**Controller only.** `TabGroupController::with_pane(pane_id, tabs,
-active_tab_id, split_direction)`; `render(backend, bounds)` →
-`TabGroupLayout`; `handle_click_event(x, y)` → `Handled<TabGroupEvent>`;
-`handle_drag_start` / `handle_drag_move_event` / `handle_drag_end` for
-divider drags; `handle_tab_drag_start` / `handle_tab_drag_move` /
-`handle_tab_drop_event` for moving tabs.
+**Widget:** `TabGroup::with_pane(id, pane, split_direction)` or
+`TabGroup::from_layout(id, panes, layout, split_direction)`
+(`State` = `TabGroupState`, `Action` = `TabGroupEvent`, delivered as
+`UiEvent::TabGroup(id, event)`). The descriptor is the model: write each
+intent back with `TabGroup::apply(event)`, which returns the changes it
+made; `add_tab`, `switch_tab`, `close_tab`, `add_pane_after` and
+`collapse_pane` change it directly. The layout
+(`TabGroupPrimitiveLayout`) hands back each pane's `content_bounds`; the
+host paints the bodies. A press in the body of the pane that already has
+focus is the host's.
 
-**Events (`TabGroupEvent`):** `TabActivated { pane_idx, tab_id }`,
-`TabClosed { pane_idx, tab_id }`, `PaneCollapsed { .. }`,
-`PaneAdded { pane_idx }`, `PaneFocused { pane_idx }`,
-`DividerResized { divider_idx }`, `NewTabRequested { pane_idx }`,
-`TabReordered { .. }`, `TabMovedToPane { .. }`, `TabSplitToNewPane { .. }`.
+**Events (`TabGroupEvent`):** intents `TabActivated { pane_idx, tab_id }`,
+`TabClosed { pane_idx, tab_id }`, `PaneFocused { pane_idx }`,
+`DividerResized { divider_idx, ratio }`, `NewTabRequested { pane_idx }`,
+`TabDropped { tab_id, instruction }`; changes `apply` reports besides
+those: `PaneCollapsed { .. }`, `TabReordered { .. }`,
+`TabMovedToPane { .. }`, `TabSplitToNewPane { .. }`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-let tabs = vec![PaneTab {
-    id: "t0".into(),
-    label: "main.rs".into(),
-    closable: true,
-    content: Box::new(MyContent),
-}];
-let mut group = TabGroupController::with_pane("main", tabs, "t0", SplitDirection::Horizontal);
-let layout = group.render(backend, area);
-// on a click at (x, y):
-if let Handled::Event(TabGroupEvent::TabActivated { tab_id, .. }) = group.handle_click_event(x, y) {
-    activate(tab_id);
+let mut group = TabGroup::with_pane(
+    WidgetId::new("editors"),
+    TabGroupPane::new("main", vec![TabGroupTab::new("t0", "main.rs")], "t0"),
+    SplitDirection::Horizontal,
+);
+// render: paint the group, then each pane's body.
+let painted = backend.draw_dyn(area, &group, &());
+// frame_tree: route it.
+tree.push(group.id, area, Box::new(group.clone()));
+// handle:
+if let UiEvent::TabGroup(_, intent) = event {
+    for change in group.apply(intent) {
+        if let TabGroupEvent::TabActivated { tab_id, .. } = change {
+            activate(tab_id);
+        }
+    }
 }
 ```
-
-<!-- TODO(0.12 final pass): after D9 (#2955) ports TabGroup onto the contract,
-add its widget, State and Action, and recheck the constructor and event list. -->
 
 **Example:** `examples/tui_tabgroup.rs` / `examples/gtk_tabgroup.rs`
 (`examples/common/tab_group_demo.rs`); active-tab bracket chrome in
@@ -1050,36 +1058,36 @@ module is the direct-use reference.
 
 **Owns:** an **open-N-view-one** set of opaque document ids with exactly
 one active, shown as a `TabBar` strip: open, close, activate, reorder,
-preview tabs, click and keyboard routing. Unlike `TabGroupController` it
-owns no content: the host paints the active document's body, which can
-borrow app state.
+preview tabs, click and keyboard routing. The host paints the active
+document's body, which can borrow app state.
 
 **Widget:** `Workspace::new(id)` with `.with_docs(..)`, `.with_active(..)`,
 `.with_preview(..)` (`State` = `WorkspaceState`, `Action` =
 `WorkspaceEvent`, delivered as `UiEvent::Workspace(id, event)`). Shape 1
 above is a complete example. A press on the body area is the host's.
 
-**Controller:** `WorkspaceController::new(bar_id)`; `open(doc)`,
-`close(id)`, `activate(id)` and `reorder(from, to)` return the
-`WorkspaceEvent`s they caused; `render(backend, bounds)` → `WorkspaceLayout` (`strip_bounds`,
-`body_bounds`); `handle_click_event(x, y, button)` →
-`Handled<Vec<WorkspaceEvent>>`; `handle_key_event(&key, modifiers)` →
-`Handled<WorkspaceEvent>`.
+**Model:** `open(doc)`, `open_preview(doc)`, `close(id)`, `activate(id)`,
+`reorder(from, to)`, `cycle(delta)`, `promote(id)` and `set_dirty(id, ..)`
+return the `WorkspaceEvent`s they caused; `apply(intent)` writes back what
+the strip reported. `Workspace::cycle_delta(&key, modifiers)` maps
+`Ctrl+Tab`-style keys for a host that binds them app-wide.
 
 **Actions (`WorkspaceEvent`):** `Opened { id, index }`,
 `Activated { id, index }`, `Closed { id, index }`,
 `Reordered { id, from, to }`, `Promoted { id }`.
 
-**Smallest wiring (controller):**
+**Smallest wiring:**
 
 ```rust,ignore
-let mut ws = WorkspaceController::new("panel:docs");
+let mut ws = Workspace::new(WidgetId::new("panel:docs"));
 ws.open(WorkspaceDoc::new("doc:a", "alpha.rs"));
-let layout = ws.render(backend, panel_rect);
-paint_body(backend, layout.body_bounds);
-// on a click at (x, y):
-if let Handled::Event(events) = ws.handle_click_event(x, y, MouseButton::Left) {
-    for ev in events {
+// render:
+let painted = backend.draw_dyn(panel_rect, &ws, &());
+// frame_tree:
+tree.push(ws.id, panel_rect, Box::new(ws.clone()));
+// handle:
+if let UiEvent::Workspace(_, intent) = event {
+    for ev in ws.apply(intent) {
         if let WorkspaceEvent::Activated { id, .. } = ev {
             switch_to(id);
         }

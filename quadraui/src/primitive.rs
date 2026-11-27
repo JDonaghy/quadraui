@@ -1698,8 +1698,7 @@ impl PaintedWidgets {
     /// `None` if it didn't paint.
     ///
     /// The *last* entry wins when one id painted twice in a frame (a
-    /// two-pass paint that corrects its own scroll offset, as
-    /// [`crate::compose::WorkspaceController::render`] does), so a caller
+    /// two-pass paint that corrects its own scroll offset), so a caller
     /// always reads the geometry that is actually on screen.
     pub fn painted_layout(&self, id: &WidgetId) -> Option<(Rect, &dyn PrimitiveLayout)> {
         self.entries

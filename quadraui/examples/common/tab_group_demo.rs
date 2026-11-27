@@ -1,7 +1,11 @@
-//! Backend-agnostic app demonstrating [`TabGroupController`].
+//! Backend-agnostic app demonstrating [`TabGroup`] on the widget contract.
 //!
 //! Two panes side-by-side (horizontal split), each with its own tab bar.
-//! Demonstrates:
+//! The group paints as a widget and is registered in the app's
+//! `FrameTree`, so the runtime routes every press, drag and release on it
+//! through `TabGroup`'s own `Interactive`; this app applies each
+//! `UiEvent::TabGroup` intent with [`TabGroup::apply`] and paints the
+//! active tab's body into each pane itself. Demonstrates:
 //!
 //! - Click a tab to activate it.
 //! - Click `×` on a closable tab to close it; closing the last tab in a pane
@@ -15,36 +19,39 @@
 //!   `Top`/`Bottom` edges create a vertical split.
 //! - Tab / Shift+Tab to cycle focus between panes.
 //! - **Ctrl-W** — close the active tab in the focused pane (keyboard
-//!   equivalent of clicking `×`, #828).
+//!   equivalent of clicking `×`).
 //! - **`f`** — rebuild via `from_layout`: 3 panes in a mixed H/V tree
-//!   (`left | (top-right / bottom-right)`). Tests the new constructor.
+//!   (`left | (top-right / bottom-right)`).
 //! - **`r`** — reset to the default 2-pane horizontal layout.
-//! - `q` / Esc to quit.
+//! - `q` / Esc to quit (Esc first cancels a tab drag in progress).
 
-use quadraui::DrawsPrimitives;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 
-use quadraui::compose::tab_group::{GroupLayout, Pane, PaneTab, TabGroupController, TabGroupEvent};
+use quadraui::compose::tab_group::{
+    GroupLayout, TabGroup, TabGroupEvent, TabGroupPane, TabGroupPrimitiveLayout, TabGroupState,
+    TabGroupTab,
+};
 use quadraui::{
-    AppLogic, Backend, Color, Handled, Key, Modifiers, NamedKey, Reaction, Rect, SplitDirection,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, DrawsPrimitives, FrameTree, Key, Modifiers, NamedKey, Point,
+    Reaction, Rect, SplitDirection, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    DROP_OVERLAY_ZONE_ID,
 };
 
-/// Minimum cursor movement (backend units: pixels for GTK, character cells for
-/// TUI) required to commit a primed tab drag.  Below this distance a
-/// mouse-down/up on a tab body is treated as a plain click (tab activation).
-const TAB_DRAG_THRESHOLD: f32 = 2.0;
+/// The group's widget id.
+const GROUP_ID: &str = "tg-demo:group";
 
-// ── Content widgets ───────────────────────────────────────────────────────────
+// ── Tab bodies ────────────────────────────────────────────────────────────────
 
-/// A content widget that fills its area with a labelled status bar.
-pub struct LabelContent {
-    pub text: String,
-    pub bg: Color,
+/// What a tab's body shows: a labelled bar in its own colour.
+#[derive(Clone)]
+struct Body {
+    text: String,
+    bg: Color,
 }
 
-impl quadraui::BackendWidget for LabelContent {
-    fn render(&self, backend: &mut dyn Backend, rect: Rect) {
+impl Body {
+    fn paint(&self, backend: &mut dyn Backend, rect: Rect) {
         if rect.height < 1.0 {
             return;
         }
@@ -64,47 +71,71 @@ impl quadraui::BackendWidget for LabelContent {
     }
 }
 
-fn lbl(text: &str, bg: Color) -> Box<LabelContent> {
-    Box::new(LabelContent {
-        text: text.to_string(),
-        bg,
-    })
+/// A closable tab plus the body it shows.
+fn tab(id: &str, label: &str, body: &str, bg: Color) -> (TabGroupTab, Body) {
+    (
+        TabGroupTab::new(id, label),
+        Body {
+            text: body.to_string(),
+            bg,
+        },
+    )
+}
+
+/// A pane of `tabs`, recording each tab's body in `bodies`.
+fn pane(
+    id: &str,
+    tabs: Vec<(TabGroupTab, Body)>,
+    active: &str,
+    bodies: &mut HashMap<String, Body>,
+) -> TabGroupPane {
+    let tabs = tabs
+        .into_iter()
+        .map(|(tab, body)| {
+            bodies.insert(tab.id.clone(), body);
+            tab
+        })
+        .collect();
+    TabGroupPane::new(id, tabs, active)
 }
 
 // ── Layout builders ───────────────────────────────────────────────────────────
 
-/// Default layout: two panes side-by-side (horizontal), built via the
-/// incremental `with_pane` / `add_pane_with_tab` API.
-fn make_default_group() -> TabGroupController {
-    let mut group = TabGroupController::with_pane(
+/// Default layout: two panes side-by-side (horizontal), built
+/// incrementally with `with_pane` / `add_pane_after`.
+fn make_default_group(bodies: &mut HashMap<String, Body>) -> TabGroup {
+    let first = pane(
         "pane:0",
         vec![
-            PaneTab {
-                id: "p0:t0".into(),
-                label: " main.rs ".into(),
-                closable: true,
-                content: lbl("main.rs content", Color::rgb(30, 40, 60)),
-            },
-            PaneTab {
-                id: "p0:t1".into(),
-                label: " lib.rs ".into(),
-                closable: true,
-                content: lbl("lib.rs content", Color::rgb(40, 30, 60)),
-            },
+            tab(
+                "p0:t0",
+                " main.rs ",
+                "main.rs content",
+                Color::rgb(30, 40, 60),
+            ),
+            tab(
+                "p0:t1",
+                " lib.rs ",
+                "lib.rs content",
+                Color::rgb(40, 30, 60),
+            ),
         ],
         "p0:t0",
-        SplitDirection::Horizontal,
+        bodies,
     );
-    group.add_pane_with_tab(
+    let mut group = TabGroup::with_pane(GROUP_ID, first, SplitDirection::Horizontal);
+    let second = pane(
         "pane:1",
-        PaneTab {
-            id: "p1:t0".into(),
-            label: " Cargo.toml ".into(),
-            closable: true,
-            content: lbl("Cargo.toml content", Color::rgb(30, 60, 40)),
-        },
+        vec![tab(
+            "p1:t0",
+            " Cargo.toml ",
+            "Cargo.toml content",
+            Color::rgb(30, 60, 40),
+        )],
+        "p1:t0",
+        bodies,
     );
-    group.focus_pane(0);
+    group.add_pane_after(0, second);
     group
 }
 
@@ -119,9 +150,8 @@ fn make_default_group() -> TabGroupController {
 /// ```
 ///
 /// Root split is Horizontal (left | right); the right sub-tree is Vertical
-/// (top-right / bottom-right).  This is the layout that was impossible to
-/// express before `from_layout` was added.
-fn make_from_layout_group() -> TabGroupController {
+/// (top-right / bottom-right).
+fn make_from_layout_group(bodies: &mut HashMap<String, Body>) -> TabGroup {
     let layout = GroupLayout::Split {
         direction: SplitDirection::Horizontal,
         ratio: 0.5,
@@ -133,86 +163,161 @@ fn make_from_layout_group() -> TabGroupController {
             second: Box::new(GroupLayout::Leaf(2)),
         }),
     };
-    TabGroupController::from_layout(
-        vec![
-            Pane::new(
-                "pane:left",
-                vec![
-                    PaneTab {
-                        id: "left:t0".into(),
-                        label: " left.rs ".into(),
-                        closable: true,
-                        content: lbl("left pane (pane 0)", Color::rgb(30, 40, 60)),
-                    },
-                    PaneTab {
-                        id: "left:t1".into(),
-                        label: " app.rs ".into(),
-                        closable: true,
-                        content: lbl("app.rs — left pane tab 2", Color::rgb(20, 50, 70)),
-                    },
-                ],
-                "left:t0",
-            ),
-            Pane::new(
-                "pane:top-right",
-                vec![PaneTab {
-                    id: "tr:t0".into(),
-                    label: " top.rs ".into(),
-                    closable: true,
-                    content: lbl("top-right pane (pane 1)", Color::rgb(60, 30, 40)),
-                }],
+    let panes = vec![
+        pane(
+            "pane:left",
+            vec![
+                tab(
+                    "left:t0",
+                    " left.rs ",
+                    "left pane (pane 0)",
+                    Color::rgb(30, 40, 60),
+                ),
+                tab(
+                    "left:t1",
+                    " app.rs ",
+                    "app.rs — left pane tab 2",
+                    Color::rgb(20, 50, 70),
+                ),
+            ],
+            "left:t0",
+            bodies,
+        ),
+        pane(
+            "pane:top-right",
+            vec![tab(
                 "tr:t0",
-            ),
-            Pane::new(
-                "pane:bottom-right",
-                vec![PaneTab {
-                    id: "br:t0".into(),
-                    label: " bottom.rs ".into(),
-                    closable: true,
-                    content: lbl("bottom-right pane (pane 2)", Color::rgb(30, 60, 30)),
-                }],
+                " top.rs ",
+                "top-right pane (pane 1)",
+                Color::rgb(60, 30, 40),
+            )],
+            "tr:t0",
+            bodies,
+        ),
+        pane(
+            "pane:bottom-right",
+            vec![tab(
                 "br:t0",
-            ),
-        ],
-        layout,
-        SplitDirection::Horizontal,
-    )
-    .expect("from_layout: layout is structurally valid")
+                " bottom.rs ",
+                "bottom-right pane (pane 2)",
+                Color::rgb(30, 60, 30),
+            )],
+            "br:t0",
+            bodies,
+        ),
+    ];
+    TabGroup::from_layout(GROUP_ID, panes, layout, SplitDirection::Horizontal)
+        .expect("from_layout: layout is structurally valid")
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
 pub struct TabGroupDemo {
-    /// Wrapped in RefCell so `render(&self, …)` can call `group.render(…)`.
-    group: RefCell<TabGroupController>,
-    last_event: RefCell<String>,
-    last_bounds: RefCell<Rect>,
-    /// True while a divider drag is in progress.
-    divider_dragging: RefCell<bool>,
-    /// True while a tab drag is in progress (threshold crossed).
-    tab_dragging: RefCell<bool>,
-    /// Mouse-down position when a tab drag has been primed but the cursor
-    /// hasn't yet crossed [`TAB_DRAG_THRESHOLD`].  `None` when there is no
-    /// pending drag.  On `MouseUp` without crossing the threshold this is
-    /// treated as a plain click.
-    tab_drag_pending_pos: RefCell<Option<(f32, f32)>>,
+    group: TabGroup,
+    /// Every tab's body, by tab id.
+    bodies: HashMap<String, Body>,
+    /// The pane keyboard commands (Ctrl-W) address.
+    focused: Option<usize>,
+    last_event: String,
+    /// The rect the group painted into last frame, which `frame_tree`
+    /// routes against.
+    area: Cell<Rect>,
+    /// The group's layout from the last frame, for a body press the group
+    /// leaves to this app.
+    painted: RefCell<Option<TabGroupPrimitiveLayout>>,
     /// Counter used to make new-tab IDs unique.
-    next_tab_id: RefCell<usize>,
+    next_tab_id: usize,
 }
 
 impl TabGroupDemo {
     pub fn new() -> Self {
+        let mut bodies = HashMap::new();
+        let group = make_default_group(&mut bodies);
         Self {
-            group: RefCell::new(make_default_group()),
-            last_event: RefCell::new(
-                "click tabs · drag divider · drag tab to edge/pane · Tab=focus · Ctrl-W=close tab · f=from_layout · r=reset · q=quit".into(),
-            ),
-            last_bounds: RefCell::new(Rect::new(0.0, 0.0, 100.0, 20.0)),
-            divider_dragging: RefCell::new(false),
-            tab_dragging: RefCell::new(false),
-            tab_drag_pending_pos: RefCell::new(None),
-            next_tab_id: RefCell::new(10),
+            group,
+            bodies,
+            focused: Some(0),
+            last_event:
+                "click tabs · drag divider · drag tab to edge/pane · Tab=focus · Ctrl-W=close tab · f=from_layout · r=reset · q=quit"
+                    .into(),
+            area: Cell::new(Rect::new(0.0, 0.0, 100.0, 20.0)),
+            painted: RefCell::new(None),
+            next_tab_id: 10,
         }
+    }
+
+    /// Swap in a freshly built group.
+    fn rebuild(&mut self, build: fn(&mut HashMap<String, Body>) -> TabGroup, note: &str) {
+        self.bodies.clear();
+        self.group = build(&mut self.bodies);
+        self.focused = Some(0);
+        self.last_event = note.into();
+    }
+
+    /// Keep focus on a real pane after the pane count changed.
+    fn clamp_focus(&mut self) {
+        let n = self.group.pane_count();
+        if let Some(f) = self.focused {
+            if f >= n {
+                self.focused = n.checked_sub(1);
+            }
+        }
+    }
+
+    /// React to one change the group made (or a request it reported).
+    fn react(&mut self, ev: &TabGroupEvent) {
+        match ev {
+            TabGroupEvent::PaneFocused { pane_idx } => self.focused = Some(*pane_idx),
+            TabGroupEvent::TabSplitToNewPane { new_pane_idx, .. } => {
+                self.focused = Some(*new_pane_idx)
+            }
+            TabGroupEvent::NewTabRequested { pane_idx } => {
+                self.next_tab_id += 1;
+                let id = format!("dyn:{}", self.next_tab_id);
+                let label = format!(" untitled-{} ", self.next_tab_id);
+                self.bodies.insert(
+                    id.clone(),
+                    Body {
+                        text: "(new tab)".into(),
+                        bg: Color::rgb(50, 50, 50),
+                    },
+                );
+                self.group
+                    .add_tab(*pane_idx, TabGroupTab::new(id.as_str(), label));
+                self.group.switch_tab(*pane_idx, &id);
+            }
+            _ => {}
+        }
+        self.clamp_focus();
+    }
+
+    fn report(&mut self, events: &[TabGroupEvent]) -> Reaction {
+        let Some(primary) = events.first() else {
+            return Reaction::Redraw;
+        };
+        self.last_event = format_event(primary);
+        for ev in events {
+            self.react(ev);
+        }
+        Reaction::Redraw
+    }
+
+    fn cycle_focus(&mut self, delta: isize) {
+        let n = self.group.pane_count();
+        if n == 0 {
+            return;
+        }
+        self.focused = Some(match self.focused {
+            Some(i) => quadraui::focus::cycle_index(i, delta, n),
+            None if delta >= 0 => 0,
+            None => n - 1,
+        });
+    }
+
+    fn focus_label(&self) -> String {
+        self.focused
+            .map(|i| i.to_string())
+            .unwrap_or_else(|| "—".into())
     }
 }
 
@@ -231,18 +336,41 @@ impl AppLogic for TabGroupDemo {
 
         // Reserve bottom row for status bar.
         let content_rect = Rect::new(0.0, 0.0, viewport.width, (viewport.height - lh).max(0.0));
-        *self.last_bounds.borrow_mut() = content_rect;
+        self.area.set(content_rect);
 
-        // Render the tab group (also draws the drop overlay when tab-dragging).
-        self.group.borrow_mut().render(backend, content_rect);
+        let layout = backend
+            .draw_dyn(content_rect, &self.group, &())
+            .downcast_ref::<TabGroupPrimitiveLayout>()
+            .cloned();
+        if let Some(layout) = &layout {
+            // Each pane's active tab paints its own body.
+            for (pane, pane_layout) in self.group.panes().iter().zip(&layout.panes) {
+                let content = pane_layout.content_bounds;
+                if content.width > 0.0 && content.height > 0.0 {
+                    if let Some(body) = self.bodies.get(pane.active_tab_id()) {
+                        body.paint(backend, content);
+                    }
+                }
+            }
+            // The drop overlay paints no text: register its zone so the
+            // frame inventory attributes it while a tab drag hovers a
+            // drop zone.
+            let overlay = quadraui::with_widget_states(|store| {
+                store
+                    .get(&self.group.id)
+                    .and_then(|state| state.downcast_ref::<TabGroupState>())
+                    .and_then(|state| self.group.drop_overlay(state, layout))
+            });
+            if let Some(overlay) = overlay {
+                backend.register_zone(WidgetId::new(DROP_OVERLAY_ZONE_ID), overlay.bounds());
+            }
+        }
+        *self.painted.borrow_mut() = layout;
 
-        let group = self.group.borrow();
-
-        // Status bar.
         let status = StatusBar {
             id: WidgetId::new("tg-demo:status"),
             left_segments: vec![StatusBarSegment {
-                text: format!(" {} ", self.last_event.borrow()),
+                text: format!(" {} ", self.last_event),
                 fg: Color::rgb(200, 200, 200),
                 bg: Color::rgb(40, 40, 60),
                 bold: false,
@@ -251,11 +379,8 @@ impl AppLogic for TabGroupDemo {
             right_segments: vec![StatusBarSegment {
                 text: format!(
                     " focus: {} | panes: {} ",
-                    group
-                        .focused_pane()
-                        .map(|i| i.to_string())
-                        .unwrap_or_else(|| "—".into()),
-                    group.pane_count()
+                    self.focus_label(),
+                    self.group.pane_count()
                 ),
                 fg: Color::rgb(180, 180, 180),
                 bg: Color::rgb(40, 40, 60),
@@ -267,273 +392,102 @@ impl AppLogic for TabGroupDemo {
         backend.draw_dyn(status_rect, &status, &());
     }
 
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(self.group.id, self.area.get(), Box::new(self.group.clone()));
+        tree
+    }
+
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         match event {
+            // ── The group's own intents ────────────────────────────
+            UiEvent::TabGroup(_, intent) => {
+                let events = self.group.apply(intent);
+                self.report(&events)
+            }
+
             // ── Quit ───────────────────────────────────────────────
             UiEvent::KeyPressed {
-                key: Key::Char('q'),
+                key: Key::Char('q') | Key::Named(NamedKey::Escape),
                 ..
-            }
-            | UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Escape),
-                ..
-            } => {
-                // Cancel any active or pending tab drag on Escape / q.
-                self.group.borrow_mut().cancel_tab_drag();
-                *self.tab_dragging.borrow_mut() = false;
-                *self.tab_drag_pending_pos.borrow_mut() = None;
-                Reaction::Exit
-            }
+            } => Reaction::Exit,
 
             // ── from_layout demo (f) / reset (r) ──────────────────
             UiEvent::KeyPressed {
                 key: Key::Char('f'),
                 ..
             } => {
-                // Rebuild the controller from an explicit mixed-direction tree:
-                //   left pane | (top-right pane / bottom-right pane)
-                // The root split is Horizontal; the right sub-tree is Vertical.
-                // This layout was impossible to construct before from_layout.
-                *self.group.borrow_mut() = make_from_layout_group();
-                *self.last_event.borrow_mut() =
-                    "from_layout: left | (top-right / bottom-right) — drag/click/Tab to verify"
-                        .into();
-                *self.divider_dragging.borrow_mut() = false;
-                *self.tab_dragging.borrow_mut() = false;
-                *self.tab_drag_pending_pos.borrow_mut() = None;
+                self.rebuild(
+                    make_from_layout_group,
+                    "from_layout: left | (top-right / bottom-right) — drag/click/Tab to verify",
+                );
                 Reaction::Redraw
             }
-
             UiEvent::KeyPressed {
                 key: Key::Char('r'),
                 ..
             } => {
-                // Reset to the default 2-pane horizontal layout (with_pane API).
-                *self.group.borrow_mut() = make_default_group();
-                *self.last_event.borrow_mut() =
-                    "reset to default 2-pane layout (with_pane API)".into();
-                *self.divider_dragging.borrow_mut() = false;
-                *self.tab_dragging.borrow_mut() = false;
-                *self.tab_drag_pending_pos.borrow_mut() = None;
+                self.rebuild(
+                    make_default_group,
+                    "reset to default 2-pane layout (with_pane API)",
+                );
                 Reaction::Redraw
             }
 
             // ── Close active tab (Ctrl-W) ──────────────────────────
-            // Keyboard equivalent of clicking a tab's `×`: the
-            // mouse-only close affordance had no key path at all.
             UiEvent::KeyPressed {
                 key: Key::Char('w'),
                 modifiers: Modifiers { ctrl: true, .. },
                 ..
             } => {
-                let target = {
-                    let group = self.group.borrow();
-                    group.focused_pane().and_then(|idx| {
-                        group
-                            .pane(idx)
-                            .map(|p| (idx, p.active_tab_id().to_string()))
-                    })
-                };
-                if let Some((pane_idx, tab_id)) = target {
-                    if let Some(ev) = self.group.borrow_mut().close_tab(pane_idx, &tab_id) {
-                        *self.last_event.borrow_mut() = format_event(&ev);
-                        self.handle_tab_group_event(ev);
-                        return Reaction::Redraw;
-                    }
+                let target = self.focused.and_then(|idx| {
+                    self.group
+                        .pane(idx)
+                        .map(|p| (idx, p.active_tab_id().to_string()))
+                });
+                match target.and_then(|(pane_idx, tab_id)| self.group.close_tab(pane_idx, &tab_id))
+                {
+                    Some(ev) => self.report(&[ev]),
+                    None => Reaction::Continue,
                 }
-                Reaction::Continue
             }
 
             // ── Focus cycling ──────────────────────────────────────
             UiEvent::KeyPressed {
                 key: Key::Named(NamedKey::Tab),
-                modifiers: Modifiers { shift: true, .. },
+                modifiers,
                 ..
             } => {
-                self.group.borrow_mut().cycle_focus(-1);
-                *self.last_event.borrow_mut() = format!(
-                    "Shift+Tab → focus {}",
-                    self.group
-                        .borrow()
-                        .focused_pane()
-                        .map(|i| i.to_string())
-                        .unwrap_or_else(|| "—".into())
-                );
-                Reaction::Redraw
-            }
-            UiEvent::KeyPressed {
-                key: Key::Named(NamedKey::Tab),
-                ..
-            } => {
-                self.group.borrow_mut().cycle_focus(1);
-                *self.last_event.borrow_mut() = format!(
-                    "Tab → focus {}",
-                    self.group
-                        .borrow()
-                        .focused_pane()
-                        .map(|i| i.to_string())
-                        .unwrap_or_else(|| "—".into())
+                let back = modifiers.shift;
+                self.cycle_focus(if back { -1 } else { 1 });
+                self.last_event = format!(
+                    "{} → focus {}",
+                    if back { "Shift+Tab" } else { "Tab" },
+                    self.focus_label()
                 );
                 Reaction::Redraw
             }
 
-            // ── Mouse down: prime tab drag, then divider, then click ──────
+            // ── A press the group left alone: a body of the pane that
+            //    already holds the group's focus ────────────────────
             UiEvent::MouseDown { position, .. } => {
-                // 1. Prime a tab drag — but do NOT commit it yet.  We wait for
-                //    the cursor to cross TAB_DRAG_THRESHOLD before starting the
-                //    visual drag so that a plain click still activates the tab.
-                if self
-                    .group
-                    .borrow_mut()
-                    .handle_tab_drag_start(position.x, position.y)
-                {
-                    *self.tab_drag_pending_pos.borrow_mut() = Some((position.x, position.y));
-                    // Don't redraw — no visible change yet.
-                    return Reaction::Continue;
-                }
-
-                // 2. Try to start a divider drag.
-                if self
-                    .group
-                    .borrow_mut()
-                    .handle_drag_start(position.x, position.y)
-                {
-                    *self.divider_dragging.borrow_mut() = true;
-                    *self.last_event.borrow_mut() = "divider drag start".into();
-                    return Reaction::Redraw;
-                }
-
-                // 3. Otherwise treat as a click.
-                if let Handled::Event(ev) = self
-                    .group
-                    .borrow_mut()
-                    .handle_click_event(position.x, position.y)
-                {
-                    *self.last_event.borrow_mut() = format_event(&ev);
-                    self.handle_tab_group_event(ev);
-                }
-                Reaction::Redraw
-            }
-
-            // ── Mouse moved ────────────────────────────────────────
-            UiEvent::MouseMoved { position, .. } => {
-                if *self.tab_dragging.borrow() {
-                    self.group
-                        .borrow_mut()
-                        .handle_tab_drag_move(position.x, position.y);
-                    return Reaction::Redraw;
-                }
-                // Promote a pending tab drag to an active drag once the cursor
-                // has moved far enough from the press point.
-                //
-                // Copy the pending position into a local variable so the
-                // immutable `Ref` returned by `.borrow()` is dropped
-                // immediately (at the `;`), before any `borrow_mut()` call
-                // inside the block. Keeping the `Ref` alive in the `if let`
-                // scrutinee and then calling `borrow_mut()` in the same block
-                // panics with "RefCell already borrowed".
-                let pending_pos = *self.tab_drag_pending_pos.borrow();
-                if let Some((sx, sy)) = pending_pos {
-                    let dx = (position.x - sx).abs();
-                    let dy = (position.y - sy).abs();
-                    if dx > TAB_DRAG_THRESHOLD || dy > TAB_DRAG_THRESHOLD {
-                        *self.tab_drag_pending_pos.borrow_mut() = None;
-                        *self.tab_dragging.borrow_mut() = true;
-                        *self.last_event.borrow_mut() = "tab drag start".into();
-                        self.group
-                            .borrow_mut()
-                            .handle_tab_drag_move(position.x, position.y);
-                        return Reaction::Redraw;
+                let pane = self
+                    .painted
+                    .borrow()
+                    .as_ref()
+                    .and_then(|l| l.pane_at(Point::new(position.x, position.y)));
+                match pane {
+                    Some(k) if self.focused != Some(k) => {
+                        self.focused = Some(k);
+                        self.last_event = format_event(&TabGroupEvent::PaneFocused { pane_idx: k });
+                        Reaction::Redraw
                     }
-                    // Still within threshold — don't update the display.
-                    return Reaction::Continue;
+                    _ => Reaction::Continue,
                 }
-                if *self.divider_dragging.borrow() {
-                    let bounds = *self.last_bounds.borrow();
-                    if let Handled::Event(ev) = self
-                        .group
-                        .borrow_mut()
-                        .handle_drag_move_event(position.x, position.y, bounds)
-                    {
-                        *self.last_event.borrow_mut() = format_event(&ev);
-                        return Reaction::Redraw;
-                    }
-                }
-                Reaction::Continue
-            }
-
-            // ── Mouse up ───────────────────────────────────────────
-            UiEvent::MouseUp { position, .. } => {
-                if *self.tab_dragging.borrow() {
-                    *self.tab_dragging.borrow_mut() = false;
-                    let outcome = self
-                        .group
-                        .borrow_mut()
-                        .handle_tab_drop_event(position.x, position.y);
-                    match outcome {
-                        Handled::Event(evs) => {
-                            // Show the primary event in the status line; dispatch each.
-                            if let Some(primary) = evs.first() {
-                                *self.last_event.borrow_mut() = format_event(primary);
-                            }
-                            for ev in evs {
-                                self.handle_tab_group_event(ev);
-                            }
-                        }
-                        Handled::Consumed | Handled::Ignored => {
-                            self.group.borrow_mut().cancel_tab_drag();
-                            *self.last_event.borrow_mut() = "tab drag cancelled".into();
-                        }
-                    }
-                    return Reaction::Redraw;
-                }
-                // A tab was pressed but the cursor never crossed the threshold
-                // → cancel the primed drag and treat the gesture as a click.
-                if self.tab_drag_pending_pos.borrow().is_some() {
-                    *self.tab_drag_pending_pos.borrow_mut() = None;
-                    self.group.borrow_mut().cancel_tab_drag();
-                    if let Handled::Event(ev) = self
-                        .group
-                        .borrow_mut()
-                        .handle_click_event(position.x, position.y)
-                    {
-                        *self.last_event.borrow_mut() = format_event(&ev);
-                        self.handle_tab_group_event(ev);
-                    }
-                    return Reaction::Redraw;
-                }
-                if *self.divider_dragging.borrow() {
-                    *self.divider_dragging.borrow_mut() = false;
-                    self.group.borrow_mut().handle_drag_end();
-                }
-                Reaction::Continue
             }
 
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,
-        }
-    }
-}
-
-impl TabGroupDemo {
-    fn handle_tab_group_event(&self, ev: TabGroupEvent) {
-        if let TabGroupEvent::NewTabRequested { pane_idx } = ev {
-            let id_num = {
-                let mut n = self.next_tab_id.borrow_mut();
-                *n += 1;
-                *n
-            };
-            let id = format!("dyn:{}", id_num);
-            let label = format!(" untitled-{} ", id_num);
-            self.group.borrow_mut().add_and_activate_tab(
-                pane_idx,
-                PaneTab {
-                    id,
-                    label,
-                    closable: true,
-                    content: lbl("(new tab)", Color::rgb(50, 50, 50)),
-                },
-            );
         }
     }
 }

@@ -354,8 +354,8 @@ the table against the module list. -->
 |---|---|
 | `ShellView` | Activity bar + sidebar + editor area: the VS Code-style application frame, with its gesture state in a `ShellViewState` beside it. |
 | `BottomPanel` | A tabbed, dockable panel along the bottom of a `ShellView`. |
-| `WorkspaceController` | Many open documents, one visible: open, switch, close. |
-| `TabGroupController` | Tabbed split panes. |
+| `Workspace` | Many open documents, one visible: open, switch, close, preview tabs. |
+| `TabGroup` | Tabbed split panes with divider and tab drags. |
 | `MenuSystem` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
 | `ContextMenuController` | One call for a context menu, native or painted per platform. |
 | `SidebarSystem` | Multi-section sidebar: per-section scroll and selection, Tab cycling, scrollbar drag. |

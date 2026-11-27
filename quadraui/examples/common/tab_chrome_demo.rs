@@ -144,8 +144,8 @@ impl AppLogic for TabChromeDemo {
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
             // Close buttons take precedence over tab-body activation —
-            // mirrors `compose::tab_group::TabGroupController`'s own
-            // click-routing order.
+            // mirrors `compose::tab_group::TabGroup`'s own click-routing
+            // order.
             UiEvent::MouseDown { position, .. } => {
                 let viewport = backend.viewport();
                 let lh = backend.line_height();

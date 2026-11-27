@@ -1,7 +1,7 @@
 //! `WorkspaceDemo` `ShellApp` + `quadraui::tui::shell_runner::run_with_shell`.
 //!
-//! `WorkspaceController` mounted **inside a ShellView
-//! panel**: the controller paints its own tab strip into the sidebar's
+//! A `Workspace` strip mounted **inside a ShellView
+//! panel**: the workspace paints its own tab strip into the sidebar's
 //! content rect, and this app paints the active document's body into the
 //! main content area. Click a tab to activate it, click its `×` to close
 //! it, `Ctrl+Tab` / `Ctrl+PageDown` cycle, `o` opens another document
