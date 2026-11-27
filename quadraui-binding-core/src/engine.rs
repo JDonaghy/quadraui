@@ -15,9 +15,9 @@ use std::rc::Rc;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, FormController, FormControllerAction,
-    FormDialogAction, FormDialogController, Handled, MenuDef, MenuEvent, MenuSystem,
-    MessageDialogController, TreeTableController, TreeTableControllerEvent,
+    ContextMenuController, ContextMenuOutcome, FormController, FormControllerAction, FormDialog,
+    FormDialogAction, FormDialogState, Handled, MenuDef, MenuEvent, MenuSystem, MessageDialog,
+    MessageDialogState, TreeTableController, TreeTableControllerEvent,
 };
 use quadraui::primitive::DynWidget;
 use quadraui::primitives::form::focus_order;
@@ -514,7 +514,7 @@ fn apply_form_focus_changed(widget_state: &WidgetState, form_id: WidgetId, new_f
 /// boundary hit at either real end gets — so this only forwards the key
 /// into the controller for it to do that, rather than second-guessing it
 /// into "leave the form" (Shift-Tab) while Tab correctly stays. Mirrors
-/// [`quadraui::compose::form_dialog::FormDialogController::navigate`]'s
+/// [`quadraui::compose::FormDialog`]'s
 /// own boundary check (which decides whether to forward a Tab/Shift-Tab
 /// keypress into its embedded form or hand focus to its own button row
 /// instead); this is the main-tree counterpart
@@ -783,17 +783,15 @@ enum Overlay {
     Float(Float, FloatMeasure, Option<FloatContent>),
     RichTextPopup(RichTextPopup, Point),
     Completions(Completions, Point),
-    Dialog(MessageDialogController),
-    /// A modal [`quadraui::Dialog`] hosting a [`quadraui::Form`]'s fields
-    /// — opened via [`InteractionEngine::open_form_dialog`]. Shares
-    /// [`Overlay::rank`] with [`Overlay::Dialog`] so only one modal
-    /// dialog (of either kind) is ever open at once. The `WidgetId` is
-    /// [`FormDialogController::dialog`]'s own `id`, cached at push time —
-    /// that method rebuilds a whole [`quadraui::Dialog`] (cloning title/
-    /// body/buttons) to expose a field that never changes after
-    /// construction, so open/close read it from here instead of paying
-    /// that cost on every call.
-    FormDialog(WidgetId, FormDialogController),
+    /// A modal [`MessageDialog`] and the state it keeps between events —
+    /// opened via [`InteractionEngine::open_message_dialog`].
+    Dialog(MessageDialog, MessageDialogState),
+    /// A modal [`FormDialog`] hosting a [`quadraui::Form`]'s fields, and
+    /// the state it keeps between events — opened via
+    /// [`InteractionEngine::open_form_dialog`]. Shares [`Overlay::rank`]
+    /// with [`Overlay::Dialog`] so only one modal dialog (of either kind)
+    /// is ever open at once.
+    FormDialog(FormDialog, FormDialogState),
     /// A modal [`Dialog`] hosting an arbitrary [`LayoutNode`] subtree in
     /// its body — opened via [`InteractionEngine::open_layout_dialog`].
     /// Shares [`Overlay::rank`] with [`Overlay::Dialog`] and
@@ -824,7 +822,7 @@ impl Overlay {
             Overlay::Float(..) => 1,
             Overlay::RichTextPopup(..) => 2,
             Overlay::Completions(..) => 3,
-            Overlay::Dialog(_) => 4,
+            Overlay::Dialog(..) => 4,
             Overlay::FormDialog(..) => 4,
             Overlay::LayoutDialog(_) => 4,
             Overlay::Tooltip(..) => 5,
@@ -874,7 +872,7 @@ struct LayoutDialog {
 /// content slot asks for, in the backend's own coordinate units (cells on
 /// TUI, pixels elsewhere). `None` on either axis takes that axis's
 /// default: half the viewport's width clamped to 30..64 characters (the
-/// same band [`FormDialogController`] sizes itself in) and a third of the
+/// same band [`FormDialog`] sizes itself in) and a third of the
 /// viewport's height. Both axes are additive — a caller that wants the
 /// defaults passes [`Default::default`].
 #[derive(Debug, Clone, Copy, Default)]
@@ -954,7 +952,7 @@ impl LayoutDialog {
     /// [`quadraui::Dialog::cancel_button_id`], falling back to
     /// [`quadraui::Dialog::default_button_id`] and then to the last
     /// button — Escape's "there's always something to resolve to"
-    /// fallback, the same order [`FormDialogController`] uses.
+    /// fallback, the same order [`FormDialog`] uses.
     fn cancel_or_default_button_id(&self) -> Option<WidgetId> {
         self.dialog
             .buttons
@@ -1661,7 +1659,7 @@ impl InteractionEngine {
     pub fn dialog_open(&self) -> bool {
         self.overlays
             .iter()
-            .any(|o| matches!(o, Overlay::Dialog(_)))
+            .any(|o| matches!(o, Overlay::Dialog(..)))
     }
 
     /// Opens an in-canvas message/alert/confirm dialog built from `opts`,
@@ -1686,11 +1684,13 @@ impl InteractionEngine {
         if self.context_menu_open() {
             self.close_context_menu(backend);
         }
-        let controller = MessageDialogController::new(opts);
-        let id = controller.dialog().id;
-        let bounds = controller.bounds(backend);
-        backend.modal_stack_handle().borrow_mut().push(id, bounds);
-        self.push_overlay(Overlay::Dialog(controller));
+        let dialog = MessageDialog::new(opts);
+        let bounds = dialog.bounds(backend);
+        backend
+            .modal_stack_handle()
+            .borrow_mut()
+            .push(dialog.dialog.id, bounds);
+        self.push_overlay(Overlay::Dialog(dialog, MessageDialogState::default()));
     }
 
     /// Closes the open message dialog (if any), popping its
@@ -1701,12 +1701,12 @@ impl InteractionEngine {
     /// all, or one the app wants to tear down from outside input, could
     /// never be cleared. A no-op (returns `false`) if nothing is open.
     pub fn close_message_dialog(&mut self, backend: &mut dyn Backend) -> bool {
-        match self.remove_overlay(|o| matches!(o, Overlay::Dialog(_))) {
-            Some(Overlay::Dialog(open)) => {
+        match self.remove_overlay(|o| matches!(o, Overlay::Dialog(..))) {
+            Some(Overlay::Dialog(open, _)) => {
                 backend
                     .modal_stack_handle()
                     .borrow_mut()
-                    .pop(&open.dialog().id);
+                    .pop(&open.dialog.id);
                 true
             }
             _ => false,
@@ -1721,7 +1721,7 @@ impl InteractionEngine {
             .any(|o| matches!(o, Overlay::FormDialog(..)))
     }
 
-    /// Opens `dialog` — a [`FormDialogController`] hosting a
+    /// Opens `dialog` — a [`FormDialog`] hosting a
     /// [`quadraui::Form`]'s fields inside a modal [`quadraui::Dialog`]'s own
     /// title/button chrome — pushing its bounds onto the backend's
     /// [`quadraui::ModalStack`], the same contract
@@ -1731,11 +1731,11 @@ impl InteractionEngine {
     /// same slot" rule keeps "only one modal dialog at a time" true
     /// across all of them. A binding's own `show_form_dialog` surface calls this, then
     /// pushes the app's current field values onto `dialog` every frame
-    /// via [`FormDialogController::set_form`] before
+    /// via [`Self::form_dialog_mut`] before
     /// [`Self::render_overlays`] paints it — the same "app owns the
-    /// data, controller owns the edits" contract a bare
+    /// data, the widget's state owns the edits" contract a bare
     /// [`FormController`] consumer already follows.
-    pub fn open_form_dialog(&mut self, dialog: FormDialogController, backend: &mut dyn Backend) {
+    pub fn open_form_dialog(&mut self, dialog: FormDialog, backend: &mut dyn Backend) {
         self.close_form_dialog(backend);
         self.close_message_dialog(backend);
         self.close_layout_dialog(backend);
@@ -1745,10 +1745,13 @@ impl InteractionEngine {
         if self.context_menu_open() {
             self.close_context_menu(backend);
         }
-        let id = dialog.dialog().id;
-        let bounds = dialog.bounds(backend);
-        backend.modal_stack_handle().borrow_mut().push(id, bounds);
-        self.push_overlay(Overlay::FormDialog(id, dialog));
+        let state = FormDialogState::default();
+        let bounds = dialog.bounds(&state, backend);
+        backend
+            .modal_stack_handle()
+            .borrow_mut()
+            .push(dialog.id, bounds);
+        self.push_overlay(Overlay::FormDialog(dialog, state));
     }
 
     /// Closes the open form-dialog (if any), popping its
@@ -1756,23 +1759,22 @@ impl InteractionEngine {
     /// Mirrors [`Self::close_message_dialog`]'s own doc.
     pub fn close_form_dialog(&mut self, backend: &mut dyn Backend) -> bool {
         match self.remove_overlay(|o| matches!(o, Overlay::FormDialog(..))) {
-            Some(Overlay::FormDialog(id, _)) => {
-                backend.modal_stack_handle().borrow_mut().pop(&id);
+            Some(Overlay::FormDialog(open, _)) => {
+                backend.modal_stack_handle().borrow_mut().pop(&open.id);
                 true
             }
             _ => false,
         }
     }
 
-    /// Mutable access to the open form-dialog's own controller, if any —
-    /// a binding's render path uses this to call
-    /// [`FormDialogController::set_form`]/[`FormDialogController::set_body`]
-    /// every frame before painting, the same "push fresh state, then
-    /// render" contract a bare [`FormController`] consumer already
-    /// follows.
-    pub fn form_dialog_mut(&mut self) -> Option<&mut FormDialogController> {
+    /// Mutable access to the open form-dialog widget, if any — a
+    /// binding's render path uses this to set its [`FormDialog::form`] and
+    /// [`FormDialog::body`] every frame before painting, the same "push
+    /// fresh state, then render" contract a bare [`FormController`]
+    /// consumer already follows.
+    pub fn form_dialog_mut(&mut self) -> Option<&mut FormDialog> {
         self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::FormDialog(_, d) => Some(d),
+            Overlay::FormDialog(d, _) => Some(d),
             _ => None,
         })
     }
@@ -1822,7 +1824,7 @@ impl InteractionEngine {
     /// Recomputes the same [`quadraui::ToastStackLayout`]
     /// [`Self::render_overlays`] just painted, for [`Self::handle`]'s click
     /// routing — the "one layout fn, two callers" pattern
-    /// [`MessageDialogController::layout`] already follows for `Dialog`.
+    /// [`MessageDialog::dialog_layout`] already follows for `Dialog`.
     fn toast_layout(&self, backend: &dyn Backend) -> ToastStackLayout {
         backend
             .layout_primitive(viewport_rect(backend), &self.toast_overlay())
@@ -2285,8 +2287,12 @@ impl InteractionEngine {
                     let layout = self.completions_layout(backend, completions, *cursor);
                     backend.draw_dyn(layout.bounds, completions, &());
                 }
-                Overlay::Dialog(dialog) => dialog.render(backend),
-                Overlay::FormDialog(_, dialog) => dialog.render(backend),
+                Overlay::Dialog(dialog, _) => {
+                    backend.draw_dyn(backend.viewport().rect(), dialog, &());
+                }
+                Overlay::FormDialog(dialog, state) => {
+                    backend.draw_dyn(backend.viewport().rect(), &dialog.painted(state), &());
+                }
                 Overlay::LayoutDialog(embedded) => embedded.render(backend),
                 Overlay::Tooltip(tooltip, anchor) => {
                     let layout = self.tooltip_layout(backend, tooltip, *anchor);
@@ -2318,7 +2324,7 @@ impl InteractionEngine {
     /// [`Overlay::Float`] (a popover opened via [`Self::show_popover`]) is
     /// open, regardless of what the main tree itself painted this frame —
     /// both trap Tab inside their own embedded form internally (see
-    /// [`FormDialogController`]'s "Keyboard model" doc section and
+    /// [`FormDialog`]'s "Focus model" doc section and
     /// [`Self::dispatch_overlays`]'s popover handling), so the main tree
     /// must report no stops at all while either is open, or the global
     /// cycle below would reach straight through the modal to whatever the
@@ -2677,7 +2683,7 @@ impl InteractionEngine {
     /// scratch would lose. At either end with another app-level stop to
     /// leave to: hands engine focus to the next/previous one instead
     /// (mirrors
-    /// [`quadraui::compose::form_dialog::FormDialogController::navigate`]'s
+    /// [`quadraui::compose::FormDialog`]'s
     /// own boundary check, which hands focus to its button row at the
     /// same point) — "leaving the form" the same way Tab already leaves
     /// any other single-stop widget. At either end with nowhere to leave
@@ -3002,14 +3008,11 @@ impl InteractionEngine {
             }
         }
 
-        // `MessageDialogController::handle_event` reports `Handled::Ignored`
-        // immediately when nothing is open, so this is safe to run
-        // unconditionally.
-        if let Some(dialog) = self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::Dialog(d) => Some(d),
+        if let Some((dialog, state)) = self.overlays.iter_mut().find_map(|o| match o {
+            Overlay::Dialog(d, s) => Some((d, s)),
             _ => None,
         }) {
-            match dialog.handle_event(event, &*backend) {
+            match dialog.handle_event(state, event, &*backend) {
                 Handled::Event(choice) => {
                     // The dialog is closing regardless of what `sink`
                     // itself returns — force the repaint that takes it
@@ -3026,7 +3029,7 @@ impl InteractionEngine {
             }
         }
 
-        // `FormDialogController::handle_event` is also self-contained —
+        // `FormDialog::handle_event` is also self-contained —
         // typing a field, toggling a `FieldKind::Toggle`, Tab/Shift+Tab
         // between fields and buttons, Enter/Escape on a button, and a
         // click anywhere in the dialog are all resolved internally (see
@@ -3034,13 +3037,13 @@ impl InteractionEngine {
         // `Handled::Ignored` for an event it has no use for — e.g. a
         // `CharTyped`/arrow key while a button (not a field) holds
         // keyboard focus — which falls through below, same pre-existing
-        // gap `Overlay::Dialog`'s own `MessageDialogController` already
-        // has.
-        if let Some((dialog_id, dialog)) = self.overlays.iter_mut().find_map(|o| match o {
-            Overlay::FormDialog(id, d) => Some((*id, d)),
+        // gap `Overlay::Dialog`'s own `MessageDialog` already has.
+        if let Some((dialog, state)) = self.overlays.iter_mut().find_map(|o| match o {
+            Overlay::FormDialog(d, s) => Some((d, s)),
             _ => None,
         }) {
-            match dialog.handle_event(event, backend) {
+            let dialog_id = dialog.id;
+            match dialog.handle_event(state, event, &*backend) {
                 Handled::Event(FormDialogAction::ButtonClicked(id)) => {
                     // Closing regardless of what `sink` itself returns —
                     // same "force the repaint" reasoning as the message
@@ -3172,7 +3175,7 @@ impl InteractionEngine {
         // so a focused, open `ComboBox` field gets first claim on it —
         // `FormController::handle_key`'s own combo-box interception
         // closes the popup instead of leaving the whole popover dismissed
-        // out from under it, mirroring `FormDialogController`'s own
+        // out from under it, mirroring `FormDialog`'s own
         // documented Escape precedence. A `MouseDown` landing outside the
         // popover's own bounds dismisses it unconditionally, before any
         // of that routing. Every other position-less `UiEvent`
@@ -5368,9 +5371,9 @@ impl InteractionEngine {
 /// non-empty (a dialog with no buttons can never be resolved by Enter or
 /// Escape) and no button setting `tint` (accepted for shape compatibility
 /// with the in-canvas `Dialog` primitive's own `buttons` field, but not yet
-/// honored by [`MessageDialogController`]). `spec`, unlike `tint`, carries
+/// honored by [`MessageDialog`]). `spec`, unlike `tint`, carries
 /// straight through to the built [`MessageDialogButton`] — honored by
-/// [`MessageDialogController`] on TUI, silently ignored by the native
+/// [`MessageDialog`] on TUI, silently ignored by the native
 /// GTK/macOS/Win32 alert facilities, the same fence
 /// [`quadraui::ButtonSpec`]'s own doc draws elsewhere. `Err` carries the
 /// message a binding's own "invalid input" error wraps.
@@ -8541,7 +8544,7 @@ mod tests {
     }
 
     /// Acceptance coverage for a content-bearing modal dialog: a
-    /// [`FormDialogController`] hosting a `text_input` field emits the
+    /// [`FormDialog`] hosting a `text_input` field emits the
     /// normal `UiEvent::Form` event for typing, and Tab never escapes
     /// the modal to the main tree's own button underneath it —
     /// exercised through the real `TuiDriver::dispatch` path (not a
@@ -8549,14 +8552,14 @@ mod tests {
     /// own global Tab-cycle is actually in the loop, the same way a real
     /// binding's runner would drive it. See [`InteractionEngine::tab_stops`]'s
     /// own doc for why trapping Tab needs this method's cooperation, not
-    /// just [`FormDialogController`]'s internal handling. A `switch`
+    /// just [`FormDialog`]'s internal handling. A `switch`
     /// (`FieldKind::Toggle`) field's own normal-event path is covered by
     /// the popover test below instead — computing a click position for
     /// it needs `FormController::field_rect`, a method this test's own
-    /// `FormDialogController` has no equivalent public accessor for.
+    /// `FormDialog` has no equivalent public accessor for.
     #[test]
     fn open_form_dialog_with_text_input_and_toggle_traps_tab_and_emits_normal_form_events() {
-        use quadraui::compose::FormDialogController;
+        use quadraui::compose::FormDialog;
         use quadraui::{DialogButton, FieldKind, Form, FormEvent, FormField, StyledText};
 
         fn field(id: &str, kind: FieldKind) -> FormField {
@@ -8602,7 +8605,7 @@ mod tests {
             spacing: Default::default(),
         };
 
-        let mut dialog = FormDialogController::new("prefs", "Preferences").with_buttons(vec![
+        let mut dialog = FormDialog::new(WidgetId::new("prefs"), "Preferences").with_buttons(vec![
             DialogButton {
                 id: WidgetId::new("cancel"),
                 label: "Cancel".into(),
@@ -8620,7 +8623,7 @@ mod tests {
                 spec: None,
             },
         ]);
-        dialog.set_form(form);
+        dialog.form = Some(form);
 
         let logic = MinimalLogic {
             button: Button::new(WidgetId::new("go"), "Go"),
@@ -8690,7 +8693,7 @@ mod tests {
                 .app_mut()
                 .engine
                 .form_dialog_mut()
-                .and_then(|d| d.form())
+                .and_then(|d| d.form.as_ref())
                 .and_then(|f| f.focused_field),
             Some(WidgetId::new("flag")),
             "Tab should advance focus from \"name\" to \"flag\" inside the \

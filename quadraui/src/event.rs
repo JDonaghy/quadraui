@@ -341,6 +341,13 @@ impl Viewport {
             scale,
         }
     }
+
+    /// The viewport as a rect at the origin — what a modal that centres
+    /// itself in the whole window (a [`crate::compose::MessageDialog`], a
+    /// [`crate::compose::FormDialog`]) is painted and laid out in.
+    pub fn rect(&self) -> Rect {
+        Rect::new(0.0, 0.0, self.width, self.height)
+    }
 }
 
 impl Default for Viewport {
@@ -1037,7 +1044,7 @@ pub enum UiEvent {
 
     // ── In-canvas modal overlays ─────────────────────────────────────────
     /// An in-canvas message/alert/confirm [`crate::Dialog`] opened via
-    /// [`crate::compose::MessageDialogController`] was resolved — the user
+    /// [`crate::compose::MessageDialog`] was resolved — the user
     /// activated one of its buttons by click, Enter, or Escape resolving to
     /// the cancel/default button. Carries that button's own `WidgetId`
     /// ([`crate::backend::MessageDialogChoice`]) — the same shape

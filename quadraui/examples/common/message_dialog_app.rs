@@ -1,4 +1,4 @@
-//! Backend-agnostic app code for the `MessageDialogController` demo
+//! Backend-agnostic app code for the `MessageDialog` demo
 //! ([`tui_message_dialog`] / [`gtk_message_dialog`]).
 //!
 //! [`MessageDialogApp`] demonstrates a self-contained `AppLogic` that:
@@ -20,15 +20,15 @@
 //! - `o` — reopen the dialog.
 //! - `q` / `Esc` — quit.
 
-use quadraui::compose::Handled;
+use quadraui::compose::{Handled, MessageDialog, MessageDialogState};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, MessageDialogButton, MessageDialogController, MessageDialogOptions,
-    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
+    AppLogic, Backend, Color, MessageDialogButton, MessageDialogOptions, Reaction, Rect, StatusBar,
+    StatusBarSegment, UiEvent, WidgetId,
 };
 
 pub struct MessageDialogApp {
-    dialog: Option<MessageDialogController>,
+    dialog: Option<(MessageDialog, MessageDialogState)>,
     status: String,
 }
 
@@ -40,8 +40,8 @@ impl MessageDialogApp {
         }
     }
 
-    fn build_dialog() -> MessageDialogController {
-        MessageDialogController::new(MessageDialogOptions {
+    fn build_dialog() -> (MessageDialog, MessageDialogState) {
+        let dialog = MessageDialog::new(MessageDialogOptions {
             title: "Unsaved Changes".to_string(),
             body: "You have unsaved changes.\nDo you want to save before closing?".to_string(),
             buttons: vec![
@@ -65,7 +65,8 @@ impl MessageDialogApp {
                 },
             ],
             severity: Some(quadraui::DialogSeverity::Warning),
-        })
+        });
+        (dialog, MessageDialogState::default())
     }
 
     fn status_bar(&self) -> StatusBar {
@@ -100,14 +101,14 @@ impl AppLogic for MessageDialogApp {
         let bar = self.status_bar();
         let _ = backend.draw_dyn(bar_rect, &bar, &());
 
-        if let Some(ref dialog) = self.dialog {
-            dialog.render(backend);
+        if let Some((dialog, _)) = &self.dialog {
+            backend.draw_dyn(backend.viewport().rect(), dialog, &());
         }
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        if let Some(ref mut dialog) = self.dialog {
-            match dialog.handle_event(&event, backend) {
+        if let Some((dialog, state)) = &mut self.dialog {
+            match dialog.handle_event(state, &event, backend) {
                 Handled::Event(id) => {
                     self.status = format!(
                         "Resolved: {}  (press 'o' to reopen, q/Esc to quit)",

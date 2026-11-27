@@ -476,7 +476,7 @@ mod tests {
     /// On a pixel backend (`RecordingBackend`'s `line_height` set above
     /// `1.0`, simulating GTK/macOS/Win), the painted button row is
     /// exactly `Style::control_height` tall — matching
-    /// `MessageDialogController::layout`'s own OK/Cancel row, the
+    /// `MessageDialog::dialog_layout`'s own OK/Cancel row, the
     /// acceptance bullet this demo's bare `Dialog` previously missed by
     /// sizing its button row at the raw chrome line height instead.
     #[test]

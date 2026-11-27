@@ -17,8 +17,8 @@
 //! - [`PathPicker`] — cross-backend filesystem picker modal:
 //!   [`FolderPicker`] browses directories, [`FilePicker`] opens or saves
 //!   files.
-//! - [`MessageDialogController`] — cross-backend message/alert-box driver.
-//! - [`FormDialogController`] — a [`crate::primitives::dialog::Dialog`]
+//! - [`MessageDialog`] — cross-backend message/alert box.
+//! - [`FormDialog`] — a [`crate::primitives::dialog::Dialog`]
 //!   hosting a multi-field [`crate::primitives::form::Form`]
 //!   (`DialogInput::Form`), with Tab/Shift+Tab handed off between the
 //!   form's fields and the dialog's buttons.
@@ -118,14 +118,7 @@ pub use form_controller::{FormController, FormControllerAction};
 // here since `pub use` of a deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use form_controller::FormControllerEvent;
-pub use form_dialog::{
-    FormDialog, FormDialogAction, FormDialogController, FormDialogLayout, FormDialogState,
-};
-// `FormDialogEvent` is `#[deprecated]` (use `FormDialogController::handle_event`'s
-// `Handled<FormDialogAction>` instead). Allow it here since `pub use` of a
-// deprecated item is itself a use site.
-#[allow(deprecated)]
-pub use form_dialog::FormDialogEvent;
+pub use form_dialog::{FormDialog, FormDialogAction, FormDialogLayout, FormDialogState};
 pub use handled::Handled;
 pub use help_layer::{
     filter_help_actions, help_actions_to_palette_items, HelpAction, HelpNote, HelpOverlay,
@@ -136,12 +129,7 @@ pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMa
 pub use menu_system::{
     AppMenu, AppMenuEvent, AppMenuLayout, AppMenuState, AppMenuView, MenuDef, MenuEvent, MenuSystem,
 };
-pub use message_dialog::{MessageDialog, MessageDialogController, MessageDialogState};
-// `MessageDialogEvent` is `#[deprecated]` (use `MessageDialogController::handle_event`'s
-// `Handled<MessageDialogChoice>` instead). Allow it here since `pub use` of a
-// deprecated item is itself a use site.
-#[allow(deprecated)]
-pub use message_dialog::MessageDialogEvent;
+pub use message_dialog::{MessageDialog, MessageDialogState};
 pub use notification::notify_or_toast;
 pub use path_picker::{
     walk_entries, PathPicker, PathPickerAction, PathPickerEditState, PathPickerState, PickerKind,

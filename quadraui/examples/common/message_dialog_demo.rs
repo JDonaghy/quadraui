@@ -12,7 +12,7 @@
 //!   reflects the chosen button (or "cancelled" on Escape/close).
 //! - **TUI** (`tui_message_dialog`):
 //!   `show_message_dialog` drives a real in-canvas
-//!   `compose::MessageDialogController` through a nested draw-and-read
+//!   `compose::MessageDialog` through a nested draw-and-read
 //!   loop (see `tui::services`'s module doc) and returns the button the
 //!   user chose — press `m`, then arrow/Tab and Enter, or
 //!   Escape, like `tui_message_dialog_app` does. Covered by the `TuiDriver`

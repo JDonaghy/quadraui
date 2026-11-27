@@ -44,7 +44,7 @@
 //! `show_folder_open_dialog`, and `show_message_dialog` all drive a real
 //! in-canvas widget ([`crate::compose::FilePicker`] /
 //! [`crate::compose::FolderPicker`] /
-//! [`crate::compose::MessageDialogController`]) through a **nested
+//! [`crate::compose::MessageDialog`]) through a **nested
 //! draw-and-read loop**: draw one frame, block for the next input event,
 //! feed it to the widget, repeat until it resolves. This is the TUI
 //! counterpart of `GtkPlatformServices::pump_until_ready`
@@ -65,7 +65,7 @@
 //! [`Self::queue_dialog_events`] (also reachable through
 //! [`crate::tui::testing::TuiDriver::queue_dialog_events`] for tests
 //! outside this crate) so the whole round trip — real
-//! `FilePicker`/`FolderPicker`/`MessageDialogController`
+//! `FilePicker`/`FolderPicker`/`MessageDialog`
 //! input handling, real `TuiBackend` paint — is exercised with **no** live
 //! terminal, purely against `ratatui::backend::TestBackend` (see this
 //! module's own `dialog_tests` for the PlatformServices-level round trips
@@ -327,8 +327,8 @@ use crate::backend::{
     MessageDialogOptions, Notification, PlatformServices, ServiceResult, SystemTheme,
 };
 use crate::compose::{
-    FilePicker, FilePickerMode, FolderPicker, Handled, MessageDialogController, PathPicker,
-    PathPickerAction, PickerKind, PALETTE_CHROME_ROWS,
+    FilePicker, FilePickerMode, FolderPicker, Handled, MessageDialog, MessageDialogState,
+    PathPicker, PathPickerAction, PickerKind, PALETTE_CHROME_ROWS,
 };
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
@@ -1964,15 +1964,18 @@ impl PlatformServices for TuiPlatformServices {
         self.run_path_picker(FolderPicker::rooted_at(root, Vec::new()))
     }
 
-    /// Nested draw-and-read loop over
-    /// [`crate::compose::MessageDialogController`] (issues #666, #965) —
-    /// see the module doc's "Dialogs" section and
-    /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
+    /// Nested draw-and-read loop over a [`crate::compose::MessageDialog`]
+    /// painted over the whole viewport — see the module doc's "Dialogs"
+    /// section and [`Self::show_file_open_dialog`]'s doc for the shared
+    /// shape.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
-        let controller = RefCell::new(MessageDialogController::new(opts));
+        let dialog = MessageDialog::new(opts);
+        let mut state = MessageDialogState::default();
         self.run_nested_dialog_loop(
-            |backend, _viewport| controller.borrow().render(backend),
-            |event, backend, _viewport| match controller.borrow_mut().handle_event(event, backend) {
+            |backend, _viewport| {
+                backend.draw_dyn(backend.viewport().rect(), &dialog, &());
+            },
+            |event, backend, _viewport| match dialog.handle_event(&mut state, event, backend) {
                 Handled::Event(id) => NestedDialogStep::Resolved(id),
                 Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
             },
@@ -2371,7 +2374,7 @@ mod message_dialog_tests {
     use crate::backend::MessageDialogOptions;
 
     /// `show_message_dialog` now drives a real nested
-    /// draw-and-read loop over `MessageDialogController` — but that loop
+    /// draw-and-read loop over `MessageDialog` — but that loop
     /// needs somewhere to paint (`set_dialog_surface`), which a bare
     /// `TuiPlatformServices::new()` never wires. This pins the resulting
     /// degrade: `None`, not a panic, mirroring
@@ -2556,7 +2559,7 @@ mod message_dialog_tests {
 /// `ratatui::Terminal<TestBackend>` via `set_dialog_surface` and a
 /// scripted `UiEvent` sequence via `queue_dialog_events`, then calls the
 /// `PlatformServices` method exactly as an app would — the *same*
-/// `FilePicker`/`FolderPicker`/`MessageDialogController`
+/// `FilePicker`/`FolderPicker`/`MessageDialog`
 /// input handling and `TuiBackend` paint path production uses, with no live
 /// terminal involved. See the module doc's "Dialogs" section.
 #[cfg(test)]

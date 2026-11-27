@@ -119,8 +119,8 @@ cycling. None of that belongs in a backend.
 The backend's part is to own the two handles (`modal_stack_handle()`,
 `drag_state_handle()`, both `Rc<RefCell<…>>`) so the runtime, the compose
 controllers and app code can share them. It does not dispatch against them
-itself. A controller that opens a modal — `MessageDialogController`,
-`FormDialogController` — pushes its bounds onto the stack and pops them on
+itself. A host that opens a modal — a `MessageDialog`, a
+`FormDialog` — pushes its bounds onto the stack and pops them on
 close; see [`COMPOSE.md`](COMPOSE.md).
 
 ### 4. PlatformServices

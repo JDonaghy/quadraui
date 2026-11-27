@@ -70,7 +70,7 @@ impl DialogTableDemo {
     /// on pixel backends — [`crate::Backend::measure`]'s [`crate::Metrics`]
     /// is the one source of truth. `measure_generic_with_style` sizes the
     /// button row's height at `backend.style().control_height` on those
-    /// pixel backends, matching `MessageDialogController`'s own OK/Cancel
+    /// pixel backends, matching `MessageDialog`'s own OK/Cancel
     /// row; TUI's one-cell row is unaffected. `measure_generic_with_style`
     /// itself still sizes `button_width` as a flat `char_width * 8.0` guess
     /// (its own doc: "does not measure … buttons' rendered pixel width
@@ -213,7 +213,7 @@ mod measure_tests {
 
     /// On a pixel backend, `measure()` sizes the button row at
     /// `backend.style().control_height`, matching
-    /// `MessageDialogController`'s own OK/Cancel row — not the raw
+    /// `MessageDialog`'s own OK/Cancel row — not the raw
     /// `line_height` the TUI char-grid path uses.
     #[test]
     fn measure_sizes_button_row_at_control_height_on_pixel_metrics() {

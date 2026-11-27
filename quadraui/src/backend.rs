@@ -2862,7 +2862,7 @@ pub trait DrawsPrimitives: Backend {
 /// `viewport` as a rect at the origin — the bounds a popup is placed
 /// inside ([`crate::popup::Popup::resolve`]).
 pub(crate) fn viewport_rect(viewport: Viewport) -> Rect {
-    Rect::new(0.0, 0.0, viewport.width, viewport.height)
+    viewport.rect()
 }
 
 /// Run `paint` against `surface`, in the editor font when `role` asks for
@@ -3228,7 +3228,7 @@ pub trait PlatformServices {
     /// callers should consult that before calling this method, and fall
     /// back to `draw_dialog` when it returns `None`. TUI backends have
     /// no *native* dialog to show; instead they drive an in-canvas
-    /// `MessageDialogController` through the same nested draw-and-read
+    /// `MessageDialog` through the same nested draw-and-read
     /// loop [`Self::show_file_open_dialog`]'s doc describes, and return
     /// the id of the button it resolves (or `None` if it's dismissed
     /// without one) — the in-canvas `Dialog` primitive stays the
@@ -4507,7 +4507,7 @@ pub struct MessageDialogButton {
     /// `label`/`is_default`/`is_cancel` fields can't express. `None`
     /// keeps today's plain rendering.
     ///
-    /// Honored on TUI, where [`crate::compose::MessageDialogController`]
+    /// Honored on TUI, where [`crate::compose::MessageDialog`]
     /// carries it straight through to the [`crate::primitives::dialog::Dialog`]
     /// button it builds. Not yet read by the native GTK/macOS/Win32 alert
     /// facilities `PlatformServices::show_message_dialog` calls there — no

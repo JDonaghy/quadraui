@@ -1,4 +1,4 @@
-//! `MessageDialogController` demo on the TUI runner.
+//! `MessageDialog` demo on the TUI runner.
 //!
 //! Demonstrates the compose controller **directly** — no
 //! `PlatformServices` involved — the same pattern `tui_folder_picker.rs`

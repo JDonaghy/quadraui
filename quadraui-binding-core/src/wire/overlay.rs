@@ -70,7 +70,7 @@ pub fn decode_layout_dialog<'de, D: Deserializer<'de>>(
 /// A layout dialog's `"dialog"` chrome key, as a binding sends it: plain
 /// `"title"`/`"body"` strings rather than [`quadraui::StyledText`]
 /// objects (`"body"` splitting on `\n` into one line each, exactly like
-/// [`quadraui::compose::MessageDialogController::new`] does with
+/// [`quadraui::compose::MessageDialog::new`] does with
 /// [`quadraui::backend::MessageDialogOptions::body`]) and a friendly
 /// lowercase `"severity"` word, so the shape matches the
 /// `"message_dialog"` overlay kind a binding already exposes. `"buttons"`

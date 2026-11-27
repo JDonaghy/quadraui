@@ -210,7 +210,7 @@ pub struct Dialog {
     /// - [`DialogInput::Form`] — a multi-field [`Form`] (e.g. Name +
     ///   Description); used when a single [`DialogTextInput`] isn't
     ///   enough. Rendered and driven through
-    ///   [`crate::compose::form_dialog::FormDialogController`], which
+    ///   [`crate::compose::form_dialog::FormDialog`], which
     ///   composes this `Dialog` with a [`crate::compose::FormController`]
     ///   so Tab/Shift-Tab traverse the form's fields and then the
     ///   button row.
@@ -237,7 +237,7 @@ pub enum DialogInput {
     /// more than one input. Unlike [`Self::Toolbar`] (which the dialog
     /// paints inline, inside the input slot), the dialog paints **no**
     /// part of this variant — it reserves a blank hole where the form
-    /// goes. [`crate::compose::form_dialog::FormDialogController`] is
+    /// goes. [`crate::compose::form_dialog::FormDialog`] is
     /// the intended (and today, only) way to use this variant: it paints
     /// the form separately through its widget contract — the same
     /// cross-backend path every other `Form` host uses — and owns the
@@ -650,7 +650,7 @@ impl Dialog {
     /// on every backend, pixel or TUI — callers with a [`Style`] available
     /// should prefer [`Self::measure_generic_with_style`], which sizes the
     /// button row at [`Style::control_height`] on a pixel backend instead,
-    /// matching [`crate::compose::MessageDialogController`]'s own button row.
+    /// matching [`crate::compose::MessageDialog`]'s own button row.
     pub fn measure_generic(
         &self,
         char_width: f32,
@@ -671,7 +671,7 @@ impl Dialog {
     /// Like [`Self::measure_generic`], but sizes [`DialogMeasure::button_row_height`]
     /// from [`Style::control_height`] on a pixel backend (`line_height > 1.0`)
     /// instead of the raw chrome line height — the same fixed-pixel button
-    /// row [`crate::compose::MessageDialogController::layout`] sizes its
+    /// row [`crate::compose::MessageDialog::dialog_layout`] sizes its
     /// OK/Cancel row at. On TUI (`line_height == 1.0`, the char-cell
     /// approximation), the button row stays one row tall — unchanged from
     /// [`Self::measure_generic`]. [`DialogButton::resolved_button_spec`]'s
@@ -831,7 +831,7 @@ impl Dialog {
         // single source of truth for button geometry
         // `native_surface_paint::paint` resolves its own `corner_radius`
         // through just below, and the same fixed-pixel row
-        // `MessageDialogController::layout`'s own `is_pixel` split
+        // `MessageDialog::dialog_layout`'s own `is_pixel` split
         // renders at. TUI's char-grid geometry (`line_height == 1.0`)
         // is unaffected either way.
         let is_pixel = line_height > 1.0;
@@ -1401,7 +1401,7 @@ pub(crate) mod native_surface_paint {
         }
 
         /// A `spec: None` button — the default OK/Cancel path
-        /// `MessageDialogController` builds — still fills and strokes at
+        /// `MessageDialog` builds — still fills and strokes at
         /// `Style::button_radius`, not square corners: it shares
         /// `ButtonMetrics::resolve` with the spec-backed path above
         /// rather than falling back to the bare `surface_fill_rect`/
@@ -1946,7 +1946,7 @@ pub(crate) mod cell_paint {
                         );
                     }
                 }
-                // `FormDialogController` (`compose::form_dialog`) paints
+                // `FormDialog` (`compose::form_dialog`) paints
                 // the embedded form separately, through
                 // the `Form` widget contract inside `input_bounds`, the same
                 // cross-backend path every other `Form` host uses —
@@ -3246,7 +3246,7 @@ mod tests {
 
     /// On a pixel backend (`line_height > 1.0`), `measure_generic_with_style`
     /// sizes the button row at `Style::control_height` — matching
-    /// `MessageDialogController::layout`'s own pixel-path button row — not
+    /// `MessageDialog::dialog_layout`'s own pixel-path button row — not
     /// the raw chrome line height `measure_generic` uses.
     #[test]
     fn measure_generic_with_style_sizes_button_row_at_control_height() {

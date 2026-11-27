@@ -1,6 +1,6 @@
 //! `Message Dialog` demo — merges
 //! `quadraui/examples/common/message_dialog_app.rs` (the
-//! `MessageDialogController` used directly) and
+//! `MessageDialog` widget hosted directly) and
 //! `quadraui/examples/common/message_dialog_demo.rs` (the
 //! `PlatformServices::show_message_dialog` + `native_dialog_options`
 //! degrade path) as two variants of the same widget rather than two
@@ -9,27 +9,26 @@
 //! Both variants open a "Save changes?" confirm dialog over the
 //! **entire gallery window**, not just the Demo tab's content area —
 //! deliberately: a real app's unsaved-changes prompt covers its whole
-//! window (sidebar included), and `MessageDialogController::render` /
+//! window (sidebar included), and the `MessageDialog` painted over the viewport /
 //! `PlatformServices::show_message_dialog`'s in-canvas fallback both
 //! centre on `Backend::viewport()` for exactly that reason. The gallery
 //! chrome reappears underneath the instant the dialog resolves.
 //!
-//! - **Direct controller** drives [`MessageDialogController`] itself —
-//!   the same shape every other "always in-canvas" compose controller in
-//!   this gallery uses.
+//! - **Direct controller** hosts the [`MessageDialog`] widget itself —
+//!   painted with `draw_dyn` and driven by [`MessageDialog::handle_event`].
 //! - **Native service** calls `backend.services().show_message_dialog`
 //!   through [`native_dialog_options`] — the one call that resolves to a
 //!   real native `gtk4::AlertDialog` on GTK and to the identical
-//!   in-canvas controller (via a nested draw-and-read loop) on TUI, with
+//!   in-canvas widget (via a nested draw-and-read loop) on TUI, with
 //!   no branch in this demo's own code. [`Demo::caps_note`] reports the
 //!   degrade.
 
-use quadraui::compose::Handled;
+use quadraui::compose::{Handled, MessageDialog, MessageDialogState};
 use quadraui::DrawsPrimitives;
 use quadraui::{
     native_dialog_options, Backend, BackendCaps, Color, Dialog, DialogButton, DialogSeverity, Key,
-    MessageDialogButton, MessageDialogController, MessageDialogOptions, Reaction, Rect, StatusBar,
-    StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
+    MessageDialogButton, MessageDialogOptions, Reaction, Rect, StatusBar, StatusBarSegment, Style,
+    StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -53,7 +52,7 @@ fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> 
 
 // gallery:begin
 pub struct MessageDialogDemo {
-    dialog: Option<MessageDialogController>,
+    dialog: Option<(MessageDialog, MessageDialogState)>,
     status: String,
 }
 
@@ -65,8 +64,8 @@ impl MessageDialogDemo {
         }
     }
 
-    fn controller_dialog() -> MessageDialogController {
-        MessageDialogController::new(MessageDialogOptions {
+    fn controller_dialog() -> MessageDialog {
+        MessageDialog::new(MessageDialogOptions {
             title: "Unsaved Changes".to_string(),
             body: "You have unsaved changes.\nDo you want to save before closing?".to_string(),
             buttons: vec![
@@ -176,8 +175,8 @@ impl Demo for MessageDialogDemo {
         let _ = backend.draw_dyn(bar_rect, &self.status_bar(variant), &());
 
         if variant == 0 {
-            if let Some(dialog) = &self.dialog {
-                dialog.render(backend);
+            if let Some((dialog, _)) = &self.dialog {
+                backend.draw_dyn(backend.viewport().rect(), dialog, &());
             }
         }
         // The native-service variant (`variant == 1`) never has a
@@ -195,8 +194,8 @@ impl Demo for MessageDialogDemo {
         _area: Rect,
     ) -> Reaction {
         if variant == 0 {
-            if let Some(ref mut dialog) = self.dialog {
-                match dialog.handle_event(event, backend) {
+            if let Some((dialog, state)) = &mut self.dialog {
+                match dialog.handle_event(state, event, backend) {
                     Handled::Event(id) => {
                         self.status = format!("Resolved: {}", id.as_str());
                         self.dialog = None;
@@ -210,7 +209,7 @@ impl Demo for MessageDialogDemo {
                 ..
             } = event
             {
-                self.dialog = Some(Self::controller_dialog());
+                self.dialog = Some((Self::controller_dialog(), MessageDialogState::default()));
                 self.status = "Save changes? — choose Save or Discard".into();
                 return Reaction::Redraw;
             }
@@ -254,7 +253,7 @@ impl Demo for MessageDialogDemo {
         if variant == 1 && !caps.native_dialogs {
             Some(
                 "This backend has no native alert facility (BackendCaps::native_dialogs is \
-                 false) — show_message_dialog drives the same MessageDialogController in-canvas \
+                 false) — show_message_dialog drives the same MessageDialog in-canvas \
                  instead, through a nested draw-and-read loop, and still returns a real chosen \
                  button."
                     .into(),
@@ -288,8 +287,8 @@ mod tests {
 
     #[test]
     fn controller_dialog_has_save_and_discard() {
-        let controller = MessageDialogDemo::controller_dialog();
-        let dialog = controller.dialog();
+        let widget = MessageDialogDemo::controller_dialog();
+        let dialog = &widget.dialog;
         assert_eq!(dialog.buttons.len(), 2);
         assert_eq!(dialog.buttons[0].label, "Save");
         assert!(dialog.buttons[0].is_default);

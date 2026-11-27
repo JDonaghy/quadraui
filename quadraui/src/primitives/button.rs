@@ -418,7 +418,7 @@ impl ButtonSpec {
     /// caller that must size a button box *before* handing it to that
     /// rasteriser (e.g. [`crate::primitives::dialog::Dialog::measure_generic_inner`],
     /// `crate::tui::dialog::tui_dialog_layout`,
-    /// `crate::compose::message_dialog::MessageDialogController`'s own
+    /// `crate::compose::message_dialog::MessageDialog`'s own
     /// layout) uses this instead of a fixed per-label estimate, so a
     /// `Danger`/`Warning` spec's icon and longer label never clip the
     /// closing bracket.

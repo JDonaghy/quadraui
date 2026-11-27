@@ -12542,7 +12542,7 @@ def handle(event):
     /// `Danger`-variant "Delete" button reads tinted in `theme.error_fg`,
     /// proving `spec` survives the `"message_dialog"` overlay's whole
     /// decode → `message_dialog_options_from_buttons` → `MessageDialogButton`
-    /// → `MessageDialogController` round trip rather than being silently
+    /// → `MessageDialog` round trip rather than being silently
     /// dropped along the way.
     #[test]
     fn open_message_dialog_button_spec_variant_paints_the_danger_tint() {

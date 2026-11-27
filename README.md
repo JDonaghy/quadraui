@@ -362,11 +362,11 @@ the table against the module list. -->
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeTableController` | A `TreeTable` driven from a hierarchical node model: expand/collapse, sibling-scoped column sort, and lazy child loading. |
 | `FormController` | A form's focus, editing and validation. |
-| `FormDialogController` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
+| `FormDialog` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
 | `DualModePalette` | A command palette that switches between modes. |
 | `Chat` | A chat overlay: transcript plus input. |
-| `FilePickerController` / `FolderPickerController` | In-app file and folder pickers for backends without a native dialog. |
-| `MessageDialogController` | Message and confirmation boxes. |
+| `FilePicker` / `FolderPicker` | In-app file and folder pickers for backends without a native dialog. |
+| `MessageDialog` | Message and confirmation boxes. |
 | `ToastStackController` | Keyboard focus for actionable notifications. |
 | `HelpOverlay` | A context-sensitive key-binding help overlay. |
 | `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |

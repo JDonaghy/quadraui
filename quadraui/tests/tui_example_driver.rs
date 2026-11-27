@@ -1475,7 +1475,7 @@ fn file_dialog_demo_escape_exits() {
 
 // ─── MessageDialogDemo: TUI now returns a real button choice ───────────────
 //
-// `show_message_dialog` drives a real `compose::MessageDialogController`
+// `show_message_dialog` drives a real `compose::MessageDialog`
 // through a nested draw-and-read loop and resolves to whichever button the
 // (scripted, via `TuiDriver::queue_dialog_events`) input actually chose.
 // These tests pin that positive contract — a real button id reaches the
@@ -2325,30 +2325,22 @@ fn form_dialog_typing_edits_the_focused_name_field() {
 #[test]
 fn form_dialog_tab_cycles_through_fields_then_buttons_then_wraps() {
     let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
-    assert!(driver.app().controller().is_form_focused());
+    assert!(driver.app().form_focused());
     driver.press_named(NamedKey::Tab); // Name -> Description
-    assert!(driver.app().controller().is_form_focused());
+    assert!(driver.app().form_focused());
     driver.press_named(NamedKey::Tab); // Description -> Cancel
-    assert!(!driver.app().controller().is_form_focused());
+    assert!(!driver.app().form_focused());
     assert_eq!(
-        driver
-            .app()
-            .controller()
-            .focused_button_id()
-            .map(|id| id.as_str()),
+        driver.app().focused_button_id().map(|id| id.as_str()),
         Some("cancel")
     );
     driver.press_named(NamedKey::Tab); // Cancel -> Create
     assert_eq!(
-        driver
-            .app()
-            .controller()
-            .focused_button_id()
-            .map(|id| id.as_str()),
+        driver.app().focused_button_id().map(|id| id.as_str()),
         Some("create")
     );
     driver.press_named(NamedKey::Tab); // Create -> (wraps) Name
-    assert!(driver.app().controller().is_form_focused());
+    assert!(driver.app().form_focused());
 }
 
 /// Shift-Tab from the first field (Name) moves focus straight to the
@@ -2358,11 +2350,7 @@ fn form_dialog_shift_tab_from_first_field_focuses_last_button() {
     let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
     form_dialog_shift_tab(&mut driver);
     assert_eq!(
-        driver
-            .app()
-            .controller()
-            .focused_button_id()
-            .map(|id| id.as_str()),
+        driver.app().focused_button_id().map(|id| id.as_str()),
         Some("create")
     );
 }
@@ -2447,13 +2435,12 @@ fn form_dialog_entering_form_from_a_button_keeps_the_apps_focus_mirror_in_sync()
     form_dialog_shift_tab(&mut driver); // Create -> Cancel
     form_dialog_shift_tab(&mut driver); // Cancel -> (wraps back) Description
     assert!(
-        driver.app().controller().is_form_focused(),
+        driver.app().form_focused(),
         "third shift-tab should land back on the form"
     );
     assert_eq!(
         driver
             .app()
-            .controller()
             .form()
             .and_then(|f| f.focused_field)
             .map(|id| id.as_str()),
@@ -2463,11 +2450,7 @@ fn form_dialog_entering_form_from_a_button_keeps_the_apps_focus_mirror_in_sync()
     driver.type_char('a');
     driver.type_char('b');
     driver.type_char('c');
-    let form = driver
-        .app()
-        .controller()
-        .form()
-        .expect("controller should have a form set");
+    let form = driver.app().form().expect("dialog should have a form set");
     let name_value = form
         .fields
         .iter()
@@ -7780,9 +7763,9 @@ fn file_picker_app_save_mode_vim_chars_type_into_filename() {
     );
 }
 
-// ─── MessageDialogApp: compose::MessageDialogController demo ──
+// ─── MessageDialogApp: compose::MessageDialog demo ──
 //
-// Drives `MessageDialogController` directly — no `PlatformServices`
+// Drives `MessageDialog` directly — no `PlatformServices`
 // involved. See `tui_message_dialog_app.rs`.
 
 /// Enter with no navigation activates the default-focused button ("Save").
@@ -7803,7 +7786,7 @@ fn message_dialog_app_enter_resolves_default_button() {
 }
 
 /// Escape resolves to the cancel button ("Discard") even though it isn't
-/// the keyboard-focused one — `MessageDialogController`'s "there's always
+/// the keyboard-focused one — `MessageDialog`'s "there's always
 /// something to degrade to" contract.
 #[test]
 fn message_dialog_app_escape_resolves_cancel_button() {
@@ -7817,7 +7800,7 @@ fn message_dialog_app_escape_resolves_cancel_button() {
 }
 
 /// `MessageDialogButton::spec` (a `Danger` override on "Discard") carries
-/// through `MessageDialogController::new` into the `DialogButton` it
+/// through `MessageDialog::new` into the `DialogButton` it
 /// builds, and paints in `theme.error_fg` — the "Danger" intent colour —
 /// through the same bracket-chrome path a standalone `Button` uses.
 #[test]

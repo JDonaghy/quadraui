@@ -972,16 +972,16 @@ pub use compose::{
     BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelItem, BottomPanelPrimitiveLayout,
     BottomPanelState, BottomPanelTab, Chat, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn,
     ChatZones, ContextMenuController, ContextMenuOutcome, DualModePaletteAction, Edge,
-    FilePickerMode, FormController, FormControllerAction, FormDialogAction, FormDialogController,
-    GroupLayout, Handled, HelpAction, HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker,
-    MenuDef, MenuEvent, MenuSystem, MessageDialogController, NavigationMode, PanelDefinition,
-    PathPickerAction, SectionKind, ShellDrag, ShellEvent, ShellLayout, ShellPosition, ShellRegion,
-    ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody,
-    SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
-    SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupEvent, TabGroupPane,
-    TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart, TabGroupTab,
-    ToastStackAction, ToastStackController, ToolbarHoverTracker, ViewHelp, Workspace, WorkspaceDoc,
-    WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
+    FilePickerMode, FormController, FormControllerAction, FormDialogAction, GroupLayout, Handled,
+    HelpAction, HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent,
+    MenuSystem, NavigationMode, PanelDefinition, PathPickerAction, SectionKind, ShellDrag,
+    ShellEvent, ShellLayout, ShellPosition, ShellRegion, ShellView, ShellViewLayout,
+    ShellViewState, Sidebar, SidebarAction, SidebarBody, SidebarPanelBody, SidebarPanelBodyLayout,
+    SidebarPanelChrome, SidebarSection, SidebarSectionDef, StatusBarInteraction, TabGroup,
+    TabGroupEvent, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
+    TabGroupSubPart, TabGroupTab, ToastStackAction, ToastStackController, ToolbarHoverTracker,
+    ViewHelp, Workspace, WorkspaceDoc, WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState,
+    PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
@@ -998,20 +998,15 @@ pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeDa
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.
-// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`,
-// `FormControllerEvent` and `FormDialogEvent` are
+// `StatusBarAction`, `ToastStackEvent` and `FormControllerEvent` are
 // `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
-// `Handled<WidgetId>`, `MessageDialogController::handle_event`'s
-// `Handled<MessageDialogChoice>`, `ToastStackController::handle_event`'s
-// `Handled<ToastStackAction>`,
+// `Handled<WidgetId>`, `ToastStackController::handle_event`'s
+// `Handled<ToastStackAction>` and
 // `FormController::handle_event`/`handle_cached_event`'s
-// `Handled<FormControllerAction>`, `FormDialogController::handle_event`'s
-// `Handled<FormDialogAction>` instead). Allow them here since `pub use` of
-// a deprecated item is itself a use site.
+// `Handled<FormControllerAction>` instead). Allow them here since `pub use`
+// of a deprecated item is itself a use site.
 #[allow(deprecated)]
-pub use compose::{
-    FormControllerEvent, FormDialogEvent, MessageDialogEvent, StatusBarAction, ToastStackEvent,
-};
+pub use compose::{FormControllerEvent, StatusBarAction, ToastStackEvent};
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,

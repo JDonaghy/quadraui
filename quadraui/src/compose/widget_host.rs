@@ -1,6 +1,6 @@
 //! Driving a contract widget from a compose controller.
 //!
-//! A controller such as [`crate::compose::MessageDialogController`], or a
+//! A controller such as [`crate::compose::MessageDialog`], or a
 //! host whose events do not pass through the runtime's routing engine
 //! ([`drive_ui_event`]), holds a widget descriptor plus its
 //! [`Interactive::State`] and is called with raw [`UiEvent`]s. This module

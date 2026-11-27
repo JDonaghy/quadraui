@@ -109,25 +109,25 @@ impl AppLogic for Docs {
 `examples/tui_wide_tab_bar_demo.rs` (`examples/common/wide_tab_bar_demo.rs`) is a
 runnable app in this shape.
 
-### Shape 2: a controller you drive
+### Shape 2: a widget you drive with raw events
 
-The controller holds the widget and its state; you paint it and offer it
-every event until it resolves:
+You keep the widget and its state; you paint it with `draw_dyn` and offer
+it every event until it resolves:
 
 ```rust
 use quadraui::{
-    AppLogic, Backend, Handled, MessageDialogButton, MessageDialogController,
-    MessageDialogOptions, Reaction, UiEvent, WidgetId,
+    AppLogic, Backend, DrawsPrimitives, Handled, MessageDialog, MessageDialogButton,
+    MessageDialogOptions, MessageDialogState, Reaction, UiEvent, WidgetId,
 };
 
 struct Confirm {
-    dialog: Option<MessageDialogController>,
+    dialog: Option<(MessageDialog, MessageDialogState)>,
     answer: Option<WidgetId>,
 }
 
 impl Confirm {
     fn open(&mut self) {
-        self.dialog = Some(MessageDialogController::new(MessageDialogOptions {
+        let dialog = MessageDialog::new(MessageDialogOptions {
             title: "Discard changes?".into(),
             body: "Unsaved edits will be lost.".into(),
             buttons: vec![
@@ -147,7 +147,8 @@ impl Confirm {
                 },
             ],
             severity: None,
-        }));
+        });
+        self.dialog = Some((dialog, MessageDialogState::default()));
     }
 }
 
@@ -155,14 +156,14 @@ impl AppLogic for Confirm {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        if let Some(dialog) = &self.dialog {
-            dialog.render(backend);
+        if let Some((dialog, _)) = &self.dialog {
+            backend.draw_dyn(backend.viewport().rect(), dialog, &());
         }
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        if let Some(dialog) = self.dialog.as_mut() {
-            match dialog.handle_event(&event, backend) {
+        if let Some((dialog, state)) = self.dialog.as_mut() {
+            match dialog.handle_event(state, &event, backend) {
                 Handled::Event(choice) => {
                     self.answer = Some(choice);
                     self.dialog = None;
@@ -483,10 +484,13 @@ resolves to the cancel button, falling back to the default one.
 **Widget:** `FormDialog::new(id, title)` (`State` = `FormDialogState`,
 `Action` = `FormDialogAction`).
 
-**Controller:** `FormDialogController::new(id, title)` with
-`.with_buttons(..)`, `.with_body(..)`, `.with_severity(..)`;
-`set_form(form)`; `render(backend)` (it centres itself in the viewport);
-`handle_event(&event, backend)` → `Handled<FormDialogAction>`.
+**Raw-event host:** build it with `.with_buttons(..)`, `.with_body(..)`,
+`.with_severity(..)` and set `form` every frame; paint
+`dialog.painted(&state)` with `draw_dyn` over `backend.viewport().rect()`
+(it centres itself in the viewport); `dialog.handle_event(&mut state,
+&event, backend)` → `Handled<FormDialogAction>`. On the runtime's routing
+engine, push the widget as a `Surface::Widget` and register it in
+`frame_tree` instead.
 
 **Actions (`FormDialogAction`):** `ButtonClicked(id)`,
 `FormAction(FormEvent)`.
@@ -494,11 +498,12 @@ resolves to the cancel button, falling back to the default one.
 **Smallest wiring:**
 
 ```rust,ignore
-let mut dialog = FormDialogController::new("create_milestone", "Create milestone")
+let mut dialog = FormDialog::new(WidgetId::new("create_milestone"), "Create milestone")
     .with_buttons(vec![cancel_button, create_button]);
-dialog.set_form(my_form_descriptor);
-dialog.render(backend);
-match dialog.handle_event(&event, backend) {
+let mut state = FormDialogState::default();
+dialog.form = Some(my_form_descriptor);
+backend.draw_dyn(backend.viewport().rect(), &dialog.painted(&state), &());
+match dialog.handle_event(&mut state, &event, backend) {
     Handled::Event(FormDialogAction::ButtonClicked(id)) if id.as_str() == "create" => submit(),
     Handled::Event(FormDialogAction::FormAction(ev)) => apply_field_change(ev),
     _ => {}
@@ -678,10 +683,11 @@ show → resolve → return-a-choice contract
 delivered as `UiEvent::MessageDialogResolved(choice)`). It centres itself in
 the rect it is laid out in, so hand it the whole viewport.
 
-**Controller:** `MessageDialogController::new(options)`, optionally
-`.with_id(..)` / `.with_vertical_buttons(..)`; `render(backend)`;
-`handle_event(&event, backend)` → `Handled<MessageDialogChoice>`. Shape 2
-above is a complete example.
+**Raw-event host:** optionally `.with_id(..)` / `.with_vertical_buttons(..)`;
+paint it with `draw_dyn` over `backend.viewport().rect()`;
+`dialog.handle_event(&mut state, &event, backend)` →
+`Handled<MessageDialogChoice>`; `dialog.bounds(backend)` for a modal-stack
+entry. Shape 2 above is a complete example.
 
 **Modal stack:** a host with its own engine pushes the dialog's bounds onto
 `Backend::modal_stack_handle()` when it opens and pops them when it closes,

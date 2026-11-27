@@ -1,6 +1,5 @@
 //! [`FormDialog`] — a [`Dialog`] hosting a multi-field [`Form`] on the
-//! widget contract, plus [`FormDialogController`], its thin
-//! event-driven wrapper.
+//! widget contract.
 //!
 //! A `FormDialog` composes two contract widgets: the modal chrome and
 //! button row paint and hit-test through [`Dialog`]'s own [`Primitive`],
@@ -11,21 +10,31 @@
 //! dialog's own job is the piece neither child has: one keyboard focus
 //! order across the form's fields and the dialog's buttons.
 //!
-//! # Usage pattern
+//! # Hosting
+//!
+//! An app on the runtime's routing engine pushes the [`FormDialog`]
+//! itself as a `Surface::Widget` over the whole viewport and registers it
+//! in its frame tree; its actions arrive as [`UiEvent::MessageDialogResolved`]
+//! (a button) and [`UiEvent::Form`] (a field).
+//!
+//! A host that reads raw [`UiEvent`]s instead keeps the widget and its
+//! [`FormDialogState`], paints [`FormDialog::painted`] with `draw_dyn` over
+//! the viewport and resolves each event through [`FormDialog::handle_event`]:
 //!
 //! ```rust,ignore
-//! let mut dialog = FormDialogController::new("create_milestone", "Create milestone")
+//! let mut dialog = FormDialog::new(WidgetId::new("create_milestone"), "Create milestone")
 //!     .with_buttons(vec![
 //!         DialogButton { id: WidgetId::new("cancel"), label: "Cancel".into(), is_cancel: true, is_default: false, tint: None, spec: None },
 //!         DialogButton { id: WidgetId::new("create"), label: "Create".into(), is_default: true, is_cancel: false, tint: None, spec: None },
 //!     ]);
-//! dialog.set_form(my_form); // rebuilt every frame from app-owned field values
+//! let mut state = FormDialogState::default();
+//! dialog.form = Some(my_form); // rebuilt every frame from app-owned field values
 //!
 //! // AppLogic::render:
-//! dialog.render(backend);
+//! backend.draw_dyn(backend.viewport().rect(), &dialog.painted(&state), &());
 //!
 //! // AppLogic::handle:
-//! match dialog.handle_event(&event, backend) {
+//! match dialog.handle_event(&mut state, &event, backend) {
 //!     Handled::Event(FormDialogAction::ButtonClicked(id)) if id.as_str() == "create" => {
 //!         // Read the app's own canonical field values (already synced via
 //!         // FormAction(FormEvent::TextInputChanged { .. }) below) — same
@@ -56,8 +65,8 @@
 //! Field focus is the form's [`Form::focused_field`], which the host
 //! owns: moving focus into the form reports
 //! [`FormEvent::FocusChanged`] for the host to apply, the same event the
-//! form's own Tab reports. The controller applies it to its stored form
-//! itself, since a dialog is a self-contained modal; a consumer that
+//! form's own Tab reports. [`FormDialog::handle_event`] applies it to the
+//! widget's form itself, since a dialog is a self-contained modal; a consumer that
 //! mirrors `focused_field` elsewhere still sees every change as a
 //! [`FormDialogAction::FormAction`].
 //!
@@ -94,9 +103,8 @@ use crate::primitives::scrollbar::{Scrollbar, ScrollbarLayout};
 use crate::types::{StyledText, WidgetId};
 use crate::{Key, Modifiers, NamedKey};
 
-/// Semantic payload of [`Handled::Event`] returned by
-/// [`FormDialogController::handle_event`], and the [`FormDialog`]
-/// widget's action.
+/// The [`FormDialog`] widget's action: the semantic payload of
+/// [`Handled::Event`] that [`FormDialog::handle_event`] returns.
 #[derive(Debug, Clone, PartialEq)]
 pub enum FormDialogAction {
     /// A button was clicked, activated via Enter while it had keyboard
@@ -126,27 +134,6 @@ impl WidgetAction for FormDialogAction {
             FormDialogAction::FormAction(event) => UiEvent::Form(id, event),
         }
     }
-}
-
-/// What happened after [`FormDialogController::handle`] processed an event.
-#[derive(Debug, Clone, PartialEq)]
-#[deprecated(
-    since = "0.9.0",
-    note = "use `FormDialogController::handle_event`'s `Handled<FormDialogAction>` instead — `Consumed`/`Ignored` are `Handled::Consumed`/`Handled::Ignored`, `ButtonClicked`/`FormAction` move to `FormDialogAction` under `Handled::Event`"
-)]
-pub enum FormDialogEvent {
-    /// A button was clicked, activated via Enter while it had keyboard
-    /// focus, or resolved via Escape. See
-    /// [`FormDialogAction::ButtonClicked`].
-    ButtonClicked(WidgetId),
-    /// A field-level event occurred inside the form. See
-    /// [`FormDialogAction::FormAction`].
-    FormAction(FormEvent),
-    /// Event consumed — internal state (keyboard/button focus, scroll)
-    /// changed, caller should redraw.
-    Consumed,
-    /// Event not relevant to this controller.
-    Ignored,
 }
 
 // ── Widget ────────────────────────────────────────────────────────────────
@@ -244,6 +231,115 @@ impl FormDialog {
             table: None,
             input: form.map(DialogInput::Form),
         }
+    }
+
+    /// Set the dialog's buttons. Returns `self` for builder-style
+    /// chaining.
+    pub fn with_buttons(mut self, buttons: Vec<DialogButton>) -> Self {
+        self.buttons = buttons;
+        self
+    }
+
+    /// Set the dialog's severity tint. Returns `self` for builder-style
+    /// chaining.
+    pub fn with_severity(mut self, severity: DialogSeverity) -> Self {
+        self.severity = Some(severity);
+        self
+    }
+
+    /// Stack buttons vertically instead of the default right-aligned
+    /// horizontal row. See [`Dialog::vertical_buttons`]. Returns `self`
+    /// for builder-style chaining.
+    pub fn with_vertical_buttons(mut self, vertical: bool) -> Self {
+        self.vertical_buttons = vertical;
+        self
+    }
+
+    /// Set body text lines, painted above the form (e.g. instructions, or
+    /// a status line a host updates after a submit). See [`Dialog::body`]'s
+    /// own "title → body → table → input → buttons" layout order. Returns
+    /// `self` for builder-style chaining.
+    pub fn with_body(mut self, body: Vec<StyledText>) -> Self {
+        self.body = body;
+        self
+    }
+
+    /// The `WidgetId` of the button holding keyboard focus in `state`, or
+    /// `None` while focus is on the form.
+    pub fn focused_button_id(&self, state: &FormDialogState) -> Option<&WidgetId> {
+        state
+            .focused_button
+            .and_then(|i| self.buttons.get(i))
+            .map(|b| &b.id)
+    }
+
+    /// The widget as a raw-event host paints it: its form overlaid with
+    /// `state` ([`Self::live_form`]), so a `draw_dyn` of it outside the
+    /// runtime's widget-state store shows the live caret and focus.
+    pub fn painted(&self, state: &FormDialogState) -> FormDialog {
+        FormDialog {
+            form: self.live_form(state),
+            ..self.clone()
+        }
+    }
+
+    /// The modal's geometry over `backend`'s viewport for the widget as
+    /// [`Self::painted`] with `state` — the geometry a host's `draw_dyn`
+    /// of it paints, resolved from the backend's own font metrics.
+    pub fn dialog_layout(&self, state: &FormDialogState, backend: &dyn Backend) -> DialogLayout {
+        backend
+            .layout_primitive(backend.viewport().rect(), &self.painted(state))
+            .dialog
+            .layout
+    }
+
+    /// The dialog's full on-screen bounds over `backend`'s viewport — see
+    /// [`crate::compose::MessageDialog::bounds`] for why a host tracking a
+    /// [`crate::ModalStack`] entry wants this.
+    pub fn bounds(&self, state: &FormDialogState, backend: &dyn Backend) -> Rect {
+        self.dialog_layout(state, backend).bounds
+    }
+
+    /// Resolve one raw [`UiEvent`] for a host that paints
+    /// [`Self::painted`] over `backend`'s viewport, through the widget's
+    /// own [`Interactive`] against `state`.
+    ///
+    /// A press outside the modal is [`Handled::Consumed`]: the dialog is
+    /// modal. A reported [`FormEvent::FocusChanged`] is applied to
+    /// [`Self::form`] here as well as returned, since the dialog is a
+    /// self-contained modal.
+    pub fn handle_event(
+        &mut self,
+        state: &mut FormDialogState,
+        event: &UiEvent,
+        backend: &dyn Backend,
+    ) -> Handled<FormDialogAction> {
+        let viewport = backend.viewport().rect();
+        let layout = backend.layout_primitive(viewport, &self.painted(state));
+        let subs = Interactive::sub_regions(self, &layout);
+        let Some(routed) = widget_host::routed_event(event, viewport, &subs) else {
+            return Handled::Ignored;
+        };
+        let units = crate::backend::primitive_layout_ctx(backend).units();
+        let driven = widget_host::drive(&*self, self.id, state, &routed, &layout, units);
+        let handled = match (driven.handled, &routed) {
+            (
+                Handled::Ignored,
+                RoutedEvent::Pointer {
+                    kind: PointerKind::Down(_),
+                    ..
+                },
+            ) => Handled::Consumed,
+            (handled, _) => handled,
+        };
+        if let Handled::Event(FormDialogAction::FormAction(FormEvent::FocusChanged { id })) =
+            &handled
+        {
+            if let Some(form) = &mut self.form {
+                form.focused_field = Some(*id);
+            }
+        }
+        handled
     }
 
     /// [`Dialog::cancel_button_id`], falling back to
@@ -747,209 +843,6 @@ impl Interactive for FormDialog {
     }
 }
 
-// ── Controller ────────────────────────────────────────────────────────────
-
-/// Event-driven wrapper over a [`FormDialog`] and its state, for a host
-/// that calls it with raw [`UiEvent`]s rather than routing it through the
-/// runtime's engine.
-///
-/// See the [module-level documentation](self) for a usage example.
-pub struct FormDialogController {
-    widget: FormDialog,
-    state: FormDialogState,
-}
-
-impl FormDialogController {
-    /// Build an empty controller — no form, no buttons. Call
-    /// [`Self::set_form`] and [`Self::with_buttons`] before using it.
-    pub fn new(id: impl Into<String>, title: impl Into<String>) -> Self {
-        Self {
-            widget: FormDialog::new(WidgetId::new(id.into()), title),
-            state: FormDialogState::default(),
-        }
-    }
-
-    /// Set the dialog's buttons. Returns `self` for builder-style
-    /// chaining.
-    pub fn with_buttons(mut self, buttons: Vec<DialogButton>) -> Self {
-        self.widget.buttons = buttons;
-        self
-    }
-
-    /// Set the dialog's severity tint. Returns `self` for builder-style
-    /// chaining.
-    pub fn with_severity(mut self, severity: DialogSeverity) -> Self {
-        self.widget.severity = Some(severity);
-        self
-    }
-
-    /// Stack buttons vertically instead of the default right-aligned
-    /// horizontal row. See [`Dialog::vertical_buttons`]. Returns `self`
-    /// for builder-style chaining.
-    pub fn with_vertical_buttons(mut self, vertical: bool) -> Self {
-        self.widget.vertical_buttons = vertical;
-        self
-    }
-
-    /// Set body text lines, rendered above the form (e.g. instructions,
-    /// or a status line a consumer updates after a submit). See
-    /// [`Dialog::body`]'s own "title → body → table → input → buttons"
-    /// layout order. Returns `self` for builder-style chaining.
-    pub fn with_body(mut self, body: Vec<StyledText>) -> Self {
-        self.widget.body = body;
-        self
-    }
-
-    /// Replace the body text lines set via [`Self::with_body`] — unlike
-    /// that builder, callable after construction, for a status line a
-    /// consumer wants to update in response to its own action handling
-    /// (e.g. "Created: …" after a submit).
-    pub fn set_body(&mut self, body: Vec<StyledText>) {
-        self.widget.body = body;
-    }
-
-    /// Push a fresh `form` into the controller — call every frame with
-    /// the app's own canonical field values.
-    pub fn set_form(&mut self, form: Form) {
-        self.widget.form = Some(form);
-    }
-
-    /// The form most recently pushed via [`Self::set_form`], with every
-    /// focus change this controller applied since.
-    pub fn form(&self) -> Option<&Form> {
-        self.widget.form.as_ref()
-    }
-
-    /// The [`FormDialog`] widget this controller drives.
-    pub fn widget(&self) -> &FormDialog {
-        &self.widget
-    }
-
-    /// Whether keyboard focus is currently on the form (as opposed to
-    /// one of the buttons).
-    pub fn is_form_focused(&self) -> bool {
-        self.state.focused_button.is_none()
-    }
-
-    /// The `WidgetId` of the currently keyboard-focused button, or
-    /// `None` when focus is on the form.
-    pub fn focused_button_id(&self) -> Option<&WidgetId> {
-        self.state
-            .focused_button
-            .and_then(|i| self.widget.buttons.get(i))
-            .map(|b| &b.id)
-    }
-
-    /// The underlying [`Dialog`] descriptor, built fresh from this
-    /// controller's current state. Its form slot carries the form as it
-    /// is painted — in particular `has_focus`, which reports whether
-    /// keyboard focus is really on the form or on a button.
-    pub fn dialog(&self) -> Dialog {
-        self.widget.dialog_with(self.widget.live_form(&self.state))
-    }
-
-    /// The dialog's full on-screen bounds for this backend's current
-    /// viewport — see [`crate::compose::MessageDialogController::bounds`]'s
-    /// own doc for why a caller tracking a [`crate::ModalStack`] entry
-    /// wants this.
-    pub fn bounds(&self, backend: &dyn Backend) -> Rect {
-        self.layout(backend).bounds
-    }
-
-    /// The whole viewport, which the modal centres itself in.
-    fn viewport(backend: &dyn Backend) -> Rect {
-        let vp = backend.viewport();
-        Rect::new(0.0, 0.0, vp.width, vp.height)
-    }
-
-    /// The widget as painted: its form overlaid with this controller's
-    /// live state, so a `Surface::Widget` paint and this one agree.
-    fn painted_widget(&self) -> FormDialog {
-        FormDialog {
-            form: self.widget.live_form(&self.state),
-            ..self.widget.clone()
-        }
-    }
-
-    /// Resolve the modal's geometry through the widget contract, from the
-    /// backend's own viewport and font metrics, so paint and hit-test can
-    /// never disagree.
-    fn layout(&self, backend: &dyn Backend) -> DialogLayout {
-        backend
-            .layout_primitive(Self::viewport(backend), &self.painted_widget())
-            .dialog
-            .layout
-    }
-
-    /// Paint the dialog, centered in the backend's current viewport.
-    ///
-    /// Call this from `AppLogic::render` whenever the dialog is open.
-    pub fn render(&self, backend: &mut dyn Backend) {
-        let viewport = Self::viewport(backend);
-        backend.draw_dyn(viewport, &self.painted_widget(), &());
-    }
-
-    /// Drive the dialog with a backend-neutral [`UiEvent`].
-    ///
-    /// A press outside the modal is swallowed: the dialog is modal.
-    pub fn handle_event(
-        &mut self,
-        event: &UiEvent,
-        backend: &mut dyn Backend,
-    ) -> Handled<FormDialogAction> {
-        let viewport = Self::viewport(backend);
-        let layout = backend.layout_primitive(viewport, &self.painted_widget());
-        let subs = Interactive::sub_regions(&self.widget, &layout);
-        let Some(routed) = widget_host::routed_event(event, viewport, &subs) else {
-            return Handled::Ignored;
-        };
-        let units = crate::backend::primitive_layout_ctx(backend).units();
-        let driven = widget_host::drive(
-            &self.widget,
-            self.widget.id,
-            &mut self.state,
-            &routed,
-            &layout,
-            units,
-        );
-        let handled = match (driven.handled, &routed) {
-            (
-                Handled::Ignored,
-                RoutedEvent::Pointer {
-                    kind: PointerKind::Down(_),
-                    ..
-                },
-            ) => Handled::Consumed,
-            (handled, _) => handled,
-        };
-        if let Handled::Event(FormDialogAction::FormAction(FormEvent::FocusChanged { id })) =
-            &handled
-        {
-            if let Some(form) = &mut self.widget.form {
-                form.focused_field = Some(*id);
-            }
-        }
-        handled
-    }
-
-    /// Drive the state machine with a backend-neutral [`UiEvent`].
-    #[deprecated(
-        since = "0.9.0",
-        note = "use `handle_event`, which returns `Handled<FormDialogAction>` instead of `FormDialogEvent`"
-    )]
-    #[allow(deprecated)] // `FormDialogEvent` is `#[deprecated]`; this method is its own shim.
-    pub fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend) -> FormDialogEvent {
-        match self.handle_event(event, backend) {
-            Handled::Event(FormDialogAction::ButtonClicked(id)) => {
-                FormDialogEvent::ButtonClicked(id)
-            }
-            Handled::Event(FormDialogAction::FormAction(e)) => FormDialogEvent::FormAction(e),
-            Handled::Consumed => FormDialogEvent::Consumed,
-            Handled::Ignored => FormDialogEvent::Ignored,
-        }
-    }
-}
-
 // ── Tests ─────────────────────────────────────────────────────────────────────
 //
 // Gated on `tui` for the same reason `compose::message_dialog`'s own test
@@ -1019,9 +912,58 @@ mod tests {
         }
     }
 
-    fn controller() -> FormDialogController {
-        let mut c =
-            FormDialogController::new("create_milestone", "Create milestone").with_buttons(vec![
+    /// A raw-event host: the dialog plus the state it keeps between
+    /// events, driven through [`FormDialog::handle_event`].
+    struct Host {
+        widget: FormDialog,
+        state: FormDialogState,
+    }
+
+    impl Host {
+        fn form(&self) -> Option<&Form> {
+            self.widget.form.as_ref()
+        }
+
+        fn set_form(&mut self, form: Form) {
+            self.widget.form = Some(form);
+        }
+
+        fn set_body(&mut self, body: Vec<StyledText>) {
+            self.widget.body = body;
+        }
+
+        fn dialog(&self) -> Dialog {
+            self.widget.dialog_with(self.widget.live_form(&self.state))
+        }
+
+        fn is_form_focused(&self) -> bool {
+            self.state.focused_button.is_none()
+        }
+
+        fn focused_button_id(&self) -> Option<&WidgetId> {
+            self.widget.focused_button_id(&self.state)
+        }
+
+        fn layout(&self, backend: &dyn Backend) -> DialogLayout {
+            self.widget.dialog_layout(&self.state, backend)
+        }
+
+        fn bounds(&self, backend: &dyn Backend) -> Rect {
+            self.widget.bounds(&self.state, backend)
+        }
+
+        fn handle_event(
+            &mut self,
+            event: &UiEvent,
+            backend: &dyn Backend,
+        ) -> Handled<FormDialogAction> {
+            self.widget.handle_event(&mut self.state, event, backend)
+        }
+    }
+
+    fn host() -> Host {
+        let widget = FormDialog::new(WidgetId::new("create_milestone"), "Create milestone")
+            .with_buttons(vec![
                 DialogButton {
                     id: WidgetId::new("cancel"),
                     label: "Cancel".into(),
@@ -1039,6 +981,10 @@ mod tests {
                     spec: None,
                 },
             ]);
+        let mut c = Host {
+            widget,
+            state: FormDialogState::default(),
+        };
         c.set_form(name_description_form());
         c
     }
@@ -1095,7 +1041,7 @@ mod tests {
 
     #[test]
     fn dialog_input_is_a_form_with_both_fields() {
-        let c = controller();
+        let c = host();
         match c.dialog().input {
             Some(DialogInput::Form(f)) => assert_eq!(f.fields.len(), 2),
             other => panic!("expected DialogInput::Form, got {:?}", other),
@@ -1112,7 +1058,7 @@ mod tests {
     /// moved to a button.
     #[test]
     fn dialog_form_has_focus_reflects_actual_keyboard_focus() {
-        let mut c = controller();
+        let mut c = host();
         match c.dialog().input {
             Some(DialogInput::Form(f)) => assert!(f.has_focus, "form should start focused"),
             other => panic!("expected DialogInput::Form, got {:?}", other),
@@ -1138,7 +1084,7 @@ mod tests {
     #[test]
     fn escape_closes_an_open_combo_box_instead_of_resolving_to_cancel() {
         use crate::primitives::combo_box::ComboBox;
-        let mut c = controller();
+        let mut c = host();
         let mut form = c.form().unwrap().clone();
         form.fields.push(FormField {
             id: WidgetId::new("kind"),
@@ -1188,7 +1134,7 @@ mod tests {
     /// shown after a submit, without rebuilding the whole controller.
     #[test]
     fn set_body_updates_the_dialogs_body_text() {
-        let mut c = controller();
+        let mut c = host();
         assert!(c.dialog().body.is_empty());
         c.set_body(vec![StyledText::plain("Created: Alpha")]);
         assert_eq!(c.dialog().body.len(), 1);
@@ -1196,14 +1142,14 @@ mod tests {
 
     #[test]
     fn starts_with_form_focused() {
-        let c = controller();
+        let c = host();
         assert!(c.is_form_focused());
         assert_eq!(c.focused_button_id(), None);
     }
 
     #[test]
     fn tab_moves_from_name_to_description_field() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let ev = tab_event(false);
         let result = c.handle_event(&ev, &mut backend);
@@ -1220,7 +1166,7 @@ mod tests {
 
     #[test]
     fn tab_past_the_last_field_moves_to_the_first_button() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         // name -> description -> (past the last field) first button.
         let _ = c.handle_event(&tab_event(false), &mut backend);
@@ -1232,7 +1178,7 @@ mod tests {
 
     #[test]
     fn tab_past_the_last_button_wraps_to_the_first_field() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let _ = c.handle_event(&tab_event(false), &mut backend); // name -> description
         let _ = c.handle_event(&tab_event(false), &mut backend); // description -> cancel
@@ -1265,7 +1211,7 @@ mod tests {
     /// asserts above, which this test exercises end-to-end.
     #[test]
     fn typing_after_tab_wrap_back_onto_the_form_lands_in_the_focused_field() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let _ = c.handle_event(&tab_event(false), &mut backend); // name -> description
         let _ = c.handle_event(&tab_event(false), &mut backend); // description -> cancel
@@ -1283,7 +1229,7 @@ mod tests {
 
     #[test]
     fn shift_tab_from_the_first_field_moves_to_the_last_button() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let result = c.handle_event(&tab_event(true), &mut backend);
         assert_eq!(result, Handled::Consumed);
@@ -1293,7 +1239,7 @@ mod tests {
 
     #[test]
     fn left_right_cycle_buttons_once_focused() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let _ = c.handle_event(&tab_event(false), &mut backend);
         let _ = c.handle_event(&tab_event(false), &mut backend); // now on "cancel"
@@ -1308,7 +1254,7 @@ mod tests {
 
     #[test]
     fn typing_while_name_focused_updates_the_form_value() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let ev = UiEvent::CharTyped('x');
         let result = c.handle_event(&ev, &mut backend);
@@ -1326,7 +1272,7 @@ mod tests {
 
     #[test]
     fn enter_on_focused_create_button_resolves_it() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let _ = c.handle_event(&tab_event(true), &mut backend); // shift-tab: focus -> "create"
         let enter = UiEvent::KeyPressed {
@@ -1343,7 +1289,7 @@ mod tests {
 
     #[test]
     fn escape_resolves_the_cancel_button_regardless_of_focus() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let esc = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Escape),
@@ -1359,7 +1305,7 @@ mod tests {
 
     #[test]
     fn click_on_a_button_focuses_and_resolves_it() {
-        let c = controller();
+        let c = host();
         let backend = crate::tui::backend::TuiBackend::new();
         let layout = c.layout(&backend);
         let btn = layout
@@ -1387,7 +1333,7 @@ mod tests {
 
     #[test]
     fn bounds_matches_the_layout_render_and_handle_both_use() {
-        let c = controller();
+        let c = host();
         let backend = crate::tui::backend::TuiBackend::new();
         assert_eq!(c.bounds(&backend), c.layout(&backend).bounds);
     }
@@ -1400,7 +1346,7 @@ mod tests {
     /// this shape.
     #[test]
     fn layout_reserves_the_text_areas_full_visible_rows_not_one_row_per_field() {
-        let c = controller();
+        let c = host();
         let backend = crate::tui::backend::TuiBackend::new();
         let input_bounds = c
             .layout(&backend)
@@ -1418,7 +1364,7 @@ mod tests {
 
     #[test]
     fn other_events_with_buttons_focused_are_ignored() {
-        let mut c = controller();
+        let mut c = host();
         let mut backend = crate::tui::backend::TuiBackend::new();
         let _ = c.handle_event(&tab_event(true), &mut backend); // focus -> "create"
         let ev = UiEvent::CharTyped('x');

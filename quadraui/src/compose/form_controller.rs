@@ -230,7 +230,7 @@ impl FormController {
     /// required-field markers) — see [`Self::build_form`]. Distinct from
     /// `form()` so a composing controller that embeds this `Form` inside
     /// its *own* descriptor (e.g.
-    /// [`crate::compose::form_dialog::FormDialogController::dialog`])
+    /// [`crate::compose::form_dialog::FormDialog::dialog_with`])
     /// reports the state that's actually on screen rather than the raw
     /// one the consumer last pushed via [`Self::set_form`] (which may
     /// have gone stale — e.g. `has_focus` toggled by [`Self::set_has_focus`]
