@@ -1,6 +1,6 @@
 // Black-box coverage for `QuiApp`'s metrics/capabilities surface:
-// `viewport`, `lineHeight`, `charWidth`, `listCharWidth`,
-// `chromeLineHeight`, `scrollbarReserve`, `scalesTextRows`, `snapHeight`,
+// `viewport`, `lineHeight`, `charWidth`,
+// `chromeLineHeight`, `scalesTextRows`, `snapHeight`,
 // `measureText`, `backendCaps`, and `cellColors` -- a port of
 // `quadraui-py/tests/test_metrics.py`. All of these read the headless
 // `TuiBackend` this `QuiApp` wraps, so the values asserted here are the
@@ -32,14 +32,18 @@ test("lineHeight and charWidth are one terminal cell", () => {
   const app = new QuiApp(10, 10);
   assert.equal(app.lineHeight(), 1.0);
   assert.equal(app.charWidth(), 1.0);
-  assert.equal(app.listCharWidth(), 1.0);
   assert.equal(app.chromeLineHeight(), 1.0);
 });
 
-test("scrollbarReserve and scalesTextRows are tui defaults", () => {
+test("scalesTextRows is the tui default", () => {
   const app = new QuiApp(10, 10);
-  assert.equal(app.scrollbarReserve(), 0.0);
   assert.equal(app.scalesTextRows(), false);
+});
+
+test("listCharWidth and scrollbarReserve are removed", () => {
+  const app = new QuiApp(10, 10) as unknown as Record<string, unknown>;
+  assert.equal(app.listCharWidth, undefined);
+  assert.equal(app.scrollbarReserve, undefined);
 });
 
 test("snapHeight rounds to a whole cell", () => {

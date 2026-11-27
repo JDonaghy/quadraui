@@ -170,6 +170,10 @@ fragment step for this package (that mechanism, and
 
 ### Removed
 
+- `QuiApp.listCharWidth()` and `QuiApp.scrollbarReserve()` (#2979, 0.12
+  rec 14), part of the 0.12 binding API cleanup. Budget row text with
+  `charWidth()` or `measureText()` instead.
+
 - `QuiApp.insertButton`/`insertTextDisplay`/`insertList`/`insertTree`/
   `insertDataTable`/`insertTabBar`/`insertProgress`/`insertSpinner`/
   `insertImage`/`insertExtra`/`clearExtra`/`slotClear`: the six fixed

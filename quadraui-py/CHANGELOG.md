@@ -189,6 +189,10 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
 
 ### Removed
 
+- `QuiApp.list_char_width()` and `QuiApp.scrollbar_reserve()` (#2979,
+  0.12 rec 14), part of the 0.12 binding API cleanup. Budget row text
+  with `char_width()` or `measure_text()` instead.
+
 - `QuiApp.insert_button`/`insert_text_display`/`insert_list`/`insert_tree`/
   `insert_data_table`/`insert_tab_bar`/`insert_progress`/`insert_spinner`/
   `insert_image`/`insert_extra`/`clear_extra`/`slot_clear`, deprecated in

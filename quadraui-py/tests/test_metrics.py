@@ -1,6 +1,6 @@
 """Black-box coverage for `QuiApp`'s metrics/capabilities surface:
-`viewport`, `line_height`, `char_width`, `list_char_width`,
-`chrome_line_height`, `scrollbar_reserve`, `scales_text_rows`,
+`viewport`, `line_height`, `char_width`,
+`chrome_line_height`, `scales_text_rows`,
 `snap_height`, `measure_text`, and `backend_caps`. All of these read the
 headless `TuiBackend` this `QuiApp` wraps, so the values asserted here are
 the fixed-cell-grid truth: a terminal cell is `1.0` wide and `1.0` tall by
@@ -36,14 +36,18 @@ def test_line_height_and_char_width_are_one_terminal_cell():
     app = QuiApp(10, 10)
     assert app.line_height() == 1.0
     assert app.char_width() == 1.0
-    assert app.list_char_width() == 1.0
     assert app.chrome_line_height() == 1.0
 
 
-def test_scrollbar_reserve_and_scales_text_rows_are_tui_defaults():
+def test_scales_text_rows_is_the_tui_default():
     app = QuiApp(10, 10)
-    assert app.scrollbar_reserve() == 0.0
     assert app.scales_text_rows() is False
+
+
+def test_list_char_width_and_scrollbar_reserve_are_removed():
+    app = QuiApp(10, 10)
+    assert not hasattr(app, "list_char_width")
+    assert not hasattr(app, "scrollbar_reserve")
 
 
 def test_snap_height_rounds_to_a_whole_cell():

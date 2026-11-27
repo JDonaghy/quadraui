@@ -5572,15 +5572,6 @@ impl QuiApp {
         self.guarded(|app| Ok(app.driver.backend().char_width()))
     }
 
-    /// The advance `draw_list` actually paints `ListView` row text with --
-    /// [`Backend::list_char_width`]. Not always the same as `char_width`
-    /// on a pixel backend, whose chrome font can differ from its editor
-    /// font; use this instead of `char_width` when budgeting text for a
-    /// list row.
-    fn list_char_width(&mut self) -> PyResult<f32> {
-        self.guarded(|app| Ok(app.driver.backend().list_char_width()))
-    }
-
     /// Line height of the chrome / UI font -- [`Backend::chrome_line_height`].
     /// Equal to `line_height` on the headless backend (one font for the
     /// whole cell grid); use this instead of `line_height` when sizing
@@ -5588,14 +5579,6 @@ impl QuiApp {
     /// a separate chrome font.
     fn chrome_line_height(&mut self) -> PyResult<f32> {
         self.guarded(|app| Ok(app.driver.backend().chrome_line_height()))
-    }
-
-    /// Width this backend reserves for its own native scrollbar overlay
-    /// alongside scrollable content -- [`Backend::scrollbar_reserve`].
-    /// Always `0.0` on the headless backend, which has no overlay
-    /// scrollbar chrome.
-    fn scrollbar_reserve(&mut self) -> PyResult<f32> {
-        self.guarded(|app| Ok(app.driver.backend().scrollbar_reserve()))
     }
 
     /// Whether this backend can render individual text rows at a larger
