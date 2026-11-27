@@ -859,7 +859,7 @@ mod tests {
             &quadraui::PaintEnv::new(&Theme::default(), &quadraui::Style::default()),
         );
 
-        assert_ne!(buf[(0, 0)].symbol().chars().next().unwrap_or(' '), ' ');
+        assert_eq!(buf[(0, 0)].bg, ratatui::style::Color::Rgb(0, 0, 200));
     }
 
     #[test]

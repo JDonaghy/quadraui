@@ -3738,7 +3738,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `menu_bar` | `MenuBarDescriptor` | no |  |
 | `command_line` | `CommandLineDescriptor` | no |  |
 | `scrollbar` | `ScrollbarDescriptor` | no |  |
-| `canvas` | `CanvasDescriptor` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor` | no |  |
 | `password` | `PasswordDescriptor` | no |  |
 | `textarea` | `TextAreaDescriptor` | no |  |
@@ -3757,6 +3756,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `minimap` | `MinimapDescriptor` | no |  |
 | `image` | `ImageDescriptor` | no |  |
 | `chart` | `ChartDescriptor` | no |  |
+| `canvas` | `CanvasDescriptor` | no |  |
 | `scroll_view` | `ScrollViewDescriptor` | no |  |
 | `board` | `BoardModelDescriptor` | no |  |
 | `pipeline_view` | `PipelineViewDescriptor` | no |  |
@@ -3807,7 +3807,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
 | `command_line` | `CommandLineDescriptor \| null` | no |  |
 | `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
-| `canvas` | `CanvasDescriptor \| null` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
 | `password` | `PasswordDescriptor \| null` | no |  |
 | `textarea` | `TextAreaDescriptor \| null` | no |  |
@@ -3826,6 +3825,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `minimap` | `MinimapDescriptor \| null` | no |  |
 | `image` | `ImageDescriptor \| null` | no |  |
 | `chart` | `ChartDescriptor \| null` | no |  |
+| `canvas` | `CanvasDescriptor \| null` | no |  |
 | `scroll_view` | `ScrollViewDescriptor \| null` | no |  |
 | `board` | `BoardModelDescriptor \| null` | no |  |
 | `pipeline_view` | `PipelineViewDescriptor \| null` | no |  |

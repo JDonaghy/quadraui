@@ -1955,7 +1955,6 @@ export interface LayoutLeafNode {
   menu_bar?: MenuBarDescriptor;
   command_line?: CommandLineDescriptor;
   scrollbar?: ScrollbarDescriptor;
-  canvas?: CanvasDescriptor;
   find_replace?: FindReplacePanelDescriptor;
   password?: PasswordDescriptor;
   textarea?: TextAreaDescriptor;
@@ -1974,6 +1973,7 @@ export interface LayoutLeafNode {
   minimap?: MinimapDescriptor;
   image?: ImageDescriptor;
   chart?: ChartDescriptor;
+  canvas?: CanvasDescriptor;
   scroll_view?: ScrollViewDescriptor;
   board?: BoardModelDescriptor;
   pipeline_view?: PipelineViewDescriptor;
@@ -2016,7 +2016,6 @@ export interface RenderFrameDict {
   menu_bar?: MenuBarDescriptor | null;
   command_line?: CommandLineDescriptor | null;
   scrollbar?: ScrollbarDescriptor | null;
-  canvas?: CanvasDescriptor | null;
   find_replace?: FindReplacePanelDescriptor | null;
   password?: PasswordDescriptor | null;
   textarea?: TextAreaDescriptor | null;
@@ -2035,6 +2034,7 @@ export interface RenderFrameDict {
   minimap?: MinimapDescriptor | null;
   image?: ImageDescriptor | null;
   chart?: ChartDescriptor | null;
+  canvas?: CanvasDescriptor | null;
   scroll_view?: ScrollViewDescriptor | null;
   board?: BoardModelDescriptor | null;
   pipeline_view?: PipelineViewDescriptor | null;

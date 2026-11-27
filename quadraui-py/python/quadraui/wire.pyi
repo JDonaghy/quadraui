@@ -1819,7 +1819,6 @@ LayoutLeafNode = TypedDict(
         "menu_bar": NotRequired[MenuBarDescriptor],
         "command_line": NotRequired[CommandLineDescriptor],
         "scrollbar": NotRequired[ScrollbarDescriptor],
-        "canvas": NotRequired[CanvasDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
         "password": NotRequired[PasswordDescriptor],
         "textarea": NotRequired[TextAreaDescriptor],
@@ -1838,6 +1837,7 @@ LayoutLeafNode = TypedDict(
         "minimap": NotRequired[MinimapDescriptor],
         "image": NotRequired[ImageDescriptor],
         "chart": NotRequired[ChartDescriptor],
+        "canvas": NotRequired[CanvasDescriptor],
         "scroll_view": NotRequired[ScrollViewDescriptor],
         "board": NotRequired[BoardModelDescriptor],
         "pipeline_view": NotRequired[PipelineViewDescriptor],
@@ -1882,7 +1882,6 @@ class RenderFrameDict(TypedDict):
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
     command_line: NotRequired[Optional[CommandLineDescriptor]]
     scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
-    canvas: NotRequired[Optional[CanvasDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
     password: NotRequired[Optional[PasswordDescriptor]]
     textarea: NotRequired[Optional[TextAreaDescriptor]]
@@ -1901,6 +1900,7 @@ class RenderFrameDict(TypedDict):
     minimap: NotRequired[Optional[MinimapDescriptor]]
     image: NotRequired[Optional[ImageDescriptor]]
     chart: NotRequired[Optional[ChartDescriptor]]
+    canvas: NotRequired[Optional[CanvasDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     board: NotRequired[Optional[BoardModelDescriptor]]
     pipeline_view: NotRequired[Optional[PipelineViewDescriptor]]

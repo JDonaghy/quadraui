@@ -301,4 +301,35 @@ mod tests {
             Handled::Ignored
         );
     }
+
+    /// The assistive-technology leg of the group-F event parity
+    /// (`tests/group_f_event_parity.rs`): a `Click` action routed through
+    /// [`crate::a11y::route_widget_action`] reports the same event a
+    /// mouse click on the field does.
+    #[test]
+    fn a_click_action_matches_the_parity_event() {
+        let id = WidgetId::new("sel");
+        let select = Select::new(id, vec!["One".into(), "Two".into(), "Three".into()]);
+        let mut tree = crate::frame_tree::FrameTree::new();
+        tree.push(id, Rect::new(0.0, 0.0, 16.0, 1.0), Box::new(select));
+        let mut states = crate::widget_state::WidgetStateStore::new();
+        let ctx = crate::primitive::LayoutCtx::new(1.0, 1.0, false);
+        let events = crate::a11y::route_widget_action(
+            &tree,
+            &mut states,
+            &ctx,
+            id,
+            crate::a11y::A11yAction::Click,
+        );
+        assert_eq!(
+            events,
+            vec![crate::UiEvent::Form(
+                id,
+                crate::FormEvent::DropdownChanged {
+                    id,
+                    selected_idx: 1
+                }
+            )]
+        );
+    }
 }

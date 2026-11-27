@@ -1308,9 +1308,9 @@ test("canvas region double-click emits a typed RegionDoubleClicked event", () =>
 });
 
 test("canvas region hover emits RegionHovered alongside MouseEntered/MouseLeft", () => {
-  // Mirrors the generic `MouseEntered`/`MouseLeft` hover bookkeeping every
-  // other extra already gets, plus the region-specific
-  // `Canvas`/`RegionHovered` translation layered alongside it.
+  // Entering the canvas reports the generic `MouseEntered` for its body,
+  // and the canvas's own `Interactive` reports the region it entered on
+  // (or `None` on leaving) as `Canvas`/`RegionHovered`.
   const app = new QuiApp(40, 20);
   app.setRender(canvasWithRegionRender);
   app.screen();
@@ -1323,31 +1323,33 @@ test("canvas region hover emits RegionHovered alongside MouseEntered/MouseLeft",
   assert.equal(received.length, 3, JSON.stringify(received));
   assert.deepEqual(received[0], {
     MouseEntered: { widget: "canvas:regions" },
-    hit: { kind: "canvas_region", region: "region:a" },
+    hit: { kind: "widget_body" },
   });
   const [widgetId, canvasEvent] = received[1].Canvas;
   assert.equal(widgetId, "canvas:regions");
   assert.deepEqual(canvasEvent, { RegionHovered: { region: "region:a" } });
 
   received.length = 0;
-  // (30, 10) is still inside the canvas's own bounds but outside the
-  // declared region, so this also synthesizes a generic `MouseEntered`
-  // for the canvas's `extra_body` right behind the region-leaving pair
-  // below -- four events in total, not three.
+  // (30, 10) is still inside the canvas but outside the declared region.
+  // Hover is tracked per widget, as on the native runtime, so a move that
+  // stays on the canvas reports nothing beyond the move itself.
   app.pushEvent({ MouseMoved: { position: { x: 30.0, y: 10.0 }, buttons: {} } });
   app.run(1);
-  assert.equal(received.length, 4, JSON.stringify(received));
+  assert.equal(received.length, 1, JSON.stringify(received));
+  assert.ok("MouseMoved" in received[0], JSON.stringify(received));
+
+  received.length = 0;
+  // Leaving the canvas reports `MouseLeft` and the region-leaving
+  // `RegionHovered`.
+  app.pushEvent({ MouseMoved: { position: { x: 60.0, y: 30.0 }, buttons: {} } });
+  app.run(1);
   assert.deepEqual(received[0], {
     MouseLeft: { widget: "canvas:regions" },
-    hit: { kind: "canvas_region", region: "region:a" },
+    hit: { kind: "widget_body" },
   });
   const [leftWidgetId, leftCanvasEvent] = received[1].Canvas;
   assert.equal(leftWidgetId, "canvas:regions");
   assert.deepEqual(leftCanvasEvent, { RegionHovered: { region: null } });
-  assert.deepEqual(received[2], {
-    MouseEntered: { widget: "canvas:regions" },
-    hit: { kind: "extra_body" },
-  });
 });
 
 test("pushEvent queues an event step consumes without raising", () => {
