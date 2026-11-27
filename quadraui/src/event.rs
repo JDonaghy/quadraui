@@ -341,6 +341,13 @@ impl Viewport {
             scale,
         }
     }
+
+    /// The viewport as a rect at the origin — what a modal that centres
+    /// itself in the whole window (a [`crate::compose::MessageDialog`], a
+    /// [`crate::compose::FormDialog`]) is painted and laid out in.
+    pub fn rect(&self) -> Rect {
+        Rect::new(0.0, 0.0, self.width, self.height)
+    }
 }
 
 impl Default for Viewport {
@@ -1037,7 +1044,7 @@ pub enum UiEvent {
 
     // ── In-canvas modal overlays ─────────────────────────────────────────
     /// An in-canvas message/alert/confirm [`crate::Dialog`] opened via
-    /// [`crate::compose::MessageDialogController`] was resolved — the user
+    /// [`crate::compose::MessageDialog`] was resolved — the user
     /// activated one of its buttons by click, Enter, or Escape resolving to
     /// the cancel/default button. Carries that button's own `WidgetId`
     /// ([`crate::backend::MessageDialogChoice`]) — the same shape
@@ -1188,10 +1195,10 @@ pub enum UiEvent {
     ),
     /// A [`crate::Chat`] was submitted, cancelled or clicked, or one of
     /// its controlled fields changed — see [`crate::ChatEvent`].
-    Chat(WidgetId, crate::compose::chat_controller::ChatEvent),
+    Chat(WidgetId, crate::compose::chat::ChatEvent),
     /// A [`crate::Sidebar`] section, row or form field was used, or one of
     /// its controlled fields changed — see [`crate::SidebarAction`].
-    Sidebar(WidgetId, crate::compose::sidebar_system::SidebarAction),
+    Sidebar(WidgetId, crate::compose::sidebar::SidebarAction),
     /// A [`crate::TabGroup`] tab, divider or pane was used — see
     /// [`crate::TabGroupEvent`].
     TabGroup(WidgetId, crate::compose::tab_group::TabGroupEvent),
@@ -1216,6 +1223,10 @@ pub enum UiEvent {
     /// A [`crate::MessageList`] scrolled — see
     /// [`crate::MessageListEvent`].
     MessageList(WidgetId, crate::primitives::message_list::MessageListEvent),
+    /// A [`crate::FindReplacePanel`] field was edited, a switch flipped, or
+    /// a match/replace/close action requested — see
+    /// [`crate::FindReplaceEvent`].
+    FindReplace(WidgetId, crate::primitives::find_replace::FindReplaceEvent),
     /// A [`crate::compose::HelpOverlay`] cheatsheet asked to open or
     /// close; the host writes it onto the overlay's `open`.
     HelpOverlay(WidgetId, crate::compose::HelpOverlayAction),

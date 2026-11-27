@@ -423,6 +423,7 @@ fn status_bar_sized_to_its_natural_width_paints_its_text_in_full() {
 fn panel() -> FindReplacePanel {
     let (hit_regions, _) = quadraui::compute_find_replace_hit_regions(50, true, "1 of 3", 2, 2);
     FindReplacePanel {
+        id: WidgetId::new("find_replace"),
         query: "needle".into(),
         replacement: "thread".into(),
         show_replace: true,
@@ -448,13 +449,16 @@ fn find_replace_paints_with_the_backend_style_its_host_hit_tests_with() {
     let style = Style::default()
         .with_control_height(44.0)
         .with_padding(14.0);
+    let bounds = Rect::new(0.0, 0.0, W as f32, H as f32);
     let driver = drive(style, |b| {
-        b.draw_find_replace(Rect::new(0.0, 0.0, W as f32, H as f32), &panel())
+        let rect = panel().anchored_rect(b, bounds);
+        let _ = b.draw_dyn(rect, &panel(), &());
     });
     let backend = driver.backend();
     let cw = backend.char_width().max(1.0);
-    let lh = backend.line_height().max(1.0);
-    let metrics = FindReplaceMetrics::resolve(&panel(), &backend.style(), cw, lh);
+    let popup = panel().anchored_rect(backend, bounds);
+    let metrics =
+        FindReplaceMetrics::for_popup(popup, &backend.style(), backend.chrome_line_height());
     assert_eq!(metrics.row_height, 44.0);
 
     for (text, want) in [("needle", 0usize), ("thread", 1usize)] {

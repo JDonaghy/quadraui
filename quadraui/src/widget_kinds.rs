@@ -296,6 +296,9 @@ widget_kinds! {
     "message_list" => crate::MessageList,
     "password" => crate::PasswordInput,
     "textarea" => crate::TextArea,
+    // Ungated like `MessageList`: `FindReplacePanel`'s
+    // `Primitive`/`Interactive` impls carry no feature gate.
+    "find_replace" => crate::FindReplacePanel,
     // `DataTable` and `MultiSectionView` implement the contract only on a
     // build with a backend feature.
     #[cfg(any(
@@ -445,6 +448,21 @@ mod tests {
             let widget = decode_widget(kind, payload).unwrap_or_else(|e| panic!("{kind}: {e}"));
             assert_eq!(widget.id().map(|w| w.as_str()), Some(id), "{kind}");
         }
+    }
+
+    /// A `find_replace` payload with no `id` decodes under the overlay's
+    /// default id, the shape a binding host sends for its one live panel.
+    #[test]
+    fn find_replace_decodes_with_its_default_id() {
+        let widget = decode_widget(
+            "find_replace",
+            serde_json::json!({
+                "query": "needle",
+                "group_bounds": {"x": 0.0, "y": 0.0, "width": 40.0, "height": 20.0},
+            }),
+        )
+        .expect("find_replace decodes");
+        assert_eq!(widget.id().map(|w| w.as_str()), Some("find_replace"));
     }
 
     /// Group A's three kinds decode from the same wire shape their

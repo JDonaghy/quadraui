@@ -5,7 +5,7 @@
 //! `examples/common/multi_tree.rs`; only the runner call differs.
 //! Demonstrates the debug-sidebar consumer pattern: a
 //! `MultiSectionView` with four `TreeView` sections (the
-//! `SidebarSystem` compose helper drives focus, scrolling, and
+//! `Sidebar` widget drives focus, scrolling, and
 //! scrollbar drag).
 //!
 //! Controls:

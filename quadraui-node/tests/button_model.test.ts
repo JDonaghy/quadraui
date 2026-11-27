@@ -123,7 +123,7 @@ test("showOverlay message_dialog accepts a dialog button with a Danger spec", ()
   // engine.rs`) narrows every button down to
   // `quadraui::backend::MessageDialogButton` -- the same native-OS-
   // compatible shape that already rejects `tint` for the identical
-  // reason -- before `MessageDialogController::new` (`quadraui/src/
+  // reason -- before `MessageDialog::new` (`quadraui/src/
   // compose/message_dialog.rs`) ever sees it. That stripping lives in
   // the `quadraui` crate itself, not `quadraui-binding-core`'s decode
   // glue, and touches every native backend's message-dialog

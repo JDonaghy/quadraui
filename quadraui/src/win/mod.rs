@@ -9,7 +9,7 @@
 //! activity bars) paint through their widget contracts; content-area
 //! rasterisers include `list`/`form`/`data_table`/`editor`/`chart`;
 //! overlay/popup rasterisers include `tooltip`/`dialog`/
-//! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
+//! `palette`/`completions`/`rich_text_popup`; container/
 //! indicator rasterisers include `split`/`toast`/`progress`/
 //! `spinner`; text-heavy rasterisers include `text_display`/
 //! `message_list` — every other `draw_*`/`*_layout` rasteriser is still a

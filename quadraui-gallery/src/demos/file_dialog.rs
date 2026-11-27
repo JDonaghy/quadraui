@@ -4,11 +4,11 @@
 //! Exercises `PlatformServices::show_file_open_dialog` /
 //! `show_file_save_dialog` / `show_folder_open_dialog` — the *native*
 //! dialog layer, distinct from the gallery's own "File Picker" demo
-//! (`Content` group), which drives `FilePickerController` /
-//! `FolderPickerController` directly as an always-in-canvas widget. This
+//! (`Content` group), which drives `FilePicker` /
+//! `FolderPicker` directly as an always-in-canvas widget. This
 //! demo instead shows the one call an app makes and lets each backend
 //! supply its own answer: a real native `gtk4::FileDialog` on GTK, and a
-//! real in-canvas `FilePickerController` / `FolderPickerController` driven
+//! real in-canvas `FilePicker` / `FolderPicker` driven
 //! through a nested draw-and-read loop on TUI — same call either way (see
 //! [`Self::caps_note`]).
 //!
@@ -260,13 +260,13 @@ impl Demo for FileDialogDemo {
             0 | 1 if !caps.file_dialogs => Some(
                 "This backend has no native file-picker facility (BackendCaps::file_dialogs is \
                  false) — open/save still resolve a real path through an in-canvas \
-                 FilePickerController driven by a nested draw-and-read loop."
+                 FilePicker driven by a nested draw-and-read loop."
                     .into(),
             ),
             2 if !caps.folder_dialogs => Some(
                 "This backend has no native folder-picker facility (BackendCaps::folder_dialogs \
                  is false) — the folder dialog still resolves a real path through an in-canvas \
-                 FolderPickerController driven by a nested draw-and-read loop."
+                 FolderPicker driven by a nested draw-and-read loop."
                     .into(),
             ),
             _ => None,

@@ -1564,7 +1564,7 @@ pub(crate) fn handle_text_event(
 
 /// Determine the `FormEvent` for a click on a form field.
 ///
-/// Used by [`click_field`] and by `compose::sidebar_system`'s own
+/// Used by [`click_field`] and by `compose::sidebar`'s own
 /// click dispatch, which reaches it through `compose::form_controller`.
 pub(crate) fn form_click_event(form: &Form, clicked_id: &WidgetId) -> FormEvent {
     for field in &form.fields {

@@ -1,7 +1,7 @@
 //! `cargo run --example tui_form_dialog --features tui`
 //!
 //! Renders a `Dialog` hosting a multi-field `Form` (Name + Description)
-//! via `DialogInput::Form`, driven through `FormDialogController`.
+//! via `DialogInput::Form`, driven through `FormDialog`.
 //!
 //! Controls:
 //! - `Tab` / `Shift+Tab`  move focus across the fields and buttons

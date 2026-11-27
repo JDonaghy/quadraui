@@ -726,9 +726,10 @@ fn payload_less_overlays_still_appear_in_the_tree() {
     let (hit_regions, _input_width) =
         compute_find_replace_hit_regions(FR_PANEL_WIDTH, false, "1 of 3", 1, 1);
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::FindReplace {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 3.0),
-            panel: FindReplacePanel {
+            widget: Box::new(FindReplacePanel {
+                id: WidgetId::new("find_replace"),
                 query: "needle".to_string(),
                 replacement: String::new(),
                 show_replace: false,
@@ -746,7 +747,7 @@ fn payload_less_overlays_still_appear_in_the_tree() {
                 replace_one_glyph: "R1".to_string(),
                 replace_all_glyph: "R*".to_string(),
                 hit_regions,
-            },
+            }),
         })
         .with_surface(Surface::Widget {
             rect: rect(4.0, 4.0),

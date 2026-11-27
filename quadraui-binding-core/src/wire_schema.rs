@@ -2380,6 +2380,7 @@ pub fn schema() -> Vec<DefJson> {
     let find_replace_panel_descriptor = b.define(obj(
         "FindReplacePanelDescriptor",
         vec![
+            field_opt("id", re("WidgetId")),
             field("query", str_()),
             field_opt("replacement", str_()),
             field_opt("show_replace", bool_()),
@@ -4104,12 +4105,13 @@ pub fn schema() -> Vec<DefJson> {
             ("Terminal", tup(vec![re("WidgetId"), re("TerminalEvent")])),
             ("Editor", tup(vec![re("WidgetId"), re("EditorEvent")])),
             ("Minimap", tup(vec![re("WidgetId"), re("MinimapEvent")])),
-            // A board, pipeline, diff or message-list event rides as its
-            // own externally-tagged serde shape.
+            // A board, pipeline, diff, message-list or find/replace event
+            // rides as its own externally-tagged serde shape.
             ("Board", tup(vec![re("WidgetId"), any_()])),
             ("PipelineView", tup(vec![re("WidgetId"), any_()])),
             ("DiffView", tup(vec![re("WidgetId"), any_()])),
             ("MessageList", tup(vec![re("WidgetId"), any_()])),
+            ("FindReplace", tup(vec![re("WidgetId"), any_()])),
             ("TextDisplay", tup(vec![re("WidgetId"), re("TextDisplayEvent")])),
             ("Chart", tup(vec![re("WidgetId"), re("ChartEvent")])),
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
@@ -6072,6 +6074,7 @@ mod coverage {
     assert_fields!(
         assert_find_replace_panel_fields,
         FindReplacePanel {
+            id,
             query,
             replacement,
             show_replace,
@@ -7136,6 +7139,7 @@ mod coverage {
                 "PipelineView",
                 "DiffView",
                 "MessageList",
+                "FindReplace",
                 "TextDisplay",
                 "Chart",
                 "DataTable",

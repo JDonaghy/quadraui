@@ -1459,7 +1459,7 @@ toward "things that genuinely need eyes".
      window's close box; confirm the status bar reports "Cancelled".
   4. TUI is **not** part of this manual-only gap:
      `show_message_dialog` drives a real in-canvas
-     `compose::MessageDialogController` through a nested draw-and-read
+     `compose::MessageDialog` through a nested draw-and-read
      loop (see `tui::services`'s module doc), and the `TuiDriver` tests
      in `tests/tui_example_driver.rs` cover the full round trip
      headlessly — a real button resolves, Escape resolves the cancel

@@ -22,7 +22,7 @@
   each primitive file.
 - `quadraui/src/compose/` — composites built from other widgets (a
   dialog, a picker, the workspace and shell chrome) and the controllers
-  that coordinate several widgets (`MenuSystem`, `SidebarSystem`).
+  that coordinate several widgets (`ContextMenuController`, `ShellView`).
 - `quadraui/src/tui/`, `quadraui/src/gtk/`, `quadraui/src/macos/`, and
   `quadraui/src/win/` — the four backends (`tui`, `gtk`, `macos`, `win`
   feature-gated respectively). A backend is platform services plus one
@@ -42,7 +42,7 @@
 **GTK hosting helpers** in `quadraui/src/gtk/`:
 
 - `MenuOverlay` — encapsulates the DrawingArea boilerplate for
-  MenuSystem dropdown popups when the menu bar lives in a separate
+  `AppMenu` dropdown popups when the menu bar lives in a separate
   titlebar widget. Handles the negative-y coordinate transform,
   `set_focusable(false)`, `can_target` toggling, surface clearing,
   and draw/click/motion wiring. Apps that use the single-DA runner

@@ -2,7 +2,7 @@
 //!
 //! `PlatformServices::show_file_open_dialog` / `show_file_save_dialog` /
 //! `show_folder_open_dialog` each drive a real in-canvas
-//! `compose::FilePickerController` / `compose::FolderPickerController` on
+//! `compose::FilePicker` / `compose::FolderPicker` on
 //! TUI and resolve to a real chosen path, not `None` — this demo exercises
 //! all three. See `examples/common/file_dialog_demo.rs` and the paired
 //! `gtk_file_dialog` example for the GTK counterpart, which shows a native

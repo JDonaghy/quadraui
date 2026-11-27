@@ -1,4 +1,4 @@
-//! Backend-agnostic app code for the shell + `MenuSystem` regression demo
+//! Backend-agnostic app code for the shell + `AppMenu` regression demo
 //! ([`tui_shell_menu`] / [`gtk_shell_menu`]).
 //!
 //! When an app-level modal visually overlaps `ShellView` chrome (activity bar,
@@ -25,38 +25,43 @@
 use quadraui::compose::app_shell::{PanelDefinition, ShellEvent, ShellLayout};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Color, ContextMenuItem, Key, MenuDef, MenuEvent, MenuSystem, NamedKey, Reaction, Rect,
-    ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar, StatusBarSegment, StyledText,
-    UiEvent, WidgetId,
+    AppMenu, AppMenuEvent, AppMenuState, Backend, Color, ContextMenuItem, Handled, Key, MenuDef,
+    NamedKey, Reaction, Rect, ShellApp as ShellAppTrait, ShellConfig, ShellContext, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct ShellMenuDemo {
-    menu_system: MenuSystem,
+    menu: AppMenu,
+    menu_state: AppMenuState,
     last_action: String,
 }
 
 impl ShellMenuDemo {
     pub fn new() -> Self {
         Self {
-            menu_system: MenuSystem::new(vec![
-                MenuDef {
-                    id: WidgetId::new("file"),
-                    label: "&File".into(),
-                    disabled: false,
-                    items: vec![
-                        action("new", "New File"),
-                        action("open", "Open File"),
-                        separator(),
-                        action("quit", "Quit"),
-                    ],
-                },
-                MenuDef {
-                    id: WidgetId::new("edit"),
-                    label: "&Edit".into(),
-                    disabled: false,
-                    items: vec![action("undo", "Undo"), action("redo", "Redo")],
-                },
-            ]),
+            menu: AppMenu::new(
+                WidgetId::new("menu-bar"),
+                vec![
+                    MenuDef {
+                        id: WidgetId::new("file"),
+                        label: "&File".into(),
+                        disabled: false,
+                        items: vec![
+                            action("new", "New File"),
+                            action("open", "Open File"),
+                            separator(),
+                            action("quit", "Quit"),
+                        ],
+                    },
+                    MenuDef {
+                        id: WidgetId::new("edit"),
+                        label: "&Edit".into(),
+                        disabled: false,
+                        items: vec![action("undo", "Undo"), action("redo", "Redo")],
+                    },
+                ],
+            ),
+            menu_state: AppMenuState::default(),
             last_action: "click File, then click an item over the activity bar".into(),
         }
     }
@@ -97,7 +102,7 @@ impl Default for ShellMenuDemo {
 impl ShellAppTrait for ShellMenuDemo {
     fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         if let Some(bar_rect) = layout.title_bar_bounds {
-            self.menu_system.render(backend, bar_rect);
+            self.menu.render(backend, bar_rect);
         }
 
         let lh = backend.line_height();
@@ -131,16 +136,18 @@ impl ShellAppTrait for ShellMenuDemo {
             return Reaction::Continue;
         };
 
-        match self.menu_system.handle(&event, backend, bar_rect) {
-            MenuEvent::Activated(id) => {
+        match self
+            .menu
+            .handle_ui_event(&mut self.menu_state, &event, backend, bar_rect)
+        {
+            Handled::Event(AppMenuEvent::Activated(id)) => {
                 self.last_action = format!("activated: {}", id.as_str());
                 if id.as_str() == "quit" {
                     return Reaction::Exit;
                 }
                 Reaction::Redraw
             }
-            MenuEvent::StateChanged | MenuEvent::Consumed => Reaction::Redraw,
-            MenuEvent::Ignored => match event {
+            Handled::Ignored => match event {
                 UiEvent::KeyPressed {
                     key: Key::Char('q'),
                     ..
@@ -152,7 +159,7 @@ impl ShellAppTrait for ShellMenuDemo {
                 UiEvent::WindowResized { .. } => Reaction::Redraw,
                 _ => Reaction::Continue,
             },
-            _ => Reaction::Continue,
+            _ => Reaction::Redraw,
         }
     }
 

@@ -856,7 +856,7 @@ test("inline tree leaf find_replace renders its query text", () => {
   // `ExtraPaint::id`'s fixed-sentinel doc), so this is its first coverage
   // in this file, via an inline leaf. `hit_regions` drives both click
   // routing AND which content the TUI rasteriser paints
-  // (`tui::draw_find_replace` walks it to place the find/replace input
+  // (the cell painter walks it to place the find/replace input
   // text) -- a real host builds it via `compute_find_replace_hit_regions`;
   // this test supplies just the one entry it needs directly. An inline
   // leaf gets the full 40-column viewport rather than a narrower flat-slot
@@ -1331,25 +1331,27 @@ test("canvas region hover emits RegionHovered alongside MouseEntered/MouseLeft",
 
   received.length = 0;
   // (30, 10) is still inside the canvas but outside the declared region.
-  // Hover is tracked per widget, as on the native runtime, so a move that
-  // stays on the canvas reports nothing beyond the move itself.
+  // The canvas opts into pointer moves while it is hovered, so a move that
+  // stays on the canvas but leaves the region reports the region change
+  // (`null`) ahead of the move itself.
   app.pushEvent({ MouseMoved: { position: { x: 30.0, y: 10.0 }, buttons: {} } });
   app.run(1);
-  assert.equal(received.length, 1, JSON.stringify(received));
-  assert.ok("MouseMoved" in received[0], JSON.stringify(received));
+  assert.equal(received.length, 2, JSON.stringify(received));
+  const [movedWidgetId, movedCanvasEvent] = received[0].Canvas;
+  assert.equal(movedWidgetId, "canvas:regions");
+  assert.deepEqual(movedCanvasEvent, { RegionHovered: { region: null } });
+  assert.ok("MouseMoved" in received[1], JSON.stringify(received));
 
   received.length = 0;
-  // Leaving the canvas reports `MouseLeft` and the region-leaving
-  // `RegionHovered`.
+  // Leaving the canvas reports `MouseLeft`; the hovered region is already
+  // `null`, so no further `RegionHovered` follows.
   app.pushEvent({ MouseMoved: { position: { x: 60.0, y: 30.0 }, buttons: {} } });
   app.run(1);
   assert.deepEqual(received[0], {
     MouseLeft: { widget: "canvas:regions" },
     hit: { kind: "widget_body" },
   });
-  const [leftWidgetId, leftCanvasEvent] = received[1].Canvas;
-  assert.equal(leftWidgetId, "canvas:regions");
-  assert.deepEqual(leftCanvasEvent, { RegionHovered: { region: null } });
+  assert.ok(!received.some((event) => "Canvas" in event), JSON.stringify(received));
 });
 
 test("pushEvent queues an event step consumes without raising", () => {

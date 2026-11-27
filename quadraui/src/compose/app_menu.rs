@@ -1,6 +1,7 @@
 //! [`AppMenu`] — an application menu bar with its dropdown and submenu
-//! cascade on the widget contract, plus [`MenuSystem`], its thin
-//! event-driven wrapper.
+//! cascade on the widget contract, with a host API
+//! ([`AppMenu::handle_ui_event`], [`AppMenu::render`]) for a host that
+//! drives it with raw events.
 //!
 //! An `AppMenu` composes [`MenuBar`] and [`ContextMenu`]: the bar paints
 //! and resolves clicks and keys through `MenuBar`'s own [`Primitive`] and
@@ -24,12 +25,12 @@
 //! early, and AppKit reports activations as [`UiEvent::MenuActivated`].
 //!
 //! ```ignore
-//! // A wrapper-driven host, in handle():
-//! match self.menu_system.handle(&event, backend, bar_rect) {
-//!     MenuEvent::Activated(id) if id.as_str() == "save" => { /* save */ }
-//!     MenuEvent::Activated(id) if id.as_str() == "quit" => return Reaction::Exit,
-//!     MenuEvent::StateChanged | MenuEvent::Consumed => return Reaction::Redraw,
-//!     _ => { /* handle non-menu events */ }
+//! // A host driving the menu with raw events, in handle():
+//! match self.menu.handle_ui_event(&mut self.menu_state, &event, backend, bar_rect) {
+//!     Handled::Event(AppMenuEvent::Activated(id)) if id.as_str() == "save" => { /* save */ }
+//!     Handled::Event(AppMenuEvent::Activated(id)) if id.as_str() == "quit" => return Reaction::Exit,
+//!     Handled::Ignored => { /* handle non-menu events */ }
+//!     _ => return Reaction::Redraw,
 //! }
 //! ```
 
@@ -49,71 +50,14 @@ use crate::interactive::{
 use crate::popup::{DismissReason, Popup, PopupKey, PopupSide};
 use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::primitives::context_menu::{
-    item_heights, ContextMenu, ContextMenuEvent, ContextMenuItem, ContextMenuLayout,
+    item_heights, level_width, ContextMenu, ContextMenuEvent, ContextMenuItem, ContextMenuLayout,
     ContextMenuPlacement, ContextMenuPrimitiveLayout, ContextMenuState, CELL_BORDER_INSET,
 };
 use crate::primitives::menu_bar::{
     MenuBar, MenuBarEvent, MenuBarHit, MenuBarItem, MenuBarPrimitiveLayout,
 };
 use crate::types::WidgetId;
-use crate::{DrawsPrimitives, FontRole, Key, MouseButton, NamedKey};
-
-/// A dropdown or submenu's width from its items' real label/detail text.
-/// A flat width guess cannot fit both TUI's fixed grid and a
-/// proportional chrome font on GTK/macOS/Win. Mirrors
-/// [`ContextMenu::measure_generic_width`]'s per-item accounting (a
-/// leading `✓ ` slot when [`ContextMenuItem::checked`] is `Some(_)`, or
-/// the same slot for [`ContextMenuItem::icon`] when `checked` is unset,
-/// plus a trailing gap plus either a `▶` submenu arrow or
-/// [`ContextMenuItem::detail`]'s text) but measures the real chrome-font
-/// advance instead of counting characters.
-/// [`ContextMenuItem::key_equivalent`]-rendered shortcuts aren't counted,
-/// the same omission `measure_generic_width` documents for itself.
-fn dropdown_width(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -> f32 {
-    let cells = matches!(ctx.units(), Units::Cells);
-    let measure = |text: &str| -> f32 {
-        if cells {
-            crate::text_util::display_width(text) as f32
-        } else {
-            ctx.text_width(text, FontRole::Chrome)
-        }
-    };
-    let space_w = measure(" ");
-    // A pixel surface paints the codicon check/chevron glyphs (the
-    // `codicon::CHECK` / `codicon::CHEVRON_RIGHT` code points, which are
-    // square-advance at the font em and wider than either plain-text
-    // glyph); a cell grid paints the plain `✓`/`▶`. Every pixel backend
-    // registers the codicon face itself.
-    let (check_glyph, arrow_glyph): (&str, &str) = if cells {
-        ("✓", "▶")
-    } else {
-        ("\u{eab2}", "\u{eab6}")
-    };
-    let checked_w = measure(check_glyph) + space_w;
-    let arrow_w = space_w + measure(arrow_glyph);
-    let max_content_w = items
-        .iter()
-        .filter(|item| !item.is_separator())
-        .map(|item| {
-            let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
-            let mut w = measure(&label);
-            if item.checked.is_some() || item.icon.is_some() {
-                w += checked_w;
-            }
-            if item.submenu.is_some() {
-                w += arrow_w;
-            } else if let Some(det) = &item.detail {
-                let text: String = det.spans.iter().map(|s| s.text.as_str()).collect();
-                w += space_w + measure(&text);
-            }
-            w
-        })
-        .fold(0.0_f32, f32::max);
-    // Interior margin: a budget expressed in line-heights rather than
-    // assuming a meaningful relationship between `lh` and the chrome
-    // font's space advance.
-    (max_content_w + lh * 3.0).max(lh * 8.0)
-}
+use crate::{DrawsPrimitives, Key, MouseButton, NamedKey};
 
 /// One top-level menu and its dropdown items.
 ///
@@ -133,23 +77,6 @@ pub struct MenuDef {
 /// items.
 fn items_or_none<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<ContextMenuItem>, D::Error> {
     Ok(Option::<Vec<ContextMenuItem>>::deserialize(d)?.unwrap_or_default())
-}
-
-/// What happened after [`MenuSystem::handle`] processed an event.
-///
-/// `#[non_exhaustive]`: a downstream `match` must add a wildcard arm
-/// (`_ => {}`) so a future variant isn't a breaking change on its own.
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub enum MenuEvent {
-    /// An action item was activated (clicked or Enter'd).
-    Activated(WidgetId),
-    /// A menu was opened or closed — the app should redraw.
-    StateChanged,
-    /// The event was consumed (navigation, highlight) — the app should redraw.
-    Consumed,
-    /// The event was not relevant to the menu system.
-    Ignored,
 }
 
 // ── Widget ────────────────────────────────────────────────────────────────
@@ -248,7 +175,7 @@ struct LevelWidths {
 impl LevelWidths {
     fn of(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -> Self {
         Self {
-            width: dropdown_width(ctx, items, lh),
+            width: level_width(ctx, items, lh),
             children: items
                 .iter()
                 .map(|item| item.submenu.as_ref().map(|sub| Self::of(ctx, sub, lh)))
@@ -441,7 +368,7 @@ impl AppMenu {
         };
         let first_sel = sub_items
             .iter()
-            .position(|i| !i.is_separator() && !i.disabled)
+            .position(ContextMenuItem::is_selectable)
             .unwrap_or(0);
         self.view.submenu_path.push(item_idx);
         self.view.submenu_selected.push(first_sel);
@@ -530,7 +457,7 @@ impl AppMenu {
         };
         let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
         let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
-            i == current || (!items[i].is_separator() && !items[i].disabled)
+            i == current || items[i].is_selectable()
         })
         .unwrap_or(current);
         self.select_at(depth, new_sel);
@@ -734,7 +661,7 @@ impl AppMenu {
         match (kind, item) {
             // Hover moves the highlight and opens a submenu parent's child
             // at once; hovering a leaf closes anything opened deeper.
-            (PointerKind::Move, Some((idx, item))) if !item.is_separator() && !item.disabled => {
+            (PointerKind::Move, Some((idx, item))) if item.is_selectable() => {
                 next.select_at(depth, idx);
                 if item.submenu.is_some() {
                     if self.view.submenu_path.get(depth) != Some(&idx) {
@@ -751,7 +678,7 @@ impl AppMenu {
                 }
             }
             (PointerKind::Down(MouseButton::Left), Some((idx, item))) => {
-                if item.disabled || item.is_separator() {
+                if !item.is_selectable() {
                     Handled::Consumed
                 } else if item.submenu.is_some() {
                     next.truncate_to(depth);
@@ -1105,84 +1032,41 @@ impl Interactive for AppMenuLevel {
     }
 }
 
-// ── Controller ────────────────────────────────────────────────────────────
+// ── Host API ──────────────────────────────────────────────────────────────
 
-/// Event-driven wrapper over an [`AppMenu`], for a host that calls it with
-/// raw [`UiEvent`]s and a bar rect rather than routing it through the
-/// runtime's engine. It applies every view change itself, paints the bar
-/// and the open cascade directly, and keeps the open dropdown on the
-/// backend's [`crate::ModalStack`] so other modal-aware code gives it
-/// hit-test precedence.
-pub struct MenuSystem {
-    menu: AppMenu,
-    state: AppMenuState,
-    view_changed: bool,
-}
-
-/// An empty menu bar with nothing registered — equivalent to
-/// `MenuSystem::new(Vec::new())`. Lets a host struct derive `Default` for
-/// a field that only grows real menus once a `MenuBar` descriptor shows up.
-impl Default for MenuSystem {
-    fn default() -> Self {
-        Self::new(Vec::new())
-    }
-}
-
-impl MenuSystem {
-    pub fn new(menus: Vec<MenuDef>) -> Self {
-        Self {
-            menu: AppMenu::new(WidgetId::new("menu-system-bar"), menus),
-            state: AppMenuState::default(),
-            view_changed: false,
-        }
-    }
-
-    /// Whether a plain printable key in an open dropdown jumps the
-    /// highlight to the matching item (on by default). Off, such a key
-    /// is reported [`MenuEvent::Ignored`] and the dropdown stays open,
-    /// so the host handles the key itself.
-    pub fn set_typeahead(&mut self, on: bool) {
-        self.menu.typeahead = on;
-    }
-
-    /// The [`AppMenu`] this wrapper drives.
-    pub fn widget(&self) -> &AppMenu {
-        &self.menu
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.menu.is_open()
-    }
-
+/// Driving an [`AppMenu`] from a host whose events do not pass through the
+/// runtime's routing engine — one that calls it with raw [`UiEvent`]s and
+/// the rect it paints the bar at. The host keeps the menu and its
+/// [`AppMenuState`]; [`AppMenu::handle_ui_event`] applies every view change
+/// itself, [`AppMenu::render`] paints the bar and the open cascade, and the
+/// open dropdown sits on the backend's [`crate::ModalStack`] so other
+/// modal-aware code gives it hit-test precedence.
+impl AppMenu {
     /// Replace the menu definitions. Any open level whose index no longer
     /// resolves against `menus` is dropped, so a host rebuilding `menus`
     /// from per-frame application data may hand this a shorter list while
     /// the previous frame's dropdown is still open.
     pub fn set_menus(&mut self, menus: Vec<MenuDef>) {
-        self.menu.menus = menus;
-        self.menu.clamp_open_state();
+        self.menus = menus;
+        self.clamp_open_state();
     }
 
-    /// Close every level, and take the dropdown off the modal stack.
-    pub fn close(&mut self, backend: &mut dyn Backend) {
-        self.menu.close();
+    /// Close every level, and take the dropdown off `backend`'s modal
+    /// stack.
+    pub fn dismiss(&mut self, backend: &mut dyn Backend) {
+        self.close();
         backend
             .modal_stack_handle()
             .borrow_mut()
-            .pop(&self.menu.level_id(0));
+            .pop(&self.level_id(0));
     }
 
-    /// Return the current `MenuBar` descriptor without rendering.
-    pub fn menu_bar(&self) -> MenuBar {
-        self.menu.build_menu_bar()
-    }
-
-    /// The menu as `backend` presents it: [`AppMenu::native`] follows the
+    /// This menu as `backend` presents it: [`AppMenu::native`] follows the
     /// backend's effective menu style.
     fn presented(&self, backend: &dyn Backend) -> AppMenu {
         AppMenu {
             native: backend.effective_menu_style() == ResolvedMenuStyle::Native,
-            ..self.menu.clone()
+            ..self.clone()
         }
     }
 
@@ -1227,31 +1111,13 @@ impl MenuSystem {
             .collect()
     }
 
-    /// The root dropdown and its placed layout, if one is open.
-    #[cfg(test)]
-    fn dropdown_layout(
-        &self,
-        backend: &dyn Backend,
-        bar_rect: Rect,
-    ) -> Option<(ContextMenu, ContextMenuLayout)> {
-        self.dropdown_stack(backend, bar_rect).into_iter().next()
-    }
-
-    /// Open menu `idx` and register its dropdown on the modal stack.
-    #[cfg(test)]
-    fn open_menu(&mut self, idx: usize, backend: &mut dyn Backend, bar_rect: Rect) {
-        let was = self.menu.view.clone();
-        self.menu.open_menu(idx);
-        self.sync_modal(&was, backend, bar_rect);
-    }
-
     /// Keep the open dropdown's modal-stack entry in step with a view
     /// change from `was`.
     fn sync_modal(&self, was: &AppMenuView, backend: &mut dyn Backend, bar_rect: Rect) {
-        if was.open_item == self.menu.view.open_item {
+        if was.open_item == self.view.open_item {
             return;
         }
-        let id = self.menu.level_id(0);
+        let id = self.level_id(0);
         backend.modal_stack_handle().borrow_mut().pop(&id);
         if let Some((_, layout)) = self.dropdown_stack(backend, bar_rect).into_iter().next() {
             backend
@@ -1261,7 +1127,8 @@ impl MenuSystem {
         }
     }
 
-    /// Draw the menu bar and any open dropdown (including nested submenus).
+    /// Draw the menu bar and any open dropdown (including nested
+    /// submenus) at `bar_rect`.
     ///
     /// Under [`ResolvedMenuStyle::Native`] the bar is installed as the
     /// platform's own menu bar through [`Backend::install_menu_bar`]
@@ -1270,7 +1137,7 @@ impl MenuSystem {
     /// the widget contract, then each open level through
     /// [`ContextMenu`]'s.
     pub fn render(&self, backend: &mut dyn Backend, bar_rect: Rect) {
-        let _ = self.menu.build_menu_bar().present(backend, bar_rect);
+        let _ = self.build_menu_bar().present(backend, bar_rect);
         for (menu, layout) in self.dropdown_stack(backend, bar_rect) {
             paint_placed_menu(backend, &menu, &layout);
         }
@@ -1279,16 +1146,17 @@ impl MenuSystem {
     /// The routed event `event` becomes for the menu at `bar_rect`, or
     /// `None` when it is not the menu's: a press or hover on an open level
     /// becomes that level's popup event, a press outside everything while
-    /// open dismisses the cascade, and Escape dismisses the deepest open
-    /// level — the routing the runtime performs for a `Surface::Widget`
-    /// menu.
+    /// open dismisses the cascade, Escape dismisses the deepest open
+    /// level, and the Alt mnemonics reach the bar while it is closed — the
+    /// routing the runtime performs for a `Surface::Widget` menu that
+    /// holds focus.
     ///
     /// A release outside everything also dismisses: some terminal and
     /// multiplexer combinations drop `MouseDown(Left)` and deliver only
     /// `MouseUp(Left)` for a click. A release anywhere else belongs to the
     /// press that preceded it.
     fn route(&self, event: &UiEvent, backend: &dyn Backend, bar_rect: Rect) -> Option<RoutedEvent> {
-        let open = self.menu.is_open();
+        let open = self.is_open();
         let pointer = |kind: PointerKind, position: Point| -> Option<RoutedEvent> {
             for (depth, (menu, layout)) in self.levels(backend, bar_rect).iter().enumerate().rev() {
                 let rect = layout.area;
@@ -1342,7 +1210,7 @@ impl MenuSystem {
                 key: Key::Named(NamedKey::Escape),
                 ..
             } if open => Some(RoutedEvent::PopupDismissed {
-                popup: PopupKey(self.menu.view.submenu_path.len() as u64),
+                popup: PopupKey(self.view.submenu_path.len() as u64),
                 reason: DismissReason::Escape,
             }),
             // While closed, only the Alt mnemonics reach the menu: every
@@ -1367,78 +1235,57 @@ impl MenuSystem {
         }
     }
 
-    /// Process an event. Call from `handle()` before other UI routing.
+    /// Process one raw event for the menu painted at `bar_rect`, applying
+    /// any view change to `self`. Call from the host's event handler
+    /// before its other routing.
+    ///
+    /// Answers [`AppMenuEvent::Activated`] for an activated item,
+    /// [`AppMenuEvent::Changed`] (already applied) when the open menu, a
+    /// highlight or the submenu path moved, `Consumed` for an event the
+    /// menu took without a visible change, and `Ignored` for one that is
+    /// not the menu's.
     ///
     /// A native menu bar's activation arrives as
     /// [`UiEvent::MenuActivated`] (AppKit reports a click there, not a hit
-    /// on `bar_rect`); it is translated to the same
-    /// [`MenuEvent::Activated`] the painted path produces, so one match
-    /// arm covers both.
+    /// on `bar_rect`); it answers the same [`AppMenuEvent::Activated`] the
+    /// painted path produces, so one match arm covers both.
     ///
     /// While no dropdown is open, a pointer event on the strip outside its
-    /// labels is [`MenuEvent::Ignored`], so the host's own chrome in that
-    /// band receives it. A move there still clears the label hover, which
-    /// [`Self::view_changed`] reports so the host repaints the bar.
-    pub fn handle(
+    /// labels is `Ignored`, so the host's own chrome in that band receives
+    /// it. A move there still clears the label hover: the host that
+    /// repaints only for a handled event compares [`AppMenu::view`] across
+    /// the call to catch that.
+    pub fn handle_ui_event(
         &mut self,
+        state: &mut AppMenuState,
         event: &UiEvent,
         backend: &mut dyn Backend,
         bar_rect: Rect,
-    ) -> MenuEvent {
-        self.view_changed = false;
+    ) -> Handled<AppMenuEvent> {
         if let UiEvent::MenuActivated(id) = event {
-            return MenuEvent::Activated(*id);
+            return Handled::Event(AppMenuEvent::Activated(*id));
         }
-        self.menu.native = backend.effective_menu_style() == ResolvedMenuStyle::Native;
-        if self.menu.native {
-            return MenuEvent::Ignored;
+        self.native = backend.effective_menu_style() == ResolvedMenuStyle::Native;
+        if self.native {
+            return Handled::Ignored;
         }
         let Some(routed) = self.route(event, backend, bar_rect) else {
-            return MenuEvent::Ignored;
+            return Handled::Ignored;
         };
-        let layout = backend.layout_primitive(bar_rect, &self.menu);
+        let layout = backend.layout_primitive(bar_rect, &*self);
         let units = crate::backend::primitive_layout_ctx(backend).units();
-        let driven = widget_host::drive(
-            &self.menu,
-            self.menu.id,
-            &mut self.state,
-            &routed,
-            &layout,
-            units,
-        );
-        let was = self.menu.view.clone();
+        let driven = widget_host::drive(&*self, self.id, state, &routed, &layout, units);
+        let was = self.view.clone();
         for emitted in driven.emitted {
             if let UiEvent::AppMenu(_, change) = emitted {
-                self.menu.apply(&change);
+                self.apply(&change);
             }
         }
-        let result = match driven.handled {
-            Handled::Event(AppMenuEvent::Activated(id)) => MenuEvent::Activated(id),
-            Handled::Event(change) => {
-                self.menu.apply(&change);
-                if was.open_item != self.menu.view.open_item
-                    || was.submenu_path != self.menu.view.submenu_path
-                {
-                    MenuEvent::StateChanged
-                } else {
-                    MenuEvent::Consumed
-                }
-            }
-            Handled::Consumed => MenuEvent::Consumed,
-            Handled::Ignored => MenuEvent::Ignored,
-        };
-        self.view_changed = was != self.menu.view;
+        if let Handled::Event(change @ AppMenuEvent::Changed(_)) = &driven.handled {
+            self.apply(change);
+        }
         self.sync_modal(&was, backend, bar_rect);
-        result
-    }
-
-    /// Whether the last [`Self::handle`] call changed what the menu paints
-    /// — an open, close or highlight move, or a hover cleared by an event
-    /// the call still reported [`MenuEvent::Ignored`] so the host could
-    /// route it on. A host that repaints only for a handled event also
-    /// repaints when this is set.
-    pub fn view_changed(&self) -> bool {
-        self.view_changed
+        driven.handled
     }
 }
 
@@ -1448,6 +1295,78 @@ mod tests {
     use crate::primitives::context_menu::ContextMenuItem;
     use crate::types::StyledText;
     use crate::Modifiers;
+
+    /// What one [`AppMenu::handle_ui_event`] call amounted to, with a
+    /// view change split into an open/close or submenu move and a
+    /// highlight move.
+    #[derive(Debug, PartialEq)]
+    enum Outcome {
+        Activated(WidgetId),
+        StateChanged,
+        Consumed,
+        Ignored,
+    }
+
+    /// A host driving an [`AppMenu`] with raw events.
+    struct Ms {
+        menu: AppMenu,
+        state: AppMenuState,
+        view_changed: bool,
+    }
+
+    impl Ms {
+        fn new(menus: Vec<MenuDef>) -> Self {
+            Self {
+                menu: AppMenu::new(WidgetId::new("menu-system-bar"), menus),
+                state: AppMenuState::default(),
+                view_changed: false,
+            }
+        }
+
+        fn handle(
+            &mut self,
+            event: &UiEvent,
+            backend: &mut dyn Backend,
+            bar_rect: Rect,
+        ) -> Outcome {
+            let was = self.menu.view.clone();
+            let handled = self
+                .menu
+                .handle_ui_event(&mut self.state, event, backend, bar_rect);
+            self.view_changed = was != self.menu.view;
+            match handled {
+                Handled::Event(AppMenuEvent::Activated(id)) => Outcome::Activated(id),
+                Handled::Event(AppMenuEvent::Changed(view)) => {
+                    assert_eq!(view, self.menu.view, "the reported view is applied");
+                    if was.open_item != view.open_item || was.submenu_path != view.submenu_path {
+                        Outcome::StateChanged
+                    } else {
+                        Outcome::Consumed
+                    }
+                }
+                Handled::Consumed => Outcome::Consumed,
+                _ => Outcome::Ignored,
+            }
+        }
+
+        /// Open menu `idx` and register its dropdown on the modal stack.
+        fn open_menu(&mut self, idx: usize, backend: &mut dyn Backend, bar_rect: Rect) {
+            let was = self.menu.view.clone();
+            self.menu.open_menu(idx);
+            self.menu.sync_modal(&was, backend, bar_rect);
+        }
+
+        fn dropdown_layout(
+            &self,
+            backend: &dyn Backend,
+            bar_rect: Rect,
+        ) -> Option<(ContextMenu, ContextMenuLayout)> {
+            self.menu
+                .dropdown_stack(backend, bar_rect)
+                .into_iter()
+                .next()
+        }
+    }
 
     // ── Minimal mock backend for handle()-level tests ─────────────────────────
 
@@ -1570,12 +1489,6 @@ mod tests {
                 crate::primitives::list::ListItemMeasure::new(1.0)
             })
         }
-        fn draw_find_replace(
-            &mut self,
-            _r: Rect,
-            _p: &crate::primitives::find_replace::FindReplacePanel,
-        ) {
-        }
         fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
         fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
             unimplemented!()
@@ -1623,15 +1536,15 @@ mod tests {
         ContextMenuItem::default()
     }
 
-    /// `dropdown_width` must track the real content of each item it's
+    /// `level_width` must track the real content of each item it's
     /// given: a menu with a much longer label must come back wider.
     #[test]
-    fn dropdown_width_tracks_the_longest_label() {
+    fn level_width_tracks_the_longest_label() {
         let short = [action("a", "Undo")];
         let long = [action("a", "Undo Last 20 Changes")];
 
-        let short_w = dropdown_width(&cells_ctx(), &short, 1.0);
-        let long_w = dropdown_width(&cells_ctx(), &long, 1.0);
+        let short_w = level_width(&cells_ctx(), &short, 1.0);
+        let long_w = level_width(&cells_ctx(), &long, 1.0);
         assert!(
             long_w > short_w,
             "a longer label must widen the dropdown: short={short_w}, long={long_w}"
@@ -1642,16 +1555,16 @@ mod tests {
     /// `▶` arrow must each widen the result beyond the bare label width —
     /// otherwise the glyph would overlap the label or get clipped.
     #[test]
-    fn dropdown_width_reserves_space_for_checked_prefix_and_submenu_arrow() {
+    fn level_width_reserves_space_for_checked_prefix_and_submenu_arrow() {
         let plain = [action("a", "Word Wrap")];
         let mut checked = plain.clone();
         checked[0].checked = Some(true);
         let mut with_submenu = plain.clone();
         with_submenu[0].submenu = Some(vec![action("b", "On")]);
 
-        let plain_w = dropdown_width(&cells_ctx(), &plain, 1.0);
-        let checked_w = dropdown_width(&cells_ctx(), &checked, 1.0);
-        let submenu_w = dropdown_width(&cells_ctx(), &with_submenu, 1.0);
+        let plain_w = level_width(&cells_ctx(), &plain, 1.0);
+        let checked_w = level_width(&cells_ctx(), &checked, 1.0);
+        let submenu_w = level_width(&cells_ctx(), &with_submenu, 1.0);
 
         assert!(checked_w > plain_w, "checked={checked_w}, plain={plain_w}");
         assert!(submenu_w > plain_w, "submenu={submenu_w}, plain={plain_w}");
@@ -1664,16 +1577,16 @@ mod tests {
     /// item's `✓ ` uses, so a dropdown that doesn't reserve for `icon`
     /// would let that shifted label clip at the right edge.
     #[test]
-    fn dropdown_width_reserves_space_for_icon_same_as_checked() {
+    fn level_width_reserves_space_for_icon_same_as_checked() {
         let plain = [action("a", "Reveal in Explorer")];
         let mut with_icon = plain.clone();
         with_icon[0].icon = Some(crate::types::Icon::new("G", "F"));
         let mut checked = plain.clone();
         checked[0].checked = Some(true);
 
-        let plain_w = dropdown_width(&cells_ctx(), &plain, 1.0);
-        let icon_w = dropdown_width(&cells_ctx(), &with_icon, 1.0);
-        let checked_w = dropdown_width(&cells_ctx(), &checked, 1.0);
+        let plain_w = level_width(&cells_ctx(), &plain, 1.0);
+        let icon_w = level_width(&cells_ctx(), &with_icon, 1.0);
+        let checked_w = level_width(&cells_ctx(), &checked, 1.0);
 
         assert!(icon_w > plain_w, "icon={icon_w}, plain={plain_w}");
         assert_eq!(
@@ -1686,9 +1599,9 @@ mod tests {
     /// label — a menu that is otherwise all separators plus one real item
     /// must size off that one item, not panic or report `0.0`.
     #[test]
-    fn dropdown_width_ignores_separators() {
+    fn level_width_ignores_separators() {
         let items = [separator(), action("a", "Save All"), separator()];
-        let w = dropdown_width(&cells_ctx(), &items, 1.0);
+        let w = level_width(&cells_ctx(), &items, 1.0);
         assert!(w > 0.0);
     }
 
@@ -1721,27 +1634,27 @@ mod tests {
     }
 
     /// A native `NSMenu` activation (`UiEvent::MenuActivated`,
-    /// what AppKit reports once `MenuSystem::render` installs rather
-    /// than paints) must translate to the same `MenuEvent::Activated` the
+    /// what AppKit reports once `AppMenu::render` installs rather
+    /// than paints) must translate to the same `AppMenuEvent::Activated` the
     /// painted dropdown path produces — same shape as
     /// `ContextMenuController` already uses for its own native event —
-    /// so consumer code written against `MenuEvent::Activated` works
+    /// so consumer code written against `AppMenuEvent::Activated` works
     /// unchanged under either `MenuStyle`. The menu need not be "open"
-    /// in this struct's own sense at all; the native path has no
-    /// in-struct open/dropdown state, only AppKit's own.
+    /// in the menu's own sense at all; the native path has no
+    /// in-widget open/dropdown state, only AppKit's own.
     #[test]
     fn handle_routes_native_menu_activated_to_menu_event_activated() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         assert!(
-            !ms.is_open(),
+            !ms.menu.is_open(),
             "native path never opens the struct's own dropdown state"
         );
 
         let ev = UiEvent::MenuActivated(WidgetId::new("save"));
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::Activated(WidgetId::new("save")));
+        assert_eq!(result, Outcome::Activated(WidgetId::new("save")));
     }
 
     fn alt_key_ev(c: char) -> UiEvent {
@@ -1760,12 +1673,12 @@ mod tests {
     /// in-window dropdown.
     #[test]
     fn alt_char_opens_the_painted_menu_bars_dropdown() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
 
         let result = ms.handle(&alt_key_ev('f'), &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::StateChanged);
+        assert_eq!(result, Outcome::StateChanged);
         assert_eq!(ms.menu.view.open_item, Some(0));
         assert!(
             ms.dropdown_layout(&backend, bar_rect()).is_some(),
@@ -1780,7 +1693,7 @@ mod tests {
     /// not exist in the layout.
     #[test]
     fn alt_char_is_ignored_when_the_menu_bar_is_native() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::with_native_menu_bar();
         assert_eq!(
             crate::backend::Backend::effective_menu_style(&backend),
@@ -1790,8 +1703,8 @@ mod tests {
 
         let result = ms.handle(&alt_key_ev('f'), &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::Ignored);
-        assert!(!ms.is_open());
+        assert_eq!(result, Outcome::Ignored);
+        assert!(!ms.menu.is_open());
         assert_eq!(ms.menu.view.open_item, None);
     }
 
@@ -1801,20 +1714,20 @@ mod tests {
     /// degrade to "no dropdown" instead of indexing past that empty list.
     #[test]
     fn menu_bar_turning_native_while_open_paints_no_dropdown() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         ms.handle(&alt_key_ev('f'), &mut backend, bar_rect());
-        assert!(ms.is_open());
+        assert!(ms.menu.is_open());
 
         backend.native_menu_bar = true;
 
-        ms.render(&mut backend, bar_rect());
+        ms.menu.render(&mut backend, bar_rect());
         assert!(
             ms.dropdown_layout(&backend, bar_rect()).is_none(),
             "no visible bar item to anchor under means no dropdown"
         );
         assert!(
-            ms.dropdown_stack(&backend, bar_rect()).is_empty(),
+            ms.menu.dropdown_stack(&backend, bar_rect()).is_empty(),
             "an empty root dropdown must not leave submenu levels behind"
         );
     }
@@ -1825,7 +1738,7 @@ mod tests {
     /// over.
     #[test]
     fn a_serialised_menu_bar_decodes_as_an_app_menu() {
-        let mut bar = MenuSystem::new(sample_menus()).menu_bar();
+        let mut bar = Ms::new(sample_menus()).menu.build_menu_bar();
         bar.items[2].submenu = None;
         bar.open_item = Some(1);
         bar.focused_item = Some(1);
@@ -1841,18 +1754,18 @@ mod tests {
     }
 
     #[test]
-    fn new_menu_system_starts_closed() {
-        let ms = MenuSystem::new(sample_menus());
-        assert!(!ms.is_open());
+    fn a_new_app_menu_starts_closed() {
+        let ms = Ms::new(sample_menus());
+        assert!(!ms.menu.is_open());
         assert_eq!(ms.menu.view.open_item, None);
         assert_eq!(ms.menu.view.focused_item, None);
     }
 
     #[test]
     fn set_menus_replaces_definitions() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         assert_eq!(ms.menu.menus.len(), 3);
-        ms.set_menus(vec![MenuDef {
+        ms.menu.set_menus(vec![MenuDef {
             id: WidgetId::new("only"),
             label: "Only".into(),
             disabled: false,
@@ -1867,12 +1780,12 @@ mod tests {
     /// directly, so a stale out-of-range `open_item` would panic.
     #[test]
     fn set_menus_closes_dropdown_left_pointing_past_the_new_list() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let backend = MockBackend::new();
         ms.menu.view.open_item = Some(2); // "Help" — the last menu, dropped below
         ms.menu.view.focused_item = Some(2);
 
-        ms.set_menus(vec![MenuDef {
+        ms.menu.set_menus(vec![MenuDef {
             id: WidgetId::new("file"),
             label: "&File".into(),
             disabled: false,
@@ -1891,7 +1804,7 @@ mod tests {
     /// new items and would otherwise be handed a stale index.
     #[test]
     fn set_menus_truncates_submenu_path_left_pointing_past_new_items() {
-        let mut ms = MenuSystem::new(vec![MenuDef {
+        let mut ms = Ms::new(vec![MenuDef {
             id: WidgetId::new("file"),
             label: "&File".into(),
             disabled: false,
@@ -1907,7 +1820,7 @@ mod tests {
 
         // New "File" menu's one item has no submenu at all, so depth-0 of
         // the old `submenu_path` no longer resolves.
-        ms.set_menus(vec![MenuDef {
+        ms.menu.set_menus(vec![MenuDef {
             id: WidgetId::new("file"),
             label: "&File".into(),
             disabled: false,
@@ -1917,12 +1830,12 @@ mod tests {
         assert_eq!(ms.menu.view.open_item, Some(0));
         assert!(ms.menu.view.submenu_path.is_empty());
         assert!(ms.dropdown_layout(&backend, bar_rect()).is_some());
-        assert!(ms.dropdown_stack(&backend, bar_rect()).len() <= 1);
+        assert!(ms.menu.dropdown_stack(&backend, bar_rect()).len() <= 1);
     }
 
     #[test]
     fn next_enabled_menu_skips_disabled() {
-        let ms = MenuSystem::new(sample_menus());
+        let ms = Ms::new(sample_menus());
         // help (idx 2) is disabled, so from edit (1) forward wraps to file (0)
         assert_eq!(ms.menu.next_enabled_menu(1, 1), 0);
         // from file (0) backward wraps past help to edit (1)
@@ -1940,14 +1853,14 @@ mod tests {
         // The middle menu is disabled and is where the move starts from
         // (Alt-activating a disabled menu label, say): the move steps to
         // its neighbour in bar order, not to an end of the bar.
-        let ms = MenuSystem::new(vec![menu("a", false), menu("b", true), menu("c", false)]);
+        let ms = Ms::new(vec![menu("a", false), menu("b", true), menu("c", false)]);
         assert_eq!(ms.menu.next_enabled_menu(1, 1), 2);
         assert_eq!(ms.menu.next_enabled_menu(1, -1), 0);
     }
 
     #[test]
     fn move_selection_off_a_separator_steps_to_the_neighbouring_item() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         // The file dropdown is `new, save, separator, quit`, and index 2 —
         // the separator — is the current selection.
         ms.menu.view.open_item = Some(0);
@@ -1962,7 +1875,7 @@ mod tests {
 
     #[test]
     fn build_menu_bar_reflects_state() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         ms.menu.view.open_item = Some(1);
         ms.menu.view.focused_item = Some(1);
         let bar = ms.menu.build_menu_bar();
@@ -1975,12 +1888,12 @@ mod tests {
     /// `build_menu_bar`'s `MenuBarItem::submenu` must carry this
     /// `MenuDef`'s real dropdown items, not the stale `None` a native
     /// backend's `Backend::install_menu_bar` would silently bake into an
-    /// empty `NSMenu`/`HMENU` submenu — `MenuSystem::render` installs
+    /// empty `NSMenu`/`HMENU` submenu — `AppMenu::render` installs
     /// this `MenuBar` under the native style, so this is the value a
     /// native install actually ends up showing.
     #[test]
     fn build_menu_bar_carries_each_menus_own_dropdown_items_as_submenu() {
-        let ms = MenuSystem::new(sample_menus());
+        let ms = Ms::new(sample_menus());
         let bar = ms.menu.build_menu_bar();
         assert_eq!(
             bar.items[0].submenu.as_deref(),
@@ -2000,7 +1913,7 @@ mod tests {
 
     #[test]
     fn build_dropdown_uses_selected_idx() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         ms.menu.view.dropdown_selected = 2;
         let dd = ms.menu.build_dropdown(0);
         assert_eq!(dd.selected_idx, 2);
@@ -2032,7 +1945,7 @@ mod tests {
 
     #[test]
     fn items_at_depth_zero_returns_root_items() {
-        let mut ms = MenuSystem::new(menus_with_submenu());
+        let mut ms = Ms::new(menus_with_submenu());
         ms.menu.view.open_item = Some(0);
         let items = ms.menu.items_at_depth(0).unwrap();
         assert_eq!(items.len(), 3);
@@ -2041,7 +1954,7 @@ mod tests {
 
     #[test]
     fn items_at_depth_one_returns_submenu_items() {
-        let mut ms = MenuSystem::new(menus_with_submenu());
+        let mut ms = Ms::new(menus_with_submenu());
         ms.menu.view.open_item = Some(0);
         ms.menu.view.submenu_path = vec![1]; // item 1 ("Export") has a submenu
         let items = ms.menu.items_at_depth(1).unwrap();
@@ -2051,7 +1964,7 @@ mod tests {
 
     #[test]
     fn open_submenu_pushes_path_and_first_selectable() {
-        let mut ms = MenuSystem::new(menus_with_submenu());
+        let mut ms = Ms::new(menus_with_submenu());
         ms.menu.view.open_item = Some(0);
         ms.menu.view.dropdown_selected = 1; // "Export" is selected
         ms.menu.open_submenu(1);
@@ -2061,7 +1974,7 @@ mod tests {
 
     #[test]
     fn close_deepest_submenu_pops_one_level() {
-        let mut ms = MenuSystem::new(menus_with_submenu());
+        let mut ms = Ms::new(menus_with_submenu());
         ms.menu.view.open_item = Some(0);
         ms.menu.view.submenu_path = vec![1];
         ms.menu.view.submenu_selected = vec![0];
@@ -2072,7 +1985,7 @@ mod tests {
 
     #[test]
     fn current_selected_returns_root_when_no_submenus() {
-        let mut ms = MenuSystem::new(menus_with_submenu());
+        let mut ms = Ms::new(menus_with_submenu());
         ms.menu.view.open_item = Some(0);
         ms.menu.view.dropdown_selected = 2;
         assert_eq!(ms.menu.current_selected(), 2);
@@ -2080,7 +1993,7 @@ mod tests {
 
     #[test]
     fn current_selected_returns_deepest_submenu_selection() {
-        let mut ms = MenuSystem::new(menus_with_submenu());
+        let mut ms = Ms::new(menus_with_submenu());
         ms.menu.view.open_item = Some(0);
         ms.menu.view.dropdown_selected = 1;
         ms.menu.view.submenu_path = vec![1];
@@ -2094,8 +2007,8 @@ mod tests {
     // keyboard events are processed.  We set open_item directly (bypassing the
     // modal-stack push that open_menu does) because these tests focus on
     // navigation state, not on rendering.
-    fn open_ms() -> MenuSystem {
-        let mut ms = MenuSystem::new(menus_with_submenu());
+    fn open_ms() -> Ms {
+        let mut ms = Ms::new(menus_with_submenu());
         ms.menu.view.open_item = Some(0);
         ms.menu.view.dropdown_selected = 1; // pre-select "Export" (item 1, has submenu)
         ms
@@ -2112,7 +2025,7 @@ mod tests {
 
         assert_eq!(
             result,
-            MenuEvent::StateChanged,
+            Outcome::StateChanged,
             "Right must return StateChanged"
         );
         assert_eq!(
@@ -2139,7 +2052,7 @@ mod tests {
 
         assert_eq!(
             result,
-            MenuEvent::StateChanged,
+            Outcome::StateChanged,
             "Left must return StateChanged"
         );
         assert!(
@@ -2164,7 +2077,7 @@ mod tests {
 
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::StateChanged);
+        assert_eq!(result, Outcome::StateChanged);
         assert!(
             ms.menu.view.submenu_path.is_empty(),
             "deepest submenu must be closed"
@@ -2185,7 +2098,7 @@ mod tests {
 
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::StateChanged);
+        assert_eq!(result, Outcome::StateChanged);
         assert!(
             ms.menu.view.open_item.is_none(),
             "whole menu must be closed"
@@ -2204,7 +2117,7 @@ mod tests {
 
         assert_eq!(
             result,
-            MenuEvent::StateChanged,
+            Outcome::StateChanged,
             "Enter on parent must return StateChanged"
         );
         assert_eq!(
@@ -2230,7 +2143,7 @@ mod tests {
 
         assert_eq!(
             result,
-            MenuEvent::Activated(WidgetId::new("export-png")),
+            Outcome::Activated(WidgetId::new("export-png")),
             "Enter on leaf must return Activated with the item id"
         );
         assert!(
@@ -2258,7 +2171,7 @@ mod tests {
     /// that drop `MouseDown(Left)` and only deliver `MouseUp(Left)`.
     #[test]
     fn handle_mouse_up_outside_everything_closes_menu() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         ms.open_menu(0, &mut backend, bar_rect());
         assert!(ms.menu.view.open_item.is_some());
@@ -2268,7 +2181,7 @@ mod tests {
         let ev = mouse_up_ev(crate::event::Point::new(999.0, 999.0));
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::StateChanged);
+        assert_eq!(result, Outcome::StateChanged);
         assert!(
             ms.menu.view.open_item.is_none(),
             "menu must close on outside MouseUp"
@@ -2279,13 +2192,13 @@ mod tests {
     /// to close, and no panic touching layout state.
     #[test]
     fn handle_mouse_up_with_no_menu_open_is_ignored() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         let ev = mouse_up_ev(crate::event::Point::new(999.0, 999.0));
 
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::Ignored);
+        assert_eq!(result, Outcome::Ignored);
         assert!(ms.menu.view.open_item.is_none());
     }
 
@@ -2295,7 +2208,7 @@ mod tests {
     /// (Down-then-Up) click-to-open.
     #[test]
     fn handle_mouse_up_on_bar_item_does_not_close() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         ms.open_menu(0, &mut backend, bar_rect());
 
@@ -2304,7 +2217,7 @@ mod tests {
         let ev = mouse_up_ev(crate::event::Point::new(5.0, 0.0));
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::Ignored);
+        assert_eq!(result, Outcome::Ignored);
         assert!(
             ms.menu.view.open_item.is_some(),
             "menu must remain open after Up on the bar item that opened it"
@@ -2316,11 +2229,11 @@ mod tests {
     /// activation, so this arm must not double-fire `Activated`.
     #[test]
     fn handle_mouse_up_on_open_dropdown_item_is_ignored() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         ms.open_menu(0, &mut backend, bar_rect());
 
-        let stack = ms.dropdown_stack(&backend, bar_rect());
+        let stack = ms.menu.dropdown_stack(&backend, bar_rect());
         let item_bounds = stack[0].1.visible_items[0].bounds;
         let pos = crate::event::Point::new(
             item_bounds.x + item_bounds.width / 2.0,
@@ -2330,7 +2243,7 @@ mod tests {
         let ev = mouse_up_ev(pos);
         let result = ms.handle(&ev, &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::Ignored);
+        assert_eq!(result, Outcome::Ignored);
         assert!(
             ms.menu.view.open_item.is_some(),
             "menu must remain open — MouseUp must not activate or close"
@@ -2338,8 +2251,8 @@ mod tests {
     }
 
     /// The x a quarter-unit past the right edge of the bar's last label.
-    fn past_last_label(ms: &MenuSystem, backend: &MockBackend) -> f32 {
-        let layout = backend.layout_primitive(bar_rect(), ms.widget());
+    fn past_last_label(ms: &Ms, backend: &MockBackend) -> f32 {
+        let layout = backend.layout_primitive(bar_rect(), &ms.menu);
         let last = layout
             .bar
             .layout
@@ -2358,45 +2271,42 @@ mod tests {
 
     #[test]
     fn closed_click_past_the_last_label_is_ignored() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         let x = past_last_label(&ms, &backend);
         let down = crate::event::mouse_down(MouseButton::Left, x, 0.0, crate::Modifiers::default());
 
-        assert_eq!(
-            ms.handle(&down, &mut backend, bar_rect()),
-            MenuEvent::Ignored
-        );
+        assert_eq!(ms.handle(&down, &mut backend, bar_rect()), Outcome::Ignored);
         assert_eq!(
             ms.handle(&mouse_up_ev(Point::new(x, 0.0)), &mut backend, bar_rect()),
-            MenuEvent::Ignored
+            Outcome::Ignored
         );
-        assert!(!ms.is_open());
+        assert!(!ms.menu.is_open());
     }
 
     #[test]
     fn closed_hover_leaving_the_labels_clears_focus_and_is_ignored() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         let x = past_last_label(&ms, &backend);
 
         let on_file = ms.handle(&mouse_moved_ev(1.0, 0.0), &mut backend, bar_rect());
-        assert_eq!(on_file, MenuEvent::Consumed);
-        assert_eq!(ms.menu_bar().focused_item, Some(0));
+        assert_eq!(on_file, Outcome::Consumed);
+        assert_eq!(ms.menu.build_menu_bar().focused_item, Some(0));
 
         let off = ms.handle(&mouse_moved_ev(x, 0.0), &mut backend, bar_rect());
-        assert_eq!(off, MenuEvent::Ignored);
-        assert_eq!(ms.menu_bar().focused_item, None);
-        assert!(ms.view_changed(), "clearing the hover asks for a repaint");
+        assert_eq!(off, Outcome::Ignored);
+        assert_eq!(ms.menu.build_menu_bar().focused_item, None);
+        assert!(ms.view_changed, "clearing the hover asks for a repaint");
 
         let again = ms.handle(&mouse_moved_ev(x, 0.0), &mut backend, bar_rect());
-        assert_eq!(again, MenuEvent::Ignored);
-        assert!(!ms.view_changed(), "a no-op move asks for nothing");
+        assert_eq!(again, Outcome::Ignored);
+        assert!(!ms.view_changed, "a no-op move asks for nothing");
     }
 
     #[test]
     fn open_click_past_the_last_label_still_closes_the_menu() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         let x = past_last_label(&ms, &backend);
         ms.open_menu(0, &mut backend, bar_rect());
@@ -2404,33 +2314,33 @@ mod tests {
 
         assert_eq!(
             ms.handle(&down, &mut backend, bar_rect()),
-            MenuEvent::StateChanged
+            Outcome::StateChanged
         );
-        assert!(!ms.is_open());
+        assert!(!ms.menu.is_open());
     }
 
     #[test]
     fn an_open_dropdown_takes_a_plain_char_as_typeahead_by_default() {
-        let mut ms = MenuSystem::new(sample_menus());
+        let mut ms = Ms::new(sample_menus());
         let mut backend = MockBackend::new();
         ms.open_menu(0, &mut backend, bar_rect());
 
         let result = ms.handle(&key_ev(Key::Char('s')), &mut backend, bar_rect());
 
-        assert_ne!(result, MenuEvent::Ignored);
+        assert_ne!(result, Outcome::Ignored);
         assert_eq!(ms.menu.view.dropdown_selected, 1, "typeahead moved to Save");
     }
 
     #[test]
     fn typeahead_off_lets_a_plain_char_reach_the_host() {
-        let mut ms = MenuSystem::new(sample_menus());
-        ms.set_typeahead(false);
+        let mut ms = Ms::new(sample_menus());
+        ms.menu.typeahead = false;
         let mut backend = MockBackend::new();
         ms.open_menu(0, &mut backend, bar_rect());
 
         let result = ms.handle(&key_ev(Key::Char('s')), &mut backend, bar_rect());
 
-        assert_eq!(result, MenuEvent::Ignored);
+        assert_eq!(result, Outcome::Ignored);
         assert_eq!(ms.menu.view.dropdown_selected, 0, "the highlight stays put");
         let down = ms.handle(
             &key_ev(Key::Named(NamedKey::Down)),
@@ -2439,7 +2349,7 @@ mod tests {
         );
         assert_ne!(
             down,
-            MenuEvent::Ignored,
+            Outcome::Ignored,
             "navigation keys still belong to the menu"
         );
     }

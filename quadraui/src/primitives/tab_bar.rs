@@ -3280,42 +3280,6 @@ pub struct TabBarPrimitiveLayout {
     pub corrected_scroll_offset: usize,
 }
 
-/// A strip layout carrying only tab-body hit regions, synthesised from
-/// absolute `(start_x, end_x)` tab slots relative to a `strip` of
-/// `strip.width` x `strip.height`.
-///
-/// Callers that hold slot x-pairs and no close/segment geometry at all
-/// need it — a drag-geometry primer that never rendered.
-///
-/// `slots` uses the `(0.0, 0.0)` sentinel convention for a tab scrolled
-/// off the left edge: a sentinel entry contributes no visible tab, but
-/// the entries after it keep their original tab indices.
-pub(crate) fn strip_layout_from_tab_slots(strip: Rect, slots: &[(f32, f32)]) -> TabBarLayout {
-    let visible_tabs: Vec<VisibleTab> = slots
-        .iter()
-        .enumerate()
-        .filter(|(_, (s, e))| *s != 0.0 || *e != 0.0)
-        .map(|(tab_idx, (s, e))| VisibleTab {
-            tab_idx,
-            bounds: Rect::new(s - strip.x, 0.0, (e - s).max(0.0), strip.height),
-            close_bounds: None,
-        })
-        .collect();
-    TabBarLayout {
-        bar_width: strip.width,
-        bar_height: strip.height,
-        hit_regions: visible_tabs
-            .iter()
-            .map(|vt| (vt.bounds, TabBarHit::Tab(vt.tab_idx)))
-            .collect(),
-        visible_tabs,
-        visible_segments: vec![],
-        scroll_left: None,
-        scroll_right: None,
-        resolved_scroll_offset: 0,
-    }
-}
-
 impl crate::primitive::Primitive for TabBar {
     type Layout = TabBarPrimitiveLayout;
     type Event = TabBarEvent;

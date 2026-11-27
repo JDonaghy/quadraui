@@ -623,10 +623,10 @@ pub trait ConformanceDriver: Sized {
 //
 // Before this, an external developer who wanted to unit-test their own
 // `compose`-style controller (something that takes `&mut dyn Backend`,
-// the way `ChatController`/`ShellView` do) had nothing to
+// the way `ShellView` does) had nothing to
 // test against: the only full `impl Backend` mocks in this crate were
 // three near-identical private `MockBackend` copies, one each in
-// `compose::{tree_controller, chat_controller, app_shell}`'s own
+// `compose`'s own
 // `#[cfg(test)] mod tests`, invisible outside the crate. `RecordingBackend`
 // is that mock, promoted to a public, crate-external-friendly type, and
 // those three private copies delegate to (rather than duplicate) it.
@@ -725,8 +725,8 @@ pub struct RecordingBackend {
     /// to fake a GUI backend's self-registered icon font for a `compose/`
     /// helper that probes `has_font_family("codicon")` to choose a codicon
     /// glyph over a plain-text fallback — the pattern
-    /// `compose::menu_system`'s `dropdown_width` and
-    /// `compose::sidebar_system`'s `render` both use.
+    /// `compose::app_menu`'s `dropdown_width` and
+    /// `compose::sidebar`'s paint both use.
     pub font_families: std::collections::HashSet<&'static str>,
 }
 
@@ -886,7 +886,7 @@ impl crate::backend::PlatformServices for RecordingBackend {
 // hand `Backend::services()`, nothing real behind it" shape:
 // `FakePlatformServices` in `backend.rs`'s own test module,
 // `MockServices` backing `tui::backend`'s test-only `MockBackend`, and
-// `compose::menu_system`'s test-only `MockBackend::services`, which
+// `compose::app_menu`'s test-only `MockBackend::services`, which
 // didn't even have a double and `unimplemented!()`ed instead. This is
 // that double, promoted once — the same "named, not duplicated" move
 // [`RecordingBackend`]'s own module comment above describes for
@@ -1128,13 +1128,6 @@ impl crate::Backend for RecordingBackend {
             crate::primitives::list::ListItemMeasure::new(1.0)
         })
     }
-    fn draw_find_replace(
-        &mut self,
-        _r: Rect,
-        _p: &crate::primitives::find_replace::FindReplacePanel,
-    ) {
-        self.record("draw_find_replace");
-    }
     fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
         self.record("draw_scrollbar");
     }
@@ -1145,7 +1138,7 @@ impl crate::Backend for RecordingBackend {
     fn progress_layout(&self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
         unimplemented!("RecordingBackend has no ProgressBar layout algorithm")
     }
-    /// Union note: `chat_controller::MockBackend` was the only one with a
+    /// Union note: the chat tests' `MockBackend` was the only one with a
     /// real body (trivial `SpinnerLayout { bounds: r }`, needed so its
     /// render tests don't panic); the other two `unimplemented!()`d.
     fn draw_spinner(&mut self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {

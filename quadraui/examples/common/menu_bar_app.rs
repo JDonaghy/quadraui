@@ -1,11 +1,12 @@
 //! Backend-agnostic app code for the menu-bar example
 //! ([`tui_menu_bar`] / [`gtk_menu_bar`]).
 //!
-//! Demonstrates [`MenuSystem`] — the high-level compose helper that
-//! handles MenuBar + ContextMenu dropdown interaction (open/close,
-//! arrow-key navigation, hover-to-switch, Alt+key activation, modal
-//! stack coordination). The app defines menu structure and matches
-//! on [`MenuEvent::Activated`].
+//! Demonstrates [`AppMenu`] — the widget that handles MenuBar +
+//! ContextMenu dropdown interaction (open/close, arrow-key navigation,
+//! hover-to-switch, Alt+key activation, modal stack coordination),
+//! driven here with raw events through [`AppMenu::handle_ui_event`].
+//! The app defines menu structure and matches on
+//! [`AppMenuEvent::Activated`].
 //!
 //! Controls:
 //! - click menu label         open/close that menu's dropdown
@@ -21,64 +22,69 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    resolve_bar_height, AppLogic, Backend, Color, ContextMenuItem, Key, MenuDef, MenuEvent,
-    MenuSystem, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment, StyledText, UiEvent,
-    WidgetId,
+    resolve_bar_height, AppLogic, AppMenu, AppMenuEvent, AppMenuState, Backend, Color,
+    ContextMenuItem, Handled, Key, MenuDef, NamedKey, Reaction, Rect, StatusBar, StatusBarSegment,
+    StyledText, UiEvent, WidgetId,
 };
 
 pub struct MenuBarApp {
-    menu_system: MenuSystem,
+    menu: AppMenu,
+    menu_state: AppMenuState,
     last_action: Option<String>,
 }
 
 impl MenuBarApp {
     pub fn new() -> Self {
         Self {
-            menu_system: MenuSystem::new(vec![
-                MenuDef {
-                    id: WidgetId::new("file"),
-                    label: "&File".into(),
-                    disabled: false,
-                    items: vec![
-                        action("new", "New File"),
-                        action("open", "Open File"),
-                        action("save", "Save"),
-                        separator(),
-                        action("quit", "Quit"),
-                    ],
-                },
-                MenuDef {
-                    id: WidgetId::new("edit"),
-                    label: "&Edit".into(),
-                    disabled: false,
-                    items: vec![
-                        action("undo", "Undo"),
-                        action("redo", "Redo"),
-                        separator(),
-                        action("cut", "Cut"),
-                        action("copy", "Copy"),
-                        action("paste", "Paste"),
-                    ],
-                },
-                MenuDef {
-                    id: WidgetId::new("view"),
-                    label: "&View".into(),
-                    disabled: false,
-                    items: vec![
-                        action("sidebar", "Toggle Sidebar"),
-                        action("terminal", "Toggle Terminal"),
-                        separator(),
-                        action("zoom-in", "Zoom In"),
-                        action("zoom-out", "Zoom Out"),
-                    ],
-                },
-                MenuDef {
-                    id: WidgetId::new("help"),
-                    label: "&Help".into(),
-                    disabled: true,
-                    items: vec![],
-                },
-            ]),
+            menu: AppMenu::new(
+                WidgetId::new("menu-bar"),
+                vec![
+                    MenuDef {
+                        id: WidgetId::new("file"),
+                        label: "&File".into(),
+                        disabled: false,
+                        items: vec![
+                            action("new", "New File"),
+                            action("open", "Open File"),
+                            action("save", "Save"),
+                            separator(),
+                            action("quit", "Quit"),
+                        ],
+                    },
+                    MenuDef {
+                        id: WidgetId::new("edit"),
+                        label: "&Edit".into(),
+                        disabled: false,
+                        items: vec![
+                            action("undo", "Undo"),
+                            action("redo", "Redo"),
+                            separator(),
+                            action("cut", "Cut"),
+                            action("copy", "Copy"),
+                            action("paste", "Paste"),
+                        ],
+                    },
+                    MenuDef {
+                        id: WidgetId::new("view"),
+                        label: "&View".into(),
+                        disabled: false,
+                        items: vec![
+                            action("sidebar", "Toggle Sidebar"),
+                            action("terminal", "Toggle Terminal"),
+                            separator(),
+                            action("zoom-in", "Zoom In"),
+                            action("zoom-out", "Zoom Out"),
+                        ],
+                    },
+                    MenuDef {
+                        id: WidgetId::new("help"),
+                        label: "&Help".into(),
+                        disabled: true,
+                        items: vec![],
+                    },
+                ],
+            ),
+            menu_state: AppMenuState::default(),
             last_action: None,
         }
     }
@@ -100,7 +106,7 @@ impl MenuBarApp {
             right_segments: vec![StatusBarSegment {
                 text: format!(
                     " {} ",
-                    if self.menu_system.is_open() {
+                    if self.menu.is_open() {
                         "menu open"
                     } else {
                         "menu closed"
@@ -130,7 +136,7 @@ impl AppLogic for MenuBarApp {
 
         let bar_h = resolve_bar_height(backend.chrome_line_height());
         let bar_rect = Rect::new(0.0, 0.0, viewport.width, bar_h);
-        self.menu_system.render(backend, bar_rect);
+        self.menu.render(backend, bar_rect);
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
@@ -141,8 +147,11 @@ impl AppLogic for MenuBarApp {
         let bar_h = resolve_bar_height(backend.chrome_line_height());
         let bar_rect = Rect::new(0.0, 0.0, viewport.width, bar_h);
 
-        match self.menu_system.handle(&event, backend, bar_rect) {
-            MenuEvent::Activated(id) => match id.as_str() {
+        match self
+            .menu
+            .handle_ui_event(&mut self.menu_state, &event, backend, bar_rect)
+        {
+            Handled::Event(AppMenuEvent::Activated(id)) => match id.as_str() {
                 "quit" => Reaction::Exit,
                 "zoom-in" => {
                     self.last_action = Some("Zoomed in (not really)".into());
@@ -157,8 +166,7 @@ impl AppLogic for MenuBarApp {
                     Reaction::Redraw
                 }
             },
-            MenuEvent::StateChanged | MenuEvent::Consumed => Reaction::Redraw,
-            MenuEvent::Ignored => match event {
+            Handled::Ignored => match event {
                 UiEvent::KeyPressed {
                     key: Key::Char('q'),
                     ..
@@ -170,7 +178,7 @@ impl AppLogic for MenuBarApp {
                 UiEvent::WindowResized { .. } => Reaction::Redraw,
                 _ => Reaction::Continue,
             },
-            _ => Reaction::Continue,
+            _ => Reaction::Redraw,
         }
     }
 }

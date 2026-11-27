@@ -3,15 +3,15 @@
     feature = "gtk",
     all(feature = "macos", target_os = "macos")
 ))]
-//! Black-box tests for a host that drives a `MenuSystem` itself: what the
+//! Black-box tests for a host that drives an `AppMenu` itself: what the
 //! menu leaves to the host (a pointer on the strip past its labels while
 //! closed, a printable key with type-ahead off) reaches the host's own
 //! handling, and the painted strip underlines a label's `&` mnemonic on
 //! every pixel backend that paints it in-window.
 
 use quadraui::{
-    AppLogic, Backend, ContextMenuItem, MenuDef, MenuEvent, Reaction, Rect, StyledText, UiEvent,
-    WidgetId,
+    AppLogic, AppMenu, AppMenuState, Backend, ContextMenuItem, Handled, MenuDef, Reaction, Rect,
+    StyledText, UiEvent, WidgetId,
 };
 
 fn action(id: &str, label: &str) -> ContextMenuItem {
@@ -42,14 +42,16 @@ fn menus(file_label: &str) -> Vec<MenuDef> {
 /// A host with a menu strip across the top of its window; it records
 /// every event the menu leaves unhandled.
 struct HostApp {
-    menu: quadraui::MenuSystem,
+    menu: AppMenu,
+    menu_state: AppMenuState,
     to_host: Vec<UiEvent>,
 }
 
 impl HostApp {
     fn new(file_label: &str) -> Self {
         Self {
-            menu: quadraui::MenuSystem::new(menus(file_label)),
+            menu: AppMenu::new(WidgetId::new("menu-bar"), menus(file_label)),
+            menu_state: AppMenuState::default(),
             to_host: Vec::new(),
         }
     }
@@ -70,8 +72,11 @@ impl AppLogic for HostApp {
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         let bar = Self::bar(backend);
-        match self.menu.handle(&event, backend, bar) {
-            MenuEvent::Ignored => {
+        match self
+            .menu
+            .handle_ui_event(&mut self.menu_state, &event, backend, bar)
+        {
+            Handled::Ignored => {
                 if matches!(
                     event,
                     UiEvent::MouseDown { .. } | UiEvent::KeyPressed { .. }
@@ -131,7 +136,7 @@ mod tui {
     #[test]
     fn with_typeahead_off_a_typed_letter_reaches_the_host() {
         let mut driver = TuiDriver::new(HostApp::new("&File"), 60, 10);
-        driver.app_mut().menu.set_typeahead(false);
+        driver.app_mut().menu.typeahead = false;
         driver.dispatch(alt_f());
         assert!(driver.app().menu.is_open());
 

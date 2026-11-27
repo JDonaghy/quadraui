@@ -79,6 +79,12 @@ pub fn build<F: DriverFactory>(
             viewport,
         ),
         "pipeline_app" => F::make(common::pipeline_app::PipelineApp::new(), viewport),
+        #[cfg(any(
+            feature = "gtk",
+            feature = "tui",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
         "shell_app" => F::make(common::shell_app::ShellApp::new(), viewport),
         "split_app" => F::make(common::split_app::SplitApp::new(), viewport),
         "status_bar_priority_demo" => F::make(

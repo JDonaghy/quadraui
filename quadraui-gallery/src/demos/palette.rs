@@ -4,13 +4,16 @@
 //! A pretend Git branch picker: **List mode** fuzzy-filters existing
 //! branches; `Tab` switches to **Input mode**, a free-text field for
 //! naming a new one. Two variants show the popup at two sizes.
+//!
+//! The gallery hands each demo raw events, so the demo drives its
+//! [`DualModePalette`] with [`drive_ui_event`] and applies what it reports.
 
 use quadraui::compose::{DualModePaletteAction, Handled};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, DualModePaletteController, PaletteItem, PaletteMode, Reaction,
-    Rect, StatusBar, StatusBarSegment, Style, StyledSpan, StyledText, UiEvent, WidgetId,
-    PALETTE_CHROME_ROWS,
+    drive_ui_event, Backend, BackendCaps, Color, DualModePalette, DualModePaletteState,
+    MouseButton, PaletteItem, PaletteMode, Reaction, Rect, StatusBar, StatusBarSegment, Style,
+    StyledSpan, StyledText, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -45,7 +48,9 @@ static BRANCHES: &[&str] = &[
 ];
 
 pub struct PaletteDemo {
-    picker: DualModePaletteController,
+    picker: DualModePalette,
+    /// The state the picker routes through: its live query caret.
+    picker_state: DualModePaletteState,
     current_branch: String,
     status: String,
 }
@@ -54,6 +59,7 @@ impl PaletteDemo {
     pub fn new() -> Self {
         Self {
             picker: make_picker(BRANCHES),
+            picker_state: DualModePaletteState::default(),
             current_branch: "main".into(),
             status: "Tab=toggle mode  Enter=confirm".into(),
         }
@@ -69,7 +75,7 @@ impl PaletteDemo {
     }
 
     fn status_bar(&self) -> StatusBar {
-        let mode_label = match self.picker.mode() {
+        let mode_label = match self.picker.mode {
             PaletteMode::List => " [LIST] ",
             PaletteMode::Input => " [INPUT] ",
         };
@@ -127,7 +133,7 @@ impl Demo for PaletteDemo {
         let _ = backend.draw_dyn(bar_rect, &self.status_bar(), &());
 
         let popup_rect = Self::popup_rect(variant, area, backend);
-        self.picker.render(popup_rect, backend);
+        let _ = backend.draw_dyn(popup_rect, &self.picker, &());
     }
 
     fn handle(
@@ -146,21 +152,43 @@ impl Demo for PaletteDemo {
         };
         let visible_rows = popup_rows.saturating_sub(PALETTE_CHROME_ROWS);
 
-        let ev = match event {
-            UiEvent::MouseDown { .. } => {
-                self.picker
-                    .handle_mouse_event(event, backend, popup_rect, visible_rows)
+        // Keys always reach the picker, a paste only while it takes free
+        // text, and a left press or a move only inside the popup.
+        let routed = match event {
+            UiEvent::KeyPressed { .. } => true,
+            UiEvent::ClipboardPaste(_) => self.picker.mode == PaletteMode::Input,
+            UiEvent::MouseDown {
+                button: MouseButton::Left,
+                position,
+                ..
             }
-            UiEvent::MouseMoved { .. } => {
-                self.picker
-                    .handle_mouse_move_event(event, backend, popup_rect, visible_rows)
-            }
-            _ => self.picker.handle_event(event, visible_rows),
+            | UiEvent::MouseMoved { position, .. } => popup_rect.contains(*position),
+            _ => false,
         };
+        let ev = if routed {
+            drive_ui_event(
+                &self.picker,
+                &mut self.picker_state,
+                event,
+                backend,
+                popup_rect,
+            )
+            .map_or(Handled::Ignored, |driven| driven.handled)
+        } else {
+            Handled::Ignored
+        };
+        if let Handled::Event(action) = &ev {
+            self.picker.apply(action, visible_rows);
+        }
+        // A caret-only key (Left, Home, ...) answers `Consumed` yet moves
+        // the live caret, so the painted caret follows every handled key.
+        if !matches!(ev, Handled::Ignored) {
+            self.picker.sync_caret(&self.picker_state);
+        }
 
         match ev {
             Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => {
-                let query = self.picker.query().to_lowercase();
+                let query = self.picker.query.to_lowercase();
                 let matched: Vec<&&str> = BRANCHES
                     .iter()
                     .filter(|b| b.to_lowercase().contains(&query))
@@ -194,7 +222,7 @@ impl Demo for PaletteDemo {
                     PaletteMode::List => "Type to filter, Enter to select".into(),
                 };
                 if new_mode == PaletteMode::List {
-                    let q = self.picker.query().to_lowercase();
+                    let q = self.picker.query.to_lowercase();
                     let matching: Vec<&str> = BRANCHES
                         .iter()
                         .copied()
@@ -223,8 +251,8 @@ impl Demo for PaletteDemo {
 
     fn data(&self, _variant: usize) -> serde_json::Value {
         serde_json::json!({
-            "mode": format!("{:?}", self.picker.mode()),
-            "query": self.picker.query(),
+            "mode": format!("{:?}", self.picker.mode),
+            "query": self.picker.query.as_str(),
             "current_branch": self.current_branch,
             "status": self.status,
         })
@@ -235,20 +263,23 @@ impl Demo for PaletteDemo {
     }
 
     fn hover_action(&self, _variant: usize) -> Option<CaptureAction> {
-        // `DualModePaletteController::handle_mouse_move_event` moves the
-        // highlighted row (`selected`) the same way a click does — see
-        // that method's own doc for why this primitive has no hover
-        // channel distinct from `selected`. A real `MouseMoved` over
+        // A pointer move over a row moves the highlighted row
+        // (`selected`) the same way a click does: this palette has no
+        // hover channel distinct from `selected`. A real `MouseMoved` over
         // "develop" (not the default `selected == 0` "main" row) is
         // enough to tell this capture apart from the idle "rest" one.
         Some(CaptureAction::HoverText("develop"))
     }
 }
 
-fn make_picker(branches: &[&str]) -> DualModePaletteController {
-    let items = branches_as_items(branches);
-    DualModePaletteController::new("Switch Branch", Some("New branch:".into()), items)
-        .with_id("gallery:branch-picker")
+fn make_picker(branches: &[&str]) -> DualModePalette {
+    DualModePalette::new(
+        WidgetId::new("gallery:branch-picker"),
+        "Switch Branch",
+        Some("New branch:".into()),
+        branches_as_items(branches),
+    )
+    .with_vim_keys(true)
 }
 
 fn branches_as_items(branches: &[&str]) -> Vec<PaletteItem> {
@@ -285,6 +316,6 @@ mod tests {
     fn new_starts_on_main_branch_in_list_mode() {
         let demo = PaletteDemo::new();
         assert_eq!(demo.current_branch, "main");
-        assert_eq!(demo.picker.mode(), PaletteMode::List);
+        assert_eq!(demo.picker.mode, PaletteMode::List);
     }
 }

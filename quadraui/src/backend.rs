@@ -48,7 +48,6 @@ use crate::primitive::{
 use crate::primitives::context_menu::ContextMenu;
 use crate::primitives::dialog::DialogSeverity;
 use crate::primitives::editor::CursorShape as EditorCursorShape;
-use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::image::ImageSource;
 use crate::primitives::list::{ListPaintState, ListViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
@@ -1638,7 +1637,7 @@ pub trait Backend: sealed::Sealed {
     /// a native menu bar would conflict with their custom window chrome.
     ///
     /// Apps typically call this once during `AppLogic::setup`;
-    /// [`crate::compose::MenuSystem::render`] calls it every frame under
+    /// [`crate::compose::AppMenu::render`] calls it every frame under
     /// the native menu style. Re-calling with a changed bar replaces the
     /// previously-installed menu wholesale.
     fn install_menu_bar(&mut self, _bar: &crate::primitives::menu_bar::MenuBar) {}
@@ -2533,13 +2532,6 @@ pub trait Backend: sealed::Sealed {
     /// `TestBackend`).
     fn set_caret_shape(&mut self, _shape: EditorCursorShape) {}
 
-    /// Draw a [`FindReplacePanel`] (find/replace overlay sitting
-    /// above the editor). The backend pulls the editor-relative
-    /// origin from `rect.x` (TUI's `editor_left` parameter is
-    /// derived from `rect`); hosts that want a non-default offset
-    /// compose the panel into a sub-rect.
-    fn draw_find_replace(&mut self, rect: Rect, panel: &FindReplacePanel);
-
     /// Draw a [`Scrollbar`] (standalone primitive, vs the
     /// per-section scrollbars MSV paints internally). The backend
     /// pulls cell/pixel background from its current theme.
@@ -2870,7 +2862,7 @@ pub trait DrawsPrimitives: Backend {
 /// `viewport` as a rect at the origin — the bounds a popup is placed
 /// inside ([`crate::popup::Popup::resolve`]).
 pub(crate) fn viewport_rect(viewport: Viewport) -> Rect {
-    Rect::new(0.0, 0.0, viewport.width, viewport.height)
+    viewport.rect()
 }
 
 /// Run `paint` against `surface`, in the editor font when `role` asks for
@@ -3193,7 +3185,7 @@ pub trait PlatformServices {
 
     /// Show a native file-open dialog (blocking). Returns `None` if the
     /// user cancelled. TUI backends have no native dialog to show;
-    /// instead they drive an in-canvas `FilePickerController` through a
+    /// instead they drive an in-canvas `FilePicker` through a
     /// nested draw-and-read loop and return the path it resolves, the
     /// same `Some(path)`/`None` contract as a native chooser.
     fn show_file_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
@@ -3213,7 +3205,7 @@ pub trait PlatformServices {
     /// leave them at their `Default` rather than populating them.
     ///
     /// TUI backends have no native dialog to show; instead they drive an
-    /// in-canvas `FolderPickerController` through a nested draw-and-read
+    /// in-canvas `FolderPicker` through a nested draw-and-read
     /// loop and return the path it resolves, the same shared shape as
     /// [`Self::show_file_open_dialog`]. [`BackendCaps::folder_dialogs`]
     /// still reports `false` on TUI — it tracks whether the backend shows
@@ -3236,7 +3228,7 @@ pub trait PlatformServices {
     /// callers should consult that before calling this method, and fall
     /// back to `draw_dialog` when it returns `None`. TUI backends have
     /// no *native* dialog to show; instead they drive an in-canvas
-    /// `MessageDialogController` through the same nested draw-and-read
+    /// `MessageDialog` through the same nested draw-and-read
     /// loop [`Self::show_file_open_dialog`]'s doc describes, and return
     /// the id of the button it resolves (or `None` if it's dismissed
     /// without one) — the in-canvas `Dialog` primitive stays the
@@ -4515,7 +4507,7 @@ pub struct MessageDialogButton {
     /// `label`/`is_default`/`is_cancel` fields can't express. `None`
     /// keeps today's plain rendering.
     ///
-    /// Honored on TUI, where [`crate::compose::MessageDialogController`]
+    /// Honored on TUI, where [`crate::compose::MessageDialog`]
     /// carries it straight through to the [`crate::primitives::dialog::Dialog`]
     /// button it builds. Not yet read by the native GTK/macOS/Win32 alert
     /// facilities `PlatformServices::show_message_dialog` calls there — no

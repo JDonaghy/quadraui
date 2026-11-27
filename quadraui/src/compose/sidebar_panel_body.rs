@@ -11,7 +11,7 @@
 //! and call [`SidebarPanelBody::render`]. It owns no interaction state
 //! of its own: scrolling, search-query editing, and body-widget
 //! selection stay with whatever controller already manages the body
-//! (a `TreeView`, `FormController`, [`crate::SidebarSystem`], a raw
+//! (a `TreeView`, `FormController`, [`crate::Sidebar`], a raw
 //! `TreeView`, …).
 //!
 //! The panel is a widget-contract [`crate::primitive::Primitive`]
@@ -291,8 +291,7 @@ impl SidebarPanelBody {
     ///
     /// `body` must be [`BackendWidget`], i.e. `Send + 'static` — that
     /// bound exists so *owned* content can live inside `ShellAdapter`
-    /// (`BottomPanelConfig`, `TabGroupController`'s `PaneTab::content`)
-    /// and cross into the runner thread. A body that only *borrows* the
+    /// (`BottomPanelConfig`) and cross into the runner thread. A body that only *borrows* the
     /// host's app state for one frame — `Rc<RefCell<_>>`-backed
     /// controllers like `FormController`, or anything
     /// tied to a `!Send` engine — can never satisfy it. Use

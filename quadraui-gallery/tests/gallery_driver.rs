@@ -1235,7 +1235,7 @@ fn chat_interactive_submit_delivers_the_simulated_reply() {
 
 /// Switching the `Chat` demo to its "Markdown transcript" variant, then
 /// typing and submitting (Ctrl+S), pushes the next canned exchange —
-/// reaching `ChatController::push_turn_markdown`.
+/// reaching `Chat::push_turn_markdown`.
 #[test]
 fn chat_transcript_ctrl_s_sends_the_next_canned_exchange() {
     let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 40);

@@ -8,7 +8,7 @@
 //!
 //! `Toolbar` and `ContextMenu` also have a binding-host leg
 //! (`quadraui-binding-core`'s engine tests). `MenuBar` has none: the
-//! binding layer's `"menu_bar"` pairs the bar with a `MenuSystem` that owns
+//! binding layer's `"menu_bar"` pairs the bar with an `AppMenu` that owns
 //! its dropdowns, so a click on a top-level item opens that dropdown
 //! inside the host instead of reporting `UiEvent::MenuActivated` for the
 //! item, as the widget contract does.

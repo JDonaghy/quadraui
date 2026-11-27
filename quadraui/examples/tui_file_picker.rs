@@ -1,8 +1,8 @@
-//! `FilePickerController` demo on the TUI runner.
+//! `FilePicker` demo on the TUI runner.
 //!
 //! Demonstrates cross-backend file open/save browsing via the compose
 //! controller — same fuzzy-filter + keyboard navigation shape as
-//! `tui_folder_picker.rs`'s `FolderPickerController`, but for files, with
+//! `tui_folder_picker.rs`'s `FolderPicker`, but for files, with
 //! a Save mode where the typed query doubles as the destination
 //! filename. The GTK twin (`gtk_file_picker.rs`) uses the identical
 //! `FilePickerApp` — only the runner differs.

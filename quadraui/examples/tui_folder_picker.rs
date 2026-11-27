@@ -1,4 +1,4 @@
-//! `FolderPickerController` demo on the TUI runner.
+//! `FolderPicker` demo on the TUI runner.
 //!
 //! Demonstrates cross-backend directory browsing via the compose
 //! controller: filesystem walking, fuzzy filtering, keyboard navigation,

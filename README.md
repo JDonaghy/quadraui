@@ -95,7 +95,7 @@ The full version is `quadraui/examples/hello.rs`:
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
   silently doing nothing.
-- **Heavily tested.** Around 8,500 tests, including headless
+- **Heavily tested.** Around 8,600 tests, including headless
   paint-then-click round trips on all four backends, an end-to-end
   `TuiDriver` that drives real example apps through the event loop, and
   benchmarks for 100k-row tables and trees and a 4k-line editor.
@@ -341,7 +341,7 @@ recount the modules against readme_truth. -->
 
 **Compose controllers** in `quadraui::compose` coordinate several widgets
 or a whole app-level flow (a shell, a menu system, a form dialog), so an
-app matches on semantic events (`MenuEvent::Activated`,
+app matches on semantic events (`AppMenuEvent::Activated`,
 `SidebarEvent::RowSelected`) instead of raw mouse coordinates. A single
 widget's own input handling lives in its `Interactive` impl, not here:
 <!-- TODO(0.12 final pass): after W7 (#2957, #2975, #2958) and W8 (#2976-#2979),
@@ -354,19 +354,19 @@ the table against the module list. -->
 |---|---|
 | `ShellView` | Activity bar + sidebar + editor area: the VS Code-style application frame, with its gesture state in a `ShellViewState` beside it. |
 | `BottomPanel` | A tabbed, dockable panel along the bottom of a `ShellView`. |
-| `WorkspaceController` | Many open documents, one visible: open, switch, close. |
-| `TabGroupController` | Tabbed split panes. |
-| `MenuSystem` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
+| `Workspace` | Many open documents, one visible: open, switch, close, preview tabs. |
+| `TabGroup` | Tabbed split panes with divider and tab drags. |
+| `AppMenu` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
 | `ContextMenuController` | One call for a context menu, native or painted per platform. |
-| `SidebarSystem` | Multi-section sidebar: per-section scroll and selection, Tab cycling, scrollbar drag. |
+| `Sidebar` | Multi-section sidebar widget: per-section scroll and selection, Tab cycling, scrollbar drag. |
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeTableController` | A `TreeTable` driven from a hierarchical node model: expand/collapse, sibling-scoped column sort, and lazy child loading. |
 | `FormController` | A form's focus, editing and validation. |
-| `FormDialogController` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
-| `DualModePaletteController` | A command palette that switches between modes. |
-| `ChatController` | A chat overlay: transcript plus input. |
-| `FilePickerController` / `FolderPickerController` | In-app file and folder pickers for backends without a native dialog. |
-| `MessageDialogController` | Message and confirmation boxes. |
+| `FormDialog` | A modal dialog hosting a multi-field form: field editing plus focus hand-off to the dialog's buttons. |
+| `DualModePalette` | A command palette that switches between modes. |
+| `Chat` | A chat overlay: transcript plus input. |
+| `FilePicker` / `FolderPicker` | In-app file and folder pickers for backends without a native dialog. |
+| `MessageDialog` | Message and confirmation boxes. |
 | `ToastStackController` | Keyboard focus for actionable notifications. |
 | `HelpOverlay` | A context-sensitive key-binding help overlay. |
 | `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |

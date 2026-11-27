@@ -3059,6 +3059,7 @@ Alias for `("Chevron" | "ToggleCase" | "ToggleWholeWord" | "ToggleRegex" | "Prev
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
+| `id` | `WidgetId` | no |  |
 | `query` | `string` | yes |  |
 | `replacement` | `string` | no |  |
 | `show_replace` | `boolean` | no |  |
@@ -5347,6 +5348,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `PipelineView` | `[WidgetId, unknown]` |  |
 | `DiffView` | `[WidgetId, unknown]` |  |
 | `MessageList` | `[WidgetId, unknown]` |  |
+| `FindReplace` | `[WidgetId, unknown]` |  |
 | `TextDisplay` | `[WidgetId, TextDisplayEvent]` |  |
 | `Chart` | `[WidgetId, ChartEvent]` |  |
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |

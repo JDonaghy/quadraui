@@ -42,11 +42,11 @@
 //! A terminal has no native file picker, directory chooser, or alert
 //! facility, so `show_file_open_dialog`, `show_file_save_dialog`,
 //! `show_folder_open_dialog`, and `show_message_dialog` all drive a real
-//! in-canvas controller ([`crate::compose::FilePickerController`] /
-//! [`crate::compose::FolderPickerController`] /
-//! [`crate::compose::MessageDialogController`]) through a **nested
+//! in-canvas widget ([`crate::compose::FilePicker`] /
+//! [`crate::compose::FolderPicker`] /
+//! [`crate::compose::MessageDialog`]) through a **nested
 //! draw-and-read loop**: draw one frame, block for the next input event,
-//! feed it to the controller, repeat until it resolves. This is the TUI
+//! feed it to the widget, repeat until it resolves. This is the TUI
 //! counterpart of `GtkPlatformServices::pump_until_ready`
 //! (`crate::gtk::services`) — GTK nests `glib::MainContext::iteration`,
 //! TUI nests its own crossterm poll/read/redraw cycle, since a terminal
@@ -65,8 +65,8 @@
 //! [`Self::queue_dialog_events`] (also reachable through
 //! [`crate::tui::testing::TuiDriver::queue_dialog_events`] for tests
 //! outside this crate) so the whole round trip — real
-//! `FilePickerController`/`FolderPickerController`/`MessageDialogController`
-//! state machine, real `TuiBackend` paint — is exercised with **no** live
+//! `FilePicker`/`FolderPicker`/`MessageDialog`
+//! input handling, real `TuiBackend` paint — is exercised with **no** live
 //! terminal, purely against `ratatui::backend::TestBackend` (see this
 //! module's own `dialog_tests` for the PlatformServices-level round trips
 //! this makes possible: file-open confirms a path, file-open cancels,
@@ -321,13 +321,14 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
+use crate::backend::DrawsPrimitives;
 use crate::backend::{
     Backend, BackendError, Clipboard, Display, FileDialogOptions, MessageDialogChoice,
     MessageDialogOptions, Notification, PlatformServices, ServiceResult, SystemTheme,
 };
 use crate::compose::{
-    FilePickerController, FilePickerMode, FolderPickerController, Handled, MessageDialogController,
-    PathPickerAction,
+    FilePicker, FilePickerMode, FolderPicker, Handled, MessageDialog, MessageDialogState,
+    PathPicker, PathPickerAction, PickerKind, PALETTE_CHROME_ROWS,
 };
 use crate::diagnostics;
 use crate::event::{Point, Rect, UiEvent};
@@ -1821,6 +1822,34 @@ impl TuiPlatformServices {
         }
     }
 
+    /// Run `picker` through [`Self::run_nested_dialog_loop`]: paint it
+    /// over the whole dialog viewport, resolve each event through its own
+    /// input handling, apply every browsing change, and return the
+    /// confirmed path (`None` when dismissed).
+    fn run_path_picker<K: PickerKind>(&self, picker: PathPicker<K>) -> Option<PathBuf> {
+        let picker = RefCell::new(picker);
+        self.run_nested_dialog_loop(
+            |backend, viewport| {
+                let _ = backend.draw_dyn(viewport, &*picker.borrow(), &());
+            },
+            |event, _backend, viewport| {
+                let visible_rows = (viewport.height as usize).saturating_sub(PALETTE_CHROME_ROWS);
+                let handled = picker.borrow().handle_event(event, visible_rows);
+                match handled {
+                    Handled::Event(PathPickerAction::Confirmed { path }) => {
+                        NestedDialogStep::Resolved(path)
+                    }
+                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
+                    Handled::Event(change) => {
+                        picker.borrow_mut().apply(&change, visible_rows);
+                        NestedDialogStep::Continue
+                    }
+                    _ => NestedDialogStep::Continue,
+                }
+            },
+        )
+    }
+
     /// Draw-and-read nested loop shared by [`Self::show_file_open_dialog`],
     /// [`Self::show_file_save_dialog`], and [`Self::show_message_dialog`]
     /// — the TUI counterpart of `GtkPlatformServices::pump_until_ready`.
@@ -1874,130 +1903,74 @@ impl PlatformServices for TuiPlatformServices {
         &self.clipboard
     }
 
-    /// Nested draw-and-read loop over [`crate::compose::FilePickerController`]
-    /// in [`FilePickerMode::Open`] — see the module doc's
-    /// "Dialogs" section. `opts.initial_dir` seeds the browsing root
-    /// (falling back to the process's current directory);
-    /// `opts.filters` restricts which files are listed.
-    /// `opts.title`/`opts.initial_filename` don't apply to an *open*
-    /// dialog and are ignored, matching
+    /// Nested draw-and-read loop over a [`FilePicker`] in
+    /// [`FilePickerMode::Open`] — see the module doc's "Dialogs" section.
+    /// `opts.initial_dir` seeds the browsing root (falling back to the
+    /// process's current directory); `opts.filters` restricts which files
+    /// are listed. `opts.title`/`opts.initial_filename` don't apply to an
+    /// *open* dialog and are ignored, matching
     /// [`crate::backend::FileDialogOptions`]'s own doc ("ignored by
-    /// `show_file_open_dialog`"). Every key reaches
-    /// `FilePickerController::handle` first, which — in `Open` mode —
-    /// intercepts `-`, `j` and `k` as navigation before the generic
-    /// typing arm (see `FilePickerController`'s module doc), so a file
-    /// named e.g. `my-app.rs` can't be typed into the filter; arrow keys
-    /// still reach it. Unlike `Open`, [`Self::show_file_save_dialog`]
-    /// disables that interception so the destination filename can
-    /// contain those characters.
+    /// `show_file_open_dialog`"). In `Open` mode the picker takes `-`, `j`
+    /// and `k` as navigation before typing (see `FilePicker`'s module
+    /// doc), so a file named e.g. `my-app.rs` can't be typed into the
+    /// filter; arrow keys still reach it. Unlike `Open`,
+    /// [`Self::show_file_save_dialog`] types those characters, so the
+    /// destination filename can contain them.
     fn show_file_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        let picker = RefCell::new(FilePickerController::new(
-            FilePickerMode::Open,
-            root,
-            opts.filters,
-        ));
-        self.run_nested_dialog_loop(
-            |backend, viewport| picker.borrow().render(viewport, backend),
-            |event, _backend, viewport| {
-                let visible_rows = (viewport.height as usize)
-                    .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
-                match picker.borrow_mut().handle_event(event, visible_rows) {
-                    Handled::Event(PathPickerAction::Confirmed { path }) => {
-                        NestedDialogStep::Resolved(path)
-                    }
-                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
-                    _ => NestedDialogStep::Continue,
-                }
-            },
-        )
+        self.run_path_picker(FilePicker::new(FilePickerMode::Open, root, opts.filters))
     }
 
-    /// Nested draw-and-read loop over [`crate::compose::FilePickerController`]
-    /// in [`FilePickerMode::Save`] — see
-    /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
-    /// `opts.initial_filename` seeds the destination filename (the
-    /// picker's query field — see `FilePickerController`'s module doc
-    /// for why the two are the same field in Save mode). Unlike
+    /// Nested draw-and-read loop over a [`FilePicker`] in
+    /// [`FilePickerMode::Save`] — see [`Self::show_file_open_dialog`]'s
+    /// doc for the shared shape. `opts.initial_filename` seeds the
+    /// destination filename (the picker's query field — see `FilePicker`'s
+    /// module doc for why the two are the same field in Save mode). Unlike
     /// [`Self::show_file_open_dialog`] and [`Self::show_folder_open_dialog`],
-    /// `-`/`j`/`k` are *not* intercepted as navigation here: the query
-    /// doubles as the destination filename, so those three characters
-    /// must type in unchanged (`journal.md`, `my-notes.txt`,
-    /// `Makefile-k8s`). Arrow keys still move the selection.
+    /// `-`/`j`/`k` are *not* navigation here: the query doubles as the
+    /// destination filename, so those three characters must type in
+    /// unchanged (`journal.md`, `my-notes.txt`, `Makefile-k8s`). Arrow
+    /// keys still move the selection.
     fn show_file_save_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        let mut picker = FilePickerController::new(FilePickerMode::Save, root, opts.filters);
+        let mut picker = FilePicker::new(FilePickerMode::Save, root, opts.filters);
         if let Some(name) = opts.initial_filename {
             picker = picker.with_initial_filename(name);
         }
-        let picker = RefCell::new(picker);
-        self.run_nested_dialog_loop(
-            |backend, viewport| picker.borrow().render(viewport, backend),
-            |event, _backend, viewport| {
-                let visible_rows = (viewport.height as usize)
-                    .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
-                match picker.borrow_mut().handle_event(event, visible_rows) {
-                    Handled::Event(PathPickerAction::Confirmed { path }) => {
-                        NestedDialogStep::Resolved(path)
-                    }
-                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
-                    _ => NestedDialogStep::Continue,
-                }
-            },
-        )
+        self.run_path_picker(picker)
     }
 
-    /// Nested draw-and-read loop over
-    /// [`crate::compose::FolderPickerController`] — see
+    /// Nested draw-and-read loop over a [`FolderPicker`] — see
     /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
     /// `opts.initial_dir` seeds the browsing root (falling back to the
     /// process's current directory); `opts.initial_filename`/
     /// `opts.filters` don't apply to a directory chooser and are ignored,
     /// matching [`crate::backend::FileDialogOptions`]'s own doc on those
     /// two fields. `opts.title` *does* apply on GTK/Win/macOS, but TUI
-    /// ignores it too: `FolderPickerController::build_palette` always
-    /// titles the palette `"Open Folder {root}"` with no override. This
-    /// does not make `BackendCaps::folder_dialogs` `true` on
-    /// `TuiBackend` — see the module doc's "Dialogs" section for why.
-    /// Every key reaches `FolderPickerController::handle_event` first, which
-    /// intercepts `-`, `j` and `k` as navigation before the generic
-    /// typing arm (see `classify_nav_key`'s doc in
-    /// `compose::path_picker`), so a folder named e.g. `my-app` can't be
-    /// typed into the filter — arrow keys still reach it.
+    /// ignores it too: the folder picker always titles its palette
+    /// `"Open Folder {root}"` with no override. This does not make
+    /// `BackendCaps::folder_dialogs` `true` on `TuiBackend` — see the
+    /// module doc's "Dialogs" section for why. The picker takes `-`, `j`
+    /// and `k` as navigation before typing, so a folder named e.g.
+    /// `my-app` can't be typed into the filter — arrow keys still reach it.
     fn show_folder_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf> {
         let root = opts
             .initial_dir
             .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
-        let picker = RefCell::new(FolderPickerController::rooted_at(root, Vec::new()));
-        self.run_nested_dialog_loop(
-            |backend, viewport| picker.borrow().render(viewport, backend),
-            |event, _backend, viewport| {
-                let visible_rows = (viewport.height as usize)
-                    .saturating_sub(crate::compose::folder_picker::PALETTE_CHROME_ROWS);
-                match picker.borrow_mut().handle_event(event, visible_rows) {
-                    Handled::Event(PathPickerAction::Confirmed { path }) => {
-                        NestedDialogStep::Resolved(path)
-                    }
-                    Handled::Event(PathPickerAction::Cancelled) => NestedDialogStep::Cancelled,
-                    _ => NestedDialogStep::Continue,
-                }
-            },
-        )
+        self.run_path_picker(FolderPicker::rooted_at(root, Vec::new()))
     }
 
-    /// Nested draw-and-read loop over
-    /// [`crate::compose::MessageDialogController`] (issues #666, #965) —
-    /// see the module doc's "Dialogs" section and
-    /// [`Self::show_file_open_dialog`]'s doc for the shared shape.
+    /// Nested draw-and-read loop over a [`crate::compose::MessageDialog`] —
+    /// see the module doc's "Dialogs" section.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
-        let controller = RefCell::new(MessageDialogController::new(opts));
+        let (dialog, mut state) = (MessageDialog::new(opts), MessageDialogState::default());
         self.run_nested_dialog_loop(
-            |backend, _viewport| controller.borrow().render(backend),
-            |event, backend, _viewport| match controller.borrow_mut().handle_event(event, backend) {
+            |backend, viewport| _ = backend.draw_dyn(viewport, &dialog, &()),
+            |event, backend, _viewport| match dialog.handle_event(&mut state, event, backend) {
                 Handled::Event(id) => NestedDialogStep::Resolved(id),
                 Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,
             },
@@ -2396,7 +2369,7 @@ mod message_dialog_tests {
     use crate::backend::MessageDialogOptions;
 
     /// `show_message_dialog` now drives a real nested
-    /// draw-and-read loop over `MessageDialogController` — but that loop
+    /// draw-and-read loop over `MessageDialog` — but that loop
     /// needs somewhere to paint (`set_dialog_surface`), which a bare
     /// `TuiPlatformServices::new()` never wires. This pins the resulting
     /// degrade: `None`, not a panic, mirroring
@@ -2417,7 +2390,7 @@ mod message_dialog_tests {
 
     /// `show_folder_open_dialog` drives the same kind of nested
     /// draw-and-read loop as `show_message_dialog` above, over
-    /// `FolderPickerController` instead — same "no surface wired yet"
+    /// `FolderPicker` instead — same "no surface wired yet"
     /// degrade applies. See `dialog_tests` below for the real, wired
     /// confirm/cancel round trips.
     #[test]
@@ -2581,8 +2554,8 @@ mod message_dialog_tests {
 /// `ratatui::Terminal<TestBackend>` via `set_dialog_surface` and a
 /// scripted `UiEvent` sequence via `queue_dialog_events`, then calls the
 /// `PlatformServices` method exactly as an app would — the *same*
-/// `FilePickerController`/`FolderPickerController`/`MessageDialogController`
-/// state machine and `TuiBackend` paint path production uses, with no live
+/// `FilePicker`/`FolderPicker`/`MessageDialog`
+/// input handling and `TuiBackend` paint path production uses, with no live
 /// terminal involved. See the module doc's "Dialogs" section.
 #[cfg(test)]
 mod dialog_tests {

@@ -122,7 +122,7 @@ pub fn gdk_scroll_to_uievent(dx: f64, dy: f64, x: f64, y: f64) -> UiEvent {
 /// `natural_scroll = false` reproduces [`gdk_scroll_to_uievent`]'s
 /// traditional-direction behavior exactly: wheel-down (positive raw
 /// `dy`) becomes negative `delta.y`, i.e. "not up", so compose
-/// controllers (`SidebarSystem`, `ChatController`,
+/// widgets (`Sidebar`, `Chat`,
 /// `FormController`) scroll the view toward later content.
 ///
 /// `natural_scroll = true` flips the sign again — content follows the
@@ -295,7 +295,7 @@ pub fn gdk_button_to_quadraui(button: u32) -> MouseButton {
 /// `DrawingArea` and translate all native events to [`UiEvent`].
 ///
 /// The `on_event` callback fires for every translated event. The
-/// consumer routes it (e.g. to `SidebarSystem::handle_cached`) and
+/// consumer routes it (e.g. to `Sidebar::handle_event`) and
 /// triggers a redraw if needed.
 ///
 /// Covers: MouseDown (left+right), MouseUp, DoubleClick, MouseMoved

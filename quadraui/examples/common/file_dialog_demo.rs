@@ -9,8 +9,8 @@
 //!   path (or "cancelled" on Escape/close).
 //! - **TUI** (`tui_file_dialog`): `show_file_open_dialog`,
 //!   `show_file_save_dialog`, and `show_folder_open_dialog` each drive a
-//!   real in-canvas controller (`compose::FilePickerController` /
-//!   `compose::FolderPickerController`) through a nested draw-and-read loop
+//!   real in-canvas controller (`compose::FilePicker` /
+//!   `compose::FolderPicker`) through a nested draw-and-read loop
 //!   (see `tui::services`'s module doc) and return a genuine chosen path.
 //!   The `tui_folder_picker` / `gtk_folder_picker` examples show the same
 //!   controller driven directly by an app rather than through

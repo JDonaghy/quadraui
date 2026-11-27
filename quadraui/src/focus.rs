@@ -51,7 +51,7 @@ use crate::types::WidgetId;
 
 /// Wrap `current + delta` into `0..n`, the one index-cycling arithmetic
 /// every Tab/Shift+Tab-style stepper in this crate shares — [`FocusTree::step`]
-/// and the menu/workspace/tab-group/dialog/toast/form controllers that step a bounded index with wrap-around.
+/// and the menu/dialog/toast/form controllers that step a bounded index with wrap-around.
 ///
 /// `delta` may be negative (Shift+Tab) or larger than `n` in magnitude;
 /// both wrap correctly. `n == 0` has no valid index to land on, so it

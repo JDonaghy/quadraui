@@ -96,7 +96,7 @@ variant remains). If any survive, name them here as legacy, not as a path. -->
 dialogs, buttons, text boxes, lists) must *work* on TUI, not return
 `Unsupported`/`None` — reserve that for things physically absent on a terminal
 (tray icon, dock badge, OS global shortcut). **The crate owns the degrade, in
-`compose/`, behind the same call** (pattern: `compose::FolderPickerController`).
+`compose/`, behind the same call** (pattern: `compose::FolderPicker`).
 When adding a capability, state its TUI story and ship a `tui_*` test.
 
 **One backend per issue.** A quadraui issue targets exactly one backend (`tui`, `gtk`, `macos` or `win`) and is verified only on that backend's host; the Test stage routes it there. A cross-backend feature is split into a backend-neutral seam issue (trait method, primitive, layout, with a `tui_*`/headless test) plus one issue per backend that implements it. TUI issues are verified with the headless `TuiDriver`, which runs on any host; a real-terminal check on Linux, macOS and Windows is needed only when the issue is about terminal behaviour itself. If your issue spans several backends, do the one it names (or the seam) and list the rest in your final message instead of doing them.

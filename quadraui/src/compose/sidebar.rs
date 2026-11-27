@@ -1,6 +1,5 @@
 //! The sidebar: a stack of collapsible sections, each a tree or a form,
-//! as one composite widget ([`Sidebar`]) and its controller
-//! ([`SidebarSystem`]).
+//! as one composite widget ([`Sidebar`]).
 //!
 //! [`Sidebar`] is a controlled descriptor: section collapse, visibility,
 //! badges, the active section, each tree's rows, selection and scroll
@@ -13,8 +12,10 @@
 //! `Interactive`. [`SidebarState`] holds only the view's gesture in
 //! flight and each body widget's own state.
 //!
-//! [`SidebarSystem`] holds a [`Sidebar`] plus its [`SidebarState`],
-//! applies every action itself, and answers [`SidebarEvent`]s.
+//! A host that routes the sidebar through its own `FrameTree` gets its
+//! events from the runtime; one that drives it with raw [`UiEvent`]s
+//! holds a [`SidebarState`] and calls [`Sidebar::handle_event`], then
+//! applies each action it answers.
 //!
 //! Two navigation modes ([`Sidebar::navigation_mode`]):
 //! - [`NavigationMode::Scroll`] (default): Up/Down scroll the active
@@ -32,12 +33,10 @@
 
 use crate::compose::Handled;
 use crate::interactive::WidgetAction;
-use crate::primitive::LayoutCtx;
 use crate::primitives::form::{Form, FormEvent};
 use crate::{
-    Backend, MsvAxis, MultiSectionView, Point, Rect, ScrollMode, Section, SectionBody,
-    SectionHeader, SectionSize, SelectionMode, StyledText, TreePath, TreeRow, TreeRowEditState,
-    TreeView, UiEvent, WidgetId,
+    MsvAxis, MultiSectionView, Point, ScrollMode, Section, SectionBody, SectionHeader, SectionSize,
+    SelectionMode, StyledText, TreePath, TreeRow, TreeRowEditState, TreeView, UiEvent, WidgetId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -184,6 +183,10 @@ pub struct Sidebar {
     /// The panel scroll offset in [`ScrollMode::WholePanel`], in
     /// main-axis units.
     pub panel_scroll: f32,
+    /// The rename session of each section that has one, kept apart from
+    /// the rows so it outlives a [`Sidebar::set_rows`] whose rows do not
+    /// (yet) hold the renamed path.
+    renames: Vec<(usize, TreePath, TreeRowEditState)>,
 }
 
 /// What a [`Sidebar`] reports.
@@ -263,6 +266,7 @@ impl Sidebar {
             navigation_mode: NavigationMode::default(),
             scroll_mode: ScrollMode::PerSection,
             panel_scroll: 0.0,
+            renames: Vec::new(),
         }
     }
 
@@ -319,9 +323,20 @@ impl Sidebar {
                     edit.cursor = *cursor;
                     edit.selection_anchor = *selection_anchor;
                 }
+                if let Some((_, _, edit)) = self
+                    .renames
+                    .iter_mut()
+                    .find(|(s, p, _)| s == section && p == path)
+                {
+                    edit.text = text.clone();
+                    edit.cursor = *cursor;
+                    edit.selection_anchor = *selection_anchor;
+                }
             }
             SidebarAction::EditConfirmed { section, path, .. }
             | SidebarAction::EditCancelled { section, path } => {
+                self.renames
+                    .retain(|(s, p, _)| !(s == section && p == path));
                 let row = self
                     .tree_mut(*section)
                     .and_then(|t| t.rows.iter_mut().find(|r| &r.path == path));
@@ -405,7 +420,138 @@ impl Sidebar {
     }
 }
 
-/// The widget contract and the controller, on the builds that have the
+impl Sidebar {
+    /// A sidebar with id `id` and one visible, expanded section per
+    /// `defs` entry: an empty tree for a tree section, an empty form for
+    /// a form section. Each body widget's id is the section id plus
+    /// `-tree` or `-form`.
+    pub fn from_defs(id: impl Into<WidgetId>, defs: &[SidebarSectionDef]) -> Self {
+        let mut sidebar = Self::new(id);
+        sidebar.sections = defs
+            .iter()
+            .map(|def| {
+                let body = match def.kind {
+                    SectionKind::Tree => SidebarBody::Tree(TreeView {
+                        id: WidgetId::new(format!("{}-tree", def.id)),
+                        rows: Vec::new(),
+                        selection_mode: SelectionMode::Single,
+                        selected_path: None,
+                        scroll_offset: 0,
+                        style: Default::default(),
+                        has_focus: false,
+                    }),
+                    SectionKind::Form => SidebarBody::Form(empty_form(&def.id)),
+                };
+                SidebarSection::new(def, body)
+            })
+            .collect();
+        sidebar
+    }
+
+    /// Replace tree section `section`'s rows. The section's rename
+    /// session lands on the row holding its path whenever the new rows
+    /// hold it, so an app that rebuilds its rows every frame does not end
+    /// the rename, and one that starts a rename before pushing the row
+    /// (a new file's placeholder) sees it once the row arrives.
+    pub fn set_rows(&mut self, section: usize, mut rows: Vec<TreeRow>) {
+        let rename = self
+            .renames
+            .iter()
+            .find(|(s, _, _)| *s == section)
+            .map(|(_, path, edit)| (path.clone(), edit.clone()));
+        let Some(tree) = self.tree_mut(section) else {
+            return;
+        };
+        if let Some((path, edit)) = rename {
+            if let Some(row) = rows.iter_mut().find(|r| r.path == path) {
+                row.edit = Some(edit);
+            }
+        } else if let Some(editing) = tree.rows.iter().find(|r| r.edit.is_some()) {
+            if let Some(row) = rows
+                .iter_mut()
+                .find(|r| r.path == editing.path && r.edit.is_none())
+            {
+                row.edit = editing.edit.clone();
+            }
+        }
+        tree.rows = rows;
+    }
+
+    /// Section `section`'s form.
+    pub fn form(&self, section: usize) -> Option<&Form> {
+        self.sections.get(section).and_then(|s| s.form())
+    }
+
+    /// Section `section`'s form, mutably.
+    pub fn form_mut(&mut self, section: usize) -> Option<&mut Form> {
+        match &mut self.sections.get_mut(section)?.body {
+            SidebarBody::Form(f) => Some(f),
+            SidebarBody::Tree(_) => None,
+        }
+    }
+
+    /// Begin renaming the row at `path` in tree section `section`,
+    /// selecting it. `cursor` and `selection_anchor` are byte offsets
+    /// into `initial_text`; select-all is `cursor = len, anchor =
+    /// Some(0)`. The tree's own `Interactive` edits the row from then on
+    /// and reports each keystroke as [`SidebarAction::EditChanged`].
+    pub fn start_editing(
+        &mut self,
+        section: usize,
+        path: TreePath,
+        initial_text: String,
+        cursor: usize,
+        selection_anchor: Option<usize>,
+        placeholder: Option<String>,
+    ) {
+        let edit = TreeRowEditState {
+            text: initial_text,
+            cursor,
+            selection_anchor,
+            placeholder,
+        };
+        let Some(tree) = self.tree_mut(section) else {
+            return;
+        };
+        for row in &mut tree.rows {
+            row.edit = (row.path == path).then(|| edit.clone());
+        }
+        tree.selected_path = Some(path.clone());
+        self.renames.retain(|(s, _, _)| *s != section);
+        self.renames.push((section, path, edit));
+    }
+
+    /// End any rename in section `section` without reporting it.
+    pub fn cancel_editing(&mut self, section: usize) {
+        self.renames.retain(|(s, _, _)| *s != section);
+        if let Some(tree) = self.tree_mut(section) {
+            for row in &mut tree.rows {
+                row.edit = None;
+            }
+        }
+    }
+
+    /// Whether a tree row in any section is being renamed.
+    pub fn is_editing(&self) -> bool {
+        !self.renames.is_empty()
+            || self.sections.iter().any(|s| {
+                s.tree()
+                    .is_some_and(|t| t.rows.iter().any(|r| r.edit.is_some()))
+            })
+    }
+
+    /// The action toggling the active section's selected row, when that
+    /// row is a branch (`is_expanded.is_some()`) — what Space does in
+    /// [`NavigationMode::Scroll`].
+    pub fn toggle_expand_selected(&self) -> Option<SidebarAction> {
+        match self.toggle_selected(self.active_section?) {
+            Handled::Event(action) => Some(action),
+            _ => None,
+        }
+    }
+}
+
+/// The widget contract and its runtime-free host, on the builds that have the
 /// `MultiSectionView` contract they are laid out through.
 #[cfg(any(
     feature = "gtk",
@@ -422,6 +568,7 @@ mod contract {
     use crate::interactive::{
         EventCx, FocusSpec, FocusStop, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
     };
+    use crate::primitive::LayoutCtx;
     use crate::primitive::{PaintEnv, Primitive};
     use crate::primitives::multi_section_view::{
         MultiSectionViewEvent, MultiSectionViewPrimitiveLayout, MultiSectionViewSubPart,
@@ -429,6 +576,7 @@ mod contract {
     };
     use crate::primitives::scrollbar::wheel_row_delta;
     use crate::primitives::tree::TreeEvent;
+    use crate::{Backend, Rect};
     use crate::{MouseButton, NamedKey};
 
     /// The active-section marker a cell grid paints before the title.
@@ -774,14 +922,6 @@ mod contract {
             })
         }
 
-        /// Whether a tree row in any section is being renamed.
-        fn is_renaming(&self) -> bool {
-            self.sections.iter().any(|s| {
-                s.tree()
-                    .is_some_and(|t| t.rows.iter().any(|r| r.edit.is_some()))
-            })
-        }
-
         /// A key in [`NavigationMode::Scroll`]: Up/Down scroll, Enter selects
         /// the active section's first row, Space toggles the selected branch.
         fn scroll_mode_key(
@@ -832,7 +972,7 @@ mod contract {
             cx: &mut EventCx,
         ) -> Handled<SidebarAction> {
             let m = key.modifiers;
-            if !self.is_renaming() && !m.ctrl && !m.alt {
+            if !self.is_editing() && !m.ctrl && !m.alt {
                 match key.key {
                     Key::Named(NamedKey::Tab) if !m.shift => return self.cycle(1, layout, cx),
                     Key::Named(NamedKey::Tab) | Key::Named(NamedKey::BackTab) => {
@@ -841,7 +981,7 @@ mod contract {
                     _ => {}
                 }
             }
-            if self.is_renaming() {
+            if self.is_editing() {
                 return self.handle_view(state, event, layout, cx);
             }
             match self.navigation_mode {
@@ -968,188 +1108,175 @@ mod contract {
         }
     }
 
-    impl SidebarSystem {
-        /// Select `path` within `section`, expand the section if it is
-        /// collapsed, and scroll its viewport so `path` ends up visible.
-        ///
-        /// No-op if `section` is out of range, hosts a Form, `path` isn't
-        /// among the section's rows, or [`Self::set_backend_info`] hasn't
-        /// been called yet (the viewport's row capacity is unknown without
-        /// it). A collapsed section is expanded *before* the viewport is
-        /// measured.
-        pub fn reveal(&mut self, section: usize, path: &TreePath, rect: Rect) {
-            let Some(info) = self.backend_info else {
-                return;
+    // ── Scroll arithmetic ──────────────────────────────────────────────────────────
+
+    impl Sidebar {
+        /// The scroll action moving section `section`'s tree by `rows`,
+        /// clamped to its last page.
+        fn scroll_section(
+            &self,
+            section: usize,
+            rows: isize,
+            layout: &SidebarLayout,
+        ) -> Handled<SidebarAction> {
+            let Some(tree) = self.tree(section) else {
+                return Handled::Ignored;
             };
+            let max = tree
+                .rows
+                .len()
+                .saturating_sub(layout.viewport_rows(section)) as isize;
+            let offset = (tree.scroll_offset as isize + rows).clamp(0, max.max(0)) as usize;
+            if offset == tree.scroll_offset {
+                return Handled::Consumed;
+            }
+            Handled::Event(SidebarAction::ScrollChanged { section, offset })
+        }
+
+        /// The panel scroll action moving the panel by `delta`, clamped.
+        fn scroll_panel(&self, delta: f32, layout: &SidebarLayout) -> Handled<SidebarAction> {
+            let (_, max) = layout.msv.panel_extent();
+            let offset = (self.panel_scroll + delta).clamp(0.0, max);
+            if (offset - self.panel_scroll).abs() < f32::EPSILON {
+                return Handled::Consumed;
+            }
+            Handled::Event(SidebarAction::PanelScrolled { offset })
+        }
+
+        /// The panel scroll that brings sidebar section `section` into
+        /// view, when it is not already.
+        fn reveal_section_scroll(&self, section: usize, layout: &SidebarLayout) -> Option<f32> {
+            let s = layout.msv.section(layout.view_index(section)?)?;
+            let bounds = layout.msv.chrome.bounds;
+            let (_, max) = layout.msv.panel_extent();
+            let top = s.header_bounds.y - bounds.y + self.panel_scroll;
+            let bottom = top + s.resolved_size;
+            if top < self.panel_scroll {
+                Some(top.clamp(0.0, max))
+            } else if bottom > self.panel_scroll + bounds.height {
+                Some((bottom - bounds.height).clamp(0.0, max))
+            } else {
+                None
+            }
+        }
+    }
+
+    // ── Hosting without the runtime ────────────────────────────────────────────────
+
+    impl Sidebar {
+        /// Select `path` within `section`, expand the section if it is
+        /// collapsed, and scroll its tree so `path` is visible, laid out
+        /// at `rect` the way `backend` paints it.
+        ///
+        /// No-op if `section` is out of range, hosts a form, or `path` is
+        /// not among its rows. The section is expanded before its
+        /// viewport is measured.
+        pub fn reveal(
+            &mut self,
+            section: usize,
+            path: &TreePath,
+            backend: &dyn Backend,
+            rect: Rect,
+        ) {
+            use crate::backend::DrawsPrimitives;
+            self.reveal_with(section, path, |s| backend.layout_primitive(rect, s));
+        }
+
+        /// [`Self::reveal`], laid out with `ctx` rather than a backend's
+        /// metrics.
+        pub fn reveal_in(&mut self, section: usize, path: &TreePath, ctx: &LayoutCtx, rect: Rect) {
+            self.reveal_with(section, path, |s| Primitive::layout(s, ctx, rect));
+        }
+
+        fn reveal_with(
+            &mut self,
+            section: usize,
+            path: &TreePath,
+            layout: impl Fn(&Sidebar) -> SidebarLayout,
+        ) {
             let Some(row) = self
-                .sidebar
                 .tree(section)
                 .and_then(|t| t.rows.iter().position(|r| &r.path == path))
             else {
                 return;
             };
-            self.sidebar.sections[section].collapsed = false;
-            let viewport =
-                Primitive::layout(&self.sidebar, &info.ctx(), rect).viewport_rows(section);
-            if let Some(tree) = self.sidebar.tree_mut(section) {
+            self.sections[section].collapsed = false;
+            let viewport = layout(self).viewport_rows(section);
+            if let Some(tree) = self.tree_mut(section) {
                 tree.selected_path = Some(path.clone());
                 tree.scroll_offset =
                     crate::behaviour::scroll::ensure_visible(tree.scroll_offset, viewport, row);
             }
         }
 
-        // ── Render ────────────────────────────────────────────────────────
-
-        pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-            use crate::backend::DrawsPrimitives;
-            backend.draw_dyn(rect, &self.sidebar, &());
-        }
-
-        // ── Handle ────────────────────────────────────────────────────────
-
-        pub fn handle(
-            &mut self,
+        /// Drive the sidebar with a raw [`UiEvent`], laid out at `rect` the
+        /// way `backend` paints it, for a host that does not route it
+        /// through the runtime's `FrameTree`. The keyboard addresses the
+        /// active section's body.
+        ///
+        /// Answers every [`SidebarAction`] the event produced, in order,
+        /// for the host to [`Self::apply`]; [`Handled::Consumed`] when it
+        /// was the sidebar's but changed nothing the host stores, and
+        /// [`Handled::Ignored`] when it was not the sidebar's.
+        pub fn handle_event(
+            &self,
+            state: &mut SidebarState,
             event: &UiEvent,
-            backend: &mut dyn Backend,
+            backend: &dyn Backend,
             rect: Rect,
-        ) -> SidebarEvent {
+        ) -> Handled<Vec<SidebarAction>> {
             use crate::backend::DrawsPrimitives;
-            let layout = backend.layout_primitive(rect, &self.sidebar);
-            let units = crate::backend::primitive_layout_ctx(&*backend).units();
-            self.drive(event, rect, &layout, units)
+            let layout = backend.layout_primitive(rect, self);
+            let units = crate::backend::primitive_layout_ctx(backend).units();
+            self.drive(state, event, rect, &layout, units)
         }
 
-        /// Backend-free event handler. Requires [`Self::set_backend_info`]
-        /// (or [`Self::cache_form_layouts`]) called first. Returns
-        /// [`SidebarEvent::Ignored`] if backend info is not set.
-        pub fn handle_cached(&mut self, event: &UiEvent, rect: Rect) -> SidebarEvent {
-            let Some(info) = self.backend_info else {
-                return SidebarEvent::Ignored;
-            };
-            let ctx = info.ctx();
-            let layout = Primitive::layout(&self.sidebar, &ctx, rect);
-            self.drive(event, rect, &layout, ctx.units())
+        /// [`Self::handle_event`], laid out with `ctx` rather than a
+        /// backend's metrics.
+        pub fn handle_event_in(
+            &self,
+            state: &mut SidebarState,
+            event: &UiEvent,
+            ctx: &LayoutCtx,
+            rect: Rect,
+        ) -> Handled<Vec<SidebarAction>> {
+            let layout = Primitive::layout(self, ctx, rect);
+            self.drive(state, event, rect, &layout, ctx.units())
         }
 
         fn drive(
-            &mut self,
+            &self,
+            state: &mut SidebarState,
             event: &UiEvent,
             rect: Rect,
             layout: &SidebarLayout,
             units: crate::primitive::Units,
-        ) -> SidebarEvent {
-            let subs = Interactive::sub_regions(&self.sidebar, layout);
+        ) -> Handled<Vec<SidebarAction>> {
+            let subs = Interactive::sub_regions(self, layout);
             let Some(routed) = widget_host::routed_event(event, rect, &subs) else {
-                return SidebarEvent::Ignored;
+                return Handled::Ignored;
             };
-            // The keyboard addresses the active section's body.
             let focused = self
-                .sidebar
                 .active_section
-                .and_then(|s| self.sidebar.view_index(s))
+                .and_then(|s| self.view_index(s))
                 .map(|i| MultiSectionViewSubPart::Body(i, None).sub_target());
-            let driven = widget_host::drive_focused(
-                &self.sidebar,
-                self.sidebar.id,
-                &mut self.state,
-                &routed,
-                layout,
-                units,
-                focused,
-            );
-            let mut answer = None;
-            for emitted in &driven.emitted {
-                if let UiEvent::Sidebar(id, action) = emitted {
-                    if *id == self.sidebar.id {
-                        let event = self.apply(action);
-                        answer = answer.or(Some(event));
-                    }
-                }
-            }
+            let driven =
+                widget_host::drive_focused(self, self.id, state, &routed, layout, units, focused);
+            let mut actions: Vec<SidebarAction> = driven
+                .emitted
+                .into_iter()
+                .filter_map(|emitted| match emitted {
+                    UiEvent::Sidebar(id, action) if id == self.id => Some(action),
+                    _ => None,
+                })
+                .collect();
             match driven.handled {
-                Handled::Event(action) => self.apply(&action),
-                Handled::Consumed => answer.unwrap_or(SidebarEvent::Consumed),
-                Handled::Ignored => answer.unwrap_or(SidebarEvent::Ignored),
+                Handled::Event(action) => actions.push(action),
+                Handled::Consumed if actions.is_empty() => return Handled::Consumed,
+                Handled::Ignored if actions.is_empty() => return Handled::Ignored,
+                _ => {}
             }
-        }
-
-        /// Store `action` and answer the event it means.
-        fn apply(&mut self, action: &SidebarAction) -> SidebarEvent {
-            let event = match action.clone() {
-                SidebarAction::HeaderActivated { section } => {
-                    SidebarEvent::HeaderActivated { section }
-                }
-                SidebarAction::ActiveSectionChanged { .. }
-                | SidebarAction::CollapseChanged { .. }
-                | SidebarAction::PanelScrolled { .. } => SidebarEvent::StateChanged,
-                SidebarAction::RowSelected { section, path } => {
-                    SidebarEvent::RowSelected { section, path }
-                }
-                SidebarAction::RowActivated { section, path } => {
-                    SidebarEvent::RowActivated { section, path }
-                }
-                SidebarAction::RowToggleExpand { section, path } => {
-                    SidebarEvent::RowToggleExpand { section, path }
-                }
-                SidebarAction::ContextMenuRequested {
-                    section,
-                    path,
-                    position,
-                } => SidebarEvent::ContextMenuRequested {
-                    section,
-                    path,
-                    position,
-                },
-                SidebarAction::ScrollChanged { section, .. } => {
-                    SidebarEvent::ScrollChanged { section }
-                }
-                SidebarAction::EditChanged {
-                    section,
-                    path,
-                    text,
-                    cursor,
-                    selection_anchor,
-                } => {
-                    let changed = self.editing[section]
-                        .as_ref()
-                        .is_none_or(|(_, e)| e.text != text);
-                    if let Some((_, edit)) = &mut self.editing[section] {
-                        edit.text = text.clone();
-                        edit.cursor = cursor;
-                        edit.selection_anchor = selection_anchor;
-                    }
-                    if changed {
-                        SidebarEvent::EditChanged {
-                            section,
-                            path,
-                            text,
-                        }
-                    } else {
-                        SidebarEvent::Consumed
-                    }
-                }
-                SidebarAction::EditConfirmed {
-                    section,
-                    path,
-                    new_text,
-                } => {
-                    self.editing[section] = None;
-                    SidebarEvent::EditConfirmed {
-                        section,
-                        path,
-                        new_text,
-                    }
-                }
-                SidebarAction::EditCancelled { section, path } => {
-                    self.editing[section] = None;
-                    SidebarEvent::EditCancelled { section, path }
-                }
-                SidebarAction::Form { section, event } => {
-                    SidebarEvent::FormEvent { section, event }
-                }
-            };
-            self.sidebar.apply(action);
-            event
+            Handled::Event(actions)
         }
     }
 
@@ -1194,25 +1321,73 @@ mod contract {
             ]
         }
 
-        /// Cell metrics, so `handle_cached` lays the sidebar out on a
-        /// terminal grid.
-        fn cells(ss: &mut SidebarSystem) {
-            ss.set_backend_info(1.0);
+        /// Terminal-grid metrics.
+        fn cells() -> LayoutCtx<'static> {
+            LayoutCtx::new(1.0, 1.0, false)
         }
 
-        fn layout(ss: &SidebarSystem, rect: Rect) -> SidebarLayout {
-            Primitive::layout(&ss.sidebar, &LayoutCtx::new(1.0, 1.0, false), rect)
+        /// A sidebar plus its state, driven through
+        /// [`Sidebar::handle_event_in`] on a cell grid, applying every
+        /// action it answers the way an app does.
+        struct Host {
+            sidebar: Sidebar,
+            state: SidebarState,
+        }
+
+        impl Host {
+            fn new(defs: Vec<SidebarSectionDef>) -> Self {
+                Self {
+                    sidebar: Sidebar::from_defs(WidgetId::new("sidebar"), &defs),
+                    state: SidebarState::default(),
+                }
+            }
+
+            fn handle(&mut self, event: &UiEvent, rect: Rect) -> Handled<Vec<SidebarAction>> {
+                let handled = self
+                    .sidebar
+                    .handle_event_in(&mut self.state, event, &cells(), rect);
+                if let Handled::Event(actions) = &handled {
+                    for action in actions {
+                        self.sidebar.apply(action);
+                    }
+                }
+                handled
+            }
+
+            fn send(&mut self, event: &UiEvent, rect: Rect) {
+                let _ = self.handle(event, rect);
+            }
+
+            /// The last action `event` produced, if any.
+            fn last(&mut self, event: &UiEvent, rect: Rect) -> Option<SidebarAction> {
+                match self.handle(event, rect) {
+                    Handled::Event(mut actions) => actions.pop(),
+                    _ => None,
+                }
+            }
+
+            fn selected(&self, section: usize) -> Option<&TreePath> {
+                self.sidebar.tree(section)?.selected_path.as_ref()
+            }
+
+            fn scroll(&self, section: usize) -> usize {
+                self.sidebar.tree(section).map_or(0, |t| t.scroll_offset)
+            }
+        }
+
+        fn layout(sidebar: &Sidebar, rect: Rect) -> SidebarLayout {
+            Primitive::layout(sidebar, &cells(), rect)
         }
 
         /// The first body row of sidebar section `section`.
-        fn body_top(ss: &SidebarSystem, section: usize, rect: Rect) -> Rect {
-            let l = layout(ss, rect);
+        fn body_top(sidebar: &Sidebar, section: usize, rect: Rect) -> Rect {
+            let l = layout(sidebar, rect);
             let i = l.view_index(section).expect("section visible");
             l.msv.chrome.sections[i].body_bounds
         }
 
-        fn header_of(ss: &SidebarSystem, section: usize, rect: Rect) -> Rect {
-            let l = layout(ss, rect);
+        fn header_of(sidebar: &Sidebar, section: usize, rect: Rect) -> Rect {
+            let l = layout(sidebar, rect);
             let i = l.view_index(section).expect("section visible");
             l.msv.chrome.sections[i].header_bounds
         }
@@ -1246,44 +1421,56 @@ mod contract {
             }
         }
 
+        fn selected_action(section: usize, path: TreePath) -> Option<SidebarAction> {
+            Some(SidebarAction::RowSelected { section, path })
+        }
+
         const RECT: Rect = Rect::new(0.0, 0.0, 30.0, 24.0);
 
-        // ── Construction and accessors ──────────────────────────────────
+        // ── Construction ────────────────────────────────────────────────
 
         #[test]
-        fn new_starts_with_no_active_section() {
-            let ss = SidebarSystem::new(sample_defs());
-            assert_eq!(ss.active_section(), None);
-            assert!(ss.has_focus());
-            assert_eq!(ss.navigation_mode(), NavigationMode::Scroll);
-            assert_eq!(ss.scroll_mode(), ScrollMode::PerSection);
+        fn from_defs_starts_with_no_active_section_and_one_body_per_def() {
+            let sidebar = Sidebar::from_defs(
+                WidgetId::new("s"),
+                &[
+                    SidebarSectionDef::new("a", "A"),
+                    SidebarSectionDef::form("b", "B"),
+                ],
+            );
+            assert_eq!(sidebar.active_section, None);
+            assert!(sidebar.has_focus);
+            assert_eq!(sidebar.navigation_mode, NavigationMode::Scroll);
+            assert_eq!(sidebar.scroll_mode, ScrollMode::PerSection);
+            assert_eq!(sidebar.tree(0).unwrap().id, WidgetId::new("a-tree"));
+            assert_eq!(sidebar.form(1).unwrap().id, WidgetId::new("b-form"));
         }
 
         #[test]
-        fn set_rows_updates_section_data_and_reads_back() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            ss.set_rows(1, fake_rows("w", 4));
-            assert_eq!(ss.rows(1).len(), 4);
-            assert!(ss.rows(0).is_empty());
-            assert_eq!(ss.selected_path(1), None);
+        fn set_rows_updates_section_data() {
+            let mut sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
+            sidebar.set_rows(1, fake_rows("w", 4));
+            assert_eq!(sidebar.tree(1).unwrap().rows.len(), 4);
+            assert!(sidebar.tree(0).unwrap().rows.is_empty());
+            assert_eq!(sidebar.tree(1).unwrap().selected_path, None);
         }
 
         #[test]
-        fn set_panel_scroll_clamps_negative() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            ss.set_panel_scroll(-5.0);
-            assert_eq!(ss.panel_scroll(), 0.0);
+        fn a_panel_scroll_action_clamps_negative() {
+            let mut sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
+            sidebar.apply(&SidebarAction::PanelScrolled { offset: -5.0 });
+            assert_eq!(sidebar.panel_scroll, 0.0);
         }
 
         // ── The view ────────────────────────────────────────────────────
 
         #[test]
         fn view_marks_the_active_section_and_skips_hidden_ones() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            ss.set_active_section(Some(2));
-            ss.set_section_visible(1, false);
-            ss.set_section_badge(0, Some(StyledText::plain("3")));
-            let (view, map) = ss.sidebar.view(CELL_ACTIVE_MARKER);
+            let mut sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
+            sidebar.active_section = Some(2);
+            sidebar.sections[1].visible = false;
+            sidebar.sections[0].badge = Some(StyledText::plain("3"));
+            let (view, map) = sidebar.view(CELL_ACTIVE_MARKER);
             assert_eq!(map, vec![0, 2]);
             assert_eq!(view.active_section, Some(1));
             assert!(view.sections[1].header.title.spans[0]
@@ -1297,233 +1484,202 @@ mod contract {
 
         #[test]
         fn a_pixel_layout_marks_the_active_section_with_the_codicon_chevron() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            ss.set_active_section(Some(0));
-            let pixel = Primitive::layout(&ss.sidebar, &LayoutCtx::new(20.0, 8.0, false), RECT);
+            let mut sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
+            sidebar.active_section = Some(0);
+            let pixel = Primitive::layout(&sidebar, &LayoutCtx::new(20.0, 8.0, false), RECT);
             let title = &pixel.view.sections[0].header.title.spans[0].text;
             assert!(title.starts_with(PIXEL_ACTIVE_MARKER), "{title:?}");
-            let cell = layout(&ss, RECT);
+            let cell = layout(&sidebar, RECT);
             let title = &cell.view.sections[0].header.title.spans[0].text;
             assert!(title.starts_with(CELL_ACTIVE_MARKER), "{title:?}");
         }
 
         #[test]
         fn the_view_shares_the_sidebar_id_so_hover_reaches_its_bodies() {
-            let ss = SidebarSystem::new(sample_defs());
-            let (view, _) = ss.sidebar.view(CELL_ACTIVE_MARKER);
-            assert_eq!(view.id, ss.sidebar.id);
+            let sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
+            let (view, _) = sidebar.view(CELL_ACTIVE_MARKER);
+            assert_eq!(view.id, sidebar.id);
         }
 
         // ── Tab cycling ─────────────────────────────────────────────────
 
         #[test]
         fn tab_cycles_the_active_section_and_wraps() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
+            let mut h = Host::new(sample_defs());
             for expected in [0, 1, 2, 0] {
                 assert_eq!(
-                    ss.handle_cached(&named(NamedKey::Tab), RECT),
-                    SidebarEvent::StateChanged
+                    h.last(&named(NamedKey::Tab), RECT),
+                    Some(SidebarAction::ActiveSectionChanged {
+                        section: Some(expected)
+                    })
                 );
-                assert_eq!(ss.active_section(), Some(expected));
+                assert_eq!(h.sidebar.active_section, Some(expected));
             }
-            ss.handle_cached(&named(NamedKey::BackTab), RECT);
-            assert_eq!(ss.active_section(), Some(2));
+            h.send(&named(NamedKey::BackTab), RECT);
+            assert_eq!(h.sidebar.active_section, Some(2));
         }
 
         #[test]
         fn tab_skips_a_hidden_section() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_section_visible(1, false);
-            ss.set_active_section(Some(0));
-            ss.handle_cached(&named(NamedKey::Tab), RECT);
-            assert_eq!(ss.active_section(), Some(2));
+            let mut h = Host::new(sample_defs());
+            h.sidebar.sections[1].visible = false;
+            h.sidebar.active_section = Some(0);
+            h.send(&named(NamedKey::Tab), RECT);
+            assert_eq!(h.sidebar.active_section, Some(2));
         }
 
         // ── Scroll navigation mode ──────────────────────────────────────
 
         #[test]
         fn scroll_mode_down_scrolls_the_active_section_and_clamps() {
-            let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
-            cells(&mut ss);
-            ss.set_rows(0, fake_rows("r", 30));
-            ss.set_active_section(Some(0));
+            let mut h = Host::new(vec![SidebarSectionDef::new("t", "T")]);
+            h.sidebar.set_rows(0, fake_rows("r", 30));
+            h.sidebar.active_section = Some(0);
             let rect = Rect::new(0.0, 0.0, 20.0, 11.0);
-            ss.handle_cached(&named(NamedKey::Down), rect);
-            assert_eq!(ss.scroll_offset(0), 1);
+            h.send(&named(NamedKey::Down), rect);
+            assert_eq!(h.scroll(0), 1);
             for _ in 0..40 {
-                ss.handle_cached(&named(NamedKey::Down), rect);
+                h.send(&named(NamedKey::Down), rect);
             }
-            assert_eq!(ss.scroll_offset(0), 20, "clamped to the last page");
-            ss.handle_cached(&named(NamedKey::Up), rect);
-            assert_eq!(ss.scroll_offset(0), 19);
+            assert_eq!(h.scroll(0), 20, "clamped to the last page");
+            assert_eq!(h.handle(&named(NamedKey::Down), rect), Handled::Consumed);
+            h.send(&named(NamedKey::Up), rect);
+            assert_eq!(h.scroll(0), 19);
         }
 
         #[test]
         fn scroll_mode_enter_selects_the_first_row_and_resets_scroll() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, fake_rows("v", 30));
-            ss.set_active_section(Some(0));
-            ss.sidebar.tree_mut(0).unwrap().scroll_offset = 4;
-            let ev = ss.handle_cached(&named(NamedKey::Enter), RECT);
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, fake_rows("v", 30));
+            h.sidebar.active_section = Some(0);
+            h.sidebar.tree_mut(0).unwrap().scroll_offset = 4;
             assert_eq!(
-                ev,
-                SidebarEvent::RowSelected {
-                    section: 0,
-                    path: vec![0]
-                }
+                h.last(&named(NamedKey::Enter), RECT),
+                selected_action(0, vec![0])
             );
-            assert_eq!(ss.selected_path(0), Some(&vec![0]));
-            assert_eq!(ss.scroll_offset(0), 0);
+            assert_eq!(h.selected(0), Some(&vec![0]));
+            assert_eq!(h.scroll(0), 0);
         }
 
         #[test]
         fn space_on_a_selected_branch_toggles_it_and_ignores_a_leaf() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, branch_rows());
-            ss.set_active_section(Some(0));
-            ss.set_selected_path(0, Some(vec![1]));
-            assert_eq!(
-                ss.handle_cached(&key(Key::Char(' ')), RECT),
-                SidebarEvent::RowToggleExpand {
-                    section: 0,
-                    path: vec![1]
-                }
-            );
-            ss.set_selected_path(0, Some(vec![2]));
-            assert_eq!(
-                ss.handle_cached(&key(Key::Char(' ')), RECT),
-                SidebarEvent::Ignored
-            );
-            assert_eq!(ss.toggle_expand_selected(), SidebarEvent::Ignored);
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, branch_rows());
+            h.sidebar.active_section = Some(0);
+            h.sidebar.tree_mut(0).unwrap().selected_path = Some(vec![1]);
+            let toggle = Some(SidebarAction::RowToggleExpand {
+                section: 0,
+                path: vec![1],
+            });
+            assert_eq!(h.sidebar.toggle_expand_selected(), toggle);
+            assert_eq!(h.last(&key(Key::Char(' ')), RECT), toggle);
+            h.sidebar.tree_mut(0).unwrap().selected_path = Some(vec![2]);
+            assert_eq!(h.handle(&key(Key::Char(' ')), RECT), Handled::Ignored);
+            assert_eq!(h.sidebar.toggle_expand_selected(), None);
         }
 
         #[test]
         fn whole_panel_mode_scrolls_the_panel_by_one_row_per_key() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
+            let mut h = Host::new(sample_defs());
             for i in 0..3 {
-                ss.set_rows(i, fake_rows("r", 20));
+                h.sidebar.set_rows(i, fake_rows("r", 20));
             }
-            ss.set_scroll_mode(ScrollMode::WholePanel);
-            ss.set_active_section(Some(0));
+            h.sidebar.scroll_mode = ScrollMode::WholePanel;
+            h.sidebar.active_section = Some(0);
             let rect = Rect::new(0.0, 0.0, 20.0, 10.0);
-            ss.handle_cached(&named(NamedKey::Down), rect);
-            assert_eq!(ss.panel_scroll(), 1.0);
+            h.send(&named(NamedKey::Down), rect);
+            assert_eq!(h.sidebar.panel_scroll, 1.0);
         }
 
         // ── Selection navigation mode ───────────────────────────────────
 
-        fn selection_sidebar() -> SidebarSystem {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, fake_rows("v", 30));
-            ss.set_rows(1, fake_rows("w", 3));
-            ss.set_navigation_mode(NavigationMode::Selection);
-            ss.set_active_section(Some(0));
-            ss
+        fn selection_sidebar() -> Host {
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, fake_rows("v", 30));
+            h.sidebar.set_rows(1, fake_rows("w", 3));
+            h.sidebar.navigation_mode = NavigationMode::Selection;
+            h.sidebar.active_section = Some(0);
+            h
         }
 
-        fn down(ss: &mut SidebarSystem) -> SidebarEvent {
-            ss.handle_cached(&named(NamedKey::Down), RECT)
+        fn down(h: &mut Host) -> Option<SidebarAction> {
+            h.last(&named(NamedKey::Down), RECT)
         }
 
         #[test]
         fn selection_down_selects_the_first_row_then_advances() {
-            let mut ss = selection_sidebar();
-            assert_eq!(
-                down(&mut ss),
-                SidebarEvent::RowSelected {
-                    section: 0,
-                    path: vec![0]
-                }
-            );
-            assert_eq!(
-                down(&mut ss),
-                SidebarEvent::RowSelected {
-                    section: 0,
-                    path: vec![1]
-                }
-            );
-            ss.handle_cached(&named(NamedKey::Up), RECT);
-            assert_eq!(ss.selected_path(0), Some(&vec![0]));
+            let mut h = selection_sidebar();
+            assert_eq!(down(&mut h), selected_action(0, vec![0]));
+            assert_eq!(down(&mut h), selected_action(0, vec![1]));
+            h.send(&named(NamedKey::Up), RECT);
+            assert_eq!(h.selected(0), Some(&vec![0]));
         }
 
         #[test]
         fn selection_home_end_and_enter() {
-            let mut ss = selection_sidebar();
-            ss.handle_cached(&named(NamedKey::End), RECT);
-            assert_eq!(ss.selected_path(0), Some(&vec![29]));
-            ss.handle_cached(&named(NamedKey::Home), RECT);
-            assert_eq!(ss.selected_path(0), Some(&vec![0]));
+            let mut h = selection_sidebar();
+            h.send(&named(NamedKey::End), RECT);
+            assert_eq!(h.selected(0), Some(&vec![29]));
+            h.send(&named(NamedKey::Home), RECT);
+            assert_eq!(h.selected(0), Some(&vec![0]));
             assert_eq!(
-                ss.handle_cached(&named(NamedKey::Enter), RECT),
-                SidebarEvent::RowActivated {
+                h.last(&named(NamedKey::Enter), RECT),
+                Some(SidebarAction::RowActivated {
                     section: 0,
                     path: vec![0]
-                }
+                })
             );
         }
 
         #[test]
         fn selection_scroll_follows_a_row_below_the_viewport() {
-            let mut ss = selection_sidebar();
-            ss.handle_cached(&named(NamedKey::End), RECT);
-            let viewport = layout(&ss, RECT).viewport_rows(0);
+            let mut h = selection_sidebar();
+            h.send(&named(NamedKey::End), RECT);
+            let viewport = layout(&h.sidebar, RECT).viewport_rows(0);
             assert!(viewport > 0);
-            assert_eq!(ss.scroll_offset(0), 30 - viewport);
+            assert_eq!(h.scroll(0), 30 - viewport);
         }
 
         #[test]
         fn selection_in_a_collapsed_or_missing_section_is_ignored() {
-            let mut ss = selection_sidebar();
-            ss.set_collapsed(0, true);
-            assert_eq!(down(&mut ss), SidebarEvent::Ignored);
-            ss.set_collapsed(0, false);
-            ss.set_active_section(None);
-            assert_eq!(down(&mut ss), SidebarEvent::Ignored);
+            let mut h = selection_sidebar();
+            h.sidebar.sections[0].collapsed = true;
+            assert_eq!(h.handle(&named(NamedKey::Down), RECT), Handled::Ignored);
+            h.sidebar.sections[0].collapsed = false;
+            h.sidebar.active_section = None;
+            assert_eq!(h.handle(&named(NamedKey::Down), RECT), Handled::Ignored);
         }
 
         #[test]
         fn selection_leaves_unbound_keys_to_the_app() {
-            let mut ss = selection_sidebar();
-            assert_eq!(
-                ss.handle_cached(&key(Key::Char('q')), RECT),
-                SidebarEvent::Ignored
-            );
+            let mut h = selection_sidebar();
+            assert_eq!(h.handle(&key(Key::Char('q')), RECT), Handled::Ignored);
             // A letter that would type-ahead to a row is still the app's.
-            assert_eq!(
-                ss.handle_cached(&key(Key::Char('v')), RECT),
-                SidebarEvent::Ignored
-            );
-            assert_eq!(ss.selected_path(0), None);
+            assert_eq!(h.handle(&key(Key::Char('v')), RECT), Handled::Ignored);
+            assert_eq!(h.selected(0), None);
         }
 
         #[test]
         fn selection_left_and_right_fold_the_selected_branch() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, branch_rows());
-            ss.set_navigation_mode(NavigationMode::Selection);
-            ss.set_active_section(Some(0));
-            ss.set_selected_path(0, Some(vec![1]));
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, branch_rows());
+            h.sidebar.navigation_mode = NavigationMode::Selection;
+            h.sidebar.active_section = Some(0);
+            h.sidebar.tree_mut(0).unwrap().selected_path = Some(vec![1]);
             assert_eq!(
-                ss.handle_cached(&named(NamedKey::Right), RECT),
-                SidebarEvent::RowToggleExpand {
+                h.last(&named(NamedKey::Right), RECT),
+                Some(SidebarAction::RowToggleExpand {
                     section: 0,
                     path: vec![1]
-                }
+                })
             );
-            ss.set_selected_path(0, Some(vec![0]));
+            h.sidebar.tree_mut(0).unwrap().selected_path = Some(vec![0]);
             assert_eq!(
-                ss.handle_cached(&named(NamedKey::Left), RECT),
-                SidebarEvent::RowToggleExpand {
+                h.last(&named(NamedKey::Left), RECT),
+                Some(SidebarAction::RowToggleExpand {
                     section: 0,
                     path: vec![0]
-                }
+                })
             );
         }
 
@@ -1531,20 +1687,13 @@ mod contract {
 
         #[test]
         fn clicking_a_row_selects_it_and_activates_its_section() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(1, fake_rows("w", 3));
-            let body = body_top(&ss, 1, RECT);
-            let ev = ss.handle_cached(&press(MouseButton::Left, body.x + 4.0, body.y + 1.0), RECT);
-            assert_eq!(
-                ev,
-                SidebarEvent::RowSelected {
-                    section: 1,
-                    path: vec![1]
-                }
-            );
-            assert_eq!(ss.active_section(), Some(1));
-            assert_eq!(ss.selected_path(1), Some(&vec![1]));
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(1, fake_rows("w", 3));
+            let body = body_top(&h.sidebar, 1, RECT);
+            let ev = h.last(&press(MouseButton::Left, body.x + 4.0, body.y + 1.0), RECT);
+            assert_eq!(ev, selected_action(1, vec![1]));
+            assert_eq!(h.sidebar.active_section, Some(1));
+            assert_eq!(h.selected(1), Some(&vec![1]));
         }
 
         /// On a cell grid the chevron is the two cells before a branch's
@@ -1553,35 +1702,27 @@ mod contract {
         #[cfg(feature = "tui")]
         #[test]
         fn clicking_a_branch_title_on_cells_selects_rather_than_toggles() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, branch_rows());
-            let body = body_top(&ss, 0, RECT);
-            let ev = ss.handle_cached(&press(MouseButton::Left, body.x + 4.0, body.y + 1.0), RECT);
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, branch_rows());
+            let body = body_top(&h.sidebar, 0, RECT);
+            let ev = h.last(&press(MouseButton::Left, body.x + 4.0, body.y + 1.0), RECT);
+            assert_eq!(ev, selected_action(0, vec![1]));
+            let ev = h.last(&press(MouseButton::Left, body.x, body.y + 1.0), RECT);
             assert_eq!(
                 ev,
-                SidebarEvent::RowSelected {
+                Some(SidebarAction::RowToggleExpand {
                     section: 0,
                     path: vec![1]
-                }
-            );
-            let ev = ss.handle_cached(&press(MouseButton::Left, body.x, body.y + 1.0), RECT);
-            assert_eq!(
-                ev,
-                SidebarEvent::RowToggleExpand {
-                    section: 0,
-                    path: vec![1]
-                }
+                })
             );
         }
 
         #[test]
         fn double_clicking_a_row_activates_it() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, fake_rows("v", 3));
-            let body = body_top(&ss, 0, RECT);
-            let ev = ss.handle_cached(
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, fake_rows("v", 3));
+            let body = body_top(&h.sidebar, 0, RECT);
+            let ev = h.last(
                 &UiEvent::DoubleClick {
                     widget: None,
                     position: Point::new(body.x + 3.0, body.y + 2.0),
@@ -1590,63 +1731,56 @@ mod contract {
             );
             assert_eq!(
                 ev,
-                SidebarEvent::RowActivated {
+                Some(SidebarAction::RowActivated {
                     section: 0,
                     path: vec![2]
-                }
+                })
             );
         }
 
         #[test]
         fn clicking_a_body_below_its_rows_activates_the_section() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, fake_rows("v", 2));
-            ss.set_selected_path(0, Some(vec![1]));
-            let body = body_top(&ss, 0, RECT);
-            let ev = ss.handle_cached(&press(MouseButton::Left, body.x + 3.0, body.y + 4.0), RECT);
-            assert_eq!(ev, SidebarEvent::HeaderActivated { section: 0 });
-            assert_eq!(ss.selected_path(0), None);
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, fake_rows("v", 2));
+            h.sidebar.tree_mut(0).unwrap().selected_path = Some(vec![1]);
+            let body = body_top(&h.sidebar, 0, RECT);
+            let ev = h.last(&press(MouseButton::Left, body.x + 3.0, body.y + 4.0), RECT);
+            assert_eq!(ev, Some(SidebarAction::HeaderActivated { section: 0 }));
+            assert_eq!(h.selected(0), None);
         }
 
         #[test]
         fn right_clicking_a_row_requests_its_context_menu() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, fake_rows("v", 3));
-            let body = body_top(&ss, 0, RECT);
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, fake_rows("v", 3));
+            let body = body_top(&h.sidebar, 0, RECT);
             let at = Point::new(body.x + 3.0, body.y);
-            let ev = ss.handle_cached(&press(MouseButton::Right, at.x, at.y), RECT);
             assert_eq!(
-                ev,
-                SidebarEvent::ContextMenuRequested {
+                h.last(&press(MouseButton::Right, at.x, at.y), RECT),
+                Some(SidebarAction::ContextMenuRequested {
                     section: 0,
                     path: vec![0],
                     position: at,
-                }
+                })
             );
-            assert_eq!(ss.selected_path(0), Some(&vec![0]));
+            assert_eq!(h.selected(0), Some(&vec![0]));
         }
 
         #[test]
         fn empty_space_context_menu_is_opt_in_per_section() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, fake_rows("v", 2));
-            let body = body_top(&ss, 0, RECT);
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, fake_rows("v", 2));
+            let body = body_top(&h.sidebar, 0, RECT);
             let at = Point::new(body.x + 3.0, body.y + 4.0);
+            assert_eq!(h.last(&press(MouseButton::Right, at.x, at.y), RECT), None);
+            h.sidebar.sections[0].empty_space_context_menu = true;
             assert_eq!(
-                ss.handle_cached(&press(MouseButton::Right, at.x, at.y), RECT),
-                SidebarEvent::Ignored
-            );
-            ss.set_empty_space_context_menu(0, true);
-            assert_eq!(
-                ss.handle_cached(&press(MouseButton::Right, at.x, at.y), RECT),
-                SidebarEvent::ContextMenuRequested {
+                h.last(&press(MouseButton::Right, at.x, at.y), RECT),
+                Some(SidebarAction::ContextMenuRequested {
                     section: 0,
                     path: TreePath::new(),
                     position: at,
-                }
+                })
             );
         }
 
@@ -1654,64 +1788,61 @@ mod contract {
 
         #[test]
         fn a_header_click_activates_and_collapses_only_when_allowed() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            let h = header_of(&ss, 1, RECT);
-            let ev = ss.handle_cached(&press(MouseButton::Left, h.x + 2.0, h.y), RECT);
-            assert_eq!(ev, SidebarEvent::HeaderActivated { section: 1 });
-            assert_eq!(ss.active_section(), Some(1));
-            assert!(!ss.is_collapsed(1));
+            let mut h = Host::new(sample_defs());
+            let hdr = header_of(&h.sidebar, 1, RECT);
+            let ev = h.last(&press(MouseButton::Left, hdr.x + 2.0, hdr.y), RECT);
+            assert_eq!(ev, Some(SidebarAction::HeaderActivated { section: 1 }));
+            assert_eq!(h.sidebar.active_section, Some(1));
+            assert!(!h.sidebar.sections[1].collapsed);
 
-            ss.set_allow_collapse(true);
-            ss.handle_cached(&press(MouseButton::Left, h.x + 2.0, h.y), RECT);
-            assert!(ss.is_collapsed(1));
-            let h = header_of(&ss, 1, RECT);
-            ss.handle_cached(&press(MouseButton::Left, h.x + 2.0, h.y), RECT);
-            assert!(!ss.is_collapsed(1));
+            h.sidebar.allow_collapse = true;
+            h.send(&press(MouseButton::Left, hdr.x + 2.0, hdr.y), RECT);
+            assert!(h.sidebar.sections[1].collapsed);
+            let hdr = header_of(&h.sidebar, 1, RECT);
+            h.send(&press(MouseButton::Left, hdr.x + 2.0, hdr.y), RECT);
+            assert!(!h.sidebar.sections[1].collapsed);
         }
 
         // ── Wheel ───────────────────────────────────────────────────────
 
-        fn scroll_routing_sidebar() -> SidebarSystem {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
+        fn scroll_routing_sidebar() -> Host {
+            let mut h = Host::new(sample_defs());
             for i in 0..3 {
-                ss.set_rows(i, fake_rows("r", 30));
+                h.sidebar.set_rows(i, fake_rows("r", 30));
             }
-            ss.set_active_section(Some(0));
-            ss
+            h.sidebar.active_section = Some(0);
+            h
         }
 
         #[test]
         fn the_wheel_scrolls_the_section_under_the_pointer() {
-            let mut ss = scroll_routing_sidebar();
-            let body = body_top(&ss, 2, RECT);
-            ss.handle_cached(&wheel(-1.0, body.x + 2.0, body.y + 1.0), RECT);
-            assert!(ss.scroll_offset(2) > 0);
-            assert_eq!(ss.scroll_offset(0), 0);
+            let mut h = scroll_routing_sidebar();
+            let body = body_top(&h.sidebar, 2, RECT);
+            h.send(&wheel(-1.0, body.x + 2.0, body.y + 1.0), RECT);
+            assert!(h.scroll(2) > 0);
+            assert_eq!(h.scroll(0), 0);
         }
 
         #[test]
         fn the_wheel_outside_every_section_scrolls_the_active_one() {
-            let mut ss = scroll_routing_sidebar();
-            ss.handle_cached(&wheel(-1.0, 500.0, 500.0), RECT);
-            assert_eq!(ss.scroll_offset(0), 1);
+            let mut h = scroll_routing_sidebar();
+            h.send(&wheel(-1.0, 500.0, 500.0), RECT);
+            assert_eq!(h.scroll(0), 1);
         }
 
         // ── Scrollbars ──────────────────────────────────────────────────
 
         #[test]
         fn a_one_cell_drag_on_a_section_thumb_scrolls_it() {
-            let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
-            cells(&mut ss);
-            ss.set_rows(0, fake_rows("r", 30));
-            ss.set_active_section(Some(0));
+            let mut h = Host::new(vec![SidebarSectionDef::new("t", "T")]);
+            h.sidebar.set_rows(0, fake_rows("r", 30));
+            h.sidebar.active_section = Some(0);
             let rect = Rect::new(0.0, 0.0, 20.0, 21.0);
-            let l = layout(&ss, rect);
+            let l = layout(&h.sidebar, rect);
             let sb = l.msv.chrome.sections[0].scrollbar_bounds.expect("gutter");
             let thumb = l.msv.chrome.sections[0].thumb_bounds.expect("thumb");
-            ss.handle_cached(&press(MouseButton::Left, sb.x, thumb.y), rect);
-            ss.handle_cached(
+            h.send(&press(MouseButton::Left, sb.x, thumb.y), rect);
+            h.send(
                 &UiEvent::MouseMoved {
                     position: Point::new(sb.x, thumb.y + 1.0),
                     buttons: ButtonMask {
@@ -1721,25 +1852,24 @@ mod contract {
                 },
                 rect,
             );
-            assert!(ss.scroll_offset(0) > 0);
+            assert!(h.scroll(0) > 0);
         }
 
         #[test]
         fn a_panel_thumb_drag_scrolls_the_panel() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
+            let mut h = Host::new(sample_defs());
             for i in 0..3 {
-                ss.set_rows(i, fake_rows("r", 8));
+                h.sidebar.set_rows(i, fake_rows("r", 8));
             }
-            for s in &mut ss.sidebar.sections {
+            for s in &mut h.sidebar.sections {
                 s.size = SectionSize::Content;
             }
-            ss.set_scroll_mode(ScrollMode::WholePanel);
+            h.sidebar.scroll_mode = ScrollMode::WholePanel;
             let rect = Rect::new(0.0, 0.0, 20.0, 12.0);
-            let l = layout(&ss, rect);
+            let l = layout(&h.sidebar, rect);
             let thumb = l.msv.chrome.panel_scrollbar_thumb.expect("panel overflows");
-            ss.handle_cached(&press(MouseButton::Left, thumb.x, thumb.y), rect);
-            ss.handle_cached(
+            h.send(&press(MouseButton::Left, thumb.x, thumb.y), rect);
+            h.send(
                 &UiEvent::MouseMoved {
                     position: Point::new(thumb.x, thumb.y + 2.0),
                     buttons: ButtonMask {
@@ -1749,7 +1879,7 @@ mod contract {
                 },
                 rect,
             );
-            assert!(ss.panel_scroll() > 0.0);
+            assert!(h.sidebar.panel_scroll > 0.0);
         }
 
         // ── Form sections ───────────────────────────────────────────────
@@ -1779,73 +1909,62 @@ mod contract {
             }
         }
 
-        fn mixed() -> SidebarSystem {
-            let mut ss = SidebarSystem::new(vec![
+        fn mixed() -> Host {
+            Host::new(vec![
                 SidebarSectionDef::form("search", "SEARCH"),
                 SidebarSectionDef::new("results", "RESULTS"),
-            ]);
-            cells(&mut ss);
-            ss
+            ])
         }
 
         #[test]
         fn form_and_tree_setters_only_reach_their_own_kind() {
-            let mut ss = mixed();
-            assert_eq!(ss.section_kind(0), Some(SectionKind::Form));
-            assert_eq!(ss.section_kind(1), Some(SectionKind::Tree));
-            assert!(ss.form(0).is_none());
-            ss.set_form(1, form(Vec::new()));
-            assert!(ss.form(1).is_none());
-            ss.set_rows(0, fake_rows("x", 2));
-            assert!(ss.rows(0).is_empty());
-            ss.set_form(
-                0,
-                form(vec![field("q", "Q", FieldKind::Toggle { value: false })]),
-            );
-            assert_eq!(ss.form(0).unwrap().fields.len(), 1);
+            let mut h = mixed();
+            assert!(h.sidebar.form(0).is_some());
+            assert!(h.sidebar.form_mut(1).is_none());
+            h.sidebar.set_rows(0, fake_rows("x", 2));
+            assert!(h.sidebar.tree(0).is_none());
+            *h.sidebar.form_mut(0).unwrap() =
+                form(vec![field("q", "Q", FieldKind::Toggle { value: false })]);
+            assert_eq!(h.sidebar.form(0).unwrap().fields.len(), 1);
         }
 
         #[test]
-        fn focus_form_paints_a_form_focused_while_a_tree_section_is_active() {
-            let mut ss = mixed();
-            ss.set_form(0, form(Vec::new()));
-            ss.set_active_section(Some(1));
-            assert!(!ss.form_has_focus(0));
-            ss.focus_form(0, true);
-            assert!(ss.form_has_focus(0));
-            let (view, _) = ss.sidebar.view(CELL_ACTIVE_MARKER);
-            let SectionBody::Form(f) = &view.sections[0].body else {
-                panic!("form body");
+        fn a_focused_form_paints_focused_while_a_tree_section_is_active() {
+            let mut h = mixed();
+            h.sidebar.active_section = Some(1);
+            let form_focus = |s: &Sidebar| {
+                let (view, _) = s.view(CELL_ACTIVE_MARKER);
+                let SectionBody::Form(f) = &view.sections[0].body else {
+                    panic!("form body");
+                };
+                f.has_focus
             };
-            assert!(f.has_focus);
-            ss.focus_form(1, true);
-            assert!(!ss.form_has_focus(1), "a tree section has no form focus");
+            assert!(!form_focus(&h.sidebar));
+            h.sidebar.sections[0].form_focused = true;
+            assert!(form_focus(&h.sidebar));
         }
 
         #[test]
         fn clicking_a_toggle_in_a_form_section_flips_it_through_the_form() {
-            let mut ss = mixed();
-            ss.set_form(
-                0,
-                form(vec![field(
-                    "case",
-                    "Case",
-                    FieldKind::Toggle { value: false },
-                )]),
-            );
-            let body = body_top(&ss, 0, RECT);
-            let ev = ss.handle_cached(&press(MouseButton::Left, body.x + 1.0, body.y), RECT);
+            let mut h = mixed();
+            *h.sidebar.form_mut(0).unwrap() = form(vec![field(
+                "case",
+                "Case",
+                FieldKind::Toggle { value: false },
+            )]);
+            let body = body_top(&h.sidebar, 0, RECT);
+            let ev = h.last(&press(MouseButton::Left, body.x + 1.0, body.y), RECT);
             assert_eq!(
                 ev,
-                SidebarEvent::FormEvent {
+                Some(SidebarAction::Form {
                     section: 0,
                     event: FormEvent::ToggleChanged {
                         id: WidgetId::new("case"),
                         value: true,
                     },
-                }
+                })
             );
-            assert_eq!(ss.active_section(), Some(0));
+            assert_eq!(h.sidebar.active_section, Some(0));
         }
 
         /// A press on a number input's increment stepper in a form section
@@ -1860,25 +1979,22 @@ mod contract {
                     10.0,
                 );
                 count.value = 5.0;
-                let mut ss = mixed();
-                ss.set_form(
-                    0,
-                    form(vec![field("count", "Count", FieldKind::NumberInput(count))]),
-                );
-                ss
+                let mut h = mixed();
+                *h.sidebar.form_mut(0).unwrap() =
+                    form(vec![field("count", "Count", FieldKind::NumberInput(count))]);
+                h
             };
             let probe = number_sidebar();
-            let body = body_top(&probe, 0, RECT);
+            let body = body_top(&probe.sidebar, 0, RECT);
             let stepped = (0..body.width as usize).any(|dx| {
-                let mut ss = number_sidebar();
-                let ev =
-                    ss.handle_cached(&press(MouseButton::Left, body.x + dx as f32, body.y), RECT);
+                let mut h = number_sidebar();
+                let ev = h.last(&press(MouseButton::Left, body.x + dx as f32, body.y), RECT);
                 matches!(
                     ev,
-                    SidebarEvent::FormEvent {
+                    Some(SidebarAction::Form {
                         section: 0,
                         event: FormEvent::NumberChanged { value, .. },
-                    } if value == 6.0
+                    }) if value == 6.0
                 )
             });
             assert!(stepped, "no press on the number row stepped it up");
@@ -1886,40 +2002,32 @@ mod contract {
 
         #[test]
         fn selection_keys_in_a_form_section_are_ignored() {
-            let mut ss = mixed();
-            ss.set_form(
-                0,
-                form(vec![field(
-                    "case",
-                    "Case",
-                    FieldKind::Toggle { value: false },
-                )]),
-            );
-            ss.set_navigation_mode(NavigationMode::Selection);
-            ss.set_active_section(Some(0));
-            assert_eq!(
-                ss.handle_cached(&named(NamedKey::Down), RECT),
-                SidebarEvent::Ignored
-            );
+            let mut h = mixed();
+            *h.sidebar.form_mut(0).unwrap() = form(vec![field(
+                "case",
+                "Case",
+                FieldKind::Toggle { value: false },
+            )]);
+            h.sidebar.navigation_mode = NavigationMode::Selection;
+            h.sidebar.active_section = Some(0);
+            assert_eq!(h.handle(&named(NamedKey::Down), RECT), Handled::Ignored);
         }
 
         // ── Reveal and rename ───────────────────────────────────────────
 
         #[test]
         fn reveal_expands_selects_and_scrolls_to_the_row() {
-            let mut ss = SidebarSystem::new(vec![SidebarSectionDef::new("t", "T")]);
-            ss.set_rows(0, fake_rows("r", 40));
-            ss.set_collapsed(0, true);
+            let mut sidebar =
+                Sidebar::from_defs(WidgetId::new("s"), &[SidebarSectionDef::new("t", "T")]);
+            sidebar.set_rows(0, fake_rows("r", 40));
+            sidebar.sections[0].collapsed = true;
             let rect = Rect::new(0.0, 0.0, 20.0, 11.0);
-            ss.reveal(0, &vec![30], rect);
-            assert_eq!(ss.selected_path(0), None, "no backend info, no reveal");
-
-            cells(&mut ss);
-            ss.reveal(0, &vec![30], rect);
-            assert!(!ss.is_collapsed(0));
-            assert_eq!(ss.selected_path(0), Some(&vec![30]));
-            let viewport = layout(&ss, rect).viewport_rows(0);
-            let offset = ss.scroll_offset(0);
+            sidebar.reveal_in(0, &vec![30], &cells(), rect);
+            assert!(!sidebar.sections[0].collapsed);
+            let tree = sidebar.tree(0).unwrap();
+            assert_eq!(tree.selected_path, Some(vec![30]));
+            let viewport = layout(&sidebar, rect).viewport_rows(0);
+            let offset = tree.scroll_offset;
             assert!(
                 offset <= 30 && 30 < offset + viewport,
                 "{offset} {viewport}"
@@ -1927,51 +2035,96 @@ mod contract {
         }
 
         #[test]
+        fn reveal_of_a_missing_row_changes_nothing() {
+            let mut sidebar =
+                Sidebar::from_defs(WidgetId::new("s"), &[SidebarSectionDef::new("t", "T")]);
+            sidebar.set_rows(0, fake_rows("r", 3));
+            sidebar.sections[0].collapsed = true;
+            sidebar.reveal_in(0, &vec![9], &cells(), RECT);
+            assert!(sidebar.sections[0].collapsed);
+            assert_eq!(sidebar.tree(0).unwrap().selected_path, None);
+        }
+
+        #[test]
         fn a_rename_survives_set_rows_and_reports_each_edit() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            cells(&mut ss);
-            ss.set_rows(0, fake_rows("v", 3));
-            ss.set_active_section(Some(0));
-            ss.start_editing(0, vec![1], "ab".into(), 2, None, None);
-            ss.set_rows(0, fake_rows("v", 3));
-            assert!(ss.is_editing());
+            let mut h = Host::new(sample_defs());
+            h.sidebar.set_rows(0, fake_rows("v", 3));
+            h.sidebar.active_section = Some(0);
+            h.sidebar
+                .start_editing(0, vec![1], "ab".into(), 2, None, None);
+            h.sidebar.set_rows(0, fake_rows("v", 3));
+            assert!(h.sidebar.is_editing());
             assert_eq!(
-                ss.handle_cached(&UiEvent::CharTyped('c'), RECT),
-                SidebarEvent::EditChanged {
+                h.last(&UiEvent::CharTyped('c'), RECT),
+                Some(SidebarAction::EditChanged {
                     section: 0,
                     path: vec![1],
                     text: "abc".into(),
-                }
+                    cursor: 3,
+                    selection_anchor: None,
+                })
             );
+            h.sidebar.set_rows(0, fake_rows("v", 3));
             assert_eq!(
-                ss.handle_cached(&named(NamedKey::Enter), RECT),
-                SidebarEvent::EditConfirmed {
+                h.last(&named(NamedKey::Enter), RECT),
+                Some(SidebarAction::EditConfirmed {
                     section: 0,
                     path: vec![1],
                     new_text: "abc".into(),
-                }
+                })
             );
-            assert!(!ss.is_editing());
+            assert!(!h.sidebar.is_editing());
+        }
+
+        #[test]
+        fn a_rename_started_before_its_row_exists_lands_when_the_row_arrives() {
+            let mut sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
+            sidebar.set_rows(0, fake_rows("v", 1));
+            sidebar.start_editing(0, vec![1], String::new(), 0, None, Some("name".into()));
+            assert!(sidebar.is_editing());
+            sidebar.set_rows(0, fake_rows("v", 2));
+            let row = &sidebar.tree(0).unwrap().rows[1];
+            assert_eq!(row.path, vec![1]);
+            assert_eq!(
+                row.edit,
+                Some(TreeRowEditState {
+                    text: String::new(),
+                    cursor: 0,
+                    selection_anchor: None,
+                    placeholder: Some("name".into()),
+                })
+            );
+            sidebar.set_rows(0, fake_rows("v", 1));
+            sidebar.set_rows(0, fake_rows("v", 2));
+            assert!(
+                sidebar.tree(0).unwrap().rows[1].edit.is_some(),
+                "a frame that briefly leaves the row out keeps the rename"
+            );
         }
 
         #[test]
         fn cancel_editing_ends_the_session() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            ss.set_rows(0, fake_rows("v", 3));
-            ss.start_editing(0, vec![0], "x".into(), 1, None, None);
-            ss.cancel_editing(0);
-            assert!(!ss.is_editing());
-            assert!(ss.rows(0).iter().all(|r| r.edit.is_none()));
+            let mut sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
+            sidebar.set_rows(0, fake_rows("v", 3));
+            sidebar.start_editing(0, vec![0], "x".into(), 1, None, None);
+            sidebar.cancel_editing(0);
+            assert!(!sidebar.is_editing());
+            assert!(sidebar
+                .tree(0)
+                .unwrap()
+                .rows
+                .iter()
+                .all(|r| r.edit.is_none()));
         }
 
         // ── Widget contract ─────────────────────────────────────────────
 
         #[test]
         fn focus_lists_every_header_then_the_active_body() {
-            let mut ss = SidebarSystem::new(sample_defs());
-            ss.set_rows(1, fake_rows("w", 2));
-            ss.set_active_section(Some(1));
-            let FocusSpec::Children(stops) = Interactive::focus(&ss.sidebar) else {
+            let mut sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
+            sidebar.set_rows(1, fake_rows("w", 2));
+            sidebar.active_section = Some(1);
+            let FocusSpec::Children(stops) = Interactive::focus(&sidebar) else {
                 panic!("children");
             };
             let parts: Vec<_> = stops
@@ -1991,7 +2144,7 @@ mod contract {
 
         #[test]
         fn apply_writes_every_controlled_field() {
-            let mut sidebar = SidebarSystem::new(sample_defs()).sidebar;
+            let mut sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
             sidebar.tree_mut(0).unwrap().rows = fake_rows("v", 3);
             sidebar.apply(&SidebarAction::RowSelected {
                 section: 0,
@@ -2038,113 +2191,6 @@ mod contract {
     all(feature = "macos", target_os = "macos")
 ))]
 pub use contract::SidebarLayout;
-
-// ── Controller ─────────────────────────────────────────────────────────────────
-
-/// The metrics [`SidebarSystem::handle_cached`] lays the sidebar out
-/// with when no backend is in reach.
-#[cfg_attr(
-    not(any(
-        feature = "gtk",
-        feature = "tui",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    )),
-    allow(dead_code)
-)]
-#[derive(Debug, Clone, Copy)]
-struct BackendInfo {
-    line_height: f32,
-    char_width: f32,
-}
-
-#[cfg_attr(
-    not(any(
-        feature = "gtk",
-        feature = "tui",
-        feature = "win",
-        all(feature = "macos", target_os = "macos")
-    )),
-    allow(dead_code)
-)]
-impl BackendInfo {
-    fn ctx(&self) -> LayoutCtx<'static> {
-        LayoutCtx::new(self.line_height, self.char_width, false)
-    }
-}
-
-/// A [`Sidebar`] plus its [`SidebarState`], driven by raw [`UiEvent`]s
-/// and painted through a [`Backend`]. The controller applies every
-/// [`SidebarAction`] itself and answers [`SidebarEvent`]s.
-pub struct SidebarSystem {
-    pub(crate) sidebar: Sidebar,
-    kinds: Vec<SectionKind>,
-    /// Whether each form section has had a form set.
-    form_set: Vec<bool>,
-    /// The rename session each tree section holds, re-applied to the
-    /// rows every [`Self::set_rows`] pushes.
-    pub(crate) editing: Vec<Option<(TreePath, TreeRowEditState)>>,
-    #[cfg_attr(
-        not(any(
-            feature = "gtk",
-            feature = "tui",
-            feature = "win",
-            all(feature = "macos", target_os = "macos")
-        )),
-        allow(dead_code)
-    )]
-    state: SidebarState,
-    backend_info: Option<BackendInfo>,
-}
-
-/// What happened after [`SidebarSystem::handle`] processed an event.
-#[derive(Debug, Clone, PartialEq)]
-pub enum SidebarEvent {
-    /// Header clicked — section activated.
-    HeaderActivated { section: usize },
-    /// Tree row clicked — section activated + row selected.
-    RowSelected { section: usize, path: TreePath },
-    /// Enter pressed on the selected row (Selection mode), or a row
-    /// double-clicked.
-    RowActivated { section: usize, path: TreePath },
-    /// The expand/collapse chevron of a branch row was clicked, or Space
-    /// was pressed while a branch row is selected. The app owns per-row
-    /// expand state and should toggle it, then push fresh `TreeRow`s.
-    RowToggleExpand { section: usize, path: TreePath },
-    /// Right-click on a body row, or on a tree's empty space when the
-    /// section opts in ([`SidebarSystem::set_empty_space_context_menu`]),
-    /// with an empty `path`. `position` is the click position in the
-    /// backend's native coordinates.
-    ContextMenuRequested {
-        section: usize,
-        path: TreePath,
-        position: Point,
-    },
-    /// Scrollbar interaction (drag or page).
-    ScrollChanged { section: usize },
-    /// The user confirmed an inline edit (pressed Enter).
-    EditConfirmed {
-        section: usize,
-        path: TreePath,
-        new_text: String,
-    },
-    /// The user cancelled an inline edit (pressed Escape).
-    EditCancelled { section: usize, path: TreePath },
-    /// The text buffer changed during inline editing.
-    EditChanged {
-        section: usize,
-        path: TreePath,
-        text: String,
-    },
-    /// A Form section emitted a form event (toggle, text input, button, etc.).
-    FormEvent { section: usize, event: FormEvent },
-    /// State changed (navigation, collapse) — app should redraw.
-    StateChanged,
-    /// Event consumed (drag update, hover) — app should redraw.
-    Consumed,
-    /// Event not relevant to the sidebar.
-    Ignored,
-}
 
 /// [`Interactive::State`] for [`Sidebar`]: the view's gesture in flight
 /// and each body widget's own state.
@@ -2196,251 +2242,6 @@ impl Sidebar {
     }
 }
 
-impl SidebarSystem {
-    pub fn new(defs: Vec<SidebarSectionDef>) -> Self {
-        let mut sidebar = Sidebar::new(WidgetId::new("sidebar-system"));
-        sidebar.sections = defs
-            .iter()
-            .map(|def| {
-                let body = match def.kind {
-                    SectionKind::Tree => SidebarBody::Tree(TreeView {
-                        id: WidgetId::new(format!("{}-tree", def.id)),
-                        rows: Vec::new(),
-                        selection_mode: SelectionMode::Single,
-                        selected_path: None,
-                        scroll_offset: 0,
-                        style: Default::default(),
-                        has_focus: false,
-                    }),
-                    SectionKind::Form => SidebarBody::Form(empty_form(&def.id)),
-                };
-                SidebarSection::new(def, body)
-            })
-            .collect();
-        let n = defs.len();
-        Self {
-            sidebar,
-            kinds: defs.iter().map(|d| d.kind).collect(),
-            form_set: vec![false; n],
-            editing: vec![None; n],
-            state: SidebarState::default(),
-            backend_info: None,
-        }
-    }
-
-    /// The descriptor this controller paints and drives.
-    pub fn sidebar(&self) -> &Sidebar {
-        &self.sidebar
-    }
-
-    // ── Per-frame data ────────────────────────────────────────────────
-
-    pub fn set_rows(&mut self, section: usize, mut rows: Vec<TreeRow>) {
-        if let Some(Some((path, edit))) = self.editing.get(section) {
-            if let Some(row) = rows.iter_mut().find(|r| &r.path == path) {
-                row.edit = Some(edit.clone());
-            }
-        }
-        if let Some(tree) = self.sidebar.tree_mut(section) {
-            tree.rows = rows;
-        }
-    }
-
-    /// Section `section`'s tree rows.
-    pub fn rows(&self, section: usize) -> &[TreeRow] {
-        self.sidebar.tree(section).map_or(&[], |t| &t.rows)
-    }
-
-    pub fn set_form(&mut self, section: usize, form: Form) {
-        if let Some(SidebarSection {
-            body: SidebarBody::Form(f),
-            ..
-        }) = self.sidebar.sections.get_mut(section)
-        {
-            *f = form;
-            self.form_set[section] = true;
-        }
-    }
-
-    // ── State accessors ───────────────────────────────────────────────
-
-    pub fn active_section(&self) -> Option<usize> {
-        self.sidebar.active_section
-    }
-
-    pub fn selected_path(&self, section: usize) -> Option<&TreePath> {
-        self.sidebar.tree(section)?.selected_path.as_ref()
-    }
-
-    pub fn scroll_offset(&self, section: usize) -> usize {
-        self.sidebar.tree(section).map_or(0, |t| t.scroll_offset)
-    }
-
-    pub fn form(&self, section: usize) -> Option<&Form> {
-        if !self.form_set.get(section).copied().unwrap_or(false) {
-            return None;
-        }
-        self.sidebar.sections[section].form()
-    }
-
-    pub fn section_kind(&self, section: usize) -> Option<SectionKind> {
-        self.kinds.get(section).copied()
-    }
-
-    pub fn is_collapsed(&self, section: usize) -> bool {
-        self.sidebar
-            .sections
-            .get(section)
-            .is_some_and(|s| s.collapsed)
-    }
-
-    pub fn is_section_visible(&self, section: usize) -> bool {
-        self.sidebar.sections.get(section).is_none_or(|s| s.visible)
-    }
-
-    pub fn section_badge(&self, section: usize) -> Option<&StyledText> {
-        self.sidebar.sections.get(section)?.badge.as_ref()
-    }
-
-    // ── Programmatic state control ────────────────────────────────────
-
-    pub fn set_active_section(&mut self, section: Option<usize>) {
-        self.sidebar.active_section = section.filter(|s| *s < self.sidebar.sections.len());
-    }
-
-    /// Mark a Form section as focused *for rendering purposes only*,
-    /// without changing the active (nav) section — so a form field (e.g.
-    /// a FILTER box) shows its caret while a different section's tree
-    /// drives navigation.
-    ///
-    /// No-op if `section` is out of range or hosts a Tree, not a Form.
-    pub fn focus_form(&mut self, section: usize, focused: bool) {
-        if let Some(s) = self.sidebar.sections.get_mut(section) {
-            if s.form().is_some() {
-                s.form_focused = focused;
-            }
-        }
-    }
-
-    /// Whether the Form section at `section` is render-focused via
-    /// [`Self::focus_form`]. Returns `false` for Tree sections, empty
-    /// sections, or out-of-range indices.
-    pub fn form_has_focus(&self, section: usize) -> bool {
-        self.sidebar
-            .sections
-            .get(section)
-            .is_some_and(|s| s.form().is_some() && s.form_focused)
-    }
-
-    pub fn set_selected_path(&mut self, section: usize, path: Option<TreePath>) {
-        if let Some(tree) = self.sidebar.tree_mut(section) {
-            tree.selected_path = path;
-        }
-    }
-
-    pub fn set_collapsed(&mut self, section: usize, collapsed: bool) {
-        if let Some(s) = self.sidebar.sections.get_mut(section) {
-            s.collapsed = collapsed;
-        }
-    }
-
-    pub fn set_section_visible(&mut self, section: usize, visible: bool) {
-        if let Some(s) = self.sidebar.sections.get_mut(section) {
-            s.visible = visible;
-        }
-    }
-
-    pub fn set_section_badge(&mut self, section: usize, badge: Option<StyledText>) {
-        if let Some(s) = self.sidebar.sections.get_mut(section) {
-            s.badge = badge;
-        }
-    }
-
-    /// Whether a right-click on the empty space below tree section
-    /// `section`'s rows reports [`SidebarEvent::ContextMenuRequested`]
-    /// with an empty `path` (default `false`: the click is ignored).
-    pub fn set_empty_space_context_menu(&mut self, section: usize, enabled: bool) {
-        if let Some(s) = self.sidebar.sections.get_mut(section) {
-            s.empty_space_context_menu = enabled;
-        }
-    }
-
-    pub fn has_focus(&self) -> bool {
-        self.sidebar.has_focus
-    }
-
-    pub fn set_has_focus(&mut self, has_focus: bool) {
-        self.sidebar.has_focus = has_focus;
-    }
-
-    pub fn set_allow_collapse(&mut self, allow: bool) {
-        self.sidebar.allow_collapse = allow;
-    }
-
-    pub fn navigation_mode(&self) -> NavigationMode {
-        self.sidebar.navigation_mode
-    }
-
-    pub fn set_navigation_mode(&mut self, mode: NavigationMode) {
-        self.sidebar.navigation_mode = mode;
-    }
-
-    pub fn scroll_mode(&self) -> ScrollMode {
-        self.sidebar.scroll_mode
-    }
-
-    pub fn set_scroll_mode(&mut self, mode: ScrollMode) {
-        self.sidebar.scroll_mode = mode;
-    }
-
-    pub fn panel_scroll(&self) -> f32 {
-        self.sidebar.panel_scroll
-    }
-
-    pub fn set_panel_scroll(&mut self, offset: f32) {
-        self.sidebar.panel_scroll = offset.max(0.0);
-    }
-
-    /// Cache the line height [`Self::handle_cached`] lays the sidebar out
-    /// with; the header/divider/gutter metrics derive from it.
-    pub fn set_backend_info(&mut self, line_height: f32) {
-        let char_width = if line_height <= 1.0 {
-            1.0
-        } else {
-            line_height * 0.6
-        };
-        self.backend_info = Some(BackendInfo {
-            line_height,
-            char_width,
-        });
-    }
-
-    /// Cache `backend`'s own line height and character advance, so
-    /// [`Self::handle_cached`] lays the sidebar out exactly as
-    /// [`Self::render`] paints it.
-    pub fn cache_form_layouts(&mut self, backend: &dyn Backend) {
-        let ctx = crate::backend::primitive_layout_ctx(backend);
-        self.backend_info = Some(BackendInfo {
-            line_height: ctx.line_height,
-            char_width: ctx.char_width,
-        });
-    }
-
-    /// Emit [`SidebarEvent::RowToggleExpand`] for the selected row of the
-    /// active section, if that row is a branch (`is_expanded.is_some()`).
-    pub fn toggle_expand_selected(&self) -> SidebarEvent {
-        let Some(section) = self.sidebar.active_section else {
-            return SidebarEvent::Ignored;
-        };
-        match self.sidebar.toggle_selected(section) {
-            Handled::Event(SidebarAction::RowToggleExpand { section, path }) => {
-                SidebarEvent::RowToggleExpand { section, path }
-            }
-            _ => SidebarEvent::Ignored,
-        }
-    }
-}
-
 /// The empty form a form section shows until the app sets one.
 fn empty_form(section_id: &str) -> Form {
     Form {
@@ -2455,38 +2256,5 @@ fn empty_form(section_id: &str) -> Form {
         control_width: Default::default(),
         min_control_width: None,
         spacing: Default::default(),
-    }
-}
-
-/// Without a backend feature there is no widget contract to lay the
-/// sidebar out through, so it neither paints nor handles events.
-#[cfg(not(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-)))]
-impl SidebarSystem {
-    pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        let _ = (backend, rect);
-    }
-
-    pub fn handle(
-        &mut self,
-        event: &UiEvent,
-        backend: &mut dyn Backend,
-        rect: Rect,
-    ) -> SidebarEvent {
-        let _ = (event, backend, rect);
-        SidebarEvent::Ignored
-    }
-
-    pub fn handle_cached(&mut self, event: &UiEvent, rect: Rect) -> SidebarEvent {
-        let _ = (event, rect);
-        SidebarEvent::Ignored
-    }
-
-    pub fn reveal(&mut self, section: usize, path: &TreePath, rect: Rect) {
-        let _ = (section, path, rect);
     }
 }

@@ -172,3 +172,21 @@ fn arrow_keys_step_the_hover_through_the_points() {
         })
     );
 }
+
+#[test]
+fn moving_across_the_chart_moves_the_hover_from_point_to_point() {
+    let mut driver = driver();
+    let (x3, y3) = point_at(&driver, 3);
+    let (x1, y1) = point_at(&driver, 1);
+    // Every move after the first stays inside the chart, so only a
+    // per-move delivery can report the new point.
+    driver.mouse_move(x3, y3);
+    driver.mouse_move(x1, y1);
+    assert_eq!(driver.app().widget.hovered_point, Some((0, 1)));
+    driver.mouse_move(x3, y3);
+    assert_eq!(
+        hovers(&driver),
+        vec![Some((0, 3)), Some((0, 1)), Some((0, 3))]
+    );
+    assert_eq!(driver.app().widget.hovered_point, Some((0, 3)));
+}

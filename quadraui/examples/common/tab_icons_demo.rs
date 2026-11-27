@@ -19,7 +19,7 @@
 //! Every tab is closable: a click on its `×` removes it from the bar
 //! (the icon sidecar is filtered to match). If the closed tab was
 //! active, its **right-hand neighbour** becomes active — the same
-//! close-neighbour rule as `compose::WorkspaceController::close` —
+//! close-neighbour rule as `compose::Workspace::close` —
 //! falling back to the new last tab when the closed tab was the
 //! rightmost one. Close hit-testing is checked before tab-body
 //! activation, so a click on the glyph never doubles as an activation
@@ -179,7 +179,7 @@ impl AppLogic for TabIconsDemo {
                             self.closed[orig] = true;
                             if self.active == orig {
                                 // Close-neighbour rule (see
-                                // `compose::WorkspaceController::close`'s
+                                // `compose::Workspace::close`'s
                                 // doc): the tab that slides into the
                                 // closed one's visible slot — its right
                                 // neighbour — takes over; when the closed

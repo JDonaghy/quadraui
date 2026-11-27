@@ -30,7 +30,7 @@
 //!   without it a form that isn't even the active panel would still
 //!   swallow `Tab` and every other key. Toggle it with
 //!   [`FormController::set_has_focus`], the same shape
-//!   `compose::sidebar_system` uses.
+//!   `compose::sidebar` uses.
 //! - the scrollbar: its own thumb drag, track paging and wheel handling,
 //!   plus the [`crate::Scrollbar`] it paints beside the form body.
 //! - the declarative rules below, applied on every
@@ -230,7 +230,7 @@ impl FormController {
     /// required-field markers) — see [`Self::build_form`]. Distinct from
     /// `form()` so a composing controller that embeds this `Form` inside
     /// its *own* descriptor (e.g.
-    /// [`crate::compose::form_dialog::FormDialogController::dialog`])
+    /// [`crate::compose::form_dialog::FormDialog::dialog_with`])
     /// reports the state that's actually on screen rather than the raw
     /// one the consumer last pushed via [`Self::set_form`] (which may
     /// have gone stale — e.g. `has_focus` toggled by [`Self::set_has_focus`]
@@ -373,7 +373,7 @@ impl FormController {
         self.handle_inner(event, rect, lh, None)
     }
 
-    // ── Scroll primitives (pub for SidebarSystem reuse) ──────────────
+    // ── Scroll primitives (pub for Sidebar reuse) ──────────────
 
     pub fn scroll_by(&mut self, delta: isize, viewport_rows: usize) {
         let max = self.field_count().saturating_sub(viewport_rows);
@@ -513,7 +513,7 @@ impl FormController {
             // routes `KeyPressed` through a form would lose global `Tab`
             // (and every other key) to a form that isn't even the
             // active panel. `set_has_focus`/`form_has_focus` exist for
-            // exactly this (mirrors `compose/sidebar_system.rs`).
+            // exactly this (mirrors `compose/sidebar.rs`).
             UiEvent::KeyPressed { key, modifiers, .. } if self.has_focus => {
                 let vr = viewport_rows_lh(lh, rect);
                 self.delegate(|form, state, cx| {
@@ -798,7 +798,7 @@ impl FormController {
     }
 }
 
-// ── Free functions (shared by FormController + SidebarSystem) ────────
+// ── Free functions (shared by FormController + Sidebar) ────────
 
 // ── Keyboard editing helpers ──────────────────────────────────────────
 

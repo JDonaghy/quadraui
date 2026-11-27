@@ -1,4 +1,4 @@
-//! Win-GUI runner for the shell + MenuSystem regression demo.
+//! Win-GUI runner for the shell + AppMenu regression demo.
 //!
 //! Open the "File" menu and click an item — including the ones drawn
 //! over the activity bar strip on the left, which `ShellView`'s chrome

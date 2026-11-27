@@ -516,7 +516,7 @@ pub struct ScrollSurface {
 /// document). Backends normalise their native direction before
 /// constructing [`ScrollDelta`] — see [`ScrollDelta`] for the
 /// canonical definition. Widgets and compose helpers
-/// ([`SidebarSystem`]) consume the delta directly without per-call-site
+/// ([`crate::Sidebar`]) consume the delta directly without per-call-site
 /// negation.
 ///
 /// # Returns

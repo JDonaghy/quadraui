@@ -1,4 +1,4 @@
-//! `TabGroupController` demo (GTK backend).
+//! `TabGroup` demo (GTK backend).
 //!
 //! Two split panes, each with its own tab bar. Demonstrates tab
 //! switching, closing, new-tab, pane focus, and divider dragging.

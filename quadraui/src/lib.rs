@@ -671,7 +671,8 @@ pub use primitives::editor::{
 };
 pub use primitives::find_replace::{
     compute_hit_regions as compute_find_replace_hit_regions, FindReplaceClickTarget,
-    FindReplaceHit, FindReplaceMetrics, FindReplacePanel, FrHitRegion, FR_PANEL_WIDTH,
+    FindReplaceEvent, FindReplaceField, FindReplaceHit, FindReplaceLayout, FindReplaceMetrics,
+    FindReplacePanel, FindReplaceToggle, FrHitRegion, FR_PANEL_WIDTH,
 };
 pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{
@@ -964,31 +965,28 @@ pub use compose::markdown::{
     all(feature = "macos", target_os = "macos")
 ))]
 pub use compose::SidebarLayout;
+pub use compose::SidebarState;
+pub use compose::{drive_ui_event, Driven};
 pub use compose::{
     filter_help_actions, help_actions_to_palette_items, notify_or_toast, BackendWidget, BottomBand,
     BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelItem, BottomPanelPrimitiveLayout,
-    BottomPanelState, BottomPanelTab, Chat, ChatController, ChatControllerAction, ChatEvent,
-    ChatLayout, ChatRole, ChatState, ChatTurn, ChatZones, ContextMenuController,
-    ContextMenuOutcome, DualModePaletteAction, DualModePaletteController, Edge,
-    FilePickerController, FilePickerMode, FolderPickerController, FormController,
-    FormControllerAction, FormDialogAction, FormDialogController, GroupLayout, Handled, HelpAction,
-    HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,
-    MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition,
-    PathPickerAction, SectionKind, ShellDrag, ShellEvent, ShellLayout, ShellPosition, ShellRegion,
-    ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody,
-    SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
-    SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupController, TabGroupEvent,
-    TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
-    TabGroupSubPart, TabGroupTab, ToastStackAction, ToastStackController, ToolbarHoverTracker,
-    ViewHelp, Workspace, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
-    WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
+    BottomPanelState, BottomPanelTab, Chat, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn,
+    ChatZones, ContextMenuController, ContextMenuOutcome, DualModePaletteAction, Edge,
+    FilePickerMode, FormController, FormControllerAction, FormDialogAction, GroupLayout, Handled,
+    HelpAction, HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker, MenuDef,
+    NavigationMode, PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellEvent,
+    ShellLayout, ShellPosition, ShellRegion, ShellView, ShellViewLayout, ShellViewState, Sidebar,
+    SidebarAction, SidebarBody, SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome,
+    SidebarSection, SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupEvent, TabGroupPane,
+    TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart, TabGroupTab,
+    ToastStackAction, ToastStackController, ToolbarHoverTracker, ViewHelp, Workspace, WorkspaceDoc,
+    WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
-    FilePicker, FilePickerState, FolderPicker, FolderPickerState, FormDialog, FormDialogState,
-    HelpOverlay, HelpOverlayState, MessageDialog, MessageDialogState, PathPickerState,
+    FilePicker, FolderPicker, FormDialog, FormDialogState, HelpOverlay, HelpOverlayState,
+    MessageDialog, MessageDialogState, PathPicker, PathPickerEditState, PathPickerState,
 };
-pub use compose::{SidebarEvent, SidebarState, SidebarSystem};
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
@@ -999,25 +997,15 @@ pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeDa
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.
-// `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`,
-// `DualModePaletteEvent`, `FilePickerEvent`, `FolderPickerEvent`,
-// `FormControllerEvent`, `FormDialogEvent` and `ChatControllerEvent` are
+// `StatusBarAction`, `ToastStackEvent` and `FormControllerEvent` are
 // `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
-// `Handled<WidgetId>`, `MessageDialogController::handle_event`'s
-// `Handled<MessageDialogChoice>`, `ToastStackController::handle_event`'s
-// `Handled<ToastStackAction>`, `DualModePaletteController::handle_event`'s
-// `Handled<DualModePaletteAction>`, `FilePickerController`/
-// `FolderPickerController::handle_event`'s `Handled<PathPickerAction>`,
+// `Handled<WidgetId>`, `ToastStackController::handle_event`'s
+// `Handled<ToastStackAction>` and
 // `FormController::handle_event`/`handle_cached_event`'s
-// `Handled<FormControllerAction>`, `FormDialogController::handle_event`'s
-// `Handled<FormDialogAction>`, and `ChatController::handle_event`'s
-// `Handled<ChatControllerAction>` instead). Allow them here since `pub use`
+// `Handled<FormControllerAction>` instead). Allow them here since `pub use`
 // of a deprecated item is itself a use site.
 #[allow(deprecated)]
-pub use compose::{
-    ChatControllerEvent, DualModePaletteEvent, FilePickerEvent, FolderPickerEvent,
-    FormControllerEvent, FormDialogEvent, MessageDialogEvent, StatusBarAction, ToastStackEvent,
-};
+pub use compose::{FormControllerEvent, StatusBarAction, ToastStackEvent};
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,
     text_selection_line_range, DragState, DragTarget, ScrollSurface, SurfaceScrollbar, TextRegion,

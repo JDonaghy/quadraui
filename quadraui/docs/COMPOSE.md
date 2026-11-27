@@ -109,25 +109,25 @@ impl AppLogic for Docs {
 `examples/tui_wide_tab_bar_demo.rs` (`examples/common/wide_tab_bar_demo.rs`) is a
 runnable app in this shape.
 
-### Shape 2: a controller you drive
+### Shape 2: a widget you drive with raw events
 
-The controller holds the widget and its state; you paint it and offer it
-every event until it resolves:
+You keep the widget and its state; you paint it with `draw_dyn` and offer
+it every event until it resolves:
 
 ```rust
 use quadraui::{
-    AppLogic, Backend, Handled, MessageDialogButton, MessageDialogController,
-    MessageDialogOptions, Reaction, UiEvent, WidgetId,
+    AppLogic, Backend, DrawsPrimitives, Handled, MessageDialog, MessageDialogButton,
+    MessageDialogOptions, MessageDialogState, Reaction, UiEvent, WidgetId,
 };
 
 struct Confirm {
-    dialog: Option<MessageDialogController>,
+    dialog: Option<(MessageDialog, MessageDialogState)>,
     answer: Option<WidgetId>,
 }
 
 impl Confirm {
     fn open(&mut self) {
-        self.dialog = Some(MessageDialogController::new(MessageDialogOptions {
+        let dialog = MessageDialog::new(MessageDialogOptions {
             title: "Discard changes?".into(),
             body: "Unsaved edits will be lost.".into(),
             buttons: vec![
@@ -147,7 +147,8 @@ impl Confirm {
                 },
             ],
             severity: None,
-        }));
+        });
+        self.dialog = Some((dialog, MessageDialogState::default()));
     }
 }
 
@@ -155,14 +156,14 @@ impl AppLogic for Confirm {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        if let Some(dialog) = &self.dialog {
-            dialog.render(backend);
+        if let Some((dialog, _)) = &self.dialog {
+            backend.draw_dyn(backend.viewport().rect(), dialog, &());
         }
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        if let Some(dialog) = self.dialog.as_mut() {
-            match dialog.handle_event(&event, backend) {
+        if let Some((dialog, state)) = self.dialog.as_mut() {
+            match dialog.handle_event(state, &event, backend) {
                 Handled::Event(choice) => {
                     self.answer = Some(choice);
                     self.dialog = None;
@@ -270,35 +271,39 @@ let config = ShellConfig::new("App", panels).with_bottom_panel_config(BottomPane
 
 ---
 
-## `ChatController` — `src/compose/chat_controller.rs`
+## `Chat` — `src/compose/chat.rs`
 
 **Owns:** a chat overlay — scrollable transcript, multi-line input with
 history navigation, status strip, collapsible turns.
 
-**Controller only.** `ChatController::new(id)`; push turns with
-`set_transcript`, paint with `render(backend, rect)`, route with
-`handle_event(&event, backend, rect)` → `Handled<ChatControllerAction>`.
+**Widget:** `Chat` (`State` = `ChatState`, `Action` = `ChatEvent`, delivered
+as `UiEvent::Chat(id, event)`). Every visible field is on the descriptor;
+`Chat::apply` stores each write-back event (`InputChanged`,
+`TranscriptScrolled`, `FocusedTurnChanged`, `TurnCollapsed`).
 
-**Actions (`ChatControllerAction`):** `Submit { text }`,
+**Semantic events (`ChatEvent`):** `Submit { text }`,
 `StreamChunk { text }`, `Cancelled`, `StopRequested`,
 `KeyPressed { key, modifiers }`, `TurnClicked { turn_idx, row_in_turn }`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-let mut chat = ChatController::new("chat");
-chat.set_transcript(turns.clone());
-chat.render(backend, area);
-// in handle():
-if let Handled::Event(ChatControllerAction::Submit { text }) =
-    chat.handle_event(&event, backend, area)
-{
-    send_to_model(text);
+// render(): paint it; frame_tree(): register it.
+frame.push(Surface::Widget { rect: area, widget: Box::new(chat.clone()) });
+tree.push(chat.id, area, Box::new(chat.clone()));
+// handle():
+if let UiEvent::Chat(_, event) = event {
+    chat.apply(&event);
+    if let ChatEvent::Submit { text } = event {
+        send_to_model(text);
+        chat.clear_input();
+    }
 }
 ```
 
-<!-- TODO(0.12 final pass): after D3 (#2949) ports Chat onto the contract, add
-its widget (name, State, Action, UiEvent variant) and recheck this section. -->
+A host whose events do not pass through `AppLogic::frame_tree` (a
+`ShellApp`) keeps a `ChatState` and drives the chat with
+`compose::drive_ui_event`.
 
 **Example:** `examples/tui_chat.rs` / `examples/gtk_chat.rs`
 (`examples/common/chat_demo.rs`).
@@ -349,9 +354,10 @@ e.g. "new branch name"). `Tab` switches modes without clearing the query.
 **Widget:** `DualModePalette` (`State` = `DualModePaletteState`, `Action` =
 `DualModePaletteAction`, delivered as `UiEvent::DualModePalette(id, action)`).
 
-**Controller:** `DualModePaletteController::new(title, input_label, items)`;
-`render(rect, backend)`; `handle_event(&event, visible_rows)` →
-`Handled<DualModePaletteAction>`.
+`DualModePalette::apply(&action, visible_rows)` stores the query, mode and
+highlight changes. An unmodified `j`/`k` moves the highlight in list mode
+only with `vim_keys` set (`with_vim_keys(true)`); by default both type into
+the query.
 
 **Actions (`DualModePaletteAction`):** `ItemConfirmed { idx }`,
 `TextConfirmed { value }`, `QueryChanged { value }`,
@@ -360,12 +366,16 @@ e.g. "new branch name"). `Tab` switches modes without clearing the query.
 **Smallest wiring:**
 
 ```rust,ignore
-let mut pal = DualModePaletteController::new("Branches", Some("New branch name:".to_string()), items);
-pal.render(popup_rect, backend);
-match pal.handle_event(&event, visible_rows) {
-    Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => checkout(idx),
-    Handled::Event(DualModePaletteAction::TextConfirmed { value }) => create_branch(value),
-    _ => {}
+let pal = DualModePalette::new(id, "Branches", Some("New branch name:".to_string()), items);
+// render()/frame_tree(): Surface::Widget + tree.push(pal.id, popup_rect, ...).
+// handle():
+if let UiEvent::DualModePalette(_, action) = event {
+    pal.apply(&action, visible_rows);
+    match action {
+        DualModePaletteAction::ItemConfirmed { idx } => checkout(idx),
+        DualModePaletteAction::TextConfirmed { value } => create_branch(value),
+        _ => {}
+    }
 }
 ```
 
@@ -385,9 +395,10 @@ the `Palette` widget.
 **Widget:** `FilePicker` (`State` = `FilePickerState`, `Action` =
 `PathPickerAction`, delivered as `UiEvent::PathPicker(id, action)`).
 
-**Controller:** `FilePickerController::new(mode, root, filters)` with
-`FilePickerMode::Open` / `Save`; `render(rect, backend)`;
-`handle_event(&event, visible_rows)` → `Handled<PathPickerAction>`.
+**Construct:** `FilePicker::new(mode, root, filters)` with
+`FilePickerMode::Open` / `Save`; paint it with `draw_dyn`; a raw-event host
+calls `handle_event(&event, visible_rows)` → `Handled<PathPickerAction>` and
+stores each change with `apply(&action, visible_rows)`.
 
 **Actions (`PathPickerAction`, shared with `FolderPicker`):**
 `Confirmed { path }`, `Cancelled`, `QueryChanged { .. }`,
@@ -411,19 +422,20 @@ fuzzy filtering, scroll, selection. Paints through the `Palette` widget.
 **Widget:** `FolderPicker` (`State` = `FolderPickerState`, `Action` =
 `PathPickerAction`, delivered as `UiEvent::PathPicker(id, action)`).
 
-**Controller:** `FolderPickerController::rooted_at(root, extra_file_names)`,
-optionally `.with_show_hidden(true)`; `render(rect, backend)`;
-`handle_event(&event, visible_rows)` → `Handled<PathPickerAction>`.
+**Construct:** `FolderPicker::rooted_at(root, extra_file_names)`, optionally
+`.with_show_hidden(true)`; paint it with `draw_dyn`; a raw-event host calls
+`handle_event(&event, visible_rows)` → `Handled<PathPickerAction>` and stores
+each change with `apply(&action, visible_rows)`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-let mut picker = FolderPickerController::rooted_at(start_dir, Vec::new());
-picker.render(popup_rect, backend);
-if let Handled::Event(PathPickerAction::Confirmed { path }) =
-    picker.handle_event(&event, visible_rows)
-{
-    open_workspace(path);
+let mut picker = FolderPicker::rooted_at(start_dir, Vec::new());
+backend.draw_dyn(popup_rect, &picker, &());
+match picker.handle_event(&event, visible_rows) {
+    Handled::Event(PathPickerAction::Confirmed { path }) => open_workspace(path),
+    Handled::Event(change) => picker.apply(&change, visible_rows),
+    _ => {}
 }
 ```
 
@@ -474,10 +486,13 @@ resolves to the cancel button, falling back to the default one.
 **Widget:** `FormDialog::new(id, title)` (`State` = `FormDialogState`,
 `Action` = `FormDialogAction`).
 
-**Controller:** `FormDialogController::new(id, title)` with
-`.with_buttons(..)`, `.with_body(..)`, `.with_severity(..)`;
-`set_form(form)`; `render(backend)` (it centres itself in the viewport);
-`handle_event(&event, backend)` → `Handled<FormDialogAction>`.
+**Raw-event host:** build it with `.with_buttons(..)`, `.with_body(..)`,
+`.with_severity(..)` and set `form` every frame; paint
+`dialog.painted(&state)` with `draw_dyn` over `backend.viewport().rect()`
+(it centres itself in the viewport); `dialog.handle_event(&mut state,
+&event, backend)` → `Handled<FormDialogAction>`. On the runtime's routing
+engine, push the widget as a `Surface::Widget` and register it in
+`frame_tree` instead.
 
 **Actions (`FormDialogAction`):** `ButtonClicked(id)`,
 `FormAction(FormEvent)`.
@@ -485,11 +500,12 @@ resolves to the cancel button, falling back to the default one.
 **Smallest wiring:**
 
 ```rust,ignore
-let mut dialog = FormDialogController::new("create_milestone", "Create milestone")
+let mut dialog = FormDialog::new(WidgetId::new("create_milestone"), "Create milestone")
     .with_buttons(vec![cancel_button, create_button]);
-dialog.set_form(my_form_descriptor);
-dialog.render(backend);
-match dialog.handle_event(&event, backend) {
+let mut state = FormDialogState::default();
+dialog.form = Some(my_form_descriptor);
+backend.draw_dyn(backend.viewport().rect(), &dialog.painted(&state), &());
+match dialog.handle_event(&mut state, &event, backend) {
     Handled::Event(FormDialogAction::ButtonClicked(id)) if id.as_str() == "create" => submit(),
     Handled::Event(FormDialogAction::FormAction(ev)) => apply_field_change(ev),
     _ => {}
@@ -513,21 +529,24 @@ they're searchable by label and description.
 **Widget:** `HelpOverlay` (`id`, `open`, `help`; `Action` =
 `HelpOverlayAction`, delivered as `UiEvent::HelpOverlay(id, action)`).
 
-**Controller:** `HelpOverlayController::new()`; `open_action()` /
-`close_action()` / `toggle_action()`;
-`render(container, backend, registry.get(view_id))`;
-`handle_event(&event)` → `Handled<HelpOverlayAction>` (`Opened`, `Closed`).
+**Raw-event host:** `handle_event(&event)` → `Handled<HelpOverlayAction>`
+(`Opened`, `Closed`; `Consumed` while open); write each action back with
+`apply(action)`. `toggle_action()` flips it from a host binding. Paint it with
+`draw_dyn` over the window, with `help` set to the active view's `ViewHelp`.
 
 **Smallest wiring:**
 
 ```rust,ignore
 let mut registry = HelpRegistry::new();
 registry.register("editor", ViewHelp::new("Editor").with_notes(notes).with_actions(actions));
-let mut overlay = HelpOverlayController::new();
-// on `?`:
-overlay.toggle_action();
+let mut overlay = HelpOverlay::new(WidgetId::new("help"));
+// in handle():
+if let Handled::Event(action) = overlay.handle_event(&event) {
+    overlay.apply(action);
+}
 // every frame:
-overlay.render(area, backend, registry.get("editor"));
+let shown = HelpOverlay { help: registry.get("editor").cloned(), ..overlay.clone() };
+backend.draw_dyn(area, &shown, &());
 ```
 
 **Example:** `examples/tui_help_layer.rs` / `examples/gtk_help_layer.rs`
@@ -619,7 +638,7 @@ backend.draw_dyn(layout.bounds, &popup, &());
 
 ---
 
-## `AppMenu` / `MenuSystem` — `src/compose/menu_system.rs`
+## `AppMenu` — `src/compose/app_menu.rs`
 
 **Owns:** a menu bar and its dropdowns — open/close, Alt-key activation,
 arrow-key navigation, hover-to-switch between open menus, submenus. Define
@@ -636,17 +655,19 @@ view (`AppMenu::apply` does it); `AppMenuEvent::Activated(id)` is a chosen
 item. `Primitive::native_presentation` installs the bar natively where the
 backend presents menus natively.
 
-**Controller:** `MenuSystem::new(menus)`; `render(backend, bar_rect)`;
-`handle(&event, backend, bar_rect)` → `MenuEvent` (`Activated(id)`,
-`StateChanged`, `Consumed`, `Ignored`).
+**Raw-event host:** a host that reads raw `UiEvent`s keeps the `AppMenu` and
+its `AppMenuState` and calls `render(backend, bar_rect)` and
+`handle_ui_event(&mut state, &event, backend, bar_rect)`, which applies every
+view change itself, keeps the open dropdown on the modal stack and answers a
+`Handled<AppMenuEvent>`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-match self.menu_system.handle(&event, backend, bar_rect) {
-    MenuEvent::Activated(id) if id.as_str() == "save" => save(),
-    MenuEvent::StateChanged | MenuEvent::Consumed => return Reaction::Redraw,
-    _ => {}
+match self.menu.handle_ui_event(&mut self.menu_state, &event, backend, bar_rect) {
+    Handled::Event(AppMenuEvent::Activated(id)) if id.as_str() == "save" => save(),
+    Handled::Ignored => {}
+    _ => return Reaction::Redraw,
 }
 ```
 
@@ -669,10 +690,11 @@ show → resolve → return-a-choice contract
 delivered as `UiEvent::MessageDialogResolved(choice)`). It centres itself in
 the rect it is laid out in, so hand it the whole viewport.
 
-**Controller:** `MessageDialogController::new(options)`, optionally
-`.with_id(..)` / `.with_vertical_buttons(..)`; `render(backend)`;
-`handle_event(&event, backend)` → `Handled<MessageDialogChoice>`. Shape 2
-above is a complete example.
+**Raw-event host:** optionally `.with_id(..)` / `.with_vertical_buttons(..)`;
+paint it with `draw_dyn` over `backend.viewport().rect()`;
+`dialog.handle_event(&mut state, &event, backend)` →
+`Handled<MessageDialogChoice>`; `dialog.bounds(backend)` for a modal-stack
+entry. Shape 2 above is a complete example.
 
 **Modal stack:** a host with its own engine pushes the dialog's bounds onto
 `Backend::modal_stack_handle()` when it opens and pops them when it closes,
@@ -745,39 +767,50 @@ let layout = panel.render(backend, panel_rect, &explorer_tree);
 
 ---
 
-## `SidebarSystem` — `src/compose/sidebar_system.rs`
+## `Sidebar` — `src/compose/sidebar.rs`
 
 **Owns:** a multi-section sidebar (VS Code's Explorer/Outline/Timeline
 stack) — per-section scroll and selection, active-section cycling,
 collapse, scrollbar drag, keyboard navigation, and two-layer click dispatch
-(section header, then body with coordinates translated). Each section is
-tree-bodied (`SidebarSectionDef::new`) or form-bodied
-(`SidebarSectionDef::form`).
+(section header, then body). Each section is tree-bodied
+(`SidebarSectionDef::new`) or form-bodied (`SidebarSectionDef::form`).
 
-**Controller only.** `SidebarSystem::new(defs)`; `set_rows(section, rows)`
-/ `set_form(section, form)`; `render(backend, rect)`;
-`handle(&event, backend, rect)` → `SidebarEvent`.
+**Widget.** `Sidebar` implements the contract (`State` = `SidebarState`,
+`Action` = `SidebarAction`) in controlled mode: collapse, visibility,
+badges, the active section, each tree's rows, selection and scroll, and
+the panel scroll are its fields, and every change comes back as a
+`SidebarAction` the host applies (`Sidebar::apply`). List it in
+`AppLogic::frame_tree`, or drive it with raw events through
+`Sidebar::handle_event(&mut state, &event, backend, rect)`, which answers
+every action the event produced. `Sidebar::from_defs(id, &defs)` builds
+it; `set_rows` keeps a row's rename session across rebuilt rows;
+`start_editing`, `reveal` and `toggle_expand_selected` cover the
+programmatic gestures.
 
-**Events (`SidebarEvent`):** `HeaderActivated { section }`,
+**Actions (`SidebarAction`):** `HeaderActivated { section }`,
+`ActiveSectionChanged { section }`, `CollapseChanged { .. }`,
 `RowSelected { section, path }`, `RowActivated { section, path }`,
 `RowToggleExpand { section, path }`, `ContextMenuRequested { .. }`,
-`ScrollChanged { section }`, `EditConfirmed { .. }`,
-`EditCancelled { section, path }`, `EditChanged { .. }`,
-`FormEvent { section, event }`, `StateChanged`, `Consumed`, `Ignored`.
+`ScrollChanged { section, offset }`, `PanelScrolled { offset }`,
+`EditChanged { .. }`, `EditConfirmed { .. }`,
+`EditCancelled { section, path }`, `Form { section, event }`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-let mut sidebar = SidebarSystem::new(vec![SidebarSectionDef::new("files", "Files")]);
+let mut sidebar = Sidebar::from_defs("files", &[SidebarSectionDef::new("files", "Files")]);
+let mut state = SidebarState::default();
 sidebar.set_rows(0, file_tree_rows);
-sidebar.render(backend, sidebar_rect);
-if let SidebarEvent::RowActivated { path, .. } = sidebar.handle(&event, backend, sidebar_rect) {
-    open_file(path);
+backend.draw_dyn(sidebar_rect, &sidebar, &());
+if let Handled::Event(actions) = sidebar.handle_event(&mut state, &event, backend, sidebar_rect) {
+    for action in actions {
+        if let SidebarAction::RowActivated { path, .. } = &action {
+            open_file(path);
+        }
+        sidebar.apply(&action);
+    }
 }
 ```
-
-<!-- TODO(0.12 final pass): after D7 (#2953, SidebarSystem half) ports this onto
-the contract, add its widget, State and Action, and recheck the event list. -->
 
 **Example:** `examples/msv_multi_tree.rs` / `examples/gtk_multi_tree.rs`
 (`examples/common/multi_tree.rs`); search and toggle sections in
@@ -819,46 +852,54 @@ its title bar).
 
 ---
 
-## `TabGroupController` — `src/compose/tab_group.rs`
+## `TabGroup` — `src/compose/tab_group.rs`
 
-**Owns:** an editor-group-style tabbed split layout — `TabBar` + `Split` +
-`DropZone` wired into N panes in an arbitrary nested horizontal/vertical
-split tree, each pane with its own scrollable tab bar. Tab activation,
-closing, new-tab, pane focus, divider drag and drag-a-tab-to-another-pane
-all go through one controller.
+**Owns:** an editor-group-style tabbed split layout — a `TabBar` per pane,
+one `SplitTree` for the dividers and a `DropOverlay` popup for tab drags —
+over N panes in an arbitrary nested horizontal/vertical split tree, each
+pane with its own scrollable tab strip. Tab activation, closing, new-tab,
+pane focus, divider drag and drag-a-tab-to-another-pane all route through
+the widget's own `Interactive`.
 
-**Controller only.** `TabGroupController::with_pane(pane_id, tabs,
-active_tab_id, split_direction)`; `render(backend, bounds)` →
-`TabGroupLayout`; `handle_click_event(x, y)` → `Handled<TabGroupEvent>`;
-`handle_drag_start` / `handle_drag_move_event` / `handle_drag_end` for
-divider drags; `handle_tab_drag_start` / `handle_tab_drag_move` /
-`handle_tab_drop_event` for moving tabs.
+**Widget:** `TabGroup::with_pane(id, pane, split_direction)` or
+`TabGroup::from_layout(id, panes, layout, split_direction)`
+(`State` = `TabGroupState`, `Action` = `TabGroupEvent`, delivered as
+`UiEvent::TabGroup(id, event)`). The descriptor is the model: write each
+intent back with `TabGroup::apply(event)`, which returns the changes it
+made; `add_tab`, `switch_tab`, `close_tab`, `add_pane_after` and
+`collapse_pane` change it directly. The layout
+(`TabGroupPrimitiveLayout`) hands back each pane's `content_bounds`; the
+host paints the bodies. A press in the body of the pane that already has
+focus is the host's.
 
-**Events (`TabGroupEvent`):** `TabActivated { pane_idx, tab_id }`,
-`TabClosed { pane_idx, tab_id }`, `PaneCollapsed { .. }`,
-`PaneAdded { pane_idx }`, `PaneFocused { pane_idx }`,
-`DividerResized { divider_idx }`, `NewTabRequested { pane_idx }`,
-`TabReordered { .. }`, `TabMovedToPane { .. }`, `TabSplitToNewPane { .. }`.
+**Events (`TabGroupEvent`):** intents `TabActivated { pane_idx, tab_id }`,
+`TabClosed { pane_idx, tab_id }`, `PaneFocused { pane_idx }`,
+`DividerResized { divider_idx, ratio }`, `NewTabRequested { pane_idx }`,
+`TabDropped { tab_id, instruction }`; changes `apply` reports besides
+those: `PaneCollapsed { .. }`, `TabReordered { .. }`,
+`TabMovedToPane { .. }`, `TabSplitToNewPane { .. }`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-let tabs = vec![PaneTab {
-    id: "t0".into(),
-    label: "main.rs".into(),
-    closable: true,
-    content: Box::new(MyContent),
-}];
-let mut group = TabGroupController::with_pane("main", tabs, "t0", SplitDirection::Horizontal);
-let layout = group.render(backend, area);
-// on a click at (x, y):
-if let Handled::Event(TabGroupEvent::TabActivated { tab_id, .. }) = group.handle_click_event(x, y) {
-    activate(tab_id);
+let mut group = TabGroup::with_pane(
+    WidgetId::new("editors"),
+    TabGroupPane::new("main", vec![TabGroupTab::new("t0", "main.rs")], "t0"),
+    SplitDirection::Horizontal,
+);
+// render: paint the group, then each pane's body.
+let painted = backend.draw_dyn(area, &group, &());
+// frame_tree: route it.
+tree.push(group.id, area, Box::new(group.clone()));
+// handle:
+if let UiEvent::TabGroup(_, intent) = event {
+    for change in group.apply(intent) {
+        if let TabGroupEvent::TabActivated { tab_id, .. } = change {
+            activate(tab_id);
+        }
+    }
 }
 ```
-
-<!-- TODO(0.12 final pass): after D9 (#2955) ports TabGroup onto the contract,
-add its widget, State and Action, and recheck the constructor and event list. -->
 
 **Example:** `examples/tui_tabgroup.rs` / `examples/gtk_tabgroup.rs`
 (`examples/common/tab_group_demo.rs`); active-tab bracket chrome in
@@ -919,53 +960,12 @@ section while the file exists. -->
 
 ---
 
-## `TreeController` — `src/compose/tree_controller.rs`
-
-**Owns:** one keyboard-navigable `TreeView` with scrollbar, for a host that
-routes raw events itself — selection with scroll-to-follow, click
-hit-testing, scrollbar thumb drag, wheel scrolling, inline rename.
-`SidebarSystem` builds one per tree-bodied section.
-
-**For a standalone tree, the `TreeView` widget routes itself.** `TreeView`
-implements the contract (`State` = `TreeViewState`, `Action` = `TreeEvent`):
-list it in `AppLogic::frame_tree` and the runtime handles selection,
-navigation and typeahead.
-
-**Controller:** `TreeController::new(id)`; `set_rows(rows)`;
-`render(backend, rect)`; `handle(&event, backend, rect)` →
-`TreeControllerEvent` (`RowSelected { path }`, `RowActivated { path }`,
-`RowToggleExpand { path }`, `ScrollChanged`, `EditConfirmed { .. }`,
-`EditCancelled { .. }`, `EditChanged { .. }`,
-`ContextMenuRequested { .. }`, `Consumed`, `Ignored`).
-
-**Smallest wiring:**
-
-```rust,ignore
-let mut tree = TreeController::new("files");
-tree.set_rows(rows);
-tree.render(backend, area);
-if let TreeControllerEvent::RowActivated { path } = tree.handle(&event, backend, area) {
-    open(path);
-}
-```
-
-<!-- TODO(0.12 final pass): after the collapse (#2977/#2978) removes
-`classify_tree_nav_key` and the `*_via` delegates, check whether
-`TreeController` survives and update or delete this section. -->
-
-**Example:** no standalone demo — the tree examples drive it through
-`SidebarSystem` (`examples/msv_multi_tree.rs`,
-`examples/common/sidebar_panel_body_demo.rs`). Its `#[cfg(test)]` module is
-the direct-use reference.
-
----
-
 ## `TreeNavCore` — `src/behaviour/nav.rs`
 
 Not a compose module: it lives in `quadraui::behaviour` beside the other
 shared interaction rules (`ensure_visible`, `FlatNav`, `Typeahead`), and is
-listed here because `TreeController` and `TreeTableController` are built on
-it.
+listed here because `TreeView`'s `Interactive` and `TreeTableController` are
+built on it.
 
 **Owns:** the row-type-agnostic half of tree navigation — selection by
 `TreePath`, Up/Down/PageUp/PageDown/Home/End, the Left/Right
@@ -1050,36 +1050,36 @@ module is the direct-use reference.
 
 **Owns:** an **open-N-view-one** set of opaque document ids with exactly
 one active, shown as a `TabBar` strip: open, close, activate, reorder,
-preview tabs, click and keyboard routing. Unlike `TabGroupController` it
-owns no content: the host paints the active document's body, which can
-borrow app state.
+preview tabs, click and keyboard routing. The host paints the active
+document's body, which can borrow app state.
 
 **Widget:** `Workspace::new(id)` with `.with_docs(..)`, `.with_active(..)`,
 `.with_preview(..)` (`State` = `WorkspaceState`, `Action` =
 `WorkspaceEvent`, delivered as `UiEvent::Workspace(id, event)`). Shape 1
 above is a complete example. A press on the body area is the host's.
 
-**Controller:** `WorkspaceController::new(bar_id)`; `open(doc)`,
-`close(id)`, `activate(id)` and `reorder(from, to)` return the
-`WorkspaceEvent`s they caused; `render(backend, bounds)` → `WorkspaceLayout` (`strip_bounds`,
-`body_bounds`); `handle_click_event(x, y, button)` →
-`Handled<Vec<WorkspaceEvent>>`; `handle_key_event(&key, modifiers)` →
-`Handled<WorkspaceEvent>`.
+**Model:** `open(doc)`, `open_preview(doc)`, `close(id)`, `activate(id)`,
+`reorder(from, to)`, `cycle(delta)`, `promote(id)` and `set_dirty(id, ..)`
+return the `WorkspaceEvent`s they caused; `apply(intent)` writes back what
+the strip reported. `Workspace::cycle_delta(&key, modifiers)` maps
+`Ctrl+Tab`-style keys for a host that binds them app-wide.
 
 **Actions (`WorkspaceEvent`):** `Opened { id, index }`,
 `Activated { id, index }`, `Closed { id, index }`,
 `Reordered { id, from, to }`, `Promoted { id }`.
 
-**Smallest wiring (controller):**
+**Smallest wiring:**
 
 ```rust,ignore
-let mut ws = WorkspaceController::new("panel:docs");
+let mut ws = Workspace::new(WidgetId::new("panel:docs"));
 ws.open(WorkspaceDoc::new("doc:a", "alpha.rs"));
-let layout = ws.render(backend, panel_rect);
-paint_body(backend, layout.body_bounds);
-// on a click at (x, y):
-if let Handled::Event(events) = ws.handle_click_event(x, y, MouseButton::Left) {
-    for ev in events {
+// render:
+let painted = backend.draw_dyn(panel_rect, &ws, &());
+// frame_tree:
+tree.push(ws.id, panel_rect, Box::new(ws.clone()));
+// handle:
+if let UiEvent::Workspace(_, intent) = event {
+    for ev in ws.apply(intent) {
         if let WorkspaceEvent::Activated { id, .. } = ev {
             switch_to(id);
         }

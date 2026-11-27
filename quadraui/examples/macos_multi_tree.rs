@@ -4,7 +4,7 @@
 //! `DebugSidebar` `AppLogic` impl in `examples/common/multi_tree.rs`;
 //! only the runner call differs. Demonstrates the debug-sidebar
 //! consumer pattern: a `MultiSectionView` with four `TreeView`
-//! sections (the `SidebarSystem` compose helper drives focus,
+//! sections (the `Sidebar` widget drives focus,
 //! scrolling, and scrollbar drag).
 //!
 //! Controls:

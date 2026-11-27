@@ -2067,7 +2067,7 @@ mod tests {
     // Paints a Form section above a Tree section, finds the painted form
     // field labels and tree row text, hit-tests the coordinates, and
     // asserts each hit lands in the correct section with the correct body
-    // type. Validates the SidebarSystem → MSV → TUI pipeline end-to-end.
+    // type. Validates the Sidebar → MSV → TUI pipeline end-to-end.
 
     use crate::primitives::form::{FieldKind, Form, FormField};
 

@@ -49,7 +49,7 @@ pushes the work onto every consumer — the duplication this crate exists to
 prevent. The degrade belongs in `compose/`, behind the same call, so one
 app-side call site gets a native dialog on GUI and an in-canvas one on TUI.
 
-`compose::FolderPickerController` is the pattern done right: it began as
+`compose::FolderPicker` is the pattern done right: it began as
 vimcode's TUI-local `FolderPickerState` and was lifted here verbatim, so today
 vimcode drives one backend-neutral picker on every backend and branches nowhere.
 Copy that shape. What is still missing is a **file** open/save picker (only the

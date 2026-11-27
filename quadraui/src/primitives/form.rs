@@ -816,7 +816,7 @@ fn field_is_focusable(field: &FormField) -> bool {
 ///
 /// Shared by [`crate::compose::form_controller::FormController`] (which
 /// wraps within the form) and
-/// [`crate::compose::form_dialog::FormDialogController`] (which needs to
+/// [`crate::compose::form_dialog::FormDialog`] (which needs to
 /// detect stepping off either end *before* forwarding a Tab/Shift-Tab
 /// keypress into the form, so it can hand focus to its own button row
 /// instead), and by a `quadraui-py`/`quadraui-node` host's own
@@ -1328,7 +1328,7 @@ impl Form {
             // `layout_metrics::form_field_measure` does (every pixel
             // backend). A caller that measures in a different unit
             // system instead (`compose::form_controller`'s and
-            // `compose::sidebar_system`'s own backend-free TUI-cell
+            // `compose::sidebar`'s own backend-free TUI-cell
             // fallback `form_field_measure`s, both hand-rolled, neither
             // setting this field) leaves it at `FormFieldMeasure::
             // with_items`'s `0.0` default, so this never fires for

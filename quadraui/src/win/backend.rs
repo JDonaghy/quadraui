@@ -17,7 +17,6 @@ use crate::event::{Point, Rect, UiEvent, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
@@ -2898,24 +2897,6 @@ impl Backend for WinBackend {
             self.resolved_row_height(self.current_line_height),
             self.current_char_width,
         )
-    }
-
-    /// Real Direct2D/DirectWrite
-    /// rendering via [`crate::primitives::find_replace::paint`] once a
-    /// surface is attached. See the [`WinBackend`] "Before a surface is attached" doc for the
-    /// "surface not attached yet" fallback posture.
-    fn draw_find_replace(&mut self, rect: Rect, panel: &FindReplacePanel) {
-        #[cfg(target_os = "windows")]
-        if self.surface.is_some() && self.dwrite.is_some() {
-            let _ = rect;
-            let theme = self.current_theme;
-            let style = Backend::style(self);
-            crate::primitives::find_replace::paint(panel, self, &theme, &style);
-            return;
-        }
-        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, panel);
     }
 
     /// Real Direct2D rasteriser via `win::scrollbar` once a surface
@@ -6116,7 +6097,8 @@ mod tests {
         });
 
         let (hit_regions, _input_width) = compute_hit_regions(50, false, "1 of 3", 2, 2);
-        let panel = FindReplacePanel {
+        let panel = crate::FindReplacePanel {
+            id: crate::WidgetId::new("find_replace"),
             query: "needle".into(),
             replacement: String::new(),
             show_replace: false,
@@ -6139,19 +6121,11 @@ mod tests {
         // Reads the cell metrics off the backend rather than assuming
         // `WinBackend::new`'s 16.0/8.0 defaults: `attach_headless`
         // overwrites `current_line_height`/`current_char_width` with the
-        // *measured* DirectWrite metrics of the editor font, and those
-        // are what `Backend::draw_find_replace` then hands
-        // `crate::primitives::find_replace::paint`. Hardcoding
-        // 16.0/8.0 here would put the probe at coordinates the painter
-        // never painted on any host whose font measures differently.
+        // *measured* DirectWrite metrics of the editor font, and
+        // `anchored_rect` sizes the popup from those.
         let cw = backend.char_width().max(1.0);
-        let lh = backend.line_height().max(1.0);
-        // Same geometry `native_surface_paint::paint` resolves at paint
-        // time, via the shared `FindReplaceMetrics` seam.
-        let style = crate::style::Style::default();
-        let metrics =
-            crate::primitives::find_replace::FindReplaceMetrics::resolve(&panel, &style, cw, lh);
-        let popup = metrics.popup_rect;
+        let lh = backend.chrome_line_height().max(1.0);
+        let popup = panel.anchored_rect(&backend, Rect::new(0.0, 0.0, W as f32, H as f32));
         assert!(
             popup.width > 8.0
                 && popup.height > 8.0
@@ -6162,7 +6136,7 @@ mod tests {
         );
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_find_replace(Rect::new(0.0, 0.0, W as f32, H as f32), &panel);
+        let _ = crate::DrawsPrimitives::draw_dyn(&mut backend, popup, &panel, &());
         backend.end_frame();
 
         // 4 DIPs inside the popup's bottom-right corner: past the border

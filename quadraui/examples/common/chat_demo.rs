@@ -1,16 +1,16 @@
-//! Backend-agnostic `AppLogic` for the `ChatController` demo
+//! Backend-agnostic `AppLogic` for the [`Chat`] demo
 //! ([`tui_chat`] / [`gtk_chat`]).
 //!
 //! Demonstrates a self-contained chat overlay that:
-//! - Renders a `ChatController` covering the full viewport.
+//! - Paints a [`Chat`] covering the full viewport and registers it in the
+//!   frame tree, so the runtime routes every key, click and wheel to it.
 //! - Echoes submitted messages as `User` turns.
-//! - Responds immediately with a simulated `Assistant` reply after a few ticks.
+//! - Responds with a simulated `Assistant` reply after a few ticks.
 //! - Tracks a rotating spinner frame while the "assistant" is thinking.
 //! - Supports `↑`/`↓` input-history navigation.
 //! - Shows a status strip with context label and model chip.
 //! - Opts into `submit_on_enter` plus a persistent hint line, and a
 //!   clickable Send/Stop segment at the right of the input row.
-//! - Exits on `q` / `Ctrl+C`.
 //!
 //! Controls:
 //! - Type any text; `Enter` submits it.
@@ -26,7 +26,7 @@
 //!   `Shift+Tab` has focused it) to collapse it to a one-line summary
 //!   card; click/`Enter` again to expand it back.
 //! - `Esc` — clear the input, or quit when the input is already empty.
-//! - `q` / `Ctrl+C` — quit immediately.
+//! - `Ctrl+C` with nothing selected — quit immediately.
 //!
 //! The "thinking" spinner's per-frame countdown (`Self::tick`) uses
 //! [`Backend::request_frame_in`] to re-arm itself at a precise ~100ms
@@ -36,60 +36,106 @@
 //! than timer-owned).
 
 use quadraui::{
-    AppLogic, Backend, ChatController, ChatControllerAction, ChatRole, ChatTurn, Color, Handled,
-    Key, Reaction, Rect, StyledText, UiEvent,
+    AppLogic, Backend, Chat, ChatEvent, ChatRole, ChatTurn, Color, FrameTree, Reaction, Rect,
+    ScreenLayout, StyledText, Surface, UiEvent, WidgetId,
 };
+use std::cell::Cell;
 use std::time::Duration;
 
 /// Cadence for the "thinking" spinner's animation frame while
 /// `thinking_ticks > 0` — see [`ChatDemo::tick`].
 const THINKING_TICK_INTERVAL: Duration = Duration::from_millis(100);
 
-/// Demo app wrapping a `ChatController`.
+/// Demo app owning a [`Chat`].
 ///
-/// The controller owns all input and layout state. The app owns only the
-/// transcript (a `Vec<ChatTurn>`) and updates the controller's snapshot via
-/// `set_transcript` on every event that changes the conversation.
+/// The chat descriptor holds every visible field; the app applies each
+/// [`ChatEvent`] the chat reports and owns the transcript.
 pub struct ChatDemo {
-    controller: ChatController,
-    /// Accumulated transcript. A clone is pushed to the controller after each
-    /// mutation so the controller's render pass sees the latest state.
-    turns: Vec<ChatTurn>,
+    chat: Chat,
+    /// Where the chat painted last frame, for `frame_tree` to register.
+    area: Cell<Rect>,
     /// Non-zero while simulating an assistant "thinking" delay.
     thinking_ticks: usize,
     /// Pending assistant reply text (set when the user submits, delivered after
     /// the thinking delay).
     pending_reply: Option<String>,
-    /// Monotonically advancing spinner animation frame. Incremented every tick
-    /// while the assistant is "thinking" so the spinner visibly rotates.
-    spinner_frame: usize,
 }
 
 impl ChatDemo {
     pub fn new() -> Self {
-        let mut controller = ChatController::new("demo:chat");
-        controller.set_status(StyledText::plain("Chat demo — Enter to send, q to quit"));
-        controller.set_model_label("claude-opus-4-5");
+        let mut chat = Chat::new(WidgetId::new("demo:chat"));
+        chat.status = StyledText::plain("Chat demo — Enter to send, Esc to quit");
+        chat.model_label = "claude-opus-4-5".into();
         // Zed-style "Enter to send" plus a persistent hint line
         // (unlike the placeholder, this stays visible while typing).
-        controller.set_submit_on_enter(true);
-        controller.set_hint(Some(StyledText::plain(
+        chat.submit_on_enter = true;
+        chat.hint = Some(StyledText::plain(
             "Enter to send · Shift+Enter for a newline",
-        )));
+        ));
         Self {
-            controller,
-            turns: Vec::new(),
+            chat,
+            area: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
             thinking_ticks: 0,
             pending_reply: None,
-            spinner_frame: 0,
         }
     }
 
-    /// Push the current transcript + busy state into the controller so the
-    /// next `render()` call sees the latest snapshot.
-    fn sync_controller(&mut self) {
-        self.controller.set_transcript(self.turns.clone());
-        self.controller.set_busy(self.thinking_ticks > 0);
+    fn react(&mut self, event: ChatEvent, backend: &mut dyn Backend) -> Reaction {
+        self.chat.apply(&event);
+        match event {
+            ChatEvent::Submit { text } => {
+                self.chat.transcript.push(ChatTurn {
+                    role: ChatRole::User,
+                    text: StyledText::colored(text.clone(), Color::rgb(220, 220, 220)),
+                    timestamp_unix: None,
+                    line_scales: Vec::new(),
+                });
+                self.chat.clear_input();
+                // Queue a simulated reply (delivered after a few ticks).
+                self.pending_reply = Some(format!("Echo: {text}"));
+                self.thinking_ticks = 5;
+                self.chat.busy = true;
+                // Arm the first precise wake here rather than waiting on
+                // the runner's coarse idle-poll fallback for it — see
+                // `Self::tick`'s matching call.
+                backend.request_frame_in(THINKING_TICK_INTERVAL);
+                Reaction::Redraw
+            }
+            ChatEvent::Cancelled => {
+                if self.chat.input_text().is_empty() {
+                    Reaction::Exit
+                } else {
+                    self.chat.clear_input();
+                    Reaction::Redraw
+                }
+            }
+            // Clicking the Send segment while it reads "Stop" interrupts
+            // the simulated "thinking" reply — a real app would cancel its
+            // backend session continuation here instead.
+            ChatEvent::StopRequested => {
+                self.thinking_ticks = 0;
+                self.pending_reply = None;
+                self.chat.busy = false;
+                Reaction::Redraw
+            }
+            // Clicking a turn's role-header row (row 0 of its block)
+            // toggles it between its full body and a one-line summary
+            // card. A click elsewhere in the body is ignored here — a real
+            // consumer (e.g. vimcode's tool-call cards) would resolve
+            // `row_in_turn` to a `path:line` location instead.
+            ChatEvent::TurnClicked {
+                turn_idx,
+                row_in_turn: 0,
+            } => {
+                self.chat.toggle_turn_collapsed(turn_idx);
+                Reaction::Redraw
+            }
+            ChatEvent::KeyPressed { key, modifiers } if modifiers.ctrl && key == "Char('c')" => {
+                Reaction::Exit
+            }
+            ChatEvent::KeyPressed { .. } | ChatEvent::TurnClicked { .. } => Reaction::Continue,
+            _ => Reaction::Redraw,
+        }
     }
 }
 
@@ -102,118 +148,60 @@ impl Default for ChatDemo {
 impl AppLogic for ChatDemo {
     type AreaId = ();
 
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        backend.set_focus(Some(self.chat.id));
+    }
+
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let rect = Rect::new(0.0, 0.0, vp.width, vp.height);
-        self.controller.render(backend, rect);
+        self.area.set(rect);
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect,
+            widget: Box::new(self.chat.clone()),
+        });
+        frame.draw(backend);
+    }
+
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(self.chat.id, self.area.get(), Box::new(self.chat.clone()));
+        tree
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        // Global quit keys bypass the controller.
-        if let UiEvent::KeyPressed {
-            ref key,
-            ref modifiers,
-            ..
-        } = event
-        {
-            match key {
-                Key::Char('q') => return Reaction::Exit,
-                Key::Char('c') if modifiers.ctrl => return Reaction::Exit,
-                _ => {}
-            }
-        }
-
-        let vp = backend.viewport();
-        let rect = Rect::new(0.0, 0.0, vp.width, vp.height);
-        let ev = self.controller.handle_event(&event, backend, rect);
-
-        match ev {
-            Handled::Event(ChatControllerAction::Submit { text }) => {
-                // Append the user turn.
-                self.turns.push(ChatTurn {
-                    role: ChatRole::User,
-                    text: StyledText::colored(text.clone(), Color::rgb(220, 220, 220)),
-                    timestamp_unix: None,
-                    line_scales: Vec::new(),
-                });
-                self.controller.clear_input();
-                // Queue a simulated reply (delivered after a few ticks).
-                self.pending_reply = Some(format!("Echo: {text}"));
-                self.thinking_ticks = 5;
-                // Arm the first precise wake here rather
-                // than waiting on the runner's coarse idle-poll fallback
-                // for it — see `Self::tick`'s matching call.
-                backend.request_frame_in(THINKING_TICK_INTERVAL);
-                self.sync_controller();
-                Reaction::Redraw
-            }
-            Handled::Event(ChatControllerAction::Cancelled) => {
-                if self.controller.input_text().is_empty() {
-                    Reaction::Exit
-                } else {
-                    self.controller.clear_input();
-                    Reaction::Redraw
-                }
-            }
-            // Clicking the Send segment while it reads "Stop"
-            // interrupts the simulated "thinking" reply — a real app would
-            // cancel its backend session continuation here instead.
-            Handled::Event(ChatControllerAction::StopRequested) => {
-                self.thinking_ticks = 0;
-                self.pending_reply = None;
-                self.sync_controller();
-                Reaction::Redraw
-            }
-            // Clicking a turn's role-header row (row 0 of its
-            // block) toggles it between its full body and a one-line
-            // summary card. A click elsewhere in the body is ignored here —
-            // a real consumer (e.g. vimcode's tool-call cards) would resolve
-            // `row_in_turn` to a `path:line` location instead.
-            Handled::Event(ChatControllerAction::TurnClicked {
-                turn_idx,
-                row_in_turn: 0,
-            }) => {
-                self.controller.toggle_turn_collapsed(turn_idx);
-                self.sync_controller();
-                Reaction::Redraw
-            }
-            Handled::Consumed => Reaction::Redraw,
-            _ => {
-                if matches!(event, UiEvent::WindowResized { .. }) {
-                    Reaction::Redraw
-                } else {
-                    Reaction::Continue
-                }
-            }
+        match event {
+            UiEvent::Chat(id, event) if id == self.chat.id => self.react(event, backend),
+            UiEvent::WindowResized { .. } => Reaction::Redraw,
+            _ => Reaction::Continue,
         }
     }
 
     fn tick(&mut self, backend: &mut dyn Backend) -> Reaction {
-        if self.thinking_ticks > 0 {
-            self.thinking_ticks -= 1;
-            // Advance spinner animation by one frame each tick.
-            self.spinner_frame = self.spinner_frame.wrapping_add(1);
-            self.controller.set_spinner_frame(self.spinner_frame);
-            if self.thinking_ticks == 0 {
-                // Deliver the simulated reply.
-                if let Some(reply) = self.pending_reply.take() {
-                    self.turns.push(ChatTurn {
-                        role: ChatRole::Assistant,
-                        text: StyledText::colored(reply, Color::rgb(180, 230, 180)),
-                        timestamp_unix: None,
-                        line_scales: Vec::new(),
-                    });
-                }
-            } else {
-                // Still counting down — ask to be woken
-                // again at a precise interval instead of relying on
-                // whatever idle cadence (if any) the runner happens to
-                // poll at.
-                backend.request_frame_in(THINKING_TICK_INTERVAL);
-            }
-            self.sync_controller();
-            return Reaction::Redraw;
+        if self.thinking_ticks == 0 {
+            return Reaction::Continue;
         }
-        Reaction::Continue
+        self.thinking_ticks -= 1;
+        // Advance the spinner animation by one frame each tick.
+        self.chat.spinner_frame = self.chat.spinner_frame.wrapping_add(1);
+        if self.thinking_ticks == 0 {
+            // Deliver the simulated reply.
+            if let Some(reply) = self.pending_reply.take() {
+                self.chat.transcript.push(ChatTurn {
+                    role: ChatRole::Assistant,
+                    text: StyledText::colored(reply, Color::rgb(180, 230, 180)),
+                    timestamp_unix: None,
+                    line_scales: Vec::new(),
+                });
+            }
+            self.chat.busy = false;
+        } else {
+            // Still counting down — ask to be woken again at a precise
+            // interval instead of relying on whatever idle cadence (if
+            // any) the runner happens to poll at.
+            backend.request_frame_in(THINKING_TICK_INTERVAL);
+        }
+        Reaction::Redraw
     }
 }

@@ -1,4 +1,4 @@
-//! `MessageDialogController` demo on the GTK runner.
+//! `MessageDialog` demo on the GTK runner.
 //!
 //! Demonstrates the compose controller **directly** — no
 //! `PlatformServices` involved. Contrast with `gtk_message_dialog.rs`

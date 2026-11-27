@@ -372,7 +372,7 @@ fn tui_pipeline_keyboard_and_quit_roundtrip() {
 /// part unique to the status strip — "Enter to send" also appears in the
 /// hint line and input placeholder, so matching that would no longer prove
 /// the status strip itself painted.
-const CHAT_STATUS_SENTINEL: &str = "Enter to send, q to quit";
+const CHAT_STATUS_SENTINEL: &str = "Enter to send, Esc to quit";
 
 /// Sends a raw SGR mouse-motion report (`ESC [ < 35 ; x ; y M` — motion,
 /// no button, per xterm's SGR encoding) directly to the pty's stdin,

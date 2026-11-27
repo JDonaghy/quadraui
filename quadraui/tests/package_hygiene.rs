@@ -188,6 +188,7 @@ const INTERNAL_DOCS: &[&str] = &[
     "docs/SMELL_AUDIT_2026-07.md",
     "docs/TESTING.md",
     "docs/UI_CRATE_DESIGN.md",
+    "docs/WASM_BACKEND_PROPOSAL.md",
     "docs/WEB_BACKEND_PROPOSAL.md",
     "docs/audits/FRAMEWORK_AUDIT_2026-09-26.md",
     "docs/decisions/BINDING_CORE_PUBLISH_POLICY.md",

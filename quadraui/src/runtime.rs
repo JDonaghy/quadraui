@@ -342,7 +342,7 @@ pub(crate) trait PreprocessBackend {
 ///    plain `NamedKey::Tab` advances), then deliver
 ///    `UiEvent::FocusChanged` instead of the raw key press. Ctrl/Alt/Cmd
 ///    held is left alone (reserved for app-level chords like
-///    `TabGroupController`'s Ctrl-Tab pane switching). While it stays
+///    `Workspace`'s Ctrl-Tab document cycling). While it stays
 ///    empty — the default — this step never fires and Tab/Shift+Tab pass
 ///    through unchanged, exactly as before. When the currently-focused id
 ///    is focused but deliberately absent from the list (e.g. a
@@ -676,7 +676,10 @@ where
 ///   move's hit-test result against
 ///   [`crate::widget_state::WidgetRoutingState::hovered`] and delivers
 ///   [`PointerKind::Leave`]/[`PointerKind::Enter`] to whichever widgets
-///   changed — see [`route_widget_hover`]. Never claims the move itself
+///   changed — see [`route_widget_hover`] — plus [`PointerKind::Move`]
+///   to a still-hovered widget that sets
+///   [`crate::interactive::Interactive::RECEIVES_HOVER_MOVES`]. Never
+///   claims the move itself
 ///   (`MouseMoved` always bubbles, as [`WidgetRouteOutcome::Bubble`]) —
 ///   hover tracking is a side effect, not a consumption; the app's own
 ///   `MouseMoved` handling (cursors, tooltips) still runs. The resulting
@@ -1296,7 +1299,9 @@ where
 
 /// [`route_widget_move`]'s no-capture path: synthesize
 /// [`PointerKind::Leave`]/[`PointerKind::Enter`] for whichever widgets'
-/// hover state changed, then record the new hover target. The
+/// hover state changed, then record the new hover target. A move that
+/// stays on the same widget reaches it as [`PointerKind::Move`] only if
+/// it opts in — see [`route_widget_hover_move`]. The
 /// [`Handled::Event`]/[`Handled::Consumed`] outcome from either synthetic
 /// delivery is never routed further as a gesture — hover is a side effect
 /// a real mouse move causes, not something the app itself handles — but
@@ -1322,7 +1327,7 @@ where
     };
     let previous = routing.hovered;
     if previous == hit_id {
-        return Reaction::Continue;
+        return route_widget_hover_move(hit_id, position, backend, app, tree);
     }
 
     let mut reaction = Reaction::Continue;
@@ -1356,6 +1361,36 @@ where
         routing.hovered = hit_id;
     }
     reaction
+}
+
+/// [`route_widget_hover`]'s same-target path: a move that stays on the
+/// hovered widget reaches it as [`PointerKind::Move`] when the widget
+/// opts in ([`crate::interactive::Interactive::RECEIVES_HOVER_MOVES`]),
+/// and changes nothing otherwise.
+fn route_widget_hover_move<B, A>(
+    hovered: Option<WidgetId>,
+    position: Point,
+    backend: &mut B,
+    app: &mut A,
+    tree: &FrameTree,
+) -> Reaction
+where
+    B: PreprocessBackend + crate::Backend,
+    A: AppLogic,
+{
+    let Some(id) = hovered else {
+        return Reaction::Continue;
+    };
+    let Some(node) = tree.find(&id).filter(|n| n.widget.receives_hover_moves()) else {
+        return Reaction::Continue;
+    };
+    let routed = RoutedEvent::Pointer {
+        kind: PointerKind::Move,
+        sub: None,
+        local: local_point(position, node.rect),
+        mods: Modifiers::default(),
+    };
+    dispatch_widget_routed_event(id, node, &routed, backend, app).reaction()
 }
 
 /// `local` coordinates for a point relative to `rect`'s origin — what
@@ -3397,6 +3432,164 @@ mod widget_routing_tests {
             hits(&mut backend),
             (1, 1),
             "sub-target 1's own key must not also register for 0"
+        );
+    }
+
+    /// A widget that records every pointer hover kind it receives, opted
+    /// into [`Interactive::RECEIVES_HOVER_MOVES`] when `MOVES` is set.
+    #[derive(Debug)]
+    struct HoverLog<const MOVES: bool> {
+        id: WidgetId,
+    }
+
+    impl<const MOVES: bool> A11yPrimitive for HoverLog<MOVES> {
+        fn a11y_info(&self) -> A11yInfo {
+            A11yInfo::default()
+        }
+    }
+
+    impl<const MOVES: bool> Primitive for HoverLog<MOVES> {
+        type Layout = Rect;
+        type Event = ();
+
+        fn id(&self) -> Option<&WidgetId> {
+            Some(&self.id)
+        }
+
+        fn layout(&self, _ctx: &LayoutCtx, rect: Rect) -> Rect {
+            rect
+        }
+
+        fn paint(
+            &self,
+            _layout: &Rect,
+            _surface: &mut dyn crate::paint_surface::PaintSurface,
+            _env: &crate::PaintEnv,
+        ) {
+        }
+    }
+
+    impl<const MOVES: bool> Interactive for HoverLog<MOVES> {
+        type State = Vec<(&'static str, Point)>;
+        type Action = Activated;
+
+        const RECEIVES_HOVER_MOVES: bool = MOVES;
+
+        fn handle(
+            &self,
+            state: &mut Self::State,
+            event: &RoutedEvent,
+            _layout: &Rect,
+            _cx: &mut EventCx,
+        ) -> Handled<Activated> {
+            let RoutedEvent::Pointer { kind, local, .. } = event else {
+                return Handled::Ignored;
+            };
+            let name = match kind {
+                PointerKind::Enter => "enter",
+                PointerKind::Move => "move",
+                PointerKind::Leave => "leave",
+                _ => return Handled::Ignored,
+            };
+            state.push((name, *local));
+            Handled::Consumed
+        }
+    }
+
+    struct HoverLogApp<const MOVES: bool> {
+        id: WidgetId,
+    }
+
+    impl<const MOVES: bool> AppLogic for HoverLogApp<MOVES> {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn crate::Backend, _area: ()) {}
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn crate::Backend) -> Reaction {
+            Reaction::Continue
+        }
+
+        fn frame_tree(&self, _area: ()) -> FrameTree {
+            let mut tree = FrameTree::new();
+            tree.push(
+                self.id,
+                COUNTER_RECT,
+                Box::new(HoverLog::<MOVES> { id: self.id }),
+            );
+            tree
+        }
+    }
+
+    /// Moves the pointer onto the widget, twice within it, then off it,
+    /// answering each move's `Reaction` and the kinds the widget saw.
+    fn hover_log_across<const MOVES: bool>(
+        name: &str,
+    ) -> (Vec<Reaction>, Vec<(&'static str, Point)>) {
+        let id = WidgetId::new(name);
+        let mut backend = TuiBackend::new();
+        let mut app = HoverLogApp::<MOVES> { id };
+        let reactions = [(1.0, 1.0), (2.0, 1.0), (4.0, 2.0), (100.0, 100.0)]
+            .into_iter()
+            .map(|(x, y)| {
+                preprocess_event(
+                    UiEvent::MouseMoved {
+                        position: Point::new(x, y),
+                        buttons: Default::default(),
+                    },
+                    &mut backend,
+                    &mut app,
+                )
+            })
+            .collect();
+        let kinds = crate::widget_state::with_widget_states(|states| {
+            states
+                .state_for(id, &HoverLog::<MOVES> { id })
+                .downcast_mut::<Vec<(&'static str, Point)>>()
+                .unwrap()
+                .clone()
+        });
+        (reactions, kinds)
+    }
+
+    /// A widget that opts into hover moves sees `Move`, at the pointer's
+    /// widget-local point, for each move that stays on it; the move that
+    /// brings the pointer on is still `Enter` and the one that takes it
+    /// off is still `Leave`. Each `Move` the widget consumes repaints.
+    #[test]
+    fn an_opted_in_widget_receives_every_move_while_hovered() {
+        let (reactions, kinds) = hover_log_across::<true>("hover-log:moves");
+        assert_eq!(
+            kinds,
+            vec![
+                ("enter", Point::new(1.0, 1.0)),
+                ("move", Point::new(2.0, 1.0)),
+                ("move", Point::new(4.0, 2.0)),
+                ("leave", Point::new(100.0, 100.0)),
+            ]
+        );
+        assert_eq!(reactions, vec![Reaction::Redraw; 4]);
+    }
+
+    /// A widget that does not opt in gets only `Enter` and `Leave`: a
+    /// move that stays on it reaches nothing and repaints nothing.
+    #[test]
+    fn a_widget_that_does_not_opt_in_receives_only_enter_and_leave() {
+        let (reactions, kinds) = hover_log_across::<false>("hover-log:plain");
+        assert_eq!(
+            kinds,
+            vec![
+                ("enter", Point::new(1.0, 1.0)),
+                ("leave", Point::new(100.0, 100.0)),
+            ]
+        );
+        assert_eq!(
+            reactions,
+            vec![
+                Reaction::Redraw,
+                Reaction::Continue,
+                Reaction::Continue,
+                Reaction::Redraw,
+            ]
         );
     }
 }

@@ -9,12 +9,10 @@
 //!
 //! ## Why "SidebarPanel" and not "Sidebar"
 //!
-//! The compose layer already exports a `SidebarEvent` enum tied to
-//! the multi-section [`crate::SidebarSystem`]. Adding a `Sidebar`
-//! primitive with its own `SidebarEvent` would collide at the lib
-//! re-export boundary. `SidebarPanel` reads correctly at consumer
-//! use sites (each panel IS a sidebar panel) and keeps the names
-//! disjoint.
+//! The compose layer already exports [`crate::Sidebar`], the
+//! multi-section sidebar, and its `SidebarAction`. `SidebarPanel` reads
+//! correctly at consumer use sites (each panel IS a sidebar panel) and
+//! keeps the names disjoint.
 //!
 //! ## Shape
 //!

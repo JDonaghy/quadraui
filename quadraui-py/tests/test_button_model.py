@@ -25,7 +25,7 @@ Three scenarios:
   (`quadraui-binding-core/src/engine.rs`) narrows every `DialogButton`
   down to `quadraui::backend::MessageDialogButton` -- a shape shared with
   real native-OS message boxes (GTK/macOS/Win) that cannot render a
-  custom `spec` at all -- before `MessageDialogController::new`
+  custom `spec` at all -- before `MessageDialog::new`
   (`quadraui/src/compose/message_dialog.rs`) ever sees it, so `spec` has
   no visible effect on this particular surface yet. That stripping lives
   in the `quadraui` crate itself (not `quadraui-binding-core`'s decode

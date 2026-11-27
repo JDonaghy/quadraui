@@ -19,18 +19,18 @@
 //!   N collapsible-tree sections, used by `tui_multi_tree` /
 //!   `gtk_multi_tree`. Demonstrates the consumer pattern for
 //!   per-section scroll/selection state.
-//! - [`ChatDemo`] (in [`chat_demo`]) — `ChatController` overlay with
+//! - [`ChatDemo`] (in [`chat_demo`]) — `Chat` overlay with
 //!   scrollable transcript, multi-line input, history, and spinner,
 //!   used by `tui_chat` / `gtk_chat`.
 //! - [`SidebarRevealDemo`] (in [`sidebar_reveal_demo`]) — single Tree
-//!   section exercising `SidebarSystem::reveal`, used by
+//!   section exercising `Sidebar::reveal`, used by
 //!   `tui_sidebar_reveal` / `gtk_sidebar_reveal`.
 //! - [`SidebarPanelBodyDemo`] (in [`sidebar_panel_body_demo`]) —
 //!   `quadraui::compose::sidebar_panel_body::SidebarPanelBody`
 //!   composing a background fill + cyclable header/search chrome + a
 //!   raw `TreeView` body + a hand-built scrollbar. Used by
 //!   `tui_sidebar_panel_body` / `gtk_sidebar_panel_body`.
-//! - [`WorkspaceDemo`] (in [`workspace_demo`]) — `WorkspaceController`
+//! - [`WorkspaceDemo`] (in [`workspace_demo`]) — a `Workspace` strip
 //!   mounted inside a `ShellView` panel: open-N-view-one document
 //!   tabs in the panel's rect, body painted by the app. Used by
 //!   `tui_workspace` / `gtk_workspace`.
@@ -158,6 +158,12 @@ pub mod mini_app;
 pub mod minimap_app;
 pub mod modal_focus_demo;
 pub mod modal_occlusion_demo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod multi_tree;
 pub mod native_menu;
 pub mod palette_dual_mode_app;
@@ -174,6 +180,12 @@ pub mod scroll_view_demo;
 ))]
 pub mod search_panel;
 pub mod selection_app;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod shell_app;
 pub mod shell_menu_demo;
 pub mod sidebar_panel_app;
@@ -184,7 +196,19 @@ pub mod sidebar_panel_app;
     all(feature = "macos", target_os = "macos")
 ))]
 pub mod sidebar_panel_body_demo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod sidebar_reveal_demo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod sidebar_search;
 pub mod split_app;
 pub mod split_tree_app;
@@ -269,6 +293,12 @@ pub use mini_app::MiniApp;
 pub use minimap_app::MinimapApp;
 pub use modal_focus_demo::ModalFocusDemo;
 pub use modal_occlusion_demo::ModalOcclusionDemo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use multi_tree::DebugSidebar;
 pub use native_menu::NativeMenuApp;
 pub use palette_dual_mode_app::PaletteDualModeApp;
@@ -284,6 +314,12 @@ pub use scroll_view_demo::ScrollViewDemo;
 ))]
 pub use search_panel::SearchPanelApp;
 pub use selection_app::SelectionDemo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use shell_app::ShellApp;
 pub use shell_menu_demo::ShellMenuDemo;
 pub use sidebar_panel_app::SidebarPanelApp;
@@ -294,7 +330,19 @@ pub use sidebar_panel_app::SidebarPanelApp;
     all(feature = "macos", target_os = "macos")
 ))]
 pub use sidebar_panel_body_demo::SidebarPanelBodyDemo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use sidebar_reveal_demo::SidebarRevealDemo;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use sidebar_search::SidebarSearchApp;
 pub use split_app::SplitApp;
 pub use split_tree_app::SplitTreeApp;

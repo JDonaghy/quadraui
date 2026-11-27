@@ -162,6 +162,10 @@ impl crate::interactive::Interactive for Chart {
     type State = ChartState;
     type Action = ChartEvent;
 
+    /// Every move inside the widget reaches [`Self::handle`], so
+    /// the hovered data point follows the pointer.
+    const RECEIVES_HOVER_MOVES: bool = true;
+
     /// One tab stop: the arrow keys walk the hover through the points.
     fn focus(&self) -> crate::interactive::FocusSpec {
         crate::interactive::FocusSpec::Stop

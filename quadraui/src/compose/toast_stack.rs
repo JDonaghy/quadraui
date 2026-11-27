@@ -2,7 +2,7 @@
 //! in-canvas [`ToastOverlay`] primitive.
 //!
 //! Toasts are non-modal (see [`crate::primitives::toast`]'s module doc)
-//! — unlike [`crate::compose::MessageDialogController`], this controller
+//! — unlike [`crate::compose::MessageDialog`], this controller
 //! never owns the stack or blocks input while unfocused. It is a pure
 //! keyboard-focus cursor: the app builds its own `ToastOverlay` each frame
 //! (as it always has), and *optionally* hands this controller keyboard

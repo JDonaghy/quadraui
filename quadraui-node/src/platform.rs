@@ -57,7 +57,7 @@ impl QuiApp {
     /// Opens a file-open picker --
     /// [`quadraui::PlatformServices::show_file_open_dialog`]. On the
     /// headless `TuiBackend` this drives
-    /// [`quadraui::compose::FilePickerController`] through a nested
+    /// [`quadraui::compose::FilePicker`] through a nested
     /// draw-and-read loop fed by [`Self::queue_dialog_events`] (or Escape
     /// immediately, with nothing queued). Returns the confirmed path, or
     /// `null` on cancel. `filters` is an array of `[label, [ext, ...]]`
@@ -122,8 +122,8 @@ impl QuiApp {
     /// [`quadraui::PlatformServices::show_folder_open_dialog`]. Same
     /// nested-loop/`queueDialogEvents` story as
     /// [`Self::show_file_open_dialog`], but drives
-    /// [`quadraui::compose::FolderPickerController`] instead of
-    /// `FilePickerController`.
+    /// [`quadraui::compose::FolderPicker`] instead of
+    /// `FilePicker`.
     #[napi(js_name = "showFolderDialog")]
     pub fn show_folder_dialog(
         &mut self,

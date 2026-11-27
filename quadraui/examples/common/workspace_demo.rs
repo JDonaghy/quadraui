@@ -1,18 +1,20 @@
-//! [`WorkspaceController`] demo — an open-N-view-one document set living
-//! **inside a panel**, not in the shell's chrome.
+//! [`Workspace`] demo — an open-N-view-one document set living **inside
+//! a panel**, not in the shell's chrome.
 //!
-//! The controller renders its own tab strip into whatever rect the host
-//! hands it, so a consumer can put one inside a single `ShellView` sidebar
-//! panel and paint the active document's body somewhere else entirely. No
+//! The workspace paints its tab strip into whatever rect the host hands
+//! it, so a consumer can put one inside a single `ShellView` sidebar panel
+//! and paint the active document's body somewhere else entirely. No
 //! shell-level tab-strip slot is involved.
 //!
 //! The workspace is mounted into [`ShellLayout::sidebar_content_bounds`]
 //! (the panel's rect) and the active document's "body" is painted into
-//! [`ShellLayout::main_content_bounds`]. The controller owns no content:
-//! `WorkspaceDoc` is an opaque id plus a label, and this app paints the
-//! body itself from its own state — something
-//! [`TabGroupController`](quadraui::TabGroupController)'s
-//! `Box<dyn BackendWidget>` (`Send + 'static`) content could not do.
+//! [`ShellLayout::main_content_bounds`]. `WorkspaceDoc` is an opaque id
+//! plus a label, and this app paints the body itself from its own state.
+//!
+//! The strip is registered in the app's [`ShellApp::frame_tree`], so the
+//! runtime routes clicks on it through `Workspace`'s own `Interactive`
+//! and delivers what it reports as `UiEvent::Workspace`, which this app
+//! applies with [`Workspace::apply`].
 //!
 //! Controls:
 //! - click a tab            activate that document (and promote it, if preview)
@@ -33,13 +35,12 @@
 //! [`quadraui::compose::workspace`]'s module doc.
 
 use quadraui::DrawsPrimitives;
-use std::cell::RefCell;
+use std::cell::Cell;
 
 use quadraui::compose::app_shell::{PanelDefinition, ShellLayout};
 use quadraui::{
-    Backend, Color, Handled, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext,
-    StatusBar, StatusBarSegment, UiEvent, WidgetId, WorkspaceController, WorkspaceDoc,
-    WorkspaceEvent,
+    Backend, Color, FrameTree, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext,
+    StatusBar, StatusBarSegment, UiEvent, WidgetId, Workspace, WorkspaceDoc, WorkspaceEvent,
 };
 
 /// The three documents the demo starts with, `(id, label)`. Labels are
@@ -53,7 +54,7 @@ pub const INITIAL: [(&str, &str); 3] = [
 
 /// Documents `o` opens, in order. Long enough that a few of them push the
 /// strip past the sidebar's width and exercise
-/// [`quadraui::TabBar::fit_active_scroll_offset`] through the controller.
+/// [`quadraui::TabBar::fit_active_scroll_offset`] through the workspace.
 pub const BACKLOG: [(&str, &str); 4] = [
     ("doc:delta", "delta-doc"),
     ("doc:epsilon", "epsilon-doc"),
@@ -66,9 +67,10 @@ pub const BACKLOG: [(&str, &str); 4] = [
 pub const BAR_ID: &str = "workspace-demo:tabs";
 
 pub struct WorkspaceDemo {
-    /// `RefCell` so `render_content(&self, …)` can call the controller's
-    /// `&mut self` render — the same pattern `TabGroupDemo` uses.
-    workspace: RefCell<WorkspaceController>,
+    workspace: Workspace,
+    /// The panel rect the last `render_content` painted the strip into,
+    /// which [`ShellApp::frame_tree`] routes clicks against.
+    panel: Cell<Option<Rect>>,
     /// Index of the next [`BACKLOG`] entry `o` will open.
     next_backlog: usize,
     /// Index of the next [`BACKLOG`] entry `p` will open as preview —
@@ -80,7 +82,7 @@ pub struct WorkspaceDemo {
 
 impl WorkspaceDemo {
     pub fn new() -> Self {
-        let mut workspace = WorkspaceController::new(BAR_ID);
+        let mut workspace = Workspace::new(WidgetId::new(BAR_ID));
         for (id, label) in INITIAL {
             workspace.open(WorkspaceDoc::new(id, label));
         }
@@ -88,7 +90,8 @@ impl WorkspaceDemo {
         // the demo's initial screen reads left-to-right.
         workspace.activate(INITIAL[0].0);
         Self {
-            workspace: RefCell::new(workspace),
+            workspace,
+            panel: Cell::new(None),
             next_backlog: 0,
             next_preview_backlog: 0,
             last_event: "ready".to_string(),
@@ -141,10 +144,7 @@ impl WorkspaceDemo {
             return Reaction::Redraw;
         };
         self.next_backlog += 1;
-        let events = self
-            .workspace
-            .borrow_mut()
-            .open(WorkspaceDoc::new(id, label));
+        let events = self.workspace.open(WorkspaceDoc::new(id, label));
         self.record(&events)
     }
 
@@ -157,10 +157,7 @@ impl WorkspaceDemo {
             return Reaction::Redraw;
         };
         self.next_preview_backlog += 1;
-        let events = self
-            .workspace
-            .borrow_mut()
-            .open_preview(WorkspaceDoc::new(id, label));
+        let events = self.workspace.open_preview(WorkspaceDoc::new(id, label));
         self.record(&events)
     }
 
@@ -168,15 +165,11 @@ impl WorkspaceDemo {
     /// explicit-pin trigger from the module doc's promotion table. A
     /// no-op when the active document isn't the preview.
     fn promote_active(&mut self) -> Reaction {
-        let mut ws = self.workspace.borrow_mut();
-        let Some(id) = ws.active_id().map(str::to_string) else {
+        let Some(id) = self.workspace.active_id().map(str::to_string) else {
             return Reaction::Continue;
         };
-        match ws.promote(&id) {
-            Some(ev) => {
-                drop(ws);
-                self.record(&[ev])
-            }
+        match self.workspace.promote(&id) {
+            Some(ev) => self.record(&[ev]),
             None => Reaction::Continue,
         }
     }
@@ -208,14 +201,15 @@ impl ShellApp for WorkspaceDemo {
 
         // The workspace lives *inside the panel* — its tab strip is
         // painted into the sidebar's content rect, not into shell chrome.
+        self.panel.set(layout.sidebar_content_bounds);
         if let Some(panel) = layout.sidebar_content_bounds {
-            self.workspace.borrow_mut().render(backend, panel);
+            backend.draw_dyn(panel, &self.workspace, &());
         }
 
         // The host paints the active document's body itself, from its own
-        // state — the whole point of the controller owning no content.
+        // state.
         let main = layout.main_content_bounds;
-        let ws = self.workspace.borrow();
+        let ws = &self.workspace;
         let body = match ws.active_id() {
             Some(id) if ws.is_preview(id) => format!(" viewing: {id} (preview) "),
             Some(id) => format!(" viewing: {id} "),
@@ -235,6 +229,14 @@ impl ShellApp for WorkspaceDemo {
             ),
             &(),
         );
+    }
+
+    fn frame_tree(&self) -> FrameTree {
+        let mut tree = FrameTree::new();
+        if let Some(panel) = self.panel.get() {
+            tree.push(self.workspace.id, panel, Box::new(self.workspace.clone()));
+        }
+        tree
     }
 
     fn handle(
@@ -260,29 +262,21 @@ impl ShellApp for WorkspaceDemo {
                 key: Key::Char('m'),
                 ..
             } => self.promote_active(),
-            UiEvent::KeyPressed { key, modifiers, .. } => {
-                // The controller owns its own key table (Ctrl+Tab,
-                // Ctrl+PageUp/PageDown); anything it declines falls
-                // through to the rest of the app unchanged.
-                let handled = self
-                    .workspace
-                    .borrow_mut()
-                    .handle_key_event(&key, modifiers);
-                match handled {
-                    Handled::Event(ev) => self.record(&[ev]),
-                    Handled::Consumed | Handled::Ignored => Reaction::Continue,
-                }
+            // The strip's tab clicks, routed through its own
+            // `Interactive` and written back here.
+            UiEvent::Workspace(_, intent) => {
+                let events = self.workspace.apply(intent);
+                self.record(&events)
             }
-            UiEvent::MouseDown {
-                position, button, ..
-            } => {
-                let outcome = self
-                    .workspace
-                    .borrow_mut()
-                    .handle_click_event(position.x, position.y, button);
-                match outcome {
-                    Handled::Event(events) => self.record(&events),
-                    Handled::Consumed | Handled::Ignored => Reaction::Continue,
+            // Ctrl+Tab / Ctrl+PageUp/PageDown cycle documents app-wide,
+            // whether or not the strip holds keyboard focus.
+            UiEvent::KeyPressed { key, modifiers, .. } => {
+                match Workspace::cycle_delta(&key, modifiers) {
+                    Some(delta) => match self.workspace.cycle(delta) {
+                        Some(ev) => self.record(&[ev]),
+                        None => Reaction::Continue,
+                    },
+                    None => Reaction::Continue,
                 }
             }
             _ => Reaction::Continue,

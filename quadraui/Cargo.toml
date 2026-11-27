@@ -93,7 +93,8 @@ rust-version = "1.92.0"
 #   stays shipping since it's reachable from `lib.rs`'s own rustdoc
 #   (`See [`Backend`]'s own rustdoc ... see BACKEND.md`).
 # - `docs/IME_INPUT_PROPOSAL.md`, `docs/ROWS_PROVIDER_PROPOSAL.md`,
-#   `docs/WEB_BACKEND_PROPOSAL.md` — unimplemented design proposals.
+#   `docs/WASM_BACKEND_PROPOSAL.md`, `docs/WEB_BACKEND_PROPOSAL.md` —
+#   unimplemented design proposals.
 # - `docs/LESSONS.md`, `docs/NATIVE_GUI_LESSONS.md` — contributor-facing
 #   "what not to do" postmortems from building the in-tree backends.
 # - `docs/PRIMITIVE_RULES.md` — rules for authoring a new primitive
@@ -188,6 +189,7 @@ exclude = [
     "docs/SMELL_AUDIT_2026-07.md",
     "docs/TESTING.md",
     "docs/UI_CRATE_DESIGN.md",
+    "docs/WASM_BACKEND_PROPOSAL.md",
     "docs/WEB_BACKEND_PROPOSAL.md",
     "docs/audits/",
     "docs/decisions/BINDING_CORE_PUBLISH_POLICY.md",
@@ -1868,7 +1870,7 @@ name = "gtk_tab_chrome"
 path = "examples/gtk_tab_chrome.rs"
 required-features = ["gtk"]
 
-# #595 — `SidebarSystem::reveal`. Both entries are mandatory, not
+# #595 — `Sidebar::reveal`. Both entries are mandatory, not
 # cosmetic: without an explicit `[[example]]`, cargo's autodiscovery
 # picks the file up with NO `required-features`, so
 # `gtk_sidebar_reveal.rs` gets compiled by `cargo test --features tui`
@@ -1988,7 +1990,7 @@ name = "win_appshell_demo"
 path = "examples/win_appshell_demo.rs"
 required-features = ["win"]
 
-# Shell + `MenuSystem` regression demo, Win-GUI leg — same `ShellMenuDemo`
+# Shell + `AppMenu` regression demo, Win-GUI leg — same `ShellMenuDemo`
 # `tui_shell_menu`/`gtk_shell_menu` already run.
 [[example]]
 name = "win_shell_menu"
@@ -2049,7 +2051,7 @@ name = "tui_canvas_regions"
 path = "examples/tui_canvas_regions.rs"
 required-features = ["tui"]
 
-# #596 — `WorkspaceController` (open-N-view-one document tabs) mounted
+# #596 — `Workspace` (open-N-view-one document tabs) mounted
 # inside a `ShellView` panel. Both entries are mandatory (see #595's note
 # above): without an explicit `[[example]]`, `gtk_workspace.rs` gets
 # autodiscovered with no `required-features` and fails

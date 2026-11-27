@@ -4,15 +4,14 @@
 //! [`FormDialogApp`] shows a "Create milestone" dialog with a required
 //! **Name** (`TextInput`) and an optional **Description** (`TextArea`) —
 //! the two-field shape `DialogInput::Form` exists for — hosted through
-//! [`quadraui::FormDialogController`]. The demo exercises:
+//! the [`quadraui::FormDialog`] widget. The demo exercises:
 //! - `DialogInput::Form` rendering both fields inside the dialog box,
 //!   with the button row below them.
 //! - Tab/Shift-Tab moving focus Name → Description → Cancel → Create and
-//!   back around (see `FormDialogController`'s own "Keyboard model" doc
-//!   section).
+//!   back around (see `FormDialog`'s own "Focus model" doc section).
 //! - Submitting via "Create" (or Enter while a button has focus) reads
 //!   back this app's own canonical `name`/`description` state and shows
-//!   it as a status line above the form via `FormDialogController::set_body`.
+//!   it as a status line above the form via `FormDialog::body`.
 //!
 //! Controls:
 //! - `Tab` / `Shift+Tab`  move focus: Name → Description → Cancel → Create → …
@@ -22,12 +21,14 @@
 //! - `q` (no field focused) quit
 
 use quadraui::{
-    AppLogic, Backend, DialogButton, FieldKind, Form, FormDialogAction, FormDialogController,
-    FormEvent, Handled, Key, Reaction, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, DialogButton, DrawsPrimitives, FieldKind, Form, FormDialog,
+    FormDialogAction, FormDialogState, FormEvent, Handled, Key, Reaction, StyledText, UiEvent,
+    WidgetId,
 };
 
 pub struct FormDialogApp {
-    controller: FormDialogController,
+    dialog: FormDialog,
+    state: FormDialogState,
     name: String,
     description: String,
     focused_field: Option<WidgetId>,
@@ -35,7 +36,7 @@ pub struct FormDialogApp {
 
 impl FormDialogApp {
     pub fn new() -> Self {
-        let controller = FormDialogController::new("create_milestone", "Create milestone")
+        let dialog = FormDialog::new(WidgetId::new("create_milestone"), "Create milestone")
             .with_buttons(vec![
                 DialogButton {
                     id: WidgetId::new("cancel"),
@@ -55,7 +56,8 @@ impl FormDialogApp {
                 },
             ]);
         let mut app = Self {
-            controller,
+            dialog,
+            state: FormDialogState::default(),
             name: String::new(),
             description: String::new(),
             focused_field: Some(WidgetId::new("name")),
@@ -123,24 +125,36 @@ impl FormDialogApp {
     }
 
     /// Push the current `name`/`description`/`focused_field` into the
-    /// controller — call after every mutation, the same "rebuild the
+    /// dialog — call after every mutation, the same "rebuild the
     /// `Form` from the app's own canonical state" contract
     /// `FormController::set_form` documents.
     fn sync_form(&mut self) {
         let form = self.build_form();
-        self.controller.set_form(form);
+        self.dialog.form = Some(form);
     }
 
-    /// The underlying controller — exposed for `tests/tui_example_driver.rs`
-    /// to assert on keyboard-focus state (`is_form_focused`/
-    /// `focused_button_id`) that has no on-screen rendering of its own to
+    /// The button holding keyboard focus, or `None` while focus is on the
+    /// form — exposed for `tests/tui_example_driver.rs` to assert on
+    /// keyboard-focus state that has no on-screen rendering of its own to
     /// `screen_contains` against. Dead in the `tui_form_dialog` example
     /// binary itself — the standard cost of a shared example module
     /// `#[path]`-included by a test binary too (see
     /// `examples/common/appshell_demo.rs`'s own `ActivityProbe` note).
     #[allow(dead_code)]
-    pub fn controller(&self) -> &FormDialogController {
-        &self.controller
+    pub fn focused_button_id(&self) -> Option<&WidgetId> {
+        self.dialog.focused_button_id(&self.state)
+    }
+
+    /// Whether keyboard focus is on the form rather than a button.
+    pub fn form_focused(&self) -> bool {
+        self.state.focused_button.is_none()
+    }
+
+    /// The form the dialog currently hosts — see
+    /// [`Self::focused_button_id`] for why the test binary reads it.
+    #[allow(dead_code)]
+    pub fn form(&self) -> Option<&Form> {
+        self.dialog.form.as_ref()
     }
 }
 
@@ -154,7 +168,11 @@ impl AppLogic for FormDialogApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        self.controller.render(backend);
+        backend.draw_dyn(
+            backend.viewport().rect(),
+            &self.dialog.painted(&self.state),
+            &(),
+        );
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -165,7 +183,7 @@ impl AppLogic for FormDialogApp {
             ..
         } = &event
         {
-            if !self.controller.is_form_focused() {
+            if !self.form_focused() {
                 return Reaction::Exit;
             }
         }
@@ -173,15 +191,15 @@ impl AppLogic for FormDialogApp {
             return Reaction::Redraw;
         }
 
-        match self.controller.handle_event(&event, backend) {
+        match self.dialog.handle_event(&mut self.state, &event, backend) {
             Handled::Event(FormDialogAction::ButtonClicked(id)) if id.as_str() == "cancel" => {
                 Reaction::Exit
             }
             Handled::Event(FormDialogAction::ButtonClicked(id)) if id.as_str() == "create" => {
-                self.controller.set_body(vec![StyledText::plain(format!(
+                self.dialog.body = vec![StyledText::plain(format!(
                     "Created: {:?} / {:?}",
                     self.name, self.description
-                ))]);
+                ))];
                 Reaction::Redraw
             }
             Handled::Event(FormDialogAction::ButtonClicked(_)) => Reaction::Redraw,
@@ -209,8 +227,8 @@ impl AppLogic for FormDialogApp {
             }
             Handled::Consumed => Reaction::Redraw,
             // Escape always resolves to the cancel button inside
-            // `FormDialogController::handle_event` (see its "Keyboard model"
-            // doc section), so this arm never actually sees Escape.
+            // `FormDialog::handle_event` (see its "Focus model" doc
+            // section), so this arm never actually sees Escape.
             Handled::Ignored => Reaction::Continue,
         }
     }

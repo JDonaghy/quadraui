@@ -30,12 +30,13 @@
 //! - `b` — reopen picker.
 //! - `q` / `Esc` — quit.
 
-use quadraui::compose::{DualModePaletteAction, Handled};
+use std::cell::Cell;
+
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, DualModePaletteController, Key, NamedKey, PaletteItem, PaletteMode,
-    Reaction, Rect, StatusBar, StatusBarSegment, StyledSpan, StyledText, UiEvent, WidgetId,
-    PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, DualModePalette, DualModePaletteAction, FrameTree, Key, NamedKey,
+    PaletteItem, PaletteMode, Reaction, Rect, StatusBar, StatusBarSegment, StyledSpan, StyledText,
+    Surface, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
 
 /// A fixed list of pretend Git branches for the demo.
@@ -53,8 +54,10 @@ static BRANCHES: &[&str] = &[
 ];
 
 pub struct PaletteDualModeApp {
-    /// The controller — `None` when the picker is closed.
-    picker: Option<DualModePaletteController>,
+    /// The picker — `None` when it is closed.
+    picker: Option<DualModePalette>,
+    /// Where the picker painted last frame, for `frame_tree` to register.
+    popup: Cell<Rect>,
     /// Most recently selected/created branch name.
     current_branch: String,
     /// Status message shown in the status bar.
@@ -66,6 +69,7 @@ impl PaletteDualModeApp {
         let picker = make_picker(BRANCHES);
         Self {
             picker: Some(picker),
+            popup: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
             current_branch: "main".into(),
             status: "Branch picker  Tab=toggle mode  Enter=confirm  Esc=close".into(),
         }
@@ -82,7 +86,7 @@ impl PaletteDualModeApp {
 
     fn status_bar(&self) -> StatusBar {
         let mode_label = match &self.picker {
-            Some(p) => match p.mode() {
+            Some(p) => match p.mode {
                 PaletteMode::List => " [LIST] ",
                 PaletteMode::Input => " [INPUT] ",
             },
@@ -123,8 +127,92 @@ impl Default for PaletteDualModeApp {
     }
 }
 
+impl PaletteDualModeApp {
+    /// Branch-list rows that fit the popup painted last frame.
+    fn visible_rows(&self, backend: &dyn Backend) -> usize {
+        let lh = backend.line_height();
+        let popup_h_rows = if lh > 0.0 {
+            (self.popup.get().height / lh) as usize
+        } else {
+            20
+        };
+        popup_h_rows.saturating_sub(PALETTE_CHROME_ROWS)
+    }
+
+    /// The branches whose name contains `query`, case-insensitively.
+    fn matching(query: &str) -> Vec<&'static str> {
+        let q = query.to_lowercase();
+        BRANCHES
+            .iter()
+            .copied()
+            .filter(|b| b.to_lowercase().contains(&q))
+            .collect()
+    }
+
+    /// Act on what the open picker reported.
+    fn react(&mut self, action: DualModePaletteAction, backend: &mut dyn Backend) -> Reaction {
+        let visible_rows = self.visible_rows(backend);
+        let Some(picker) = self.picker.as_mut() else {
+            return Reaction::Continue;
+        };
+        picker.apply(&action, visible_rows);
+        match action {
+            DualModePaletteAction::ItemConfirmed { idx } => {
+                if let Some(branch) = Self::matching(&picker.query).get(idx) {
+                    self.current_branch = (*branch).to_string();
+                    self.status = format!(
+                        "Switched to '{}'  —  press 'b' to reopen, q/Esc to quit",
+                        self.current_branch
+                    );
+                }
+                self.picker = None;
+            }
+            DualModePaletteAction::TextConfirmed { value } => {
+                if !value.is_empty() {
+                    self.current_branch = value.clone();
+                    self.status = format!(
+                        "Created and switched to '{}'  —  press 'b' to reopen",
+                        value
+                    );
+                }
+                self.picker = None;
+            }
+            // Refilter the branch list for List mode.
+            DualModePaletteAction::QueryChanged { value } => {
+                picker.set_items(branches_as_items(&Self::matching(&value)));
+            }
+            DualModePaletteAction::ModeToggled { new_mode } => {
+                self.status = match new_mode {
+                    PaletteMode::Input => {
+                        "Input mode: type a new branch name, Enter to create, Tab to switch".into()
+                    }
+                    PaletteMode::List => {
+                        "List mode: type to filter, Enter to select, Tab to switch".into()
+                    }
+                };
+                // Restore the full item list when switching back to List mode.
+                if new_mode == PaletteMode::List {
+                    picker.set_items(branches_as_items(&Self::matching(&picker.query)));
+                }
+            }
+            DualModePaletteAction::Cancelled => {
+                self.status = "Picker closed  —  press 'b' to reopen, q/Esc to quit".into();
+                self.picker = None;
+            }
+            _ => {}
+        }
+        Reaction::Redraw
+    }
+}
+
 impl AppLogic for PaletteDualModeApp {
     type AreaId = ();
+
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        if let Some(picker) = &self.picker {
+            backend.set_focus(Some(picker.id));
+        }
+    }
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
@@ -138,117 +226,39 @@ impl AppLogic for PaletteDualModeApp {
         // Dual-mode palette (when open).
         if let Some(ref picker) = self.picker {
             let popup_rect = Self::popup_rect(backend);
-            picker.render(popup_rect, backend);
+            self.popup.set(popup_rect);
+            let mut frame = quadraui::ScreenLayout::new();
+            frame.push(Surface::Widget {
+                rect: popup_rect,
+                widget: Box::new(picker.clone()),
+            });
+            frame.draw(backend);
         }
     }
 
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        if let Some(ref mut picker) = self.picker {
-            let popup_rect = Self::popup_rect(backend);
-            let lh = backend.line_height();
-            let popup_h_rows = if lh > 0.0 {
-                (popup_rect.height / lh) as usize
-            } else {
-                20
-            };
-            let visible_rows = popup_h_rows.saturating_sub(PALETTE_CHROME_ROWS);
-
-            // Mouse events route through `handle_mouse_event`; everything
-            // else (keyboard, paste) keeps going through `handle_event`.
-            let ev = match &event {
-                UiEvent::MouseDown { .. } => {
-                    picker.handle_mouse_event(&event, backend, popup_rect, visible_rows)
-                }
-                _ => picker.handle_event(&event, visible_rows),
-            };
-            match ev {
-                Handled::Event(DualModePaletteAction::ItemConfirmed { idx }) => {
-                    // Recompute filtered list from current query to map idx
-                    // back to a branch name.
-                    let query = picker.query().to_lowercase();
-                    let matched: Vec<&&str> = BRANCHES
-                        .iter()
-                        .filter(|b| b.to_lowercase().contains(&query))
-                        .collect();
-                    if let Some(branch) = matched.get(idx) {
-                        self.current_branch = (*branch).to_string();
-                        self.status = format!(
-                            "Switched to '{}'  —  press 'b' to reopen, q/Esc to quit",
-                            self.current_branch
-                        );
-                    }
-                    self.picker = None;
-                    return Reaction::Redraw;
-                }
-                Handled::Event(DualModePaletteAction::TextConfirmed { value }) => {
-                    if !value.is_empty() {
-                        self.current_branch = value.clone();
-                        self.status = format!(
-                            "Created and switched to '{}'  —  press 'b' to reopen",
-                            value
-                        );
-                    }
-                    self.picker = None;
-                    return Reaction::Redraw;
-                }
-                Handled::Event(DualModePaletteAction::QueryChanged { value }) => {
-                    // Refilter the branch list for List mode.
-                    let q = value.to_lowercase();
-                    let matching: Vec<&str> = BRANCHES
-                        .iter()
-                        .copied()
-                        .filter(|b| b.to_lowercase().contains(&q))
-                        .collect();
-                    picker.set_items(branches_as_items(&matching));
-                    return Reaction::Redraw;
-                }
-                Handled::Event(DualModePaletteAction::ModeToggled { new_mode }) => {
-                    self.status = match new_mode {
-                        PaletteMode::Input => {
-                            "Input mode: type a new branch name, Enter to create, Tab to switch"
-                                .into()
-                        }
-                        PaletteMode::List => {
-                            "List mode: type to filter, Enter to select, Tab to switch".into()
-                        }
-                    };
-                    // Restore the full item list when switching back to List mode.
-                    if new_mode == PaletteMode::List {
-                        let q = picker.query().to_lowercase();
-                        let matching: Vec<&str> = BRANCHES
-                            .iter()
-                            .copied()
-                            .filter(|b| b.to_lowercase().contains(&q))
-                            .collect();
-                        picker.set_items(branches_as_items(&matching));
-                    }
-                    return Reaction::Redraw;
-                }
-                Handled::Event(DualModePaletteAction::Cancelled) => {
-                    self.status = "Picker closed  —  press 'b' to reopen, q/Esc to quit".into();
-                    self.picker = None;
-                    return Reaction::Redraw;
-                }
-                Handled::Event(_) | Handled::Consumed => return Reaction::Redraw,
-                Handled::Ignored => {}
-            }
-        } else {
-            // Picker is closed — handle reopen / quit.
-            if let UiEvent::KeyPressed { ref key, .. } = event {
-                match key {
-                    Key::Char('q') | Key::Named(NamedKey::Escape) => return Reaction::Exit,
-                    Key::Char('b') => {
-                        self.picker = Some(make_picker(BRANCHES));
-                        self.status =
-                            "Branch picker  Tab=toggle mode  Enter=confirm  Esc=close".into();
-                        return Reaction::Redraw;
-                    }
-                    _ => {}
-                }
-            }
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        if let Some(picker) = &self.picker {
+            tree.push(picker.id, self.popup.get(), Box::new(picker.clone()));
         }
+        tree
+    }
 
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         match event {
+            UiEvent::DualModePalette(_, action) => self.react(action, backend),
+            // Picker closed — handle reopen / quit.
+            UiEvent::KeyPressed { ref key, .. } if self.picker.is_none() => match key {
+                Key::Char('q') | Key::Named(NamedKey::Escape) => Reaction::Exit,
+                Key::Char('b') => {
+                    let picker = make_picker(BRANCHES);
+                    backend.set_focus(Some(picker.id));
+                    self.picker = Some(picker);
+                    self.status = "Branch picker  Tab=toggle mode  Enter=confirm  Esc=close".into();
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            },
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,
         }
@@ -257,10 +267,14 @@ impl AppLogic for PaletteDualModeApp {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-fn make_picker(branches: &[&str]) -> DualModePaletteController {
-    let items = branches_as_items(branches);
-    DualModePaletteController::new("Switch Branch", Some("New branch:".into()), items)
-        .with_id("branch_picker")
+fn make_picker(branches: &[&str]) -> DualModePalette {
+    DualModePalette::new(
+        WidgetId::new("branch_picker"),
+        "Switch Branch",
+        Some("New branch:".into()),
+        branches_as_items(branches),
+    )
+    .with_vim_keys(true)
 }
 
 fn branches_as_items(branches: &[&str]) -> Vec<PaletteItem> {

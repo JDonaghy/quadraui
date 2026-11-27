@@ -294,10 +294,9 @@ fn tui_driver_targets_a_draw_dyn_painted_bar_with_no_legacy_cache() {
     );
 }
 
-/// Painting the same id twice in one frame — the two-pass paint
-/// `compose::WorkspaceController::render` does when the first pass
-/// corrects its own scroll offset — must leave the record describing the
-/// *second* pass, the one on screen.
+/// Painting the same id twice in one frame — a two-pass paint whose
+/// first pass corrects its own scroll offset — must leave the record
+/// describing the *second* pass, the one on screen.
 #[test]
 fn a_second_paint_of_the_same_id_wins() {
     struct TwoPass(TabBar);

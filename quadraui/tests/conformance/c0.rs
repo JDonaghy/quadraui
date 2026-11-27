@@ -31,8 +31,8 @@
 //! `tests::NON_TRAIT_DRAW_FNS`.
 
 use quadraui::{
-    AppLogic, Backend, Decoration, FindReplacePanel, ListItem, ListView, ProgressBar, Reaction,
-    Rect, ScrollAxis, Scrollbar, Spinner, StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Decoration, ListItem, ListView, ProgressBar, Reaction, Rect, ScrollAxis,
+    Scrollbar, Spinner, StyledText, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -186,40 +186,6 @@ pub const CASES: &[Case] = &[
             let lh = b.line_height();
             b.draw_focus_ring(Rect::new(cw * 2.0, lh * 2.0, cw * 20.0, lh * 3.0));
             let _ = area;
-        },
-    },
-    Case {
-        method: "draw_find_replace",
-        needle: Some("c0find"),
-        paint: |b, area| {
-            // `hit_regions` isn't just click-dispatch metadata here — the
-            // rasteriser paints the query/replace field *text* by walking
-            // it (`paint_input` in `tui::find_replace`), so an empty list
-            // paints a border with nothing inside. Must be the real
-            // output of `compute_find_replace_hit_regions`, the same
-            // helper a real caller uses.
-            let (hit_regions, _input_width) =
-                quadraui::compute_find_replace_hit_regions(40, false, "", 2, 2);
-            let panel = FindReplacePanel {
-                query: "c0find".to_string(),
-                replacement: String::new(),
-                show_replace: false,
-                focus: 0,
-                cursor: 6,
-                sel_anchor: None,
-                match_info: String::new(),
-                case_sensitive: false,
-                whole_word: false,
-                use_regex: false,
-                preserve_case: false,
-                in_selection: false,
-                group_bounds: area,
-                panel_width: 40,
-                replace_one_glyph: "R1".to_string(),
-                replace_all_glyph: "R*".to_string(),
-                hit_regions,
-            };
-            b.draw_find_replace(area, &panel);
         },
     },
 ];

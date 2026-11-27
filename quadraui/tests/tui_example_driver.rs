@@ -1224,8 +1224,8 @@ fn caret_shape_demo_escape_exits() {
 // ─── FileDialogDemo: TUI open/save/folder all return a real path ───────────
 //
 // `show_file_open_dialog` / `show_file_save_dialog` / `show_folder_open_dialog`
-// each drive a real `compose::FilePickerController` /
-// `compose::FolderPickerController` through a nested draw-and-read loop and
+// each drive a real `compose::FilePicker` /
+// `compose::FolderPicker` through a nested draw-and-read loop and
 // resolve to whichever path the (scripted, via
 // `TuiDriver::queue_dialog_events`) input actually picked. These tests
 // pin that positive contract. The GTK path (a real, modal,
@@ -1475,7 +1475,7 @@ fn file_dialog_demo_escape_exits() {
 
 // ─── MessageDialogDemo: TUI now returns a real button choice ───────────────
 //
-// `show_message_dialog` drives a real `compose::MessageDialogController`
+// `show_message_dialog` drives a real `compose::MessageDialog`
 // through a nested draw-and-read loop and resolves to whichever button the
 // (scripted, via `TuiDriver::queue_dialog_events`) input actually chose.
 // These tests pin that positive contract — a real button id reaches the
@@ -1597,10 +1597,11 @@ fn message_list_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the message list demo");
 }
 
-// ─── FindReplaceApp: click routes through FindReplacePanel::hit_test ─
+// ─── FindReplaceApp: clicks route through the panel's frame-tree widget ─
 
-/// Clicking a toggle button resolves through `FindReplacePanel::hit_test`
-/// and is reported in the status bar.
+/// Clicking a toggle button resolves through the panel's own
+/// `Interactive::handle` and the flipped switch is reported in the status
+/// bar.
 #[test]
 fn find_replace_click_on_toggle_case_reports_it() {
     let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
@@ -1617,8 +1618,8 @@ fn find_replace_click_on_toggle_case_reports_it() {
 
     let after = driver.screen();
     assert!(
-        after.contains("clicked ToggleCase"),
-        "clicking the 'Aa' glyph should report ToggleCase in the status bar:\n{after}"
+        after.contains("CaseSensitive on"),
+        "clicking the 'Aa' glyph should report CaseSensitive on in the status bar:\n{after}"
     );
 }
 
@@ -1641,7 +1642,7 @@ fn find_replace_click_chevron_reveals_replace_row() {
 
     let after = driver.screen();
     assert!(
-        after.contains("clicked Chevron"),
+        after.contains("ShowReplace on"),
         "clicking the chevron should report it in the status bar:\n{after}"
     );
     assert!(
@@ -1650,13 +1651,10 @@ fn find_replace_click_chevron_reveals_replace_row() {
     );
 }
 
-/// `FindReplacePanel::hit_test` compares clicks against px rects; TUI
-/// always calls it with `char_width = line_height = 1.0`, so px space and
-/// cell space are numerically identical here. The find row's "ab"
-/// (whole-word) and ".*" (regex) toggles are otherwise uncovered by any
-/// regression test — only "Aa" is pinned above — so both are exercised end
-/// to end here: located via `driver.find`, clicked, and confirmed via the
-/// status bar.
+/// The panel's layout projects its cell regions at one cell per unit on
+/// TUI. The find row's "ab" (whole-word) and ".*" (regex) toggles are
+/// exercised end to end here: located via `driver.find`, clicked, and
+/// confirmed via the status bar.
 #[test]
 fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
     let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
@@ -1669,8 +1667,8 @@ fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
     });
     driver.click(x, y);
     assert!(
-        driver.screen_contains("clicked ToggleWholeWord"),
-        "clicking the 'ab' glyph should report ToggleWholeWord in the status bar:\n{}",
+        driver.screen_contains("WholeWord on"),
+        "clicking the 'ab' glyph should report WholeWord on in the status bar:\n{}",
         driver.screen()
     );
 
@@ -1679,8 +1677,8 @@ fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
         .unwrap_or_else(|| panic!("the '.*' regex glyph must be visible:\n{}", driver.screen()));
     driver.click(x, y);
     assert!(
-        driver.screen_contains("clicked ToggleRegex"),
-        "clicking the '.*' glyph should report ToggleRegex in the status bar:\n{}",
+        driver.screen_contains("Regex on"),
+        "clicking the '.*' glyph should report Regex on in the status bar:\n{}",
         driver.screen()
     );
 }
@@ -1688,9 +1686,8 @@ fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
 /// The replace row's toggle ("AB", preserve-case) lives at `row = 1` in
 /// `hit_regions` — unlike the find-row toggles above, which all sit at
 /// `row = 0`. Revealing it via `r` (rather than clicking the chevron,
-/// already covered above) and clicking it end to end exercises
-/// `hit_test`'s px projection of a non-zero `region.row` — the other
-/// half of the px rewrite the find-row cases above can't reach.
+/// already covered above) and clicking it end to end exercises the
+/// layout's projection of a non-zero `region.row`.
 #[test]
 fn find_replace_click_on_replace_row_toggle_preserve_case_reports_it() {
     let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
@@ -1710,8 +1707,8 @@ fn find_replace_click_on_replace_row_toggle_preserve_case_reports_it() {
     driver.click(x, y);
 
     assert!(
-        driver.screen_contains("clicked TogglePreserveCase"),
-        "clicking the 'AB' glyph on the replace row should report TogglePreserveCase \
+        driver.screen_contains("PreserveCase on"),
+        "clicking the 'AB' glyph on the replace row should report PreserveCase on \
          in the status bar:\n{}",
         driver.screen()
     );
@@ -2328,30 +2325,22 @@ fn form_dialog_typing_edits_the_focused_name_field() {
 #[test]
 fn form_dialog_tab_cycles_through_fields_then_buttons_then_wraps() {
     let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
-    assert!(driver.app().controller().is_form_focused());
+    assert!(driver.app().form_focused());
     driver.press_named(NamedKey::Tab); // Name -> Description
-    assert!(driver.app().controller().is_form_focused());
+    assert!(driver.app().form_focused());
     driver.press_named(NamedKey::Tab); // Description -> Cancel
-    assert!(!driver.app().controller().is_form_focused());
+    assert!(!driver.app().form_focused());
     assert_eq!(
-        driver
-            .app()
-            .controller()
-            .focused_button_id()
-            .map(|id| id.as_str()),
+        driver.app().focused_button_id().map(|id| id.as_str()),
         Some("cancel")
     );
     driver.press_named(NamedKey::Tab); // Cancel -> Create
     assert_eq!(
-        driver
-            .app()
-            .controller()
-            .focused_button_id()
-            .map(|id| id.as_str()),
+        driver.app().focused_button_id().map(|id| id.as_str()),
         Some("create")
     );
     driver.press_named(NamedKey::Tab); // Create -> (wraps) Name
-    assert!(driver.app().controller().is_form_focused());
+    assert!(driver.app().form_focused());
 }
 
 /// Shift-Tab from the first field (Name) moves focus straight to the
@@ -2361,11 +2350,7 @@ fn form_dialog_shift_tab_from_first_field_focuses_last_button() {
     let mut driver = TuiDriver::new(FormDialogApp::new(), 60, 20);
     form_dialog_shift_tab(&mut driver);
     assert_eq!(
-        driver
-            .app()
-            .controller()
-            .focused_button_id()
-            .map(|id| id.as_str()),
+        driver.app().focused_button_id().map(|id| id.as_str()),
         Some("create")
     );
 }
@@ -2450,13 +2435,12 @@ fn form_dialog_entering_form_from_a_button_keeps_the_apps_focus_mirror_in_sync()
     form_dialog_shift_tab(&mut driver); // Create -> Cancel
     form_dialog_shift_tab(&mut driver); // Cancel -> (wraps back) Description
     assert!(
-        driver.app().controller().is_form_focused(),
+        driver.app().form_focused(),
         "third shift-tab should land back on the form"
     );
     assert_eq!(
         driver
             .app()
-            .controller()
             .form()
             .and_then(|f| f.focused_field)
             .map(|id| id.as_str()),
@@ -2466,11 +2450,7 @@ fn form_dialog_entering_form_from_a_button_keeps_the_apps_focus_mirror_in_sync()
     driver.type_char('a');
     driver.type_char('b');
     driver.type_char('c');
-    let form = driver
-        .app()
-        .controller()
-        .form()
-        .expect("controller should have a form set");
+    let form = driver.app().form().expect("dialog should have a form set");
     let name_value = form
         .fields
         .iter()
@@ -3079,14 +3059,14 @@ fn toolbar_overflow_menu_hit_tests_overflow_and_lists_dropped_items() {
     );
 }
 
-/// Pressing `f` rebuilds the controller via `from_layout`, producing a
+/// Pressing `f` rebuilds the group via `from_layout`, producing a
 /// 3-pane mixed H/V tree (left | top-right / bottom-right).
 ///
 /// Verifies that after pressing 'f':
 /// - All three pane tab labels are visible on screen.
 /// - The pane count shown in the status bar reflects 3 panes.
 ///
-/// This is the primary smoke-test for `TabGroupController::from_layout`.
+/// This is the primary smoke-test for `TabGroup::from_layout`.
 #[test]
 fn tab_group_f_key_switches_to_from_layout_3_pane() {
     let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
@@ -3203,12 +3183,10 @@ fn tab_group_drag_start_does_not_panic() {
 /// The default two-pane layout's root divider lands on a half-cell
 /// position at this driver width: `content width = 120`, divider
 /// thickness 1 → `available = 119`, `ratio = 0.5` → `position = 59.5`,
-/// which the split's cell paint lands on the truncated cell `59`.
-/// `TabGroupController::handle_drag_start` hit-tests
-/// `DividerInfo::divider_bounds` by hand (not through
-/// `SplitLayout::hit_test`), so it must use the backend's snapped click
-/// target rather than the raw unsnapped `59.5` position, or clicking the
-/// visible divider glyph at cell 59 would silently miss.
+/// which the split's cell paint lands on the truncated cell `59`. A press
+/// on that painted cell must start the drag — the group hit-tests the
+/// divider's snapped band, not the raw unsnapped `59.5` position — so
+/// dragging from it resizes the divider.
 #[test]
 fn tab_group_divider_drag_starts_at_the_half_cell_divider_s_painted_cell() {
     let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
@@ -3219,13 +3197,40 @@ fn tab_group_divider_drag_starts_at_the_half_cell_divider_s_painted_cell() {
     let y = 10.0;
 
     driver.mouse_down(divider_cell_x, y);
+    driver.mouse_move(70.0, y);
     let after = driver.screen();
     assert!(
-        after.contains("divider drag start"),
-        "clicking the painted divider cell (59) must start a drag:\n{after}"
+        after.contains("divider 0 resized"),
+        "pressing the painted divider cell (59) must start a drag:\n{after}"
     );
+    driver.mouse_up(70.0, y);
+    assert_eq!(
+        driver.styled_row(y as u16)[70].0,
+        '│',
+        "the divider paints where it was dropped:\n{}",
+        driver.screen()
+    );
+}
 
-    driver.mouse_up(divider_cell_x, y);
+/// A press in the body of a pane moves keyboard focus there, so Ctrl-W
+/// closes that pane's active tab.
+#[test]
+fn tab_group_clicking_a_pane_body_focuses_it_for_ctrl_w() {
+    let mut driver = TuiDriver::new(TabGroupDemo::new(), 120, 30);
+    assert!(driver.screen_contains("focus: 0"), "{}", driver.screen());
+    driver.click(90.0, 10.0);
+    assert!(
+        driver.screen_contains("focus: 1"),
+        "a body press focuses the right pane:\n{}",
+        driver.screen()
+    );
+    driver.ctrl_char('w');
+    assert!(
+        !driver.screen_contains("Cargo.toml"),
+        "Ctrl-W closes the focused pane's tab:\n{}",
+        driver.screen()
+    );
+    assert!(driver.screen_contains("main.rs"), "{}", driver.screen());
 }
 
 #[test]
@@ -3528,8 +3533,8 @@ fn shell_app_activity_bar_active_hovered_and_keyboard_selected_rows_paint_distin
 /// raw `KeyPressed` event isn't intercepted by the Tab-focuses-activity-bar
 /// special case (which matches only `NamedKey::Tab`) or by
 /// `ShellView::handle_event` (no `BackTab` arm at all), so it falls through to
-/// `SidebarSystem::handle`'s own `NamedKey::BackTab` arm, which calls
-/// `cycle_active(-1)`. `SidebarSystem::build_view` prefixes the active
+/// `Sidebar`'s own `NamedKey::BackTab` handling, which makes the previous
+/// visible section active. `Sidebar::view` prefixes the active
 /// section's title with `"▶ "` — the focus indicator this test follows
 /// as it moves from one sidebar region to another.
 #[test]
@@ -3953,7 +3958,7 @@ fn full_chrome_bottom_panel_and_command_line_clicks_update_status_line() {
 
 // ─── ShellMenuDemo: modal-over-chrome MouseDown routing ─────────────────────
 //
-// `ShellMenuDemo` opens a `MenuSystem` dropdown whose bar spans the full
+// `ShellMenuDemo` opens an `AppMenu` dropdown whose bar spans the full
 // viewport width, so the dropdown sits directly over the activity bar strip.
 // Before the fix, `ShellAdapter::handle` ran `ShellView::handle_event` first, which
 // hit-tested `MouseDown` purely by screen position and swallowed any click
@@ -5297,14 +5302,13 @@ fn modal_occlusion_q_exits() {
     assert!(driver.exited());
 }
 
-// ─── ChatDemo: ChatController submit round-trip ─────────────────────────────
+// ─── ChatDemo: Chat submit round-trip ─────────────────────────────
 //
-// `ChatDemo` wraps a `ChatController`; typing goes through
-// `ChatController::handle`'s `Key::Char(c) if !ctrl && !alt` arm (character
-// insertion). `ChatDemo` opts into `submit_on_enter`, so plain
-// `Enter` submits — `Ctrl+S` remains a working alternative in both modes.
-// A missed `ChatDemo::sync_controller()` call or a dropped
-// `Reaction::Redraw` on `ChatControllerEvent::Submit` would leave the typed
+// `ChatDemo` owns a `Chat`; typing goes through the chat's shared
+// text-edit core (character insertion). `ChatDemo` opts into
+// `submit_on_enter`, so plain `Enter` submits — `Ctrl+S` remains a
+// working alternative in both modes. A dropped transcript push or a dropped
+// `Reaction::Redraw` on `ChatEvent::Submit` would leave the typed
 // text stuck in the input box and never reach the transcript — exactly
 // what this test would catch.
 
@@ -5342,9 +5346,9 @@ fn chat_typing_and_ctrl_s_submits_message_into_transcript() {
 // ─── ChatDemo: submit_on_enter, hint line, Send/Stop segment ────────────────
 //
 // `ChatDemo::new` opts into `set_submit_on_enter(true)` and a persistent
-// hint line via `set_hint`, and `ChatController::render` always paints the
+// hint line via `set_hint`, and `Chat`'s paint always paints the
 // Send/Stop segment when the row is wide enough. These drive the real
-// `ChatController::handle`/`render` path through those affordances.
+// `Chat`'s `Interactive::handle`/paint path through those affordances.
 
 #[test]
 fn chat_plain_enter_submits_when_submit_on_enter_is_set() {
@@ -5480,7 +5484,7 @@ fn chat_clicking_stop_segment_while_busy_cancels_the_reply() {
 
 // ─── ChatDemo: input soft-wrap + auto-grow ──────────────────────────────────
 //
-// `ChatController::build_text_input` pre-wraps to `TextInput::content_cols`,
+// `Chat`'s input layout pre-wraps to `TextInput::content_cols`,
 // so a long message's words all paint across multiple visual rows inside the
 // (now auto-grown) box, rather than scrolling horizontally off-screen.
 
@@ -5551,7 +5555,7 @@ fn chat_input_box_grows_taller_as_wrapped_row_count_increases() {
 
 // ─── ChatDemo: the "thinking" spinner schedules its own frames ─
 //
-// `ChatController` must call `Backend::request_frame_in` to animate the
+// `ChatDemo` must call `Backend::request_frame_in` to animate the
 // thinking spinner — without it, the spinner freezes on macOS/Windows (no
 // idle poll) and stutters at 250ms on TUI/GTK (coarse fallback ceiling).
 
@@ -5634,8 +5638,8 @@ fn chat_thinking_countdown_rearms_a_frame_per_tick_and_stops_when_the_reply_land
 
 // ─── ChatDemo: per-turn hit regions + collapsible turns ─────────────────────
 //
-// `ChatDemo::handle` wires `ChatControllerEvent::TurnClicked { row_in_turn: 0,
-// .. }` to `ChatController::toggle_turn_collapsed` (the demo's own choice —
+// `ChatDemo::handle` wires `ChatEvent::TurnClicked { row_in_turn: 0,
+// .. }` to `Chat::toggle_turn_collapsed` (the demo's own choice —
 // the controller never toggles this itself). These drive the real
 // click → handle → render path, exercising both the mouse (click the role
 // header) and keyboard (`Tab` to focus, `Enter` to toggle) affordances the
@@ -5646,7 +5650,7 @@ fn chat_click_turn_header_collapses_then_reexpands_via_click() {
     let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
     // Two deliberate, separate single clicks on the same spot — without
     // this they'd fold into a `DoubleClick`, which
-    // `ChatController::handle` doesn't special-case for the transcript.
+    // `Chat`'s `Interactive::handle` doesn't special-case for the transcript.
     driver.set_double_click_folding(false);
 
     for c in "hello world".chars() {
@@ -5697,7 +5701,7 @@ fn chat_click_turn_header_collapses_then_reexpands_via_click() {
 
 #[test]
 fn chat_click_then_enter_toggles_the_same_turn_the_mouse_focused() {
-    // A click must move `ChatController::focused_turn` onto the clicked turn
+    // A click must move `Chat::focused_turn` onto the clicked turn
     // so a following `Enter` (no mouse involved) acts on it.
     let mut driver = TuiDriver::new(ChatDemo::new(), 100, 30);
 
@@ -5742,9 +5746,9 @@ fn chat_tab_then_enter_toggles_focused_turn_without_a_mouse() {
     assert!(driver.screen_contains("keyboard only"));
 
     // `Tab` from the input moves focus onto turn 0 (the just-submitted
-    // turn) — see `ChatController::focus_next_turn`'s cycle order.
-    // `ChatController::handle` reports this as `Consumed`, which
-    // `ChatDemo::handle` maps to `Reaction::Redraw`.
+    // turn) — see `Chat`'s Tab cycle order.
+    // The chat reports this as `ChatEvent::FocusedTurnChanged`, which
+    // `ChatDemo::handle` applies and answers with `Reaction::Redraw`.
     let reaction = driver.press_named(NamedKey::Tab);
     assert_eq!(reaction, Reaction::Redraw);
 
@@ -7467,9 +7471,9 @@ fn tooltip_demo_key_t_toggles_the_title_independently_of_the_border() {
 
 // ─── AiTranscript: appended turn renders below prior turns ─────────────────
 //
-// `AiTranscript::send_next` (invoked on `ChatControllerEvent::Submit`)
+// `AiTranscript::send_next` (invoked on `ChatEvent::Submit`)
 // pushes a user turn followed by a markdown-rendered assistant turn onto
-// the `ChatController`'s transcript, on top of the seeded system greeting.
+// the `Chat`'s transcript, on top of the seeded system greeting.
 // This is the "append a turn, assert it renders below prior turns"
 // scenario named in the issue: the seeded greeting must still be present
 // (prior turns aren't clobbered) and the new turns' text must appear after
@@ -7477,7 +7481,7 @@ fn tooltip_demo_key_t_toggles_the_title_independently_of_the_border() {
 // `push_turn`/`push_turn_markdown` call that overwrote instead of
 // appended would leave this failing.
 //
-// `ChatController::handle_key`'s Ctrl+S arm is a no-op on an empty
+// `Chat`'s Ctrl+S submit is a no-op on an empty
 // `input_buf` (`ctrl_s_on_empty_input_ignored`, chat_controller.rs), even
 // though `AiTranscript::send_next` ignores the *typed* text and always
 // sends the next canned `EXCHANGES` entry — so a character has to be
@@ -7561,7 +7565,7 @@ fn text_input_backspacing_to_empty_restores_placeholder() {
 }
 
 /// folder_picker: `FolderPickerApp` flattens the whole
-/// directory tree up front (see `FolderPickerController::new`'s
+/// directory tree up front (see `FolderPicker::rooted_at`'s
 /// `collect_dir_entries` walk) rather than descending one level at a
 /// time, so "navigate down a directory" here means selecting a real
 /// subdirectory entry (not `.` or `..`) and confirming it — the picker
@@ -7643,9 +7647,9 @@ fn folder_picker_confirmed_status_survives_a_path_longer_than_the_screen() {
     );
 }
 
-// ─── FilePickerApp: compose::FilePickerController demo ─────────────────────
+// ─── FilePickerApp: compose::FilePicker demo ─────────────────────
 //
-// Drives `FilePickerController` directly — no `PlatformServices` involved
+// Drives `FilePicker` directly — no `PlatformServices` involved
 // — the same "app owns the controller, no backend branching" shape
 // `FolderPickerApp` above already has. See `tui_file_picker.rs`.
 
@@ -7705,7 +7709,7 @@ fn file_picker_app_save_mode_confirms_seeded_filename() {
 
 /// Open mode: `j`/`k` move the selection the same way `Down`/`Up` do,
 /// driven through the real example path (not just the controller's own
-/// unit tests) so the vim shortcuts unified with `FolderPickerController`
+/// unit tests) so the vim shortcuts unified with `FolderPicker`
 /// are pinned end to end.
 #[test]
 fn file_picker_app_open_mode_vim_keys_navigate_and_confirm() {
@@ -7759,9 +7763,9 @@ fn file_picker_app_save_mode_vim_chars_type_into_filename() {
     );
 }
 
-// ─── MessageDialogApp: compose::MessageDialogController demo ──
+// ─── MessageDialogApp: compose::MessageDialog demo ──
 //
-// Drives `MessageDialogController` directly — no `PlatformServices`
+// Drives `MessageDialog` directly — no `PlatformServices`
 // involved. See `tui_message_dialog_app.rs`.
 
 /// Enter with no navigation activates the default-focused button ("Save").
@@ -7782,7 +7786,7 @@ fn message_dialog_app_enter_resolves_default_button() {
 }
 
 /// Escape resolves to the cancel button ("Discard") even though it isn't
-/// the keyboard-focused one — `MessageDialogController`'s "there's always
+/// the keyboard-focused one — `MessageDialog`'s "there's always
 /// something to degrade to" contract.
 #[test]
 fn message_dialog_app_escape_resolves_cancel_button() {
@@ -7796,7 +7800,7 @@ fn message_dialog_app_escape_resolves_cancel_button() {
 }
 
 /// `MessageDialogButton::spec` (a `Danger` override on "Discard") carries
-/// through `MessageDialogController::new` into the `DialogButton` it
+/// through `MessageDialog::new` into the `DialogButton` it
 /// builds, and paints in `theme.error_fg` — the "Danger" intent colour —
 /// through the same bracket-chrome path a standalone `Button` uses.
 #[test]
@@ -7893,18 +7897,18 @@ fn multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section() {
     );
 }
 
-// ─── SidebarRevealDemo: SidebarSystem::reveal ──────────────────────────────
+// ─── SidebarRevealDemo: Sidebar::reveal ────────────────────────────────────
 //
 // `DebugSidebar` above uses `ScrollMode::WholePanel`, where the rendered
 // viewport is driven by a single panel-level scroll offset, not each
 // section's own scroll offset — under that mode, even
 // *interactive* arrow-key nav never moves the screen, so it can't prove
 // anything about `reveal`. `SidebarRevealDemo` (`examples/common/
-// sidebar_reveal_demo.rs`) stays on `SidebarSystem`'s default
+// sidebar_reveal_demo.rs`) stays on `Sidebar`'s default
 // `PerSection` scroll mode instead, so `reveal`'s call to
 // `TreeNavCore::scroll_to_visible` has a real, on-screen effect these
 // tests can read back off the rendered grid — not by inspecting
-// `scroll_offset` (see the `compose::sidebar_system::tests` module note
+// `scroll_offset` (see the `compose::sidebar::tests` module note
 // by the same name for the unit-level state-transition coverage).
 
 /// `reveal` scrolls a programmatically-selected, currently off-screen row
@@ -8514,7 +8518,7 @@ fn hscroll_dollar_key_scrolls_visible_window_to_line_end() {
     );
 }
 
-// ─── MenuBarApp: open / navigate / select via MenuSystem ───────────────────
+// ─── MenuBarApp: open / navigate / select via AppMenu ───────────────────
 
 #[test]
 fn menu_bar_alt_f_opens_file_dropdown() {
@@ -10055,16 +10059,16 @@ fn float_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the float demo");
 }
 
-// ─── WorkspaceDemo: `WorkspaceController` inside a ShellView panel ──────────
+// ─── WorkspaceDemo: a `Workspace` strip inside a ShellView panel ───────────
 //
 // An ordered set of opaque document ids with one active, rendered through
 // `TabBar` into the sidebar panel's content rect, with the active document's
 // body painted by the app into the main content area. These drive the shipping
 // example end-to-end through `driver_with_shell`, so the whole event →
-// ShellAdapter → WorkspaceController → render path is real.
+// ShellAdapter → frame-tree routing → `Workspace` → apply path is real.
 //
 // Tab targets come from `tab_center` / `tab_close_center` against the
-// controller's bar id — never hardcoded columns — because every tab paints
+// workspace's bar id — never hardcoded columns — because every tab paints
 // the same close glyph and `find()` cannot disambiguate them.
 
 fn workspace_bar_id() -> quadraui::WidgetId {
@@ -10076,7 +10080,7 @@ fn workspace_driver() -> TuiDriver<impl quadraui::AppLogic> {
 }
 
 /// Deliver `key` with Ctrl (and optionally Shift) held. `TuiDriver` has
-/// `ctrl_char` but no named-key equivalent, and `WorkspaceController`'s
+/// `ctrl_char` but no named-key equivalent, and the workspace's cycle
 /// bindings are all on named keys (Tab / PageUp / PageDown).
 fn press_ctrl_named<A: quadraui::AppLogic>(driver: &mut TuiDriver<A>, key: NamedKey, shift: bool) {
     driver.dispatch(UiEvent::KeyPressed {
@@ -10257,7 +10261,7 @@ fn workspace_demo_overflowing_strip_keeps_the_active_tab_visible() {
     // until the strip cannot show them all. The newly-opened document is
     // the active one, so it must be on screen on the *same* frame — the
     // scroll offset is resolved before the strip paints, not one frame
-    // late (see `WorkspaceController::render`).
+    // late (see `Workspace`'s `Primitive::layout`).
     let mut driver = workspace_driver();
     for _ in 0..workspace_demo::BACKLOG.len() {
         driver.type_char('o');
@@ -10309,7 +10313,7 @@ fn workspace_demo_q_exits() {
 //
 // `p` opens the next backlog document as the workspace's single preview;
 // `m` promotes the active document explicitly. These drive the same
-// `WorkspaceController` through the shipping example, end to end.
+// `Workspace` through the shipping example, end to end.
 
 #[test]
 fn workspace_demo_p_opens_a_preview_tab_that_paints_italic() {
@@ -10406,7 +10410,7 @@ fn workspace_demo_clicking_the_preview_tab_promotes_it() {
     assert!(
         driver.screen_contains("promoted doc:delta"),
         "selecting the preview tab promotes it — the deliberate VS Code \
-         divergence documented on WorkspaceController:\n{}",
+         divergence documented on `compose::workspace`:\n{}",
         driver.screen()
     );
     let label_after = driver
@@ -11245,7 +11249,7 @@ fn context_menu_style_demo_submenu_opens_on_hover_and_activates_leaf() {
 
 /// Near the viewport's right edge the child popup has no room to pull
 /// right, so it flips to the parent's left edge instead — the same
-/// `ContextMenuLayout::submenu_anchor` rule `MenuSystem`'s menu-bar
+/// `ContextMenuLayout::submenu_anchor` rule `AppMenu`'s menu-bar
 /// submenus use.
 #[test]
 fn context_menu_style_demo_submenu_flips_left_near_right_edge() {

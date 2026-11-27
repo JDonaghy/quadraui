@@ -1,4 +1,4 @@
-//! `SidebarSystem::reveal` `AppLogic` + `quadraui::tui::run`
+//! `Sidebar::reveal` `AppLogic` + `quadraui::tui::run`
 //! example. See `examples/common/sidebar_reveal_demo.rs` for the
 //! consumer pattern.
 //!

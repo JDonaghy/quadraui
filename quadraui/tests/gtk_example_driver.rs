@@ -725,13 +725,13 @@ fn data_table_divider_before_last_column_widens_on_right_drag() {
     );
 }
 
-// ─── WorkspaceDemo: `WorkspaceController` inside a ShellView panel ──────────
+// ─── WorkspaceDemo: a `Workspace` strip inside a ShellView panel ───────────
 //
 // GTK twin of `tests/tui_example_driver.rs`'s workspace set. Same
-// `ShellApp`, so the controller is driven through the Pango-measured
+// `ShellApp`, so the workspace is driven through the Pango-measured
 // tab-bar rasteriser — which, unlike the TUI one, reports its own
-// `correct_scroll_offset` and therefore exercises `WorkspaceController::render`'s
-// second, corrected paint pass. Kept deliberately thin per this file's
+// `corrected_scroll_offset` and therefore exercises `Workspace`'s
+// second, corrected layout pass. Kept deliberately thin per this file's
 // scope note; the exhaustive behaviour matrix lives on the TUI side and in
 // `compose::workspace`'s own unit tests.
 
@@ -1193,7 +1193,7 @@ fn context_menu_style_demo_gtk_escape_dismisses() {
 // ─── SubmenuApp: pull-right cascading submenus ──────────────────────────────
 //
 // Same `SubmenuApp` as `tui_submenu`/`gtk_submenu` — driven entirely through
-// the `ContextMenu` widget / `MenuSystem`, proving that GTK's shared
+// the `ContextMenu` widget / `AppMenu`, proving that GTK's shared
 // `native_surface_paint::paint` renders the `▶` affordance and that the
 // cascading open/close/click state machine behaves the same as it does on TUI.
 
