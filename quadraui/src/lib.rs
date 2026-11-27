@@ -990,7 +990,7 @@ pub use compose::{
     BottomPanelState, BottomPanelTab, Chat, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn,
     ChatZones, ContextMenuController, ContextMenuOutcome, DualModePaletteAction, Edge,
     FilePickerMode, FormController, FormControllerAction, FormDialogAction, GroupLayout, Handled,
-    HelpAction, HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker, MenuDef,
+    HelpAction, HelpNote, HelpOverlayAction, HelpRegistry, MenuDef,
     NavigationMode, PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellEvent,
     ShellLayout, ShellPosition, ShellRegion, ShellView, ShellViewLayout, ShellViewState, Sidebar,
     SidebarAction, SidebarBody, SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome,

@@ -99,8 +99,8 @@ pub struct ListView {
     /// persistent indicator unrelated to real keyboard focus, so a
     /// focus-visible ring can't ride on this field without painting a
     /// ring on every one of them. The GUI focus-visible ring instead
-    /// reads [`crate::Backend::draw_list_with_state`]'s own
-    /// `focus_ring_visible` parameter — pass
+    /// reads the paint state's
+    /// [`crate::primitive::PaintState::focus_ring_visible`] — pass
     /// `ring.is_focused(&list.id) && ring.is_focus_visible()` there.
     #[serde(default)]
     pub has_focus: bool,
@@ -171,8 +171,8 @@ pub struct ListItem {
 // TreeView — same vertical-stacking layout, minus indent and chevrons.
 // An optional title row always renders at the top (outside scroll).
 
-/// Horizontal-scrollbar track geometry, shared by every backend's
-/// `list_hscrollbar` rasteriser.
+/// Horizontal-scrollbar track geometry, shared by every painter of a
+/// list's horizontal scrollbar.
 ///
 /// `char_w` and `row_h` are the caller's native horizontal/vertical
 /// units: `1.0` / `1.0` on TUI (a cell), `current_char_width` /
@@ -559,7 +559,8 @@ impl ListView {
     /// implement thumb dragging. Keeping it here (rather than inline in
     /// each backend's `draw_*`) means a consumer never re-derives the
     /// track rect and so can never drift out of sync with the paint.
-    /// Reach it backend-agnostically via [`crate::Backend::list_hscrollbar`].
+    /// Reach it backend-agnostically via
+    /// [`ListViewPrimitiveLayout::hscrollbar`].
     ///
     /// Returns `None` when no horizontal scrollbar is needed:
     /// `max_content_width` is `None`, or the content fits within the
@@ -639,7 +640,7 @@ impl ListView {
     /// dragging. Keeping it here (rather than inline in each backend's
     /// `draw_*`) means a consumer never re-derives the track rect and so can
     /// never drift out of sync with the paint. Reach it backend-agnostically
-    /// via [`crate::Backend::list_vscrollbar`].
+    /// via [`ListViewPrimitiveLayout::vscrollbar`].
     ///
     /// Returns `None` when no vertical scrollbar is needed: `show_v_scrollbar`
     /// is `false`, the list is empty, or all items fit in the visible viewport.
@@ -1036,10 +1037,10 @@ mod vscrollbar_tests {
 // and `crate::primitives::scrollbar::native_surface_paint` for the same
 // pattern applied to earlier primitives.
 //
-// The vertical scrollbar is now painted via
+// The vertical scrollbar is painted via
 // [`crate::primitives::scrollbar::native_surface_paint::paint`],
-// using real track/thumb geometry that `Backend::list_vscrollbar`
-// already provides.
+// using the same track/thumb geometry `ListViewPrimitiveLayout::vscrollbar`
+// reports.
 //
 // `bordered`'s frame itself is not painted here: `ListView`'s
 // `Primitive::paint` clips this content to a rounded rect and strokes
@@ -1066,20 +1067,15 @@ pub(crate) mod native_surface_paint {
     /// scrollbars — onto `surface` at `area`.
     ///
     /// - `list_layout` must be the same [`ListViewLayout`] the caller
-    ///   uses for hit-testing (typically `gtk_list_layout`/
-    ///   `mac_list_layout`/`win_list_layout`'s return value) so paint
-    ///   and hit-test can never disagree.
+    ///   uses for hit-testing (the list's own `Primitive::layout`) so
+    ///   paint and hit-test can never disagree.
     /// - `line_height` is one row's height in `surface`'s native units
     ///   (pixels on every current caller).
     /// - `nerd_fonts_enabled` selects `Icon::glyph` vs. `Icon::fallback`.
     /// - `supports_border` — see this module's doc for what it toggles.
-    /// - `supports_hscrollbar` — `false` on Windows only: `win_list_layout`
-    ///   never reserves a bottom row for an overflowing
-    ///   `ListView::max_content_width` (a real, tracked-separately gap —
-    ///   see `win::list`'s module doc, "Known gap: no horizontal
-    ///   scrollbar"), so painting one there without a reservation would
-    ///   overlap the last content row — a new (and wrong) visual, not a
-    ///   fix. `true` on GTK/macOS, which both already reserve the row.
+    /// - `supports_hscrollbar` — whether to paint a horizontal scrollbar
+    ///   for an overflowing `ListView::max_content_width`; the caller's
+    ///   layout must have reserved the bottom row for it.
     /// - `style` supplies [`Style::row_padding_x`], the horizontal inset
     ///   a row's leading content (chevron-less here, so its icon/text)
     ///   starts at — callers pass `&self.current_style` (GTK/macOS);
@@ -1139,9 +1135,7 @@ pub(crate) mod native_surface_paint {
     /// Like [`paint`], plus an explicit pixel-precise scroll position
     /// (`scroll_px`) that wins over [`ListView::scroll_offset`] for both
     /// the rows (via `list_layout.visible_items`, already resolved
-    /// against `scroll_px` by whichever of
-    /// [`ListView::layout_with_scroll_px`]/`mac_list_layout_with_scroll_px`
-    /// built `list_layout`) and the vertical scrollbar thumb (resolved
+    /// against `scroll_px` by [`ListView::layout_with_scroll_px`]) and the vertical scrollbar thumb (resolved
     /// here, via [`ListView::vscrollbar_with_scroll_px`]).
     ///
     /// `scroll_px: None` (what [`paint`] passes) is pixel-identical to
@@ -2343,9 +2337,8 @@ pub(crate) mod native_surface_paint {
 // ── `crate::primitive::Primitive` pilot ─────────────────────────────
 //
 // `paint`'s pixel-backend branch below needs `native_surface_paint`;
-// `paint_cells` needs `crate::tui::draw_list`/`ratatui` — gated to
-// whichever of those a build actually has, same as those modules
-// themselves.
+// `paint_cells` needs the `tui` cell painter — each gated to whichever of
+// those a build actually has, same as those modules themselves.
 
 /// [`crate::primitive::Primitive::Layout`] for [`ListView`] — the
 /// list-local [`ListViewLayout`] paired with the absolute area it was
@@ -2508,14 +2501,11 @@ impl crate::primitive::Primitive for ListView {
         Some(&self.id)
     }
 
-    /// Round-trips through [`crate::frame::OwnedContent::ListWidget`] —
-    /// distinct from [`crate::frame::OwnedContent::List`] (which
-    /// [`crate::frame::capture_surface`] produces for the legacy
-    /// [`crate::frame::Surface::List`] instead) so a `ListView` reached
-    /// through [`crate::frame::Surface::Widget`] replays through
-    /// [`crate::backend::DrawsPrimitives::draw_primitive`] and
-    /// hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
-    /// exactly as it does live — see that variant's own doc.
+    /// Round-trips through [`crate::frame::OwnedContent::ListWidget`], so
+    /// a `ListView` reached through [`crate::frame::Surface::Widget`]
+    /// replays through [`crate::backend::DrawsPrimitives::draw_primitive`]
+    /// and hit-tests as [`crate::frame::FrameZone::Widget`] after capture,
+    /// exactly as it does live.
     fn capture(&self) -> crate::frame::OwnedContent {
         crate::frame::OwnedContent::ListWidget(self.clone())
     }
@@ -4081,13 +4071,13 @@ mod primitive_parity_tests {
             &crate::PaintEnv::new(&theme, &style),
         );
 
-        let direct_layout = crate::primitives::layout_metrics::list_layout(
-            &list,
-            rect.width as f64,
-            rect.height as f64,
-            ctx.line_height as f64,
-            ctx.char_width as f64,
+        let direct_layout = list.resolve_layout(
+            crate::primitive::Units::Pixels,
+            (rect.width, rect.height),
+            ctx.line_height,
+            ctx.char_width,
             0.0,
+            None,
         );
         let mut direct_surface = LogSurface::default();
         native_surface_paint::paint(

@@ -17,14 +17,11 @@ use crate::event::{Point, Rect, UiEvent, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::scrollbar::Scrollbar;
-use crate::primitives::spinner::{Spinner, SpinnerLayout};
 // Only named by the Windows tests below.
 #[cfg(all(test, target_os = "windows"))]
 use crate::primitives::toolbar::ToolbarButton;
 use crate::types::WidgetId;
-use crate::{Accelerator, AcceleratorId, Key, ListView, Modifiers, UserPayload};
+use crate::{Accelerator, AcceleratorId, Key, Modifiers, UserPayload};
 // `ActivityBar`, `MenuBar`, `StatusBar` and `TabBar` are only named by
 // `#[cfg(test)]` code below — each paints through its widget contract, not a
 // method on this backend. `ContextMenu` is named only by the Windows-host
@@ -109,21 +106,6 @@ fn focus_ring_band_overlaps(rect: Rect, stroke_width: f32, overlay: Rect) -> boo
     [top, bottom, left, right]
         .into_iter()
         .any(|band| rects_overlap(band, overlay))
-}
-
-/// [`super::spinner::SpinnerMeasureSource`] impl backed by
-/// [`nominal_text_width`] for the width and a fixed `line_height` for the
-/// height (`DWrite::measure_text` isn't available yet) — matches the
-/// pre-#1078 `win_spinner_nominal_layout`'s behaviour exactly.
-struct NominalSpinnerMeasure {
-    char_width: f32,
-    line_height: f32,
-}
-
-impl super::spinner::SpinnerMeasureSource for NominalSpinnerMeasure {
-    fn measure(&self, text: &str) -> (f32, f32) {
-        (nominal_text_width(text, self.char_width), self.line_height)
-    }
 }
 
 // ─── Direct2D bootstrap ─────────────────────────────────────────────────
@@ -935,7 +917,7 @@ impl WinBackend {
             .unwrap_or_else(std::time::Instant::now)
     }
 
-    /// Opacity multiplier [`Backend::draw_scrollbar`] paints the track
+    /// Opacity multiplier the overlay scrollbars paint the track
     /// and thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
     /// explicitly cleared to `None`, otherwise
     /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
@@ -946,18 +928,6 @@ impl WinBackend {
         match self.scroll_fade_last_interaction {
             Some(last) => crate::primitives::scrollbar::idle_fade_opacity(last, self.fade_now()),
             None => 0.0,
-        }
-    }
-
-    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
-    /// (`candidate_line_height > 1.0`), floored at the font's own line
-    /// height so a chrome font taller than the token isn't clipped — see
-    /// `MacBackend::resolved_row_height`'s identical rationale.
-    fn resolved_row_height(&self, candidate_line_height: f32) -> f32 {
-        if candidate_line_height > 1.0 {
-            candidate_line_height.max(self.current_style.row_height)
-        } else {
-            candidate_line_height
         }
     }
 
@@ -3979,6 +3949,8 @@ mod tests {
     // this file's own coverage of the methods it deprecates.
     #![allow(deprecated)]
     use super::*;
+    use crate::backend::DrawsPrimitives;
+    use crate::ListView;
 
     /// Build a flat tree of `n_rows` leaf rows for the tree paint tests,
     /// which run only on Windows.
@@ -4231,7 +4203,7 @@ mod tests {
         );
     }
 
-    /// `list_vscrollbar`'s track width must follow a host-set
+    /// A list's reported vertical scrollbar track width must follow a host-set
     /// `Style::scrollbar_width`, the same live field
     /// `native_surface_paint::paint` reads — so the painted track and
     /// the hit-tested track can never drift apart, at the default width
@@ -6939,7 +6911,7 @@ mod tests {
         );
         assert!(
             diff > 0,
-            "#1266: draw_list must paint row text through chrome_dwrite, not the \
+            "#1266: a list must paint row text through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
         );
     }
@@ -7204,12 +7176,12 @@ mod tests {
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_spinner must paint its label through chrome_dwrite, not the \
+             a spinner must paint its label through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
         );
     }
 
-    /// `Backend::set_theme` must reach `Self::draw_spinner`'s shared
+    /// `Backend::set_theme` must reach the spinner's shared
     /// painter, not just be stored and ignored. A spinner's glyph is text (no solid-fill
     /// region to probe pixel-exact like `set_theme_reaches_the_rasterisers`
     /// does for the terminal divider), so this finds the most-inked pixel
@@ -7941,9 +7913,8 @@ mod tests {
         );
     }
 
-    /// `spinner_layout` must measure the spinner's label against the
-    /// same `chrome_dwrite`-preferring handle `Self::draw_spinner` paints
-    /// with — see that method's doc.
+    /// The spinner's layout must measure its label against the
+    /// same `chrome_dwrite`-preferring handle its paint uses.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_spinner_layout_measures_label_in_the_chrome_fonts_size() {
@@ -7965,7 +7936,7 @@ mod tests {
         );
         assert!(
             big > small * 2.0,
-            "spinner_layout must measure the label through chrome_dwrite, not \
+            "the spinner layout must measure the label through chrome_dwrite, not \
              the (unchanged) editor dwrite handle: small={small}, big={big}"
         );
     }

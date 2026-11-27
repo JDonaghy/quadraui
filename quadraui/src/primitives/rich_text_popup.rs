@@ -1186,16 +1186,10 @@ pub(crate) mod cell_paint {
     }
 }
 
-/// Visible width of the rich-text-popup scrollbar, shared by
-/// [`native_surface_paint::paint`] and each backend's own hit-testing
-/// constant of the same value
-/// (`gtk`/`macos::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`) — wider
-/// than [`RichTextPopupLayout::scrollbar`]'s bare 1-unit track so the
-/// bar is paint+click-friendly. Lives outside the `native_surface_paint`
-/// cfg gate (unlike the rest of that module) so a GTK build — which
-/// only needs this constant, not the whole shared painter — doesn't
-/// have to compile the ~200-line `paint` function to reach it. Its own
-/// gate is therefore the union of the rasterisers that read it, so a
+/// Visible width of the rich-text-popup scrollbar
+/// [`native_surface_paint::paint`] draws — wider than
+/// [`RichTextPopupLayout::scrollbar`]'s bare 1-unit track so the bar is
+/// paint+click-friendly. Gated on the pixel backends that paint it, so a
 /// TUI-only build (which has no rich-text-popup scrollbar to paint)
 /// doesn't carry an unused constant.
 #[cfg(any(
@@ -1205,8 +1199,7 @@ pub(crate) mod cell_paint {
 ))]
 pub(crate) const SB_WIDTH: f32 = 8.0;
 /// Inset between the scrollbar's right edge and the popup's own right
-/// border. See [`SB_WIDTH`]'s doc for why this sits outside the
-/// `native_surface_paint` gate and carries this one instead.
+/// border. Gated like [`SB_WIDTH`].
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -1215,21 +1208,8 @@ pub(crate) const SB_WIDTH: f32 = 8.0;
 pub(crate) const SB_INSET: f32 = 1.0;
 
 // Shared painting implementation for every pixel surface — the painter
-// `Primitive::paint` runs on GTK, macOS and Windows alike, and the one
-// `macos::rich_text_popup`/`win::rich_text_popup` delegate to.
-//
-// `gtk::rich_text_popup::draw_rich_text_popup` keeps a painter of its own
-// because it shapes entire lines with Pango's `AttrList` to avoid glyph-position
-// drift from kerning/ligatures that occurs when spans are shaped and advanced
-// separately, and derives its link rects from `index_to_pos` — neither of which
-// `PaintSurface`'s per-run verbs can express. That wrapper also reaches into
-// this file for the scrollbar geometry constants above (re-exported as
-// `gtk::rich_text_popup::RICH_TEXT_POPUP_SB_WIDTH`/`_SB_INSET`, same derivation
-// `macos::rich_text_popup` already uses), so its own paint stays in sync with
-// macOS/Windows's scrollbar geometry without duplicating the constant.
-//
-// macOS and Windows both use per-span manual x-advance (the approach below),
-// so consolidating them closes gaps between the implementations:
+// `Primitive::paint` runs on GTK, macOS and Windows alike. It advances x
+// per span by each span's measured width and paints:
 //
 // - Selection background + inverted foreground colour.
 // - Bold span styling.
@@ -1246,20 +1226,14 @@ pub(crate) const SB_INSET: f32 = 1.0;
 ))]
 pub(crate) mod native_surface_paint {
     use super::{RichTextPopup, RichTextPopupLayout, TextSelection};
-    // `pub(crate)` (not a plain `use`) so `native_surface_paint::SB_WIDTH`/
-    // `::SB_INSET` stay reachable from `macos::rich_text_popup` and
-    // `win::rich_text_popup`, which both read the constants through this
-    // module path rather than `crate::primitives::rich_text_popup::` directly.
-    pub(crate) use super::{SB_INSET, SB_WIDTH};
+    use super::{SB_INSET, SB_WIDTH};
     use crate::paint_surface::PaintSurface;
     use crate::theme::Theme;
     use crate::{Point, Rect};
 
     /// Translate a `TextSelection` (char columns) into the byte range
     /// this line contributes to the selection. Returns `(0, 0)` when
-    /// the line is outside the selection. Ported verbatim from
-    /// `gtk::rich_text_popup`'s (and `win::rich_text_popup`'s identical
-    /// copy of the) private helper of the same name.
+    /// the line is outside the selection.
     fn selection_byte_range(
         sel: TextSelection,
         line_idx: usize,
@@ -1294,11 +1268,7 @@ pub(crate) mod native_surface_paint {
     /// `surface`'s own glyph measurements — more accurate than
     /// `layout.link_hit_regions`, whose widths come from the host's
     /// `link_widths` measure closure rather than this backend's actual
-    /// glyph advances (mirrors `gtk::draw_rich_text_popup`'s
-    /// `index_to_pos`-derived link rects for the same reason).
-    ///
-    /// See this module's doc for why `gtk::rich_text_popup` does not
-    /// call this — GTK's own paint is not migrated.
+    /// glyph advances.
     pub(crate) fn paint(
         popup: &RichTextPopup,
         layout: &RichTextPopupLayout,

@@ -939,7 +939,7 @@ impl MacBackend {
             .unwrap_or_else(std::time::Instant::now)
     }
 
-    /// Opacity multiplier [`Backend::draw_scrollbar`] paints the track
+    /// Opacity multiplier the overlay scrollbars paint the track
     /// and thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
     /// explicitly cleared to `None`, otherwise
     /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
@@ -1059,24 +1059,6 @@ impl MacBackend {
     /// The current style. Mirrors [`Self::current_theme`].
     pub fn current_style(&self) -> &crate::Style {
         &self.current_style
-    }
-
-    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
-    /// (`candidate_line_height > 1.0`), floored at the font's own line
-    /// height so a chrome/editor font large enough to need more than
-    /// `Style::row_height` still gets it — a huge UI font size never
-    /// clips row content against a fixed slot. On a cell grid
-    /// (`candidate_line_height <= 1.0`, which never reaches this code on
-    /// macOS but is kept symmetric with the TUI-shared formula other
-    /// chrome strips use), `Style` tokens are a documented no-op (see
-    /// that module's "Where each token maps on TUI"), so the raw
-    /// candidate passes through unchanged.
-    pub(crate) fn resolved_row_height(&self, candidate_line_height: f64) -> f64 {
-        if candidate_line_height > 1.0 {
-            candidate_line_height.max(self.current_style.row_height as f64)
-        } else {
-            candidate_line_height
-        }
     }
 
     /// Shared handle to the backend's event queue. The runner clones
@@ -2858,7 +2840,7 @@ impl PaintSurface for MacBackend {
     }
 
     /// `self` is the surface every non-editor-class primitive paints
-    /// through unwrapped (`draw_toast_overlay`, `draw_progress`, …), so
+    /// through unwrapped (toasts, progress bars, …), so
     /// this reads `chrome_font` unconditionally
     /// rather than `current_font` — see [`EditorSurface`]'s doc for the
     /// three editor-class primitives that opt back into `current_font`
@@ -4518,48 +4500,6 @@ mod tests {
     fn backend_caps_declares_native_dialogs() {
         let b = MacBackend::new();
         assert!(b.backend_caps().native_dialogs);
-    }
-
-    /// Build a flat `ListView` whose widest row is `content_width` chars
-    /// wide, scrolled to `h_scroll`, with `max_content_width` populated so
-    /// it always overflows a narrow viewport. Mirrors
-    /// `primitives::list::hscrollbar_tests::list`.
-    fn bordered_overflow_list(content_width: usize, h_scroll: usize, bordered: bool) -> ListView {
-        ListView {
-            id: crate::types::WidgetId::new("l"),
-            title: None,
-            items: vec![crate::ListItem {
-                text: crate::types::StyledText::plain("x".repeat(content_width)),
-                detail: None,
-                icon: None,
-                decoration: crate::types::Decoration::default(),
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            has_focus: true,
-            bordered,
-            h_scroll,
-            max_content_width: Some(content_width),
-            show_v_scrollbar: false,
-            striped: false,
-        }
-    }
-
-    // ── Style::row_height governs list/tree/table row pitch ────────────
-
-    /// On a pixel backend, `resolved_row_height` defaults to
-    /// `Style::row_height` (22, the default) rather than the raw chrome
-    /// line height, but never shrinks below it.
-    #[test]
-    fn resolved_row_height_defaults_to_style_token_but_never_shrinks_the_font_metric() {
-        let b = MacBackend::new();
-        assert_eq!(
-            b.resolved_row_height(10.0),
-            b.current_style.row_height as f64
-        );
-        assert_eq!(b.resolved_row_height(40.0), 40.0);
-        // A cell grid (TUI's architectural `1.0`) is a documented no-op.
-        assert_eq!(b.resolved_row_height(1.0), 1.0);
     }
 
     // ── Minimap/Image paint real pixels on macOS ─────────────────────────
@@ -7448,7 +7388,7 @@ mod tests {
         );
     }
 
-    /// `list_vscrollbar`'s track width must follow a host-set
+    /// A list's reported vertical scrollbar track width must follow a host-set
     /// `Style::scrollbar_width`, the same live field
     /// `native_surface_paint::paint` reads — so the painted track and
     /// the hit-tested track can never drift apart, at the default width

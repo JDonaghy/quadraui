@@ -277,11 +277,11 @@ pub struct GtkBackend {
     /// [`idle_fade_opacity`]: crate::primitives::scrollbar::idle_fade_opacity
     scroll_fade_clock_override: Option<std::time::Instant>,
     /// Per-frame Pango advance for `ui_font` (the chrome twin of
-    /// `current_char_width`), in DIPs — backs [`Backend::list_char_width`].
-    /// `draw_list` paints row text in `ui_font`, not the editor font
-    /// `current_char_width` measures, so a consumer sizing
-    /// list content from `current_char_width` under-fills the row
-    /// whenever the two fonts' advances differ. Refreshed once
+    /// `current_char_width`), in DIPs — backs `measure_text`'s chrome-role
+    /// fallback. Chrome rows paint in `ui_font`, not the editor font
+    /// `current_char_width` measures, so sizing chrome content from
+    /// `current_char_width` under-fills the row whenever the two fonts'
+    /// advances differ. Refreshed once
     /// per frame by `gtk::run::render_frame` via
     /// [`Self::refresh_chrome_char_width`], the same way
     /// `current_char_width` is refreshed from the editor font.
@@ -533,8 +533,8 @@ impl GtkBackend {
             // above) — a real value is only established once
             // `refresh_chrome_char_width` runs inside a live frame; a
             // `GtkBackend` built directly by a test and never entered
-            // into a frame scope just gets this placeholder back from
-            // `list_char_width()`, same posture as `current_char_width`.
+            // into a frame scope just gets this placeholder back, same
+            // posture as `current_char_width`.
             current_chrome_char_width: 8.0,
             pango_ctx: None,
             frame_pango_ctx: None,
@@ -658,8 +658,7 @@ impl GtkBackend {
             .unwrap_or_else(std::time::Instant::now)
     }
 
-    /// Opacity multiplier [`Backend::draw_scrollbar`] (and the
-    /// `DataTable` rasteriser's own scrollbars) paint the track and
+    /// Opacity multiplier the overlay scrollbars paint the track and
     /// thumb at: `0.0` if [`Self::scroll_last_interaction`] has been
     /// explicitly cleared to `None`, otherwise
     /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
@@ -954,21 +953,19 @@ impl GtkBackend {
     }
 
     /// Re-measure and cache `ui_font`'s real Pango advance into
-    /// `current_chrome_char_width`, backing [`Backend::list_char_width`]
-    /// — the chrome twin of [`Self::set_current_char_width`].
+    /// `current_chrome_char_width` — the chrome twin of
+    /// [`Self::set_current_char_width`].
     ///
     /// Takes a live `layout` (the same shared per-frame layout every
     /// `draw_*` method borrows via `current_frame_refs`) because Pango
     /// text measurement needs a `pango::Context`-backed layout to read
     /// real hinted advances from, not just a font description. Saves and
-    /// restores `layout`'s font description around the measurement, the
-    /// same save/swap/restore shape [`Backend::draw_list`]'s own
-    /// [`crate::gtk::GtkBackend`] impl uses to paint in `ui_font` without
-    /// leaving it stuck on the shared layout afterward — so calling this
-    /// mid-frame never disturbs whatever the caller had `layout` set to.
+    /// restores `layout`'s font description around the measurement, so
+    /// calling this mid-frame never disturbs whatever the caller had
+    /// `layout` set to.
     ///
     /// Called once per frame by `gtk::run::render_frame`, right alongside
-    /// [`Self::set_current_char_width`], so `list_char_width()` can never
+    /// [`Self::set_current_char_width`], so the chrome advance can never
     /// go stale after a runtime [`Backend::set_ui_font`] call the way a
     /// value cached only at `set_ui_font` time would (GTK's `ui_font` is
     /// a plain string, not a live `pango::FontDescription` with metrics
@@ -5900,7 +5897,7 @@ mod tests {
         );
     }
 
-    /// `list_vscrollbar`'s track width must follow a host-set
+    /// A list's reported vertical scrollbar track width must follow a host-set
     /// `Style::scrollbar_width`, the same live field
     /// `native_surface_paint::paint` reads — so the painted track and
     /// the hit-tested track can never drift apart, at the default width
@@ -5947,7 +5944,7 @@ mod tests {
         assert_eq!(overridden_sb.track.width, 24.0);
     }
 
-    /// `draw_list` paints item labels and icon glyphs with `ui_font`, not
+    /// A list paints item labels and icon glyphs with `ui_font`, not
     /// the editor-content layout's font. Paint the same single-item list
     /// under two wildly different "editor" font sizes with `ui_font` left
     /// at its default — the painted extent must be identical — then change
@@ -6384,7 +6381,7 @@ mod tests {
     /// *role*-appropriate cached advance (`current_chrome_char_width` for
     /// [`crate::FontRole::Chrome`], `current_char_width` for
     /// [`crate::FontRole::Editor`]) rather than the same one for both.
-    /// The same mismatch hazard [`Backend::list_char_width`]'s doc describes.
+    /// The same mismatch hazard `current_chrome_char_width`'s doc describes.
     #[test]
     fn measure_text_fallback_picks_the_role_appropriate_char_width() {
         use crate::{Backend, FontRole};

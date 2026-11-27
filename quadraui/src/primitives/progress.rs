@@ -437,8 +437,7 @@ pub(crate) mod native_surface_paint {
     use crate::theme::Theme;
 
     /// Paint a [`ProgressBar`] into `rect` on `surface`, returning
-    /// [`ProgressBarLayout`] for host click dispatch — same contract as
-    /// every deleted per-backend `draw_progress`. `style` supplies the
+    /// [`ProgressBarLayout`] for host click dispatch. `style` supplies the
     /// corner radius the track/fill paint with — no
     /// border/shadow: VS Code's own progress indicator is a flat bar
     /// with no outline or elevation, unlike the card-shaped overlays
@@ -818,7 +817,7 @@ mod cell_paint_tests {
 
     // Shared bodies parametrized over the area's origin — LESSONS.md
     // "Layout helpers must return coords in the same frame across
-    // backends". `tui_progress_layout` bakes `area.x`/
+    // backends". The cell layout bakes `area.x`/
     // `area.y` straight into `bar.layout`'s returned bounds (absolute
     // frame), so the regression guard is a full paint+hit_test round
     // trip re-run at a non-zero origin, not a relative-coords check.
@@ -939,10 +938,8 @@ mod macos_tests {
         make_font("Menlo", 14.0).expect("Menlo installed")
     }
 
-    /// Paint via the real `Backend::draw_progress` path — which now
-    /// routes through the shared `native_surface_paint::paint` — avoids
-    /// tripping the `-D warnings`-denied `deprecated` lint (CLAUDE.md
-    /// rule 3) by not calling the deprecated free-function shim above.
+    /// Paint through the real backend's `draw_primitive`, which routes
+    /// through the shared `native_surface_paint::paint`.
     fn paint_via_backend(bar: &ProgressBar) -> (BitmapSurface, ProgressBarLayout) {
         let surface = BitmapSurface::new(W, H);
         surface.fill(0.0, 0.0, 0.0, 0.0);
@@ -1005,7 +1002,7 @@ mod macos_tests {
         );
     }
 
-    /// Body for testing cancel-bounds layout: `mac_progress_layout`
+    /// Body for testing cancel-bounds layout: the pixel layout
     /// bakes `x`/`y` straight into the returned `cancel_bounds` in
     /// absolute frame coordinates. This test verifies that a click at
     /// the resulting position resolves through `hit_test`.
@@ -1073,7 +1070,7 @@ mod macos_tests {
     }
 }
 
-#[cfg(all(test, feature = "win"))]
+#[cfg(all(test, feature = "win", target_os = "windows"))]
 mod win_tests {
     use crate::event::Rect;
     use crate::primitives::progress::ProgressBarHit;
@@ -1100,8 +1097,7 @@ mod win_tests {
     /// Paint `bar` via the shared
     /// [`crate::primitives::progress::native_surface_paint::paint`]
     /// through a [`crate::win::surface::D2dSurface`] over `surface`'s
-    /// headless target — the same adapter the now-removed
-    /// `draw_progress` shim used, exercised here directly.
+    /// headless target, exercised here directly.
     fn paint(
         surface: &HeadlessSurface,
         dwrite: &DWrite,
@@ -1193,7 +1189,7 @@ mod win_tests {
         assert_eq!(
             (fill_px.r, fill_px.g, fill_px.b),
             (custom_accent.r, custom_accent.g, custom_accent.b),
-            "draw_progress must paint the caller's theme, not Theme::default()",
+            "the painter must paint the caller's theme, not Theme::default()",
         );
     }
 
@@ -1242,7 +1238,7 @@ mod win_tests {
         assert_eq!(hit, ProgressBarHit::Cancel(WidgetId::new("p")));
     }
 
-    /// `win_progress_layout` must produce byte-identical layout to the painted result.
+    /// The no-paint pixel layout must be byte-identical to the painted one.
     #[test]
     fn no_paint_layout_matches_paint_layout() {
         let bar = bar(Some(0.3), true);

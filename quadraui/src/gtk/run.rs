@@ -2393,8 +2393,8 @@ pub(crate) fn render_frame<A: AppLogic>(
     backend.set_current_line_height(line_h);
     backend.set_current_char_width(char_w);
     // `ui_font` is set once per app at setup; don't re-seed it every frame.
-    // However, its *advance* needs re-deriving every frame for
-    // `Backend::list_char_width()`, so `set_ui_font` takes effect on the
+    // However, its *advance* needs re-deriving every frame for chrome
+    // measurement, so `set_ui_font` takes effect on the
     // next repaint the same way `set_editor_font` does for `char_width()`.
     backend.refresh_chrome_char_width(&layout);
 

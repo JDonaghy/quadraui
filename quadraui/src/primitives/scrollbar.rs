@@ -1088,8 +1088,7 @@ pub(crate) mod cell_paint {
 // fully-opaque colour pre-blended against `theme.background`.
 //
 // `#[allow(dead_code)]`: only called when a real pixel backend is
-// compiled in, exercised by each backend's own `Backend::draw_scrollbar`
-// call site plus tests.
+// compiled in, exercised by `Scrollbar`'s `Primitive::paint` plus tests.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -2295,9 +2294,9 @@ mod gtk_tests {
         (data[off + 2], data[off + 1], data[off])
     }
 
-    /// Paint `sb` through the real `GtkBackend::draw_scrollbar` trait
-    /// method, after letting `configure` set up the backend's
-    /// scroll-fade state. Mirrors `macos::scrollbar::paint_via_backend_raw`.
+    /// Paint `sb` through the real `GtkBackend`'s `draw_dyn`, after
+    /// letting `configure` set up the backend's scroll-fade state. Mirrors
+    /// the macOS tests' `paint_via_backend_raw`.
     fn paint_via_backend_raw(
         sb: &Scrollbar,
         configure: impl FnOnce(&mut GtkBackend),
@@ -2802,7 +2801,7 @@ mod macos_tests {
     }
 }
 
-#[cfg(all(test, feature = "win"))]
+#[cfg(all(test, feature = "win", target_os = "windows"))]
 mod win_tests {
     use crate::event::Rect;
     use crate::primitives::scrollbar::Scrollbar;
@@ -2816,9 +2815,7 @@ mod win_tests {
     /// Paint `scrollbar` via the shared
     /// [`crate::primitives::scrollbar::native_surface_paint::paint`]
     /// through a [`crate::win::surface::D2dSurface`] over `surface`'s
-    /// headless target — the same adapter the now-removed
-    /// `draw_scrollbar` shim used, exercised here
-    /// directly.
+    /// headless target, exercised here directly.
     fn paint(scrollbar: &Scrollbar) -> HeadlessSurface {
         let surface = HeadlessSurface::new(W, H).expect("create surface");
         // Fill with a known background so blended track/thumb colours
@@ -3022,7 +3019,7 @@ mod win_tests {
     //
     // Unlike `paint` above (which exercises `native_surface_paint::paint`
     // directly, always at full opacity), these tests go through
-    // `WinBackend::draw_scrollbar` itself, so they also exercise
+    // `WinBackend`'s `draw_dyn` itself, so they also exercise
     // `WinBackend::scrollbar_fade_opacity` — the render-side half of the
     // overlay idle-fade seam `super::run`'s `WM_MOUSEWHEEL`/
     // `WM_MOUSEHWHEEL` handler drives via `note_scroll_activity`. Mirrors

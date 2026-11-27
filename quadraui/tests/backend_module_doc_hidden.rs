@@ -225,16 +225,16 @@ fn backend_modules_hide_unstable_painter_internals() {
     }
 
     // A scanner bug that matched nothing would make this test permanently
-    // green — these four files have a few hundred `pub use`-brought-in
-    // names and a few dozen `pub mod`s between them.
+    // green — these four files have a few dozen `pub use`-brought-in
+    // names and `pub mod`s between them.
     assert!(
         pub_mod_checked > 20,
         "expected many `pub mod` declarations across the four backend \
          modules, found {pub_mod_checked} — has the scanner stopped matching?"
     );
     assert!(
-        pub_use_checked > 100,
-        "expected a few hundred flat re-exported names across the four \
+        pub_use_checked > 30,
+        "expected a few dozen flat re-exported names across the four \
          backend modules, found {pub_use_checked} — has the scanner \
          stopped matching?"
     );

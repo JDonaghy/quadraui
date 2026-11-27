@@ -1,7 +1,7 @@
 //! [`HoverTooltipTracker`] — the delay + auto-dismiss state machine a
 //! hover-driven tooltip needs on top of the plain "what's under the
-//! cursor right now" answer [`crate::compose::ToolbarHoverTracker`]/
-//! [`crate::compose::ListHoverTracker`] already give.
+//! cursor right now" answer [`crate::compose::ToolbarHoverTracker`]
+//! already gives.
 //!
 //! Hovering a widget shouldn't show its tooltip the instant the pointer
 //! crosses into its bounds — VS Code (and every other desktop toolkit)

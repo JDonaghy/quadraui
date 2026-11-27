@@ -45,9 +45,8 @@
 //!   cycle a focused toast's buttons, Up/Down move between toasts, Enter
 //!   activates, Escape dismisses.
 //! - [`HoverTooltipTracker`] — delay + auto-dismiss state machine for a
-//!   hover-driven tooltip, sitting on top of [`ToolbarHoverTracker`]/
-//!   [`ListHoverTracker`]'s plain "what's hovered"
-//!   answer.
+//!   hover-driven tooltip, sitting on top of [`ToolbarHoverTracker`]'s
+//!   plain "what's hovered" answer.
 //! - [`Handled`] — the shared "did you handle it" return type new
 //!   `handle_*` controller methods converge on: a semantic event to
 //!   route, a state-only consumption, or "not mine".
@@ -163,7 +162,7 @@ pub use toast_stack::{ToastStackAction, ToastStackController};
 pub use crate::behaviour::nav::Edge;
 #[allow(deprecated)]
 pub use toast_stack::ToastStackEvent;
-pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker};
+pub use toolbar_hover_tracker::ToolbarHoverTracker;
 #[cfg(any(
     feature = "gtk",
     feature = "tui",

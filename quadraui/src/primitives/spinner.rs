@@ -23,8 +23,7 @@
 //! bordered box at all — every backend paints a bare glyph-plus-label,
 //! matching VS Code's own activity spinner (a rotating icon, no card)
 //! — so there is no rectangle for a radius to round or a shadow to sit
-//! behind. Each backend's `draw_spinner` stays untouched by that token
-//! set.
+//! behind. The spinner painters stay untouched by that token set.
 
 use crate::event::Rect;
 use crate::types::{Color, WidgetId};
@@ -33,10 +32,7 @@ use serde::{Deserialize, Serialize};
 /// Braille animation frames for every backend's spinner rasteriser —
 /// the one table a backend indexes instead of carrying its own copy.
 /// A backend picks `FRAMES[frame_idx % FRAMES.len()]` for the current
-/// glyph; see [`frame_glyph`]. The TUI rasteriser and
-/// `native_surface_paint` read it today; the pixel backends' own
-/// `draw_spinner` copies collapse onto it as each adopts the shared
-/// painter.
+/// glyph; see [`frame_glyph`].
 ///
 /// The animation lives in the shared painters, not in a backend: both
 /// [`cell_paint`] and [`native_surface_paint`] index this table through
@@ -359,13 +355,8 @@ pub(crate) mod cell_paint {
 }
 
 // `paint` is the shared [`crate::paint_surface::PaintSurface`]
-// implementation of spinner painting (glyph + optional label). `win`
-// routes its `draw_spinner` through this directly
-// (`win::backend::WinBackend::draw_spinner`), and so does
-// `MacBackend::draw_spinner` (`self` is the surface); GTK still carries
-// its own independent (but visually identical) paint path — adopting
-// this one for GTK is a follow-on issue — the same shape
-// `button`/`progress` already route every backend through.
+// implementation of spinner painting (glyph + optional label) every
+// pixel backend reaches through `Spinner`'s `Primitive::paint`.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -378,9 +369,8 @@ pub(crate) mod native_surface_paint {
     use crate::theme::Theme;
 
     /// Paint `spinner` at `(x, y)` on `surface`, returning
-    /// [`SpinnerLayout`] for host hit-testing — same contract as every
-    /// per-backend `draw_spinner`: no fixed width/height, the glyph +
-    /// label text's own measured size is the spinner's bounds.
+    /// [`SpinnerLayout`] for host hit-testing: no fixed width/height, the
+    /// glyph + label text's own measured size is the spinner's bounds.
     pub(crate) fn paint(
         spinner: &Spinner,
         surface: &mut dyn PaintSurface,
@@ -629,7 +619,7 @@ mod cell_paint_tests {
 
     // Parametrized over the area's origin — LESSONS.md "Layout helpers
     // must return coords in the same frame across backends".
-    // `tui_spinner_layout` bakes `area.x`/`area.y`
+    // The cell layout bakes `area.x`/`area.y`
     // straight into `spinner.layout`'s returned bounds (absolute
     // frame), so the regression guard is a full paint+hit_test round
     // trip re-run at a non-zero origin.
