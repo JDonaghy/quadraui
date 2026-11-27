@@ -615,13 +615,16 @@ pub use primitives::button::{
     Button, ButtonEvent, ButtonHit, ButtonIconPosition, ButtonLayout, ButtonMetrics, ButtonSpec,
     ButtonVariant,
 };
-pub use primitives::canvas::{Canvas, CanvasCursor, CanvasHit, CanvasLayout, CanvasRegion, DrawOp};
+pub use primitives::canvas::{
+    Canvas, CanvasCursor, CanvasHit, CanvasLayout, CanvasRegion, CanvasState, DrawOp,
+};
 pub use primitives::cell_grid::{
     column_letters, Cell, CellAlign, CellGrid, CellGridEvent, CellGridHit, CellGridLayout,
     CellGridPrimitiveLayout, CellGridState, CellStyle, CellsWindow, ResolvedSpan,
 };
 pub use primitives::chart::{
-    Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, Series,
+    Chart, ChartEvent, ChartHit, ChartKind, ChartLayout, ChartMeasure, ChartPrimitiveLayout,
+    ChartState, Series,
 };
 pub use primitives::combo_box::{ComboBox, ComboBoxEvent};
 pub use primitives::command_center::{
@@ -747,7 +750,7 @@ pub use primitives::rich_text_popup::{
     PopupPlacement, PopupScrollbar, RichTextLink, RichTextPopup, RichTextPopupHit,
     RichTextPopupLayout, RichTextPopupMeasure, TextSelection, VisibleRichTextLine,
 };
-pub use primitives::scroll_view::{ScrollView, ScrollViewEvent};
+pub use primitives::scroll_view::{ScrollView, ScrollViewEvent, ScrollViewLayout, ScrollViewState};
 pub use primitives::scrollbar::{
     clamp_scroll_offset_f32, fit_thumb, scroll_by_clamped_f32, scroll_rows, wheel_delta,
     wheel_row_delta, PressZone, ScrollAxis, Scrollbar, ScrollbarEvent, ScrollbarLayout,

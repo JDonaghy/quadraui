@@ -3462,6 +3462,8 @@ mod tests {
                         y_ticks: None,
                         x_ticks: None,
                         show_grid: false,
+                        hovered_point: None,
+                        crosshair_x: None,
                     }),
                     aux: None,
                     size: SectionSize::Weight(1.0),

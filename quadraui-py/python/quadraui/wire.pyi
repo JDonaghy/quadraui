@@ -1033,6 +1033,8 @@ class ChartDescriptor(TypedDict):
     y_ticks: NotRequired[Optional[int]]
     x_ticks: NotRequired[Optional[int]]
     show_grid: NotRequired[bool]
+    hovered_point: NotRequired[Optional[Tuple[int, int]]]
+    crosshair_x: NotRequired[Optional[float]]
 
 StageStatus = Literal['Pending', 'Active', 'Done', 'Failed', 'Skipped', 'Stale']
 
@@ -1801,7 +1803,6 @@ LayoutLeafNode = TypedDict(
         "number_input": NotRequired[NumberInputDescriptor],
         "combo_box": NotRequired[ComboBoxDescriptor],
         "date_picker": NotRequired[DatePickerDescriptor],
-        "chart": NotRequired[ChartDescriptor],
         "message_list": NotRequired[MessageListDescriptor],
         "board": NotRequired[BoardModelDescriptor],
         "pipeline_view": NotRequired[PipelineViewDescriptor],
@@ -1814,7 +1815,6 @@ LayoutLeafNode = TypedDict(
         "command_line": NotRequired[CommandLineDescriptor],
         "scrollbar": NotRequired[ScrollbarDescriptor],
         "canvas": NotRequired[CanvasDescriptor],
-        "scroll_view": NotRequired[ScrollViewDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
         "checkbox": NotRequired[CheckboxDescriptor],
         "slider": NotRequired[SliderDescriptor],
@@ -1836,6 +1836,8 @@ LayoutLeafNode = TypedDict(
         "editor": NotRequired[EditorDescriptor],
         "minimap": NotRequired[MinimapDescriptor],
         "image": NotRequired[ImageDescriptor],
+        "chart": NotRequired[ChartDescriptor],
+        "scroll_view": NotRequired[ScrollViewDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1864,7 +1866,6 @@ class RenderFrameDict(TypedDict):
     number_input: NotRequired[Optional[NumberInputDescriptor]]
     combo_box: NotRequired[Optional[ComboBoxDescriptor]]
     date_picker: NotRequired[Optional[DatePickerDescriptor]]
-    chart: NotRequired[Optional[ChartDescriptor]]
     message_list: NotRequired[Optional[MessageListDescriptor]]
     board: NotRequired[Optional[BoardModelDescriptor]]
     pipeline_view: NotRequired[Optional[PipelineViewDescriptor]]
@@ -1877,7 +1878,6 @@ class RenderFrameDict(TypedDict):
     command_line: NotRequired[Optional[CommandLineDescriptor]]
     scrollbar: NotRequired[Optional[ScrollbarDescriptor]]
     canvas: NotRequired[Optional[CanvasDescriptor]]
-    scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
     checkbox: NotRequired[Optional[CheckboxDescriptor]]
     slider: NotRequired[Optional[SliderDescriptor]]
@@ -1899,6 +1899,8 @@ class RenderFrameDict(TypedDict):
     editor: NotRequired[Optional[EditorDescriptor]]
     minimap: NotRequired[Optional[MinimapDescriptor]]
     image: NotRequired[Optional[ImageDescriptor]]
+    chart: NotRequired[Optional[ChartDescriptor]]
+    scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
@@ -2246,6 +2248,12 @@ class _MinimapSeekPayload(TypedDict):
 class MinimapEvent(TypedDict):
     Seek: NotRequired[_MinimapSeekPayload]
 
+class _ScrollViewScrolledPayload(TypedDict):
+    offset: float
+
+class ScrollViewEvent(TypedDict):
+    Scrolled: NotRequired[_ScrollViewScrolledPayload]
+
 class _DataPointClickedPayload(TypedDict):
     id: WidgetId
     series_idx: int
@@ -2255,7 +2263,12 @@ class _LegendClickedPayload(TypedDict):
     id: WidgetId
     series_idx: int
 
+class _DataPointHoveredPayload(TypedDict):
+    id: WidgetId
+    point: Optional[Tuple[int, int]]
+
 class ChartEvent(TypedDict):
+    DataPointHovered: NotRequired[_DataPointHoveredPayload]
     Clicked: NotRequired[_IdPayload]
     DataPointClicked: NotRequired[_DataPointClickedPayload]
     LegendClicked: NotRequired[_LegendClickedPayload]
@@ -2680,6 +2693,7 @@ class _UiEventDict(TypedDict):
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]
     TreeTable: NotRequired[Tuple[WidgetId, TreeTableEvent]]
     CellGrid: NotRequired[Tuple[WidgetId, CellGridEvent]]
+    ScrollView: NotRequired[Tuple[WidgetId, ScrollViewEvent]]
     HelpOverlay: NotRequired[Tuple[WidgetId, Any]]
     PathPicker: NotRequired[Tuple[WidgetId, Any]]
     DualModePalette: NotRequired[Tuple[WidgetId, Any]]

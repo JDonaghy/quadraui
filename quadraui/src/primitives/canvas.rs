@@ -8,7 +8,7 @@
 //! text run, image, push/pop clip) that every backend paints through
 //! the same seam — [`crate::paint_surface::PaintSurface`] for the
 //! three pixel backends, and a dedicated degrade rasteriser
-//! (`crate::tui::canvas`) for TUI.
+//! (this module's `paint_cells`) for TUI.
 //!
 //! # Coordinate frame
 //!
@@ -388,7 +388,7 @@ impl CanvasFontRole {
 /// Fill spans for a closed polygon using the even-odd rule, scanning in
 /// `row_height`-tall horizontal bands from the polygon's own `y` bounds.
 /// Pure geometry, shared by every pixel backend (through
-/// [`native_surface_paint::paint`]) and the TUI degrade (`crate::tui::canvas`),
+/// [`native_surface_paint::paint`]) and the TUI degrade (`paint_cells`),
 /// since neither [`crate::paint_surface::PaintSurface`] nor the TUI
 /// braille grid has a native "fill this polygon" primitive — both lower
 /// it to a list of filled rects instead.
@@ -672,6 +672,12 @@ impl CanvasLayout {
     }
 }
 
+mod contract;
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
+pub use contract::CanvasState;
+
 // ── PaintSurface paint ──────────────────────────────────────────────────
 //
 // Every pixel backend (GTK/macOS/Win) paints a `Canvas` identically: walk
@@ -708,7 +714,7 @@ pub mod native_surface_paint {
     /// [`crate::paint_surface::PaintSurface::surface_fill_rect`] calls —
     /// one device pixel, since every pixel backend's native resolution
     /// is fine enough that this reads as a solid fill (unlike
-    /// `tui::canvas`'s dot-row height, which is driven by the braille
+    /// the cell painter's dot-row height, which is driven by the braille
     /// grid instead).
     const PIXEL_POLYGON_ROW_HEIGHT: f32 = 1.0;
     /// Segment counts for sampling the curve-shaped ops down to
@@ -730,7 +736,8 @@ pub mod native_surface_paint {
         points.iter().map(|p| translate_point(*p, dx, dy)).collect()
     }
 
-    fn stroke_polyline(
+    /// Stroke `points` as consecutive line segments.
+    pub(crate) fn stroke_polyline(
         surface: &mut dyn PaintSurface,
         points: &[Point],
         color: crate::types::Color,
@@ -757,7 +764,7 @@ pub mod native_surface_paint {
         // state for the rest of the frame, not just this canvas. A stray
         // `PopClip` with no open push is dropped instead of forwarded, and
         // any push still open when `ops` runs out is popped here before
-        // returning, matching `tui::canvas`'s own `clip_per_op` guard
+        // returning, matching the cell painter's own `clip_per_op` guard
         // (`stack.len() > 1`) so both rasterisers degrade a malformed op
         // list the same way.
         let mut clip_depth: u32 = 0;

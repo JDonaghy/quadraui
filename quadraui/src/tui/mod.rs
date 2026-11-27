@@ -356,12 +356,7 @@ pub(crate) fn align_offset(
 /// highlight, and (when `text` is empty) a dim placeholder — starting at
 /// `start_col` cells into `area`, on row `y`, clipped to `area.width`.
 ///
-/// Shared by every TUI inline-editing surface so there is exactly one
-/// cursor/selection/placeholder rasteriser rather than a per-primitive
-/// copy: [`crate::tui::tree::paint_edit_input`] (tree row rename) and
-/// [`crate::tui::cell_grid::draw_cell_grid`]'s cell editor overlay both
-/// call this directly instead of re-deriving the same multibyte-aware
-/// cursor/selection arithmetic.
+/// Used by [`crate::tui::tree::paint_edit_input`] (tree row rename).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn paint_inline_text_editor(
     buf: &mut Buffer,

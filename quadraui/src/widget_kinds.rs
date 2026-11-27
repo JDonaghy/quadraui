@@ -253,6 +253,12 @@ widget_kinds! {
     "editor" => crate::Editor,
     "minimap" => crate::Minimap,
     "image" => crate::Image,
+    // Ungated: the `Primitive`/`Interactive` impls of `Chart`, `Canvas`
+    // and `ScrollView` carry no feature gate. The kind strings are the
+    // ones the wire schema already publishes for them.
+    "chart" => crate::Chart,
+    "canvas" => crate::Canvas,
+    "scroll_view" => crate::ScrollView,
 }
 
 #[cfg(test)]
@@ -659,5 +665,28 @@ mod tests {
             Ok(widget) => format!("Ok(widget id = {:?})", widget.id().map(|id| id.as_str())),
             Err(err) => format!("Err({err})"),
         }
+    }
+
+    #[test]
+    fn decodes_the_chart_canvas_and_scroll_view_kinds() {
+        let chart = decode_widget(
+            "chart",
+            serde_json::json!({"id": "chart", "kind": "Line", "series": []}),
+        )
+        .expect("chart decodes");
+        assert_eq!(chart.id().map(|id| id.as_str()), Some("chart"));
+        let canvas = decode_widget("canvas", serde_json::json!({"id": "canvas", "ops": []}))
+            .expect("canvas decodes");
+        assert_eq!(canvas.id().map(|id| id.as_str()), Some("canvas"));
+        let view = decode_widget(
+            "scroll_view",
+            serde_json::json!({
+                "id": "scroll",
+                "viewport": {"x": 0.0, "y": 0.0, "width": 10.0, "height": 4.0},
+                "content_len": 20.0,
+            }),
+        )
+        .expect("scroll_view decodes");
+        assert_eq!(view.id().map(|id| id.as_str()), Some("scroll"));
     }
 }

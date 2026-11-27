@@ -731,8 +731,11 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`EditorEvent`](#wire-editorevent)
 - [`_MinimapSeekPayload`](#wire-_minimapseekpayload)
 - [`MinimapEvent`](#wire-minimapevent)
+- [`_ScrollViewScrolledPayload`](#wire-_scrollviewscrolledpayload)
+- [`ScrollViewEvent`](#wire-scrollviewevent)
 - [`_DataPointClickedPayload`](#wire-_datapointclickedpayload)
 - [`_LegendClickedPayload`](#wire-_legendclickedpayload)
+- [`_DataPointHoveredPayload`](#wire-_datapointhoveredpayload)
 - [`ChartEvent`](#wire-chartevent)
 - [`_CanvasRegionClickedPayload`](#wire-_canvasregionclickedpayload)
 - [`_CanvasRegionDoubleClickedPayload`](#wire-_canvasregiondoubleclickedpayload)
@@ -2406,6 +2409,8 @@ Alias for `"Sparkline" | "Line" | "Bar" | "BarGrouped"`.
 | `y_ticks` | `number \| null` | no |  |
 | `x_ticks` | `number \| null` | no |  |
 | `show_grid` | `boolean` | no |  |
+| `hovered_point` | `[number, number] \| null` | no |  |
+| `crosshair_x` | `number \| null` | no |  |
 
 <a id="wire-stagestatus"></a>
 #### `StageStatus`
@@ -3715,7 +3720,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `number_input` | `NumberInputDescriptor` | no |  |
 | `combo_box` | `ComboBoxDescriptor` | no |  |
 | `date_picker` | `DatePickerDescriptor` | no |  |
-| `chart` | `ChartDescriptor` | no |  |
 | `message_list` | `MessageListDescriptor` | no |  |
 | `board` | `BoardModelDescriptor` | no |  |
 | `pipeline_view` | `PipelineViewDescriptor` | no |  |
@@ -3728,7 +3732,6 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `command_line` | `CommandLineDescriptor` | no |  |
 | `scrollbar` | `ScrollbarDescriptor` | no |  |
 | `canvas` | `CanvasDescriptor` | no |  |
-| `scroll_view` | `ScrollViewDescriptor` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor` | no |  |
 | `checkbox` | `CheckboxDescriptor` | no |  |
 | `slider` | `SliderDescriptor` | no |  |
@@ -3750,6 +3753,8 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `editor` | `EditorDescriptor` | no |  |
 | `minimap` | `MinimapDescriptor` | no |  |
 | `image` | `ImageDescriptor` | no |  |
+| `chart` | `ChartDescriptor` | no |  |
+| `scroll_view` | `ScrollViewDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3784,7 +3789,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `number_input` | `NumberInputDescriptor \| null` | no |  |
 | `combo_box` | `ComboBoxDescriptor \| null` | no |  |
 | `date_picker` | `DatePickerDescriptor \| null` | no |  |
-| `chart` | `ChartDescriptor \| null` | no |  |
 | `message_list` | `MessageListDescriptor \| null` | no |  |
 | `board` | `BoardModelDescriptor \| null` | no |  |
 | `pipeline_view` | `PipelineViewDescriptor \| null` | no |  |
@@ -3797,7 +3801,6 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `command_line` | `CommandLineDescriptor \| null` | no |  |
 | `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
 | `canvas` | `CanvasDescriptor \| null` | no |  |
-| `scroll_view` | `ScrollViewDescriptor \| null` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
 | `checkbox` | `CheckboxDescriptor \| null` | no |  |
 | `slider` | `SliderDescriptor \| null` | no |  |
@@ -3819,6 +3822,8 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `editor` | `EditorDescriptor \| null` | no |  |
 | `minimap` | `MinimapDescriptor \| null` | no |  |
 | `image` | `ImageDescriptor \| null` | no |  |
+| `chart` | `ChartDescriptor \| null` | no |  |
+| `scroll_view` | `ScrollViewDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`
@@ -4471,6 +4476,22 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- |
 | `Seek` | `_MinimapSeekPayload` |  |
 
+<a id="wire-_scrollviewscrolledpayload"></a>
+#### `_ScrollViewScrolledPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `offset` | `number` | yes |  |
+
+<a id="wire-scrollviewevent"></a>
+#### `ScrollViewEvent`
+
+Exactly one of the tags below is present on the wire (a discriminated union):
+
+| Tag | Payload type | Description |
+| --- | --- | --- |
+| `Scrolled` | `_ScrollViewScrolledPayload` |  |
+
 <a id="wire-_datapointclickedpayload"></a>
 #### `_DataPointClickedPayload`
 
@@ -4488,6 +4509,14 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `id` | `WidgetId` | yes |  |
 | `series_idx` | `number` | yes |  |
 
+<a id="wire-_datapointhoveredpayload"></a>
+#### `_DataPointHoveredPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `id` | `WidgetId` | yes |  |
+| `point` | `[number, number] \| null` | yes |  |
+
 <a id="wire-chartevent"></a>
 #### `ChartEvent`
 
@@ -4495,6 +4524,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Tag | Payload type | Description |
 | --- | --- | --- |
+| `DataPointHovered` | `_DataPointHoveredPayload` |  |
 | `Clicked` | `_IdPayload` |  |
 | `DataPointClicked` | `_DataPointClickedPayload` |  |
 | `LegendClicked` | `_LegendClickedPayload` |  |
@@ -5288,6 +5318,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |
 | `TreeTable` | `[WidgetId, TreeTableEvent]` |  |
 | `CellGrid` | `[WidgetId, CellGridEvent]` |  |
+| `ScrollView` | `[WidgetId, ScrollViewEvent]` |  |
 | `HelpOverlay` | `[WidgetId, unknown]` |  |
 | `PathPicker` | `[WidgetId, unknown]` |  |
 | `DualModePalette` | `[WidgetId, unknown]` |  |

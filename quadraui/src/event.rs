@@ -1179,6 +1179,9 @@ pub enum UiEvent {
     /// from [`crate::CellGrid::cells_requested`] once per frame rather
     /// than from any particular `UiEvent` — see that method's doc.
     CellGrid(WidgetId, CellGridEvent),
+    /// A [`crate::ScrollView`] resolved a wheel, key or scrollbar gesture
+    /// to a new offset — see [`crate::ScrollViewEvent`].
+    ScrollView(WidgetId, crate::primitives::scroll_view::ScrollViewEvent),
     /// A pointer or wheel gesture on a [`crate::Editor`], resolved against
     /// its layout — see [`crate::EditorEvent`].
     Editor(WidgetId, crate::primitives::editor::EditorEvent),

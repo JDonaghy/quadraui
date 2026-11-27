@@ -4,7 +4,7 @@
 //! the [`crate::primitive::Primitive`] impl near the bottom of this
 //! module that wires it through [`crate::backend::DrawsPrimitives::draw_primitive`]:
 //! TUI paints real content via [`crate::primitive::Primitive::paint_cells`]
-//! → [`crate::tui::draw_cell_grid`], and GTK/macOS/Win paint through
+//! → this module's own `paint_cells`, and GTK/macOS/Win paint through
 //! [`crate::primitive::Primitive::paint`] → this module's own
 //! `native_surface_paint`, reusing
 //! [`crate::primitives::data_table::DataTable`]'s own alignment/ellipsis
@@ -73,6 +73,9 @@ use crate::types::{Color, Modifiers, WidgetId};
 use crate::Handled;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
+
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
 
 fn default_true() -> bool {
     true
@@ -1661,13 +1664,7 @@ impl crate::primitive::Primitive for CellGrid {
         // are compiled into the same binary.
         #[cfg(feature = "tui")]
         if ctx.units() == crate::primitive::Units::Cells {
-            // Route through the exact resolver `crate::tui::draw_cell_grid`
-            // itself calls (`tui_cell_grid_layout`), so this layout can
-            // never drift from what TUI actually paints —
-            // `Self::paint_cells` below makes the matching paint-side
-            // guarantee.
-            let area = crate::tui::backend::q_rect_to_ratatui(rect);
-            let layout = crate::tui::tui_cell_grid_layout(area, self);
+            let layout = paint_cells::layout(self, rect);
             return CellGridPrimitiveLayout { area: rect, layout };
         }
 
@@ -1753,11 +1750,8 @@ impl crate::primitive::Primitive for CellGrid {
         }
     }
 
-    /// Delegates straight to [`crate::tui::draw_cell_grid`] — the exact
-    /// function `TuiBackend` would call for a bespoke `draw_cell_grid`
-    /// `Backend` method, so painting `CellGrid` through
-    /// [`crate::primitive::Primitive`] on TUI is byte-for-byte identical
-    /// by construction.
+    /// The cell painter in [`paint_cells`], against the layout
+    /// [`Self::layout`] resolved.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -1765,13 +1759,7 @@ impl crate::primitive::Primitive for CellGrid {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-        crate::tui::draw_cell_grid(buf, area, self, theme);
+        paint_cells::paint(self, layout.area, &layout.layout, cells, env.theme());
     }
 }
 

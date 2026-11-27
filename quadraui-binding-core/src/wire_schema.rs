@@ -1815,6 +1815,8 @@ pub fn schema() -> Vec<DefJson> {
             field_opt("y_ticks", nullable(int_())),
             field_opt("x_ticks", nullable(int_())),
             field_opt("show_grid", bool_()),
+            field_opt("hovered_point", nullable(tup(vec![int_(), int_()]))),
+            field_opt("crosshair_x", nullable(float_())),
         ],
     ));
     let stage_status = b.define(alias(
@@ -2938,7 +2940,6 @@ pub fn schema() -> Vec<DefJson> {
             "number_input" => number_input_descriptor.clone(),
             "combo_box" => combo_box_descriptor.clone(),
             "date_picker" => date_picker_descriptor.clone(),
-            "chart" => chart_descriptor.clone(),
             "message_list" => message_list_descriptor.clone(),
             "board" => board_model_descriptor.clone(),
             "pipeline_view" => pipeline_view_descriptor.clone(),
@@ -2949,7 +2950,6 @@ pub fn schema() -> Vec<DefJson> {
             "command_line" => command_line_descriptor.clone(),
             "scrollbar" => scrollbar_descriptor.clone(),
             "canvas" => canvas_descriptor.clone(),
-            "scroll_view" => scroll_view_descriptor.clone(),
             "find_replace" => find_replace_panel_descriptor.clone(),
             "checkbox" => checkbox_descriptor.clone(),
             "slider" => slider_descriptor.clone(),
@@ -2988,6 +2988,8 @@ pub fn schema() -> Vec<DefJson> {
             "editor" => editor_descriptor.clone(),
             "minimap" => minimap_descriptor.clone(),
             "image" => image_descriptor.clone(),
+            "chart" => chart_descriptor.clone(),
+            "scroll_view" => scroll_view_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3534,6 +3536,16 @@ pub fn schema() -> Vec<DefJson> {
         vec![],
     ));
 
+    let scroll_view_scrolled_payload = b.define(obj(
+        "_ScrollViewScrolledPayload",
+        vec![field("offset", float_())],
+    ));
+    b.define(flat(
+        "ScrollViewEvent",
+        &[("Scrolled", scroll_view_scrolled_payload)],
+        vec![],
+    ));
+
     let data_point_clicked_payload = b.define(obj(
         "_DataPointClickedPayload",
         vec![
@@ -3546,9 +3558,17 @@ pub fn schema() -> Vec<DefJson> {
         "_LegendClickedPayload",
         vec![field("id", re("WidgetId")), field("series_idx", int_())],
     ));
+    let data_point_hovered_payload = b.define(obj(
+        "_DataPointHoveredPayload",
+        vec![
+            field("id", re("WidgetId")),
+            field("point", nullable(tup(vec![int_(), int_()]))),
+        ],
+    ));
     b.define(flat(
         "ChartEvent",
         &[
+            ("DataPointHovered", data_point_hovered_payload),
             ("Clicked", id_payload.clone()),
             ("DataPointClicked", data_point_clicked_payload),
             ("LegendClicked", legend_clicked_payload),
@@ -4065,6 +4085,7 @@ pub fn schema() -> Vec<DefJson> {
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
             ("TreeTable", tup(vec![re("WidgetId"), re("TreeTableEvent")])),
             ("CellGrid", tup(vec![re("WidgetId"), re("CellGridEvent")])),
+            ("ScrollView", tup(vec![re("WidgetId"), re("ScrollViewEvent")])),
             ("HelpOverlay", tup(vec![re("WidgetId"), any_()])),
             ("PathPicker", tup(vec![re("WidgetId"), any_()])),
             ("DualModePalette", tup(vec![re("WidgetId"), any_()])),
@@ -4272,6 +4293,7 @@ mod coverage {
             UiEvent::DataTable(_, _) => {}
             UiEvent::TreeTable(_, _) => {}
             UiEvent::CellGrid(_, _) => {}
+            UiEvent::ScrollView(_, _) => {}
             UiEvent::Toolbar(_, _) => {}
             UiEvent::Canvas(_, _) => {}
             UiEvent::BackendNative(_) => {}
@@ -4542,6 +4564,7 @@ mod coverage {
 
     fn assert_chart_event(e: ChartEvent) {
         match e {
+            ChartEvent::DataPointHovered { id: _, point: _ } => {}
             ChartEvent::Clicked { id: _ } => {}
             ChartEvent::DataPointClicked {
                 id: _,
@@ -5502,7 +5525,9 @@ mod coverage {
             show_legend,
             y_ticks,
             x_ticks,
-            show_grid
+            show_grid,
+            hovered_point,
+            crosshair_x
         }
     );
     fn assert_stage_status(s: StageStatus) {
@@ -7055,6 +7080,7 @@ mod coverage {
                 "DataTable",
                 "TreeTable",
                 "CellGrid",
+                "ScrollView",
                 "HelpOverlay",
                 "PathPicker",
                 "DualModePalette",
