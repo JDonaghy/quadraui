@@ -10,9 +10,7 @@ use quadraui::{Color, Theme};
 use crate::layout::{style_override_tokens, FontWeight, StyleOverride, StyleSets};
 use crate::DecodeError;
 
-use super::value::{
-    dict_str, must_be_dict, obj_get, opt_f32, opt_status_bar_overflow, opt_u64, opt_u8,
-};
+use super::value::{dict_str, must_be_dict, obj_get, opt_cell_overflow, opt_f32, opt_u64, opt_u8};
 
 /// The host state a layout-tree decode resolves a node's `"class"` key
 /// against: the [`StyleSets`] registry a binding's own `define_style`
@@ -632,29 +630,36 @@ mod tests {
         );
     }
 
-    /// `"status_bar_cell_overflow"` decodes its two spellings and rejects
-    /// anything else.
+    /// `"status_bar_cell_overflow"` and `"list_cell_overflow"` decode
+    /// their two spellings and reject anything else.
     #[test]
-    fn status_bar_cell_overflow_decodes_clip_and_rejects_an_unknown_value() {
+    fn cell_overflow_tokens_decode_clip_and_reject_an_unknown_value() {
         let value = json!({
             "row": [],
-            "style": {"status_bar_cell_overflow": "clip", "status_bar_cell_gap": 0.0},
+            "style": {
+                "status_bar_cell_overflow": "clip",
+                "status_bar_cell_gap": 0.0,
+                "list_cell_overflow": "clip",
+            },
         });
         let LayoutNode::Styled(styled) = decode(&value).expect("valid style") else {
             panic!("expected a styled wrapper");
         };
         assert_eq!(
             styled.style.status_bar_cell_overflow,
-            Some(quadraui::StatusBarOverflow::Clip)
+            Some(quadraui::CellOverflow::Clip)
         );
         assert_eq!(styled.style.status_bar_cell_gap, Some(0.0));
-
-        let bad = json!({"row": [], "style": {"status_bar_cell_overflow": "fade"}});
-        let error = err(decode(&bad));
-        assert!(
-            error.to_string().contains("status_bar_cell_overflow"),
-            "{error}"
+        assert_eq!(
+            styled.style.list_cell_overflow,
+            Some(quadraui::CellOverflow::Clip)
         );
+
+        for key in ["status_bar_cell_overflow", "list_cell_overflow"] {
+            let bad = json!({"row": [], "style": {key: "fade"}});
+            let error = err(decode(&bad));
+            assert!(error.to_string().contains(key), "{error}");
+        }
     }
 
     /// An empty `"style": {}` is a no-op -- decoding falls through to the

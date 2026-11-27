@@ -16,6 +16,7 @@ use crate::primitives::list::{ListView, ListViewLayout};
 use crate::text_util::{char_cell_width, display_width};
 use crate::theme::Theme;
 use crate::types::{Decoration, StyledText};
+use crate::CellOverflow;
 
 /// Compute the TUI cell-unit layout for a [`ListView`] without painting —
 /// the same viewport reservation (h/v scrollbar rows/columns, title row)
@@ -104,7 +105,16 @@ pub fn draw_list_with_scroll_px(
     nerd_fonts_enabled: bool,
     scroll_px: Option<f32>,
 ) {
-    draw_list_inner(buf, area, list, theme, nerd_fonts_enabled, scroll_px, false)
+    draw_list_inner(
+        buf,
+        area,
+        list,
+        theme,
+        nerd_fonts_enabled,
+        scroll_px,
+        false,
+        CellOverflow::Ellipsis,
+    )
 }
 
 /// [`draw_list_with_scroll_px`], plus [`crate::primitives::list::ListPaintState::striped`]
@@ -119,6 +129,29 @@ pub fn draw_list_with_state(
     nerd_fonts_enabled: bool,
     state: &crate::primitives::list::ListPaintState,
 ) {
+    draw_list_with_overflow(
+        buf,
+        area,
+        list,
+        theme,
+        nerd_fonts_enabled,
+        state,
+        CellOverflow::Ellipsis,
+    )
+}
+
+/// [`draw_list_with_state`], cutting a row too long for its band by
+/// `overflow`: an `…` in the last cell ([`CellOverflow::Ellipsis`]) or
+/// nothing at all ([`CellOverflow::Clip`]).
+pub(crate) fn draw_list_with_overflow(
+    buf: &mut Buffer,
+    area: Rect,
+    list: &ListView,
+    theme: &Theme,
+    nerd_fonts_enabled: bool,
+    state: &crate::primitives::list::ListPaintState,
+    overflow: CellOverflow,
+) {
     draw_list_inner(
         buf,
         area,
@@ -127,9 +160,11 @@ pub fn draw_list_with_state(
         nerd_fonts_enabled,
         state.scroll_px,
         state.striped,
+        overflow,
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_list_inner(
     buf: &mut Buffer,
     area: Rect,
@@ -138,6 +173,7 @@ fn draw_list_inner(
     nerd_fonts_enabled: bool,
     scroll_px: Option<f32>,
     striped: bool,
+    overflow: CellOverflow,
 ) {
     // Floor to a whole cell up front — see `tui_list_layout_with_scroll_px`'s
     // doc for why — so the scrollbar thumb below and the row layout
@@ -389,11 +425,12 @@ fn draw_list_inner(
         );
 
         // The item's own right edge (not `h_scroll`'s left edge) cut the
-        // text off mid-glyph — overwrite the last visible column with
-        // `…`, reusing whatever fg/bg that cell already has so per-span
-        // colouring survives the clamp untouched (same technique as
-        // `Tree`'s TUI rasteriser).
-        if item_w > 0
+        // text off mid-glyph — under `CellOverflow::Ellipsis`, overwrite
+        // the last visible column with `…`, reusing whatever fg/bg that
+        // cell already has so per-span colouring survives the clamp
+        // untouched (same technique as `Tree`'s TUI rasteriser).
+        if overflow == CellOverflow::Ellipsis
+            && item_w > 0
             && vcol_after_text > h_scroll + item_w as usize
             && text_start_vcol < h_scroll + item_w as usize
         {

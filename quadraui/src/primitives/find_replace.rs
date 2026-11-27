@@ -734,7 +734,16 @@ mod native_surface_paint {
     /// [`super::compute_hit_regions`] builds once at panel construction
     /// and every backend's click dispatch hit-tests against — so paint
     /// and click can never disagree about where a target lives.
-    pub(crate) fn paint(panel: &FindReplacePanel, surface: &mut dyn PaintSurface, theme: &Theme) {
+    ///
+    /// `style` is the painting backend's own ([`crate::Backend::style`]):
+    /// a host hit-testing a click resolves the same
+    /// [`FindReplaceMetrics`] from that style and the surface's metrics.
+    pub(crate) fn paint(
+        panel: &FindReplacePanel,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        style: &Style,
+    ) {
         use FindReplaceClickTarget as T;
 
         let cw = surface.surface_char_width().max(1.0);
@@ -743,8 +752,7 @@ mod native_surface_paint {
         // Resolved once here and by `FindReplacePanel::hit_test`'s caller
         // (see `FindReplaceMetrics`'s own doc) so a painted box and its
         // clickable band can never disagree about where it sits.
-        let style = Style::default();
-        let metrics = FindReplaceMetrics::resolve(panel, &style, cw, lh);
+        let metrics = FindReplaceMetrics::resolve(panel, style, cw, lh);
         let row_h = metrics.row_height;
 
         surface.surface_fill_rect(metrics.popup_rect, theme.surface_bg);
@@ -1047,7 +1055,7 @@ mod native_surface_paint {
             let panel = sample_panel("needle", 6, None);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme);
+            paint(&panel, &mut surface, &theme, &Style::default());
 
             assert!(
                 surface.fills.iter().any(|(_, c)| *c == theme.surface_bg),
@@ -1075,7 +1083,7 @@ mod native_surface_paint {
             let panel = sample_panel("needle", 6, None);
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme);
+            paint(&panel, &mut surface, &theme, &Style::default());
 
             let expected_h = Style::default().control_height;
             assert!(
@@ -1102,7 +1110,7 @@ mod native_surface_paint {
             panel.hit_regions = hit_regions;
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme);
+            paint(&panel, &mut surface, &theme, &Style::default());
 
             let control_height = Style::default().control_height;
             let find_row_y = surface
@@ -1132,7 +1140,7 @@ mod native_surface_paint {
             panel.case_sensitive = true;
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme);
+            paint(&panel, &mut surface, &theme, &Style::default());
 
             assert!(
                 surface.fills.iter().any(|(_, c)| *c == theme.accent_bg),
@@ -1149,7 +1157,7 @@ mod native_surface_paint {
             panel.focus = 0;
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme);
+            paint(&panel, &mut surface, &theme, &Style::default());
 
             assert!(
                 surface.fills.iter().any(|(_, c)| *c == theme.selection_bg),
@@ -1185,7 +1193,7 @@ mod native_surface_paint {
             panel.hit_regions = hit_regions.clone();
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme);
+            paint(&panel, &mut surface, &theme, &Style::default());
 
             // Derive content_x the same way `paint` does — from the
             // popup background fill it always records first — rather
@@ -1267,7 +1275,7 @@ mod native_surface_paint {
             panel.focus = 1; // no replace row exists, so FindInput (focus 0) is unfocused
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme);
+            paint(&panel, &mut surface, &theme, &Style::default());
 
             assert!(
                 !surface.fills.iter().any(|(_, c)| *c == theme.selection_bg),
@@ -1288,7 +1296,7 @@ mod native_surface_paint {
             let panel = sample_panel("café🎉中文", 3, Some(6));
             let theme = Theme::default();
             let mut surface = RecordingSurface::default();
-            paint(&panel, &mut surface, &theme);
+            paint(&panel, &mut surface, &theme, &Style::default());
         }
     }
 }

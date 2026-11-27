@@ -697,7 +697,7 @@ pub use primitives::icon_grid::IconGridPrimitiveLayout;
 pub use primitives::image::{Image, ImageFit, ImageHit, ImageLayout, ImageSource};
 pub use primitives::list::{
     ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
-    ListViewLayout, VisibleListItem,
+    ListViewLayout, ListViewSubPart, VisibleListItem,
 };
 // `ListView`'s `Primitive::Layout` — defined on every feature set the
 // pilot `impl Primitive for ListView` itself is (see that impl's own
@@ -784,9 +784,8 @@ pub use primitives::split_tree::{
     MAX_RATIO as SPLIT_TREE_MAX_RATIO, MIN_RATIO as SPLIT_TREE_MIN_RATIO,
 };
 pub use primitives::status_bar::{
-    StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout,
-    StatusBarOverflow, StatusBarSegment, StatusSegmentMeasure, StatusSegmentSide,
-    VisibleStatusSegment,
+    StatusBar, StatusBarEvent, StatusBarHit, StatusBarHitRegion, StatusBarLayout, StatusBarSegment,
+    StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
 };
 pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
 pub use primitives::text_area::{TextArea, TextAreaAction};
@@ -843,7 +842,7 @@ pub use primitives::tree::{
 pub use primitives::tree_table::{
     TreeTable, TreeTableEvent, TreeTableHit, TreeTableLayout, TreeTableNode,
 };
-pub use style::Style;
+pub use style::{CellOverflow, Style};
 pub use text_util::{
     fuzzy_score, next_char_boundary, prev_char_boundary, safe_prefix, safe_slice,
     snap_to_char_boundary, word_wrap, wrap_spans, WrapPolicy,

@@ -2398,17 +2398,21 @@ impl crate::primitive::Primitive for TreeView {
                 vscrollbar_layout,
             };
         }
-        // No live `Style` reaches `Primitive::layout` (its signature
-        // carries only `LayoutCtx`), so this uses `Style::default`'s
-        // `row_padding_x` and `scrollbar_width` — what
-        // `crate::primitives::layout_metrics::tree_layout`'s own doc says
-        // to pass "when no live `Style` is reachable".
-        let default_style = crate::style::Style::default();
-        let layout = crate::primitives::layout_metrics::tree_layout(
+        // The host's live `Style` sets the row padding and scrollbar
+        // width, and the chevron is measured in the chrome font the
+        // painter draws it in, so the chevron hit band ends where the
+        // painted glyph does.
+        let style = ctx.style();
+        let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+            ctx,
+            role: crate::FontRole::Chrome,
+        };
+        let layout = crate::primitives::layout_metrics::tree_layout_measured(
             self,
             rect,
             ctx.line_height as f64,
-            default_style.row_padding_x,
+            &measure,
+            style.row_padding_x,
         );
         let row_pitch =
             crate::primitives::layout_metrics::tree_row_pitch(self, ctx.line_height as f64) as f32;
@@ -2419,8 +2423,7 @@ impl crate::primitive::Primitive for TreeView {
         };
         // A pixel surface overlays the scrollbar on the rows (the shared
         // pixel painter draws it), so no width is reserved for it here.
-        let vscrollbar =
-            self.vscrollbar_with_track_width(rect, row_pitch, default_style.scrollbar_width);
+        let vscrollbar = self.vscrollbar_with_track_width(rect, row_pitch, style.scrollbar_width);
         let vscrollbar_layout = vscrollbar
             .as_ref()
             .map(|sb| crate::primitive::Primitive::layout(sb, ctx, sb.track));

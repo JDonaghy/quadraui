@@ -116,6 +116,23 @@
 
 use serde::{Deserialize, Serialize};
 
+/// How a cell-grid painter cuts text wider than the cells its layout
+/// left it. Set per widget family on [`Style`]:
+/// [`Style::status_bar_cell_overflow`] for a [`crate::StatusBar`]
+/// segment, [`Style::list_cell_overflow`] for a [`crate::ListView`] row.
+///
+/// `#[non_exhaustive]`: a future overflow style is additive.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CellOverflow {
+    /// End the visible text in `…`, so the cut reads as deliberate.
+    #[default]
+    Ellipsis,
+    /// Cut the text at the last cell with no marker.
+    Clip,
+}
+
 /// Non-colour visual tokens shared by every pixel backend. See the
 /// module doc for why this is a separate type from [`crate::Theme`],
 /// which rasterisers that want styling read alongside it the same way
@@ -494,15 +511,27 @@ pub struct Style {
 
     /// How a cell-grid [`crate::StatusBar`] cuts a segment whose text is
     /// wider than the cells its layout left it:
-    /// [`crate::StatusBarOverflow::Ellipsis`] ends it in `…`,
-    /// [`crate::StatusBarOverflow::Clip`] cuts it with no marker.
+    /// [`CellOverflow::Ellipsis`] ends it in `…`,
+    /// [`CellOverflow::Clip`] cuts it with no marker.
     ///
     /// **Pixel story: no-op.** Pixel backends always end overlong text
     /// in an ellipsis.
     ///
-    /// Default [`crate::StatusBarOverflow::Ellipsis`].
+    /// Default [`CellOverflow::Ellipsis`].
     #[serde(default)]
-    pub status_bar_cell_overflow: crate::StatusBarOverflow,
+    pub status_bar_cell_overflow: CellOverflow,
+
+    /// How a cell-grid [`crate::ListView`] cuts a row whose text is wider
+    /// than the row: [`CellOverflow::Ellipsis`] ends it in `…`,
+    /// [`CellOverflow::Clip`] cuts it at the row's last cell with no
+    /// marker.
+    ///
+    /// **Pixel story: no-op.** Pixel backends always end overlong text
+    /// in an ellipsis.
+    ///
+    /// Default [`CellOverflow::Ellipsis`].
+    #[serde(default)]
+    pub list_cell_overflow: CellOverflow,
 }
 
 /// `#[serde(default)]` value for [`Style::button_radius`] — a struct
@@ -610,7 +639,8 @@ impl Default for Style {
             tooltip_delay_ms: 500,
             tooltip_auto_dismiss_ms: 0,
             status_bar_cell_gap: crate::primitives::status_bar::MIN_GAP_CELLS,
-            status_bar_cell_overflow: crate::StatusBarOverflow::Ellipsis,
+            status_bar_cell_overflow: CellOverflow::Ellipsis,
+            list_cell_overflow: CellOverflow::Ellipsis,
         }
     }
 }
@@ -762,8 +792,15 @@ impl Style {
 
     /// Set [`Self::status_bar_cell_overflow`].
     #[must_use]
-    pub fn with_status_bar_cell_overflow(mut self, overflow: crate::StatusBarOverflow) -> Self {
+    pub fn with_status_bar_cell_overflow(mut self, overflow: CellOverflow) -> Self {
         self.status_bar_cell_overflow = overflow;
+        self
+    }
+
+    /// Set [`Self::list_cell_overflow`].
+    #[must_use]
+    pub fn with_list_cell_overflow(mut self, overflow: CellOverflow) -> Self {
+        self.list_cell_overflow = overflow;
         self
     }
 }
