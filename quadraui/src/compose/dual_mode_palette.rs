@@ -43,6 +43,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
+use crate::compose::palette_host::{route_palette_host, PaletteHostKey};
 use crate::compose::widget_host;
 use crate::compose::Handled;
 use crate::interactive::{
@@ -166,6 +167,10 @@ pub struct DualModePalette {
     pub selected: usize,
     /// First visible row (scroll offset into `items`).
     pub scroll_top: usize,
+    /// Whether an unmodified `j`/`k` moves the List-mode highlight instead
+    /// of typing into the query. Off by default, so a query can contain
+    /// both letters; arrow keys always move the highlight.
+    pub vim_keys: bool,
 }
 
 /// [`Interactive::State`] for [`DualModePalette`]: the composed palette's
@@ -195,7 +200,15 @@ impl DualModePalette {
             items,
             selected: 0,
             scroll_top: 0,
+            vim_keys: false,
         }
+    }
+
+    /// Let an unmodified `j`/`k` move the List-mode highlight instead of
+    /// typing. Returns `self` for builder-style chaining.
+    pub fn with_vim_keys(mut self, vim_keys: bool) -> Self {
+        self.vim_keys = vim_keys;
+        self
     }
 
     /// The other mode.
@@ -323,9 +336,9 @@ impl Interactive for DualModePalette {
     }
 
     /// Tab toggles the mode, Escape cancels, and Enter confirms the
-    /// highlighted item (List) or the typed text (Input). In List mode an
-    /// unmodified `j`/`k` moves the highlight, and the pointer hovering a
-    /// row highlights it. Everything else is the palette's own input —
+    /// highlighted item (List) or the typed text (Input). In List mode
+    /// with [`DualModePalette::vim_keys`] an unmodified `j`/`k` moves the
+    /// highlight, and the pointer hovering a row highlights it. Everything else is the palette's own input —
     /// query editing and list navigation — reported as the change it
     /// names.
     fn handle(
@@ -336,40 +349,36 @@ impl Interactive for DualModePalette {
         cx: &mut EventCx,
     ) -> Handled<DualModePaletteAction> {
         let list = self.mode == PaletteMode::List;
+        match route_palette_host(event, list && self.vim_keys) {
+            Some(PaletteHostKey::Cancel) => {
+                return Handled::Event(DualModePaletteAction::Cancelled)
+            }
+            Some(PaletteHostKey::Confirm) if list => {
+                return if self.items.is_empty() {
+                    Handled::Consumed
+                } else {
+                    Handled::Event(DualModePaletteAction::ItemConfirmed { idx: self.selected })
+                };
+            }
+            Some(PaletteHostKey::Confirm) => {
+                return Handled::Event(DualModePaletteAction::TextConfirmed {
+                    value: self.query.clone(),
+                });
+            }
+            Some(PaletteHostKey::Up) => return self.select(self.selected.saturating_sub(1)),
+            Some(PaletteHostKey::Down) => {
+                let last = self.items.len().saturating_sub(1);
+                return self.select((self.selected + 1).min(last));
+            }
+            None => {}
+        }
         match event {
             RoutedEvent::Key(key) => {
                 let modified = key.modifiers.ctrl || key.modifiers.cmd || key.modifiers.alt;
-                match key.key {
-                    Key::Named(NamedKey::Tab | NamedKey::BackTab) if !modified => {
-                        return Handled::Event(DualModePaletteAction::ModeToggled {
-                            new_mode: self.toggled(),
-                        });
-                    }
-                    Key::Named(NamedKey::Escape) => {
-                        return Handled::Event(DualModePaletteAction::Cancelled);
-                    }
-                    Key::Named(NamedKey::Enter) if list => {
-                        return if self.items.is_empty() {
-                            Handled::Consumed
-                        } else {
-                            Handled::Event(DualModePaletteAction::ItemConfirmed {
-                                idx: self.selected,
-                            })
-                        };
-                    }
-                    Key::Named(NamedKey::Enter) => {
-                        return Handled::Event(DualModePaletteAction::TextConfirmed {
-                            value: self.query.clone(),
-                        });
-                    }
-                    Key::Char('k') if list && !modified => {
-                        return self.select(self.selected.saturating_sub(1));
-                    }
-                    Key::Char('j') if list && !modified => {
-                        let last = self.items.len().saturating_sub(1);
-                        return self.select((self.selected + 1).min(last));
-                    }
-                    _ => {}
+                if matches!(key.key, Key::Named(NamedKey::Tab | NamedKey::BackTab)) && !modified {
+                    return Handled::Event(DualModePaletteAction::ModeToggled {
+                        new_mode: self.toggled(),
+                    });
                 }
             }
             RoutedEvent::Pointer {
@@ -1230,6 +1239,53 @@ mod tests {
         assert_eq!(
             ctrl.handle_mouse(&mouse_down(5.0, 99.0), &backend, rect, 10),
             DualModePaletteEvent::Ignored
+        );
+    }
+
+    // ── Shared palette-host prelude ───────────────────────────────────
+
+    fn drive_widget(widget: &DualModePalette, ev: &UiEvent) -> Handled<DualModePaletteAction> {
+        let mut state = DualModePaletteState::default();
+        widget_host::drive_in_cells(widget, &mut state, ev, Rect::new(0.0, 0.0, 80.0, 14.0))
+            .map_or(Handled::Ignored, |driven| driven.handled)
+    }
+
+    #[test]
+    fn list_mode_query_can_contain_j_and_k() {
+        let widget = DualModePalette::new(
+            WidgetId::new("dmp"),
+            "T",
+            None,
+            vec![item("one"), item("two")],
+        );
+        for c in ['j', 'k'] {
+            assert_eq!(
+                drive_widget(&widget, &key_ev(Key::Char(c))),
+                Handled::Event(DualModePaletteAction::QueryChanged {
+                    value: c.to_string()
+                }),
+                "{c} types into the query when vim keys are off"
+            );
+        }
+    }
+
+    #[test]
+    fn with_vim_keys_j_and_k_move_the_list_highlight() {
+        let mut widget = DualModePalette::new(
+            WidgetId::new("dmp"),
+            "T",
+            None,
+            vec![item("one"), item("two")],
+        )
+        .with_vim_keys(true);
+        assert_eq!(
+            drive_widget(&widget, &key_ev(Key::Char('j'))),
+            Handled::Event(DualModePaletteAction::SelectionChanged { idx: 1 })
+        );
+        widget.selected = 1;
+        assert_eq!(
+            drive_widget(&widget, &key_ev(Key::Char('k'))),
+            Handled::Event(DualModePaletteAction::SelectionChanged { idx: 0 })
         );
     }
 }

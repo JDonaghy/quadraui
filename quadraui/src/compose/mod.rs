@@ -14,8 +14,9 @@
 //!   sibling-scoped sort) flattened into a `TreeTable`, over
 //!   [`crate::behaviour::nav::TreeNavCore`].
 //! - [`ShellView`] — ActivityBar + sidebar panel container composition.
-//! - [`FolderPickerController`] — cross-backend directory-browsing modal.
-//! - [`FilePickerController`] — cross-backend file open/save modal.
+//! - [`PathPicker`] — cross-backend filesystem picker modal:
+//!   [`FolderPicker`] browses directories, [`FilePicker`] opens or saves
+//!   files.
 //! - [`MessageDialogController`] — cross-backend message/alert-box driver.
 //! - [`FormDialogController`] — a [`crate::primitives::dialog::Dialog`]
 //!   hosting a multi-field [`crate::primitives::form::Form`]
@@ -75,6 +76,7 @@ pub mod markdown;
 pub mod menu_system;
 pub mod message_dialog;
 pub mod notification;
+mod palette_host;
 mod path_picker;
 mod shell_layout;
 mod sidebar_edit;
@@ -131,20 +133,8 @@ pub use dual_mode_palette::{
 // use site.
 #[allow(deprecated)]
 pub use dual_mode_palette::DualModePaletteEvent;
-pub use file_picker::{FilePicker, FilePickerController, FilePickerMode, FilePickerState};
-// `FilePickerEvent` is `#[deprecated]` (use `FilePickerController::handle_event`'s
-// `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
-// deprecated item is itself a use site.
-#[allow(deprecated)]
-pub use file_picker::FilePickerEvent;
-pub use folder_picker::{
-    FolderPicker, FolderPickerController, FolderPickerState, PALETTE_CHROME_ROWS,
-};
-// `FolderPickerEvent` is `#[deprecated]` (use `FolderPickerController::handle_event`'s
-// `Handled<PathPickerAction>` instead). Allow it here since `pub use` of a
-// deprecated item is itself a use site.
-#[allow(deprecated)]
-pub use folder_picker::FolderPickerEvent;
+pub use file_picker::{FileKind, FilePicker, FilePickerMode};
+pub use folder_picker::{FolderKind, FolderPicker};
 pub use form_controller::{FormController, FormControllerAction};
 // `FormControllerEvent` is `#[deprecated]` (use `FormController::handle_event`/
 // `handle_cached_event`'s `Handled<FormControllerAction>` instead). Allow it
@@ -176,7 +166,10 @@ pub use message_dialog::{MessageDialog, MessageDialogController, MessageDialogSt
 #[allow(deprecated)]
 pub use message_dialog::MessageDialogEvent;
 pub use notification::notify_or_toast;
-pub use path_picker::{PathPickerAction, PathPickerState};
+pub use path_picker::{
+    walk_entries, PathPicker, PathPickerAction, PathPickerEditState, PathPickerState, PickerKind,
+    WalkOptions, DEFAULT_IGNORE_DIRS, DEFAULT_MAX_DEPTH, PALETTE_CHROME_ROWS,
+};
 pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
 #[cfg(any(
     feature = "gtk",

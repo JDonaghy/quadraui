@@ -45,7 +45,8 @@ impl BranchApp {
                 "Branches",
                 Some("New branch:".into()),
                 items(""),
-            ),
+            )
+            .with_vim_keys(true),
             area,
             confirmed: Vec::new(),
         }

@@ -4,7 +4,7 @@
 //!
 //! Sidebar name is "File Picker" (the sidebar's demo-name column is too
 //! narrow for the fuller "File & Folder Picker"), but its three variants
-//! cover `FilePickerController`'s two modes *plus* `FolderPickerController`
+//! cover `FilePicker`'s two modes *plus* `FolderPicker`
 //! — the in-app pickers every backend (including TUI) gets for free, no
 //! native file-dialog support required. All three are rooted at a small
 //! synthetic directory tree this demo creates for itself (see
@@ -16,10 +16,11 @@
 use quadraui::DrawsPrimitives;
 use std::path::PathBuf;
 
+use quadraui::compose::PickerKind;
 use quadraui::{
-    Backend, BackendCaps, Color, FilePickerController, FilePickerMode, FolderPickerController,
-    Handled, PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent,
-    WidgetId, PALETTE_CHROME_ROWS,
+    Backend, BackendCaps, Color, FilePicker, FilePickerMode, FolderPicker, Handled, PathPicker,
+    PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment, Style, UiEvent, WidgetId,
+    PALETTE_CHROME_ROWS,
 };
 use tempfile::TempDir;
 
@@ -76,9 +77,9 @@ pub struct FilePickerDemo {
     // below hold only the `PathBuf` this resolves to, not the `TempDir`
     // itself, and dropping it would delete the tree out from under them.
     root_dir: TempDir,
-    open_picker: FilePickerController,
-    save_picker: FilePickerController,
-    folder_picker: FolderPickerController,
+    open_picker: FilePicker,
+    save_picker: FilePicker,
+    folder_picker: FolderPicker,
     confirmed: Option<String>,
 }
 
@@ -88,10 +89,13 @@ impl FilePickerDemo {
         let root: PathBuf = root_dir.path().to_path_buf();
         Self {
             root_dir,
-            open_picker: FilePickerController::new(FilePickerMode::Open, root.clone(), vec![]),
-            save_picker: FilePickerController::new(FilePickerMode::Save, root.clone(), vec![])
+            open_picker: FilePicker::new(FilePickerMode::Open, root.clone(), vec![])
+                .with_id("gallery:file-picker:open"),
+            save_picker: FilePicker::new(FilePickerMode::Save, root.clone(), vec![])
+                .with_id("gallery:file-picker:save")
                 .with_initial_filename("untitled.rs"),
-            folder_picker: FolderPickerController::rooted_at(root, vec![]),
+            folder_picker: FolderPicker::rooted_at(root, vec![])
+                .with_id("gallery:file-picker:folder"),
             confirmed: None,
         }
     }
@@ -132,6 +136,34 @@ impl FilePickerDemo {
         };
         rows.saturating_sub(PALETTE_CHROME_ROWS)
     }
+
+    /// Resolve `event` through `picker`'s own input handling, apply a
+    /// browsing change, and record a confirmation (as `verb: path`) or a
+    /// dismissal.
+    fn drive<K: PickerKind>(
+        picker: &mut PathPicker<K>,
+        confirmed: &mut Option<String>,
+        verb: &str,
+        event: &UiEvent,
+        visible_rows: usize,
+    ) -> Reaction {
+        match picker.handle_event(event, visible_rows) {
+            Handled::Event(PathPickerAction::Confirmed { path }) => {
+                *confirmed = Some(format!("{verb}: {}", path.display()));
+                Reaction::Redraw
+            }
+            Handled::Event(PathPickerAction::Cancelled) => {
+                *confirmed = Some("Dismissed".into());
+                Reaction::Redraw
+            }
+            Handled::Event(change) => {
+                picker.apply(&change, visible_rows);
+                Reaction::Redraw
+            }
+            Handled::Consumed => Reaction::Redraw,
+            Handled::Ignored => Reaction::Continue,
+        }
+    }
 }
 
 impl Default for FilePickerDemo {
@@ -164,11 +196,11 @@ impl Demo for FilePickerDemo {
         let _ = backend.draw_dyn(bar_rect, &self.status_bar(), &());
 
         let popup_rect = Self::popup_rect(area, backend);
-        match variant {
-            0 => self.open_picker.render(popup_rect, backend),
-            1 => self.save_picker.render(popup_rect, backend),
-            _ => self.folder_picker.render(popup_rect, backend),
-        }
+        let _ = match variant {
+            0 => backend.draw_dyn(popup_rect, &self.open_picker, &()),
+            1 => backend.draw_dyn(popup_rect, &self.save_picker, &()),
+            _ => backend.draw_dyn(popup_rect, &self.folder_picker, &()),
+        };
     }
 
     fn handle(
@@ -180,43 +212,29 @@ impl Demo for FilePickerDemo {
     ) -> Reaction {
         let popup_rect = Self::popup_rect(area, backend);
         let visible_rows = Self::visible_rows(popup_rect, backend);
+        let confirmed = &mut self.confirmed;
         match variant {
-            0 => match self.open_picker.handle_event(event, visible_rows) {
-                Handled::Event(PathPickerAction::Confirmed { path }) => {
-                    self.confirmed = Some(format!("Opened: {}", path.display()));
-                    Reaction::Redraw
-                }
-                Handled::Event(PathPickerAction::Cancelled) => {
-                    self.confirmed = Some("Dismissed".into());
-                    Reaction::Redraw
-                }
-                Handled::Event(_) | Handled::Consumed => Reaction::Redraw,
-                Handled::Ignored => Reaction::Continue,
-            },
-            1 => match self.save_picker.handle_event(event, visible_rows) {
-                Handled::Event(PathPickerAction::Confirmed { path }) => {
-                    self.confirmed = Some(format!("Saved: {}", path.display()));
-                    Reaction::Redraw
-                }
-                Handled::Event(PathPickerAction::Cancelled) => {
-                    self.confirmed = Some("Dismissed".into());
-                    Reaction::Redraw
-                }
-                Handled::Event(_) | Handled::Consumed => Reaction::Redraw,
-                Handled::Ignored => Reaction::Continue,
-            },
-            _ => match self.folder_picker.handle_event(event, visible_rows) {
-                Handled::Event(PathPickerAction::Confirmed { path }) => {
-                    self.confirmed = Some(format!("Chose folder: {}", path.display()));
-                    Reaction::Redraw
-                }
-                Handled::Event(PathPickerAction::Cancelled) => {
-                    self.confirmed = Some("Dismissed".into());
-                    Reaction::Redraw
-                }
-                Handled::Event(_) | Handled::Consumed => Reaction::Redraw,
-                Handled::Ignored => Reaction::Continue,
-            },
+            0 => Self::drive(
+                &mut self.open_picker,
+                confirmed,
+                "Opened",
+                event,
+                visible_rows,
+            ),
+            1 => Self::drive(
+                &mut self.save_picker,
+                confirmed,
+                "Saved",
+                event,
+                visible_rows,
+            ),
+            _ => Self::drive(
+                &mut self.folder_picker,
+                confirmed,
+                "Chose folder",
+                event,
+                visible_rows,
+            ),
         }
     }
 
@@ -238,7 +256,7 @@ impl Demo for FilePickerDemo {
     }
 
     fn caps_note(&self, _variant: usize, _caps: &BackendCaps) -> Option<String> {
-        // Both controllers are in-app pickers (quadraui's own
+        // Both pickers are in-app pickers (quadraui's own
         // palette-rendered list, not a native OS dialog), so they work
         // identically everywhere — there's no `BackendCaps` flag to
         // check and no gap to report.
@@ -265,6 +283,6 @@ mod tests {
     fn save_picker_starts_with_the_initial_filename() {
         let demo = FilePickerDemo::new();
         assert_eq!(demo.save_picker.mode(), FilePickerMode::Save);
-        assert_eq!(demo.save_picker.query(), "untitled.rs");
+        assert_eq!(demo.save_picker.paths.query, "untitled.rs");
     }
 }

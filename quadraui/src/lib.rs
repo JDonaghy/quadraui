@@ -971,7 +971,7 @@ pub use compose::{
     BottomPanelState, BottomPanelTab, Chat, ChatController, ChatControllerAction, ChatEvent,
     ChatLayout, ChatRole, ChatState, ChatTurn, ChatZones, ContextMenuController,
     ContextMenuOutcome, DualModePaletteAction, DualModePaletteController, Edge,
-    FilePickerController, FilePickerMode, FolderPickerController, FormController,
+    FilePickerMode, FormController,
     FormControllerAction, FormDialogAction, FormDialogController, GroupLayout, Handled, HelpAction,
     HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,
     MessageDialogController, NavigationMode, PanelDefinition, PathPickerAction, SectionKind,
@@ -985,8 +985,8 @@ pub use compose::{
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
-    FilePicker, FilePickerState, FolderPicker, FolderPickerState, FormDialog, FormDialogState,
-    HelpOverlay, HelpOverlayState, MessageDialog, MessageDialogState, PathPickerState,
+    FilePicker, FolderPicker, FormDialog, FormDialogState, HelpOverlay, HelpOverlayState,
+    MessageDialog, MessageDialogState, PathPicker, PathPickerEditState, PathPickerState,
 };
 pub use compose::{SidebarEvent, SidebarState, SidebarSystem};
 #[cfg(any(
@@ -1000,14 +1000,13 @@ pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeDa
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.
 // `StatusBarAction`, `MessageDialogEvent`, `ToastStackEvent`,
-// `DualModePaletteEvent`, `FilePickerEvent`, `FolderPickerEvent`,
+// `DualModePaletteEvent`,
 // `FormControllerEvent`, `FormDialogEvent` and `ChatControllerEvent` are
 // `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
 // `Handled<WidgetId>`, `MessageDialogController::handle_event`'s
 // `Handled<MessageDialogChoice>`, `ToastStackController::handle_event`'s
 // `Handled<ToastStackAction>`, `DualModePaletteController::handle_event`'s
-// `Handled<DualModePaletteAction>`, `FilePickerController`/
-// `FolderPickerController::handle_event`'s `Handled<PathPickerAction>`,
+// `Handled<DualModePaletteAction>`,
 // `FormController::handle_event`/`handle_cached_event`'s
 // `Handled<FormControllerAction>`, `FormDialogController::handle_event`'s
 // `Handled<FormDialogAction>`, and `ChatController::handle_event`'s
@@ -1015,8 +1014,8 @@ pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeDa
 // of a deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use compose::{
-    ChatControllerEvent, DualModePaletteEvent, FilePickerEvent, FolderPickerEvent,
-    FormControllerEvent, FormDialogEvent, MessageDialogEvent, StatusBarAction, ToastStackEvent,
+    ChatControllerEvent, DualModePaletteEvent, FormControllerEvent, FormDialogEvent,
+    MessageDialogEvent, StatusBarAction, ToastStackEvent,
 };
 pub use dispatch::{
     dispatch_click, dispatch_mouse_down, dispatch_mouse_drag, dispatch_mouse_up, dispatch_scroll,

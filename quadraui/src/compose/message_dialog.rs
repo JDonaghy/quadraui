@@ -510,7 +510,7 @@ impl MessageDialogController {
 // module itself, `lib.rs`), but these tests need a concrete `Backend` impl
 // to exercise `layout()`'s `backend.measure()`/`backend.viewport()` calls
 // (`Dialog`'s layout is generic over real backend metrics, unlike
-// `FolderPickerController`, which hardcodes its own popup sizing and never
+// `FolderPicker`, which hardcodes its own popup sizing and never
 // needs one). `TuiBackend` is the cheapest concrete `Backend` in-tree, so
 // this module is gated on the `tui` feature — every CI leg that runs tests
 // enables it (`--features tui` and `--features gtk,tui`, see

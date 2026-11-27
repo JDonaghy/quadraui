@@ -2,7 +2,7 @@
 //!
 //! Demonstrates the compose controller **directly** — no
 //! `PlatformServices` involved — the same pattern `tui_folder_picker.rs`
-//! uses for `FolderPickerController`: keyboard button focus,
+//! uses for `FolderPicker`: keyboard button focus,
 //! Enter/Escape/click resolution, all rendered through the existing
 //! `Dialog` primitive. Contrast with `tui_message_dialog.rs`
 //! (`examples/common/message_dialog_demo.rs`), which exercises

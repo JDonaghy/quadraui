@@ -1,4 +1,4 @@
-//! `FilePickerController` demo on the GTK runner.
+//! `FilePicker` demo on the GTK runner.
 //!
 //! Demonstrates cross-backend file open/save browsing via the compose
 //! controller. The TUI twin (`tui_file_picker.rs`) uses the identical

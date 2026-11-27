@@ -1,4 +1,4 @@
-//! `FolderPickerController` demo on the GTK runner.
+//! `FolderPicker` demo on the GTK runner.
 //!
 //! Demonstrates cross-backend directory browsing via the compose
 //! controller: filesystem walking, fuzzy filtering, keyboard navigation,
