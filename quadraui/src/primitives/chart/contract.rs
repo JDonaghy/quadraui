@@ -58,12 +58,16 @@ impl crate::primitive::Primitive for Chart {
         crate::NaturalSize::NONE
     }
 
-    /// [`Chart::layout_in`] at the backend's character advance and row
-    /// height (`1.0`/`1.0` on a cell grid).
+    /// [`Chart::layout_in`] at the chrome font's digit advance and the
+    /// row height (`1.0`/`1.0` on a cell grid): the axis labels paint in
+    /// the chrome font, so the y-axis gutter is sized in its advance.
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> ChartPrimitiveLayout {
         let (char_width, line_height) = match ctx.units() {
             crate::primitive::Units::Cells => (1.0, 1.0),
-            _ => (ctx.char_width, ctx.line_height),
+            _ => (
+                ctx.text_width("0", crate::FontRole::Chrome),
+                ctx.line_height,
+            ),
         };
         ChartPrimitiveLayout {
             chart: self.layout_in(rect, char_width, line_height),
