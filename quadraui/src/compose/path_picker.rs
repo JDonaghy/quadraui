@@ -38,9 +38,7 @@ use crate::compose::widget_host;
 use crate::compose::Handled;
 use crate::interactive::{EventCx, FocusSpec, Interactive, RoutedEvent, SubTarget, WidgetAction};
 use crate::primitive::{LayoutCtx, Primitive, Size};
-use crate::primitives::palette::{
-    Palette, PaletteEvent, PaletteItem, PalettePrimitiveLayout, PaletteState,
-};
+use crate::primitives::palette::{Palette, PaletteItem, PalettePrimitiveLayout, PaletteState};
 use crate::types::WidgetId;
 use crate::{Icon, Key, Rect, StyledText, UiEvent};
 

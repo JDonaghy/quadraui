@@ -965,24 +965,23 @@ pub use compose::markdown::{
     all(feature = "macos", target_os = "macos")
 ))]
 pub use compose::SidebarLayout;
-pub use compose::{drive_ui_event, Driven};
 pub use compose::SidebarState;
+pub use compose::{drive_ui_event, Driven};
 pub use compose::{
     filter_help_actions, help_actions_to_palette_items, notify_or_toast, BackendWidget, BottomBand,
     BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelItem, BottomPanelPrimitiveLayout,
     BottomPanelState, BottomPanelTab, Chat, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn,
     ChatZones, ContextMenuController, ContextMenuOutcome, DualModePaletteAction, Edge,
-    FilePickerMode, FormController,
-    FormControllerAction, FormDialogAction, FormDialogController, GroupLayout, Handled, HelpAction,
-    HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,
-    MessageDialogController, NavigationMode, PanelDefinition, PathPickerAction, SectionKind,
-    ShellDrag, ShellEvent, ShellLayout, ShellPosition, ShellRegion, ShellView, ShellViewLayout,
-    ShellViewState, Sidebar, SidebarAction, SidebarBody, SidebarPanelBody, SidebarPanelBodyLayout,
-    SidebarPanelChrome, SidebarSection, SidebarSectionDef, StatusBarInteraction, TabGroup,
-    TabGroupEvent, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
-    TabGroupSubPart, TabGroupTab, ToastStackAction, ToastStackController, ToolbarHoverTracker,
-    ViewHelp, Workspace, WorkspaceDoc, WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState,
-    PALETTE_CHROME_ROWS,
+    FilePickerMode, FormController, FormControllerAction, FormDialogAction, FormDialogController,
+    GroupLayout, Handled, HelpAction, HelpNote, HelpOverlayAction, HelpRegistry, ListHoverTracker,
+    MenuDef, MenuEvent, MenuSystem, MessageDialogController, NavigationMode, PanelDefinition,
+    PathPickerAction, SectionKind, ShellDrag, ShellEvent, ShellLayout, ShellPosition, ShellRegion,
+    ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody,
+    SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
+    SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupEvent, TabGroupPane,
+    TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart, TabGroupTab,
+    ToastStackAction, ToastStackController, ToolbarHoverTracker, ViewHelp, Workspace, WorkspaceDoc,
+    WorkspaceEvent, WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
