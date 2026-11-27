@@ -66,7 +66,7 @@ pub trait ExtraPaint: std::any::Any {
     /// the five fixed leaf slots (`TextDisplay`/`List`/`Tree`/
     /// `DataTable`/`TabBar`). Consulted by
     /// [`crate::render::layout_container_rects`]'s non-`Stretch`
-    /// `crate::layout::Align` so a compact additive leaf (`Checkbox`,
+    /// `quadraui::Align` so a compact additive leaf (`Checkbox`,
     /// `Switch`, `ProgressBar`, `Image`, ...) sizes to its own content
     /// under `Align::Start`/`Center`/`End` instead of always filling the
     /// cross-axis extent — a `None` on either axis still degrades that
@@ -1364,8 +1364,9 @@ mod tests {
     #[test]
     fn switch_leaf_click_toggles_through_the_dyn_widget_seam() {
         use crate::engine::InteractionEngine;
-        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::layout::{LayoutContainer, LayoutNode};
         use crate::render::paint_layout;
+        use quadraui::Spacing;
         use quadraui::{Modifiers, MouseButton, Switch};
 
         struct SwitchLeafApp {
@@ -1455,8 +1456,9 @@ mod tests {
     #[test]
     fn toolbar_leaf_click_emits_button_clicked_through_the_interaction_engine() {
         use crate::engine::InteractionEngine;
-        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::layout::{LayoutContainer, LayoutNode};
         use crate::render::paint_layout;
+        use quadraui::Spacing;
         use quadraui::{Modifiers, MouseButton, ToolbarEvent};
 
         struct ToolbarLeafApp {
@@ -1553,8 +1555,9 @@ mod tests {
     #[test]
     fn toolbar_extra_is_hit_tested_by_the_ambient_pointer_state() {
         use crate::engine::InteractionEngine;
-        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::layout::{LayoutContainer, LayoutNode};
         use crate::render::paint_layout;
+        use quadraui::Spacing;
 
         struct ToolbarLeafApp {
             engine: InteractionEngine,
@@ -1677,8 +1680,9 @@ mod tests {
     fn icon_grid_leaf_click_round_trips_through_the_dyn_widget_seam() {
         use crate::engine::InteractionEngine;
         use crate::hit::HitDetail;
-        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::layout::{LayoutContainer, LayoutNode};
         use crate::render::paint_layout;
+        use quadraui::Spacing;
         use quadraui::{IconGrid, IconGridItem, Modifiers, MouseButton};
 
         /// Unlike [`RecordingSink`], also keeps the [`HitDetail`] each
@@ -1797,8 +1801,9 @@ mod tests {
     #[test]
     fn markdown_leaf_renders_formatting_and_link_click_emits_rich_text_link_clicked() {
         use crate::engine::InteractionEngine;
-        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::layout::{LayoutContainer, LayoutNode};
         use crate::render::paint_layout;
+        use quadraui::Spacing;
         use quadraui::{Modifiers, MouseButton};
 
         struct MarkdownLeafApp {
@@ -1943,8 +1948,9 @@ mod tests {
     #[test]
     fn markdown_leaf_wheel_scroll_emits_text_display_scrolled() {
         use crate::engine::InteractionEngine;
-        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::layout::{LayoutContainer, LayoutNode};
         use crate::render::paint_layout;
+        use quadraui::Spacing;
         use quadraui::{ScrollDelta, TextDisplayEvent};
 
         struct MarkdownScrollApp {
@@ -2027,8 +2033,9 @@ mod tests {
     #[test]
     fn menu_bar_leaf_activation_reaches_the_interaction_engine() {
         use crate::engine::InteractionEngine;
-        use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+        use crate::layout::{LayoutContainer, LayoutNode};
         use crate::render::paint_layout;
+        use quadraui::Spacing;
         use quadraui::{ContextMenuItem, Key, Modifiers, NamedKey, StyledText};
 
         struct MenuBarLeafApp {
@@ -2127,8 +2134,9 @@ mod tests {
         type AreaId = ();
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            use crate::layout::{LayoutContainer, LayoutNode, Spacing};
+            use crate::layout::{LayoutContainer, LayoutNode};
             use crate::render::paint_layout;
+            use quadraui::Spacing;
 
             let tree = LayoutNode::Row(LayoutContainer::new(
                 vec![LayoutNode::Leaf(LayoutLeaf {

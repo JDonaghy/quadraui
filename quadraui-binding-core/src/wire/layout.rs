@@ -16,11 +16,11 @@ use quadraui::{
 use quadraui::layout::GridTrack;
 
 use crate::layout::{
-    Align, EdgeInsets, Justify, LayoutChild, LayoutContainer, LayoutGrid, LayoutNode, LayoutScroll,
-    LayoutSidebarPanel, LayoutSplit, LayoutSplitTree, LayoutStyled, LayoutTabEntry, LayoutTabs,
-    Spacing,
+    LayoutChild, LayoutContainer, LayoutGrid, LayoutNode, LayoutScroll, LayoutSidebarPanel,
+    LayoutSplit, LayoutSplitTree, LayoutStyled, LayoutTabEntry, LayoutTabs,
 };
 use crate::{decode_value, DecodeError};
+use quadraui::{Align, EdgeInsets, Justify, Spacing};
 
 use super::frame::{all_node_kind_keys, unknown_node_kind_key};
 use super::leaf::layout_leaf_from_value;
@@ -384,7 +384,7 @@ fn layout_children_from_value(
 /// documented "share of the original container" contract — so a plausible
 /// typo like `{"Percent": 25}` (meaning "25 percent") is rejected here
 /// rather than silently read as `2500%` and clamped to `100%` by
-/// `crate::layout::resolve_main_axis_sizes`.
+/// `quadraui::layout::stack::resolve_main_axis_sizes`.
 fn child_size_from_value(value: &Value, context: &str) -> Result<SectionSize, DecodeError> {
     let size = match obj_get(value, "size") {
         None => return Ok(SectionSize::default()),
@@ -404,7 +404,7 @@ fn child_size_from_value(value: &Value, context: &str) -> Result<SectionSize, De
 
 /// The lowercase, Python-idiomatic spellings `"justify"` accepts —
 /// [`SPLIT_ORIENTATIONS`]'s own convention, independent of
-/// [`crate::layout::Justify`]'s PascalCase Rust variant names.
+/// [`quadraui::Justify`]'s PascalCase Rust variant names.
 const JUSTIFY_VALUES: [&str; 4] = ["start", "center", "end", "space_between"];
 
 /// Decodes a `"row"`/`"column"` node's optional `"justify"` key — the

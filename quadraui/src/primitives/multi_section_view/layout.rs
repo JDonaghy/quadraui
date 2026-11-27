@@ -11,6 +11,7 @@ use super::{
     SectionBody, SectionHeader, SectionLayout, SectionMeasure, SectionSize,
 };
 use crate::event::Rect;
+use crate::layout::stack::{resolve_main_axis_sizes, MainAxisSpec};
 use crate::types::Decoration;
 
 impl MultiSectionView {
@@ -664,15 +665,15 @@ fn compute_thumb_bounds(
     Rect::new(gutter.x, gutter.y + thumb_start, gutter.width, thumb_len)
 }
 
-/// Three-pass main-axis size resolution for `ScrollMode::PerSection`.
+/// Per-section main-axis sizes for `ScrollMode::PerSection`, resolved by
+/// the shared stack solver [`resolve_main_axis_sizes`].
 ///
-/// Pass 1 (Fixed): allocate `SectionSize::Fixed`, `Content` /
-/// `ContentClamped`, and collapsed-section header heights.
-/// Pass 2 (Percent): allocate `SectionSize::Percent` against the
-/// *original* container size; if total overflows the remainder, scale
-/// proportionally.
-/// Pass 3 (Flex): distribute leftover space across `Weight`,
-/// `EqualShare`. `Content` already consumed its content size in pass 1.
+/// A collapsed section is a `Content` child whose content is its header
+/// chrome alone; a `Content` section's content is its chrome plus its
+/// body. Every `Percent`/`Weight`/`EqualShare` section is floored at its
+/// chrome cost so it never resolves smaller than its own header. A section
+/// whose `min_size` exceeds its `max_size` resolves to `max_size`, so its
+/// `min` is capped at `max` before the solver's min-wins clamp sees it.
 fn resolve_per_section_sizes(
     sections: &[Section],
     measures: &[SectionMeasure],
@@ -680,104 +681,32 @@ fn resolve_per_section_sizes(
     container_main: f32,
     usable_main: f32,
 ) -> Vec<f32> {
-    let n = sections.len();
-    let mut out = vec![0.0_f32; n];
-
-    // Pass 1: Fixed + Content (collapsed sections always reduce to chrome
-    // cost only).
-    let mut consumed = 0.0_f32;
-    let mut pass1_done = vec![false; n];
-    for i in 0..n {
-        if sections[i].collapsed {
-            // Collapsed: only the header (chrome_cost includes only
-            // header for collapsed).
-            out[i] = apply_min_max(&sections[i], chrome_cost[i]);
-            consumed += out[i];
-            pass1_done[i] = true;
-            continue;
-        }
-        match sections[i].size {
-            SectionSize::Fixed(rows) => {
-                let v = apply_min_max(&sections[i], rows as f32);
-                out[i] = v;
-                consumed += v;
-                pass1_done[i] = true;
+    let specs: Vec<MainAxisSpec> = sections
+        .iter()
+        .zip(measures)
+        .zip(chrome_cost)
+        .map(|((section, measure), &chrome)| {
+            let max = section.max_size.map(f32::from);
+            let min = section
+                .min_size
+                .map(|m| max.map_or(f32::from(m), |max| f32::from(m).min(max)));
+            let (size, content) = if section.collapsed {
+                (SectionSize::Content, chrome)
+            } else if section.size == SectionSize::Content {
+                (SectionSize::Content, chrome + measure.content_size)
+            } else {
+                (section.size, 0.0)
+            };
+            MainAxisSpec {
+                size,
+                min,
+                max,
+                content,
+                floor: chrome,
             }
-            SectionSize::Content => {
-                let raw = chrome_cost[i] + measures[i].content_size;
-                let v = apply_min_max(&sections[i], raw);
-                out[i] = v;
-                consumed += v;
-                pass1_done[i] = true;
-            }
-            _ => {}
-        }
-    }
-
-    // Pass 2: Percent (allocated against container_main).
-    let mut percent_indices: Vec<usize> = Vec::new();
-    let mut percent_raw: Vec<f32> = Vec::new();
-    for i in 0..n {
-        if pass1_done[i] {
-            continue;
-        }
-        if let SectionSize::Percent(p) = sections[i].size {
-            percent_indices.push(i);
-            percent_raw.push(p.clamp(0.0, 1.0) * container_main);
-        }
-    }
-    let percent_total: f32 = percent_raw.iter().sum();
-    let percent_budget = (usable_main - consumed).max(0.0);
-    let percent_scale = if percent_total > percent_budget && percent_total > 0.0 {
-        percent_budget / percent_total
-    } else {
-        1.0
-    };
-    for (k, &i) in percent_indices.iter().enumerate() {
-        let raw = percent_raw[k] * percent_scale;
-        let v = apply_min_max(&sections[i], raw.max(chrome_cost[i]));
-        out[i] = v;
-        consumed += v;
-        pass1_done[i] = true;
-    }
-
-    // Pass 3: Weight + EqualShare share remainder.
-    let remainder = (usable_main - consumed).max(0.0);
-    let mut flex_indices: Vec<usize> = Vec::new();
-    let mut weights: Vec<f32> = Vec::new();
-    for i in 0..n {
-        if pass1_done[i] {
-            continue;
-        }
-        match sections[i].size {
-            SectionSize::Weight(w) => {
-                flex_indices.push(i);
-                weights.push(w.max(0.0));
-            }
-            SectionSize::EqualShare => {
-                flex_indices.push(i);
-                weights.push(1.0);
-            }
-            // Fixed/Content/Percent already handled above.
-            _ => {}
-        }
-    }
-    let weight_sum: f32 = weights.iter().sum();
-    if !flex_indices.is_empty() && weight_sum > 0.0 {
-        for (k, &i) in flex_indices.iter().enumerate() {
-            let raw = remainder * (weights[k] / weight_sum);
-            let v = apply_min_max(&sections[i], raw.max(chrome_cost[i]));
-            out[i] = v;
-        }
-    } else {
-        // No flex sections — leftover space is unused. Apps that want
-        // to absorb it should add an `EqualShare` section.
-        for &i in &flex_indices {
-            out[i] = apply_min_max(&sections[i], chrome_cost[i]);
-        }
-    }
-
-    out
+        })
+        .collect();
+    resolve_main_axis_sizes(&specs, container_main, usable_main)
 }
 
 fn push_header_hits(

@@ -53,7 +53,6 @@ declared.
 | `macos` | `quadraui::macos`: AppKit native backend (Core Graphics + Core Text) | macOS only. A no-op on other targets |
 | `win` | `quadraui::win`: Win32 native backend (Direct2D + DirectWrite) | Windows (MSVC). Type-checks elsewhere, runs only on Windows |
 | `terminal` | `quadraui::terminal_engine`: PTY + vt100 + scrollback, for embedding a terminal in your app | Any. No renderer of its own; pairs with any backend |
-| `layout` | `quadraui::flex`: flex/grid layout via Taffy | Any. Pure Rust |
 
 Platform services (clipboard, trash, secret store) come with each backend feature; you do
 not enable them separately.

@@ -5498,12 +5498,13 @@ mod tests {
     };
     use crate::layout::{
         LayoutContainer, LayoutLeaf, LayoutNode, LayoutScroll, LayoutSplit, LayoutSplitTree,
-        LayoutTabEntry, LayoutTabs, LeafDescriptor, Spacing,
+        LayoutTabEntry, LayoutTabs, LeafDescriptor,
     };
     use crate::render::{
         draw_bands, list_viewport_rows, paint_layout, tree_viewport_rows, RenderRefs,
     };
     use crate::semantic::DragGestureWireEvent;
+    use quadraui::Spacing;
 
     /// Records every event [`InteractionEngine::handle`] dispatches, in
     /// order, so a test can assert on the orchestration's decisions (e.g.

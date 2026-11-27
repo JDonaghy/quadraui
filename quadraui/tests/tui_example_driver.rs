@@ -11397,15 +11397,12 @@ fn status_bar_priority_demo_pressing_q_exits() {
     assert!(driver.exited(), "'q' should make the app exit");
 }
 
-// ─── flex-layout rewire: packing must stay identical with and without `layout` ─
+// ─── 1D packing ────────────────────────────────────────────────────────────
 //
-// `ShellView`, `Form` and `Toolbar` each route their 1D position arithmetic
-// through `crate::flex::pack_1d` when the `layout` feature is enabled, and
-// through the original hand-rolled arithmetic when it is not. The three
-// tests below assert the *packing* each primitive is responsible for —
-// item order, adjacency, cumulative row offsets, band carve — in terms the
-// screen reveals, so running this file with `--features tui` and with
-// `--features tui,layout` must produce the same verdict.
+// `ShellView`, `Form` and `Toolbar` each pack their items along one axis.
+// The three tests below assert the *packing* each primitive is responsible
+// for — item order, adjacency, cumulative row offsets, band carve — in
+// terms the screen reveals.
 //
 // They are deliberately written against painted text and relative offsets
 // (`find_bounds` deltas, the column a divider lands on) rather than a

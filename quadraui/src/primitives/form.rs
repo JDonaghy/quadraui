@@ -1465,26 +1465,6 @@ impl Form {
 /// (unclipped) height, top-to-bottom, never shrinking — the vertical
 /// counterpart of `Toolbar`'s item packing. `viewport_width` is every
 /// row's fixed cross-axis size.
-///
-/// With the `layout` feature this runs through [`crate::flex`]'s shared
-/// flexbox engine, so `Form` composes with the same engine
-/// [`crate::primitives::Toolbar`] and [`crate::compose::ShellView`] use.
-/// Without it, the same arithmetic is done by hand. Both arms are
-/// covered by this module's exact-value tests to guarantee they agree
-/// bit-for-bit.
-#[cfg(feature = "layout")]
-fn row_y_positions(viewport_width: f32, heights: &[f32]) -> Vec<f32> {
-    crate::flex::pack_1d(
-        crate::flex::FlexDirection::Column,
-        0.0,
-        heights,
-        0.0,
-        viewport_width,
-    )
-}
-
-/// Same contract as the `layout`-feature arm above, computed by hand.
-#[cfg(not(feature = "layout"))]
 fn row_y_positions(_viewport_width: f32, heights: &[f32]) -> Vec<f32> {
     let mut y = 0.0_f32;
     let mut ys = Vec::with_capacity(heights.len());
@@ -1498,22 +1478,6 @@ fn row_y_positions(_viewport_width: f32, heights: &[f32]) -> Vec<f32> {
 /// Compute each `ToggleGroup`/`ButtonRow` item's left edge, left-to-right
 /// starting at `origin_x` with `gap` between consecutive items, never
 /// shrinking. `row_height` is every item's fixed cross-axis size.
-///
-/// With the `layout` feature this runs through [`crate::flex`]'s shared
-/// flexbox engine. Without it, the same arithmetic is done by hand.
-#[cfg(feature = "layout")]
-fn item_x_positions(origin_x: f32, row_height: f32, gap: f32, widths: &[f32]) -> Vec<f32> {
-    crate::flex::pack_1d(
-        crate::flex::FlexDirection::Row,
-        origin_x,
-        widths,
-        gap,
-        row_height,
-    )
-}
-
-/// Same contract as the `layout`-feature arm above, computed by hand.
-#[cfg(not(feature = "layout"))]
 fn item_x_positions(origin_x: f32, _row_height: f32, gap: f32, widths: &[f32]) -> Vec<f32> {
     let mut x = origin_x;
     let mut xs = Vec::with_capacity(widths.len());
