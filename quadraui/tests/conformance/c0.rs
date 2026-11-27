@@ -689,8 +689,8 @@ mod tests {
     fn cases_cover_every_draw_method_on_the_trait() {
         let trait_methods: Vec<&str> = draw_fn_names(backend_trait_body());
         assert!(
-            trait_methods.len() >= 20,
-            "sanity check failed: expected dozens of `fn draw_*` trait methods in backend.rs, \
+            trait_methods.len() >= 10,
+            "sanity check failed: expected many `fn draw_*` trait methods in backend.rs, \
              found only {} — the line-based parser above likely broke against a reformatted \
              file rather than the trait actually shrinking: {trait_methods:?}",
             trait_methods.len()

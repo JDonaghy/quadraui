@@ -2620,11 +2620,9 @@ pub struct TreeViewState {
     pub nav: crate::behaviour::nav::TreeNavCore,
     /// The debounced "type to jump" buffer.
     pub typeahead: crate::behaviour::typeahead::Typeahead,
-    /// The row a Shift range-extension grows from.
-    pub anchor: Option<usize>,
-    /// The multi-selection set a Ctrl/Cmd or Shift gesture grew,
-    /// as indices into `TreeView.rows`.
-    pub selected: Vec<usize>,
+    /// The multi-selection a Ctrl/Cmd or Shift gesture grew, as indices
+    /// into `TreeView.rows`, and the row a Shift range extends from.
+    pub selection: crate::types::SelectionCore,
 }
 
 #[cfg(any(
@@ -2680,8 +2678,9 @@ impl TreeView {
             NavOutcome::Unchanged => Handled::Consumed,
             NavOutcome::Selected(path) => {
                 if let Some(idx) = state.nav.selected_row_index(&self.rows) {
-                    state.anchor = Some(idx);
-                    state.selected = vec![idx];
+                    state
+                        .selection
+                        .on_gesture(None, idx, crate::types::SelectionGesture::Replace);
                 }
                 Handled::Event(TreeEvent::SelectionChanged { path })
             }
@@ -2701,8 +2700,9 @@ impl TreeView {
         };
         state.nav.set_selected_path(Some(path.clone()));
         state.nav.scroll_to_visible(idx, layout.viewport_rows);
-        state.anchor = Some(idx);
-        state.selected = vec![idx];
+        state
+            .selection
+            .on_gesture(None, idx, crate::types::SelectionGesture::Replace);
         Handled::Event(TreeEvent::SelectionChanged { path })
     }
 
@@ -2815,29 +2815,20 @@ impl TreeView {
         idx: usize,
         mods: Modifiers,
     ) -> Handled<TreeEvent> {
-        use crate::types::{apply_selection_gesture, SelectionGesture};
+        use crate::types::SelectionGesture;
         let path = self.rows[idx].path.clone();
         let gesture = SelectionGesture::from_modifiers(mods);
         if self.selection_mode == SelectionMode::Multi && gesture != SelectionGesture::Replace {
             let current = state.nav.selected_row_index(&self.rows).unwrap_or(idx);
-            let anchor = *state.anchor.get_or_insert(current);
-            let seed = if state.selected.is_empty() {
-                vec![current]
-            } else {
-                state.selected.clone()
-            };
-            let indices = apply_selection_gesture(&seed, anchor, idx, gesture);
-            if gesture == SelectionGesture::Toggle {
-                state.anchor = Some(idx);
-            }
-            state.selected = indices.clone();
+            let indices = state.selection.on_gesture(Some(current), idx, gesture);
             state.nav.set_selected_path(Some(path));
             return Handled::Event(TreeEvent::SelectionSet {
                 paths: selected_paths_for_indices(&self.rows, &indices),
             });
         }
-        state.anchor = Some(idx);
-        state.selected = vec![idx];
+        state
+            .selection
+            .on_gesture(None, idx, crate::types::SelectionGesture::Replace);
         state.nav.set_selected_path(Some(path.clone()));
         Handled::Event(TreeEvent::RowClicked {
             path,
