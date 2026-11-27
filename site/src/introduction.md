@@ -32,7 +32,7 @@ impl ShellApp for Hello {
     fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
         // The shell already computed where the status bar goes —
         // no viewport arithmetic here. Describe the UI as plain data;
-        // the backend rasterises it natively.
+        // the widget paints itself on whichever backend is running.
         let Some(rect) = layout.status_bar_bounds else { return };
         let bar = StatusBar {
             id: WidgetId::new("status:bar"),
@@ -59,8 +59,8 @@ impl ShellApp for Hello {
     }
 }
 
-fn main() {
-    quadraui::tui::shell_runner::run_with_shell(Hello { keys_pressed: 0 }, Hello::config());
+fn main() -> Result<(), quadraui::RunError> {
+    quadraui::tui::shell_runner::run_with_shell(Hello { keys_pressed: 0 }, Hello::config())
     // quadraui::gtk::shell_runner::run_with_shell(...), quadraui::macos::... or
     // quadraui::win::... for a native window: same `Hello`.
 }
