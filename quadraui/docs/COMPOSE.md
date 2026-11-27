@@ -409,9 +409,12 @@ dialog.
 with a dynamic count. `SidebarSystem` and `TabGroupController` use it for
 their own section and pane cycling.
 
-**Not for app code.** For keyboard focus between widgets, list them in
-`AppLogic::frame_tree`: the runtime cycles Tab through each widget's
-`Interactive::focus` stops and tracks focus in the backend's `FocusTree`.
+**Not for app code.** For keyboard focus between widgets, return them
+from `AppLogic::frame_tree` and list their ids and rects in
+`AppLogic::extra_tab_stops`. A click focuses any `frame_tree` widget with
+an `Interactive::focus` stop; Tab and Shift+Tab cycle only through the
+widgets `extra_tab_stops` names, and reach `AppLogic::handle` unclaimed
+while it returns nothing. Focus is tracked in the backend's `FocusTree`.
 
 **API:** `FocusGroup::new(count)`, `active()`, `set_active(idx)`,
 `count()`, `set_count(count)`, `cycle(delta)`. No events.
@@ -931,10 +934,12 @@ the pointer against every widget painted that way and hands hover and press
 to the widget's paint through `PaintEnv`, so the toolbar tints its hovered
 button with no tracker.
 
-<!-- TODO(0.12 final pass): `TreeHoverTracker` goes in DC1 (#2957),
-`ListHoverTracker` in the residue sweep (#3029), `ToolbarHoverTracker` in the
-collapse (#2977). Once `src/compose/toolbar_hover_tracker.rs` is gone, delete
-this section. -->
+<!-- TODO(0.12 final pass): DC1 (#2957) deletes `TreeHoverTracker` and keeps
+`src/compose/toolbar_hover_tracker.rs` with `ToolbarHoverTracker` (the same
+rule as README.md's compose-table marker). After W9, check whether
+`ListHoverTracker` survived the residue sweep (its in-tree user is
+`gtk/list.rs`), then drop each departed type from this section; keep the
+section while the file exists. -->
 
 **Example:** `examples/tui_sidebar_panel.rs` / `examples/gtk_sidebar_panel.rs`
 (`examples/common/sidebar_panel_app.rs`).

@@ -19,6 +19,8 @@ A widget is one Rust type with one implementation that every backend paints:
   `UiEvent`), using the same `Self::Layout` the paint used. A widget with no
   behaviour uses `non_interactive!(Type)`.
 
+<!-- TODO(0.12 final pass): this paragraph states rule 7's final state; see the
+marker under the rule list. -->
 Backends know no widget. A pixel backend implements `PaintSurface` (fill,
 stroke, text runs and text lines, images, clip); TUI implements `CellSurface`
 (cells, borders, cursor, inline graphics). `Backend` itself carries frame,
@@ -59,8 +61,8 @@ font, input and platform-service methods. A leaf widget lives in
    `tests/hover_channel_{tui,gtk,macos,win}.rs`).
 5. **Behaviour lives in `Interactive`.** `handle` receives events already
    resolved against the widget: `RoutedEvent::Pointer`/`Wheel` carry `local`
-   coordinates (origin at the widget's rect) and the `sub` part under the
-   pointer. Declare tab order with `focus()` (`FocusSpec::None`, `Stop`, or
+   coordinates (origin at the widget's rect), and `Pointer` also carries the
+   `sub` part under the pointer. Declare tab order with `focus()` (`FocusSpec::None`, `Stop`, or
    `Children` for per-row or per-cell stops). Name addressable parts with
    `sub_regions()` (local rects, most specific first) and, where a driver or
    structural test must see a part as a zone, `sub_region_name()`. Reach the
@@ -323,8 +325,10 @@ fn clicking_the_chip_toggles_it() {
 - **Route.** Return the same widgets from `AppLogic::frame_tree` (or derive
   the tree with `ScreenLayout::into_frame_tree`). The runtime hit-tests the
   tree, moves focus, captures the pointer, and calls `handle`; the resulting
-  `UiEvent` reaches `AppLogic::handle`. `AppLogic::extra_tab_stops` makes a
-  widget reachable by Tab before anything has focused it.
+  `UiEvent` reaches `AppLogic::handle`. A click focuses a widget that has an
+  `Interactive::focus` stop. Tab and Shift+Tab cycle only through the
+  widgets whose ids and rects `AppLogic::extra_tab_stops` returns; while it
+  returns nothing, Tab reaches `AppLogic::handle` unclaimed.
 - **Observe.** Every identified widget painted through `draw_dyn` is recorded
   for the frame: `primitive::painted_hit(x, y)` answers which widget and
   sub-part is under a point, and `primitive::painted_sub_center` finds a

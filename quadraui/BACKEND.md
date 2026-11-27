@@ -18,6 +18,16 @@ through the widget contract ([`Primitive`] + [`Interactive`]) onto one paint
 target your backend provides. Adding a widget to quadraui changes no backend;
 adding a backend makes every widget work on it.
 
+<!-- TODO(0.12 final pass): this guide describes the trait as W9 leaves it. On
+develop at 94f45833 `trait Backend` still declares 111 methods: the 66 in §2
+plus 45 legacy widget methods (draw_tree/list/data_table/split/split_tree/chart/
+board/canvas/progress/spinner/scrollbar/message_list/find_replace/…, their
+*_layout twins, list_char_width, scrollbar_reserve, tree_scroll_row_height, …),
+and src/{gtk,macos,win,tui}/ still hold per-widget rasterisers (tree.rs,
+list.rs, data_table.rs, split.rs, chart.rs, board.rs, …). After W9 (#2981 plus
+the residue sweep) confirm both are gone; if any survive, name them here as
+legacy. -->
+
 Audience: you're opening a PR against this repo to add a new render
 backend — a new GPU surface, a webview, a different terminal library, an
 embedded display, the next desktop toolkit — or you want to understand why
@@ -86,10 +96,13 @@ every frame, which is cheap in practice.
 | Native chrome | `install_menu_bar`, `show_context_menu`, `menu_style`, `set_menu_style`, `effective_menu_style`, `begin_window_drag`, `toggle_window_maximize`, `begin_window_resize`, `set_cursor`, `titlebar_control_inset`, `set_caret_shape`, `window`, `tray` |
 | OS services | `services` (a `dyn PlatformServices`: clipboard, dialogs, notifications, URLs, trash, secrets, …), `backend_caps` |
 
-<!-- TODO(0.12 final pass): after W9 (#2981) confirm `trait Backend` has exactly
-the 66 methods tabulated above (`tests/backend_method_ratchet.rs` asserts the
-count by equality) and that no `draw_<widget>`/`<widget>_layout` method remains.
-If a merged PR moved one of these to another seam, update the table. -->
+<!-- TODO(0.12 final pass): the table lists the 66 methods W9 keeps. Today
+`tests/backend_method_ratchet.rs` has BACKEND_METHOD_COUNT_BASELINE = 111; the
+45 not tabulated are the legacy widget methods W9 (#2981 plus the residue sweep)
+deletes. After W9 confirm the baseline is exactly 66, that the trait's methods
+match this table name for name, and that no `draw_<widget>`/`<widget>_layout`
+method remains. If a merged PR moved one of these to another seam, update the
+table. -->
 
 Beyond the trait, an in-tree backend ships:
 
@@ -161,9 +174,13 @@ bare buffer for tests and headless renders.
 
 The native drawing handle (a `ratatui::Frame`, a `cairo::Context`, a
 `CGContextRef`, an `ID2D1RenderTarget`) is only valid inside the toolkit's
-draw callback. Each backend's `enter_frame_scope` stashes it for the
-duration of a closure; `paint_surface()`/`cell_surface()` answer `Some` only
-inside that scope. [`docs/BACKEND.md`](docs/BACKEND.md#1-frame-ownership)
+draw callback. The TUI, GTK and macOS backends stash it for the duration
+of a closure with an inherent `enter_frame_scope` method, and
+`paint_surface()`/`cell_surface()` answer `Some` only inside that scope.
+The Windows backend has no `enter_frame_scope`: `begin_frame`/`end_frame`
+bracket the Direct2D render target with `BeginDraw`/`EndDraw` in its
+`WM_PAINT` handling, and its `paint_surface()` always answers `Some`, with
+each verb degrading on its own while no render target is attached. [`docs/BACKEND.md`](docs/BACKEND.md#1-frame-ownership)
 shows the pattern.
 
 ## 4. The runner's paint sequence
@@ -337,11 +354,16 @@ and then `src/tui/cell_surface.rs`; for pixels, `src/gtk/surface.rs`.
 
 ## 9. Backend-implementer checklist
 
+<!-- TODO(0.12 final pass): until W9 a new backend would also have to implement
+the 45 legacy widget methods (see the marker under §2). After W9 confirm this
+checklist is complete for a backend that implements only the §2 table. -->
+
 ### Paint
 
 - [ ] **Every required `PaintSurface` verb** (or every `CellSurface` verb)
       is implemented, and `paint_surface()`/`cell_surface()` answer `Some`
-      only inside the frame scope.
+      only inside the frame scope, or every verb degrades safely outside
+      it (section 3, *Frame scope*).
 - [ ] **The clip stack nests** and actually clips — `draw_dyn` pushes one
       clip per widget, and a popup paints inside its own.
 - [ ] **`measure_text` agrees with what you paint**, in your native unit,

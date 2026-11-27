@@ -585,7 +585,8 @@ sizes any of them from a cell viewport.
   `apply_dispatch` + `DragState` layer `wait_events` uses — so a scripted
   drag exercises the real selection/drag machinery. E.g. drag over a
   registered text region → `TextSelectionChanged`, then `ctrl_char('c')`
-  → `TextCopied` (see `panel_drag_selects_text_and_ctrl_c_copies_it`).
+  → `TextCopied` (see `shell_runner_path_drag_and_ctrl_c_copies_text` in
+  `tests/tui_example_driver.rs`).
 - **Locating contract widgets.** Text-bearing targets: `find`. Sub-parts
   with no unique text: `primitive::painted_sub_center`. `TuiDriver` also
   offers `tab_center` / `tab_close_center` for a tab bar.

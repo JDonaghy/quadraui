@@ -32,6 +32,12 @@
   no per-widget painter, layout or routing. See the root `README.md`'s
   *Status* section for how far each backend gets today, and
   [`../BACKEND.md`](../BACKEND.md) for what implementing one involves.
+  <!-- TODO(0.12 final pass): after W9 (#2981 plus the residue sweep), confirm
+  src/{tui,gtk,macos,win}/ hold no per-widget file (today: tree.rs, list.rs,
+  data_table.rs, split.rs, split_tree.rs, chart.rs, board.rs, diff_view.rs,
+  pipeline_view.rs, message_list.rs, multi_section_view.rs, progress.rs,
+  spinner.rs, scrollbar.rs and others) and no draw_<widget> method in any
+  backend.rs. If any survive, name them here as legacy. -->
 
 **GTK hosting helpers** in `quadraui/src/gtk/`:
 

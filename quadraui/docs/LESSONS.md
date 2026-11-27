@@ -13,6 +13,10 @@ through `DrawsPrimitives::draw_dyn` or `Surface::Widget`, and routed
 through a `FrameTree`. Backends are platform services and rasterisers;
 they have no per-widget methods.
 
+<!-- TODO(0.12 final pass): after W9 (#2981), confirm `trait Backend` has no
+widget-named draw_*/ *_layout method (backend_method_ratchet baseline 66, 111
+today). -->
+
 ## Paint/click drift is the structural bug class quadraui exists to eliminate
 
 When a widget's paint code computes one set of coordinates and its

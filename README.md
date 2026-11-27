@@ -75,6 +75,10 @@ The full version is `quadraui/examples/hello.rs`:
   `Interactive` (focus, input, popups). The same code paints on all four
   backends; a backend supplies drawing verbs and platform services and
   holds no per-widget code.
+  <!-- TODO(0.12 final pass): true once W5-W9 land. On develop at 94f45833
+  eleven primitive modules have no Primitive impl and paint through legacy
+  Backend methods (split, split_tree, chart, board, canvas, diff_view, pipeline_view, message_list, multi_section_view, find_replace and scroll_view), and the backends
+  still hold their rasterisers. After W9 confirm both. -->
 - **Paint and click share one layout.** A widget's `layout(...)` result
   is what it paints from and what its event handler hit-tests against.
   Mouse clicks cannot drift from what is on screen, because both read the
@@ -195,8 +199,10 @@ Then:
   backend features and a `TuiDriver` test, with no edits needed to build
   and run `--features tui`.
 - Read [`quadraui/docs/GUIDE.md`](quadraui/docs/GUIDE.md) for the app
-  model and [`quadraui/docs/APP_ARCHITECTURE.md`](quadraui/docs/APP_ARCHITECTURE.md)
-  for how a larger app is put together.
+  model, [`quadraui/docs/COMPOSE.md`](quadraui/docs/COMPOSE.md) for the
+  controllers a larger app is assembled from, and the host section of
+  [`quadraui/docs/PRIMITIVE_RULES.md`](quadraui/docs/PRIMITIVE_RULES.md)
+  for how an app paints, routes and tests its widgets.
 - Read [`quadraui/docs/TUI_CONSUMER_TOUR.md`](quadraui/docs/TUI_CONSUMER_TOUR.md)
   for a short code tour of one widget, from descriptor to click.
 - Browse `quadraui/examples/`. Most examples come in `tui_*` / `gtk_*`
@@ -311,6 +317,13 @@ The exceptions are the two shared-math modules `layout_metrics` and
 `row_stack`, which hold arithmetic several widgets reuse rather than a
 widget of their own. Among them:
 
+<!-- TODO(0.12 final pass): the claim above that every module except
+layout_metrics and row_stack implements Primitive and Interactive holds once
+W5 (#2966-#2974, including FindReplace split off F5) and W6 (#2971
+MultiSectionView) land. Today these lack it: split, split_tree, chart, board, canvas, diff_view, pipeline_view, message_list, multi_section_view, find_replace and scroll_view. After W9 re-run
+`git grep -n "Primitive for"` over src/primitives and confirm none is missing;
+recount the modules against readme_truth. -->
+
 - Content: `TreeView`, `ListView`, `IconGrid`, `DataTable`, `TreeTable`,
   `Form`, `Editor`,
   `TextDisplay`, `MessageList`, `DiffView`, `Chart`, `Board`, `Terminal`,
@@ -343,7 +356,7 @@ the table against the module list. -->
 | `AppShell` | Activity bar + sidebar + editor area: the VS Code-style application frame. Owns a `ShellView` widget and its state. |
 | `BottomPanel` | A tabbed, dockable panel along the bottom of an `AppShell`. |
 | `WorkspaceController` | Many open documents, one visible: open, switch, close. |
-| `TabGroup` | Tabbed split panes. |
+| `TabGroupController` | Tabbed split panes. |
 | `MenuSystem` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
 | `ContextMenuController` | One call for a context menu, native or painted per platform. |
 | `SidebarSystem` | Multi-section sidebar: per-section scroll and selection, Tab cycling, scrollbar drag. |
@@ -357,7 +370,7 @@ the table against the module list. -->
 | `FilePickerController` / `FolderPickerController` | In-app file and folder pickers for backends without a native dialog. |
 | `MessageDialogController` | Message and confirmation boxes. |
 | `ToastStackController` | Keyboard focus for actionable notifications. |
-| `FocusRing` / `FocusGroup` | Tab / Shift+Tab focus cycling. |
+| `FocusGroup` | Tab / Shift+Tab cycling between a controller's own regions, by index. |
 | `HelpOverlayController` | A context-sensitive key-binding help overlay. |
 | `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |
 | `HoverTooltipTracker` | When a hover tooltip shows: hover delay, dismiss and auto-dismiss. |

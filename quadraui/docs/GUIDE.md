@@ -45,8 +45,8 @@ building the split ourselves is less code than configuring an
 `AppShell`. Reach for `ShellApp` when you find yourself manually
 reimplementing an activity bar, a collapsible sidebar, or a bottom
 panel with tabs — `AppShell` (what `ShellApp` runs inside) already has
-all of that, and `quadraui/docs/CONSUMER_PATTERNS.md` has recipes for
-wiring your own panels into it.
+all of that, and the `ShellView` / `AppShell` section of
+[`COMPOSE.md`](COMPOSE.md) shows how to fill its panels.
 
 Both traits' methods take a `&mut dyn Backend` — the same trait object
 either way, so switching from `AppLogic` to `ShellApp` later doesn't
@@ -74,14 +74,19 @@ instead.
 ## Step 2: app state
 
 ```rust,ignore
+use std::cell::Cell;
+
 use quadraui::prelude::*;
-use quadraui::DrawsPrimitives; // draw_dyn
+use quadraui::{DrawsPrimitives, FrameTree, TreeEvent}; // draw_dyn
 
 struct TwoPane {
     split: Split,
     files: Vec<&'static str>,
     selected: usize,
     body: String,
+    /// Where `render` last put the file tree, so `frame_tree` can route
+    /// input to the same rectangle.
+    tree_rect: Cell<Rect>,
 }
 
 impl TwoPane {
@@ -97,6 +102,7 @@ impl TwoPane {
             files: vec!["README.md", "src/main.rs", "Cargo.toml"],
             selected: 0,
             body: "Select a file on the left.".into(),
+            tree_rect: Cell::new(Rect::default()),
         }
     }
 
@@ -125,38 +131,9 @@ impl TwoPane {
             has_focus: true,
         }
     }
-}
-```
 
-`Split` only describes geometry — a ratio and two minimum sizes — it
-doesn't hold either pane's content. That's the pattern every quadraui
-container primitive follows: the primitive is the frame, your app draws
-into the rectangles it hands back.
-
-## Step 3: rendering
-
-<!-- TODO(0.12 final pass): after W5 (Split/SplitTree ported) and W9 (#2981
-legacy Backend removal), rewrite this step's render() and handle() so the split
-and tree paint through Surface::Widget / draw_dyn and route through
-AppLogic::frame_tree; draw_split, draw_tree, split_layout and tree_layout are
-on the W9 deletion list. Then check the sample compiles (it is `ignore`
-today). -->
-
-```rust,ignore
-impl AppLogic for TwoPane {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let viewport = backend.viewport();
-        let bounds = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-
-        // Split gives us two rectangles; we're responsible for what
-        // goes in each one.
-        let layout = backend.draw_split(bounds, &self.split);
-
-        backend.draw_tree(layout.first_bounds, &self.tree_view());
-
-        let body = TextDisplay {
+    fn body_view(&self) -> TextDisplay {
+        TextDisplay {
             id: WidgetId::new("body:text"),
             lines: self
                 .body
@@ -173,55 +150,69 @@ impl AppLogic for TwoPane {
             has_focus: false,
             title: None,
             show_scrollbar: false,
-        };
-        backend.draw_dyn(layout.second_bounds, &body, &());
+        }
+    }
+}
+```
+
+The app owns its state; `tree_view` and `body_view` build fresh widget
+descriptions from it every frame. A widget is plain data: the `TreeView`
+holds the rows and which one is selected, and the app changes those
+fields when the tree reports a click.
+
+`Split` only describes geometry, a ratio and two minimum sizes; it holds
+neither pane's content. The app decides what goes in each rectangle the
+split hands back.
+
+## Step 3: rendering and input
+
+<!-- TODO(0.12 final pass): after W5 (#2968 ports Split/SplitTree onto the
+contract) and W9 (#2981 deletes draw_split/split_layout), replace the
+`backend.draw_split` call below with the contract way to get a split's pane
+rects (paint the Split as a widget and read its layout), and compile the
+sample against the release. The tree half already uses the contract. -->
+
+```rust,ignore
+impl AppLogic for TwoPane {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let viewport = backend.viewport();
+        let bounds = Rect::new(0.0, 0.0, viewport.width, viewport.height);
+
+        // Split gives us two rectangles; we decide what goes in each one.
+        let panes = backend.draw_split(bounds, &self.split);
+        self.tree_rect.set(panes.first_bounds);
+
+        backend.draw_dyn(panes.first_bounds, &self.tree_view(), &());
+        backend.draw_dyn(panes.second_bounds, &self.body_view(), &());
     }
 
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        match event {
-            UiEvent::MouseDown { position, .. } => {
-                let viewport = backend.viewport();
-                let bounds = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-                let split_layout = backend.split_layout(bounds, &self.split);
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        // The widgets that take input this frame, at the rects they were
+        // painted at. The runtime hit-tests these, gives the clicked one
+        // keyboard focus and calls its `handle`.
+        let mut tree = FrameTree::new();
+        let files = self.tree_view();
+        tree.push(files.id, self.tree_rect.get(), Box::new(files));
+        tree
+    }
 
-                match split_layout.hit_test(position.x, position.y) {
-                    quadraui::SplitHit::FirstPane(_) => {
-                        // Re-derive which tree row was clicked from the
-                        // same layout the paint pass used — never
-                        // hardcode a row height here. `tree_layout`'s
-                        // row bounds are relative to `first_bounds`'s
-                        // own top-left corner, so add it back to compare
-                        // against `position`, which is in screen space.
-                        let tree = self.tree_view();
-                        let tree_layout =
-                            backend.tree_layout(split_layout.first_bounds, &tree);
-                        let origin_y = split_layout.first_bounds.y;
-                        let hit_row = tree_layout.visible_rows.iter().find(|row| {
-                            let top = origin_y + row.bounds.y;
-                            position.y >= top && position.y < top + row.bounds.height
-                        });
-                        if let Some(row) = hit_row {
-                            self.selected = row.row_idx;
-                            self.body = format!("You picked: {}", self.files[self.selected]);
-                            return Reaction::Redraw;
-                        }
-                        Reaction::Continue
-                    }
-                    _ => Reaction::Continue,
-                }
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        match event {
+            // The tree reports what happened to it as a `TreeEvent`: a
+            // click on a row, or the arrow keys moving the selection once
+            // the tree has focus.
+            UiEvent::Tree(_, TreeEvent::RowClicked { path, .. })
+            | UiEvent::Tree(_, TreeEvent::SelectionChanged { path }) => {
+                self.selected = usize::from(path[0]);
+                self.body = format!("You picked: {}", self.files[self.selected]);
+                Reaction::Redraw
             }
-            UiEvent::KeyPressed { key, .. } => match key {
-                Key::Named(NamedKey::Escape) | Key::Char('q') => Reaction::Exit,
-                Key::Named(NamedKey::Down) if self.selected + 1 < self.files.len() => {
-                    self.selected += 1;
-                    Reaction::Redraw
-                }
-                Key::Named(NamedKey::Up) if self.selected > 0 => {
-                    self.selected -= 1;
-                    Reaction::Redraw
-                }
-                _ => Reaction::Continue,
-            },
+            UiEvent::KeyPressed {
+                key: Key::Named(NamedKey::Escape),
+                ..
+            } => Reaction::Exit,
             UiEvent::WindowResized { .. } => Reaction::Redraw,
             _ => Reaction::Continue,
         }
@@ -229,15 +220,22 @@ impl AppLogic for TwoPane {
 }
 ```
 
-Two things worth calling out:
+Three things worth calling out:
 
-- **Click routing goes through the same layout paint used**
-  (`backend.split_layout` / `backend.tree_layout`), never a hand-computed
-  coordinate. This is the whole point of the primitive/layout split —
-  paint and click can never drift apart because they're the same
-  computation.
+- **The app never hit-tests the tree.** `TreeView` implements
+  `Interactive`: the runtime finds which row is under the pointer from the
+  same layout the tree painted with, so a click cannot land on a row other
+  than the one on screen. The app only applies the `TreeEvent` it gets
+  back.
+- **The tree takes focus when clicked.** After that the arrow keys, Home,
+  End and typeahead move its selection, and each move arrives as
+  `TreeEvent::SelectionChanged`. Keys the tree does not use, such as
+  Escape, still reach `handle` as `UiEvent::KeyPressed`. To make the tree
+  reachable with Tab, return its id and rect from
+  `AppLogic::extra_tab_stops`.
 - **`render` takes `&self`, `handle` takes `&mut self`.** State changes
-  happen in `handle`; `render` only reads.
+  happen in `handle`; `render` only reads, which is why the tree's rect is
+  kept in a `Cell`.
 
 ## Step 4: running it
 
@@ -248,8 +246,8 @@ fn main() -> Result<(), quadraui::RunError> {
 ```
 
 `cargo run --features tui` and you should see a two-pane terminal app:
-a file list on the left, a message pane on the right. Click a filename
-or use the arrow keys; `q` or Esc quits.
+a file list on the left, a message pane on the right. Click a filename,
+then use the arrow keys; Esc quits.
 
 ## Step 5: testing it
 
@@ -282,12 +280,15 @@ conformance) once your app grows past one screen.
 
 ## Where to go next
 
-- **More primitives**: `quadraui::primitives` has 40 of them; the crate
-  root doc (`quadraui/src/lib.rs`) has a representative table, and every
-  module has its own doc comment describing its backend contract.
+- **More widgets**: the root README's *What's in the box* introduces the
+  widgets in `quadraui::primitives`, and each module's doc comment
+  describes the widget, its layout and the events it emits.
+  [`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md) covers writing your own
+  widget and how a host paints, routes and tests one.
 - **`AppShell` / `ShellApp`**: if your app grows an activity bar, a
-  resizable sidebar, or tabs, revisit Step 0 — `quadraui/docs/
-  CONSUMER_PATTERNS.md` has recipes for wiring panels into `AppShell`.
+  resizable sidebar, or tabs, revisit Step 0. [`COMPOSE.md`](COMPOSE.md)
+  documents `AppShell` and the other controllers that coordinate several
+  widgets.
 - **A second backend**: everything above is TUI-specific only in
   `main()`. Swap `quadraui::tui::run` for `quadraui::gtk::run` (behind
   the `gtk` feature) and the exact same `AppLogic` impl draws with
@@ -302,4 +303,4 @@ conformance) once your app grows past one screen.
 [`AppLogic`]: ../src/runner.rs
 [`ShellApp`]: ../src/shell.rs
 [`quadraui::tui::testing::TuiDriver`]: ../src/tui/testing.rs
-[`quadraui::testing::RecordingBackend`]: ../src/testing.rs
+[`quadraui::testing::RecordingBackend`]: ../src/testing/mod.rs

@@ -29,6 +29,10 @@ A **widget** is one Rust type with three parts:
    `RoutedEvent` (`handle`), what it remembers between events (`State`),
    and which popups it has open (`popups`).
 
+<!-- TODO(0.12 final pass): after W9 (#2981), confirm src/tui/ holds no
+per-widget file and TuiBackend no draw_<widget> method (today: tui/tree.rs,
+tui/list.rs, tui/data_table.rs, tui/split.rs and others, plus the legacy
+Backend widget methods). -->
 Backends hold no widget code. The TUI backend hands a widget a
 `CellSurface` (a cell grid with glyph, style, border and cursor verbs);
 the pixel backends hand it a `PaintSurface` (fill, stroke, text and image
@@ -101,7 +105,12 @@ shell computed, and calls `frame.draw(backend)`.
 
 An app that wants the resolved layout back (to hit-test something itself)
 can call `backend.draw_dyn(rect, &widget, &())` directly; it returns the
-layout it painted. The third argument is a `PaintState`: `&()` paints
+layout it painted as a `Box<dyn PrimitiveLayout>`. Recover the concrete
+type with `layout.downcast_ref::<MyLayout>()`, not `layout.as_any()`: the
+`as_any` call resolves on the `Box` itself and the downcast then fails
+silently. With the concrete widget type in hand,
+`backend.layout_primitive(rect, &widget)` returns the typed layout
+without painting. The third argument is a `PaintState`: `&()` paints
 with the live pointer state, and an explicit `InteractionState` pins
 hover and press, which is how a test paints a hovered widget without a
 mouse.

@@ -139,6 +139,7 @@ work but is not checked.
 ## Next
 
 - [`GUIDE.md`](GUIDE.md): your first app, from `cargo new` to something you can click.
-- [`APP_ARCHITECTURE.md`](APP_ARCHITECTURE.md): how a larger app is put together.
+- [`COMPOSE.md`](COMPOSE.md): the controllers a larger app is assembled from.
+- [`PRIMITIVE_RULES.md`](PRIMITIVE_RULES.md): writing a widget, and how an app paints, routes and tests one.
 - [`decisions/DECISIONS.md`](decisions/DECISIONS.md) D-019: what may change between releases
   before 1.0.
