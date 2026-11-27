@@ -116,6 +116,16 @@ pub fn demo_zone_id(index: usize) -> WidgetId {
     WidgetId::new(format!("gallery:demo:{index}"))
 }
 
+/// The zone id the variant picker registers for column `index` of the
+/// selected demo's `variants()`, covering that column's whole painted
+/// bounds — public so a capture helper (e.g. `capture.rs`'s
+/// `click_variant_zone`) can select a variant by position rather than by
+/// its painted name, which the picker's equal-width columns ellipsise
+/// once a name outgrows its column.
+pub fn variant_zone_id(index: usize) -> WidgetId {
+    WidgetId::new(format!("gallery:variant-column:{index}"))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MainTab {
     Demo,
@@ -1013,16 +1023,14 @@ fn draw_variant_picker(backend: &mut dyn Backend, rect: Rect, variants: &[&str],
             }],
             right_segments: vec![],
         };
-        backend.draw_dyn(
-            Rect::new(
-                rect.x + i as f32 * col_width,
-                rect.y,
-                col_width,
-                rect.height,
-            ),
-            &bar,
-            &(),
+        let col_rect = Rect::new(
+            rect.x + i as f32 * col_width,
+            rect.y,
+            col_width,
+            rect.height,
         );
+        backend.draw_dyn(col_rect, &bar, &());
+        backend.register_zone(variant_zone_id(i), col_rect);
     }
 }
 
