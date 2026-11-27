@@ -459,7 +459,7 @@ macos = [
 # so it pairs with any backend feature or none at all; see
 # `src/flex.rs`'s module doc for the design.
 #
-# `AppShell`'s chrome-band carve, `Form`'s field stacking, and `Toolbar`'s
+# `ShellView`'s chrome-band carve, `Form`'s field stacking, and `Toolbar`'s
 # item packing each delegate their 1D position arithmetic through
 # `crate::flex::pack_1d` when this feature is enabled, and fall
 # back to the identical hand-rolled arithmetic when it is not — verified
@@ -2050,7 +2050,7 @@ path = "examples/tui_canvas_regions.rs"
 required-features = ["tui"]
 
 # #596 — `WorkspaceController` (open-N-view-one document tabs) mounted
-# inside an `AppShell` panel. Both entries are mandatory (see #595's note
+# inside a `ShellView` panel. Both entries are mandatory (see #595's note
 # above): without an explicit `[[example]]`, `gtk_workspace.rs` gets
 # autodiscovered with no `required-features` and fails
 # `cargo test --features tui` on `quadraui::gtk` being configured out.

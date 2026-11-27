@@ -1,4 +1,4 @@
-//! Shared [`ShellAdapter`] that wraps a [`ShellApp`] in an [`AppShell`]
+//! Shared [`ShellAdapter`] that wraps a [`ShellApp`] in a [`ShellView`]
 //! and implements [`AppLogic`] against it.
 //!
 //! Both the TUI and GTK shell runners instantiate this struct and pass it to
@@ -12,16 +12,20 @@
 
 use std::cell::RefCell;
 
-use crate::compose::app_shell::{AppShell, AppShellEvent, AppShellLayout};
-use crate::compose::bottom_panel::{BottomPanelController, BottomPanelEvent};
+use crate::compose::app_shell::{ShellEvent, ShellLayout, ShellView, ShellViewState};
+use crate::compose::bottom_panel::{
+    BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelPrimitiveLayout, BottomPanelState,
+    BottomPanelTab,
+};
+use crate::compose::Handled;
 use crate::event::{Point, Rect};
 use crate::runner::{AppLogic, Reaction};
 use crate::shell::{ShellApp, ShellConfig, ShellContext};
 use crate::types::WidgetId;
 use crate::{ActivityBarEvent, Backend, MouseButton, PointerShape, ResizeEdge, UiEvent};
 
-/// Adapts a [`ShellApp`] into an [`AppLogic`] by composing it with an
-/// [`AppShell`] and an optional [`BottomPanelController`].
+/// Adapts a [`ShellApp`] into an [`AppLogic`] by composing it with a
+/// [`ShellView`] and an optional [`DockedBottomPanel`].
 ///
 /// The struct and its fields are `pub(crate)` so only the in-crate shell
 /// runners can construct it. Downstream consumers drive the shell through
@@ -30,13 +34,15 @@ use crate::{ActivityBarEvent, Backend, MouseButton, PointerShape, ResizeEdge, Ui
 /// they never touch the adapter directly.
 pub(crate) struct ShellAdapter<A: ShellApp> {
     pub(crate) app: A,
-    pub(crate) shell: AppShell,
-    pub(crate) _last_layout: Option<AppShellLayout>,
+    pub(crate) shell: ShellView,
+    /// The shell's gesture state: a divider drag and the activity bar's
+    /// hover.
+    pub(crate) shell_state: ShellViewState,
     pub(crate) active_panel_id: Option<WidgetId>,
-    /// Optional bottom-panel controller. Present when `ShellConfig.bottom_panel`
-    /// was `Some`. Wrapped in `RefCell` because `render(&self)` must mutate it
-    /// to cache hit regions and render tab content.
-    pub(crate) bottom_panel: Option<RefCell<BottomPanelController>>,
+    /// The tabbed bottom panel. Present when `ShellConfig.bottom_panel`
+    /// was `Some`. Wrapped in `RefCell` because `render(&self)` records the
+    /// layout it painted, which clicks resolve against.
+    pub(crate) bottom_panel: Option<RefCell<DockedBottomPanel>>,
     /// Editor font override from `ShellConfig::with_editor_font`
     /// (family, size_pt), applied once in `setup()` via
     /// `Backend::set_editor_font`. `None` leaves the backend's own
@@ -50,15 +56,15 @@ impl<A: ShellApp> ShellAdapter<A> {
     /// `run_with_shell` rather than building an adapter directly.
     pub(crate) fn new(
         app: A,
-        shell: AppShell,
+        shell: ShellView,
         active_panel_id: Option<WidgetId>,
-        bottom_panel: Option<RefCell<BottomPanelController>>,
+        bottom_panel: Option<RefCell<DockedBottomPanel>>,
         editor_font: Option<(String, f32)>,
     ) -> Self {
         Self {
             app,
             shell,
-            _last_layout: None,
+            shell_state: ShellViewState::default(),
             active_panel_id,
             bottom_panel,
             editor_font,
@@ -66,7 +72,7 @@ impl<A: ShellApp> ShellAdapter<A> {
     }
 
     /// Apply a pending [`ShellApp::take_requested_panel`] switch, if any.
-    /// Updates the underlying `AppShell`'s active panel (ActivityBar
+    /// Updates the underlying `ShellView`'s active panel (ActivityBar
     /// highlight + sidebar header), mirrors it into `active_panel_id`, and
     /// re-notifies the app via `on_shell_event_ctx` — the same notification a
     /// mouse-driven switch produces. Returns `true` iff a switch was
@@ -77,13 +83,13 @@ impl<A: ShellApp> ShellAdapter<A> {
         };
         self.shell.show_panel(&panel_id);
         self.active_panel_id = Some(panel_id);
-        self.notify_shell_event(backend, area, &AppShellEvent::PanelChanged { panel_id });
+        self.notify_shell_event(backend, area, &ShellEvent::PanelChanged { panel_id });
         true
     }
 
     /// Build a [`ShellContext`] for the current dispatch and notify
     /// [`ShellApp::on_shell_event_ctx`] with it, then return
-    /// `Reaction::Redraw` — the shape every `AppShellEvent` arm in
+    /// `Reaction::Redraw` — the shape every `ShellEvent` arm in
     /// [`Self::handle`] needs.
     ///
     /// Built fresh per call (rather than once before the caller's match)
@@ -96,15 +102,18 @@ impl<A: ShellApp> ShellAdapter<A> {
         &mut self,
         backend: &mut dyn Backend,
         area: Rect,
-        ev: &AppShellEvent,
+        ev: &ShellEvent,
     ) -> Reaction {
         let layout = self.shell.layout_for(backend, area);
         let sidebar_visible = self.shell.sidebar_visible();
+        let bands = self.shell.bottom_band_bounds_for(backend, area);
         let ctx = ShellContext::new(
             self.active_panel_id.as_ref(),
             sidebar_visible,
             &layout,
             &mut self.shell,
+            bands,
+            self.shell_state.activity.hovered_idx,
         );
         self.app.on_shell_event_ctx(ev, &ctx);
         Reaction::Redraw
@@ -143,7 +152,7 @@ impl<A: ShellApp> ShellAdapter<A> {
     }
 }
 
-/// Assemble the [`AppShell`] + [`ShellAdapter`] stack for a [`ShellApp`].
+/// Assemble the [`ShellView`] + [`ShellAdapter`] stack for a [`ShellApp`].
 ///
 /// This is the single source of truth for shell construction across every
 /// backend — the live runners ([`crate::tui::shell_runner::run_with_shell`],
@@ -159,7 +168,7 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     config: ShellConfig,
 ) -> ShellAdapter<A> {
     let editor_font = config.editor_font.clone();
-    let mut shell = AppShell::new(config.panels, config.default_sidebar_width)
+    let mut shell = ShellView::new(config.panels, config.default_sidebar_width)
         .with_bottom_items(config.bottom_items)
         .with_min_width(config.min_sidebar_width)
         .with_max_width(config.max_sidebar_width)
@@ -168,10 +177,10 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
         .with_bottom_bands(config.bottom_bands);
 
     // Replay every `ShellConfig::with_panel_icon` override onto the
-    // built `AppShell`. `AppShell::with_panel_icon` is a consuming
-    // `mut self -> Self` builder, and this is the only place an `AppShell`
+    // built `ShellView`. `ShellView::with_panel_icon` is a consuming
+    // `mut self -> Self` builder, and this is the only place a `ShellView`
     // is constructed from a `ShellConfig`. Covers both `config.panels` and
-    // `config.bottom_items` — `AppShell::with_panel_icon` does not
+    // `config.bottom_items` — `ShellView::with_panel_icon` does not
     // distinguish the two.
     for (id, icon) in config.panel_icons {
         shell = shell.with_panel_icon(id, icon);
@@ -185,7 +194,7 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     }
 
     // Fixed-pixel override wins over the line-height multiple set just
-    // above — see `AppShell::with_activity_bar_width_px`.
+    // above — see `ShellView::with_activity_bar_width_px`.
     if let Some(width_px) = config.activity_bar_width_px {
         shell = shell.with_activity_bar_width_px(width_px);
     }
@@ -195,7 +204,7 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     // (as before) silently discarded `title_bar_height_lh` whenever the
     // bar started hidden — exactly the case where it matters later: a
     // consumer that reveals the bar at runtime via `set_title_bar_visible`
-    // got the `AppShell` struct default (1.5 line-heights) instead of the
+    // got the `ShellView` struct default (1.5 line-heights) instead of the
     // height it configured.
     shell = shell.with_title_bar(config.title_bar_height_lh);
     if let Some(min_px) = config.title_bar_min_px {
@@ -203,16 +212,16 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
     }
     shell.set_title_bar_visible(config.has_title_bar);
 
-    // Seed initial sidebar visibility before the first render. `AppShell`
+    // Seed initial sidebar visibility before the first render. `ShellView`
     // has no `show_sidebar()`/`set_sidebar_visible()` setter — only
-    // `hide_sidebar()`/`toggle_sidebar()` — but `AppShell::new` already
+    // `hide_sidebar()`/`toggle_sidebar()` — but `ShellView::new` already
     // starts visible, so hiding is the only transition this needs.
     if !config.sidebar_visible {
         shell.hide_sidebar();
     }
 
     // Bottom panel does NOT share this defect, despite the parallel shape:
-    // `AppShell` has no runtime setter that flips `has_bottom_panel` alone
+    // `ShellView` has no runtime setter that flips `has_bottom_panel` alone
     // the way `set_title_bar_visible` flips `has_title_bar`. The only way
     // to enable it is `with_bottom_panel(height)`, which sets the flag and
     // height together — `show_bottom_panel`/`hide_bottom_panel`/
@@ -249,7 +258,7 @@ pub(crate) fn build_shell_adapter<A: ShellApp + 'static>(
         shell = shell
             .with_bottom_panel(10.0)
             .with_bottom_panel_limits(3.0, 40.0);
-        Some(RefCell::new(BottomPanelController::new(bp_config)))
+        Some(RefCell::new(DockedBottomPanel::new(bp_config)))
     } else {
         None
     };
@@ -283,7 +292,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         self.app.setup(backend);
 
         // Give the app a second, `ShellContext`-equipped chance to
-        // reconcile the real `AppShell` before the first `render()` paints.
+        // reconcile the real `ShellView` before the first `render()` paints.
         // `self.app.setup` above only received a `Backend` — no shell
         // access — so any decision depending on live backend/startup
         // state (not just the static `ShellConfig` seed already applied
@@ -293,11 +302,14 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
         let layout = self.shell.layout_for(backend, area);
         let sidebar_visible = self.shell.sidebar_visible();
+        let bands = self.shell.bottom_band_bounds_for(backend, area);
         let ctx = ShellContext::new(
             self.active_panel_id.as_ref(),
             sidebar_visible,
             &layout,
             &mut self.shell,
+            bands,
+            self.shell_state.activity.hovered_idx,
         );
         self.app.setup_shell(&ctx);
     }
@@ -306,10 +318,10 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         self.app.pre_render(backend);
         let viewport = backend.viewport();
         let area = Rect::new(0.0, 0.0, viewport.width, viewport.height);
-        let layout = self.shell.render(backend, area);
+        let layout = self.shell.render(&self.shell_state, backend, area);
 
         if let Some(ref ctrl_cell) = self.bottom_panel {
-            let maximised = ctrl_cell.borrow().maximised;
+            let maximised = ctrl_cell.borrow().panel.maximised;
 
             if maximised {
                 // Expand panel to cover main content area too.
@@ -319,7 +331,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 ctrl_cell.borrow_mut().render(backend, full_panel);
 
                 // Pass a layout with zeroed main area so app skips rendering it.
-                let maximised_layout = AppShellLayout {
+                let maximised_layout = ShellLayout {
                     main_content_bounds: Rect::new(
                         main.x,
                         main.y + main.height + bp_h,
@@ -343,7 +355,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         // Independently-gated bottom bands render after main content,
         // in bottom-up stacking order. No-op for apps that never called
         // `ShellConfig::with_bottom_bands` (empty by default).
-        for (id, bounds) in self.shell.bottom_band_bounds() {
+        for (id, bounds) in self.shell.bottom_band_bounds_for(backend, area) {
             self.app.render_bottom_band(backend, &id, bounds);
         }
     }
@@ -364,7 +376,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
 
         // An app-level modal (MenuSystem dropdown, Palette, Dialog, ...) can
         // visually overlap shell chrome (activity bar, sidebar, dividers,
-        // bottom-panel grip). `AppShell::handle` below — and the
+        // bottom-panel grip). `ShellView::handle_event` below — and the
         // bottom-panel tab-strip click check further down — both hit-test
         // purely on screen position, so an open modal that overlaps chrome
         // would otherwise have its `MouseDown` / `MouseUp` silently
@@ -385,17 +397,22 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             if modal_hit {
                 let layout = self.shell.layout_for(backend, area);
                 let sidebar_visible = self.shell.sidebar_visible();
+                let bands = self.shell.bottom_band_bounds_for(backend, area);
                 let ctx = ShellContext::new(
                     self.active_panel_id.as_ref(),
                     sidebar_visible,
                     &layout,
                     &mut self.shell,
+                    bands,
+                    self.shell_state.activity.hovered_idx,
                 );
                 return self.app.handle(event, backend, &ctx);
             }
         }
 
-        let shell_ev = self.shell.handle(&event, backend, area);
+        let shell_ev = self
+            .shell
+            .handle_event(&mut self.shell_state, &event, backend, area);
 
         // The sidebar/main-content resize divider gets the OS resize
         // cursor while the pointer hovers or drags it — mirrors VS Code's
@@ -419,7 +436,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         // `gdk_surface_set_cursor` call) for every ordinary hover move.
         let mut divider_active = false;
         if let UiEvent::MouseMoved { position, .. } = &event {
-            let dragging = matches!(shell_ev, AppShellEvent::SidebarResized { .. });
+            let dragging = matches!(shell_ev, ShellEvent::SidebarResized { .. });
             divider_active = self.divider_resize_cursor_active(backend, area, *position, dragging);
             if dragging {
                 backend.set_cursor(PointerShape::Resize(ResizeEdge::East));
@@ -427,17 +444,17 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
         }
 
         match &shell_ev {
-            AppShellEvent::PanelChanged { panel_id } => {
+            ShellEvent::PanelChanged { panel_id } => {
                 self.active_panel_id = Some(*panel_id);
                 return self.notify_shell_event(backend, area, &shell_ev);
             }
-            AppShellEvent::SidebarHidden => {
+            ShellEvent::SidebarHidden => {
                 return self.notify_shell_event(backend, area, &shell_ev);
             }
-            AppShellEvent::SidebarResized { .. } => {
+            ShellEvent::SidebarResized { .. } => {
                 return self.notify_shell_event(backend, area, &shell_ev);
             }
-            AppShellEvent::BottomPanelResized { new_height } => {
+            ShellEvent::BottomPanelResized { new_height } => {
                 // Forward as BottomPanelEvent::Resized to app when a controller is present.
                 // Also update `height_fraction` so a subsequent WindowResized doesn't snap
                 // the panel back to its initial proportion: the drag is the new intent.
@@ -449,34 +466,34 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 }
                 return self.notify_shell_event(backend, area, &shell_ev);
             }
-            AppShellEvent::BottomPanelHidden => {
+            ShellEvent::BottomPanelHidden => {
                 return self.notify_shell_event(backend, area, &shell_ev);
             }
-            AppShellEvent::BottomItemClicked { .. } => {
+            ShellEvent::BottomItemClicked { .. } => {
                 return self.notify_shell_event(backend, area, &shell_ev);
             }
-            AppShellEvent::Consumed | AppShellEvent::ActivityCursorMoved { .. } => {
+            ShellEvent::Consumed | ShellEvent::ActivityCursorMoved { .. } => {
                 return Reaction::Redraw
             }
-            AppShellEvent::Ignored => {}
+            ShellEvent::Ignored => {}
         }
 
         // ── Built-in activity-bar keyboard navigation ─────────────────────
         //
-        // `AppShell::build_activity_bar()` (compose/app_shell.rs) already
+        // `ShellView::build_activity_bar()` (compose/app_shell.rs) already
         // implements the full keyboard-cursor API (select_next/prev,
         // activate_selected, ...) and the backends already translate a
         // `KeyPressed` into `UiEvent::ActivityBar(id, KeyPressed { key, .. })`
         // once `activity_keyboard_focused()` is true — see
         // `TuiBackend::apply_dispatch`. But `ShellApp` consumers had no path
         // to reach any of it (the raw `AppLogic` pattern in
-        // `examples/common/shell_app.rs` owns `AppShell` directly and wires
+        // `examples/common/shell_app.rs` owns `ShellView` directly and wires
         // this itself). Mirror that pattern here, once, for every `ShellApp`
         // consumer: intercept the synthesized `ActivityBar` event before it
         // would otherwise reach `ShellApp::handle` (which never sees this
         // event type — there is nothing for a consumer to opt into or
-        // conflict with) and drive `AppShell` directly. Resulting
-        // `AppShellEvent`s are reported through the existing
+        // conflict with) and drive `ShellView` directly. Resulting
+        // `ShellEvent`s are reported through the existing
         // `on_shell_event_ctx` notification, exactly like a mouse-driven panel
         // switch.
         if let UiEvent::ActivityBar(_, ActivityBarEvent::KeyPressed { ref key, .. }) = event {
@@ -492,7 +509,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 "l" | "Enter" | " " | "Space" => {
                     if let Some(ev) = self.shell.activity_activate_selected() {
                         self.shell.set_activity_keyboard_focused(false);
-                        if let AppShellEvent::PanelChanged { ref panel_id } = ev {
+                        if let ShellEvent::PanelChanged { ref panel_id } = ev {
                             self.active_panel_id = Some(*panel_id);
                         }
                         self.notify_shell_event(backend, area, &ev);
@@ -515,14 +532,11 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
                 ..
             } = &event
             {
-                let bp_ev = ctrl_cell
-                    .borrow_mut()
-                    .handle_click_event(position.x, position.y)
-                    .into_event();
+                let bp_ev = ctrl_cell.borrow_mut().click(*position).into_event();
                 if let Some(bp_ev) = bp_ev {
                     // Auto-hide the panel once its last tab is closed.
                     if matches!(bp_ev, BottomPanelEvent::TabClosed(_))
-                        && ctrl_cell.borrow().tabs().is_empty()
+                        && ctrl_cell.borrow().panel.tabs.is_empty()
                     {
                         self.shell.hide_bottom_panel();
                     }
@@ -534,11 +548,14 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
 
         let layout = self.shell.layout_for(backend, area);
         let sidebar_visible = self.shell.sidebar_visible();
+        let bands = self.shell.bottom_band_bounds_for(backend, area);
         let ctx = ShellContext::new(
             self.active_panel_id.as_ref(),
             sidebar_visible,
             &layout,
             &mut self.shell,
+            bands,
+            self.shell_state.activity.hovered_idx,
         );
         let mut reaction = self.app.handle(event, backend, &ctx);
 
@@ -589,11 +606,74 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
     }
 }
 
+/// The tabbed bottom panel a [`ShellAdapter`] docks under the main column:
+/// the [`BottomPanel`] descriptor and its state, each tab's content, and
+/// the layout the last frame painted, which clicks resolve against.
+pub(crate) struct DockedBottomPanel {
+    /// The panel descriptor the strip paints from.
+    pub(crate) panel: BottomPanel,
+    state: BottomPanelState,
+    /// Every configured tab, whose content paints when it is active.
+    contents: Vec<BottomPanelTab>,
+    /// Panel height as a fraction of the viewport, for viewport-resize
+    /// recalculation.
+    pub(crate) height_fraction: f32,
+    last_layout: Option<BottomPanelPrimitiveLayout>,
+}
+
+impl DockedBottomPanel {
+    pub(crate) fn new(config: BottomPanelConfig) -> Self {
+        Self {
+            panel: BottomPanel::from_config(&config),
+            state: BottomPanelState::default(),
+            height_fraction: config.height_fraction,
+            contents: config.tabs,
+            last_layout: None,
+        }
+    }
+
+    /// Paint the strip through the widget contract into `bounds`, then the
+    /// active tab's content into the area below it.
+    fn render(&mut self, backend: &mut dyn Backend, bounds: Rect) {
+        let painted = crate::DrawsPrimitives::draw_dyn(backend, bounds, &self.panel, &())
+            .downcast_ref::<BottomPanelPrimitiveLayout>()
+            .cloned();
+        let Some(painted) = painted else {
+            self.last_layout = None;
+            return;
+        };
+        let content = painted.content_bounds;
+        self.last_layout = Some(painted);
+        if content.width > 0.0 && content.height > 0.0 {
+            if let Some(tab) = self
+                .contents
+                .iter()
+                .find(|t| t.id == self.panel.active_tab_id)
+            {
+                tab.content.render(backend, content);
+            }
+        }
+    }
+
+    /// Resolve a left click at `position` against the last painted strip
+    /// and apply what it asks for.
+    fn click(&mut self, position: Point) -> Handled<BottomPanelEvent> {
+        let Some(layout) = self.last_layout.as_ref() else {
+            return Handled::Ignored;
+        };
+        let outcome = self.panel.click(&mut self.state, layout, position);
+        if let Handled::Event(event) = &outcome {
+            self.panel.apply(event);
+        }
+        outcome
+    }
+}
+
 /// Extract the screen position from a `MouseDown` / `MouseUp` event, or
 /// `None` for any other event variant.
 ///
 /// Used to consult the backend's [`crate::modal_stack::ModalStack`] before
-/// letting shell chrome (`AppShell::handle`) hit-test the same position.
+/// letting shell chrome (`ShellView::handle_event`) hit-test the same position.
 fn mouse_event_position(event: &UiEvent) -> Option<Point> {
     match event {
         UiEvent::MouseDown { position, .. } => Some(*position),
@@ -605,7 +685,7 @@ fn mouse_event_position(event: &UiEvent) -> Option<Point> {
 /// Recover the bottom-panel `height_fraction` after a drag-resize.
 ///
 /// `new_height` arrives in the backend's native units (cells for TUI, pixels
-/// for GTK) from `AppShellEvent::BottomPanelResized`; `viewport_height` is
+/// for GTK) from `ShellEvent::BottomPanelResized`; `viewport_height` is
 /// in the same native units (from `Backend::viewport()`). Dividing yields the
 /// proportion of the viewport the panel now occupies, clamped to `[0, 1]`.
 ///
@@ -620,12 +700,12 @@ fn resized_to_fraction(new_height: f32, viewport_height: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::compose::app_shell::{AppShellLayout, PanelDefinition};
+    use crate::compose::app_shell::{PanelDefinition, ShellLayout};
 
     struct NoopApp;
 
     impl ShellApp for NoopApp {
-        fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+        fn render_content(&self, _backend: &mut dyn Backend, _layout: &ShellLayout) {}
 
         fn handle(
             &mut self,
@@ -651,11 +731,13 @@ mod tests {
         assert!(!adapter.shell.title_bar_visible());
 
         adapter.shell.set_title_bar_visible(true);
-        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        let layout = adapter
+            .shell
+            .shell_layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
         let tb = layout.title_bar_bounds.expect("row now reserved");
         assert_eq!(
             tb.height, 1.0,
-            "configured height (1.0 lh) must be honoured, not the 1.5 lh AppShell default"
+            "configured height (1.0 lh) must be honoured, not the 1.5 lh ShellView default"
         );
     }
 
@@ -670,7 +752,9 @@ mod tests {
         let adapter = build_shell_adapter(NoopApp, config);
         assert!(adapter.shell.title_bar_visible());
 
-        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        let layout = adapter
+            .shell
+            .shell_layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
         let tb = layout
             .title_bar_bounds
             .expect("row reserved from construction");
@@ -678,7 +762,7 @@ mod tests {
     }
 
     /// A `ShellConfig` seeded sidebar-hidden must reach the built
-    /// `AppShell` before the first render — no visible→hidden flicker.
+    /// `ShellView` before the first render — no visible→hidden flicker.
     #[test]
     fn sidebar_visible_seeds_hidden_on_first_render() {
         let config = ShellConfig::new(
@@ -695,7 +779,9 @@ mod tests {
         let adapter = build_shell_adapter(NoopApp, config);
         assert!(!adapter.shell.sidebar_visible());
 
-        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        let layout = adapter
+            .shell
+            .shell_layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
         assert!(
             layout.sidebar_content_bounds.is_none(),
             "first render must honour the seeded hidden state, not briefly show the sidebar"
@@ -719,7 +805,9 @@ mod tests {
         let adapter = build_shell_adapter(NoopApp, config);
         assert!(adapter.shell.sidebar_visible());
 
-        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        let layout = adapter
+            .shell
+            .shell_layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
         assert!(layout.sidebar_content_bounds.is_some());
     }
 
@@ -828,7 +916,7 @@ mod tests {
     }
 
     /// Covers the other apply site: a `MouseMoved` that arrives mid-drag
-    /// (`AppShellEvent::SidebarResized`) returns early via
+    /// (`ShellEvent::SidebarResized`) returns early via
     /// `notify_shell_event`, never reaching `self.app.handle` — so the
     /// resize cursor must come from the pre-`app.handle` apply site, not
     /// the post-`app.handle` one, and must be applied exactly once.
@@ -853,12 +941,13 @@ mod tests {
             .expect("sidebar visible with one panel lays out a divider");
         let on_divider = Point::new(divider.x + divider.width / 2.0, divider.y + 1.0);
 
-        // Arm the drag directly against `AppShell::handle` — not through
+        // Arm the drag directly against `ShellView::handle_event` — not through
         // `ShellAdapter::handle` — because the divider drag is
-        // `AppShell`'s own state machine, and `AppShell::handle` reaches
+        // `ShellView`'s own state machine, and `ShellView::handle_event` reaches
         // the same `drag_offset` arming `ShellAdapter::handle` would,
         // without the adapter's surrounding modal/drag plumbing.
-        adapter.shell.handle(
+        adapter.shell.handle_event(
+            &mut adapter.shell_state,
             &crate::event::mouse_down(
                 MouseButton::Left,
                 on_divider.x,
@@ -874,7 +963,7 @@ mod tests {
         );
 
         // Drag the pointer away from the divider's own hit rect while the
-        // button stays down — `AppShell` reports `SidebarResized` for
+        // button stays down — `ShellView` reports `SidebarResized` for
         // this regardless of exact position, since the drag is already
         // in progress.
         adapter.handle(
@@ -907,7 +996,7 @@ mod tests {
         struct SetsDefaultCursorOnEveryMove;
 
         impl ShellApp for SetsDefaultCursorOnEveryMove {
-            fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+            fn render_content(&self, _backend: &mut dyn Backend, _layout: &ShellLayout) {}
 
             fn handle(
                 &mut self,
@@ -972,7 +1061,7 @@ mod tests {
     }
 
     /// `ShellApp::setup_shell` fires once, right after `ShellApp::setup`,
-    /// with a `ShellContext` already reaching the real `AppShell` — so a
+    /// with a `ShellContext` already reaching the real `ShellView` — so a
     /// mutation made through `ctx.shell_mut()` lands before the very first
     /// `render()`, with no event dispatch needed first. Unlike the
     /// `sidebar_visible` tests above (a static `ShellConfig` seed), this
@@ -984,7 +1073,7 @@ mod tests {
         struct HidesSidebarOnSetup;
 
         impl ShellApp for HidesSidebarOnSetup {
-            fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+            fn render_content(&self, _backend: &mut dyn Backend, _layout: &ShellLayout) {}
 
             fn handle(
                 &mut self,
@@ -1031,7 +1120,9 @@ mod tests {
             !adapter.shell.sidebar_visible(),
             "setup_shell's ctx.shell_mut() mutation must land before the first render"
         );
-        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
+        let layout = adapter
+            .shell
+            .shell_layout(Rect::new(0.0, 0.0, 80.0, 24.0), 1.0);
         assert!(
             layout.sidebar_content_bounds.is_none(),
             "frame 0 must honour the setup_shell mutation, not render one frame late"
@@ -1039,7 +1130,7 @@ mod tests {
     }
 
     /// `ShellConfig::with_title_bar_min_px` reaches the built
-    /// `AppShell` so a floor set on the config actually floors the
+    /// `ShellView` so a floor set on the config actually floors the
     /// resolved title-bar height, not just stores a field nobody reads.
     #[test]
     fn title_bar_min_px_reaches_the_built_app_shell() {
@@ -1050,13 +1141,15 @@ mod tests {
         let adapter = build_shell_adapter(NoopApp, config);
         // `line_height = 6.0` resolves `1.5 * 6.0 = 9.0`, well under the
         // 34.0 floor — the floor must win.
-        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 6.0);
+        let layout = adapter
+            .shell
+            .shell_layout(Rect::new(0.0, 0.0, 80.0, 24.0), 6.0);
         let tb = layout.title_bar_bounds.expect("row reserved");
         assert_eq!(tb.height, 34.0);
     }
 
     /// `ShellConfig::with_status_bar_height_px` reaches the built
-    /// `AppShell` so a pixel height set on the config actually sizes the
+    /// `ShellView` so a pixel height set on the config actually sizes the
     /// resolved status bar, not just stores a field nobody reads.
     #[test]
     fn status_bar_height_px_reaches_the_built_app_shell() {
@@ -1067,14 +1160,16 @@ mod tests {
         let adapter = build_shell_adapter(NoopApp, config);
         // `line_height = 6.0` would resolve to `6.0` via the one-line-height
         // fallback — the 30.0 px override must win instead.
-        let layout = adapter.shell.layout(Rect::new(0.0, 0.0, 80.0, 24.0), 6.0);
+        let layout = adapter
+            .shell
+            .shell_layout(Rect::new(0.0, 0.0, 80.0, 24.0), 6.0);
         let sb = layout.status_bar_bounds.expect("row reserved");
         assert_eq!(sb.height, 30.0);
     }
 
     /// A host's `Backend::set_style` override must reach the app-visible
     /// `ShellContext::layout` `setup_shell`/`handle` hand to a `ShellApp`,
-    /// not just `AppShell::render`'s own painted chrome — otherwise the
+    /// not just `ShellView::render`'s own painted chrome — otherwise the
     /// app's content rects and the app's own hit routing desync from what
     /// got drawn. `AppLogic::setup` is the canonical `ShellApp` entry
     /// point that builds this `ShellContext`, via
@@ -1086,7 +1181,7 @@ mod tests {
         }
 
         impl ShellApp for CapturesStatusBarHeight {
-            fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+            fn render_content(&self, _backend: &mut dyn Backend, _layout: &ShellLayout) {}
 
             fn handle(
                 &mut self,
@@ -1127,8 +1222,8 @@ mod tests {
             *adapter.app.seen_height.borrow(),
             Some(40.0),
             "ctx.layout seen by setup_shell must reflect the backend's set_style \
-             override, the same 40.0px AppShell::render would paint, not the \
-             Style::default() 22.0px AppShell::layout alone would resolve"
+             override, the same 40.0px ShellView::render would paint, not the \
+             Style::default() 22.0px ShellView::shell_layout alone would resolve"
         );
     }
 
@@ -1138,9 +1233,9 @@ mod tests {
     /// on a GUI backend (`line_height > 1.0`), with no app configuration
     /// beyond enabling the three bands and zero app-side pixel tuning.
     ///
-    /// Drives `AppShell::render` (the paint path, through
+    /// Drives `ShellView::render` (the paint path, through
     /// [`crate::testing::RecordingBackend`]) rather than the hit-test-only
-    /// `AppShell::layout`, so this pins the dimensions a GUI backend
+    /// `ShellView::shell_layout`, so this pins the dimensions a GUI backend
     /// actually paints, not just what a caller without a `Backend` in hand
     /// would compute.
     #[test]
@@ -1163,9 +1258,11 @@ mod tests {
             20.0,
             8.0,
         );
-        let layout = adapter
-            .shell
-            .render(&mut backend, Rect::new(0.0, 0.0, 800.0, 600.0));
+        let layout = adapter.shell.render(
+            &adapter.shell_state,
+            &mut backend,
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+        );
 
         assert_eq!(layout.activity_bar_bounds.width, 48.0);
         let tb = layout.title_bar_bounds.expect("title bar row reserved");
@@ -1175,7 +1272,7 @@ mod tests {
     }
 
     /// `ShellConfig::with_panel_icon` overrides are applied to the underlying
-    /// `AppShell` for both top panels and bottom items.
+    /// `ShellView` for both top panels and bottom items.
     #[test]
     fn build_shell_adapter_replays_panel_icon_overrides() {
         use crate::compose::app_shell::PanelDefinition;
@@ -1206,19 +1303,19 @@ mod tests {
         assert_eq!(
             bar.top_items[0].icon,
             Icon::new("\u{f07c}", "\u{25c6}"),
-            "top-panel override must reach the built AppShell, not just ShellConfig"
+            "top-panel override must reach the built ShellView, not just ShellConfig"
         );
         assert_eq!(
             bar.bottom_items[0].icon,
             Icon::new("\u{f013}", "\u{25a0}"),
-            "bottom-item override must reach the built AppShell too (#683 parity)"
+            "bottom-item override must reach the built ShellView too (#683 parity)"
         );
     }
 
-    /// `ShellConfig::bottom_bands` reaches the built `AppShell` —
+    /// `ShellConfig::bottom_bands` reaches the built `ShellView` —
     /// before this call was added to `build_shell_adapter`, a
     /// `ShellApp`-based consumer had no path to the new N-band layout at
-    /// all (only a direct `AppShell::with_bottom_bands` chain, i.e.
+    /// all (only a direct `ShellView::with_bottom_bands` chain, i.e.
     /// quadraui's own tests/examples).
     #[test]
     fn build_shell_adapter_replays_bottom_bands() {
@@ -1267,7 +1364,7 @@ mod tests {
     /// update `height_fraction` so a subsequent `WindowResized` reuses
     /// the dragged proportion instead of snapping back to the initial
     /// 30 %. This exercises the same arithmetic the `handle()` branch
-    /// uses for `AppShellEvent::BottomPanelResized`.
+    /// uses for `ShellEvent::BottomPanelResized`.
     #[test]
     fn drag_then_window_resize_preserves_user_intent() {
         // Initial state: viewport 100 cells tall, fraction 0.30

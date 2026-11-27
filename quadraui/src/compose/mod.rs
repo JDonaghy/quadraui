@@ -13,7 +13,7 @@
 //! - [`TreeTableController`] — hierarchical model (lazy children,
 //!   sibling-scoped sort) flattened into a `TreeTable`, over
 //!   [`crate::behaviour::nav::TreeNavCore`].
-//! - [`AppShell`] — ActivityBar + sidebar panel container composition.
+//! - [`ShellView`] — ActivityBar + sidebar panel container composition.
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
 //! - [`FilePickerController`] — cross-backend file open/save modal.
 //! - [`MessageDialogController`] — cross-backend message/alert-box driver.
@@ -107,13 +107,12 @@ pub(crate) mod widget_host;
 pub mod workspace;
 
 pub use app_shell::{
-    AppShell, AppShellEvent, AppShellLayout, BottomBand, PanelDefinition, ShellDrag, ShellPosition,
-    ShellRegion, ShellView, ShellViewLayout, ShellViewState,
+    BottomBand, PanelDefinition, ShellDrag, ShellEvent, ShellLayout, ShellPosition, ShellRegion,
+    ShellView, ShellViewLayout, ShellViewState,
 };
 pub use bottom_panel::{
-    BackendWidget, BottomPanel, BottomPanelConfig, BottomPanelController, BottomPanelEvent,
-    BottomPanelItem, BottomPanelLayout, BottomPanelPrimitiveLayout, BottomPanelState,
-    BottomPanelTab,
+    BackendWidget, BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelItem,
+    BottomPanelPrimitiveLayout, BottomPanelState, BottomPanelTab,
 };
 pub use chat_controller::{
     Chat, ChatController, ChatControllerAction, ChatEvent, ChatLayout, ChatRole, ChatState,

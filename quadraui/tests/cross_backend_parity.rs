@@ -764,7 +764,7 @@ fn native_width_is_exactly_n_cells_on_tui_and_n_px_on_gtk() {
 // ─── Issue #552: activity-bar hit regions vs. a revealed title bar ───────────
 //
 // An activity bar's `ActivityBarRowHit`s carry `y_start`/`y_end` **bar-relative** —
-// measured from the `rect` the bar was drawn into. `AppShell` adds
+// measured from the `rect` the bar was drawn into. `ShellView` adds
 // `activity_bar_bounds.y` itself in both its click reader (`cached_activity_hit`)
 // and its hover reader (`update_hover`), so a painter that also folded the origin in
 // would place every hit region `activity_bar_bounds.y` too low. That offset is

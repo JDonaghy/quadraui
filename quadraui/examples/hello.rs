@@ -1,6 +1,6 @@
 //! The smallest quadraui app, on the canonical `ShellApp` path.
 //!
-//! [`AppShellLayout::status_bar_bounds`] below is computed for us, so there
+//! [`ShellLayout::status_bar_bounds`] below is computed for us, so there
 //! is no viewport arithmetic anywhere in this file, and painting goes
 //! through [`ScreenLayout`]/[`Surface`] — the same declarative frame-list
 //! path a multi-primitive screen uses — rather than a raw `Backend::draw_*`
@@ -16,7 +16,7 @@
 //! Press any key to bump the counter; `q` or Esc to quit.
 
 use quadraui::prelude::*;
-use quadraui::{AppShellLayout, ScreenLayout, Surface};
+use quadraui::{ScreenLayout, ShellLayout, Surface};
 
 pub struct Hello {
     pub keys_pressed: u32,
@@ -33,7 +33,7 @@ impl Hello {
 }
 
 impl ShellApp for Hello {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let Some(rect) = layout.status_bar_bounds else {
             return;
         };

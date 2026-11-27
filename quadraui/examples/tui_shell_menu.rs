@@ -2,7 +2,7 @@
 //!
 //! Open the "File" menu and click an item — including the ones drawn
 //! over the activity bar strip on the left. Menu clicks are properly
-//! routed through `AppShell`'s chrome to the app.
+//! routed through `ShellView`'s chrome to the app.
 #[path = "common/mod.rs"]
 mod common;
 

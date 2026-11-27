@@ -31,7 +31,7 @@
 //!   raw `TreeView` body + a hand-built scrollbar. Used by
 //!   `tui_sidebar_panel_body` / `gtk_sidebar_panel_body`.
 //! - [`WorkspaceDemo`] (in [`workspace_demo`]) — `WorkspaceController`
-//!   mounted inside an `AppShell` panel: open-N-view-one document
+//!   mounted inside a `ShellView` panel: open-N-view-one document
 //!   tabs in the panel's rect, body painted by the app. Used by
 //!   `tui_workspace` / `gtk_workspace`.
 //! - [`FocusDemo`] (in [`focus_demo`]) — two lists + a status bar whose

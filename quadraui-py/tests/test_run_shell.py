@@ -1,6 +1,6 @@
 """Black-box coverage for `QuiApp.run_shell`: a headless `ShellApp`/
 `ShellConfig`-backed app frame (activity bar + sidebar + optional
-bottom-panel tab strip) driven from Python, with `AppShellEvent`/
+bottom-panel tab strip) driven from Python, with `ShellEvent`/
 `BottomPanelEvent` routed to registered callbacks.
 
 Run against a built wheel/extension, e.g.:

@@ -118,7 +118,7 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
     assert_locatable(
         &driver,
         &[
-            // AppShell paints the panel title + main-content label as
+            // ShellView paints the panel title + main-content label as
             // StatusBars — the one primitive that already recorded.
             ("draw_status_bar", "EXPLORER"),
             ("draw_status_bar", "Selected: nothing selected"),
@@ -152,7 +152,7 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
 ///
 /// Both probes must be needles *no other* painted text in this fixture
 /// contains, because [`GtkDriver::find_bounds`] is a substring search over
-/// painted texts in paint order and `AppShell` paints the sidebar's
+/// painted texts in paint order and `ShellView` paints the sidebar's
 /// `" EXPLORER "` panel-title status bar before the activity bar paints.
 /// `"G"` (source-control) and `"*"` (settings) are unique to the
 /// activity bar's own glyphs.

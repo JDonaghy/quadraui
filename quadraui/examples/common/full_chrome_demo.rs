@@ -1,4 +1,4 @@
-//! Full-chrome AppShell demo — proves all four chrome slots
+//! Full-chrome ShellView demo — proves all four chrome slots
 //! (title bar, bottom panel, command line, status bar) plus the
 //! existing activity bar / sidebar / main layout.
 //!
@@ -22,12 +22,12 @@
 //! `Ctrl+B` uses for the sidebar in `appshell_demo.rs`. This is the
 //! shape vimcode's runtime-toggleable menu bar needs: the
 //! activity bar and main content must re-derive their top origin from
-//! `AppShell::layout()` on the very next frame, not from a cached offset —
+//! `ShellView::shell_layout()` on the very next frame, not from a cached offset —
 //! toggle title bar off and the "TITLE BAR" label disappears while the
 //! activity bar/content shift up to reclaim the row; toggle it back on and
 //! they shift back down without losing the configured height.
 
-use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
+use quadraui::compose::app_shell::{PanelDefinition, ShellEvent, ShellLayout};
 use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, Color, Handled, ImageSource, Key, Modifiers, MouseButton, NamedKey, PointerShape,
@@ -209,7 +209,7 @@ impl Default for FullChromeDemo {
 }
 
 impl ShellAppTrait for FullChromeDemo {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let title_fg = Color::rgb(220, 220, 220);
         let title_bg = Color::rgb(50, 50, 55);
         let content_fg = Color::rgb(140, 140, 140);
@@ -446,20 +446,20 @@ impl ShellAppTrait for FullChromeDemo {
         }
     }
 
-    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
+    fn on_shell_event_ctx(&mut self, event: &ShellEvent, _ctx: &ShellContext) {
         self.last_event = match event {
-            AppShellEvent::PanelChanged { panel_id } => {
+            ShellEvent::PanelChanged { panel_id } => {
                 format!("Panel: {}", panel_id.as_str())
             }
-            AppShellEvent::SidebarHidden => "Sidebar hidden".into(),
-            AppShellEvent::SidebarResized { new_width } => {
+            ShellEvent::SidebarHidden => "Sidebar hidden".into(),
+            ShellEvent::SidebarResized { new_width } => {
                 format!("Sidebar resized: {new_width:.0}px")
             }
-            AppShellEvent::BottomPanelResized { new_height } => {
+            ShellEvent::BottomPanelResized { new_height } => {
                 format!("Bottom panel resized: {new_height:.0}px")
             }
-            AppShellEvent::BottomPanelHidden => "Bottom panel hidden".into(),
-            AppShellEvent::BottomItemClicked { id } => {
+            ShellEvent::BottomPanelHidden => "Bottom panel hidden".into(),
+            ShellEvent::BottomItemClicked { id } => {
                 format!("Bottom item: {}", id.as_str())
             }
             _ => return,

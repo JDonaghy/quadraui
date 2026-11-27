@@ -1,4 +1,4 @@
-//! TUI runner for AppShell demo — proves run_with_shell() pattern.
+//! TUI runner for ShellView demo — proves run_with_shell() pattern.
 #[path = "common/mod.rs"]
 mod common;
 

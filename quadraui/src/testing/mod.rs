@@ -273,7 +273,7 @@ pub struct ZoneRec {
 /// `zones` is populated from [`crate::Backend::register_zone`] calls made
 /// during the frame, and **coverage is opt-in per paint site**. Exactly
 /// one composer registers zones today —
-/// [`crate::compose::app_shell::AppShell::render`], via its
+/// [`crate::compose::app_shell::ShellView::render`], via its
 /// `register_chrome_zones` helper — and it contributes:
 ///
 /// - one `app-shell:`-prefixed zone per chrome region it lays out:
@@ -623,7 +623,7 @@ pub trait ConformanceDriver: Sized {
 //
 // Before this, an external developer who wanted to unit-test their own
 // `compose`-style controller (something that takes `&mut dyn Backend`,
-// the way `ChatController`/`AppShell` do) had nothing to
+// the way `ChatController`/`ShellView` do) had nothing to
 // test against: the only full `impl Backend` mocks in this crate were
 // three near-identical private `MockBackend` copies, one each in
 // `compose::{tree_controller, chat_controller, app_shell}`'s own

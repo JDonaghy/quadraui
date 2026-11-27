@@ -22,7 +22,7 @@
 //! - `Tab`                focus the activity bar (j/k/Enter/Esc to navigate panels)
 //! - `q` / `Esc`          quit (when no overlay is open)
 
-use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
+use quadraui::compose::app_shell::{PanelDefinition, ShellEvent, ShellLayout};
 use quadraui::compose::{DualModePaletteAction, Handled};
 use quadraui::DrawsPrimitives;
 use quadraui::{
@@ -146,7 +146,7 @@ impl Default for HelpLayerDemo {
 }
 
 impl ShellApp for HelpLayerDemo {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let lh = backend.line_height();
 
         let hint = StatusBar {
@@ -284,8 +284,8 @@ impl ShellApp for HelpLayerDemo {
         }
     }
 
-    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
-        if let AppShellEvent::PanelChanged { panel_id } = event {
+    fn on_shell_event_ctx(&mut self, event: &ShellEvent, _ctx: &ShellContext) {
+        if let ShellEvent::PanelChanged { panel_id } = event {
             self.active_panel = *panel_id;
             self.last_message = format!("Panel: {}", panel_id.as_str());
         }

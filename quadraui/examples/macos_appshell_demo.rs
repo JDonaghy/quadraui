@@ -1,4 +1,4 @@
-//! macOS runner for AppShell demo — proves `run_with_shell()` pattern.
+//! macOS runner for ShellView demo — proves `run_with_shell()` pattern.
 //! Same `AppShellDemo` `ShellApp` impl `tui_appshell_demo.rs` /
 //! `gtk_appshell_demo.rs` already share; only the runner call differs.
 #[path = "common/mod.rs"]

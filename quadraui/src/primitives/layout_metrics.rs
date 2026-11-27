@@ -390,7 +390,7 @@ fn tree_layout_inner(
 /// `TreeStyle::row_height` is in screen pixels.  On a cell grid (TUI,
 /// where `line_height` is architecturally `1.0`), a raw px value would
 /// become an absurd cell count, so the px field is suppressed — the
-/// same guard `AppShell::compute_layout` applies to its own px fields.
+/// same guard `ShellView::compute_layout` applies to its own px fields.
 pub fn tree_row_pitch(tree: &TreeView, line_height: f64) -> f64 {
     let is_cell_grid = line_height <= 1.0;
     tree.style

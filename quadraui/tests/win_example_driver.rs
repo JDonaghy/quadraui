@@ -146,8 +146,8 @@ const SHELL_H: u32 = 480;
 /// WinBackend` chain actually runs.
 ///
 /// The activity-bar bounds `AppShellDemo::render_content` publishes into
-/// `ActivityProbe` come from the real `AppShellLayout` the shell computed —
-/// non-empty here means `AppShell::compute_layout` genuinely ran and handed
+/// `ActivityProbe` come from the real `ShellLayout` the shell computed —
+/// non-empty here means `ShellView::compute_layout` genuinely ran and handed
 /// real geometry through, not a zeroed default.
 #[test]
 fn appshell_demo_renders_shell_chrome_via_driver_with_shell() {
@@ -156,7 +156,7 @@ fn appshell_demo_renders_shell_chrome_via_driver_with_shell() {
     let config = AppShellDemo::config();
 
     // Constructing the driver runs `setup` + paints the first frame
-    // (`WinDriver::new`) — if any rasteriser `AppShell::render` or
+    // (`WinDriver::new`) — if any rasteriser `ShellView::render` or
     // `AppShellDemo::render_content` calls were still a `todo!()` stub,
     // this would panic right here instead of reaching the assertions
     // below.
@@ -334,20 +334,20 @@ fn menu_bar_clicking_view_item_opens_its_dropdown() {
     );
 }
 
-// ─── ShellMenuDemo: menu bar inside AppShell's title-bar band ──────────────
+// ─── ShellMenuDemo: menu bar inside ShellView's title-bar band ──────────────
 //
-// `ShellMenuDemo::config()` puts the `MenuSystem` inside `AppShell`'s
+// `ShellMenuDemo::config()` puts the `MenuSystem` inside `ShellView`'s
 // title-bar band (`ShellConfig::with_title_bar`) — on a live Win32 window
 // that band is exactly `WinBackend::nc_hit_test`'s `TITLE_BAR_DRAG_ZONE`.
 // A click at the File menu's position in that band must reach the app as
 // an ordinary `MouseDown`, not get swallowed as a title-bar drag.
 // `driver_with_shell`/`WinDriver` dispatch straight to `UiEvent`s and
 // never send a real `WM_NCHITTEST`, so this test can't reproduce an
-// OS-level swallow itself — it proves the composed `AppShell` +
+// OS-level swallow itself — it proves the composed `ShellView` +
 // `MenuSystem` *logic* opens the dropdown on a title-band click (the half
 // `win::run`'s `live_window_nchittest_tests` module doesn't cover, since
 // that module's probe app registers the band and widgets by hand rather
-// than composing them through `AppShell`/`MenuSystem`).
+// than composing them through `ShellView`/`MenuSystem`).
 // `real_wm_nchittest_reaches_the_file_menu_through_a_composed_shell` in
 // that same module is the live-window half that *does* send a real
 // `WM_NCHITTEST` at this exact composition.
@@ -355,7 +355,7 @@ const SHELL_MENU_W: u32 = 800;
 const SHELL_MENU_H: u32 = 480;
 
 /// Clicking "File" in the shell's title-bar band must open its dropdown —
-/// `AppShell::handle` doesn't intercept title-bar clicks, so this reaches
+/// `ShellView::handle_event` doesn't intercept title-bar clicks, so this reaches
 /// `MenuSystem` as an ordinary `MouseDown`.
 #[test]
 fn shell_menu_file_click_in_title_bar_band_opens_dropdown() {
@@ -432,7 +432,7 @@ fn shell_menu_file_click_in_title_bar_band_opens_dropdown() {
 /// Sanity check for the shell's chrome hit-testing: with no dropdown open,
 /// a click inside the activity bar strip must still behave as a normal
 /// chrome click (toggle/switch panels). The activity bar paints before the
-/// sidebar header (`AppShell::render`), so `find("E")` resolves to the
+/// sidebar header (`ShellView::render`), so `find("E")` resolves to the
 /// Explorer row's own icon glyph, not the sidebar header's "EXPLORER"
 /// title painted afterwards.
 #[test]
@@ -461,7 +461,7 @@ fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
         driver.screen_contains("Sidebar hidden"),
         "clicking the active panel's activity-bar row with no modal open \
          should still be handled by shell chrome \
-         (AppShellEvent::SidebarHidden): {:?}",
+         (ShellEvent::SidebarHidden): {:?}",
         driver.painted_texts()
     );
 }

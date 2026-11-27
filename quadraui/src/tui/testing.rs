@@ -94,7 +94,7 @@ use crate::{
 /// # use quadraui::{ShellApp, ShellConfig, Backend, ShellContext, Reaction, UiEvent};
 /// # struct MyApp;
 /// # impl ShellApp for MyApp {
-/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::AppShellLayout) {}
+/// #     fn render_content(&self, _: &mut dyn Backend, _: &quadraui::compose::app_shell::ShellLayout) {}
 /// #     fn handle(&mut self, _: UiEvent, _: &mut dyn Backend, _: &ShellContext) -> Reaction { Reaction::Continue }
 /// # }
 /// let config = ShellConfig::new("Demo", vec![]);
@@ -980,7 +980,7 @@ impl<A: AppLogic> ConformanceDriver for TuiDriver<A> {
         FrameInventory {
             text_runs,
             // Zones registered this frame via `Backend::register_zone` —
-            // currently the shell-chrome zones `AppShell::render` records
+            // currently the shell-chrome zones `ShellView::render` records
             // (activity-bar items, sidebar header/content, status bar,
             // ...). Primitives that don't yet call `register_zone`
             // contribute no zone.
@@ -2299,7 +2299,7 @@ mod tests {
         );
     }
 
-    use crate::compose::app_shell::{AppShellLayout, PanelDefinition};
+    use crate::compose::app_shell::{PanelDefinition, ShellLayout};
     use crate::shell::ShellContext;
     use crate::types::Icon;
 
@@ -2311,7 +2311,7 @@ mod tests {
     }
 
     impl ShellApp for NerdFontsToggleApp {
-        fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+        fn render_content(&self, _backend: &mut dyn Backend, _layout: &ShellLayout) {}
 
         fn handle(
             &mut self,

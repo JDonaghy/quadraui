@@ -20,7 +20,7 @@
 
 use quadraui::prelude::*;
 use quadraui::win::RunConfig;
-use quadraui::{AppShellLayout, BackendError, RunError};
+use quadraui::{BackendError, RunError, ShellLayout};
 
 /// Smallest possible [`AppLogic`]: paints nothing and quits on the first
 /// event. Never actually driven here — it exists to give the entry-point
@@ -42,7 +42,7 @@ impl AppLogic for NoopApp {
 struct NoopShell;
 
 impl ShellApp for NoopShell {
-    fn render_content(&self, _backend: &mut dyn Backend, _layout: &AppShellLayout) {}
+    fn render_content(&self, _backend: &mut dyn Backend, _layout: &ShellLayout) {}
 
     fn handle(
         &mut self,

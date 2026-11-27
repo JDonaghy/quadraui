@@ -1,4 +1,4 @@
-//! `BottomPanel` — a tabbed dockable panel for the bottom of an [`AppShell`].
+//! `BottomPanel` — a tabbed dockable panel for the bottom of a [`ShellView`].
 //!
 //! Modelled on VS Code's terminal panel. Attach a [`BottomPanelConfig`] to
 //! [`crate::ShellConfig::bottom_panel`] to add a tab strip + switchable
@@ -38,11 +38,11 @@
 //!
 //! # Adoption status
 //!
-//! Folded into [`AppShell`]: `ShellConfig::bottom_panel` /
-//! `ShellConfig::with_bottom_panel` (`shell.rs`) is what constructs a
-//! `BottomPanelController` (`shell_adapter.rs`), so a host app opts in
-//! by setting that config field rather than constructing this type
-//! directly. Demoed via `examples/tui_bottom_panel.rs`,
+//! Folded into the shell: `ShellConfig::bottom_panel` /
+//! `ShellConfig::with_bottom_panel` (`shell.rs`) is what docks a
+//! [`BottomPanel`] under the main column (`shell_adapter.rs`), so a host
+//! app opts in by setting that config field rather than mounting the
+//! descriptor itself. Demoed via `examples/tui_bottom_panel.rs`,
 //! `examples/gtk_bottom_panel.rs`, and
 //! `examples/common/full_chrome_demo.rs`.
 //!
@@ -50,20 +50,20 @@
 //!
 //! The shell runner calls [`ShellApp::on_bottom_panel_event`] whenever
 //! the user interacts with the tab strip. Tab activation and close are
-//! handled automatically (the controller mutates its own state); the
-//! app is notified for re-render and any higher-level bookkeeping.
+//! applied to the panel automatically ([`BottomPanel::apply`]); the app
+//! is notified for re-render and any higher-level bookkeeping.
 //!
 //! # Maximised mode
 //!
-//! When [`BottomPanelController::maximised`] is `true`, the panel
+//! When [`BottomPanel::maximised`] is `true`, the panel
 //! expands to fill the full content area. The tab strip remains visible
 //! at the top; main content is hidden. Click the `^`/`v` button or
 //! emit [`BottomPanelEvent::MaximiseToggled`] to toggle.
 //!
 //! # Resize
 //!
-//! The resize grip (top edge of the panel) is managed by [`AppShell`]
-//! — dragging it emits `AppShellEvent::BottomPanelResized`, which the
+//! The resize grip (top edge of the panel) is managed by [`ShellView`]
+//! — dragging it emits `ShellEvent::BottomPanelResized`, which the
 //! shell runner maps to [`BottomPanelEvent::Resized`] for the app.
 
 use serde::ser::SerializeMap;
@@ -71,11 +71,11 @@ use serde::{Serialize, Serializer};
 
 use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
 pub use crate::backend::BackendWidget;
-use crate::backend::DrawsPrimitives;
+use crate::compose::widget_host::drive;
 use crate::compose::Handled;
 use crate::event::{MouseButton, Point};
 use crate::interactive::{
-    EventCx, EventHost, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget, WidgetAction,
+    EventCx, FocusSpec, Interactive, PointerKind, RoutedEvent, SubTarget, WidgetAction,
 };
 use crate::paint_surface::PaintSurface;
 use crate::primitive::{LayoutCtx, PaintEnv, Primitive, Units};
@@ -84,9 +84,11 @@ use crate::primitives::tab_bar::{
     TabItem,
 };
 use crate::types::{Modifiers, WidgetId};
+#[cfg(test)]
+use crate::Backend;
 #[cfg(feature = "tui")]
 use crate::CellSurface;
-use crate::{Backend, Rect};
+use crate::Rect;
 
 // ── Public types ──────────────────────────────────────────────────────────────
 
@@ -124,7 +126,7 @@ pub struct BottomPanelConfig {
     /// Initial panel height as a fraction of total viewport height.
     /// Defaults to `0.3` (30 %). The fraction is only used on first setup
     /// (and on viewport resize); subsequent heights come from the resize
-    /// drag managed by [`AppShell`].
+    /// drag managed by [`ShellView`].
     pub height_fraction: f32,
 }
 
@@ -146,24 +148,23 @@ impl Default for BottomPanelConfig {
 pub enum BottomPanelEvent {
     /// User switched to a different tab. Payload is the new active tab `id`.
     ///
-    /// The controller updates [`BottomPanelController::active_tab_id`]
-    /// automatically before emitting this event.
+    /// [`BottomPanel::apply`] makes it [`BottomPanel::active_tab_id`].
     TabActivated(String),
     /// User clicked the `×` close button on a closable tab. Payload is the
-    /// closed tab's `id`. The controller removes the tab automatically.
+    /// closed tab's `id`. [`BottomPanel::apply`] removes the tab.
     TabClosed(String),
-    /// User clicked the `^`/`v` maximise toggle. The controller flips
-    /// [`BottomPanelController::maximised`] automatically.
+    /// User clicked the `^`/`v` maximise toggle. [`BottomPanel::apply`]
+    /// flips [`BottomPanel::maximised`].
     MaximiseToggled,
     /// User dragged the resize grip (forwarded from
-    /// `AppShellEvent::BottomPanelResized`). Payload is the new panel
+    /// `ShellEvent::BottomPanelResized`). Payload is the new panel
     /// height in the backend's native units (cells for TUI, pixels for GTK).
     Resized(f32),
 }
 
 /// Externally-tagged, one-entry-map shape: `{"TabActivated": "bp:terminal"}`,
 /// `{"MaximiseToggled": null}`, etc. Hand-written rather than derived for
-/// the same reason [`crate::compose::app_shell::AppShellEvent`]'s own impl
+/// the same reason [`crate::compose::app_shell::ShellEvent`]'s own impl
 /// is: `serde`'s default external tagging would serialize the unit variant
 /// [`BottomPanelEvent::MaximiseToggled`] as a bare string, not the
 /// dict-with-`null` shape a binding's own `on_bottom_panel_event` callback
@@ -186,21 +187,10 @@ impl Serialize for BottomPanelEvent {
     }
 }
 
-/// Resolved panel regions for one rendered frame.
-#[derive(Debug, Clone, PartialEq)]
-pub struct BottomPanelLayout {
-    /// Strip at the top of the panel containing tab labels + controls —
-    /// `Style::tab_height` tall on a pixel backend, one row tall on a
-    /// cell grid (TUI).
-    pub tab_strip_bounds: Rect,
-    /// Content area below the strip where the active tab's widget renders.
-    pub content_bounds: Rect,
-}
-
 // ── BottomPanel: the widget-contract descriptor ─────────────────────────────
 
 /// One tab of a [`BottomPanel`]: what its strip shows. The tab's content
-/// is the host's; [`BottomPanelController`] pairs each of these with a
+/// is the host's — a [`BottomPanelTab`] pairs each of these with a
 /// [`BackendWidget`].
 #[non_exhaustive]
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -252,8 +242,7 @@ pub const BOTTOM_PANEL_MAXIMISE_ID: &str = "bp:maximise";
 /// A tabbed bottom panel as a widget-contract descriptor: the tabs, the
 /// active one and whether the panel is maximised. The app owns all of it
 /// (controlled mode) and applies the [`BottomPanelEvent`]s
-/// [`Interactive::handle`] reports; [`BottomPanelController`] is the
-/// ready-made owner that does exactly that.
+/// [`Interactive::handle`] reports, through [`Self::apply`].
 ///
 /// The strip paints and routes through a [`TabBar`] child that shares
 /// this panel's [`Self::id`]; the content area below it is the host's.
@@ -524,75 +513,19 @@ impl Interactive for BottomPanel {
     }
 }
 
-// ── Controller ────────────────────────────────────────────────────────────────
+// ── Owning the panel ──────────────────────────────────────────────────────────
 
-/// Stateful controller that renders a bottom panel tab strip and handles
-/// user interactions (tab activation, close, maximise).
-///
-/// Created by the shell runner from a [`BottomPanelConfig`]; apps interact
-/// through [`BottomPanelEvent`]s and by querying accessors. Paints a
-/// [`BottomPanel`] descriptor built from its own fields, routes clicks
-/// through that descriptor's [`Interactive::handle`] and applies what it
-/// reports.
-///
-/// # Interior-mutability note
-///
-/// The controller must be mutated during `render()`, which the runner
-/// calls from `AppLogic::render(&self, …)`. Wrap in a `RefCell` when
-/// storing in a `&self`-render context (the runner does this for you).
-pub struct BottomPanelController {
-    // ── Live mutable state ──────────────────────────────────────────
-    /// The currently-active tab's `id`.
-    pub active_tab_id: String,
-    /// Whether the panel is currently maximised (takes the full content area).
-    pub maximised: bool,
-    /// The ordered tab list. Closed tabs are removed here.
-    tabs: Vec<BottomPanelTab>,
-    /// Panel height fraction stored for viewport-resize recalculation.
-    pub height_fraction: f32,
-    /// The scroll offset the last `render()` resolved.
-    tab_scroll_offset: usize,
-    /// The panel's interaction state.
-    state: BottomPanelState,
-    /// The panel's resolved layout from the last `render()`, which clicks
-    /// are routed against so paint and click agree on tab, close-button
-    /// and maximise positions.
-    last_layout: Option<BottomPanelPrimitiveLayout>,
-}
-
-/// The [`EventHost`] [`BottomPanelController`] runs its panel's
-/// [`Interactive::handle`] against: no focus, capture or outbox of its
-/// own.
-struct ControllerHost {
-    units: Units,
-}
-
-impl EventHost for ControllerHost {
-    fn is_focused(&self, _id: &WidgetId, _sub: Option<SubTarget>) -> bool {
-        false
-    }
-    fn request_focus(&mut self, _id: &WidgetId, _sub: Option<SubTarget>) {}
-    fn capture_pointer(&mut self, _id: &WidgetId) {}
-    fn release_pointer(&mut self) {}
-    fn set_cursor(&mut self, _cursor: crate::backend::PointerShape) {}
-    fn request_redraw(&mut self) {}
-    fn emit(&mut self, _event: crate::UiEvent) {}
-    fn units(&self) -> Units {
-        self.units
-    }
-}
-
-impl BottomPanelController {
-    /// Create from an initial configuration. The config is consumed; its
-    /// mutable parts (active tab, maximised flag, tabs) live in the
-    /// controller from here on.
+impl BottomPanel {
+    /// The panel a [`BottomPanelConfig`] describes: its tabs' strip data,
+    /// its active tab and whether it starts maximised. The tabs' content
+    /// stays with the config's [`BottomPanelTab`]s.
     ///
-    /// If `config.active_tab_id` does not match any tab in `config.tabs`,
-    /// the first tab's `id` is used instead (or an empty string when there
-    /// are no tabs). This implements the documented fallback.
-    pub fn new(config: BottomPanelConfig) -> Self {
+    /// If `config.active_tab_id` names no tab in `config.tabs`, the first
+    /// tab is active instead (or none, with an empty id, when there are no
+    /// tabs).
+    pub fn from_config(config: &BottomPanelConfig) -> Self {
         let active_tab_id = if config.tabs.iter().any(|t| t.id == config.active_tab_id) {
-            config.active_tab_id
+            config.active_tab_id.clone()
         } else {
             config
                 .tabs
@@ -600,28 +533,9 @@ impl BottomPanelController {
                 .map(|t| t.id.clone())
                 .unwrap_or_default()
         };
-        Self {
-            active_tab_id,
-            maximised: config.maximised,
-            tabs: config.tabs,
-            height_fraction: config.height_fraction,
-            tab_scroll_offset: 0,
-            state: BottomPanelState::default(),
-            last_layout: None,
-        }
-    }
-
-    // ── Accessors ──────────────────────────────────────────────────
-
-    /// Ordered slice of all tabs currently in the panel.
-    pub fn tabs(&self) -> &[BottomPanelTab] {
-        &self.tabs
-    }
-
-    /// The [`BottomPanel`] descriptor this controller paints right now.
-    pub fn view(&self) -> BottomPanel {
-        BottomPanel::new(
-            self.tabs
+        Self::new(
+            config
+                .tabs
                 .iter()
                 .map(|t| {
                     BottomPanelItem::new(t.id.clone(), t.label.clone())
@@ -629,27 +543,24 @@ impl BottomPanelController {
                         .with_badge(t.badge.clone())
                 })
                 .collect(),
-            self.active_tab_id.clone(),
+            active_tab_id,
         )
-        .with_maximised(self.maximised)
+        .with_maximised(config.maximised)
     }
-
-    // ── Mutations (called automatically from handle_click) ─────────
 
     /// Toggle between docked and maximised mode.
     pub fn toggle_maximised(&mut self) {
         self.maximised = !self.maximised;
     }
 
-    /// Make `id` the active tab and reset the strip scroll offset.
-    pub fn activate_tab(&mut self, id: String) {
-        self.active_tab_id = id;
-        self.tab_scroll_offset = 0;
+    /// Make `id` the active tab.
+    pub fn activate_tab(&mut self, id: impl Into<String>) {
+        self.active_tab_id = id.into();
     }
 
-    /// Remove the tab with the given `id`. If it was the active tab,
-    /// the first remaining tab becomes active; returns `false` when
-    /// no tab with that `id` exists.
+    /// Remove the tab with the given `id`. If it was the active tab, the
+    /// first remaining tab becomes active; returns `false` when no tab
+    /// with that `id` exists.
     pub fn close_tab(&mut self, id: impl Into<WidgetId>) -> bool {
         let id = id.into();
         let Some(idx) = self.tabs.iter().position(|t| t.id == id.as_str()) else {
@@ -662,120 +573,50 @@ impl BottomPanelController {
         true
     }
 
-    // ── Render ─────────────────────────────────────────────────────
-
-    /// Paint the panel's tab strip through the widget contract, then call
-    /// the active tab's [`BackendWidget::render`] for the content area.
-    ///
-    /// Returns the resolved [`BottomPanelLayout`] so the caller can use
-    /// the bounds for hit-region documentation or overlays.
-    ///
-    /// # Coordinate units
-    ///
-    /// `panel_bounds` must be in the backend's native units (cells for
-    /// TUI, pixels for GTK). All returned rects use the same unit.
-    pub fn render(&mut self, backend: &mut dyn Backend, panel_bounds: Rect) -> BottomPanelLayout {
-        let view = self.view();
-        let painted = DrawsPrimitives::draw_dyn(backend, panel_bounds, &view, &())
-            .downcast_ref::<BottomPanelPrimitiveLayout>()
-            .cloned()
-            .unwrap_or_else(|| {
-                let ctx = LayoutCtx::new(backend.chrome_line_height(), backend.char_width(), false);
-                Primitive::layout(&view, &ctx, panel_bounds)
-            });
-        self.tab_scroll_offset = painted.scroll_offset;
-        let layout = BottomPanelLayout {
-            tab_strip_bounds: painted.tab_strip_bounds,
-            content_bounds: painted.content_bounds,
-        };
-        self.last_layout = Some(painted);
-
-        let content = layout.content_bounds;
-        if content.width > 0.0 && content.height > 0.0 {
-            if let Some(idx) = self.tabs.iter().position(|t| t.id == self.active_tab_id) {
-                self.tabs[idx].content.render(backend, content);
+    /// Apply one intent [`Interactive::handle`] reported: activate or close
+    /// a tab, or toggle maximised. A resize is the shell's to apply.
+    pub fn apply(&mut self, event: &BottomPanelEvent) {
+        match event {
+            BottomPanelEvent::TabActivated(id) => self.activate_tab(id.clone()),
+            BottomPanelEvent::TabClosed(id) => {
+                self.close_tab(id.as_str());
             }
+            BottomPanelEvent::MaximiseToggled => self.toggle_maximised(),
+            BottomPanelEvent::Resized(_) => {}
         }
-        layout
     }
 
-    // ── Click dispatch ─────────────────────────────────────────────
-
-    /// Resolve a mouse click at `(x, y)` in viewport coordinates.
+    /// Resolve a left click at `position` (absolute) against `layout`, the
+    /// layout this panel was painted with, through the panel's own
+    /// [`Interactive::handle`].
     ///
-    /// Applies any resulting state change (tab activation, close, maximise
-    /// toggle) to the controller and returns [`Handled::Event`] with the
-    /// event for the app. Returns [`Handled::Consumed`] when the click
-    /// landed inside the tab strip but on dead space (a non-closable tab's
-    /// × region, or the already-active tab's body) — nothing to route, but
-    /// the click was this controller's to handle. Returns
-    /// [`Handled::Ignored`] when the click was outside the tab strip
-    /// entirely.
-    ///
-    /// Call this from the shell runner's mouse-down handler after
-    /// [`AppShell::handle`] returns [`AppShellEvent::Ignored`].
-    pub fn handle_click_event(&mut self, x: f32, y: f32) -> Handled<BottomPanelEvent> {
-        let Some(layout) = self.last_layout.as_ref() else {
-            return Handled::Ignored;
-        };
-        // The strip spans only the panel's own column (`AppShell` docks
-        // the bottom panel under the main column, not the full viewport
-        // width), so a click at the strip's `y` but outside its `x` range
-        // is not this controller's to claim.
-        let strip = layout.tab_strip_bounds;
-        if y < strip.y || y >= strip.y + strip.height || x < strip.x || x >= strip.x + strip.width {
+    /// Returns [`Handled::Event`] with the intent for the host to
+    /// [`Self::apply`], [`Handled::Consumed`] when the click landed on the
+    /// strip's dead space (a non-closable tab's close region, or the
+    /// already-active tab's body), and [`Handled::Ignored`] when it landed
+    /// outside the strip — including beside it, since the strip spans only
+    /// the panel's own column.
+    pub fn click(
+        &self,
+        state: &mut BottomPanelState,
+        layout: &BottomPanelPrimitiveLayout,
+        position: Point,
+    ) -> Handled<BottomPanelEvent> {
+        if !layout.tab_strip_bounds.contains(position) {
             return Handled::Ignored;
         }
         let routed = RoutedEvent::Pointer {
             kind: PointerKind::Down(MouseButton::Left),
             sub: None,
-            local: Point::new(x - layout.area.x, y - layout.area.y),
+            local: Point::new(position.x - layout.area.x, position.y - layout.area.y),
             mods: Modifiers::default(),
         };
-        let view = self.view();
-        let mut host = ControllerHost {
-            units: if strip.height > 1.0 {
-                Units::Pixels
-            } else {
-                Units::Cells
-            },
+        let units = if layout.tab_strip_bounds.height > 1.0 {
+            Units::Pixels
+        } else {
+            Units::Cells
         };
-        let outcome = {
-            let mut cx = EventCx::new(view.id, &mut host);
-            Interactive::handle(&view, &mut self.state, &routed, layout, &mut cx)
-        };
-        if let Handled::Event(event) = &outcome {
-            match event {
-                BottomPanelEvent::TabActivated(id) => self.activate_tab(id.clone()),
-                BottomPanelEvent::TabClosed(id) => {
-                    self.close_tab(id.as_str());
-                }
-                BottomPanelEvent::MaximiseToggled => self.toggle_maximised(),
-                BottomPanelEvent::Resized(_) => {}
-            }
-        }
-        outcome
-    }
-
-    /// Resolve a mouse click at `(x, y)` in viewport coordinates.
-    ///
-    /// Applies any resulting state change (tab activation, close, maximise
-    /// toggle) to the controller and returns the event for the app. Returns
-    /// `None` when the click is outside the tab strip or on dead space.
-    #[deprecated(
-        since = "0.9.0",
-        note = "use `handle_click_event`, which returns `Handled<BottomPanelEvent>` and distinguishes dead-space clicks (`Handled::Consumed`) from clicks outside the panel (`Handled::Ignored`)"
-    )]
-    pub fn handle_click(&mut self, x: f32, y: f32) -> Option<BottomPanelEvent> {
-        self.handle_click_event(x, y).into_event()
-    }
-
-    // ── Helpers ────────────────────────────────────────────────────
-
-    /// The [`TabBar`] this controller paints, at its last scroll offset.
-    #[cfg(test)]
-    fn build_tab_bar(&self) -> TabBar {
-        self.view().tab_bar(self.tab_scroll_offset)
+        drive(self, self.id, state, &routed, layout, units).handled
     }
 }
 
@@ -814,13 +655,74 @@ mod tests {
         }
     }
 
+    // ── Host harness: a panel, its state and its last painted layout ─────────
+
+    /// What a host keeps for one panel: the descriptor, its interaction
+    /// state and the layout it last painted, which clicks resolve against.
+    struct Host {
+        panel: BottomPanel,
+        state: BottomPanelState,
+        last_layout: Option<BottomPanelPrimitiveLayout>,
+    }
+
+    impl Host {
+        fn new(config: BottomPanelConfig) -> Self {
+            Self {
+                panel: BottomPanel::from_config(&config),
+                state: BottomPanelState::default(),
+                last_layout: None,
+            }
+        }
+
+        fn build_tab_bar(&self) -> TabBar {
+            self.panel.tab_bar(0)
+        }
+
+        fn render(&mut self, backend: &mut dyn Backend, rect: Rect) -> BottomPanelPrimitiveLayout {
+            let layout = crate::DrawsPrimitives::draw_dyn(backend, rect, &self.panel, &())
+                .downcast_ref::<BottomPanelPrimitiveLayout>()
+                .cloned()
+                .expect("a bottom panel lays out as its own layout");
+            self.last_layout = Some(layout.clone());
+            layout
+        }
+
+        fn handle_click_event(&mut self, x: f32, y: f32) -> Handled<BottomPanelEvent> {
+            let Some(layout) = self.last_layout.as_ref() else {
+                return Handled::Ignored;
+            };
+            let outcome = self.panel.click(&mut self.state, layout, Point::new(x, y));
+            if let Handled::Event(event) = &outcome {
+                self.panel.apply(event);
+            }
+            outcome
+        }
+
+        fn handle_click(&mut self, x: f32, y: f32) -> Option<BottomPanelEvent> {
+            self.handle_click_event(x, y).into_event()
+        }
+    }
+
+    impl std::ops::Deref for Host {
+        type Target = BottomPanel;
+        fn deref(&self) -> &BottomPanel {
+            &self.panel
+        }
+    }
+
+    impl std::ops::DerefMut for Host {
+        fn deref_mut(&mut self) -> &mut BottomPanel {
+            &mut self.panel
+        }
+    }
+
     // ── Layout pre-loading helper ─────────────────────────────────────────────
 
-    /// Prime a controller's strip layout + bounds so handle_click works
+    /// Prime a host's strip layout + bounds so handle_click works
     /// without a real backend render. Measurement: each tab = 6 cells total
     /// (4 label + 2 padding/close), maximise segment = 3 cells — the same
     /// strip-relative `TabBarLayout` a painted `TabBar` primitive resolves.
-    fn prime_layout(ctrl: &mut BottomPanelController, strip_x: f32, strip_y: f32, bar_w: f32) {
+    fn prime_layout(ctrl: &mut Host, strip_x: f32, strip_y: f32, bar_w: f32) {
         use crate::primitives::tab_bar::{SegmentMeasure, TabMeasure};
 
         let tab_bar = ctrl.build_tab_bar();
@@ -857,12 +759,12 @@ mod tests {
     // ── Construction ─────────────────────────────────────────────────────────
 
     #[test]
-    fn new_controller_reflects_initial_state() {
+    fn from_config_reflects_initial_state() {
         let cfg = make_config(vec![tab("t0", "TERM", false)], "t0");
-        let ctrl = BottomPanelController::new(cfg);
+        let ctrl = Host::new(cfg);
         assert_eq!(ctrl.active_tab_id, "t0");
         assert!(!ctrl.maximised);
-        assert_eq!(ctrl.tabs().len(), 1);
+        assert_eq!(ctrl.tabs.len(), 1);
     }
 
     // ── Toggle maximised ─────────────────────────────────────────────────────
@@ -870,7 +772,7 @@ mod tests {
     #[test]
     fn toggle_maximised_flips_state_twice() {
         let cfg = make_config(vec![], "");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         ctrl.toggle_maximised();
         assert!(ctrl.maximised);
         ctrl.toggle_maximised();
@@ -880,13 +782,11 @@ mod tests {
     // ── Activate tab ─────────────────────────────────────────────────────────
 
     #[test]
-    fn activate_tab_changes_active_and_resets_scroll() {
+    fn activate_tab_changes_active() {
         let cfg = make_config(vec![tab("t0", "A", false), tab("t1", "B", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
-        ctrl.tab_scroll_offset = 2; // dirty state
-        ctrl.activate_tab("t1".to_string());
+        let mut ctrl = Host::new(cfg);
+        ctrl.activate_tab("t1");
         assert_eq!(ctrl.active_tab_id, "t1");
-        assert_eq!(ctrl.tab_scroll_offset, 0);
     }
 
     // ── Close tab ─────────────────────────────────────────────────────────────
@@ -901,63 +801,60 @@ mod tests {
             ],
             "t0",
         );
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         let removed = ctrl.close_tab("t0");
         assert!(removed);
-        assert_eq!(ctrl.tabs().len(), 2);
+        assert_eq!(ctrl.tabs.len(), 2);
         assert_eq!(ctrl.active_tab_id, "t1"); // fallback to first
     }
 
     #[test]
     fn close_inactive_tab_preserves_active() {
         let cfg = make_config(vec![tab("t0", "A", false), tab("t1", "B", true)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         ctrl.close_tab("t1");
         assert_eq!(ctrl.active_tab_id, "t0"); // not changed
-        assert_eq!(ctrl.tabs().len(), 1);
+        assert_eq!(ctrl.tabs.len(), 1);
     }
 
     #[test]
     fn close_unknown_tab_returns_false() {
         let cfg = make_config(vec![tab("t0", "A", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         assert!(!ctrl.close_tab("no-such-id"));
     }
 
     #[test]
     fn close_tab_also_accepts_a_widget_id_directly() {
         let cfg = make_config(vec![tab("t0", "A", true), tab("t1", "B", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         assert!(ctrl.close_tab(WidgetId::new("t0")));
-        assert_eq!(ctrl.tabs().len(), 1);
+        assert_eq!(ctrl.tabs.len(), 1);
     }
 
     // ── handle_click: no layout primed ────────────────────────────────────────
 
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn handle_click_without_render_returns_none() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         assert!(ctrl.handle_click(0.0, 0.0).is_none());
     }
 
     // ── handle_click: outside strip ──────────────────────────────────────────
 
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn handle_click_above_strip_is_none() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 10.0, 80.0);
         assert!(ctrl.handle_click(5.0, 5.0).is_none()); // y=5 < strip.y=10
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn handle_click_below_strip_is_none() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 10.0, 80.0);
         assert!(ctrl.handle_click(5.0, 12.0).is_none()); // y=12 >= strip.y+h=11
     }
@@ -965,14 +862,13 @@ mod tests {
     // ── handle_click: tab body ────────────────────────────────────────────────
 
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_inactive_tab_emits_tab_activated() {
         // t0 = [0..6], t1 = [6..12], maximise = [77..80]
         let cfg = make_config(
             vec![tab("t0", "AAAA", false), tab("t1", "BBBB", false)],
             "t0",
         );
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         let ev = ctrl.handle_click(9.0, 0.5); // x=9 → local=9 → tab1
         assert_eq!(ev, Some(BottomPanelEvent::TabActivated("t1".to_string())));
@@ -980,10 +876,9 @@ mod tests {
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_already_active_tab_returns_none() {
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         let ev = ctrl.handle_click(2.0, 0.5); // x=2 → tab0 (already active)
         assert_eq!(ev, None);
@@ -992,23 +887,21 @@ mod tests {
     // ── handle_click: close button ────────────────────────────────────────────
 
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_close_button_emits_tab_closed_and_removes_tab() {
         // tab0 closable: total=6, close=2 → close region [4..6]
         let cfg = make_config(vec![tab("t0", "AAAA", true)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         let ev = ctrl.handle_click(5.0, 0.5); // x=5 → close region of tab0
         assert_eq!(ev, Some(BottomPanelEvent::TabClosed("t0".to_string())));
-        assert_eq!(ctrl.tabs().len(), 0);
+        assert_eq!(ctrl.tabs.len(), 0);
     }
 
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_non_closable_tab_close_area_returns_none() {
         // tab0 NOT closable but measurement still gives it 6 cells total/0 close
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         // With close_width=0, there is no TabBarHit::TabClose for tab0
         // so clicking anywhere in [0..6] → Tab(0) → already active → None
@@ -1019,7 +912,6 @@ mod tests {
     // ── handle_click: non-zero strip origin (panel docked in main column) ─────
 
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_switches_and_closes_when_strip_offset_from_origin() {
         // Regression: the bottom panel docks in the main column, so the strip's
         // x origin is non-zero. Hits are in absolute coords, so clicks must be
@@ -1029,7 +921,7 @@ mod tests {
             vec![tab("t0", "AAAA", true), tab("t1", "BBBB", false)],
             "t0",
         );
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 20.0, 0.0, 100.0);
 
         // Click body of the inactive tab t1 → activates it.
@@ -1041,17 +933,16 @@ mod tests {
         prime_layout(&mut ctrl, 20.0, 0.0, 100.0);
         let ev = ctrl.handle_click(25.0, 0.5);
         assert_eq!(ev, Some(BottomPanelEvent::TabClosed("t0".to_string())));
-        assert_eq!(ctrl.tabs().len(), 1);
+        assert_eq!(ctrl.tabs.len(), 1);
     }
 
     // ── handle_click: maximise button ────────────────────────────────────────
 
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn click_on_maximise_toggles_and_emits_event() {
         // Maximise segment at [77..80] in 80-cell bar
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         let ev = ctrl.handle_click(78.0, 0.5);
         assert_eq!(ev, Some(BottomPanelEvent::MaximiseToggled));
@@ -1068,7 +959,7 @@ mod tests {
     #[test]
     fn build_tab_bar_shows_caret_when_docked() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
-        let ctrl = BottomPanelController::new(cfg);
+        let ctrl = Host::new(cfg);
         let bar = ctrl.build_tab_bar();
         assert_eq!(bar.right_segments[0].text, " ^ ");
     }
@@ -1076,7 +967,7 @@ mod tests {
     #[test]
     fn build_tab_bar_shows_down_arrow_when_maximised() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         ctrl.maximised = true;
         let bar = ctrl.build_tab_bar();
         assert_eq!(bar.right_segments[0].text, " v ");
@@ -1093,7 +984,7 @@ mod tests {
             vec![tab("t0", "TERM", false), tab("t1", "LOGS", true)],
             "t0",
         );
-        let ctrl = BottomPanelController::new(cfg);
+        let ctrl = Host::new(cfg);
         let bar = ctrl.build_tab_bar();
         assert!(
             !bar.tabs[0].is_closable,
@@ -1109,7 +1000,6 @@ mod tests {
     /// (which has no close bounds) falls through to tab-body click → returns None
     /// (already active). A closable tab's close region still emits TabClosed.
     #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
     fn mixed_closable_tabs_only_closable_tab_emits_close_event() {
         // t0: non-closable (close_w=0 → no close bounds)
         // t1: closable (close_w=2 → close region [10..12] in strip [0..80])
@@ -1118,7 +1008,7 @@ mod tests {
             vec![tab("t0", "AAAA", false), tab("t1", "BBBB", true)],
             "t0",
         );
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
 
         // Click anywhere in t0's region — body click on already-active tab → None.
@@ -1137,7 +1027,7 @@ mod tests {
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         let ev = ctrl.handle_click(11.0, 0.5); // x=11 → close region of t1 [10..12]
         assert_eq!(ev, Some(BottomPanelEvent::TabClosed("t1".to_string())));
-        assert_eq!(ctrl.tabs().len(), 1, "t1 removed; only t0 remains");
+        assert_eq!(ctrl.tabs.len(), 1, "t1 removed; only t0 remains");
     }
 
     // ── active_tab_id fallback ────────────────────────────────────────────────
@@ -1150,7 +1040,7 @@ mod tests {
             vec![tab("t0", "A", false), tab("t1", "B", false)],
             "no-such-id",
         );
-        let ctrl = BottomPanelController::new(cfg);
+        let ctrl = Host::new(cfg);
         assert_eq!(ctrl.active_tab_id, "t0", "should fall back to first tab");
     }
 
@@ -1159,7 +1049,7 @@ mod tests {
     #[test]
     fn new_uses_empty_string_when_no_tabs_and_unknown_id() {
         let cfg = make_config(vec![], "no-such-id");
-        let ctrl = BottomPanelController::new(cfg);
+        let ctrl = Host::new(cfg);
         assert_eq!(ctrl.active_tab_id, "", "no tabs → empty active_tab_id");
     }
 
@@ -1184,7 +1074,7 @@ mod tests {
     /// line height.
     #[test]
     fn render_tab_strip_height_uses_style_tab_height_on_gui() {
-        let mut ctrl = BottomPanelController::new(make_config(vec![tab("t0", "A", false)], "t0"));
+        let mut ctrl = Host::new(make_config(vec![tab("t0", "A", false)], "t0"));
         let mut backend = gui_backend();
         let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 800.0, 300.0));
         assert_eq!(layout.tab_strip_bounds.height, 35.0);
@@ -1194,7 +1084,7 @@ mod tests {
     /// row height.
     #[test]
     fn render_tab_strip_height_follows_a_set_style_override() {
-        let mut ctrl = BottomPanelController::new(make_config(vec![tab("t0", "A", false)], "t0"));
+        let mut ctrl = Host::new(make_config(vec![tab("t0", "A", false)], "t0"));
         let mut backend = gui_backend();
         backend.set_style(crate::Style::default().with_tab_height(50.0));
         let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 800.0, 300.0));
@@ -1204,20 +1094,20 @@ mod tests {
     /// On a cell grid (TUI), the row stays exactly one line tall.
     #[test]
     fn render_tab_strip_height_ignores_style_tab_height_on_a_cell_grid() {
-        let mut ctrl = BottomPanelController::new(make_config(vec![tab("t0", "A", false)], "t0"));
+        let mut ctrl = Host::new(make_config(vec![tab("t0", "A", false)], "t0"));
         let mut backend = crate::testing::RecordingBackend::new();
         backend.set_style(crate::Style::default().with_tab_height(50.0));
         let layout = ctrl.render(&mut backend, Rect::new(0.0, 0.0, 80.0, 24.0));
         assert_eq!(layout.tab_strip_bounds.height, 1.0);
     }
 
-    /// A real `render` caches the strip-relative layout the painted
+    /// A real paint returns the strip-relative layout the painted
     /// `TabBar` primitive resolved, so a click on tab 1's own close glyph
     /// closes *that* tab even when the panel is docked away from the
     /// viewport origin.
     #[test]
     fn a_close_glyph_click_after_a_real_render_closes_that_tab() {
-        let mut ctrl = BottomPanelController::new(make_config(
+        let mut ctrl = Host::new(make_config(
             vec![
                 tab("t0", "TERMINAL", true),
                 tab("t1", "OUTPUT", true),
@@ -1244,10 +1134,7 @@ mod tests {
             Handled::Event(BottomPanelEvent::TabClosed("t1".to_string()))
         );
         assert_eq!(
-            ctrl.tabs()
-                .iter()
-                .map(|t| t.id.as_str())
-                .collect::<Vec<_>>(),
+            ctrl.tabs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
             vec!["t0", "t2"]
         );
     }
@@ -1255,7 +1142,7 @@ mod tests {
     /// Same real-paint path on a tab body: the click activates that tab.
     #[test]
     fn a_tab_body_click_after_a_real_render_activates_that_tab() {
-        let mut ctrl = BottomPanelController::new(make_config(
+        let mut ctrl = Host::new(make_config(
             vec![
                 tab("t0", "TERMINAL", true),
                 tab("t1", "OUTPUT", true),
@@ -1295,7 +1182,7 @@ mod tests {
     /// impl — pins the externally-tagged, one-entry-map JSON a binding's
     /// own `on_bottom_panel_event` dict/JSON payload must keep matching
     /// byte-for-byte, the same pinning `app_shell`'s own golden test gives
-    /// [`crate::compose::app_shell::AppShellEvent`].
+    /// [`crate::compose::app_shell::ShellEvent`].
     #[test]
     fn bottom_panel_event_serializes_to_the_externally_tagged_dict_shape() {
         let cases = [
@@ -1327,14 +1214,14 @@ mod tests {
     #[test]
     fn handle_click_event_without_render_is_ignored() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         assert_eq!(ctrl.handle_click_event(0.0, 0.0), Handled::Ignored);
     }
 
     #[test]
     fn handle_click_event_outside_strip_is_ignored() {
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 10.0, 80.0);
         assert_eq!(ctrl.handle_click_event(5.0, 5.0), Handled::Ignored); // above strip
         assert_eq!(ctrl.handle_click_event(5.0, 12.0), Handled::Ignored); // below strip
@@ -1342,11 +1229,11 @@ mod tests {
 
     #[test]
     fn handle_click_event_outside_strip_horizontally_is_ignored() {
-        // Strip starts at x=20 (docked under the main column, as `AppShell`
+        // Strip starts at x=20 (docked under the main column, as `ShellView`
         // does), so a click at the strip's `y` but left or right of its `x`
         // range (the activity bar / sidebar columns) must not be claimed.
         let cfg = make_config(vec![tab("t0", "T", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 20.0, 0.0, 40.0);
         assert_eq!(ctrl.handle_click_event(5.0, 0.5), Handled::Ignored); // left of strip
         assert_eq!(ctrl.handle_click_event(70.0, 0.5), Handled::Ignored); // right of strip
@@ -1358,7 +1245,7 @@ mod tests {
             vec![tab("t0", "AAAA", false), tab("t1", "BBBB", false)],
             "t0",
         );
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         let outcome = ctrl.handle_click_event(9.0, 0.5); // x=9 → tab1
         assert_eq!(
@@ -1370,7 +1257,7 @@ mod tests {
     #[test]
     fn handle_click_event_on_already_active_tab_is_consumed() {
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         // Inside the panel's tab strip, but dead space — the already-active
         // tab's own body — so this is `Consumed`, not `Ignored`.
@@ -1380,7 +1267,7 @@ mod tests {
     #[test]
     fn handle_click_event_on_non_closable_close_area_is_consumed() {
         let cfg = make_config(vec![tab("t0", "AAAA", false)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         assert_eq!(ctrl.handle_click_event(5.0, 0.5), Handled::Consumed);
     }
@@ -1388,30 +1275,13 @@ mod tests {
     #[test]
     fn handle_click_event_on_close_button_is_event() {
         let cfg = make_config(vec![tab("t0", "AAAA", true)], "t0");
-        let mut ctrl = BottomPanelController::new(cfg);
+        let mut ctrl = Host::new(cfg);
         prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
         let outcome = ctrl.handle_click_event(5.0, 0.5); // close region of tab0
         assert_eq!(
             outcome,
             Handled::Event(BottomPanelEvent::TabClosed("t0".to_string()))
         );
-        assert_eq!(ctrl.tabs().len(), 0);
-    }
-
-    #[test]
-    #[allow(deprecated)] // exercises the `handle_click` shim directly.
-    fn deprecated_handle_click_still_adapts_to_option() {
-        let cfg = make_config(
-            vec![tab("t0", "AAAA", false), tab("t1", "BBBB", false)],
-            "t0",
-        );
-        let mut ctrl = BottomPanelController::new(cfg);
-        prime_layout(&mut ctrl, 0.0, 0.0, 80.0);
-        assert_eq!(
-            ctrl.handle_click(9.0, 0.5),
-            Some(BottomPanelEvent::TabActivated("t1".to_string()))
-        );
-        assert_eq!(ctrl.handle_click(9.0, 0.5), None); // already active now — consumed, no event
-        assert_eq!(ctrl.handle_click(5.0, 5.0), None); // ignored, outside strip
+        assert_eq!(ctrl.tabs.len(), 0);
     }
 }

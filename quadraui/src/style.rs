@@ -81,7 +81,7 @@
 //! A second group of five tokens — [`Self::tab_height`],
 //! [`Self::status_bar_height`], [`Self::activity_bar_width`],
 //! [`Self::row_height`] and [`Self::toolbar_height`] — sizes shell
-//! *chrome* (`AppShell`'s tab strip/status bar/activity bar/sidebar
+//! *chrome* (`ShellView`'s tab strip/status bar/activity bar/sidebar
 //! header, `SidebarPanel`'s own header, and `List`/`TreeView`/
 //! `DataTable` row pitch) rather than overlay padding/radius/border; no
 //! overlay primitive reads them. They follow the same cell-grid-no-op

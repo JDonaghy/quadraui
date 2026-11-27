@@ -1,11 +1,11 @@
-//! Backend-agnostic app code for the AppShell example
+//! Backend-agnostic app code for the ShellView example
 //! ([`tui_shell`] / [`gtk_shell`]).
 //!
 //! Demonstrates a VS Code-style app shell with:
 //! - 3 sidebar panels (Explorer, Search, Source Control) each backed
 //!   by a [`SidebarSystem`] with real tree rows
 //! - 1 bottom activity bar item (Settings)
-//! - Toggle/switch/resize behaviour driven by [`AppShell`]
+//! - Toggle/switch/resize behaviour driven by [`ShellView`]
 //! - Status bar showing last action
 //!
 //! Controls:
@@ -17,7 +17,7 @@
 //! - `↑` / `↓`                  scroll / select in sidebar
 //! - `q` / `Esc`                quit
 
-use quadraui::compose::app_shell::{AppShell, AppShellEvent, PanelDefinition};
+use quadraui::compose::app_shell::{PanelDefinition, ShellEvent, ShellView, ShellViewState};
 use quadraui::DrawsPrimitives;
 use quadraui::{
     ActivityBarEvent, AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode,
@@ -26,7 +26,8 @@ use quadraui::{
 };
 
 pub struct ShellApp {
-    shell: AppShell,
+    shell: ShellView,
+    shell_state: ShellViewState,
     explorer: SidebarSystem,
     search: SidebarSystem,
     git: SidebarSystem,
@@ -64,7 +65,7 @@ impl ShellApp {
 
         // All widths are in line_height multiples — portable across
         // TUI (1 lh = 1 cell) and GTK (1 lh ≈ 16px).
-        let shell = AppShell::new(panels, 20.0)
+        let shell = ShellView::new(panels, 20.0)
             .with_bottom_items(bottom)
             .with_min_width(8.0)
             .with_max_width(50.0)
@@ -76,6 +77,7 @@ impl ShellApp {
 
         Self {
             shell,
+            shell_state: ShellViewState::default(),
             explorer,
             search,
             git,
@@ -152,7 +154,7 @@ impl AppLogic for ShellApp {
         let shell_area = Rect::new(0.0, 0.0, viewport.width, viewport.height - status_h);
         let status_area = Rect::new(0.0, viewport.height - status_h, viewport.width, status_h);
 
-        let layout = self.shell.render(backend, shell_area);
+        let layout = self.shell.render(&self.shell_state, backend, shell_area);
 
         if let Some(sidebar_bounds) = layout.sidebar_content_bounds {
             if self.shell.sidebar_visible() {
@@ -199,40 +201,43 @@ impl AppLogic for ShellApp {
         let status_h = lh;
         let shell_area = Rect::new(0.0, 0.0, viewport.width, viewport.height - status_h);
 
-        match self.shell.handle(&event, backend, shell_area) {
-            AppShellEvent::PanelChanged { panel_id } => {
+        match self
+            .shell
+            .handle_event(&mut self.shell_state, &event, backend, shell_area)
+        {
+            ShellEvent::PanelChanged { panel_id } => {
                 self.last_message = format!("Panel: {}", panel_id.as_str());
                 return Reaction::Redraw;
             }
-            AppShellEvent::SidebarHidden => {
+            ShellEvent::SidebarHidden => {
                 self.last_message = "Sidebar hidden".into();
                 return Reaction::Redraw;
             }
-            AppShellEvent::SidebarResized { new_width } => {
+            ShellEvent::SidebarResized { new_width } => {
                 self.last_message = format!("Sidebar width: {:.0}", new_width);
                 return Reaction::Redraw;
             }
-            AppShellEvent::BottomPanelResized { new_height } => {
+            ShellEvent::BottomPanelResized { new_height } => {
                 self.last_message = format!("Bottom panel: {new_height:.0}px");
                 return Reaction::Redraw;
             }
-            AppShellEvent::BottomPanelHidden => {
+            ShellEvent::BottomPanelHidden => {
                 self.last_message = "Bottom panel hidden".into();
                 return Reaction::Redraw;
             }
-            AppShellEvent::BottomItemClicked { id } => {
+            ShellEvent::BottomItemClicked { id } => {
                 self.last_message = format!("Settings clicked ({})", id.as_str());
                 return Reaction::Redraw;
             }
-            AppShellEvent::Consumed => return Reaction::Redraw,
-            AppShellEvent::Ignored => {}
+            ShellEvent::Consumed => return Reaction::Redraw,
+            ShellEvent::Ignored => {}
             _ => {}
         }
 
         // ── Activity-bar keyboard navigation ─────────────────────────────
         // When the bar is focused the backend emits ActivityBar events
         // instead of raw KeyPressed; the consumer maps key strings to the
-        // AppShell navigation methods.
+        // ShellView navigation methods.
         if let UiEvent::ActivityBar(_, ActivityBarEvent::KeyPressed { ref key, .. }) = event {
             match key.as_str() {
                 "j" | "Down" => {
@@ -261,13 +266,13 @@ impl AppLogic for ShellApp {
                     if let Some(ev) = self.shell.activity_activate_selected() {
                         self.shell.set_activity_keyboard_focused(false);
                         match ev {
-                            AppShellEvent::PanelChanged { ref panel_id } => {
+                            ShellEvent::PanelChanged { ref panel_id } => {
                                 self.last_message = format!("Panel: {}", panel_id.as_str());
                             }
-                            AppShellEvent::SidebarHidden => {
+                            ShellEvent::SidebarHidden => {
                                 self.last_message = "Sidebar hidden".into();
                             }
-                            AppShellEvent::BottomItemClicked { ref id } => {
+                            ShellEvent::BottomItemClicked { ref id } => {
                                 self.last_message = format!("Settings clicked ({})", id.as_str());
                             }
                             _ => {}
@@ -310,7 +315,7 @@ impl AppLogic for ShellApp {
 
         // Forward events to the active sidebar panel.
         if self.shell.sidebar_visible() {
-            let layout = self.shell.layout(shell_area, lh);
+            let layout = self.shell.shell_layout(shell_area, lh);
             if let Some(sidebar_bounds) = layout.sidebar_content_bounds {
                 if let Some(sidebar) = self.active_sidebar_mut() {
                     match sidebar.handle(&event, backend, sidebar_bounds) {
@@ -414,7 +419,7 @@ fn build_search_sidebar() -> SidebarSystem {
     sidebar.set_rows(
         1,
         vec![
-            file_row(&[0], 0, "\"AppShell\""),
+            file_row(&[0], 0, "\"ShellView\""),
             file_row(&[1], 0, "\"draw_activity_bar\""),
             file_row(&[2], 0, "\"SidebarSystem\""),
         ],

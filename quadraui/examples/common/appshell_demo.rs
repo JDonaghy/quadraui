@@ -1,4 +1,4 @@
-//! Minimal AppShell runner demo — proves `run_with_shell()` pattern.
+//! Minimal ShellView runner demo — proves `run_with_shell()` pattern.
 //!
 //! The consumer implements [`ShellApp`] (~30 lines) instead of
 //! `AppLogic` (~80 lines). The shell owns activity bar, sidebar header,
@@ -14,17 +14,17 @@
 //! `request_activity_keyboard_focus()`; a different consumer could bind
 //! `Ctrl+W` instead of `Tab` with no quadraui changes.
 //!
-//! `Ctrl+B` demonstrates direct access to the real `AppShell` instance:
+//! `Ctrl+B` demonstrates direct access to the real `ShellView` instance:
 //! [`ShellContext::shell_mut`] reaches the actual shell that quadraui's
 //! internal `ShellAdapter` renders, so a consumer-driven binding can call
 //! `ctx.shell_mut().toggle_sidebar()` directly instead of tracking a shadow
-//! `AppShell` that can drift from what's on screen.
+//! `ShellView` that can drift from what's on screen.
 
 use quadraui::DrawsPrimitives;
 use std::cell::Cell;
 use std::rc::Rc;
 
-use quadraui::compose::app_shell::{AppShellEvent, AppShellLayout, PanelDefinition};
+use quadraui::compose::app_shell::{PanelDefinition, ShellEvent, ShellLayout};
 use quadraui::{
     Backend, Color, Icon, Key, Modifiers, NamedKey, Reaction, Rect, ShellApp, ShellConfig,
     ShellContext, StatusBar, StatusBarSegment, UiEvent, WidgetId,
@@ -54,8 +54,8 @@ impl ActivityProbe {
         self.bounds.get()
     }
 
-    /// `AppShell::hovered_activity_idx()` as of the last pointer move
-    /// this app saw. `AppShell` reports `MouseMoved` as `Ignored`, so the
+    /// `ShellView::hovered_activity_idx()` as of the last pointer move
+    /// this app saw. `ShellView` reports `MouseMoved` as `Ignored`, so the
     /// event reaches `ShellApp::handle` *after* the shell has already
     /// updated its hover state — making this an honest read of what the
     /// shell decided, not a re-derivation.
@@ -104,7 +104,7 @@ impl AppShellDemo {
         let settings = WidgetId::new("panel:settings");
 
         ShellConfig::new(
-            "AppShell Demo",
+            "ShellView Demo",
             vec![
                 PanelDefinition {
                     id: explorer,
@@ -156,7 +156,7 @@ impl AppShellDemo {
     /// `render_content` draws exactly this list, so a test can snapshot
     /// the app's contribution to the window without a backend and still
     /// be looking at what a real frame contains.
-    pub fn content_bars(&self, layout: &AppShellLayout, lh: f32) -> Vec<(Rect, StatusBar)> {
+    pub fn content_bars(&self, layout: &ShellLayout, lh: f32) -> Vec<(Rect, StatusBar)> {
         fn bar(id: &str, left: StatusBarSegment, right: Vec<StatusBarSegment>) -> StatusBar {
             StatusBar {
                 id: WidgetId::new(id),
@@ -260,7 +260,7 @@ impl Default for AppShellDemo {
 }
 
 impl ShellApp for AppShellDemo {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let lh = backend.line_height();
         // Publish the activity bar's real painted bounds for regression tests.
         self.probe.bounds.set(Some(layout.activity_bar_bounds));
@@ -305,9 +305,9 @@ impl ShellApp for AppShellDemo {
                 self.last_event = "Requested programmatic switch to panel:git".into();
                 Reaction::Redraw
             }
-            // `Ctrl+B`: `ctx.shell_mut()` reaches the real `AppShell` the
+            // `Ctrl+B`: `ctx.shell_mut()` reaches the real `ShellView` the
             // `ShellAdapter` renders, so this app can call `toggle_sidebar()`
-            // directly without tracking a shadow `AppShell` that could drift from
+            // directly without tracking a shadow `ShellView` that could drift from
             // what's actually painted.
             UiEvent::KeyPressed {
                 key: Key::Char('b'),
@@ -346,11 +346,11 @@ impl ShellApp for AppShellDemo {
                 };
                 Reaction::Redraw
             }
-            // Pointer moves are `Ignored` by `AppShell` (it updates hover and passes
+            // Pointer moves are `Ignored` by `ShellView` (it updates hover and passes
             // the event on), so by the time we see one the shell's hover state is
             // already settled — record it for hover regression tests.
             UiEvent::MouseMoved { .. } => {
-                self.probe.hovered.set(ctx.shell().hovered_activity_idx());
+                self.probe.hovered.set(ctx.hovered_activity_idx());
                 Reaction::Continue
             }
             UiEvent::MouseDown { position, .. } => {
@@ -371,9 +371,9 @@ impl ShellApp for AppShellDemo {
         }
     }
 
-    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, ctx: &ShellContext) {
+    fn on_shell_event_ctx(&mut self, event: &ShellEvent, ctx: &ShellContext) {
         self.last_event = match event {
-            AppShellEvent::PanelChanged { panel_id } => {
+            ShellEvent::PanelChanged { panel_id } => {
                 // `on_shell_event_ctx` receives a `ShellContext`, so an app can push
                 // shell state back on the same frame this notification fires — no
                 // intervening `handle` dispatch required. Reveal the title bar the
@@ -383,20 +383,20 @@ impl ShellApp for AppShellDemo {
                 }
                 format!("Panel: {}", panel_id.as_str())
             }
-            AppShellEvent::SidebarHidden => "Sidebar hidden".into(),
-            AppShellEvent::SidebarResized { new_width } => {
+            ShellEvent::SidebarHidden => "Sidebar hidden".into(),
+            ShellEvent::SidebarResized { new_width } => {
                 format!("Resized: {new_width:.0}px")
             }
-            AppShellEvent::BottomPanelResized { new_height } => {
+            ShellEvent::BottomPanelResized { new_height } => {
                 format!("Bottom panel: {new_height:.0}px")
             }
-            AppShellEvent::BottomPanelHidden => "Bottom panel hidden".into(),
-            // `AppShell` itself never opens the sidebar for a bottom-item click
+            ShellEvent::BottomPanelHidden => "Bottom panel hidden".into(),
+            // `ShellView` itself never opens the sidebar for a bottom-item click
             // (a notifications bell shouldn't have to become the sidebar's owner
             // just because it was clicked) — an app that does want its bottom item
             // to own the sidebar opts in explicitly by calling `show_panel` with
             // the clicked id, exactly like a top-panel switch.
-            AppShellEvent::BottomItemClicked { id } => {
+            ShellEvent::BottomItemClicked { id } => {
                 ctx.shell_mut().show_panel(id);
                 format!("Bottom: {}", id.as_str())
             }

@@ -1468,7 +1468,7 @@ impl Form {
 ///
 /// With the `layout` feature this runs through [`crate::flex`]'s shared
 /// flexbox engine, so `Form` composes with the same engine
-/// [`crate::primitives::Toolbar`] and [`crate::compose::AppShell`] use.
+/// [`crate::primitives::Toolbar`] and [`crate::compose::ShellView`] use.
 /// Without it, the same arithmetic is done by hand. Both arms are
 /// covered by this module's exact-value tests to guarantee they agree
 /// bit-for-bit.

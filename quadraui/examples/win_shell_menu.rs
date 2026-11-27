@@ -1,10 +1,10 @@
 //! Win-GUI runner for the shell + MenuSystem regression demo.
 //!
 //! Open the "File" menu and click an item — including the ones drawn
-//! over the activity bar strip on the left, which `AppShell`'s chrome
+//! over the activity bar strip on the left, which `ShellView`'s chrome
 //! hit-testing must not swallow.
 //!
-//! The menu bar lives in `AppShell`'s title-bar band
+//! The menu bar lives in `ShellView`'s title-bar band
 //! (`ShellConfig::with_title_bar`) — the same band `WinBackend::
 //! nc_hit_test` reclassifies from `HTCAPTION` to `HTCLIENT` over anything
 //! a host paints inside it, so a click on "File" reaches the app as an

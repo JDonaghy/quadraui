@@ -1,4 +1,4 @@
-"""AppShell-shaped demo: one `ListView` holding 10,000 rows, scrolled
+"""ShellView-shaped demo: one `ListView` holding 10,000 rows, scrolled
 smoothly from Python.
 
 `AppShellDemo` holds `scroll_offset`/`selected_idx` as plain Python

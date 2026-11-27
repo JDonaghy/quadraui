@@ -9,11 +9,11 @@
 //! Painting goes through [`quadraui::ScreenLayout`]/[`quadraui::Surface`]
 //! — the same declarative frame-list path a multi-primitive screen uses —
 //! rather than a raw `Backend::draw_*` call, and
-//! [`quadraui::AppShellLayout::status_bar_bounds`] below is computed for
+//! [`quadraui::ShellLayout::status_bar_bounds`] below is computed for
 //! us, so there is no viewport arithmetic anywhere in this file either.
 
 use quadraui::prelude::*;
-use quadraui::{AppShellLayout, ScreenLayout, Surface};
+use quadraui::{ScreenLayout, ShellLayout, Surface};
 
 /// The whole app: one counter of how many keys have been pressed.
 pub struct App {
@@ -41,7 +41,7 @@ impl Default for App {
 }
 
 impl ShellApp for App {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let Some(rect) = layout.status_bar_bounds else {
             return;
         };

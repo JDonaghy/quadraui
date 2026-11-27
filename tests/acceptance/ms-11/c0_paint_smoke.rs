@@ -45,7 +45,7 @@
 //               and paints no text contributes **nothing** to the frame
 //               inventory, and `zones()` stays empty until a paint site
 //               calls `Backend::register_zone` (quadraui#490 — today only
-//               `AppShell::render` does).
+//               `ShellView::render` does).
 //
 // That is why the chrome-only descriptors below (scrollbar, terminal
 // divider, drop overlay) are the sharp end of contract §5b: on a pixel
@@ -604,7 +604,7 @@ mod ms11_492_c0_paint_smoke {
     //
     // RED TODAY for the chrome-only descriptors on the pixel backend. A
     // GTK scrollbar / terminal divider / drop overlay paints no text, and
-    // no paint site outside `AppShell::render` calls
+    // no paint site outside `ShellView::render` calls
     // `Backend::register_zone` (quadraui#490), so the frame that drew it is
     // byte-identical to the frame that took the trait's no-op default.
     // That indistinguishability is the whole premise of #492.

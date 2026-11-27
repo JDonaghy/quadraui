@@ -95,7 +95,7 @@ pub mod run;
 #[cfg(target_os = "windows")]
 mod scrollbar;
 pub mod services;
-/// `run_with_shell()`: composes a [`crate::ShellApp`] into an `AppShell`
+/// `run_with_shell()`: composes a [`crate::ShellApp`] into a `ShellView`
 /// and drives it through the Win32 message loop — the Windows
 /// analogue of `gtk::shell_runner` / `tui::shell_runner` /
 /// `macos::shell_runner`. `pub` (not target-gated) for the same

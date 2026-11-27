@@ -188,7 +188,7 @@ fn appshell_demo_renders_shell_chrome_via_driver_with_shell() {
 
 /// `Tab` focuses the activity bar, `j` `j` moves the keyboard cursor down
 /// two items (explorer → search → git), and `Enter` activates the
-/// selection — switching the *real* `AppShell` panel, visible as the
+/// selection — switching the *real* `ShellView` panel, visible as the
 /// sidebar header flipping from "EXPLORER" to "SOURCE CONTROL".
 ///
 /// This is the acceptance criterion that the macOS test path and the live
@@ -254,7 +254,7 @@ fn appshell_demo_tab_focus_then_jj_enter_switches_panel() {
     );
 }
 
-/// `ctx.shell_mut()` reaches the real `AppShell` instance `ShellAdapter`
+/// `ctx.shell_mut()` reaches the real `ShellView` instance `ShellAdapter`
 /// renders, so `Ctrl+B` hides/shows the sidebar `driver_with_shell` actually
 /// painted — not a shadow copy. Mirrors `tests/tui_example_driver.rs` /
 /// `tests/gtk_example_driver.rs`'s `appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar`.
@@ -272,7 +272,7 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
     assert_eq!(
         reaction,
         Reaction::Redraw,
-        "Ctrl+B toggling the real AppShell must redraw"
+        "Ctrl+B toggling the real ShellView must redraw"
     );
     assert!(
         driver.find_bounds("(sidebar content here)").is_none(),
@@ -948,7 +948,7 @@ fn tab_icons_demo_closing_the_last_active_tab_activates_its_left_neighbour() {
 
 // ─── flex-layout packing stays identical on macOS ──────────────────────────
 //
-// `AppShell`, `Form` and `Toolbar` each route their 1D position arithmetic
+// `ShellView`, `Form` and `Toolbar` each route their 1D position arithmetic
 // through `crate::flex::pack_1d` when the `layout` feature is enabled, and
 // through the original hand-rolled arithmetic when it is not. The three
 // tests below are the macOS twins of `tests/tui_example_driver.rs`'s
@@ -959,7 +959,7 @@ fn tab_icons_demo_closing_the_last_active_tab_activates_its_left_neighbour() {
 // character-grid `screen()` string, since `MacDriver` has no grid to scan:
 // there is no `row_containing`/divider-column-scan equivalent here, and
 // activity-bar icons paint as Nerd-Font glyphs (not the ASCII `E`/`S`/`G`
-// fallback TUI's test keys off), so the AppShell band check below is
+// fallback TUI's test keys off), so the ShellView band check below is
 // `find_bounds` on painted *text* chrome only (sidebar header, main-area
 // hint), not the activity bar itself.
 

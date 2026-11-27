@@ -12,7 +12,7 @@
 //! set_editor_font` no-ops there. This mirrors existing GTK-only runner capabilities
 //! (e.g. CSD window-drag/resize) that also shipped without a TUI demo.
 
-use quadraui::compose::app_shell::AppShellLayout;
+use quadraui::compose::app_shell::ShellLayout;
 use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, Color, Editor, EditorCursor, EditorCursorPos, EditorCursorShape, EditorLine,
@@ -109,7 +109,7 @@ impl Default for EditorFontDemo {
 }
 
 impl ShellApp for EditorFontDemo {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let lh = backend.line_height();
         let main = layout.main_content_bounds;
         let editor_rect = Rect::new(main.x, main.y, main.width, main.height - lh);

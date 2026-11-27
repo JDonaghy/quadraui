@@ -1372,9 +1372,9 @@ impl WinBackend {
     /// Reserved [`WidgetId`] a host registers (via [`Backend::register_zone`])
     /// for the drawn title-bar band it wants Windows to treat as a native
     /// caption — the drag-to-move / double-click-to-maximize row. Matches
-    /// [`crate::compose::app_shell::AppShell`]'s own `"app-shell:title-bar"`
-    /// zone id, so a host built on `AppShell` gets [`Self::nc_hit_test`]
-    /// for free; a bespoke host (one that doesn't use `AppShell`) opts in
+    /// [`crate::compose::app_shell::ShellView`]'s own `"app-shell:title-bar"`
+    /// zone id, so a host built on `ShellView` gets [`Self::nc_hit_test`]
+    /// for free; a bespoke host (one that doesn't use `ShellView`) opts in
     /// with one `register_zone` call of its own each frame.
     pub const TITLE_BAR_DRAG_ZONE: &'static str = "app-shell:title-bar";
 
@@ -1406,7 +1406,7 @@ impl WinBackend {
     ///   move/maximize gesture.
     ///
     /// Zones whose bounds are *not* strictly smaller than the band (e.g.
-    /// `AppShell`'s own `"app-shell:window"` whole-window zone, which
+    /// `ShellView`'s own `"app-shell:window"` whole-window zone, which
     /// necessarily contains every point in the band too) are never
     /// treated as an exclusion — otherwise every point in the band would
     /// read as "covered by another zone" and this would always answer
@@ -1440,7 +1440,7 @@ impl WinBackend {
     // screen bounds are known: right after its `draw_*` call. Called
     // unconditionally — a zone outside the band is simply never found by
     // `nc_hit_test`'s `band.bounds.contains(point)` check, so this is harmless
-    // for the common case and mirrors how `AppShell::render` already registers
+    // for the common case and mirrors how `ShellView::render` already registers
     // every activity-bar item's zone regardless of position.
 
     // ── Paint-time text-run recording ───────────────────────────────────
@@ -5675,7 +5675,7 @@ mod tests {
         assert_eq!(b.nc_hit_test(pad_x, 16.0), Some(true));
     }
 
-    /// A coarser zone that contains the whole band (e.g. `AppShell`'s own
+    /// A coarser zone that contains the whole band (e.g. `ShellView`'s own
     /// `"app-shell:window"` whole-window zone) must **not** be treated as
     /// an exclusion — otherwise every point in the band would read as
     /// "covered by another zone" and this would always answer

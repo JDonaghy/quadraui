@@ -3700,11 +3700,11 @@ mod win32 {
         /// `Backend::register_zone`/`draw_dyn` itself) — this one
         /// proves the same real `WM_NCHITTEST` round trip when the band
         /// comes from the actual consumer-shaped composition instead:
-        /// `AppShell`'s title-bar band (`ShellConfig::with_title_bar`)
+        /// `ShellView`'s title-bar band (`ShellConfig::with_title_bar`)
         /// hosting a `MenuSystem` menu bar, run through the real
         /// `win::shell_runner::run_with_shell` — the same path
         /// `examples/win_shell_menu.rs` exercises. A gap in how
-        /// `AppShell::render`/`MenuSystem::render` register their own
+        /// `ShellView::render`/`MenuSystem::render` register their own
         /// band-content zones (as opposed to a gap in `nc_hit_test`
         /// itself, which the test above already covers) would show up
         /// here even if that one still passed.
@@ -3719,7 +3719,7 @@ mod win32 {
         }
 
         impl crate::ShellApp for LiveShellMenuApp {
-            fn render_content(&self, backend: &mut dyn Backend, layout: &crate::AppShellLayout) {
+            fn render_content(&self, backend: &mut dyn Backend, layout: &crate::ShellLayout) {
                 let Some(bar_rect) = layout.title_bar_bounds else {
                     return;
                 };
@@ -3874,7 +3874,7 @@ mod win32 {
 
             assert!(
                 !is_caption,
-                "File menu item (through AppShell + MenuSystem): expected \
+                "File menu item (through ShellView + MenuSystem): expected \
                  not HTCAPTION (HTCLIENT) but WM_NCHITTEST returned {:#x} — \
                  a real click here would be swallowed as a title-bar drag \
                  instead of opening the dropdown (quadraui#1307)",

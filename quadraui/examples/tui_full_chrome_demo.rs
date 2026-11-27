@@ -1,4 +1,4 @@
-//! TUI runner for the full-chrome AppShell demo.
+//! TUI runner for the full-chrome ShellView demo.
 //!
 //! Clicking or double-clicking the title bar exercises the same code path
 //! as GTK but is a documented no-op. Edge-resize clicking runs the same call

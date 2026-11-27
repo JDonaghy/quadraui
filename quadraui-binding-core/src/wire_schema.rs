@@ -4131,7 +4131,7 @@ pub fn schema() -> Vec<DefJson> {
             ("AppMenu", tup(vec![re("WidgetId"), any_()])),
             // A shell, bottom-panel or workspace intent rides as the
             // event's own externally-tagged serde shape.
-            ("AppShell", tup(vec![re("WidgetId"), any_()])),
+            ("ShellView", tup(vec![re("WidgetId"), any_()])),
             ("BottomPanel", tup(vec![re("WidgetId"), any_()])),
             ("Workspace", tup(vec![re("WidgetId"), any_()])),
             ("Toolbar", tup(vec![re("WidgetId"), re("ToolbarEvent")])),
@@ -7148,7 +7148,7 @@ mod coverage {
                 "PathPicker",
                 "DualModePalette",
                 "AppMenu",
-                "AppShell",
+                "ShellView",
                 "BottomPanel",
                 "Workspace",
                 "Toolbar",

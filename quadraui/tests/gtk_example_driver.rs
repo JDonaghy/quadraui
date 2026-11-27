@@ -214,7 +214,7 @@ fn appshell_demo_resize_divider_is_solid_with_no_gaps() {
         .zones()
         .iter()
         .find(|z| z.id == WidgetId::new("app-shell:divider"))
-        .expect("AppShell::render should register the divider's chrome zone")
+        .expect("ShellView::render should register the divider's chrome zone")
         .bounds;
     assert!(
         divider.height > 8.0,
@@ -242,7 +242,7 @@ fn appshell_demo_resize_divider_is_solid_with_no_gaps() {
 
 /// `Tab` focuses the activity bar, `j` `j` moves the keyboard cursor down
 /// two items (explorer → search → git), and `Enter` activates the
-/// selection — switching the *real* `AppShell` panel, visible as the
+/// selection — switching the *real* `ShellView` panel, visible as the
 /// sidebar header flipping from "EXPLORER" to "SOURCE CONTROL".
 ///
 /// This is the acceptance criterion that the GTK test path and the live
@@ -405,7 +405,7 @@ fn appshell_demo_bottom_item_show_panel_retitles_sidebar_header() {
     );
 }
 
-/// `ctx.shell_mut()` reaches the real `AppShell` instance `ShellAdapter`
+/// `ctx.shell_mut()` reaches the real `ShellView` instance `ShellAdapter`
 /// renders, so `Ctrl+B` hides/shows the sidebar `driver_with_shell` actually
 /// painted — not a shadow copy. Mirrors `tests/tui_example_driver.rs`'s
 /// `appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar`.
@@ -423,7 +423,7 @@ fn appshell_demo_ctrl_b_toggles_the_real_rendered_sidebar() {
     assert_eq!(
         reaction,
         Reaction::Redraw,
-        "Ctrl+B toggling the real AppShell must redraw"
+        "Ctrl+B toggling the real ShellView must redraw"
     );
     assert!(
         driver.find_bounds("(sidebar content here)").is_none(),
@@ -710,7 +710,7 @@ fn data_table_divider_before_last_column_widens_on_right_drag() {
     );
 }
 
-// ─── WorkspaceDemo: `WorkspaceController` inside an AppShell panel ──────────
+// ─── WorkspaceDemo: `WorkspaceController` inside a ShellView panel ──────────
 //
 // GTK twin of `tests/tui_example_driver.rs`'s workspace set. Same
 // `ShellApp`, so the controller is driven through the Pango-measured

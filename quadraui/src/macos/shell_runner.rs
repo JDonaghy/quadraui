@@ -1,4 +1,4 @@
-//! macOS shell runner: `run_with_shell()` wraps a [`ShellApp`] in an AppShell and
+//! macOS shell runner: `run_with_shell()` wraps a [`ShellApp`] in a ShellView and
 //! drives it through the AppKit event loop, forwarding its `Result<(), RunError>`.
 //!
 //! The shared [`crate::shell_adapter::ShellAdapter`] owns all runtime logic
@@ -7,7 +7,7 @@
 //! [`ShellConfig`]. This module only wires the adapter into the macOS event
 //! loop, mirroring `tui::shell_runner` / `gtk::shell_runner`.
 //!
-//! `MacBackend` already paints everything `AppShell` renders (its
+//! `MacBackend` already paints everything `ShellView` renders (its
 //! activity bar, status bars and menu bar through the widget contract),
 //! so no new rasteriser
 //! work is needed here — this is pure composition, same as the TUI/GTK
@@ -26,7 +26,7 @@ use super::run::RunConfig;
 use crate::shell::{ShellApp, ShellConfig};
 use crate::{shell_adapter::build_shell_adapter, RunError};
 
-/// Run a [`ShellApp`] with AppShell chrome on the macOS backend.
+/// Run a [`ShellApp`] with ShellView chrome on the macOS backend.
 ///
 /// `config.app_icon` (set via [`ShellConfig::with_app_icon`])
 /// reaches [`RunConfig::app_icon`] the same way `config.title` /
@@ -49,7 +49,7 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) -> Res
 
 /// Build a [`ShellApp`] as a [`crate::macos::run::MacRunner`] instead of
 /// entering [`run_with_shell`]'s blocking `NSApplication::run()` loop —
-/// for a host that wants the AppShell chrome but also needs
+/// for a host that wants the ShellView chrome but also needs
 /// [`crate::macos::run::MacRunner::attach_control`] (see
 /// [`crate::control`]'s module doc), which `run_with_shell` (which owns
 /// the process for its whole lifetime) can't give. Mirrors

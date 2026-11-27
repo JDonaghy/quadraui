@@ -1,20 +1,20 @@
-//! Pure layout geometry behind `AppShell`'s title-bar / status-bar /
+//! Pure layout geometry behind `ShellView`'s title-bar / status-bar /
 //! command-line / activity-bar / sidebar / divider / main-content carve.
 //!
 //! Split out of `app_shell.rs` so the carve reads as one function in its
-//! own file instead of sitting in the middle of `AppShell`'s builder,
+//! own file instead of sitting in the middle of `ShellView`'s builder,
 //! event and keyboard-navigation methods. [`compute_layout`] takes a
-//! read-only snapshot of exactly the `AppShell` fields it needs
-//! ([`ShellLayoutConfig`]) rather than `&AppShell` itself, so this module
-//! owns no shell state of its own — `AppShell::layout` builds the
+//! read-only snapshot of exactly the `ShellView` fields it needs
+//! ([`ShellLayoutConfig`]) rather than `&ShellView` itself, so this module
+//! owns no shell state of its own — `ShellView::shell_layout` builds the
 //! snapshot fresh on every call and is this function's only caller.
 
 use crate::types::WidgetId;
 use crate::{Rect, Style};
 
-use super::app_shell::{AppShellLayout, BottomBand, ShellPosition};
+use super::app_shell::{BottomBand, ShellLayout, ShellPosition};
 
-/// Read-only snapshot of the `AppShell` fields [`compute_layout`] reads.
+/// Read-only snapshot of the `ShellView` fields [`compute_layout`] reads.
 /// Borrows `bottom_bands` rather than cloning it — the carve only ever
 /// iterates it once, in bottom-up order.
 pub(crate) struct ShellLayoutConfig<'a> {
@@ -46,21 +46,21 @@ pub(crate) struct ShellLayoutConfig<'a> {
 /// `snap` quantizes a native-unit extent to what the caller's backend
 /// actually paints: the identity function on pixel backends (GUI paints
 /// fractional heights exactly), `.round()` on a cell grid (TUI, which
-/// snaps to whole rows). `AppShell::layout` derives this from `line_height`
-/// alone (no [`crate::Backend`] in hand); `AppShell::render`/
-/// `AppShell::handle` pass `backend.snap_height` directly — the two agree
+/// snaps to whole rows). `ShellView::shell_layout` derives this from `line_height`
+/// alone (no [`crate::Backend`] in hand); `ShellView::render`/
+/// `ShellView::handle_event` pass `backend.snap_height` directly — the two agree
 /// because both apply the same above-one-line-height threshold.
 ///
 /// Returns the resolved layout plus the per-band bottom-band bounds in the
 /// same bottom-up order `cfg.bottom_bands` was given, for the caller to
-/// cache (`AppShell::cached_bottom_band_bounds`).
+/// cache (`ShellView::cached_bottom_band_bounds`).
 pub(crate) fn compute_layout(
     cfg: &ShellLayoutConfig<'_>,
     area: Rect,
     line_height: f32,
     style: &Style,
     snap: &dyn Fn(f32) -> f32,
-) -> (AppShellLayout, Vec<(WidgetId, Rect)>) {
+) -> (ShellLayout, Vec<(WidgetId, Rect)>) {
     // `activity_bar_width_px`, `title_bar_min_px` and `status_bar_height_px`
     // are literal screen pixels. On a cell grid (TUI), `line_height` is
     // architecturally always exactly `1.0` — one character cell, never a
@@ -255,7 +255,7 @@ pub(crate) fn compute_layout(
     //
     // Band widths (`ab_w`, `sidebar_w`, `divider_w`, `main_w`) are still
     // decided by hand — they depend on clamping/min/max rules that are
-    // AppShell's own policy, not a layout concern. Once the widths are
+    // ShellView's own policy, not a layout concern. Once the widths are
     // known, turning them into left-to-right x-positions is exactly the
     // one-dimensional packing `crate::flex::pack_1d` already does for
     // `Toolbar` and `Form` (same shared engine, see those modules), so
@@ -300,7 +300,7 @@ pub(crate) fn compute_layout(
             bottom_panel_bounds,
         ) = finish_main_column(main_bounds);
         return (
-            AppShellLayout {
+            ShellLayout {
                 window_bounds: area,
                 title_bar_bounds,
                 activity_bar_bounds: ab_bounds,
@@ -356,7 +356,7 @@ pub(crate) fn compute_layout(
             ) = finish_main_column(main_bounds);
 
             (
-                AppShellLayout {
+                ShellLayout {
                     window_bounds: area,
                     title_bar_bounds,
                     activity_bar_bounds: ab_bounds,
@@ -390,7 +390,7 @@ pub(crate) fn compute_layout(
             ) = finish_main_column(main_bounds);
 
             (
-                AppShellLayout {
+                ShellLayout {
                     window_bounds: area,
                     title_bar_bounds,
                     activity_bar_bounds: ab_bounds,

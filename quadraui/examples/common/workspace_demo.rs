@@ -2,13 +2,13 @@
 //! **inside a panel**, not in the shell's chrome.
 //!
 //! The controller renders its own tab strip into whatever rect the host
-//! hands it, so a consumer can put one inside a single `AppShell` sidebar
+//! hands it, so a consumer can put one inside a single `ShellView` sidebar
 //! panel and paint the active document's body somewhere else entirely. No
 //! shell-level tab-strip slot is involved.
 //!
-//! The workspace is mounted into [`AppShellLayout::sidebar_content_bounds`]
+//! The workspace is mounted into [`ShellLayout::sidebar_content_bounds`]
 //! (the panel's rect) and the active document's "body" is painted into
-//! [`AppShellLayout::main_content_bounds`]. The controller owns no content:
+//! [`ShellLayout::main_content_bounds`]. The controller owns no content:
 //! `WorkspaceDoc` is an opaque id plus a label, and this app paints the
 //! body itself from its own state — something
 //! [`TabGroupController`](quadraui::TabGroupController)'s
@@ -35,7 +35,7 @@
 use quadraui::DrawsPrimitives;
 use std::cell::RefCell;
 
-use quadraui::compose::app_shell::{AppShellLayout, PanelDefinition};
+use quadraui::compose::app_shell::{PanelDefinition, ShellLayout};
 use quadraui::{
     Backend, Color, Handled, Key, NamedKey, Reaction, Rect, ShellApp, ShellConfig, ShellContext,
     StatusBar, StatusBarSegment, UiEvent, WidgetId, WorkspaceController, WorkspaceDoc,
@@ -203,7 +203,7 @@ impl Default for WorkspaceDemo {
 }
 
 impl ShellApp for WorkspaceDemo {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let lh = backend.line_height();
 
         // The workspace lives *inside the panel* — its tab strip is

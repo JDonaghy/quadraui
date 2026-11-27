@@ -23,7 +23,7 @@ const SOURCE: &str = include_str!("status_bar.rs");
 /// backend — never shrunk below it, so a chrome font taller than the
 /// design token isn't clipped — or the plain chrome line height on TUI's
 /// fixed cell grid, where every `Style` chrome metric is a documented
-/// no-op. Mirrors `AppShell`'s own token-vs-line-height carve
+/// no-op. Mirrors `ShellView`'s own token-vs-line-height carve
 /// (`compose::shell_layout::compute_layout`'s `header_h`/`status_h`).
 fn chrome_strip_height(backend: &dyn Backend, token: impl Fn(&Style) -> f32) -> f32 {
     let lh = backend.chrome_line_height();
@@ -82,7 +82,7 @@ impl StatusBarDemo {
     /// `area`'s top strip, sized off `Style::status_bar_height` on a pixel
     /// backend (floored at the chrome line height so a chrome font taller
     /// than the token isn't clipped) and off the plain chrome line height
-    /// on TUI's fixed cell grid — mirrors `AppShell`'s own status-bar
+    /// on TUI's fixed cell grid — mirrors `ShellView`'s own status-bar
     /// sizing (`compose/shell_layout.rs`'s `status_h`).
     fn rect(area: Rect, backend: &dyn Backend) -> Rect {
         let h = chrome_strip_height(backend, |s| s.status_bar_height);

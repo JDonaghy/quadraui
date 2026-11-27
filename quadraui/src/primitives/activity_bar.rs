@@ -2437,7 +2437,7 @@ mod cell_paint_tests {
             (0.0, 1.0),
             "the top row must start at 0.0 relative to the bar, not at \
              area.y ({}) — folding the origin in here double-counts it \
-             against AppShell's own `+ activity_bar_bounds.y`",
+             against ShellView's own `+ activity_bar_bounds.y`",
             area.y
         );
         assert_eq!(span("search"), (1.0, 2.0), "second row is one row down");

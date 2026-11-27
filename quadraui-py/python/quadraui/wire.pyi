@@ -2724,7 +2724,7 @@ class _UiEventDict(TypedDict):
     PathPicker: NotRequired[Tuple[WidgetId, Any]]
     DualModePalette: NotRequired[Tuple[WidgetId, Any]]
     AppMenu: NotRequired[Tuple[WidgetId, Any]]
-    AppShell: NotRequired[Tuple[WidgetId, Any]]
+    ShellView: NotRequired[Tuple[WidgetId, Any]]
     BottomPanel: NotRequired[Tuple[WidgetId, Any]]
     Workspace: NotRequired[Tuple[WidgetId, Any]]
     Toolbar: NotRequired[Tuple[WidgetId, ToolbarEvent]]

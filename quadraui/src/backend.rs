@@ -1181,7 +1181,7 @@ pub trait Backend: sealed::Sealed {
     /// last value passed to [`Self::set_theme`], or the backend's own
     /// default if it was never called.
     ///
-    /// Lets shared compose code (e.g. `AppShell::render`) source its
+    /// Lets shared compose code (e.g. `ShellView::render`) source its
     /// chrome colours from the same palette every `draw_*` call already
     /// paints with, instead of hardcoding literals — without needing a
     /// `Theme` threaded through every call site that only has a
@@ -1397,7 +1397,7 @@ pub trait Backend: sealed::Sealed {
     /// [`crate::testing::FrameInventory::zones`] reads from.
     ///
     /// Call once per zone during render (chrome composers like
-    /// [`crate::compose::app_shell::AppShell::render`] call this for
+    /// [`crate::compose::app_shell::ShellView::render`] call this for
     /// each `WidgetId`-bearing region they lay out — activity-bar items,
     /// sidebar panels, the status bar, and so on). The registration is
     /// cleared at the start of each frame by `begin_frame`, mirroring
@@ -1736,7 +1736,7 @@ pub trait Backend: sealed::Sealed {
     ///
     /// For apps that draw their own client-side titlebar (`ShellConfig::
     /// with_title_bar` + `window.set_decorated(false)`) into
-    /// `AppShellLayout::title_bar_bounds` and want the empty part of that
+    /// `ShellLayout::title_bar_bounds` and want the empty part of that
     /// band to drag the window like a native titlebar. Call from
     /// [`crate::shell::ShellApp::handle`] when a `MouseDown` lands in
     /// [`crate::shell::ShellContext::in_title_bar`] outside any interactive
@@ -1813,7 +1813,7 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Inset at the leading edge of the title-bar band
-    /// ([`crate::compose::app_shell::AppShellLayout::title_bar_bounds`])
+    /// ([`crate::compose::app_shell::ShellLayout::title_bar_bounds`])
     /// occupied by backend-drawn window controls, in the same native
     /// units every other `Rect` this trait returns uses. `Rect::default()`
     /// means the backend puts nothing of its own into that band, so the

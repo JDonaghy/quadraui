@@ -1233,7 +1233,7 @@ pub enum UiEvent {
     /// An app shell ([`crate::ShellView`]) resolved a gesture on its own
     /// chrome — a panel switch, a sidebar or bottom-panel resize or hide,
     /// a bottom activity item click. The id is the shell's own.
-    AppShell(WidgetId, crate::compose::app_shell::AppShellEvent),
+    ShellView(WidgetId, crate::compose::app_shell::ShellEvent),
     /// A [`crate::BottomPanel`]'s tab strip activated or closed a tab, or
     /// toggled the panel maximised. The id is the panel's own.
     BottomPanel(WidgetId, crate::compose::bottom_panel::BottomPanelEvent),

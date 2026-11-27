@@ -45,7 +45,7 @@ tests:
   ms11_542_structural_parity::structural_parity_backends_emit_the_same_tooltip_surface_set: 542      # ask 1
   ms11_542_structural_parity::structural_parity_tooltip_surface_encloses_its_text_on_every_side: 542 # #541
   ms11_542_structural_parity::structural_parity_tooltip_surface_shape_agrees_across_unit_systems: 542 # ask 4
-  # tier B ratchet half — `AppShell` already registers this chrome on both
+  # tier B ratchet half — `ShellView` already registers this chrome on both
   # backends, so this is green today and guards it from regressing while
   # #542 reworks the surface-recording path (ask 3).
   ms11_542_structural_parity::structural_parity_shell_chrome_surface_set_agrees_across_backends: 542

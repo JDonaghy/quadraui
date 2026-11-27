@@ -29,7 +29,7 @@ impl Hello {
 }
 
 impl ShellApp for Hello {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         // The shell already computed where the status bar goes —
         // no viewport arithmetic here. Describe the UI as plain data;
         // the widget paints itself on whichever backend is running.

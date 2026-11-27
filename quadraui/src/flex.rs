@@ -330,7 +330,7 @@ impl FlexLayout {
 /// clipped by the caller afterwards rather than by squeezing children
 /// to fit. This is the one-dimensional packing shape shared by
 /// [`crate::primitives::Toolbar::layout`], [`crate::primitives::Form::layout`]
-/// and [`crate::compose::AppShell`]'s chrome-band split.
+/// and [`crate::compose::ShellView`]'s chrome-band split.
 pub(crate) fn pack_1d(
     direction: FlexDirection,
     origin: f32,

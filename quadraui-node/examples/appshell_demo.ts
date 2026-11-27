@@ -1,4 +1,4 @@
-// AppShell-shaped demo: one `ListView` holding 10,000 rows, scrolled
+// ShellView-shaped demo: one `ListView` holding 10,000 rows, scrolled
 // smoothly from JavaScript/TypeScript. Mirrors
 // `quadraui-py/examples/appshell_demo.py` 1:1.
 //

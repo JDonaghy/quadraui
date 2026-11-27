@@ -1,5 +1,5 @@
 //! TUI shell runner: `run_with_shell()` wraps a [`ShellApp`] in an
-//! AppShell and drives it through the standard TUI event loop.
+//! ShellView and drives it through the standard TUI event loop.
 //!
 //! The shared [`crate::shell_adapter::ShellAdapter`] owns all runtime logic
 //! (bottom-panel init, panel routing, resize recalc, click dispatch), and
@@ -9,7 +9,7 @@
 use crate::shell::{ShellApp, ShellConfig};
 use crate::{shell_adapter::build_shell_adapter, RunError};
 
-/// Run a [`ShellApp`] with AppShell chrome on the TUI backend, returning
+/// Run a [`ShellApp`] with ShellView chrome on the TUI backend, returning
 /// [`RunError::Io`] if terminal setup or tear-down fails.
 pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) -> Result<(), RunError> {
     let adapter = build_shell_adapter(app, config);
@@ -18,7 +18,7 @@ pub fn run_with_shell<A: ShellApp + 'static>(app: A, config: ShellConfig) -> Res
 
 /// Build a [`ShellApp`] as a [`crate::tui::run::TuiRunner`] instead of
 /// entering [`run_with_shell`]'s blocking loop — for a host that wants
-/// the AppShell chrome but also needs
+/// the ShellView chrome but also needs
 /// [`crate::tui::run::TuiRunner::attach_control`] (see [`crate::control`]'s
 /// module doc) or the step/pump-level control `run_with_shell` (which owns
 /// the process for its whole lifetime) can't give. Mirrors

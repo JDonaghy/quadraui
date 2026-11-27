@@ -126,7 +126,7 @@
 //!
 //! **ShellApp / `QuiApp.runShell`.** [`QuiShellApp`] wraps a
 //! `quadraui::shell_adapter::ShellAdapter<NodeShellApp>` running headlessly
-//! over a `TuiDriver` (an `AppShell` -- activity bar, sidebar, optional
+//! over a `TuiDriver` (a `ShellView` -- activity bar, sidebar, optional
 //! bottom-panel tab strip -- around JS-registered content and event
 //! handlers), the napi-rs analog of `quadraui-py`'s own `QuiShellApp` /
 //! `PyShellApp`. `driver_with_shell` returns `TuiDriver<impl AppLogic>`: an
@@ -145,7 +145,7 @@
 //! kind-dispatched decoder in this crate uses -- `&serde_json::Value`
 //! implements `serde::Deserializer` directly, so no extra wrapper is
 //! needed) and builds the [`NodeShellApp`]/driver pair around it.
-//! `AppShellEvent`/`BottomPanelEvent` each have their own hand-written
+//! `ShellEvent`/`BottomPanelEvent` each have their own hand-written
 //! `Serialize` impl upstream (not derived -- see that impl's own doc for
 //! why), so this binding converts them through `serde_json::to_value` +
 //! `Env::to_js_value` directly, the same `encode_via_json` shape every
@@ -276,10 +276,10 @@ use quadraui::tui::testing::{driver_with_shell, TuiDriver};
 use quadraui::tui::{RunConfig, StepOutcome, TuiRunner};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    A11yChild, A11yInfo, AppLogic, AppShellEvent, AppShellLayout, Backend, BackendCaps,
-    BottomPanelEvent, CanvasRegion, ContextMenuItem, DialogButton, DrawOp, FloatMeasure,
-    ImageSource, LayoutCtx, Notification, Point, PointerShape, Reaction, Rect, RgbaImage, ShellApp,
-    ShellConfig, ShellContext, Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId,
+    A11yChild, A11yInfo, AppLogic, Backend, BackendCaps, BottomPanelEvent, CanvasRegion,
+    ContextMenuItem, DialogButton, DrawOp, FloatMeasure, ImageSource, LayoutCtx, Notification,
+    Point, PointerShape, Reaction, Rect, RgbaImage, ShellApp, ShellConfig, ShellContext,
+    ShellEvent, ShellLayout, Toast, ToastCorner, Tooltip, UiEvent, UserPayload, WidgetId,
 };
 #[cfg(test)]
 use quadraui_binding_core::callback_reaction;
@@ -4217,7 +4217,7 @@ impl QuiApp {
 // See the module doc's "ShellApp / `QuiApp.runShell`" section for the
 // overall shape; the items below are its pieces.
 
-/// `WidgetId` string `quadraui::compose::bottom_panel::BottomPanelController::build_tab_bar`
+/// `WidgetId` string `quadraui::compose::bottom_panel::BottomPanel::tab_bar`
 /// gives the `TabBar` it paints -- fixed, not per-config, so
 /// [`QuiShellApp::bottom_panel_tab_center`] can name it directly. Mirrors
 /// `quadraui-py`'s own `BOTTOM_PANEL_TABS_WIDGET_ID`.
@@ -4242,12 +4242,12 @@ struct ShellState {
     on_tick: Option<NodeCallback>,
     /// Invoked with no meaningful argument once per frame; its return
     /// value, if a JS array of strings, becomes the lines of a single
-    /// `TextDisplay` painted into `AppShellLayout::main_content_bounds`.
+    /// `TextDisplay` painted into `ShellLayout::main_content_bounds`.
     /// `None` paints nothing into the main content area -- the shell
     /// chrome still renders either way.
     render_content: Option<NodeCallback>,
-    /// Invoked with one JS-converted `AppShellEvent` payload (via
-    /// `Env::to_js_value`, using `AppShellEvent`'s own `Serialize` impl)
+    /// Invoked with one JS-converted `ShellEvent` payload (via
+    /// `Env::to_js_value`, using `ShellEvent`'s own `Serialize` impl)
     /// whenever [`ShellApp::on_shell_event_ctx`] fires -- a panel switch,
     /// the sidebar being hidden/resized, the bottom panel being
     /// resized/hidden, or a bottom-item (no-panel) activity-bar click.
@@ -4321,7 +4321,7 @@ impl NodeShellApp {
 }
 
 impl ShellApp for NodeShellApp {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &AppShellLayout) {
+    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
         let Some(env) = self.state.borrow().env else {
             return;
         };
@@ -4380,7 +4380,7 @@ impl ShellApp for NodeShellApp {
         }
     }
 
-    fn on_shell_event_ctx(&mut self, event: &AppShellEvent, _ctx: &ShellContext) {
+    fn on_shell_event_ctx(&mut self, event: &ShellEvent, _ctx: &ShellContext) {
         let Some(env) = self.state.borrow().env else {
             return;
         };
@@ -4469,7 +4469,7 @@ fn shell_config_from_descriptor(
     })
 }
 
-/// Headless [`ShellApp`]-backed app: an AppShell (activity bar + sidebar +
+/// Headless [`ShellApp`]-backed app: a ShellView (activity bar + sidebar +
 /// optional bottom-panel tab strip) around JS-registered content and event
 /// handlers. Built by [`QuiApp::run_shell`] -- there is no public
 /// constructor on this type itself, mirroring how `quadraui-py`'s own
@@ -4533,7 +4533,7 @@ impl QuiShellApp {
     }
 
     /// Registers `callback` as the callable invoked with one JS-converted
-    /// `AppShellEvent` payload whenever a panel switch, sidebar show/hide/
+    /// `ShellEvent` payload whenever a panel switch, sidebar show/hide/
     /// resize, or bottom-panel resize/hide occurs. Raises if called
     /// re-entrantly.
     #[napi(js_name = "setOnShellEvent")]
@@ -4585,7 +4585,7 @@ impl QuiShellApp {
 
     /// Queues a synthetic `MouseDown` + `MouseUp` left-click at `(x, y)`,
     /// in the backend's native (cell) units -- the same coordinates
-    /// `AppShellLayout`'s bounds (as JS-converted by `setOnShellEvent`'s
+    /// `ShellLayout`'s bounds (as JS-converted by `setOnShellEvent`'s
     /// payloads and this binding's own `find`) are expressed in. Use this
     /// to drive sidebar-toggle / panel-switch / bottom-panel-tab clicks
     /// from JS without hand-building two raw `pushEvent` descriptors.
@@ -5314,7 +5314,7 @@ mod tests {
         assert!(matches!(output, RenderOutput::Tree(_)));
     }
 
-    /// [`AppShellEvent`]'s own `Serialize` impl gives every variant the
+    /// [`ShellEvent`]'s own `Serialize` impl gives every variant the
     /// same externally-tagged shape `quadraui-py`'s identical impl does --
     /// a struct-like variant's payload nested under its tag, a unit
     /// variant tagged with `null`. Pure JSON construction, so this needs
@@ -5325,29 +5325,29 @@ mod tests {
     #[test]
     fn app_shell_event_to_json_tags_every_variant() {
         assert_eq!(
-            serde_json::to_value(AppShellEvent::PanelChanged {
+            serde_json::to_value(ShellEvent::PanelChanged {
                 panel_id: WidgetId::new("panel:files")
             })
             .unwrap(),
             serde_json::json!({"PanelChanged": {"panel_id": "panel:files"}})
         );
         assert_eq!(
-            serde_json::to_value(AppShellEvent::SidebarHidden).unwrap(),
+            serde_json::to_value(ShellEvent::SidebarHidden).unwrap(),
             serde_json::json!({"SidebarHidden": null})
         );
         assert_eq!(
-            serde_json::to_value(AppShellEvent::SidebarResized { new_width: 12.5 }).unwrap(),
+            serde_json::to_value(ShellEvent::SidebarResized { new_width: 12.5 }).unwrap(),
             serde_json::json!({"SidebarResized": {"new_width": 12.5}})
         );
         assert_eq!(
-            serde_json::to_value(AppShellEvent::BottomItemClicked {
+            serde_json::to_value(ShellEvent::BottomItemClicked {
                 id: WidgetId::new("bottom:terminal")
             })
             .unwrap(),
             serde_json::json!({"BottomItemClicked": {"id": "bottom:terminal"}})
         );
         assert_eq!(
-            serde_json::to_value(AppShellEvent::Consumed).unwrap(),
+            serde_json::to_value(ShellEvent::Consumed).unwrap(),
             serde_json::json!({"Consumed": null})
         );
     }
