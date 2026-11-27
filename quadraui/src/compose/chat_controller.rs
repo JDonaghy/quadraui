@@ -4324,6 +4324,7 @@ mod tests {
     #[cfg(feature = "gtk")]
     #[test]
     fn gtk_render_inks_surface_and_layout_nonempty() {
+        use crate::backend::DrawsPrimitives;
         use crate::gtk::GtkBackend;
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
