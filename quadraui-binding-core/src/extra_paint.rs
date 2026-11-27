@@ -634,20 +634,16 @@ impl ExtraPaint for TextArea {
 
 impl ExtraPaint for MessageList {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_message_list(area, self);
-        // Register a selectable text region every frame so drag-select and
-        // Ctrl-C copy work against the transcript. TUI ignores `lines` (it
-        // reads the live cell buffer); pixel backends extract from it, so
-        // `lines` must be the rows actually painted into `area` this frame:
-        // `rows[scroll_top..]`, clipped to how many whole rows fit in
-        // `area.height` at this frame's line height — matching
-        // `Backend::draw_message_list`'s own row walk (TUI's
-        // `draw_message_list`, GTK's `draw_message_list` free function) so
-        // row `i` of `bounds` always lines up with `lines[i]`. Each row is
-        // already one display row (wrapping happens at the call site, not
-        // in this primitive), so unlike `TextDisplay` there's no wrap/
-        // timestamp misalignment to worry about here.
-        let line_height = backend.line_height();
+        let line_height = backend.layout_primitive(area, self).line_height;
+        let _ = backend.draw_dyn(area, self, &());
+        // A selectable text region every frame lets drag-select and Ctrl-C
+        // copy work against the transcript. TUI ignores `lines` (it reads
+        // the live cell buffer); pixel backends extract from it, so `lines`
+        // are the rows the widget painted into `area` this frame:
+        // `rows[scroll_top..]`, as many whole rows as fit at the widget's
+        // own row pitch, so row `i` of `bounds` lines up with `lines[i]`.
+        // Each row is already one display row (the caller wraps), so there
+        // is no wrap or timestamp offset to account for.
         let visible_rows = if line_height > 0.0 {
             (area.height / line_height).floor() as usize
         } else {
@@ -2603,6 +2599,43 @@ mod tests {
     /// every other `ExtraBody` hit; a click on the chevron itself resolves
     /// through [`crate::hit::PaintedHit::Extra::tree_table_hit`] to a real
     /// [`quadraui::UiEvent::TreeTable`]`(`[`quadraui::TreeTableEvent::ToggleExpanded`]`)`.
+    /// A `message_list` extra paints through the widget contract rather
+    /// than the bespoke `Backend::draw_message_list`, on a pixel backend
+    /// whose editor line height differs from its chrome row height.
+    #[test]
+    fn message_list_extra_paints_through_the_widget_contract() {
+        let mut backend = quadraui::testing::RecordingBackend {
+            viewport: quadraui::Viewport {
+                width: 400.0,
+                height: 400.0,
+                scale: 1.0,
+            },
+            line_height: 16.0,
+            char_width: 8.0,
+            chrome_line_height: Some(22.0),
+            ..Default::default()
+        };
+        let list = MessageList {
+            id: WidgetId::new("ml"),
+            rows: (0..8)
+                .map(|i| {
+                    quadraui::MessageRow::new(
+                        format!("row {i}"),
+                        quadraui::Color::rgb(9, 9, 9),
+                        0.0,
+                    )
+                })
+                .collect(),
+            scroll_top: 0,
+        };
+        ExtraPaint::paint(&list, &mut backend, Rect::new(0.0, 0.0, 200.0, 64.0));
+        assert!(
+            !backend.calls.contains(&"draw_message_list"),
+            "painted through Backend::draw_message_list: {:?}",
+            backend.calls
+        );
+    }
+
     #[test]
     fn tree_table_extra_renders_label_and_chevron_and_passes_through_a_click() {
         let id = WidgetId::new("tt:files");
