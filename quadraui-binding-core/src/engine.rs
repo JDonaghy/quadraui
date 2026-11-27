@@ -250,7 +250,7 @@ impl LayoutContent {
                 }
                 // A `"button"`-kind `WidgetBody` hit is resolved directly
                 // here rather than through `InteractionEngine`'s own
-                // `dispatch_dyn_widget_click` (whose `dyn_widget_state`/
+                // `dispatch_dyn_widget_click` (whose `widget_state`/
                 // `dyn_widget_capture` caches live on the main engine, not
                 // this subtree's own smaller `LayoutContent`): a `Button`
                 // leaf nested in a popover/dialog needs nothing beyond a
@@ -305,7 +305,7 @@ impl LayoutContent {
                 // no `PaintedHit::Widget` arm (a focused `WIDGET_KINDS` leaf
                 // in the main tree instead reaches
                 // `InteractionEngine::dispatch_dyn_widget_key`, which keys
-                // off caches — `dyn_widget_state`/`dyn_widget_capture` —
+                // off caches — `widget_state`/`dyn_widget_capture` —
                 // that live on the main engine, not this smaller subtree),
                 // so a focused `"button"`-kind leaf needs its own
                 // Enter/Space activation synthesized right here too.
@@ -964,7 +964,7 @@ enum DispatchFocus {
 /// arbitrary [`LayoutNode`] subtree ([`InteractionEngine::show_popover_layout`]).
 enum FloatContent {
     /// Routed through an embedded [`FormController`], the same
-    /// self-contained model [`Overlay::FormDialog`] uses for its own
+    /// self-contained model the form dialog overlay uses for its own
     /// form. See [`InteractionEngine::show_popover`]'s own doc.
     Form(FormController),
     /// An arbitrary [`LayoutNode`] subtree, painted and routed through the
@@ -1479,7 +1479,7 @@ impl Default for DynWidgetClickOutcome {
 /// `backend`/`sink` directly from inside [`DynWidgetEventHost`]'s own
 /// methods, sidesteps a second concurrent borrow of either while
 /// [`DynWidget::handle`] itself still holds `&mut dyn Any` into
-/// [`InteractionEngine::dyn_widget_state`].
+/// [`InteractionEngine::widget_state`].
 #[derive(Default)]
 struct DynWidgetIntents {
     focus_request: Option<quadraui::FocusAddress>,
@@ -1802,7 +1802,7 @@ impl InteractionEngine {
     /// gets the same hit-test precedence an open context menu already has.
     /// Replaces (and pops) any dialog already open. Also closes an open
     /// `"menu_bar"` dropdown or context-menu popup, if either is open: the
-    /// dialog paints on top of both ([`Overlay::Dialog`]'s own
+    /// dialog paints on top of both (its [`Overlay::Widget`] entry's
     /// [`Overlay::rank`] is higher than [`Overlay::ContextMenu`]'s), and
     /// [`Self::handle`] now routes the dialog ahead of both, so a popup
     /// left open underneath would be unreachable input it still holds
@@ -2127,7 +2127,7 @@ impl InteractionEngine {
     /// Opens `float` at `measure`'s size, pushing its resolved bounds
     /// onto the backend's [`quadraui::ModalStack`] via
     /// [`quadraui::ModalStack::push_float`] so other modal-aware code
-    /// gets the same hit-test precedence [`Overlay::Dialog`] already has.
+    /// gets the same hit-test precedence a modal dialog already has.
     /// Replaces (and pops) any float already open. **Content is not
     /// this call's concern** — same as [`quadraui::Backend::draw_float`]
     /// itself, the host paints whatever belongs in
@@ -2532,7 +2532,7 @@ impl InteractionEngine {
     /// keyboard focus the same way a `Tree`/`List` does); every other
     /// variant yields its id and bounding `Rect`.
     ///
-    /// Returns empty while an [`Overlay::FormDialog`] or a Form-content
+    /// Returns empty while a form dialog or a Form-content
     /// [`Overlay::Float`] (a popover opened via [`Self::show_popover`]) is
     /// open, regardless of what the main tree itself painted this frame —
     /// both trap Tab inside their own embedded form internally (see
@@ -2608,8 +2608,8 @@ impl InteractionEngine {
     /// [`Self::handle`] without going through this engine's click-to-focus
     /// code at all). Every other offset-changing path (wheel, page keys,
     /// thumb drag, track paging) dispatches this same event, in both
-    /// controlled and uncontrolled mode — see [`crate::widget_state`]'s own
-    /// module doc — and this is no exception, even though `id` landing
+    /// controlled and uncontrolled mode — see [`quadraui::WidgetStateStore`]'s
+    /// own doc — and this is no exception, even though `id` landing
     /// here is itself a side effect of a focus change rather than a direct
     /// scroll gesture. Returns `Reaction::Continue` when nothing scrolled,
     /// so a caller can fold the result into its own `Reaction` via `merge`
@@ -3377,7 +3377,7 @@ impl InteractionEngine {
         // inside its own bounds, and a position-less keyboard/clipboard
         // event (typing, toggling a field, Tab/Shift-Tab, pasting, or
         // Escape) — these route into its embedded `FormController`
-        // directly, the same self-contained model `Overlay::FormDialog`
+        // directly, the same self-contained model the form dialog overlay
         // above uses. Escape is deliberately routed in here (rather than
         // short-circuited before this block, the way `is_escape` used to)
         // so a focused, open `ComboBox` field gets first claim on it —
@@ -3461,7 +3461,7 @@ impl InteractionEngine {
                         // (for Escape the `FormController` had no use for —
                         // e.g. no open `ComboBox` to close) and, past that,
                         // all the way to `Self::handle`'s own final
-                        // `sink.dispatch` — same as `Overlay::FormDialog`'s
+                        // `sink.dispatch` — same as the form dialog overlay's
                         // own `Handled::Ignored` arm above.
                         Some(Handled::Ignored) | None => {}
                     }
@@ -9763,7 +9763,7 @@ mod tests {
 
     /// Opening a message dialog while a context-menu popup is already
     /// open closes the popup: paint order puts the dialog on top
-    /// ([`Overlay::Dialog`]'s own [`Overlay::rank`] is higher than
+    /// (a dialog's [`Overlay::rank`] is higher than
     /// [`Overlay::ContextMenu`]'s), and [`InteractionEngine::handle`]
     /// checks the dialog first, so a popup left open underneath would be
     /// unreachable input it still held precedence over.
