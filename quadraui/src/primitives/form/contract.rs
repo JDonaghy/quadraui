@@ -54,19 +54,18 @@
 //!   id and feeds it back as `focused_field` on the next
 //!   frame — same contract [`super`]'s own module doc describes.
 //! - While a `TextInput` / `TextArea` / `PasswordInput` field is
-//!   focused, every other key is decoded through
-//!   [`crate::EditOp::from_key`] and applied via [`crate::TextEditor::apply`]
-//!   against that field's `value`, emitting
-//!   [`FormEvent::TextInputChanged`] with the new value.
-//!   `Ctrl`/`Cmd`+`<character>` combos are rejected before
-//!   `EditOp::from_key` sees them — every backend delivers those as
-//!   `Key::Char` with the modifier set, so an unregistered accelerator
-//!   (Ctrl+C, Cmd+S, ...) doesn't get typed as a literal character.
+//!   focused, every other key and all committed text go through the
+//!   shared flat-value editing handler
+//!   ([`crate::behaviour::text_edit::handle_flat_edit_event`]) against
+//!   that field's `value`, emitting [`FormEvent::TextInputChanged`] with
+//!   the new value — the same handler [`crate::TextField`] and
+//!   [`crate::CommandLine`] use, so Ctrl/Cmd+A selects all, Ctrl/Cmd+C
+//!   and Ctrl/Cmd+X copy and cut (never on a `PasswordInput`), and any
+//!   other Ctrl/Cmd chord is left to the app rather than typed.
 //!   `Enter` commits instead of inserting a newline, emitting
 //!   [`FormEvent::TextInputCommitted`] — except on a `TextArea`, where
 //!   `Enter` inserts a newline, since that is the one field kind meant
-//!   to hold them. `ClipboardPaste` inserts its text via
-//!   [`crate::EditOp::InsertText`].
+//!   to hold them. `ClipboardPaste` inserts its text.
 //! - The cursor/selection position is **owned by [`FormState`]**, not
 //!   the app — it survives across keystrokes internally (see
 //!   `text_edit` below) even though the app only ever has to persist the
@@ -317,9 +316,8 @@ use crate::primitives::combo_box::ComboBoxEvent;
 use crate::primitives::date_picker::DatePickerEvent;
 use crate::primitives::number_input::NumberInputEvent;
 use crate::primitives::radio_group::RadioGroupEvent;
-use crate::text_util::snap_to_char_boundary;
 use crate::types::{Modifiers, WidgetId};
-use crate::{EditOp, Handled};
+use crate::Handled;
 
 use super::{
     focusable_items, FieldKind, Form, FormEvent, FormHit, FormLayout, LabelPosition,
@@ -526,6 +524,7 @@ impl Primitive for Form {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
+        let painted = self.with_painted_edit(env);
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -533,7 +532,7 @@ impl Primitive for Form {
         ))]
         {
             super::native_surface_paint::paint(
-                self,
+                &painted,
                 &layout.layout,
                 surface,
                 theme,
@@ -556,7 +555,7 @@ impl Primitive for Form {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme);
+            let _ = (&painted, layout, surface, theme);
         }
     }
 
@@ -575,7 +574,29 @@ impl Primitive for Form {
             .ratatui_buffer()
             .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-        super::cell_paint::draw_form(buf, area, self, theme);
+        let painted = self.with_painted_edit(env);
+        super::cell_paint::draw_form(buf, area, &painted, theme);
+    }
+}
+
+impl Form {
+    /// This form with the text caret and date scrub position its own
+    /// editing has walked to, for a painter — read off the persistent
+    /// [`FormState`] `env` carries. The scroll offset is not overlaid:
+    /// the layout being painted was resolved from the descriptor's own.
+    fn with_painted_edit(&self, env: &crate::PaintEnv) -> std::borrow::Cow<'_, Self> {
+        match env.widget_state_as::<FormState>() {
+            Some(state) if state.text_edit.is_some() || state.date_edit.is_some() => {
+                let mut painted = self.clone();
+                let edits = FormState {
+                    scroll_offset: None,
+                    ..state.clone()
+                };
+                overlay_state(&mut painted, &edits);
+                std::borrow::Cow::Owned(painted)
+            }
+            _ => std::borrow::Cow::Borrowed(self),
+        }
     }
 }
 
@@ -723,6 +744,7 @@ pub(crate) fn handle_key(
     key: &Key,
     modifiers: &Modifiers,
     viewport_rows: usize,
+    cx: &mut EventCx,
 ) -> Handled<FormEvent> {
     // `DatePicker` claims Left/Right/Up/Down/PageUp/PageDown/Enter
     // ahead of the generic dispatch below — those keys would
@@ -831,26 +853,22 @@ pub(crate) fn handle_key(
         Key::Named(NamedKey::BackTab) => move_focus(form, state, -1, viewport_rows),
         // `Enter` commits for `TextInput`/`PasswordInput` (a single
         // commit boundary), but `TextArea` is the one field kind
-        // that is meant to hold newlines, so `Enter` inserts one
-        // there instead — same split VS Code makes between a
-        // single-line input and a multi-line text area.
-        Key::Named(NamedKey::Enter) if focused_field_is_text_area(form) => {
-            handle_text_op(form, state, EditOp::InsertChar('\n'))
+        // that is meant to hold newlines, so `Enter` reaches the shared
+        // editing handler there instead — same split VS Code makes
+        // between a single-line input and a multi-line text area.
+        Key::Named(NamedKey::Enter) if !focused_field_is_text_area(form) => {
+            commit_focused_text(form, state)
         }
-        Key::Named(NamedKey::Enter) => commit_focused_text(form, state),
-        // Every backend delivers Ctrl/Cmd+<letter> as `Key::Char`
-        // with the modifier set (so an unregistered accelerator can
-        // still be recovered), not as a dedicated key variant — see
-        // `EditOp::from_key`'s callers in `examples/common/text_input_demo.rs`
-        // for the same guard. Without this, Ctrl+C/Ctrl+V/Ctrl+W (or
-        // Cmd+<letter> on macOS) would type a stray literal character
-        // into the focused field instead of falling through to an
-        // app-level accelerator.
-        Key::Char(_) if modifiers.ctrl || modifiers.cmd => Handled::Ignored,
-        _ => match EditOp::from_key(key, *modifiers) {
-            Some(op) => handle_text_op(form, state, op),
-            None => Handled::Ignored,
-        },
+        _ => handle_text_event(
+            form,
+            state,
+            &RoutedEvent::Key(crate::interactive::KeyEvent {
+                key: key.clone(),
+                modifiers: *modifiers,
+                repeat: false,
+            }),
+            cx,
+        ),
     }
 }
 
@@ -1140,18 +1158,12 @@ fn focused_field_is_enabled_slider(form: &Form) -> bool {
         .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::Slider { .. }))
 }
 
-/// Left/Down steps the focused `Slider` field's value down by
-/// `step`, Right/Up steps it up, Home/End jump straight to
-/// `min`/`max` — the same keyboard contract `slider_key_event`
-/// (`quadraui-binding-core`'s `semantic` module) gives the
-/// standalone leaf, and `FieldKind::Slider`'s own doc promises
-/// ("arrow keys step by `step`; Home/End jump to bounds").
-/// `FieldKind::Slider`'s fields are already the live state (no
-/// shadow-state struct needed, the same as `NumberInput`/`RadioGroup`
-/// above), so there's no clone-and-force-focused step here. `None`
-/// for every other key or a step/jump that doesn't move the clamped
-/// value, which falls through to `handle_key`'s generic dispatch
-/// exactly like an unclaimed number-input/radio-group key does.
+/// The focused `Slider` field's value moved by one key, through the
+/// stepping a standalone [`crate::Slider`] uses
+/// ([`crate::primitives::slider::step_for_key`]): arrows step by `step`,
+/// PageUp/PageDown by ten steps, Home/End jump to the bounds. `None` for
+/// every other key or a move that leaves the clamped value where it is,
+/// which falls through to `handle_key`'s generic dispatch.
 fn handle_slider_key(form: &Form, key: &Key) -> Option<Handled<FormEvent>> {
     let focused_id = form.focused_field?;
     let field = form.fields.iter().find(|f| f.id == focused_id)?;
@@ -1167,21 +1179,7 @@ fn handle_slider_key(form: &Form, key: &Key) -> Option<Handled<FormEvent>> {
     else {
         return None;
     };
-    let (value, min, max, step) = (*value, *min, *max, *step);
-    let new_value = match key {
-        Key::Named(NamedKey::Left) | Key::Named(NamedKey::Down) => {
-            slider_clamp(value - step, min, max)
-        }
-        Key::Named(NamedKey::Right) | Key::Named(NamedKey::Up) => {
-            slider_clamp(value + step, min, max)
-        }
-        Key::Named(NamedKey::Home) => min,
-        Key::Named(NamedKey::End) => max,
-        _ => return None,
-    };
-    if new_value == value {
-        return None;
-    }
+    let new_value = crate::primitives::slider::step_for_key(*value, *min, *max, *step, key)?;
     Some(Handled::Event(FormEvent::SliderChanged {
         id: focused_id,
         value: new_value,
@@ -1228,16 +1226,7 @@ fn handle_dropdown_key(form: &Form, key: &Key) -> Option<Handled<FormEvent>> {
     else {
         return None;
     };
-    let delta: i32 = match key {
-        Key::Named(NamedKey::Up) => -1,
-        Key::Named(NamedKey::Down) => 1,
-        _ => return None,
-    };
-    let max_idx = options.len().saturating_sub(1) as i32;
-    let new_idx = (*selected_idx as i32 + delta).clamp(0, max_idx) as usize;
-    if new_idx == *selected_idx {
-        return None;
-    }
+    let new_idx = crate::primitives::select::step_for_key(*selected_idx, options.len(), key)?;
     Some(Handled::Event(FormEvent::DropdownChanged {
         id: focused_id,
         selected_idx: new_idx,
@@ -1355,7 +1344,7 @@ fn focused_field_is_enabled_toggle(form: &Form) -> bool {
 /// Any other key returns `None`, which `handle_key` falls through to
 /// its generic dispatch, same as [`handle_item_row_key`].
 fn handle_toggle_key(form: &Form, key: &Key) -> Option<Handled<FormEvent>> {
-    if !matches!(key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
+    if !crate::primitives::checkbox::activates(key) {
         return None;
     }
     let focused_id = form.focused_field?;
@@ -1503,11 +1492,22 @@ fn commit_focused_text(form: &Form, state: &mut FormState) -> Handled<FormEvent>
     })
 }
 
-/// Apply `op` to the currently-focused text field (if any), emitting
-/// [`FormEvent::TextInputChanged`] with the new value. The cursor
-/// produced by `op` is cached on `state.text_edit` so the next
-/// keystroke continues from it — see `TextCursor`'s doc.
-pub(crate) fn handle_text_op(form: &Form, state: &mut FormState, op: EditOp) -> Handled<FormEvent> {
+/// Route one text-editing event — a key the form did not claim, or
+/// committed text — to the focused `TextInput`/`TextArea`/
+/// `PasswordInput` field through the shared flat-value editing handler,
+/// emitting [`FormEvent::TextInputChanged`] with the new value. The caret
+/// it walks is cached on `state.text_edit` so the next keystroke
+/// continues from it — see `TextCursor`'s doc. A password field never
+/// copies its value out: Ctrl/Cmd+C and Ctrl/Cmd+X are swallowed there.
+pub(crate) fn handle_text_event(
+    form: &Form,
+    state: &mut FormState,
+    event: &RoutedEvent,
+    cx: &mut EventCx,
+) -> Handled<FormEvent> {
+    use crate::behaviour::text_edit::{
+        handle_flat_edit_event, EditIntent, FlatEditOutcome, FlatEditState,
+    };
     let Some(focused_id) = form.focused_field else {
         return Handled::Ignored;
     };
@@ -1520,41 +1520,45 @@ pub(crate) fn handle_text_op(form: &Form, state: &mut FormState, op: EditOp) -> 
     let Some(value) = text_field_value(&field.kind) else {
         return Handled::Ignored;
     };
-
-    let (cursor, anchor) = match &state.text_edit {
-        Some(e) if e.field_id == focused_id => (e.cursor, e.selection_anchor),
-        _ => default_text_cursor(&field.kind),
-    };
-    let cursor = snap_to_char_boundary(value, cursor.min(value.len()));
-
-    let value_before = value.to_string();
-    let (new_value, new_cursor, new_anchor) =
-        crate::primitives::text_input::apply_flat_edit_op(value, cursor, anchor, op);
-    let text_changed = new_value != value_before;
-    // `TextEditor::move_cursor_to` leaves a degenerate `anchor ==
-    // cursor` selection in place for a no-op extend (e.g. Shift+Left
-    // at offset 0). Left uncleared, the *next* keystroke would see a
-    // phantom one-character-wide selection and silently eat a
-    // character. Normalise it away here, where the controller caches
-    // the anchor across keystrokes (unlike a one-shot `TextEditor`
-    // call, which never notices).
-    let new_anchor = new_anchor.filter(|a| *a != new_cursor);
-    state.text_edit = Some(TextCursor {
+    if let (FieldKind::PasswordInput { .. }, RoutedEvent::Key(key)) = (&field.kind, event) {
+        if matches!(
+            EditIntent::from_key(&key.key, key.modifiers),
+            Some(EditIntent::Copy | EditIntent::Cut)
+        ) {
+            return Handled::Consumed;
+        }
+    }
+    let (seed_cursor, seed_anchor) = default_text_cursor(&field.kind);
+    let mut edit = FlatEditState::default();
+    if let Some(e) = state
+        .text_edit
+        .as_ref()
+        .filter(|e| e.field_id == focused_id)
+    {
+        edit.cursor = Some(e.cursor);
+        edit.anchor = e.selection_anchor;
+    }
+    let outcome = handle_flat_edit_event(
+        value,
+        Some(seed_cursor),
+        seed_anchor,
+        &mut edit,
+        event,
+        &|_| None,
+        cx,
+    );
+    state.text_edit = edit.cursor.map(|cursor| TextCursor {
         field_id: focused_id,
-        cursor: new_cursor,
-        selection_anchor: new_anchor,
+        cursor,
+        selection_anchor: edit.anchor,
     });
-    if text_changed {
-        Handled::Event(FormEvent::TextInputChanged {
+    match outcome {
+        FlatEditOutcome::Changed(value) => Handled::Event(FormEvent::TextInputChanged {
             id: focused_id,
-            value: new_value,
-        })
-    } else {
-        // Cursor-only movement (or selection extend): the field's
-        // text content is unchanged, so there is nothing for the app
-        // to persist — but the cursor/selection did move, so the
-        // caller should still redraw to show it.
-        Handled::Consumed
+            value,
+        }),
+        FlatEditOutcome::Consumed => Handled::Consumed,
+        FlatEditOutcome::Ignored => Handled::Ignored,
     }
 }
 
@@ -1672,16 +1676,6 @@ fn number_input_click_event(
     })
 }
 
-/// Clamps `raw` to `[min, max]` without [`f32::clamp`]'s panic on an
-/// inverted `min > max` — `FieldKind::Slider`'s `min`/`max` come from a
-/// wire payload, so a host typo inverting them degrades to a
-/// well-defined (if useless) clamp instead of a panic that would take
-/// the whole render down. Mirrors `quadraui-binding-core`'s
-/// `Slider::clamp`, which the standalone leaf already uses this same way.
-fn slider_clamp(raw: f32, min: f32, max: f32) -> f32 {
-    raw.max(min).min(max)
-}
-
 /// Cells of track [`crate::primitives::layout_metrics::form_field_measure`]'s backend-free fallback gives a
 /// [`FieldKind::Slider`] field — `tui::form`'s own natural track width,
 /// which is what `ControlWidth::Content` resolves to there. This
@@ -1781,8 +1775,7 @@ fn slider_value_at(
     if overrun == TrackOverrun::Reject && !(0.0..1.0).contains(&raw) {
         return None;
     }
-    let fraction = raw.clamp(0.0, 1.0);
-    let new_value = slider_clamp(min + fraction * (max - min), *min, *max);
+    let new_value = crate::primitives::slider::value_at_fraction(raw, *min, *max);
     if new_value == *value {
         return None;
     }
@@ -2127,23 +2120,14 @@ impl Interactive for Form {
                 state.scroll_by(self, delta, rows);
                 Handled::Consumed
             }
-            RoutedEvent::Key(key) => handle_key(self, state, &key.key, &key.modifiers, rows),
-            // A space delivered as text rather than as a key still
+            RoutedEvent::Key(key) => handle_key(self, state, &key.key, &key.modifiers, rows, cx),
+            // A lone space delivered as text rather than as a key still
             // activates a focused item row or plain `Toggle` — the one
-            // text character with activation semantics. Every other
-            // character, and a space on a text field, inserts.
-            RoutedEvent::Text(text) => {
-                let mut result = Handled::Ignored;
-                for ch in text.chars() {
-                    result = if ch == ' ' {
-                        activate_focused_on_space(self, state)
-                            .unwrap_or_else(|| handle_text_op(self, state, EditOp::InsertChar(' ')))
-                    } else {
-                        handle_text_op(self, state, EditOp::InsertChar(ch))
-                    };
-                }
-                result
-            }
+            // text character with activation semantics. Any other text,
+            // and a space on a text field, inserts.
+            RoutedEvent::Text(text) if text == " " => activate_focused_on_space(self, state)
+                .unwrap_or_else(|| handle_text_event(self, state, event, cx)),
+            RoutedEvent::Text(_) => handle_text_event(self, state, event, cx),
             // `A11yAction` names no field through this generic seam, so
             // `Click` activates whichever field is focused — the same
             // one Enter/Space activates, matching the

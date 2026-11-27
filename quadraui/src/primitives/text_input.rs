@@ -1382,7 +1382,9 @@ impl crate::primitive::Primitive for TextInput {
 }
 
 /// [`crate::interactive::Interactive::State`] for [`TextInput`]: the
-/// caret and selection anchor this widget's own key handling moves.
+/// shared multi-line editing state — the caret and selection anchor this
+/// widget's own key handling moves, and whether a press is
+/// drag-selecting.
 ///
 /// # Why the caret lives here
 ///
@@ -1390,26 +1392,16 @@ impl crate::primitive::Primitive for TextInput {
 /// (see [`crate::widget_state`]'s module doc), so `TextInput`'s
 /// `cursor_line`/`cursor_col` fields are whatever the *app* last set.
 /// The caret a run of keystrokes walks is interaction state, which is
-/// exactly what this type is for: [`Self::caret`] is seeded from the
+/// exactly what this type is for: the caret is seeded from the
 /// descriptor on [`crate::interactive::RoutedEvent::FocusIn`] and from
 /// the hit-tested position on a click, then owned by this widget until
 /// focus leaves. Content changes are reported to the app as
 /// [`TextInputAction::Changed`]; the app owns the buffer.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TextInputState {
-    /// The caret this widget's own editing has moved to, or `None` while
-    /// it still follows the descriptor's own
-    /// `cursor_line`/`cursor_col`.
-    pub caret: Option<(usize, usize)>,
-    /// The selection's fixed end, if a selection is active —
-    /// `TextInput` itself carries no field for this, by design (see that
-    /// type's doc).
-    pub anchor: Option<(usize, usize)>,
-}
+pub type TextInputState = text_edit::LinesEditState;
 
 /// What a [`TextInput`]'s own [`crate::interactive::Interactive::handle`]
-/// resolves one gesture to.
+/// resolves one gesture to. A copy reaches the host as
+/// [`crate::UiEvent::TextCopied`] directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextInputAction {
     /// The buffer changed. Carries the whole new text, lines joined with
@@ -1418,9 +1410,6 @@ pub enum TextInputAction {
     /// names, so an app routes a standalone input through the handler it
     /// already has for a `Form` row.
     Changed(String),
-    /// Ctrl-C (or the copy half of Ctrl-X) put the selection on the
-    /// clipboard.
-    Copied(String),
 }
 
 impl crate::interactive::WidgetAction for TextInputAction {
@@ -1430,58 +1419,7 @@ impl crate::interactive::WidgetAction for TextInputAction {
                 id,
                 crate::primitives::form::FormEvent::TextInputChanged { id, value },
             ),
-            TextInputAction::Copied(text) => crate::UiEvent::TextCopied(text),
         }
-    }
-}
-
-impl TextInput {
-    /// The caret one `handle` call starts from: whatever this widget's
-    /// own state has walked to, else the descriptor's own cursor —
-    /// clamped into the buffer either way.
-    fn effective_caret(&self, state: &TextInputState) -> (usize, usize) {
-        let (line, col) = state.caret.unwrap_or((self.cursor_line, self.cursor_col));
-        let line = line.min(self.lines.len().saturating_sub(1));
-        let col = col.min(self.lines.get(line).map_or(0, |l| l.chars().count()));
-        (line, col)
-    }
-
-    /// Apply one [`EditOp`] against the descriptor's buffer and the
-    /// caret/anchor in `state`, writing the resulting caret back into
-    /// `state`.
-    ///
-    /// Returns the new buffer text when content changed, `None` when the
-    /// op only moved the caret or the selection.
-    fn apply_op(&self, state: &mut TextInputState, op: &EditOp) -> Option<String> {
-        let mut lines = if self.lines.is_empty() {
-            vec![String::new()]
-        } else {
-            self.lines.clone()
-        };
-        let (mut line, mut col) = self.effective_caret(state);
-        let mut anchor = state.anchor;
-        let changed = text_edit::EditView {
-            lines: &mut lines,
-            cursor_line: &mut line,
-            cursor_col: &mut col,
-            anchor: &mut anchor,
-        }
-        .apply(op);
-        state.caret = Some((line, col));
-        state.anchor = anchor;
-        if changed && lines != self.lines {
-            Some(lines.join("\n"))
-        } else {
-            None
-        }
-    }
-
-    /// The selected text, as [`text_edit::EditView::selected_text`]
-    /// resolves it against this descriptor's buffer and `state`'s
-    /// caret/anchor.
-    fn selection_text(&self, state: &TextInputState) -> Option<String> {
-        let (start, end) = text_edit::selection_range(self.effective_caret(state), state.anchor)?;
-        Some(text_edit::text_in_range(&self.lines, start, end))
     }
 }
 
@@ -1530,14 +1468,13 @@ impl crate::interactive::Interactive for TextInput {
         ]
     }
 
-    /// Keystrokes go through [`EditOp::from_key`] and the shared
-    /// [`text_edit::EditView`] mutator, so this widget and
-    /// [`TextEditor`] can never disagree about what a key means.
-    /// Ctrl-A selects all, Ctrl-C copies the selection, Ctrl-X cuts it
-    /// (emitting [`crate::UiEvent::TextCopied`] alongside the change),
-    /// and committed IME text inserts verbatim. A left click moves the
-    /// caret to the clicked column and takes focus; a shift-click
-    /// extends the selection to it.
+    /// Every editing event goes through the shared multi-line editing
+    /// handler, so this widget, [`crate::TextField`] and
+    /// [`TextEditor`] can never disagree about what a key, a click or a
+    /// drag means: Enter inserts a newline, Ctrl-A/C/X select-all/copy/
+    /// cut, committed IME text inserts verbatim, and a press parks the
+    /// caret (a shift-press or a drag extends the selection). Pointer
+    /// entry sets the text cursor shape.
     fn handle(
         &self,
         state: &mut TextInputState,
@@ -1546,122 +1483,34 @@ impl crate::interactive::Interactive for TextInput {
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<TextInputAction> {
         use crate::interactive::{PointerKind, RoutedEvent};
+        use text_edit::FlatEditOutcome;
 
-        match event {
-            RoutedEvent::Key(key) => self.handle_key(state, &key.key, key.modifiers, cx),
-            RoutedEvent::Text(text) => self.commit(state, &EditOp::InsertText(text.clone()), cx),
-            RoutedEvent::Pointer {
-                kind: PointerKind::Down(crate::event::MouseButton::Left),
-                local,
-                mods,
-                ..
-            } => {
-                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
-                match layout.caret_at(x, y) {
-                    Some((line, col)) => {
-                        cx.request_focus(None);
-                        self.commit(
-                            state,
-                            &EditOp::SetCursor {
-                                line,
-                                col,
-                                extend: mods.shift,
-                            },
-                            cx,
-                        )
-                    }
-                    None => {
-                        cx.request_focus(None);
-                        Handled::Consumed
-                    }
-                }
-            }
-            RoutedEvent::Pointer {
-                kind: PointerKind::Enter,
-                local,
-                ..
-            } => {
-                // Hinted on entry, not on every move: a plain move only
-                // reaches a widget holding an active pointer capture, and
-                // this one doesn't take one, so entry is the event this
-                // widget actually gets.
-                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
-                cx.set_cursor(layout.layout.pointer_shape(x, y));
-                Handled::Ignored
-            }
-            RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
-                cx.request_focus(None);
-                Handled::Consumed
-            }
-            RoutedEvent::FocusIn(_) => {
-                // Re-seed from the descriptor: the app may have moved the
-                // caret while this input was unfocused.
-                state.caret = Some((self.cursor_line, self.cursor_col));
-                state.anchor = None;
-                Handled::Consumed
-            }
-            RoutedEvent::FocusOut => {
-                state.caret = None;
-                state.anchor = None;
-                Handled::Consumed
-            }
-            _ => Handled::Ignored,
+        if let RoutedEvent::Pointer {
+            kind: PointerKind::Enter,
+            local,
+            ..
+        } = event
+        {
+            // Hinted on entry, not on every move: a plain move only
+            // reaches a widget holding an active pointer capture.
+            let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+            cx.set_cursor(layout.layout.pointer_shape(x, y));
+            return Handled::Ignored;
         }
-    }
-}
-
-impl TextInput {
-    /// One keystroke, with the Ctrl-chorded clipboard/select-all keys
-    /// resolved by
-    /// [`EditIntent::from_key`](text_edit::EditIntent::from_key) ahead of
-    /// [`EditOp::from_key`] (which would otherwise read `Ctrl+A` as
-    /// typing an `a`).
-    fn handle_key(
-        &self,
-        state: &mut TextInputState,
-        key: &crate::event::Key,
-        modifiers: crate::types::Modifiers,
-        cx: &mut crate::interactive::EventCx,
-    ) -> Handled<TextInputAction> {
-        use text_edit::EditIntent;
-
-        match EditIntent::from_key(key, modifiers) {
-            Some(EditIntent::SelectAll) => self.commit(state, &EditOp::SelectAll, cx),
-            Some(EditIntent::Copy) => match self.selection_text(state) {
-                Some(text) => Handled::Event(TextInputAction::Copied(text)),
-                None => Handled::Consumed,
-            },
-            Some(EditIntent::Cut) => match self.selection_text(state) {
-                Some(text) => {
-                    cx.emit(crate::UiEvent::TextCopied(text));
-                    self.commit(state, &EditOp::DeleteSelection, cx)
-                }
-                None => Handled::Consumed,
-            },
-            // Paste is the host's: the clipboard text arrives as
-            // `UiEvent::ClipboardPaste`, which a host feeds back in as
-            // `RoutedEvent::Text`.
-            Some(EditIntent::Paste) => Handled::Ignored,
-            Some(EditIntent::Op(op)) => self.commit(state, &op, cx),
-            None => Handled::Ignored,
-        }
-    }
-
-    /// Apply `op` and report it: a content change as
-    /// [`TextInputAction::Changed`], a caret-only move as
-    /// [`Handled::Consumed`] plus a redraw request.
-    fn commit(
-        &self,
-        state: &mut TextInputState,
-        op: &EditOp,
-        cx: &mut crate::interactive::EventCx,
-    ) -> Handled<TextInputAction> {
-        match self.apply_op(state, op) {
-            Some(value) => Handled::Event(TextInputAction::Changed(value)),
-            None => {
-                cx.request_redraw();
-                Handled::Consumed
-            }
+        let caret_at = |local: crate::event::Point| {
+            layout.caret_at(layout.area.x + local.x, layout.area.y + local.y)
+        };
+        match text_edit::handle_lines_edit_event(
+            &self.lines,
+            (self.cursor_line, self.cursor_col),
+            state,
+            event,
+            &caret_at,
+            cx,
+        ) {
+            FlatEditOutcome::Changed(value) => Handled::Event(TextInputAction::Changed(value)),
+            FlatEditOutcome::Consumed => Handled::Consumed,
+            FlatEditOutcome::Ignored => Handled::Ignored,
         }
     }
 }
@@ -1789,6 +1638,7 @@ mod interactive_tests {
         let mut state = TextInputState {
             caret: Some((0, 0)),
             anchor: Some((0, 1)),
+            ..TextInputState::default()
         };
         let mut cx = EventCx::new(ti.id, &mut host);
         assert_eq!(

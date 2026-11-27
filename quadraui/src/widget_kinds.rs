@@ -263,6 +263,10 @@ widget_kinds! {
     "board" => crate::BoardModel,
     "pipeline_view" => crate::PipelineView,
     "diff_view" => crate::DiffView,
+    "checkbox" => crate::Checkbox,
+    "slider" => crate::Slider,
+    "select" => crate::Select,
+    "markdown" => crate::Markdown,
 }
 
 #[cfg(test)]

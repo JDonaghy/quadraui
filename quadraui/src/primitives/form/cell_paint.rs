@@ -159,7 +159,13 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
             FieldKind::ReadOnly { value } => draw_field_read_only(buf, &ctx, value),
             FieldKind::Slider {
                 value, min, max, ..
-            } => draw_field_slider(buf, &ctx, visible_field, *value, *min, *max),
+            } => {
+                let track = visible_field
+                    .item_bounds
+                    .first()
+                    .map(|(_, r)| (r.x.round() as usize, r.width.round() as usize));
+                draw_field_slider(buf, &ctx, track, *value, *min, *max)
+            }
             FieldKind::ColorPicker { value } => draw_field_color_picker(buf, &ctx, *value),
             FieldKind::Dropdown {
                 options,
@@ -200,6 +206,103 @@ pub fn draw_form(buf: &mut Buffer, area: Rect, form: &Form, theme: &Theme) {
     }
 }
 
+/// A slider track's `(start column, cells)` for a control column
+/// starting at `control_start` and `control_width` cells wide: one cell
+/// in for the opening bracket, [`track_cells_within`] long.
+fn bare_slider_track(control_start: usize, control_width: usize, value: f32) -> (usize, usize) {
+    (control_start + 1, track_cells_within(control_width, value))
+}
+
+/// Where a standalone slider's track sits in a bare control row `area`
+/// wide: `(start column relative to the row, cells)` — the rect
+/// [`paint_bare_field`] paints the track over and a standalone slider
+/// maps a press across.
+pub(crate) fn bare_field_slider_track(area_width: u16, value: f32) -> (usize, usize) {
+    bare_slider_track(
+        BARE_CONTROL_START,
+        (area_width as usize).saturating_sub(BARE_CONTROL_START),
+        value,
+    )
+}
+
+/// Column a bare control starts at, the same as a label-less form row's
+/// (one cell clear of the row's left edge).
+const BARE_CONTROL_START: usize = 1;
+
+/// Paint `kind` as one bare control — no form chrome, no label — across
+/// `area`: the same row wash and the same per-kind `draw_field_*`
+/// painter a label-less [`Form`] row of that kind uses, so a standalone
+/// control and a form field of the same kind cannot drift apart.
+///
+/// Covers the kinds that stand alone as their own widget (`Toggle`,
+/// `Slider`, `Dropdown`, `TextInput`, `PasswordInput`, `TextArea`);
+/// any other kind paints only the row wash. `slider_track` overrides the
+/// slider track's `(start column, cells)` relative to `area.x`.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn paint_bare_field(
+    buf: &mut Buffer,
+    area: Rect,
+    kind: &FieldKind,
+    disabled: bool,
+    focused: bool,
+    slider_track: Option<(usize, usize)>,
+    theme: &Theme,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let colors = FormColors::from_theme(theme);
+    let (default_fg, row_bg) = colors.row(false, focused);
+    for x in area.x..area.x + area.width {
+        set_cell(buf, x, area.y, ' ', default_fg, row_bg);
+    }
+    let ctx = RowCtx {
+        area,
+        y: area.y,
+        default_fg,
+        row_bg,
+        field_fg: if disabled { colors.dim_fg } else { default_fg },
+        dim_fg: colors.dim_fg,
+        accent_fg: colors.accent_fg,
+        is_focused: focused,
+        theme,
+        no_label: true,
+        control_start: BARE_CONTROL_START,
+        control_width: (area.width as usize)
+            .saturating_sub(BARE_CONTROL_START)
+            .max(1),
+    };
+    match kind {
+        FieldKind::Toggle { value } => draw_field_toggle(buf, &ctx, *value),
+        FieldKind::Slider {
+            value, min, max, ..
+        } => draw_field_slider(buf, &ctx, slider_track, *value, *min, *max),
+        FieldKind::Dropdown {
+            options,
+            selected_idx,
+        } => draw_field_dropdown(buf, &ctx, options, *selected_idx),
+        FieldKind::TextInput {
+            value,
+            placeholder,
+            cursor,
+            selection_anchor,
+        } => draw_field_text_input(buf, &ctx, value, placeholder, *cursor, *selection_anchor),
+        FieldKind::PasswordInput {
+            value,
+            placeholder,
+            cursor,
+            mask_char,
+        } => draw_field_password_input(buf, &ctx, value, placeholder, *cursor, *mask_char),
+        FieldKind::TextArea {
+            value,
+            placeholder,
+            cursor,
+            visible_rows,
+        } => draw_field_text_area(buf, &ctx, value, placeholder, *cursor, *visible_rows),
+        _ => {}
+    }
+}
+
 /// Theme colours `draw_form` resolves once per call and threads into
 /// every row via [`build_row_ctx`] — kept as a small struct rather than
 /// nine positional args.
@@ -214,6 +317,24 @@ struct FormColors {
 }
 
 impl FormColors {
+    /// A row's `(foreground, background)`: the selection wash when
+    /// focused, the header pair for a bare `Label` row, else the body
+    /// pair.
+    fn row(&self, is_header: bool, is_focused: bool) -> (RatatuiColor, RatatuiColor) {
+        match (is_header, is_focused) {
+            // `fg` (`theme.foreground`, the editor-body text colour) has
+            // no guaranteed contrast against `selected_bg` — on
+            // `vscode-light` both are near-black on mid-blue and the
+            // focused row goes unreadable. `hdr_fg` (`theme.header_fg`)
+            // is `Theme`'s documented on-selection foreground; `Tree` and
+            // `native_surface_paint::paint` already pair it with
+            // `selected_bg` the same way for their focused row.
+            (_, true) => (self.hdr_fg, self.sel_bg),
+            (true, false) => (self.hdr_fg, self.hdr_bg),
+            (false, false) => (self.fg, self.bg),
+        }
+    }
+
     fn from_theme(theme: &Theme) -> Self {
         Self {
             bg: ratatui_color(theme.tab_bar_bg),
@@ -255,18 +376,7 @@ fn build_row_ctx<'a>(
         width: row_width,
     } = row_x;
 
-    let (default_fg, row_bg) = match (is_header, is_focused) {
-        // `fg` (`theme.foreground`, the editor-body text
-        // colour) has no guaranteed contrast against `selected_bg` — on
-        // `vscode-light` both are near-black on mid-blue and the focused
-        // row goes unreadable. `hdr_fg` (`theme.header_fg`) is `Theme`'s
-        // documented on-selection foreground; `Tree` and
-        // `native_surface_paint::paint` already pair it with
-        // `selected_bg` the same way for their focused row.
-        (_, true) => (colors.hdr_fg, colors.sel_bg),
-        (true, false) => (colors.hdr_fg, colors.hdr_bg),
-        (false, false) => (colors.fg, colors.bg),
-    };
+    let (default_fg, row_bg) = colors.row(is_header, is_focused);
 
     let row_left = area.x + row_x_offset as u16;
     let row_right = row_left + row_width as u16;
@@ -634,12 +744,13 @@ fn draw_field_read_only(buf: &mut Buffer, ctx: &RowCtx, value: &crate::types::St
     }
 }
 
-/// Paints `[===---] 5.00`; the track is `item_bounds`' single rect (the
-/// one click routing maps across), else [`track_cells_within`].
+/// Paints `[===---] 5.00`; the track is `track` (`(start column,
+/// cells)`, the rect click routing maps across) when the caller resolved
+/// one, else [`track_cells_within`] the control column.
 fn draw_field_slider(
     buf: &mut Buffer,
     ctx: &RowCtx,
-    visible_field: &crate::primitives::form::VisibleFormField,
+    track: Option<(usize, usize)>,
     value: f32,
     min: f32,
     max: f32,
@@ -659,13 +770,8 @@ fn draw_field_slider(
     let range = (max - min).max(f32::EPSILON);
     let frac = ((value - min) / range).clamp(0.0, 1.0);
     let value_str = format!("{value:.2}");
-    let (track_start, track_cells) = match visible_field.item_bounds.first() {
-        Some((_, item_rect)) => (
-            item_rect.x.round() as usize,
-            item_rect.width.round() as usize,
-        ),
-        None => (control_start + 1, track_cells_within(control_width, value)),
-    };
+    let (track_start, track_cells) =
+        track.unwrap_or_else(|| bare_slider_track(control_start, control_width, value));
     let filled = (frac * track_cells as f32).round() as usize;
 
     if track_start.saturating_sub(1) < area.width as usize {

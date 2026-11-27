@@ -43,7 +43,6 @@
 use serde::{Deserialize, Serialize};
 
 use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
-use crate::compose::path_picker::is_chorded_typing;
 use crate::compose::widget_host;
 use crate::compose::Handled;
 use crate::interactive::{
@@ -370,7 +369,6 @@ impl Interactive for DualModePalette {
                         let last = self.items.len().saturating_sub(1);
                         return self.select((self.selected + 1).min(last));
                     }
-                    _ if is_chorded_typing(key) => return Handled::Ignored,
                     _ => {}
                 }
             }
@@ -870,7 +868,7 @@ mod tests {
     #[test]
     fn ctrl_char_is_ignored_in_list_mode() {
         let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let ev = ctrl.handle_event(&ctrl_ev(Key::Char('c')), 10);
+        let ev = ctrl.handle_event(&ctrl_ev(Key::Char('w')), 10);
         assert_eq!(ev, Handled::Ignored);
     }
 
@@ -880,7 +878,7 @@ mod tests {
     #[test]
     fn cmd_char_is_ignored_in_list_mode() {
         let mut ctrl = DualModePaletteController::new("T", None, vec![]);
-        let ev = ctrl.handle_event(&cmd_ev(Key::Char('c')), 10);
+        let ev = ctrl.handle_event(&cmd_ev(Key::Char('w')), 10);
         assert_eq!(ev, Handled::Ignored);
     }
 

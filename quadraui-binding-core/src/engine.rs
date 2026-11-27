@@ -37,7 +37,7 @@ use quadraui::{
 
 use crate::drag::{
     enclosing_scroll_child, find_data_table_layout, find_split_layout, find_split_tree_layout,
-    gesture_target_at, markdown_at, scroll_scrollbar, scroll_view_at, text_display_scroll_state,
+    gesture_target_at, scroll_scrollbar, scroll_view_at, text_display_scroll_state,
     tree_scroll_state, ActiveDrag, DataTableColumnDrag, GestureDrag, ScrollDrag, ScrollbarDrag,
 };
 use crate::extra_paint::{extra_as, TreeTableControllerDescriptor};
@@ -4796,26 +4796,6 @@ impl InteractionEngine {
                         | HitDetail::TextDisplayScrollbarTrackBefore
                         | HitDetail::TextDisplayScrollbarTrackAfter
                 );
-                // A `"markdown"` extra leaf is a `TextDisplay` under the
-                // hood, but it paints as `PaintedHit::Extra` (so its link
-                // chrome hits can coexist with it), not
-                // `PaintedHit::TextDisplay` — `ExtraBody`/`ExtraChrome` is
-                // what `hit_test_painted` reports for it instead of
-                // `TextDisplayLine`, so it needs this separate lookup
-                // rather than folding into `over_text_display` above.
-                // `ExtraChrome`'s own `id` is the clicked link's child id,
-                // not the leaf's — `bar` is, matching every other
-                // `ExtraChrome` resolution in this file (see
-                // `semantic_event_for_hit`'s own `bar` use).
-                let over_markdown = match detail {
-                    HitDetail::ExtraBody => Some(*id),
-                    HitDetail::ExtraChrome { bar } => Some(*bar),
-                    _ => None,
-                }
-                .and_then(|markdown_id| {
-                    markdown_at(&self.hit_map.borrow(), markdown_id)
-                        .map(|(area, markdown)| (markdown_id, area, markdown))
-                });
                 // Either landed on the `Scroll` itself (its empty body or
                 // its own scrollbar) or on a direct child with no wheel
                 // behavior of its own (a plain `Button`, say) that happens
@@ -4859,16 +4839,6 @@ impl InteractionEngine {
                             UiEvent::TextDisplay(*id, TextDisplayEvent::Scrolled { new_offset });
                         scroll_translated = true;
                     }
-                } else if let Some((markdown_id, area, markdown)) = over_markdown {
-                    let (total_lines, viewport_lines) = markdown.viewport_lines(backend, area);
-                    let max_offset = total_lines.saturating_sub(viewport_lines);
-                    let rows = wheel_row_delta(delta.y, 1.0);
-                    let new_offset = scroll_by_clamped(markdown.scroll_offset, rows, max_offset);
-                    event = UiEvent::TextDisplay(
-                        markdown_id,
-                        TextDisplayEvent::Scrolled { new_offset },
-                    );
-                    scroll_translated = true;
                 } else if let Some(scroll_id) = scroll_target {
                     if let Some(view) = scroll_view_at(&self.hit_map.borrow(), scroll_id) {
                         let step = match view.axis {

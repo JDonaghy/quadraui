@@ -68,18 +68,28 @@ pub(crate) fn drive<W: Interactive>(
     layout: &W::Layout,
     units: Units,
 ) -> Driven<W::Action> {
+    let (handled, emitted) = with_cx(id, units, |cx| widget.handle(state, event, layout, cx));
+    Driven { handled, emitted }
+}
+
+/// Run `f` with an [`EventCx`] for `id` over a controller host, returning
+/// its answer and every [`UiEvent`] it emitted, in order — for a
+/// controller that drives a widget's behaviour functions directly rather
+/// than through [`Interactive::handle`].
+pub(crate) fn with_cx<R>(
+    id: WidgetId,
+    units: Units,
+    f: impl FnOnce(&mut EventCx) -> R,
+) -> (R, Vec<UiEvent>) {
     let mut host = ControllerHost {
         units,
         emitted: Vec::new(),
     };
-    let handled = {
+    let answer = {
         let mut cx = EventCx::new(id, &mut host);
-        widget.handle(state, event, layout, &mut cx)
+        f(&mut cx)
     };
-    Driven {
-        handled,
-        emitted: host.emitted,
-    }
+    (answer, host.emitted)
 }
 
 /// The [`RoutedEvent`] `event` becomes for a widget painted at `area`, or
