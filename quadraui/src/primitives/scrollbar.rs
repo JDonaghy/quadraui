@@ -15,7 +15,7 @@
 //! computes its thumb through it, directly or via a thin per-primitive
 //! adapter (e.g. `multi_section_view::compute_thumb_bounds` converts a
 //! row-indexed scroll position into `fit_thumb`'s continuous units, then
-//! [`quantize_thumb`](crate::primitives::multi_section_view::quantize_thumb)
+//! `multi_section_view::quantize_thumb`
 //! snaps the result to whole cells for TUI).
 //!
 //! A caller may choose its own `min_thumb_len` value (cells vs. pixels,

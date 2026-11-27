@@ -9,28 +9,33 @@
 //! See `quadraui/docs/decisions/DECISIONS.md` D-003 for the design pass that
 //! produced this primitive.
 //!
-//! # Composition vs subsumption
+//! # Composition
 //!
-//! `MultiSectionView` does NOT reimplement tree / list / form painting.
-//! Each section's `body` is a `SectionBody` enum carrying an existing
-//! quadraui primitive (`TreeView`, `ListView`, `Form`, `Terminal`,
-//! `MessageList`), plain `Text`, an `Empty` welcome state, or a
-//! `Custom` escape hatch. Backend rasterisers dispatch to the correct
-//! body painter.
+//! `MultiSectionView` does not reimplement tree, list or form painting.
+//! Each section's `body` is a [`SectionBody`] carrying an existing
+//! quadraui widget ([`TreeView`], [`ListView`], [`Form`], [`Terminal`],
+//! [`MessageList`], [`Chart`]), plain `Text`, an `Empty` welcome state,
+//! or a host-painted `Custom` region.
 //!
-//! # Backend contract
+//! # Widget contract
 //!
-//! Two-stage layout:
-//! 1. [`MultiSectionView::layout`] resolves chrome bounds (header,
-//!    optional aux row, body, optional scrollbar) per section, plus
-//!    divider bounds and a flat `hit_regions` list.
-//! 2. Backend rasterisers paint headers/aux/scrollbars verbatim and
-//!    dispatch each section's body to the correct primitive painter
-//!    using the body bounds returned in [`SectionLayout::body_bounds`].
+//! [`crate::primitive::Primitive::layout`] resolves the chrome layout
+//! ([`MultiSectionView::layout`] with the unit's own metrics: [`msv_metrics`]
+//! on a pixel surface, [`cell_msv_metrics`] on a cell grid) and then lays
+//! every expanded, visible body out through that body widget's own
+//! `Primitive::layout`. Paint draws the chrome (headers, aux rows,
+//! scrollbars, dividers) with this module's painters and each body through
+//! its own widget's `paint` / `paint_cells`; the section's gutter owns a
+//! tree or list body's scrollbar, so the body does not draw a second one.
 //!
-//! This split keeps the chrome layout testable in isolation (no need
-//! for tree / list measurers in unit tests) and lets backends paint
-//! body content with their native conventions.
+//! [`crate::interactive::Interactive`] is controlled: collapse, per-section
+//! scroll (a tree or list body's own `scroll_offset`), panel scroll and
+//! section sizes stay descriptor fields the app writes back from the
+//! [`MultiSectionViewEvent`]s the view reports. Its state holds only the
+//! gestures in flight (a divider or thumb drag, aux-input editing) and
+//! each body widget's own `Interactive::State`; every event that lands on
+//! a body is forwarded to that body widget's `handle`, and what it reports
+//! comes back as [`MultiSectionViewEvent::Body`].
 
 use crate::event::Rect;
 use crate::primitives::chart::Chart;
@@ -376,7 +381,7 @@ pub enum MultiSectionViewHit {
 }
 
 /// Sub-zone of a section header that was hit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HeaderHit {
     /// Leading chevron — explicit collapse/expand.
     Chevron,
@@ -389,7 +394,7 @@ pub enum HeaderHit {
 }
 
 /// Sub-zone of a section aux that was hit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AuxHit {
     /// Hit on the input region of an `Input` or `Search` aux.
     Input,
@@ -408,6 +413,54 @@ pub enum ScrollbarHit {
     TrackBefore,
     /// Hit on the track below/after the thumb (page down).
     TrackAfter,
+}
+
+/// What a [`MultiSectionView`] reports through its
+/// [`crate::interactive::Interactive`] impl. Every visible change it asks
+/// for is the app's to apply: the view keeps collapse, scroll, sizes and
+/// aux-input text as descriptor fields.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum MultiSectionViewEvent {
+    /// A header was clicked, or activated from the keyboard (Enter or
+    /// Space on its focus stop): its title area, its chevron, or one of
+    /// its action buttons.
+    HeaderActivated { section: usize, hit: HeaderHit },
+    /// A header asked to collapse or expand its section; the app writes
+    /// `collapsed` onto [`Section::collapsed`].
+    CollapseChanged { section: usize, collapsed: bool },
+    /// A divider drag resized the two sections either side of it; the
+    /// app writes both sizes as [`SectionSize::Fixed`].
+    SectionResized {
+        above: usize,
+        above_size: u16,
+        below: usize,
+        below_size: u16,
+    },
+    /// A scrollbar gesture asked to scroll. `section: Some(i)` is the new
+    /// row `scroll_offset` of section `i`'s tree or list body; `None` is
+    /// the new [`MultiSectionView::panel_scroll`], in main-axis units.
+    ScrollChanged { section: Option<usize>, offset: f32 },
+    /// An aux-row toolbar button or a custom aux was clicked.
+    AuxActivated { section: usize, hit: AuxHit },
+    /// Editing changed an aux input's text or caret; the app writes both
+    /// onto its [`InlineInput`] (`caret` in chars, like the field).
+    AuxInputChanged {
+        section: usize,
+        text: String,
+        caret: usize,
+    },
+    /// Enter was pressed in an aux input.
+    AuxInputSubmitted { section: usize, text: String },
+    /// An event section `.0`'s body widget reported, as that widget's own
+    /// [`crate::UiEvent`] under its own id.
+    Body(usize, Box<crate::UiEvent>),
+}
+
+impl crate::interactive::WidgetAction for MultiSectionViewEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::MultiSectionView(id, self)
+    }
 }
 
 /// Fully-resolved layout for a `MultiSectionView`.
@@ -508,922 +561,146 @@ impl Default for MsvLayoutMetrics {
     }
 }
 
-impl MultiSectionView {
-    /// Compute the full chrome layout for this view.
-    ///
-    /// `measure(section_idx) -> SectionMeasure` reports the body's
-    /// natural content size (used by `SectionSize::Content` and
-    /// `ContentClamped`) and the aux row size (used to subtract from
-    /// the body area). The closure is called once per section.
-    pub fn layout<F>(
-        &self,
-        bounds: Rect,
-        metrics: MsvLayoutMetrics,
-        measure: F,
-    ) -> MultiSectionViewLayout
-    where
-        F: Fn(usize) -> SectionMeasure,
-    {
-        match self.axis {
-            Axis::Vertical => self.layout_vertical(bounds, metrics, measure),
-            Axis::Horizontal => {
-                // Horizontal rasterisers not yet implemented; return an empty layout.
-                MultiSectionViewLayout {
-                    bounds,
-                    axis: self.axis,
-                    scroll_mode: self.scroll_mode,
-                    sections: Vec::new(),
-                    dividers: Vec::new(),
-                    panel_scrollbar: None,
-                    panel_scrollbar_thumb: None,
-                    hit_regions: Vec::new(),
-                }
-            }
-        }
-    }
+mod layout;
+pub use layout::{cell_msv_layout, cell_msv_metrics, msv_body_measure, msv_layout, msv_metrics};
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use layout::{MultiSectionViewPrimitiveLayout, SectionBodyLayout, SectionBodyView};
 
-    fn layout_vertical<F>(
-        &self,
-        bounds: Rect,
-        metrics: MsvLayoutMetrics,
-        measure: F,
-    ) -> MultiSectionViewLayout
-    where
-        F: Fn(usize) -> SectionMeasure,
-    {
-        let n = self.sections.len();
-        if n == 0 {
-            return MultiSectionViewLayout {
-                bounds,
-                axis: Axis::Vertical,
-                scroll_mode: self.scroll_mode,
-                sections: Vec::new(),
-                dividers: Vec::new(),
-                panel_scrollbar: None,
-                panel_scrollbar_thumb: None,
-                hit_regions: Vec::new(),
-            };
-        }
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+mod contract;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use contract::{MultiSectionViewState, MultiSectionViewSubPart, SectionBodyState};
 
-        // Pre-compute per-section measures in one pass; reused below.
-        let measures: Vec<SectionMeasure> = (0..n).map(&measure).collect();
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
 
-        // Container main-axis size after subtracting divider stripes
-        // between non-collapsed sections. Dividers always sit between
-        // sections (not above the first / below the last).
-        let divider_count = if metrics.divider_size > 0.0 && n > 1 {
-            (n - 1) as f32
-        } else {
-            0.0
-        };
-        let dividers_total = metrics.divider_size * divider_count;
-        let usable_main = (bounds.height - dividers_total).max(0.0);
-
-        // Per-section "must-have" main-axis cost: header + (aux if any).
-        // This is paid even when collapsed for the header.
-        let mut chrome_cost: Vec<f32> = vec![0.0; n];
-        for i in 0..n {
-            let aux = if self.sections[i].aux.is_some() {
-                measures[i].aux_size
-            } else {
-                0.0
-            };
-            // Collapsed sections only show the header row.
-            let chrome = if self.sections[i].collapsed {
-                metrics.header_size
-            } else {
-                metrics.header_size + aux
-            };
-            chrome_cost[i] = chrome;
-        }
-
-        // ── Resolve per-section main-axis sizes ────────────────────
-        let mut resolved = match self.scroll_mode {
-            ScrollMode::WholePanel => {
-                // Every section sized to chrome + content height.
-                let mut sizes = Vec::with_capacity(n);
-                for i in 0..n {
-                    let body = if self.sections[i].collapsed {
-                        0.0
-                    } else {
-                        measures[i].content_size
-                    };
-                    let total = chrome_cost[i] + body;
-                    sizes.push(apply_min_max(&self.sections[i], total));
-                }
-                sizes
-            }
-            ScrollMode::PerSection => resolve_per_section_sizes(
-                &self.sections,
-                &measures,
-                &chrome_cost,
-                bounds.height,
-                usable_main,
-            ),
-        };
-
-        // Snap resolved sizes to integer cell multiples when the host
-        // requests it (TUI). Without this, fractional section sizes
-        // (e.g. 5.5 cells) cause paint to round to integer rows while
-        // hit_test uses the raw fractional bounds — paint and click
-        // disagree about which row is in which section. Distributes the
-        // remainder one cell at a time so the sum still equals the
-        // (integer) usable_main exactly.
-        if metrics.cell_quantum > 0.0 && n > 0 {
-            let q = metrics.cell_quantum;
-            let target_total: f32 = resolved.iter().sum();
-            let target_cells = (target_total / q).round() as i32;
-            let mut snapped: Vec<i32> = resolved.iter().map(|s| (s / q).floor() as i32).collect();
-            let mut remainder = target_cells - snapped.iter().sum::<i32>();
-            // Order the indices by the size of the dropped fractional
-            // part so the largest fractional shares get the spare
-            // cells first — matches how layout managers usually break
-            // ties on integer distribution.
-            let mut order: Vec<(usize, f32)> = resolved
-                .iter()
-                .enumerate()
-                .map(|(i, s)| (i, (s / q) - (s / q).floor()))
-                .collect();
-            order.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-            let mut cursor = 0;
-            while remainder > 0 && !order.is_empty() {
-                let (idx, _) = order[cursor % order.len()];
-                snapped[idx] += 1;
-                remainder -= 1;
-                cursor += 1;
-            }
-            // If we overshot (remainder negative), shave from the
-            // smallest-fractional sections.
-            if remainder < 0 {
-                let mut order_rev = order;
-                order_rev.reverse();
-                let mut c = 0;
-                while remainder < 0 && !order_rev.is_empty() {
-                    let (idx, _) = order_rev[c % order_rev.len()];
-                    if snapped[idx] > 1 {
-                        snapped[idx] -= 1;
-                        remainder += 1;
-                    }
-                    c += 1;
-                }
-            }
-            resolved = snapped.into_iter().map(|s| (s as f32) * q).collect();
-        }
-
-        // ── Walk and emit per-section layouts + dividers ───────────
-        let mut sections_out = Vec::with_capacity(n);
-        let mut dividers = Vec::new();
-        let mut hit_regions: Vec<(Rect, MultiSectionViewHit)> = Vec::new();
-
-        let panel_sb_w = match self.scroll_mode {
-            ScrollMode::WholePanel => {
-                let total: f32 = resolved.iter().sum::<f32>() + dividers_total;
-                if total > bounds.height {
-                    metrics.scrollbar_size
-                } else {
-                    0.0
-                }
-            }
-            ScrollMode::PerSection => 0.0,
-        };
-
-        // For WholePanel mode, sections stack at content size and the
-        // viewport scrolls the whole panel. `panel_scroll` shifts every
-        // section's y upward; the layout clamps the value internally to
-        // `[0, total - viewport]` so sections never scroll past the
-        // bottom even if the host stores an over-shot value (host's
-        // stored scroll may exceed the clamp; layout only ever applies
-        // the clamped value).
-        let scroll_offset = match self.scroll_mode {
-            ScrollMode::WholePanel => {
-                let total: f32 = resolved.iter().sum::<f32>() + dividers_total;
-                let max_scroll = (total - bounds.height).max(0.0);
-                self.panel_scroll.clamp(0.0, max_scroll)
-            }
-            ScrollMode::PerSection => 0.0,
-        };
-        let mut y = bounds.y - scroll_offset;
-        for i in 0..n {
-            // For PerSection, each section is bounded by its resolved size.
-            // For WholePanel, sections stack at content size and the panel
-            // itself scrolls (content past bounds.height is clipped by the
-            // backend; we still emit hit_regions / sections normally).
-            let s_main = resolved[i];
-            let s_top = y;
-
-            let header_bounds = Rect::new(
-                bounds.x,
-                s_top,
-                (bounds.width - panel_sb_w).max(0.0),
-                metrics.header_size,
-            );
-
-            let mut content_top = s_top + metrics.header_size;
-
-            let aux_bounds = if let Some(aux) = &self.sections[i].aux {
-                if self.sections[i].collapsed {
-                    None
-                } else {
-                    let aux_h = measures[i].aux_size;
-                    let r = Rect::new(bounds.x, content_top, bounds.width, aux_h);
-                    content_top += aux_h;
-                    let _ = aux; // silences unused-binding warnings on cfg-narrow builds
-                    Some(r)
-                }
-            } else {
-                None
-            };
-
-            let collapsed = self.sections[i].collapsed;
-
-            // Body and scrollbar split the remainder of this section's
-            // main-axis budget.
-            let remaining_main = (s_top + s_main - content_top).max(0.0);
-
-            // Decide if a per-section scrollbar is reserved. PerSection
-            // mode reserves one if body content overflows the body area;
-            // WholePanel never reserves per-section scrollbars.
-            let body_main = if collapsed { 0.0 } else { remaining_main };
-            let needs_scrollbar = matches!(self.scroll_mode, ScrollMode::PerSection)
-                && !collapsed
-                && body_overflows(&self.sections[i], measures[i].content_size, body_main);
-            let scrollbar_w = if needs_scrollbar {
-                metrics.scrollbar_size
-            } else {
-                0.0
-            };
-            let body_w = (bounds.width - scrollbar_w - panel_sb_w).max(0.0);
-
-            let body_bounds = Rect::new(bounds.x, content_top, body_w, body_main);
-            let scrollbar_bounds = if needs_scrollbar {
-                Some(Rect::new(
-                    bounds.x + body_w,
-                    content_top,
-                    scrollbar_w,
-                    body_main,
-                ))
-            } else {
-                None
-            };
-
-            // Per-section thumb bounds — computed from the body's scroll state when
-            // introspectable (Tree, List). For overflowing bodies without row-based
-            // scroll the thumb bounds stay None; the hit-region emission below falls
-            // back to a single combined-Thumb region covering the whole gutter.
-            let thumb_bounds = match (scrollbar_bounds, body_scroll_state(&self.sections[i].body)) {
-                (Some(sb), Some((scroll_rows, row_count))) if row_count > 0 => {
-                    Some(compute_thumb_bounds(
-                        sb,
-                        scroll_rows,
-                        row_count,
-                        measures[i].content_size,
-                        metrics.cell_quantum,
-                    ))
-                }
-                _ => None,
-            };
-
-            sections_out.push(SectionLayout {
-                section_idx: i,
-                header_bounds,
-                aux_bounds,
-                body_bounds,
-                scrollbar_bounds,
-                thumb_bounds,
-                collapsed,
-                resolved_size: s_main,
-            });
-
-            // Header hit regions: actions first (right-to-left so the
-            // last-declared action gets the rightmost slot). Then
-            // chevron at the leading edge if shown. Title area covers
-            // whatever remains.
-            push_header_hits(&self.sections[i].header, header_bounds, i, &mut hit_regions);
-
-            // Aux hit region: a single Input / Search / Custom rectangle,
-            // or per-action regions for Toolbar.
-            if let (Some(aux), Some(ar)) = (&self.sections[i].aux, aux_bounds) {
-                if !collapsed {
-                    push_aux_hits(aux, ar, i, &mut hit_regions);
-                }
-            }
-
-            // Body hit region: one rectangle that the host re-tests
-            // against the inner body's own hit_test.
-            if !collapsed && body_bounds.height > 0.0 && body_bounds.width > 0.0 {
-                hit_regions.push((body_bounds, MultiSectionViewHit::Body { section: i }));
-            }
-
-            // Scrollbar hit regions. When the body's scroll state is introspectable
-            // (Tree, List), split the gutter into TrackBefore / Thumb / TrackAfter so
-            // consumers can route page-up and page-down clicks without re-deriving
-            // thumb geometry. For overflowing body types without row-based scroll, fall
-            // back to a single combined-Thumb region. Hit-region order matters: Thumb
-            // first (front-to-back hit_test), then the two tracks.
-            if let Some(sb) = scrollbar_bounds {
-                if let Some(thumb) = thumb_bounds {
-                    hit_regions.push((
-                        thumb,
-                        MultiSectionViewHit::Scrollbar {
-                            section: i,
-                            kind: ScrollbarHit::Thumb,
-                        },
-                    ));
-                    let above_h = (thumb.y - sb.y).max(0.0);
-                    if above_h > 0.0 {
-                        let above = Rect::new(sb.x, sb.y, sb.width, above_h);
-                        hit_regions.push((
-                            above,
-                            MultiSectionViewHit::Scrollbar {
-                                section: i,
-                                kind: ScrollbarHit::TrackBefore,
-                            },
-                        ));
-                    }
-                    let below_y = thumb.y + thumb.height;
-                    let below_h = (sb.y + sb.height - below_y).max(0.0);
-                    if below_h > 0.0 {
-                        let below = Rect::new(sb.x, below_y, sb.width, below_h);
-                        hit_regions.push((
-                            below,
-                            MultiSectionViewHit::Scrollbar {
-                                section: i,
-                                kind: ScrollbarHit::TrackAfter,
-                            },
-                        ));
-                    }
-                } else {
-                    hit_regions.push((
-                        sb,
-                        MultiSectionViewHit::Scrollbar {
-                            section: i,
-                            kind: ScrollbarHit::Thumb,
-                        },
-                    ));
-                }
-            }
-
-            // Divider after this section (not after the last one).
-            y += s_main;
-            if metrics.divider_size > 0.0 && i + 1 < n && self.allow_resize {
-                let d = Rect::new(bounds.x, y, bounds.width, metrics.divider_size);
-                dividers.push(DividerBounds {
-                    above: i,
-                    below: i + 1,
-                    bounds: d,
-                });
-                hit_regions.push((
-                    d,
-                    MultiSectionViewHit::Divider {
-                        above: i,
-                        below: i + 1,
-                    },
-                ));
-                y += metrics.divider_size;
-            }
-        }
-
-        // Panel-level scrollbar (WholePanel mode only). Thumb geometry uses the
-        // same canonical fit_thumb helper as per-section scrollbars. The thumb rect
-        // is published on the layout (panel_scrollbar_thumb) so callers can read it
-        // instead of re-deriving it.
-        let (panel_scrollbar, panel_scrollbar_thumb) = match self.scroll_mode {
-            ScrollMode::WholePanel => {
-                let total_content: f32 = resolved.iter().sum::<f32>() + dividers_total;
-                if total_content > bounds.height {
-                    let sb_w = metrics.scrollbar_size;
-                    let r = Rect::new(
-                        bounds.x + bounds.width - sb_w,
-                        bounds.y,
-                        sb_w,
-                        bounds.height,
-                    );
-                    let min_thumb = panel_thumb_min(&metrics);
-                    // Deliberately *not* snapped to `metrics.cell_quantum`
-                    // (unlike `compute_thumb_bounds`'s per-section thumb):
-                    // a whole-cell `quantize_thumb` pass rounds a
-                    // near-full-track thumb *up* to fill the track
-                    // exactly, zeroing `travel` and making the panel
-                    // scrollbar undraggable under a 1-row overflow — see
-                    // `tui_panel_drag_works_in_multi_tree_example_shape`.
-                    // The paint side rounds this fractional rect to cells
-                    // at render time instead (`tui::multi_section_view::
-                    // paint_panel_scrollbar`), same as the per-section
-                    // paint path's `.round()` fallback.
-                    let (thumb_start, thumb_h) = crate::primitives::scrollbar::fit_thumb(
-                        self.panel_scroll,
-                        total_content,
-                        bounds.height,
-                        r.height,
-                        min_thumb,
-                    );
-                    let thumb_y = r.y + thumb_start;
-                    if thumb_y > r.y {
-                        hit_regions.push((
-                            Rect::new(r.x, r.y, r.width, thumb_y - r.y),
-                            MultiSectionViewHit::PanelScrollbar {
-                                kind: ScrollbarHit::TrackBefore,
-                            },
-                        ));
-                    }
-                    let thumb_rect = Rect::new(r.x, thumb_y, r.width, thumb_h);
-                    hit_regions.push((
-                        thumb_rect,
-                        MultiSectionViewHit::PanelScrollbar {
-                            kind: ScrollbarHit::Thumb,
-                        },
-                    ));
-                    let thumb_bottom = thumb_y + thumb_h;
-                    let track_bottom = r.y + r.height;
-                    if thumb_bottom < track_bottom {
-                        hit_regions.push((
-                            Rect::new(r.x, thumb_bottom, r.width, track_bottom - thumb_bottom),
-                            MultiSectionViewHit::PanelScrollbar {
-                                kind: ScrollbarHit::TrackAfter,
-                            },
-                        ));
-                    }
-                    (Some(r), Some(thumb_rect))
-                } else {
-                    (None, None)
-                }
-            }
-            ScrollMode::PerSection => (None, None),
-        };
-
-        MultiSectionViewLayout {
-            bounds,
-            axis: Axis::Vertical,
-            scroll_mode: self.scroll_mode,
-            sections: sections_out,
-            dividers,
-            panel_scrollbar,
-            panel_scrollbar_thumb,
-            hit_regions,
-        }
-    }
-
-    /// Apply a divider drag (Q3 — Fixed-on-drag policy).
-    ///
-    /// `delta` is the signed main-axis distance the divider moved
-    /// (positive = section `above` grew, section `below` shrank).
-    /// Both adjacent sections become `SectionSize::Fixed(measured)`,
-    /// honouring their `min_size`/`max_size`.
-    ///
-    /// Returns `true` if either section's size changed; `false` if
-    /// `delta` was clamped to zero (already at the boundary).
-    pub fn resize_divider(
-        &mut self,
-        above: usize,
-        below: usize,
-        current_above: f32,
-        current_below: f32,
-        delta: f32,
-    ) -> bool {
-        if above >= self.sections.len() || below >= self.sections.len() {
-            return false;
-        }
-        // Clamp delta against both sections' min/max.
-        let (lo_above, hi_above) = size_bounds(&self.sections[above]);
-        let (lo_below, hi_below) = size_bounds(&self.sections[below]);
-        let max_grow_above = hi_above - current_above;
-        let max_shrink_above = current_above - lo_above;
-        let max_grow_below = hi_below - current_below;
-        let max_shrink_below = current_below - lo_below;
-        let mut d = delta;
-        if d > 0.0 {
-            d = d.min(max_grow_above).min(max_shrink_below);
-        } else if d < 0.0 {
-            d = (-d).min(max_shrink_above).min(max_grow_below).neg();
-        }
-        if d == 0.0 {
-            return false;
-        }
-        let new_above = (current_above + d).round() as u16;
-        let new_below = (current_below - d).round() as u16;
-        self.sections[above].size = SectionSize::Fixed(new_above);
-        self.sections[below].size = SectionSize::Fixed(new_below);
-        true
-    }
-}
-
-// ── Internal helpers ───────────────────────────────────────────────────────
-
-trait FloatNeg {
-    fn neg(self) -> Self;
-}
-impl FloatNeg for f32 {
-    fn neg(self) -> Self {
-        -self
-    }
-}
-
-fn apply_min_max(s: &Section, raw: f32) -> f32 {
-    let mut v = raw;
-    if let Some(min) = s.min_size {
-        v = v.max(min as f32);
-    }
-    if let Some(max) = s.max_size {
-        v = v.min(max as f32);
-    }
-    v
-}
-
-fn size_bounds(s: &Section) -> (f32, f32) {
-    let lo = s.min_size.map(|m| m as f32).unwrap_or(0.0);
-    let hi = s.max_size.map(|m| m as f32).unwrap_or(f32::INFINITY);
-    (lo, hi)
-}
-
-/// Minimum thumb height for the panel-level scrollbar, in the same units
-/// the rest of the layout uses (cells for TUI, pixels for GTK).
+/// The shared pixel painter for [`MultiSectionView`]: [`paint`] draws the
+/// whole view from its contract layout — chrome through this module's
+/// helpers, each body through its own widget's
+/// [`crate::primitive::Primitive::paint`].
 ///
-/// `cell_quantum > 0.0` flags TUI: the painter clamps thumb height to 1 cell
-/// (`.max(1)` in `paint_panel_scrollbar`), so we mirror that here. GTK keeps
-/// the historical 8-pixel floor (clamped up to `scrollbar_size` when the
-/// gutter is wider).
-///
-/// Exposed `pub(crate)` so drag init can compute the same `thumb_h` the
-/// layout did, keeping drag travel consistent with the painted thumb's track
-/// distance.
-pub(crate) fn panel_thumb_min(metrics: &MsvLayoutMetrics) -> f32 {
-    if metrics.cell_quantum > 0.0 {
-        metrics.cell_quantum
-    } else {
-        metrics.scrollbar_size.max(8.0)
-    }
-}
-
-fn body_overflows(s: &Section, content: f32, body_main: f32) -> bool {
-    // Empty/Custom never claim overflow — host paints whatever it wants.
-    match &s.body {
-        SectionBody::Empty(_) | SectionBody::Custom(_) => false,
-        _ => content > body_main + 0.5, // tolerate sub-cell rounding
-    }
-}
-
-/// Inner body's scroll state when introspectable. Returns
-/// `(scroll_offset_rows, row_count)` for body types that carry a
-/// row-based `scroll_offset` field. `None` for bodies without
-/// row-based scroll (`Form`, `Terminal`, `MessageList`, `Text`,
-/// `Empty`, `Custom`); the layout falls back to a single
-/// combined-Thumb hit region for those.
-///
-/// Per #9: the primitive introspects the body enum directly rather
-/// than threading a host-supplied scroll measure through every
-/// `MultiSectionView::layout` call. The scroll state already lives
-/// on the inner primitive — there's no second source of truth.
-fn body_scroll_state(body: &SectionBody) -> Option<(usize, usize)> {
-    match body {
-        SectionBody::Tree(t) => Some((t.scroll_offset, t.rows.len())),
-        SectionBody::List(l) => {
-            let title_row = if l.title.is_some() { 1 } else { 0 };
-            Some((l.scroll_offset, l.items.len() + title_row))
-        }
-        _ => None,
-    }
-}
-
-/// Snap a [`crate::fit_thumb`] result to whole `cell_quantum` units so
-/// paint (which rounds to integer cells in TUI) and hit-test (which
-/// otherwise sees raw fractional bounds) agree exactly. A no-op when
-/// `cell_quantum <= 0.0` (GTK's fractional-pixel bounds pass through
-/// unchanged).
-///
-/// Used by [`compute_thumb_bounds`] (per-section scrollbars) only.
-/// *Not* used for the panel-level scrollbar — see the "Deliberately
-/// not snapped" note at that branch's `fit_thumb` call in
-/// `MultiSectionView::layout_vertical` for why quantising a
-/// near-full-track panel thumb would zero out drag `travel`. Panel
-/// paint rounds its fractional rect to cells at render time instead
-/// (`tui::multi_section_view::paint_panel_scrollbar`).
-pub(crate) fn quantize_thumb(
-    thumb_start: f32,
-    thumb_len: f32,
-    track_len: f32,
-    cell_quantum: f32,
-) -> (f32, f32) {
-    if cell_quantum <= 0.0 {
-        return (thumb_start, thumb_len);
-    }
-    let q = cell_quantum;
-    let start_q = (thumb_start / q).floor() as i32;
-    let end_q = ((thumb_start + thumb_len) / q).ceil() as i32;
-    let max_end_q = (track_len / q).round() as i32;
-    let end_q = end_q.min(max_end_q);
-    let len_q = (end_q - start_q).max(1);
-    let start_q = start_q.min(max_end_q - len_q).max(0);
-    (start_q as f32 * q, len_q as f32 * q)
-}
-
-/// Compute thumb bounds for a per-section scrollbar.
-///
-/// Shares [`crate::fit_thumb`] with the panel-level scrollbar (see the
-/// `fit_thumb` call in the `WholePanel` branch of
-/// `MultiSectionView::layout_vertical`) so both kinds of scrollbar size
-/// and position their thumb identically. Unlike the panel-level branch,
-/// this additionally snaps to `cell_quantum` via [`quantize_thumb`] when
-/// set, so paint and hit-test agree on integer cells (TUI) — per-section
-/// thumbs don't have the panel scrollbar's near-full-track drag-`travel`
-/// concern (see `quantize_thumb`'s doc), so there's no reason not to.
-/// Falls through to fractional bounds when `cell_quantum == 0.0` (GTK).
-fn compute_thumb_bounds(
-    gutter: Rect,
-    scroll_rows: usize,
-    row_count: usize,
-    content_size: f32,
-    cell_quantum: f32,
-) -> Rect {
-    if row_count == 0 || gutter.height <= 0.0 || content_size <= 0.0 {
-        return gutter;
-    }
-    // Convert row-indexed scroll into the same main-axis units as
-    // content_size: row_main_unit = content_size / row_count.
-    let row_main_unit = content_size / row_count as f32;
-    let scroll_main = scroll_rows as f32 * row_main_unit;
-    let visible = gutter.height; // viewport main-axis size = gutter height
-    let track_len = gutter.height;
-    let min_thumb_len = if cell_quantum > 0.0 {
-        cell_quantum
-    } else {
-        1.0
-    };
-    let (thumb_start, thumb_len) = crate::primitives::scrollbar::fit_thumb(
-        scroll_main,
-        content_size,
-        visible,
-        track_len,
-        min_thumb_len,
-    );
-    let (thumb_start, thumb_len) = quantize_thumb(thumb_start, thumb_len, track_len, cell_quantum);
-    Rect::new(gutter.x, gutter.y + thumb_start, gutter.width, thumb_len)
-}
-
-/// Three-pass main-axis size resolution for `ScrollMode::PerSection`.
-///
-/// Pass 1 (Fixed): allocate `SectionSize::Fixed`, `Content` /
-/// `ContentClamped`, and collapsed-section header heights.
-/// Pass 2 (Percent): allocate `SectionSize::Percent` against the
-/// *original* container size; if total overflows the remainder, scale
-/// proportionally.
-/// Pass 3 (Flex): distribute leftover space across `Weight`,
-/// `EqualShare`. `Content` already consumed its content size in pass 1.
-fn resolve_per_section_sizes(
-    sections: &[Section],
-    measures: &[SectionMeasure],
-    chrome_cost: &[f32],
-    container_main: f32,
-    usable_main: f32,
-) -> Vec<f32> {
-    let n = sections.len();
-    let mut out = vec![0.0_f32; n];
-
-    // Pass 1: Fixed + Content (collapsed sections always reduce to chrome
-    // cost only).
-    let mut consumed = 0.0_f32;
-    let mut pass1_done = vec![false; n];
-    for i in 0..n {
-        if sections[i].collapsed {
-            // Collapsed: only the header (chrome_cost includes only
-            // header for collapsed).
-            out[i] = apply_min_max(&sections[i], chrome_cost[i]);
-            consumed += out[i];
-            pass1_done[i] = true;
-            continue;
-        }
-        match sections[i].size {
-            SectionSize::Fixed(rows) => {
-                let v = apply_min_max(&sections[i], rows as f32);
-                out[i] = v;
-                consumed += v;
-                pass1_done[i] = true;
-            }
-            SectionSize::Content => {
-                let raw = chrome_cost[i] + measures[i].content_size;
-                let v = apply_min_max(&sections[i], raw);
-                out[i] = v;
-                consumed += v;
-                pass1_done[i] = true;
-            }
-            _ => {}
-        }
-    }
-
-    // Pass 2: Percent (allocated against container_main).
-    let mut percent_indices: Vec<usize> = Vec::new();
-    let mut percent_raw: Vec<f32> = Vec::new();
-    for i in 0..n {
-        if pass1_done[i] {
-            continue;
-        }
-        if let SectionSize::Percent(p) = sections[i].size {
-            percent_indices.push(i);
-            percent_raw.push(p.clamp(0.0, 1.0) * container_main);
-        }
-    }
-    let percent_total: f32 = percent_raw.iter().sum();
-    let percent_budget = (usable_main - consumed).max(0.0);
-    let percent_scale = if percent_total > percent_budget && percent_total > 0.0 {
-        percent_budget / percent_total
-    } else {
-        1.0
-    };
-    for (k, &i) in percent_indices.iter().enumerate() {
-        let raw = percent_raw[k] * percent_scale;
-        let v = apply_min_max(&sections[i], raw.max(chrome_cost[i]));
-        out[i] = v;
-        consumed += v;
-        pass1_done[i] = true;
-    }
-
-    // Pass 3: Weight + EqualShare share remainder.
-    let remainder = (usable_main - consumed).max(0.0);
-    let mut flex_indices: Vec<usize> = Vec::new();
-    let mut weights: Vec<f32> = Vec::new();
-    for i in 0..n {
-        if pass1_done[i] {
-            continue;
-        }
-        match sections[i].size {
-            SectionSize::Weight(w) => {
-                flex_indices.push(i);
-                weights.push(w.max(0.0));
-            }
-            SectionSize::EqualShare => {
-                flex_indices.push(i);
-                weights.push(1.0);
-            }
-            // Fixed/Content/Percent already handled above.
-            _ => {}
-        }
-    }
-    let weight_sum: f32 = weights.iter().sum();
-    if !flex_indices.is_empty() && weight_sum > 0.0 {
-        for (k, &i) in flex_indices.iter().enumerate() {
-            let raw = remainder * (weights[k] / weight_sum);
-            let v = apply_min_max(&sections[i], raw.max(chrome_cost[i]));
-            out[i] = v;
-        }
-    } else {
-        // No flex sections — leftover space is unused. Apps that want
-        // to absorb it should add an `EqualShare` section.
-        for &i in &flex_indices {
-            out[i] = apply_min_max(&sections[i], chrome_cost[i]);
-        }
-    }
-
-    out
-}
-
-fn push_header_hits(
-    header: &SectionHeader,
-    bounds: Rect,
-    section: usize,
-    out: &mut Vec<(Rect, MultiSectionViewHit)>,
-) {
-    // Estimated chevron width (1 unit). The exact glyph width is
-    // backend-dependent; this is a hit-test approximation that matches
-    // typical 1-cell or icon-width footprints.
-    let chevron_w = if header.show_chevron { 2.0 } else { 0.0 };
-
-    // Action buttons: right-to-left, 2 units each (icon + spacing).
-    // Disabled actions don't reserve a hit region — clicks fall through
-    // to TitleArea.
-    let action_w = 2.0;
-    let mut right_cursor = bounds.x + bounds.width;
-    for action in header.actions.iter().rev() {
-        if !action.enabled {
-            continue;
-        }
-        let r = Rect::new(right_cursor - action_w, bounds.y, action_w, bounds.height);
-        out.push((
-            r,
-            MultiSectionViewHit::Header {
-                section,
-                kind: HeaderHit::Action(action.id.clone()),
-            },
-        ));
-        right_cursor -= action_w;
-    }
-
-    // Chevron region (leading edge).
-    if header.show_chevron {
-        let r = Rect::new(bounds.x, bounds.y, chevron_w, bounds.height);
-        out.push((
-            r,
-            MultiSectionViewHit::Header {
-                section,
-                kind: HeaderHit::Chevron,
-            },
-        ));
-    }
-
-    // TitleArea covers the strip between chevron and the leftmost
-    // enabled action button.
-    let title_x = bounds.x + chevron_w;
-    let title_w = (right_cursor - title_x).max(0.0);
-    if title_w > 0.0 {
-        let r = Rect::new(title_x, bounds.y, title_w, bounds.height);
-        out.push((
-            r,
-            MultiSectionViewHit::Header {
-                section,
-                kind: HeaderHit::TitleArea,
-            },
-        ));
-    }
-}
-
-fn push_aux_hits(
-    aux: &SectionAux,
-    bounds: Rect,
-    section: usize,
-    out: &mut Vec<(Rect, MultiSectionViewHit)>,
-) {
-    match aux {
-        SectionAux::Input(_) | SectionAux::Search(_) => {
-            out.push((
-                bounds,
-                MultiSectionViewHit::Aux {
-                    section,
-                    kind: AuxHit::Input,
-                },
-            ));
-        }
-        SectionAux::Toolbar(actions) => {
-            let action_w = 2.0;
-            let mut x = bounds.x;
-            for a in actions {
-                if !a.enabled {
-                    x += action_w;
-                    continue;
-                }
-                let r = Rect::new(x, bounds.y, action_w, bounds.height);
-                out.push((
-                    r,
-                    MultiSectionViewHit::Aux {
-                        section,
-                        kind: AuxHit::Action(a.id.clone()),
-                    },
-                ));
-                x += action_w;
-            }
-        }
-        SectionAux::Custom(_) => {
-            out.push((
-                bounds,
-                MultiSectionViewHit::Aux {
-                    section,
-                    kind: AuxHit::Custom,
-                },
-            ));
-        }
-    }
-}
-
-/// Shared chrome-paint helpers for the `MultiSectionView` rasterisers.
-///
-/// Only the **chrome** — header row, aux row, per-section and panel-level
-/// scrollbars, divider strip, `Text`/`Empty` bodies — is implemented here.
-/// Each pixel backend's own `src/{gtk,macos,win}/multi_section_view.rs` keeps
-/// its `draw_multi_section_view` orchestrator and its `paint_body` dispatcher:
-/// `SectionBody::Tree`/`List`/`MessageList` still call each backend's own
-/// native rasteriser (`gtk::draw_tree`, `win::list::draw_list`, …), which
-/// take a raw `(&Context, &pango::Layout)` / `(&ID2D1RenderTarget, &DWrite)`
-/// pair, not `&mut dyn PaintSurface` — those primitives have not yet been
-/// ported onto this trait (see `crate::paint_surface`'s own doc for the full
-/// ported/unported split). Moving only what is already expressible through
-/// the ~15 verbs on `PaintSurface` mirrors how `crate::primitives::form`
-/// leaves `FieldKind::Toolbar` (no rounded-rect/hover chrome available) to
-/// each backend's own `draw_form` wrapper.
-///
-/// # Fixed drift
-///
-/// Pre-port, only Win-GUI and macOS `paint_header`s clipped the title paint
-/// to the region between the chevron and the first reserved action slot; GTK
-/// painted the title unclipped, allowing it to bleed past the header's trailing
-/// margin. This shared [`paint_header`] always brackets the title draw in
-/// [`PaintSurface::surface_push_clip`]/[`PaintSurface::surface_pop_clip`],
-/// unifying on the already-majority-correct behaviour.
-///
-/// A second drift found while porting: macOS's `paint_panel_scrollbar` recomputed
-/// the panel thumb's position/size itself instead of consuming the layout's
-/// `panel_scrollbar_thumb`. Routing macOS through this shared
-/// [`paint_panel_scrollbar`] (which only consumes pre-computed `thumb_bounds`)
-/// closes that gap.
+/// Every helper brackets the header title in
+/// [`PaintSurface::surface_push_clip`]/[`PaintSurface::surface_pop_clip`]
+/// so a long title never bleeds past the first action slot, and both
+/// scrollbar painters consume the thumb bounds the layout already
+/// resolved rather than re-deriving them.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-#[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{EmptyBody, HeaderAction, SectionAux, SectionHeader};
+    use super::contract::with_body_paint;
+    use super::{
+        Axis, EmptyBody, HeaderAction, MultiSectionView, MultiSectionViewPrimitiveLayout,
+        SectionAux, SectionBody, SectionBodyLayout, SectionBodyView, SectionHeader,
+    };
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
+    use crate::primitive::Primitive;
     use crate::primitives::toolbar::action_text;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText};
+    use crate::PaintEnv;
+
+    /// Paint `view` at `layout` (its contract layout) onto `surface`:
+    /// the panel background, then per section its header (on whole-pixel
+    /// rows), aux row, body and scrollbar gutter, then the dividers, all
+    /// clipped to the panel; the panel scrollbar paints last, unclipped.
+    /// Each body paints through its own widget inside its visible rect;
+    /// `Text` and `Empty` bodies use this module's painters.
+    /// `caret_visible` gates a focused aux input's caret, for a caller
+    /// with its own blink phase.
+    pub(crate) fn paint(
+        view: &MultiSectionView,
+        layout: &MultiSectionViewPrimitiveLayout,
+        surface: &mut dyn PaintSurface,
+        env: &PaintEnv,
+        caret_visible: bool,
+    ) {
+        let theme = env.theme();
+        let bounds = layout.chrome.bounds;
+        if bounds.width <= 0.0 || bounds.height <= 0.0 || view.axis == Axis::Horizontal {
+            return;
+        }
+        surface.surface_push_clip(bounds);
+        surface.surface_fill_rect(bounds, theme.background);
+        for s in &layout.chrome.sections {
+            let section = &view.sections[s.section_idx];
+            let header = Rect::new(
+                s.header_bounds.x,
+                s.header_bounds.y.round(),
+                s.header_bounds.width,
+                s.header_bounds.height.round(),
+            );
+            paint_header(surface, header, &section.header, section.collapsed, theme);
+            if s.collapsed {
+                continue;
+            }
+            if let (Some(aux), Some(aux_b)) = (&section.aux, s.aux_bounds) {
+                paint_aux(surface, aux_b, aux, theme, caret_visible);
+            }
+            if let Some(body) = layout.body(s.section_idx) {
+                surface.surface_push_clip(body.clip);
+                paint_body(view, s.section_idx, body, surface, env, layout.line_height);
+                surface.surface_pop_clip();
+            }
+            if let Some(gutter) = s.scrollbar_bounds {
+                paint_scrollbar(surface, gutter, s.thumb_bounds, theme);
+            }
+        }
+        if view.allow_resize {
+            for d in &layout.chrome.dividers {
+                paint_divider(surface, d.bounds, theme);
+            }
+        }
+        surface.surface_pop_clip();
+        if let Some(panel) = layout.chrome.panel_scrollbar {
+            paint_panel_scrollbar(surface, panel, layout.chrome.panel_scrollbar_thumb, theme);
+        }
+    }
+
+    fn paint_body(
+        view: &MultiSectionView,
+        idx: usize,
+        body: &SectionBodyView,
+        surface: &mut dyn PaintSurface,
+        env: &PaintEnv,
+        line_height: f32,
+    ) {
+        let theme = env.theme();
+        let descriptor = body.body.as_ref().unwrap_or(&view.sections[idx].body);
+        match (descriptor, &body.layout) {
+            (SectionBody::Text(lines), SectionBodyLayout::Text(rect)) => {
+                paint_text_lines(surface, *rect, lines, theme, line_height);
+            }
+            (SectionBody::Empty(empty), SectionBodyLayout::Empty(rect)) => {
+                paint_empty_body(surface, *rect, empty, theme, line_height);
+            }
+            _ => {
+                let interaction = view.body_interaction(idx, env);
+                let child_env = view.body_env(idx, env, &interaction);
+                with_body_paint!(descriptor, &body.layout, |w, l| Primitive::paint(
+                    w, l, surface, &child_env
+                ));
+            }
+        }
+    }
 
     fn plain_text(t: &StyledText) -> String {
         t.spans.iter().map(|s| s.text.as_str()).collect()
@@ -2071,6 +1348,127 @@ pub(crate) mod native_surface_paint {
                 "the action button must stroke exactly one bordering rect; \
                  strokes were {:?}",
                 surface.strokes,
+            );
+        }
+
+        fn one_section_view(
+            body: crate::primitives::multi_section_view::SectionBody,
+        ) -> MultiSectionView {
+            MultiSectionView {
+                id: WidgetId::new("msv"),
+                sections: vec![crate::primitives::multi_section_view::Section {
+                    id: "s".into(),
+                    header: header_with("S", vec![]),
+                    body,
+                    aux: None,
+                    size: crate::primitives::multi_section_view::SectionSize::EqualShare,
+                    collapsed: false,
+                    min_size: None,
+                    max_size: None,
+                }],
+                active_section: None,
+                axis: Axis::Vertical,
+                allow_resize: false,
+                allow_collapse: true,
+                scroll_mode: Default::default(),
+                has_focus: false,
+                panel_scroll: 0.0,
+            }
+        }
+
+        fn paint_view(view: &MultiSectionView, bounds: Rect) -> RecordingSurface {
+            let ctx = crate::primitive::LayoutCtx::new(16.0, 8.0, false);
+            let layout = Primitive::layout(view, &ctx, bounds);
+            let (theme, style) = (Theme::default(), crate::Style::default());
+            let mut surface = RecordingSurface::default();
+            paint(
+                view,
+                &layout,
+                &mut surface,
+                &PaintEnv::new(&theme, &style),
+                true,
+            );
+            surface
+        }
+
+        /// A message-list section paints its rows through the message
+        /// list's own painter on every pixel backend.
+        #[test]
+        fn message_list_body_paints_its_rows() {
+            let list = crate::primitives::message_list::MessageList {
+                id: WidgetId::new("msgs"),
+                rows: vec![crate::primitives::message_list::MessageRow::new(
+                    "hello there",
+                    Color::rgb(200, 200, 200),
+                    0.0,
+                )],
+                scroll_top: 0,
+            };
+            let view = one_section_view(SectionBody::MessageList(list));
+            let surface = paint_view(&view, Rect::new(0.0, 0.0, 200.0, 100.0));
+            assert!(
+                surface
+                    .texts
+                    .iter()
+                    .any(|(_, t, ..)| t.contains("hello there")),
+                "{:?}",
+                surface.texts
+            );
+        }
+
+        /// An overflowing tree section shows one scrollbar: the section's
+        /// gutter, with the tree's own scrollbar handed to it.
+        #[test]
+        fn overflowing_tree_section_paints_one_scrollbar() {
+            let rows = (0..40)
+                .map(|i| crate::primitives::tree::TreeRow {
+                    path: vec![i],
+                    indent: 0,
+                    icon: None,
+                    text: StyledText::plain(format!("row{i}")),
+                    badge: None,
+                    is_expanded: None,
+                    decoration: Default::default(),
+                    edit: None,
+                })
+                .collect();
+            let tree = crate::primitives::tree::TreeView {
+                id: WidgetId::new("t"),
+                rows,
+                selection_mode: crate::types::SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: Default::default(),
+                has_focus: false,
+            };
+            assert!(tree.style.show_scrollbar);
+            let view = one_section_view(SectionBody::Tree(tree));
+            let bounds = Rect::new(0.0, 0.0, 200.0, 120.0);
+            let ctx = crate::primitive::LayoutCtx::new(16.0, 8.0, false);
+            let layout = Primitive::layout(&view, &ctx, bounds);
+            let gutter = layout.chrome.sections[0]
+                .scrollbar_bounds
+                .expect("40 rows overflow the section");
+            let body = layout.body(0).expect("an expanded tree body");
+            match (&body.body, &body.layout) {
+                (Some(SectionBody::Tree(t)), SectionBodyLayout::Tree(l)) => {
+                    assert!(!t.style.show_scrollbar);
+                    assert!(l.vscrollbar.is_none());
+                }
+                other => panic!("expected the gutter to own the tree scrollbar, got {other:?}"),
+            }
+            let theme = Theme::default();
+            let surface = paint_view(&view, bounds);
+            let thumb_fills = surface
+                .fills
+                .iter()
+                .filter(|(_, c)| {
+                    *c == theme.scrollbar_thumb.with_alpha(0.9) || *c == theme.scrollbar_thumb
+                })
+                .collect::<Vec<_>>();
+            assert!(
+                thumb_fills.iter().all(|(r, _)| r.x >= gutter.x),
+                "every scrollbar thumb paints in the gutter: {thumb_fills:?}"
             );
         }
 

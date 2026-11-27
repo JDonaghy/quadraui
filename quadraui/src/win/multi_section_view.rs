@@ -1,99 +1,38 @@
-//! Direct2D / DirectWrite rasteriser for [`crate::MultiSectionView`]
-//!
-//! Paints the full chrome (per-section headers, optional aux rows,
-//! per-section scrollbars, optional dividers) onto an `ID2D1RenderTarget`
-//! and dispatches each section's body to the appropriate quadraui body
-//! rasteriser (`super::tree::draw_tree`, `super::list::draw_list`,
-//! `draw_form_body`, `crate::primitives::chart::paint`,
-//! `crate::primitives::terminal::paint`,
-//! `super::message_list::draw_message_list`) using the body bounds
-//! returned by the primitive's [`crate::MultiSectionView::layout`].
-//!
-//! Mirrors [`crate::macos::multi_section_view`] in shape (the closest
-//! existing pixel backend: no frame-scope requirement for layout, real
-//! font measurement rather than TUI's cell grid): [`win_msv_metrics`]
-//! computes the layout metrics for a given `line_height`,
-//! [`win_msv_layout`] returns the resolved chrome layout, and
-//! [`draw_multi_section_view`] consumes the same layout for paint.
-//! `WinBackend::msv_layout` calls [`win_msv_layout`] directly so paint
-//! and click share one source of truth (see `super::backend`'s
-//! `msv_layout`/`msv_metrics` methods). Both, and the section
-//! body-measurement they drive, are thin wrappers over
-//! [`crate::primitives::layout_metrics`] rather than a third hand-derived
-//! copy of the GTK/macOS math.
-//!
-//! Vertical-only in v1 (per #294 / D-003 in
-//! `quadraui/docs/decisions/DECISIONS.md`); horizontal sections fall through to a
-//! no-op, same as the GTK/macOS twins.
-//!
-//! Only compiled on `target_os = "windows"` — see `super::mod`'s
-//! `#[cfg(target_os = "windows")] mod multi_section_view;` and
-//! `backend.rs`'s module docs for why the rest of this repo's
-//! `--features win` compile gate stays meaningful without a Windows
-//! host. Colours come from `Theme::default()` rather than a live
-//! `WinBackend` theme field, same as every other rasteriser in this
-//! module.
-//!
-//! # Scope omissions (follow-up, matches `crate::macos::multi_section_view`)
-//!
-//! - **Custom-icon empty bodies** — the `EmptyBody::action` button is
-//!   rendered as plain centred text, no clickable button chrome.
-//! - **Translucent overlays** — the per-section scrollbar paints through
-//!   the shared [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`],
-//!   which fills with real alpha (`Color::with_alpha`) the same way
-//!   GTK/macOS do. [`super::surface::D2dSurface::surface_fill_rect`] honours
-//!   real alpha, unifying Win-GUI onto the same real alpha blend GTK/macOS use.
+//! Direct2D / DirectWrite entry points for [`crate::MultiSectionView`]:
+//! paint it onto an `ID2D1RenderTarget` through the widget's own pixel
+//! painter, and resolve the chrome layout that paint uses for
+//! hit-testing.
 
 use windows::Win32::Graphics::Direct2D::ID2D1RenderTarget;
 
-use super::text::{fill_rect, pop_clip, push_clip, DWrite};
+use super::text::DWrite;
 use crate::event::Rect;
+use crate::primitive::{LayoutCtx, Primitive};
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::multi_section_view::{
-    Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
-    SectionBody, SectionHeader,
+    msv_layout, msv_metrics, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::theme::Theme;
-use crate::types::StyledText;
 
-/// Compute the Win-GUI metrics for a `MultiSectionView` from a
-/// `line_height`. Hosts call this and the primitive's `layout()` with
-/// the same metrics so paint and click resolve to the same bounds.
-/// Matches `mac_msv_metrics` / `gtk::multi_section_view::metrics_for`'s
-/// convention exactly.
-///
-/// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
-/// — identical math across every pixel backend.
+/// The pixel metrics a view lays out with at `line_height` — see
+/// [`msv_metrics`].
 pub fn win_msv_metrics(line_height: f32, allow_resize: bool) -> MsvLayoutMetrics {
-    crate::primitives::layout_metrics::msv_metrics(line_height as f64, allow_resize)
+    msv_metrics(line_height as f64, allow_resize)
 }
 
-/// Compute the layout for a `MultiSectionView` using the Win-GUI
-/// metrics the rasteriser would use itself. Hosts call this to drive
-/// hit-testing without re-computing — paint and click share this single
-/// layout per frame. No `DWrite` handle needed: body measurement is
-/// estimate-based (row counts × `line_height`), not real text
-/// measurement, mirroring `mac_msv_metrics`'s twin body measure.
-///
-/// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`]
-/// / [`crate::primitives::layout_metrics::msv_body_measure`],
-/// which handle the `MessageList` real-content-height computation
-/// so `win/` inherits it automatically instead of re-deriving it.
+/// The chrome layout [`draw_multi_section_view`] paints `view` with in
+/// `bounds` at `line_height`, for hit-testing what it painted.
 pub fn win_msv_layout(
     view: &MultiSectionView,
     bounds: Rect,
     line_height: f32,
 ) -> MultiSectionViewLayout {
-    crate::primitives::layout_metrics::msv_layout(view, bounds, line_height as f64)
+    msv_layout(view, bounds, line_height as f64)
 }
 
-/// Draw a [`MultiSectionView`] into `rect` (DIPs) on `target`.
-///
-/// # Visual contract
-///
-/// See [`crate::macos::multi_section_view::draw_multi_section_view`]'s
-/// doc — this rasteriser matches its chrome layout (header/aux/body/
-/// scrollbar/divider) byte-for-byte modulo the scope omissions listed
-/// in this module's doc.
+/// Paint `view` into `rect` (DIPs) on `target` in the default theme; each
+/// section body paints through its own widget. `caret_visible` is the
+/// blink phase of a focused aux input's caret.
 pub fn draw_multi_section_view(
     target: &ID2D1RenderTarget,
     dwrite: &DWrite,
@@ -103,429 +42,38 @@ pub fn draw_multi_section_view(
     char_width: f32,
     caret_visible: bool,
 ) {
-    if rect.width <= 0.0 || rect.height <= 0.0 || view.axis == Axis::Horizontal {
-        return;
-    }
-
     let theme = Theme::default();
-    push_clip(target, rect);
-    let _ = fill_rect(target, rect, theme.background);
-
-    let view_layout = win_msv_layout(view, rect, line_height);
-
-    for s_layout in &view_layout.sections {
-        let section = &view.sections[s_layout.section_idx];
-
-        paint_header(
-            target,
-            dwrite,
-            s_layout.header_bounds,
-            &section.header,
-            section.collapsed,
-            &theme,
-        );
-
-        if !s_layout.collapsed {
-            if let (Some(aux), Some(aux_b)) = (&section.aux, s_layout.aux_bounds) {
-                paint_aux(target, dwrite, aux_b, aux, &theme, caret_visible);
-            }
-
-            paint_body(
-                target,
-                dwrite,
-                s_layout.body_bounds,
-                &section.body,
-                &theme,
-                line_height,
-                char_width,
-            );
-
-            if let Some(sb_b) = s_layout.scrollbar_bounds {
-                paint_section_scrollbar(target, sb_b, s_layout.thumb_bounds, &theme);
-            }
-        }
-    }
-
-    if view.allow_resize {
-        for d in &view_layout.dividers {
-            let _ = fill_rect(target, d.bounds, theme.separator);
-        }
-    }
-
-    pop_clip(target);
-
-    // Panel-level scrollbar (WholePanel mode) painted outside the
-    // panel clip so it isn't itself clipped — matches
-    // `mac_msv`/`gtk_msv`'s posture. Thumb geometry comes from
-    // `view_layout.panel_scrollbar_thumb` (computed once via `fit_thumb`
-    // in `MultiSectionView::layout`).
-    if let Some(panel_sb) = view_layout.panel_scrollbar {
-        paint_panel_scrollbar(target, panel_sb, view_layout.panel_scrollbar_thumb, &theme);
-    }
-}
-
-// Header/aux/text/empty/scrollbar/divider
-// chrome painting moved to the shared
-// [`crate::primitives::multi_section_view::native_surface_paint`] — these
-// wrappers just build a [`super::surface::D2dSurface`] adapter and
-// forward. `paint_body` (below) stays here: `Tree`/`List`/`MessageList`
-// bodies still dispatch to this backend's own `super::tree::draw_tree`/
-// `super::list::draw_list`/`super::message_list::draw_message_list`, which
-// take a raw `(&ID2D1RenderTarget, &DWrite)` pair, not `&mut dyn
-// PaintSurface`.
-//
-// Pre-port, this rasteriser already clipped the title paint the same way
-// the shared [`crate::primitives::multi_section_view::native_surface_paint::paint_header`]
-// does — see that function's doc for the GTK-only drift this port fixes
-// elsewhere, not here.
-
-fn paint_header(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    bounds: Rect,
-    header: &SectionHeader,
-    collapsed: bool,
-    theme: &Theme,
-) {
+    let style = crate::Style::default();
+    let measurer = |text: &str, _role: crate::FontRole| dwrite.width_of(text);
+    let ctx = LayoutCtx::new(line_height, char_width, false)
+        .with_measurer(&measurer)
+        .with_style(&style);
+    let view_layout = Primitive::layout(view, &ctx, rect);
     let mut surface = super::surface::D2dSurface {
         target,
         dwrite: Some(dwrite),
     };
-    crate::primitives::multi_section_view::native_surface_paint::paint_header(
+    crate::primitives::multi_section_view::native_surface_paint::paint(
+        view,
+        &view_layout,
         &mut surface,
-        bounds,
-        header,
-        collapsed,
-        theme,
-    );
-}
-
-fn paint_aux(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    bounds: Rect,
-    aux: &SectionAux,
-    theme: &Theme,
-    caret_visible: bool,
-) {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    // `caret_visible` comes from `WinBackend::caret_visible` — see
-    // `crate::caret_blink`'s module doc and this crate's
-    // `CARET_BLINK_TIMER_ID` wiring in `super::run` for the blink-timer
-    // mechanism driving it.
-    crate::primitives::multi_section_view::native_surface_paint::paint_aux(
-        &mut surface,
-        bounds,
-        aux,
-        theme,
+        &crate::PaintEnv::new(&theme, &style),
         caret_visible,
     );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_body(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    bounds: Rect,
-    body: &SectionBody,
-    theme: &Theme,
-    line_height: f32,
-    char_width: f32,
-) {
-    if bounds.width <= 0.0 || bounds.height <= 0.0 {
-        return;
-    }
-    // Clip to body bounds so inner primitives can't paint past the
-    // section boundary.
-    push_clip(target, bounds);
-
-    match body {
-        SectionBody::Tree(t) => {
-            // `nerd_fonts_enabled` parameter is not yet wired through
-            // `draw_multi_section_view`'s call chain; passing `false`
-            // preserves fallback-only behaviour for tree bodies nested in an MSV.
-            // `theme` is the local `Theme::default()` — this module is not
-            // wired to `current_theme`, so this stays scoped to compiling
-            // against `super::tree::draw_tree`'s `&Theme` parameter.
-            // `style` is likewise `Style::default()` for the same reason.
-            let _ = super::tree::draw_tree(
-                target,
-                dwrite,
-                bounds,
-                t,
-                line_height,
-                false,
-                theme,
-                &crate::style::Style::default(),
-            );
-        }
-        SectionBody::List(l) => {
-            // `style` is `Style::default()` for the same reason as the
-            // `TreeView` arm above: no live `WinBackend` on hand here.
-            let _ = super::list::draw_list(
-                target,
-                dwrite,
-                bounds,
-                l,
-                line_height,
-                &crate::style::Style::default(),
-            );
-        }
-        SectionBody::Form(f) => {
-            draw_form_body(target, dwrite, bounds, f, theme, line_height);
-        }
-        SectionBody::Chart(c) => {
-            // Painting moved to the shared
-            // `crate::primitives::chart::paint`; this raw
-            // `(&ID2D1RenderTarget, &DWrite)` call site (no live
-            // `WinBackend` on hand) reuses the shared
-            // `super::surface::D2dSurface` adapter.
-            let chart_layout = super::chart::win_chart_layout(c, bounds, char_width, line_height);
-            let mut surface = super::surface::D2dSurface {
-                target,
-                dwrite: Some(dwrite),
-            };
-            crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
-        }
-        SectionBody::Terminal(t) => {
-            // Painting moved to the shared
-            // `crate::primitives::terminal::paint`; reuses the shared
-            // `super::surface::D2dSurface` adapter like the `Chart` arm
-            // above.
-            let mut surface = super::surface::D2dSurface {
-                target,
-                dwrite: Some(dwrite),
-            };
-            crate::primitives::terminal::paint(
-                t,
-                &mut surface,
-                theme,
-                bounds.x,
-                bounds.y,
-                bounds.width,
-                bounds.height,
-                line_height,
-                char_width,
-                None,
-            );
-        }
-        SectionBody::MessageList(m) => {
-            super::message_list::draw_message_list(
-                target,
-                dwrite,
-                m,
-                bounds.x,
-                bounds.y,
-                bounds.y + bounds.height,
-                line_height,
-            );
-        }
-        SectionBody::Text(lines) => {
-            paint_text_lines(target, dwrite, bounds, lines, theme, line_height);
-        }
-        SectionBody::Empty(empty) => {
-            paint_empty_body(target, dwrite, bounds, empty, theme, line_height);
-        }
-        SectionBody::Custom(_) => {
-            // Host paints in body bounds.
-        }
-    }
-    pop_clip(target);
-}
-
-/// Paint an embedded [`crate::Form`] section body. Field-kind
-/// painting goes through the shared [`crate::primitives::form::paint`]
-/// via [`super::surface::D2dSurface`] (this call site has only a raw
-/// `target`/`dwrite`, not a live [`super::WinBackend`]). `FieldKind::Toolbar`
-/// is painted separately below, because the shared form painter leaves it
-/// to the caller.
-fn draw_form_body(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    bounds: Rect,
-    form: &crate::Form,
-    theme: &Theme,
-    line_height: f32,
-) {
-    let row_h = crate::primitives::layout_metrics::form_row_height(line_height as f64);
-    let flayout = form.layout(bounds.width, bounds.height, |i| {
-        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, dwrite)
-    });
-    let origin = crate::Point::new(bounds.x, bounds.y);
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
-
-    for vf in &flayout.visible_fields {
-        let Some(field) = form.fields.get(vf.field_idx) else {
-            continue;
-        };
-        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
-            continue;
-        };
-        let field_fg = if field.disabled {
-            theme.muted_fg
-        } else {
-            theme.foreground
-        };
-        for (item_id, item_rect) in &vf.item_bounds {
-            let btn = toolbar.buttons.iter().find_map(|b| {
-                toolbar_item(&field.id, b)
-                    .filter(|(id, _)| id == item_id)
-                    .map(|_| b)
-            });
-            let r = Rect::new(
-                origin.x + item_rect.x,
-                origin.y + item_rect.y,
-                item_rect.width,
-                item_rect.height,
-            );
-            match btn {
-                Some(crate::primitives::toolbar::ToolbarButton::Action {
-                    label, enabled, ..
-                }) => {
-                    let fg = if *enabled { field_fg } else { theme.muted_fg };
-                    let (tw, th) = dwrite.measure_text(label).unwrap_or((0.0, 0.0));
-                    let ty = r.y + (r.height - th) / 2.0;
-                    let _ = dwrite.draw_text(target, label, Rect::new(r.x, ty, tw, th), fg);
-                }
-                Some(crate::primitives::toolbar::ToolbarButton::Label { text, fg }) => {
-                    let color = fg.unwrap_or(field_fg);
-                    let (tw, th) = dwrite.measure_text(text).unwrap_or((0.0, 0.0));
-                    let ty = r.y + (r.height - th) / 2.0;
-                    let _ = dwrite.draw_text(target, text, Rect::new(r.x, ty, tw, th), color);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
-fn paint_text_lines(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    bounds: Rect,
-    lines: &[StyledText],
-    theme: &Theme,
-    line_height: f32,
-) {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_text_lines(
-        &mut surface,
-        bounds,
-        lines,
-        theme,
-        line_height,
-    );
-}
-
-fn paint_empty_body(
-    target: &ID2D1RenderTarget,
-    dwrite: &DWrite,
-    bounds: Rect,
-    empty: &EmptyBody,
-    theme: &Theme,
-    line_height: f32,
-) {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: Some(dwrite),
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_empty_body(
-        &mut surface,
-        bounds,
-        empty,
-        theme,
-        line_height,
-    );
-}
-
-/// Per-section scrollbar gutter — 50%-alpha track, 90%-alpha thumb.
-///
-/// This scrollbar paints through the shared, real-alpha
-/// [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`],
-/// which honours real alpha (`Color::with_alpha`) the same way GTK/macOS do.
-/// [`super::surface::D2dSurface::surface_fill_rect`] honours real alpha,
-/// unifying Win-GUI onto the same real alpha blend.
-fn paint_section_scrollbar(
-    target: &ID2D1RenderTarget,
-    gutter: Rect,
-    thumb_bounds: Option<Rect>,
-    theme: &Theme,
-) {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: None,
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar(
-        &mut surface,
-        gutter,
-        thumb_bounds,
-        theme,
-    );
-}
-
-/// Panel-level scrollbar (`ScrollMode::WholePanel`) — opaque track and
-/// thumb. Thumb geometry comes from `thumb_bounds`, computed once by
-/// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
-/// (`fit_thumb`) and published as
-/// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`],
-/// so paint and hit-testing use the same bounds.
-fn paint_panel_scrollbar(
-    target: &ID2D1RenderTarget,
-    bounds: Rect,
-    thumb_bounds: Option<Rect>,
-    theme: &Theme,
-) {
-    let mut surface = super::surface::D2dSurface {
-        target,
-        dwrite: None,
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_panel_scrollbar(
-        &mut surface,
-        bounds,
-        thumb_bounds,
-        theme,
-    );
-}
-
-/// The `(id, text)` pair a plain-text toolbar row paints for `btn`:
-/// an `Action` paints its label under its own id, a `Label` its text
-/// under the field's id. A `Group`, an editable `Field`, a `MenuButton`,
-/// a `Separator` and a `Spacer` have no single such pair and paint
-/// nothing here.
-fn toolbar_item(
-    field_id: &crate::types::WidgetId,
-    btn: &crate::primitives::toolbar::ToolbarButton,
-) -> Option<(crate::types::WidgetId, String)> {
-    use crate::primitives::toolbar::ToolbarButton;
-    match btn {
-        ToolbarButton::Action { id, label, .. } => Some((*id, label.clone())),
-        ToolbarButton::Label { text, .. } => Some((*field_id, text.clone())),
-        ToolbarButton::Separator
-        | ToolbarButton::Spacer
-        | ToolbarButton::Group { .. }
-        | ToolbarButton::Field { .. }
-        | ToolbarButton::MenuButton { .. } => None,
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::primitives::multi_section_view::{
+        Axis, EmptyBody, SectionAux, SectionBody, SectionHeader,
+    };
+    use crate::primitives::multi_section_view::{
         InlineInput, MultiSectionViewHit, ScrollMode, ScrollbarHit, Section, SectionAux,
         SectionHeader, SectionSize,
     };
     use crate::primitives::tree::{TreeRow, TreeView};
+    use crate::types::StyledText;
     use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle, WidgetId};
     use crate::win::testing::HeadlessSurface;
 
@@ -979,7 +527,7 @@ mod tests {
     }
 
     /// `win_msv_layout`'s body measurement for a `MessageList` section
-    /// must agree with [`crate::primitives::layout_metrics::msv_body_measure`],
+    /// must agree with [`crate::primitives::multi_section_view::msv_body_measure`],
     /// ensuring a `SectionSize::Content` section's `resolved_size`
     /// (`header_size + body content_size`) matches the shared function.
     #[test]
@@ -1026,7 +574,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W, H);
         let layout = win_msv_layout(&view, rect, LINE_HEIGHT);
 
-        let shared_measure = crate::primitives::layout_metrics::msv_body_measure(
+        let shared_measure = crate::primitives::multi_section_view::msv_body_measure(
             &view.sections[0].body,
             &view.sections[0].aux,
             LINE_HEIGHT as f64,

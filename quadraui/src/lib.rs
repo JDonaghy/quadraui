@@ -727,9 +727,19 @@ pub use primitives::minimap::{
 };
 pub use primitives::multi_section_view::{
     ActionId as MsvActionId, AuxHit, Axis as MsvAxis, DividerBounds, EmptyBody, HeaderAction,
-    HeaderHit, InlineInput, MsvLayoutMetrics, MultiSectionView, MultiSectionViewHit,
-    MultiSectionViewLayout, ScrollMode, ScrollbarHit, Section, SectionAux, SectionBody,
-    SectionHeader, SectionId, SectionLayout, SectionMeasure, SectionSize,
+    HeaderHit, InlineInput, MsvLayoutMetrics, MultiSectionView, MultiSectionViewEvent,
+    MultiSectionViewHit, MultiSectionViewLayout, ScrollMode, ScrollbarHit, Section, SectionAux,
+    SectionBody, SectionHeader, SectionId, SectionLayout, SectionMeasure, SectionSize,
+};
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use primitives::multi_section_view::{
+    MultiSectionViewPrimitiveLayout, MultiSectionViewState, MultiSectionViewSubPart,
+    SectionBodyLayout, SectionBodyState, SectionBodyView,
 };
 pub use primitives::number_input::{
     NumberInput, NumberInputEvent, NumberInputHit, NumberInputLayout,

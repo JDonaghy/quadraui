@@ -3314,11 +3314,15 @@ impl Backend for WinBackend {
     /// stripped, so this block *is* the tail expression and an explicit
     /// `return` trips `clippy::needless_return` under CI's `-D warnings`.
     fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
-        // `crate::primitives::layout_metrics::msv_layout` is fully
+        // `crate::primitives::multi_section_view::msv_layout` is fully
         // portable (row-count estimate, no Direct2D/DirectWrite type) —
         // call it directly instead of reaching into the Windows-only
         // `super::multi_section_view` module.
-        crate::primitives::layout_metrics::msv_layout(view, rect, self.current_line_height as f64)
+        crate::primitives::multi_section_view::msv_layout(
+            view,
+            rect,
+            self.current_line_height as f64,
+        )
     }
 
     /// See [`Self::msv_layout`]'s doc for both the "no measurer
@@ -3330,7 +3334,7 @@ impl Backend for WinBackend {
     /// [`Self::msv_layout`] instead.
     fn msv_metrics(&self) -> MsvLayoutMetrics {
         // Portable — see `msv_layout`'s doc.
-        crate::primitives::layout_metrics::msv_metrics(self.current_line_height as f64, false)
+        crate::primitives::multi_section_view::msv_metrics(self.current_line_height as f64, false)
     }
 
     /// Pure measurement — only needs `self.dwrite`, not a live render

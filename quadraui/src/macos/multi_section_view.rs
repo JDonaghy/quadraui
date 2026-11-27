@@ -1,72 +1,38 @@
-//! macOS rasteriser for [`crate::MultiSectionView`].
-//!
-//! Paints the full chrome (per-section headers, optional aux rows,
-//! per-section scrollbars, optional dividers) onto a `CGContextRef`
-//! and dispatches each section's body to the appropriate quadraui
-//! body rasteriser (`draw_tree`, `draw_list`, the form painter, …) using
-//! the body bounds returned by the primitive's
-//! [`crate::MultiSectionView::layout`].
-//!
-//! Vertical-only in v1; horizontal sections fall through to
-//! a no-op.
-//!
-//! Mirrors [`crate::gtk::multi_section_view`] in shape:
-//! [`mac_msv_metrics`] computes the layout metrics for a given
-//! `line_height`, [`mac_msv_layout`] returns the resolved chrome
-//! layout, and [`draw_multi_section_view`] consumes the same layout
-//! for paint. Apps call `mac_msv_layout` for hit-testing so paint and
-//! click share one source of truth.
-//!
-//! ## Scope omissions
-//!
-//! - **Terminal section bodies** — `SectionBody::Terminal` paints the bg only.
-//! - **MessageList section bodies** — same as Terminal.
-//! - **Custom-icon empty bodies** — placeholder text rendering matches
-//!   GTK but the `EmptyBody::action` button is rendered as plain
-//!   centred text (no clickable button chrome yet).
+//! macOS entry points for [`crate::MultiSectionView`]: paint it onto a
+//! `CGContextRef` through the widget's own pixel painter, and resolve the
+//! chrome layout that paint uses for hit-testing.
 
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
-use super::cg::*;
-use super::text::measure_text;
 use crate::event::Rect as QRect;
+use crate::primitive::{LayoutCtx, Primitive};
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::multi_section_view::{
-    Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
-    SectionBody, SectionHeader,
+    msv_layout, msv_metrics, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::style::Style;
 use crate::theme::Theme;
-use crate::types::StyledText;
 
-/// Compute the macOS metrics for a `MultiSectionView` from a
-/// `line_height`. Hosts call this and the primitive's `layout()`
-/// with the same metrics so paint and click resolve to the same bounds.
-///
-/// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
-/// — identical math across every pixel backend.
+/// The pixel metrics a view lays out with at `line_height` — see
+/// [`msv_metrics`].
 pub fn mac_msv_metrics(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
-    crate::primitives::layout_metrics::msv_metrics(line_height, allow_resize)
+    msv_metrics(line_height, allow_resize)
 }
 
-/// Compute the layout for a `MultiSectionView` using the macOS metrics
-/// the rasteriser would use itself. Hosts call this to drive hit-
-/// testing without re-computing — paint and click share this single
-/// layout per frame.
-///
-/// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`].
-/// This backend and GTK now share one function, ensuring that
-/// `SectionBody::MessageList` measures correctly on both platforms.
-/// See `crate::primitives::layout_metrics::msv_body_measure`.
+/// The chrome layout [`draw_multi_section_view`] paints `view` with in
+/// `bounds` at `line_height`, for hit-testing what it painted.
 pub fn mac_msv_layout(
     view: &MultiSectionView,
     bounds: QRect,
     line_height: f64,
 ) -> MultiSectionViewLayout {
-    crate::primitives::layout_metrics::msv_layout(view, bounds, line_height)
+    msv_layout(view, bounds, line_height)
 }
 
-/// Paint `view` into `(x, y, w, h)` on `ctx`.
+/// Paint `view` into `(x, y, w, h)` on `ctx` in `font`; each section body
+/// paints through its own widget. `caret_visible` is the blink phase of
+/// a focused aux input's caret.
 ///
 /// # Safety
 ///
@@ -87,395 +53,22 @@ pub unsafe fn draw_multi_section_view(
     char_width: f64,
     caret_visible: bool,
 ) {
-    if w <= 0.0 || h <= 0.0 || view.axis == Axis::Horizontal {
-        return;
-    }
-
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, rect(x, y, w, h));
-    fill_rect(ctx, x, y, w, h, theme.background);
-
-    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let view_layout = mac_msv_layout(view, bounds, line_height);
-
-    for s_layout in &view_layout.sections {
-        let section = &view.sections[s_layout.section_idx];
-
-        paint_header(
-            ctx,
-            font,
-            s_layout.header_bounds,
-            &section.header,
-            section.collapsed,
-            theme,
-        );
-
-        if !s_layout.collapsed {
-            if let (Some(aux), Some(aux_b)) = (&section.aux, s_layout.aux_bounds) {
-                paint_aux(ctx, font, aux_b, aux, theme, caret_visible);
-            }
-
-            paint_body(
-                ctx,
-                font,
-                s_layout.body_bounds,
-                &section.body,
-                theme,
-                style,
-                line_height,
-                char_width,
-            );
-
-            // Skip the gutter when the body paints its own scrollbar, so
-            // only one scrollbar column shows.
-            let own_sb = body_self_paints_scrollbar(&section.body);
-            if let Some(sb_b) = s_layout.scrollbar_bounds.filter(|_| !own_sb) {
-                paint_section_scrollbar(ctx, sb_b, s_layout.thumb_bounds, theme);
-            }
-        }
-    }
-
-    if view.allow_resize {
-        for d in &view_layout.dividers {
-            fill_rect(
-                ctx,
-                d.bounds.x as f64,
-                d.bounds.y as f64,
-                d.bounds.width as f64,
-                d.bounds.height as f64,
-                theme.separator,
-            );
-        }
-    }
-
-    CGContextRestoreGState(ctx);
-
-    // Panel-level scrollbar (WholePanel mode) painted outside the
-    // panel clip so it isn't itself clipped. Thumb geometry comes
-    // straight from `view_layout.panel_scrollbar_thumb` (computed once,
-    // via `fit_thumb`, in `MultiSectionView::layout`).
-    if let Some(panel_sb) = view_layout.panel_scrollbar {
-        paint_panel_scrollbar(ctx, panel_sb, view_layout.panel_scrollbar_thumb, theme);
-    }
-}
-
-// Header/aux/text/empty/scrollbar/divider
-// chrome painting moved to the shared
-// [`crate::primitives::multi_section_view::native_surface_paint`] — these
-// wrappers just build a [`super::surface::CgSurface`] adapter and forward.
-// `paint_body` (below) stays here: `Tree`/`List` bodies still dispatch to
-// this backend's own `super::tree::draw_tree`/`super::list::draw_list`,
-// which take a raw `(CGContextRef, &CTFont)` pair, not `&mut dyn
-// PaintSurface`.
-//
-// Pre-port, this rasteriser already clipped the title paint the same way
-// the shared [`crate::primitives::multi_section_view::native_surface_paint::paint_header`]
-// does — see that function's doc for the GTK-only drift this port fixes
-// elsewhere, not here.
-
-unsafe fn paint_header(
-    ctx: CGContextRef,
-    font: &CTFont,
-    bounds: QRect,
-    header: &SectionHeader,
-    collapsed: bool,
-    theme: &Theme,
-) {
+    let measurer = |text: &str, _role: crate::FontRole| font.width_of(text);
+    let layout_ctx = LayoutCtx::new(line_height as f32, char_width as f32, false)
+        .with_measurer(&measurer)
+        .with_style(style);
+    let rect = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    let view_layout = Primitive::layout(view, &layout_ctx, rect);
     let mut surface = super::surface::CgSurface {
         ctx,
         font: Some(font),
     };
-    crate::primitives::multi_section_view::native_surface_paint::paint_header(
+    crate::primitives::multi_section_view::native_surface_paint::paint(
+        view,
+        &view_layout,
         &mut surface,
-        bounds,
-        header,
-        collapsed,
-        theme,
-    );
-}
-
-unsafe fn paint_aux(
-    ctx: CGContextRef,
-    font: &CTFont,
-    bounds: QRect,
-    aux: &SectionAux,
-    theme: &Theme,
-    caret_visible: bool,
-) {
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    // `caret_visible` threads macOS's own blink-timer phase
-    // straight through to the shared implementation, preserving this
-    // backend's blink-aware caret exactly.
-    crate::primitives::multi_section_view::native_surface_paint::paint_aux(
-        &mut surface,
-        bounds,
-        aux,
-        theme,
+        &crate::PaintEnv::new(theme, style),
         caret_visible,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-unsafe fn paint_body(
-    ctx: CGContextRef,
-    font: &CTFont,
-    bounds: QRect,
-    body: &SectionBody,
-    theme: &Theme,
-    style: &Style,
-    line_height: f64,
-    char_width: f64,
-) {
-    let bx = bounds.x as f64;
-    let by = bounds.y as f64;
-    let bw = bounds.width as f64;
-    let bh = bounds.height as f64;
-    if bw <= 0.0 || bh <= 0.0 {
-        return;
-    }
-    // Clip to body bounds so inner primitives can't paint past the
-    // section boundary.
-    CGContextSaveGState(ctx);
-    CGContextClipToRect(ctx, rect(bx, by, bw, bh));
-
-    match body {
-        SectionBody::Tree(t) => {
-            // `draw_multi_section_view`'s call chain has no
-            // `nerd_fonts_enabled` parameter, so `false` is
-            // fallback-only behaviour for tree bodies nested in an MSV.
-            super::tree::draw_tree(
-                ctx,
-                font,
-                bx,
-                by,
-                bw,
-                bh,
-                t,
-                theme,
-                style,
-                line_height,
-                false,
-            );
-        }
-        SectionBody::List(l) => {
-            // `draw_multi_section_view`'s call chain has no
-            // `nerd_fonts_enabled` parameter, so `false` means
-            // list-item icons are not painted in an MSV.
-            super::list::draw_list(
-                ctx,
-                font,
-                bx,
-                by,
-                bw,
-                bh,
-                l,
-                theme,
-                style,
-                line_height,
-                false,
-            );
-        }
-        SectionBody::Form(f) => {
-            draw_form_body(ctx, font, bx, by, bw, bh, f, theme, line_height);
-        }
-        SectionBody::Chart(c) => {
-            // Painting moved to the shared
-            // `crate::primitives::chart::paint`; this raw
-            // `(CGContextRef, &CTFont)` call site (no live `MacBackend`
-            // on hand) reuses the shared `super::surface::CgSurface`
-            // adapter.
-            let chart_layout =
-                super::chart::mac_chart_layout(c, bx, by, bw, bh, line_height, char_width);
-            let mut surface = super::surface::CgSurface {
-                ctx,
-                font: Some(font),
-            };
-            crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
-        }
-        SectionBody::Terminal(_) | SectionBody::MessageList(_) => {
-            // Terminal and MessageList section bodies paint the background only.
-            fill_rect(ctx, bx, by, bw, bh, theme.background);
-        }
-        SectionBody::Text(lines) => {
-            paint_text_lines(ctx, font, bx, by, bw, bh, lines, theme, line_height);
-        }
-        SectionBody::Empty(empty) => {
-            paint_empty_body(ctx, font, bx, by, bw, bh, empty, theme, line_height);
-        }
-        SectionBody::Custom(_) => {
-            // Host paints in body bounds.
-        }
-    }
-    CGContextRestoreGState(ctx);
-}
-
-/// Paint an embedded [`crate::Form`] section body. Field-kind
-/// painting goes through the shared [`crate::primitives::form::paint`]
-/// via [`super::surface::CgSurface`] (this call site has only a raw
-/// `CGContextRef`, not a live [`super::MacBackend`]). A `FieldKind::
-/// Toolbar` field's embedded toolbar is painted separately below,
-/// because the shared form painter leaves it to the caller.
-#[allow(clippy::too_many_arguments)]
-unsafe fn draw_form_body(
-    ctx: CGContextRef,
-    font: &CTFont,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    form: &crate::Form,
-    theme: &Theme,
-    line_height: f64,
-) {
-    let area = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
-    let flayout = form.layout(area.width, area.height, |i| {
-        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, font)
-    });
-    let origin = crate::Point::new(x as f32, y as f32);
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
-
-    for vf in &flayout.visible_fields {
-        let Some(field) = form.fields.get(vf.field_idx) else {
-            continue;
-        };
-        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
-            continue;
-        };
-        let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-        let no_label = label_text.is_empty();
-        let (label_w, _) = measure_text(font, &label_text);
-        let row_x = x + vf.bounds.x as f64;
-        let row_y = y + vf.bounds.y as f64;
-        let row_w = vf.bounds.width as f64;
-        let row_h = vf.bounds.height as f64;
-        // Starts at the form's shared control column (`FormLayout::toolbar_field_rect`).
-        let (toolbar_x, toolbar_w) = flayout.toolbar_field_rect(row_x, row_w, label_w, no_label);
-        if toolbar_w > 0.0 {
-            crate::primitives::toolbar::native_surface_paint::paint_embedded(
-                toolbar,
-                QRect::new(
-                    toolbar_x as f32,
-                    row_y as f32,
-                    toolbar_w as f32,
-                    row_h as f32,
-                ),
-                &mut surface,
-                theme,
-            );
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-unsafe fn paint_text_lines(
-    ctx: CGContextRef,
-    font: &CTFont,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    lines: &[StyledText],
-    theme: &Theme,
-    line_height: f64,
-) {
-    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_text_lines(
-        &mut surface,
-        bounds,
-        lines,
-        theme,
-        line_height as f32,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-unsafe fn paint_empty_body(
-    ctx: CGContextRef,
-    font: &CTFont,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    empty: &EmptyBody,
-    theme: &Theme,
-    line_height: f64,
-) {
-    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let mut surface = super::surface::CgSurface {
-        ctx,
-        font: Some(font),
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_empty_body(
-        &mut surface,
-        bounds,
-        empty,
-        theme,
-        line_height as f32,
-    );
-}
-
-/// Whether `body` paints its own vertical scrollbar inside `body_bounds`:
-/// `Tree` always, `List` only with `show_v_scrollbar`.
-fn body_self_paints_scrollbar(body: &SectionBody) -> bool {
-    match body {
-        SectionBody::Tree(_) => true,
-        SectionBody::List(l) => l.show_v_scrollbar,
-        _ => false,
-    }
-}
-
-/// Per-section scrollbar gutter — 50%-alpha track, 90%-alpha thumb, both
-/// real alpha blends against whatever is already painted underneath.
-/// Routed through the shared
-/// [`crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar`].
-unsafe fn paint_section_scrollbar(
-    ctx: CGContextRef,
-    gutter: QRect,
-    thumb_bounds: Option<QRect>,
-    theme: &Theme,
-) {
-    let mut surface = super::surface::CgSurface { ctx, font: None };
-    crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar(
-        &mut surface,
-        gutter,
-        thumb_bounds,
-        theme,
-    );
-}
-
-/// Panel-level scrollbar (`ScrollMode::WholePanel`) — opaque track and
-/// thumb. Thumb geometry comes from `thumb_bounds`, computed once by
-/// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
-/// (`fit_thumb`) and published as
-/// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
-///
-/// Consuming the layout's pre-computed bounds instead of re-deriving them
-/// avoids mismatches between different calculation methods.
-/// Mirrors [`paint_section_scrollbar`]'s pattern of using pre-computed bounds.
-unsafe fn paint_panel_scrollbar(
-    ctx: CGContextRef,
-    bounds: QRect,
-    thumb_bounds: Option<QRect>,
-    theme: &Theme,
-) {
-    let mut surface = super::surface::CgSurface { ctx, font: None };
-    crate::primitives::multi_section_view::native_surface_paint::paint_panel_scrollbar(
-        &mut surface,
-        bounds,
-        thumb_bounds,
-        theme,
     );
 }
 
@@ -487,10 +80,14 @@ mod tests {
     use super::*;
     use crate::event::Viewport;
     use crate::primitives::multi_section_view::{
+        Axis, EmptyBody, SectionAux, SectionBody, SectionHeader,
+    };
+    use crate::primitives::multi_section_view::{
         MultiSectionViewHit, ScrollMode, Section, SectionHeader, SectionSize,
     };
     use crate::primitives::tree::{TreeRow, TreeView};
     use crate::theme::Theme;
+    use crate::types::StyledText;
     use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle, WidgetId};
     use crate::Backend;
 

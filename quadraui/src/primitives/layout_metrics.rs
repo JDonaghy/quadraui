@@ -1,11 +1,7 @@
 //! Shared pixel-layout math for rasterisers.
 //!
 //! `gtk::tree::gtk_tree_layout` and `macos::tree::mac_tree_layout` were
-//! byte-identical apart from the function name and one comment; the
-//! same was true of the two backends' `MultiSectionView` body-measure
-//! match arms, and they had already **drifted** — GTK measured real
-//! `MessageList` section height, macOS returned `0.0`; see
-//! [`msv_body_measure`]'s doc for the fix.
+//! byte-identical apart from the function name and one comment.
 //!
 //! This module is the shared home for that math: **pure functions,
 //! no native drawing handles** (no `cairo::Context`, no
@@ -30,10 +26,6 @@ use crate::primitives::form::{
     FieldKind, FormField, FormFieldMeasure, FormItemMeasure, ValidationState,
 };
 use crate::primitives::list::{ListView, ListViewLayout};
-use crate::primitives::multi_section_view::{
-    MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux, SectionBody,
-    SectionMeasure,
-};
 use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout, PipelineViewMeasure};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout, ProgressBarMeasure};
 use crate::primitives::split::{Split, SplitLayout, SplitMeasure};
@@ -466,97 +458,6 @@ pub fn list_layout(
         border_inset as f32,
         None,
     )
-}
-
-// ── MultiSectionView ────────────────────────────────────────────────
-
-/// Compute the [`MsvLayoutMetrics`] any pixel backend derives from a
-/// `line_height`. Backends call this AND the primitive's `layout()`
-/// with the same metrics so paint and click resolve to the same
-/// bounds.
-pub fn msv_metrics(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
-    MsvLayoutMetrics {
-        header_size: (line_height * 1.4) as f32,
-        divider_size: if allow_resize { 1.0 } else { 0.0 },
-        // 8px gives a visible scrollbar against typical dark sidebar
-        // backgrounds.
-        scrollbar_size: 8.0,
-        // Pixel backends paint at sub-pixel precision; no quantization.
-        cell_quantum: 0.0,
-    }
-}
-
-/// Compute the layout for a `MultiSectionView` using [`msv_metrics`].
-/// Hosts call this to drive hit-testing without re-computing or
-/// re-measuring — paint AND click share this single layout per frame.
-pub fn msv_layout(
-    view: &MultiSectionView,
-    bounds: QRect,
-    line_height: f64,
-) -> MultiSectionViewLayout {
-    let metrics = msv_metrics(line_height, view.allow_resize);
-    view.layout(bounds, metrics, |i| {
-        msv_body_measure(&view.sections[i].body, &view.sections[i].aux, line_height)
-    })
-}
-
-/// Measure one section's body content size at `line_height`.
-///
-/// `SectionBody::MessageList` measures real content height (one
-/// header line per message plus its wrapped body lines) rather than
-/// returning `0.0`.
-pub fn msv_body_measure(
-    body: &SectionBody,
-    aux: &Option<SectionAux>,
-    line_height: f64,
-) -> SectionMeasure {
-    let item_h = (line_height * 1.4).round() as f32;
-    let aux_size = if aux.is_some() { item_h } else { 0.0 };
-    let content_size = match body {
-        SectionBody::Tree(t) => {
-            let header_h = (line_height * 1.2).round() as f32;
-            let mut total = 0.0_f32;
-            for row in &t.rows {
-                let is_header = matches!(row.decoration, Decoration::Header);
-                total += if is_header { header_h } else { item_h };
-            }
-            total
-        }
-        SectionBody::List(l) => {
-            let title_h = if l.title.is_some() {
-                line_height as f32
-            } else {
-                0.0
-            };
-            title_h + l.items.len() as f32 * item_h
-        }
-        SectionBody::Form(f) => f.fields.len() as f32 * item_h,
-        SectionBody::Chart(c) => {
-            if matches!(c.kind, crate::primitives::chart::ChartKind::Sparkline) {
-                line_height as f32
-            } else {
-                item_h * 8.0
-            }
-        }
-        SectionBody::MessageList(m) => {
-            // 1 header row + body lines per message.
-            m.rows
-                .iter()
-                .map(|r| {
-                    let lines = r.text.lines().count().max(1) as f32;
-                    line_height as f32 + lines * line_height as f32
-                })
-                .sum()
-        }
-        SectionBody::Terminal(_) => 0.0,
-        SectionBody::Text(lines) => lines.len() as f32 * line_height as f32,
-        SectionBody::Empty(_) => item_h * 4.0, // icon + text + hint + action
-        SectionBody::Custom(_) => 0.0,
-    };
-    SectionMeasure {
-        content_size,
-        aux_size,
-    }
 }
 
 // ── Form ─────────────────────────────────────────────────────────────
@@ -1442,32 +1343,6 @@ pub(crate) fn pixel_tab_bar_layout_fitting_boundary(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::primitives::message_list::{MessageList, MessageRow};
-    use crate::primitives::multi_section_view::SectionBody;
-    use crate::types::Color;
-
-    #[test]
-    fn msv_body_measure_message_list_is_not_zero() {
-        // MessageList bodies must measure real content height, not 0.0.
-        let rows = vec![MessageRow::new(
-            "line one\nline two",
-            Color::rgb(255, 255, 255),
-            0.0,
-        )];
-        let body = SectionBody::MessageList(MessageList {
-            id: WidgetId::new("test-msg-list"),
-            rows,
-            scroll_top: 0,
-        });
-        let measure = msv_body_measure(&body, &None, 20.0);
-        assert!(
-            measure.content_size > 0.0,
-            "MessageList section must measure non-zero height, got {}",
-            measure.content_size
-        );
-        // 1 header line + 2 body lines, at line_height 20.
-        assert_eq!(measure.content_size, 20.0 + 2.0 * 20.0);
-    }
 
     /// Fixed-width stand-in for a real font: `6.0` px per char. Lets
     /// `form_field_measure` (only exercised for real by macOS's
