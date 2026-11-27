@@ -61,17 +61,8 @@ pub fn gtk_list_layout(
     )
 }
 
-/// Like [`gtk_list_layout`], but threads an explicit pixel-precise
-/// scroll position (`scroll_px`) through to
-/// [`ListView::layout_with_scroll_px`] instead of only
-/// [`ListView::scroll_offset`]'s whole-row value — mirrors
-/// [`crate::primitives::layout_metrics::list_layout`]'s own border-inset
-/// and h-scrollbar reservation math (that shared fn calls
-/// `ListView::layout`, which can't reach the scroll_px-aware method, so
-/// this duplicates its small reservation arithmetic rather than widening
-/// that fn's signature — the same approach
-/// [`super::super::macos::list::mac_list_layout_with_scroll_px`] takes).
-/// `scroll_px: None` produces byte-identical output to [`gtk_list_layout`].
+/// [`gtk_list_layout`] with a pixel-precise scroll position
+/// (`scroll_px`), resolved through [`ListView::resolve_layout`].
 pub fn gtk_list_layout_with_scroll_px(
     w: f64,
     h: f64,
@@ -80,22 +71,15 @@ pub fn gtk_list_layout_with_scroll_px(
     char_width: f64,
     scroll_px: Option<f32>,
 ) -> ListViewLayout {
-    let border_inset: f64 = if list.bordered { 1.0 } else { 0.0 };
-    let visible_px = (w - border_inset * 2.0).max(0.0);
-    let needs_hscrollbar = list
-        .max_content_width
-        .is_some_and(|n| n as f64 * char_width > visible_px);
-    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
-    let title_h = if list.title.is_some() {
-        line_height as f32
-    } else {
-        0.0
-    };
-    let layout_w = (w - border_inset * 2.0) as f32;
-    let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
-    list.layout_with_scroll_px(layout_w, layout_h, title_h, scroll_px, |_| {
-        crate::primitives::list::ListItemMeasure::new(line_height as f32)
-    })
+    let border_inset: f32 = if list.bordered { 1.0 } else { 0.0 };
+    list.resolve_layout(
+        crate::primitive::Units::Pixels,
+        (w as f32, h as f32),
+        line_height as f32,
+        char_width as f32,
+        border_inset,
+        scroll_px,
+    )
 }
 
 /// Draw a [`ListView`] into `(x, y, w, h)` on `cr`.
