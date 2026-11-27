@@ -1136,6 +1136,11 @@ where
     resolved
 }
 
+/// Cell-grid rasteriser behind [`DataTable`]'s `Primitive::paint_cells`
+/// and its cell-grid layout, shared with a `TreeTable`'s body rows.
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
 // The shared paint implementation [`crate::GtkBackend`](crate::gtk::GtkBackend)'s
 // `draw_data_table` family forwards to through [`crate::gtk::GtkBackend::with_chrome_surface`]
 // — GTK has no bespoke Cairo+Pango `DataTable` painter of its own anymore.
@@ -2539,6 +2544,10 @@ impl crate::primitive::Primitive for DataTable {
     type Layout = DataTablePrimitiveLayout;
     type Event = DataTableEvent;
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::DataTable(self.clone())
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }
@@ -2550,7 +2559,7 @@ impl crate::primitive::Primitive for DataTable {
         #[cfg(feature = "tui")]
         if ctx.units() == crate::primitive::Units::Cells {
             let area = crate::tui::backend::q_rect_to_ratatui(rect);
-            let layout = crate::tui::data_table_layout(area, self);
+            let layout = paint_cells::cell_data_table_layout(area, self);
             return DataTablePrimitiveLayout {
                 area: rect,
                 line_height: ctx.line_height,
@@ -2620,8 +2629,7 @@ impl crate::primitive::Primitive for DataTable {
         }
     }
 
-    /// Paints through the TUI rasteriser
-    /// [`crate::tui::draw_data_table`] shares, with this paint's row
+    /// Paints through the cell-grid rasteriser, with this paint's row
     /// state and the descriptor's glyphs.
     #[cfg(feature = "tui")]
     fn paint_cells(
@@ -2636,7 +2644,7 @@ impl crate::primitive::Primitive for DataTable {
             .ratatui_buffer()
             .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-        crate::tui::draw_data_table_inner(
+        paint_cells::draw_data_table_inner(
             buf,
             area,
             self,

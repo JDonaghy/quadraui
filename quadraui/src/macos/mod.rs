@@ -42,37 +42,23 @@
 // through a flat re-export — mirrors the set `crate::gtk`/`crate::tui`/
 // `crate::win` already keep `pub` (undecorated) for the same reason.
 pub mod backend;
-#[doc(hidden)]
-pub mod board;
 pub(crate) mod caret_blink;
 // Shared CoreGraphics FFI bindings + fill/stroke/rect helpers.
 mod cg;
-#[doc(hidden)]
-pub mod chart;
 #[doc(hidden)]
 pub mod command_line;
 #[doc(hidden)]
 pub mod completions;
 #[doc(hidden)]
-pub mod data_table;
-#[doc(hidden)]
 pub mod date_picker;
 #[doc(hidden)]
 pub mod dialog;
-#[doc(hidden)]
-pub mod diff_view;
 pub mod events;
 #[doc(hidden)]
 pub mod headless;
 #[doc(hidden)]
 pub mod list;
 pub(crate) mod menu_bar_install;
-#[doc(hidden)]
-pub mod message_list;
-#[doc(hidden)]
-pub mod multi_section_view;
-#[doc(hidden)]
-pub mod pipeline_view;
 #[doc(hidden)]
 pub mod progress;
 #[doc(hidden)]
@@ -84,10 +70,6 @@ pub mod services;
 pub mod shell_runner;
 #[doc(hidden)]
 pub mod spinner;
-#[doc(hidden)]
-pub mod split;
-#[doc(hidden)]
-pub mod split_tree;
 // Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
 #[doc(hidden)]
@@ -124,25 +106,13 @@ pub(crate) mod tray;
 // (see `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 pub use backend::MacBackend;
 #[doc(hidden)]
-pub use board::mac_board_layout;
-#[doc(hidden)]
-pub use chart::mac_chart_layout;
-#[doc(hidden)]
 pub use command_line::draw_command_line;
 #[doc(hidden)]
 pub use completions::draw_completions;
 #[doc(hidden)]
-pub use data_table::{draw_data_table, mac_data_table_layout};
-#[doc(hidden)]
 pub use dialog::draw_dialog;
 #[doc(hidden)]
 pub use list::{draw_list, mac_list_layout};
-#[doc(hidden)]
-pub use message_list::draw_message_list;
-#[doc(hidden)]
-pub use multi_section_view::{draw_multi_section_view, mac_msv_layout, mac_msv_metrics};
-#[doc(hidden)]
-pub use pipeline_view::mac_pipeline_view_layout;
 #[doc(hidden)]
 pub use progress::mac_progress_layout;
 #[doc(hidden)]
@@ -154,10 +124,6 @@ pub use run::{run, MacRunner, RunConfig, StepOutcome};
 pub use services::MacPlatformServices;
 #[doc(hidden)]
 pub use spinner::mac_spinner_layout;
-#[doc(hidden)]
-pub use split::mac_split_layout;
-#[doc(hidden)]
-pub use split_tree::mac_split_tree_layout;
 #[doc(hidden)]
 pub use text_display::mac_text_display_layout;
 #[doc(hidden)]

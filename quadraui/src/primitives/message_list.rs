@@ -319,6 +319,10 @@ impl crate::primitive::Primitive for MessageList {
     type Layout = MessageListLayout;
     type Event = MessageListEvent;
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::MessageList(self.clone())
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }

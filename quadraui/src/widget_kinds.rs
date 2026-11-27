@@ -293,6 +293,25 @@ widget_kinds! {
     "slider" => crate::Slider,
     "select" => crate::Select,
     "markdown" => crate::Markdown,
+    "message_list" => crate::MessageList,
+    "password" => crate::PasswordInput,
+    "textarea" => crate::TextArea,
+    // `DataTable` and `MultiSectionView` implement the contract only on a
+    // build with a backend feature.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    "data_table" => crate::DataTable,
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    "multi_section_view" => crate::MultiSectionView,
 }
 
 #[cfg(test)]
@@ -337,6 +356,48 @@ mod tests {
             assert_eq!(widget.id().map(|id| id.as_str()), Some("icons"));
         }
 
+        /// `data_table` and `multi_section_view` decode on a build with a
+        /// backend feature, the only builds their contract exists on.
+        #[test]
+        fn decodes_the_backend_gated_group_f_kinds() {
+            let table = crate::DataTable {
+                id: "table".into(),
+                columns: Vec::new(),
+                rows: Vec::new(),
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: false,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: Vec::new(),
+                footer: None,
+                bordered: false,
+                striped: false,
+                glyphs: None,
+            };
+            let payload = serde_json::to_value(table).expect("data_table serializes");
+            let widget = decode_widget("data_table", payload).expect("data_table decodes");
+            assert_eq!(widget.id().map(|id| id.as_str()), Some("table"));
+
+            let view = crate::MultiSectionView {
+                id: "panel".into(),
+                sections: Vec::new(),
+                active_section: None,
+                axis: crate::MsvAxis::Vertical,
+                allow_resize: false,
+                allow_collapse: true,
+                scroll_mode: crate::ScrollMode::PerSection,
+                has_focus: false,
+                panel_scroll: 0.0,
+            };
+            let payload = serde_json::to_value(view).expect("multi_section_view serializes");
+            let widget =
+                decode_widget("multi_section_view", payload).expect("multi_section_view decodes");
+            assert_eq!(widget.id().map(|id| id.as_str()), Some("panel"));
+        }
+
         #[test]
         fn rejects_a_malformed_payload() {
             // `items` must be an array — a string value has no sensible
@@ -349,6 +410,40 @@ mod tests {
                 Err(KindError::Decode { kind, .. }) => assert_eq!(kind, "icon_grid"),
                 other => panic!("expected Err(KindError::Decode), got {}", describe(other)),
             }
+        }
+    }
+
+    /// The group-F kinds a binding host sends round-trip through
+    /// `decode_widget` from the shape their descriptors serialize to.
+    #[test]
+    fn group_f_kinds_decode_from_their_serialized_descriptors() {
+        let cases: Vec<(&str, serde_json::Value, &str)> = vec![
+            (
+                "message_list",
+                serde_json::to_value(crate::MessageList {
+                    id: "chat".into(),
+                    rows: Vec::new(),
+                    scroll_top: 0,
+                })
+                .expect("message_list serializes"),
+                "chat",
+            ),
+            (
+                "password",
+                serde_json::to_value(crate::PasswordInput::new("pw".into()))
+                    .expect("password serializes"),
+                "pw",
+            ),
+            (
+                "textarea",
+                serde_json::to_value(crate::TextArea::new("notes".into()))
+                    .expect("textarea serializes"),
+                "notes",
+            ),
+        ];
+        for (kind, payload, id) in cases {
+            let widget = decode_widget(kind, payload).unwrap_or_else(|e| panic!("{kind}: {e}"));
+            assert_eq!(widget.id().map(|w| w.as_str()), Some(id), "{kind}");
         }
     }
 

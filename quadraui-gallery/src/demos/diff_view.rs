@@ -146,7 +146,7 @@ impl Demo for DiffViewDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = Self::diff_rect(area, backend);
-        let _layout = backend.draw_diff_view(rect, &self.views[variant]);
+        let _ = backend.draw_primitive(rect, &self.views[variant]);
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(variant), &());

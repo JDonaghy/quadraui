@@ -258,17 +258,9 @@ use crate::Backend;
 #[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
 pub enum Surface {
-    MultiSectionView {
-        rect: Rect,
-        view: MultiSectionView,
-    },
     List {
         rect: Rect,
         list: ListView,
-    },
-    Split {
-        rect: Rect,
-        split: Split,
     },
     Scrollbar {
         rect: Rect,
@@ -277,11 +269,6 @@ pub enum Surface {
     FindReplace {
         rect: Rect,
         panel: FindReplacePanel,
-    },
-    DataTable {
-        rect: Rect,
-        table: DataTable,
-        hovered: Option<usize>,
     },
     /// Any type-erased [`DynWidget`] — paints through
     /// [`crate::backend::DrawsPrimitives::draw_dyn`] rather than a
@@ -296,36 +283,6 @@ pub enum Surface {
         rect: Rect,
         widget: Box<dyn DynWidget>,
     },
-    Chart {
-        rect: Rect,
-        chart: Chart,
-        hovered_point: Option<(usize, usize)>,
-        crosshair_x: Option<f64>,
-    },
-    /// App-defined escape-hatch drawing: a declarative list of
-    /// [`crate::primitives::canvas::DrawOp`]s painted in order. See
-    /// [`Canvas`]'s module doc for the coordinate frame and the
-    /// per-backend degrade table.
-    Canvas {
-        rect: Rect,
-        canvas: Canvas,
-    },
-    Board {
-        rect: Rect,
-        model: BoardModel,
-    },
-    DiffView {
-        rect: Rect,
-        view: DiffView,
-    },
-    MessageList {
-        rect: Rect,
-        list: MessageList,
-    },
-    PipelineView {
-        rect: Rect,
-        view: PipelineView,
-    },
     Progress {
         rect: Rect,
         bar: ProgressBar,
@@ -333,13 +290,6 @@ pub enum Surface {
     Spinner {
         rect: Rect,
         spinner: Spinner,
-    },
-    /// Structural chrome, like [`Surface::Split`] — a divider set with
-    /// no independent focusable identity, so excluded from
-    /// [`ScreenLayout::tab_stops`].
-    SplitTree {
-        rect: Rect,
-        tree: SplitTree,
     },
 }
 
@@ -377,22 +327,13 @@ pub enum FrameZone {
     TabBar {
         idx: usize,
     },
-    MultiSectionView {
-        idx: usize,
-    },
     List {
-        idx: usize,
-    },
-    Split {
         idx: usize,
     },
     Scrollbar {
         idx: usize,
     },
     FindReplace {
-        idx: usize,
-    },
-    DataTable {
         idx: usize,
     },
     /// The zone for a [`Surface::Widget`] — carries the widget's own id
@@ -404,31 +345,10 @@ pub enum FrameZone {
         idx: usize,
         id: Option<WidgetId>,
     },
-    Chart {
-        idx: usize,
-    },
-    Canvas {
-        idx: usize,
-    },
-    Board {
-        idx: usize,
-    },
-    DiffView {
-        idx: usize,
-    },
-    MessageList {
-        idx: usize,
-    },
-    PipelineView {
-        idx: usize,
-    },
     Progress {
         idx: usize,
     },
     Spinner {
-        idx: usize,
-    },
-    SplitTree {
         idx: usize,
     },
     Empty,
@@ -572,29 +492,15 @@ impl ScreenLayout {
 
         for (idx, surface) in self.surfaces.iter().enumerate() {
             match surface {
-                Surface::MultiSectionView { rect, view } => {
-                    backend.draw_multi_section_view(*rect, view);
-                }
                 #[allow(deprecated)]
                 Surface::List { rect, list } => {
                     backend.draw_list(*rect, list);
-                }
-                Surface::Split { rect, split } => {
-                    backend.draw_split(*rect, split);
                 }
                 Surface::Scrollbar { rect, sb } => {
                     backend.draw_scrollbar(*rect, sb);
                 }
                 Surface::FindReplace { rect, panel } => {
                     backend.draw_find_replace(*rect, panel);
-                }
-                #[allow(deprecated)]
-                Surface::DataTable {
-                    rect,
-                    table,
-                    hovered,
-                } => {
-                    backend.draw_data_table(*rect, table, *hovered);
                 }
                 Surface::Widget { rect, widget } => {
                     // A widget the platform presents itself (a native menu
@@ -603,37 +509,11 @@ impl ScreenLayout {
                         backend.draw_dyn(*rect, widget.as_ref(), &());
                     }
                 }
-                Surface::Chart {
-                    rect,
-                    chart,
-                    hovered_point,
-                    crosshair_x,
-                } => {
-                    backend.draw_chart(*rect, chart, *hovered_point, *crosshair_x);
-                }
-                Surface::Canvas { rect, canvas } => {
-                    backend.draw_canvas(*rect, canvas);
-                }
-                Surface::Board { rect, model } => {
-                    backend.draw_board(*rect, model);
-                }
-                Surface::DiffView { rect, view } => {
-                    backend.draw_diff_view(*rect, view);
-                }
-                Surface::MessageList { rect, list } => {
-                    backend.draw_message_list(*rect, list);
-                }
-                Surface::PipelineView { rect, view } => {
-                    backend.draw_pipeline_view(*rect, view);
-                }
                 Surface::Progress { rect, bar } => {
                     backend.draw_progress(*rect, bar);
                 }
                 Surface::Spinner { rect, spinner } => {
                     backend.draw_spinner(*rect, spinner);
-                }
-                Surface::SplitTree { rect, tree } => {
-                    backend.draw_split_tree(*rect, tree);
                 }
             }
 
@@ -706,23 +586,13 @@ impl ScreenLayout {
             .surfaces
             .iter()
             .flat_map(|s| match s {
-                Surface::MultiSectionView { rect, view } => vec![(view.id, *rect)],
                 Surface::List { rect, list } => vec![(list.id, *rect)],
-                Surface::DataTable { rect, table, .. } => vec![(table.id, *rect)],
                 Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
-                Surface::Chart { rect, chart, .. } => vec![(chart.id, *rect)],
-                Surface::Board { rect, model } => vec![(model.id, *rect)],
-                Surface::DiffView { rect, view } => vec![(view.id, *rect)],
-                Surface::MessageList { rect, list } => vec![(list.id, *rect)],
-                Surface::PipelineView { rect, view } => vec![(view.id, *rect)],
                 Surface::Progress { rect, bar } if bar.cancellable => vec![(bar.id, *rect)],
                 Surface::Spinner { .. }
-                | Surface::Canvas { .. }
                 | Surface::Progress { .. }
-                | Surface::Split { .. }
                 | Surface::Scrollbar { .. }
-                | Surface::FindReplace { .. }
-                | Surface::SplitTree { .. } => Vec::new(),
+                | Surface::FindReplace { .. } => Vec::new(),
             })
             .collect();
         stops.sort_by(|(_, a), (_, b)| {
@@ -763,12 +633,9 @@ impl ScreenLayout {
     #[allow(deprecated)]
     fn zone_for(idx: usize, surface: &Surface) -> (Rect, FrameZone) {
         match surface {
-            Surface::MultiSectionView { rect, .. } => (*rect, FrameZone::MultiSectionView { idx }),
             Surface::List { rect, .. } => (*rect, FrameZone::List { idx }),
-            Surface::Split { rect, .. } => (*rect, FrameZone::Split { idx }),
             Surface::Scrollbar { rect, .. } => (*rect, FrameZone::Scrollbar { idx }),
             Surface::FindReplace { rect, .. } => (*rect, FrameZone::FindReplace { idx }),
-            Surface::DataTable { rect, .. } => (*rect, FrameZone::DataTable { idx }),
             Surface::Widget { rect, widget } => (
                 *rect,
                 FrameZone::Widget {
@@ -776,15 +643,8 @@ impl ScreenLayout {
                     id: widget.id().copied(),
                 },
             ),
-            Surface::Chart { rect, .. } => (*rect, FrameZone::Chart { idx }),
-            Surface::Canvas { rect, .. } => (*rect, FrameZone::Canvas { idx }),
-            Surface::Board { rect, .. } => (*rect, FrameZone::Board { idx }),
-            Surface::DiffView { rect, .. } => (*rect, FrameZone::DiffView { idx }),
-            Surface::MessageList { rect, .. } => (*rect, FrameZone::MessageList { idx }),
-            Surface::PipelineView { rect, .. } => (*rect, FrameZone::PipelineView { idx }),
             Surface::Progress { rect, .. } => (*rect, FrameZone::Progress { idx }),
             Surface::Spinner { rect, .. } => (*rect, FrameZone::Spinner { idx }),
-            Surface::SplitTree { rect, .. } => (*rect, FrameZone::SplitTree { idx }),
         }
     }
 
@@ -980,7 +840,26 @@ impl OwnedContent {
             OwnedContent::TextDisplay(td) => {
                 backend.draw_primitive(rect, td);
             }
-            OwnedContent::MultiSectionView(view) => backend.draw_multi_section_view(rect, view),
+            OwnedContent::MultiSectionView(view) => {
+                #[cfg(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                ))]
+                {
+                    backend.draw_primitive(rect, view);
+                }
+                #[cfg(not(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                )))]
+                {
+                    let _ = (rect, view);
+                }
+            }
             OwnedContent::Tree(tree) => {
                 #[cfg(any(
                     feature = "gtk",
@@ -1043,7 +922,7 @@ impl OwnedContent {
                 let _ = bar.present(backend, rect);
             }
             OwnedContent::Split(split) => {
-                backend.draw_split(rect, split);
+                backend.draw_primitive(rect, split);
             }
             OwnedContent::Scrollbar(sb) => backend.draw_scrollbar(rect, sb),
             OwnedContent::Palette(palette) => {
@@ -1052,21 +931,37 @@ impl OwnedContent {
             OwnedContent::Toast(stack) => {
                 backend.draw_primitive(rect, stack);
             }
-            #[allow(deprecated)]
             OwnedContent::DataTable(table) => {
-                backend.draw_data_table(rect, table, None);
+                #[cfg(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                ))]
+                {
+                    backend.draw_primitive(rect, table);
+                }
+                #[cfg(not(any(
+                    feature = "gtk",
+                    feature = "tui",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                )))]
+                {
+                    let _ = (rect, table);
+                }
             }
             OwnedContent::CellGrid(grid) => {
                 backend.draw_primitive(rect, grid);
             }
             OwnedContent::Chart(chart) => {
-                backend.draw_chart(rect, chart, None, None);
+                backend.draw_primitive(rect, chart);
             }
             OwnedContent::Canvas(canvas) => {
-                backend.draw_canvas(rect, canvas);
+                backend.draw_primitive(rect, canvas);
             }
             OwnedContent::Board(model) => {
-                backend.draw_board(rect, model);
+                backend.draw_primitive(rect, model);
             }
             OwnedContent::CommandCenter(cc) => {
                 // `impl Primitive for CommandCenter` is unconditional, like
@@ -1075,17 +970,19 @@ impl OwnedContent {
                 backend.draw_primitive(rect, cc);
             }
             OwnedContent::DiffView(view) => {
-                backend.draw_diff_view(rect, view);
+                backend.draw_primitive(rect, view);
             }
             OwnedContent::Image(image) => {
                 backend.draw_primitive(rect, image);
             }
-            OwnedContent::MessageList(list) => backend.draw_message_list(rect, list),
+            OwnedContent::MessageList(list) => {
+                backend.draw_primitive(rect, list);
+            }
             OwnedContent::Minimap(minimap) => {
                 backend.draw_primitive(rect, minimap);
             }
             OwnedContent::PipelineView(view) => {
-                backend.draw_pipeline_view(rect, view);
+                backend.draw_primitive(rect, view);
             }
             OwnedContent::Progress(bar) => {
                 backend.draw_progress(rect, bar);
@@ -1099,7 +996,7 @@ impl OwnedContent {
                 backend.draw_spinner(rect, spinner);
             }
             OwnedContent::SplitTree(tree) => {
-                backend.draw_split_tree(rect, tree);
+                backend.draw_primitive(rect, tree);
             }
             OwnedContent::TextInput(ti) => {
                 backend.draw_primitive(rect, ti);
@@ -1185,7 +1082,10 @@ impl OwnedContent {
                 idx,
                 id: Some(td.id),
             },
-            OwnedContent::MultiSectionView(_) => FrameZone::MultiSectionView { idx },
+            OwnedContent::MultiSectionView(view) => FrameZone::Widget {
+                idx,
+                id: Some(view.id),
+            },
             OwnedContent::Tree(tree) => FrameZone::Widget {
                 idx,
                 id: Some(tree.id),
@@ -1203,7 +1103,10 @@ impl OwnedContent {
                 idx,
                 id: Some(bar.id),
             },
-            OwnedContent::Split(_) => FrameZone::Split { idx },
+            OwnedContent::Split(split) => FrameZone::Widget {
+                idx,
+                id: Some(split.id),
+            },
             OwnedContent::Scrollbar(_) => FrameZone::Scrollbar { idx },
             OwnedContent::Palette(palette) => FrameZone::Widget {
                 idx,
@@ -1237,36 +1140,57 @@ impl OwnedContent {
                 idx,
                 id: Some(stack.id),
             },
-            OwnedContent::DataTable(_) => FrameZone::DataTable { idx },
+            OwnedContent::DataTable(table) => FrameZone::Widget {
+                idx,
+                id: Some(table.id),
+            },
             OwnedContent::CellGrid(grid) => FrameZone::Widget {
                 idx,
                 id: Some(grid.id),
             },
-            OwnedContent::Chart(_) => FrameZone::Chart { idx },
-            OwnedContent::Canvas(_) => FrameZone::Canvas { idx },
-            OwnedContent::Board(_) => FrameZone::Board { idx },
+            OwnedContent::Chart(chart) => FrameZone::Widget {
+                idx,
+                id: Some(chart.id),
+            },
+            OwnedContent::Canvas(canvas) => FrameZone::Widget {
+                idx,
+                id: Some(canvas.id),
+            },
+            OwnedContent::Board(model) => FrameZone::Widget {
+                idx,
+                id: Some(model.id),
+            },
             OwnedContent::CommandCenter(cc) => FrameZone::Widget {
                 idx,
                 id: Some(cc.id),
             },
-            OwnedContent::DiffView(_) => FrameZone::DiffView { idx },
+            OwnedContent::DiffView(view) => FrameZone::Widget {
+                idx,
+                id: Some(view.id),
+            },
             OwnedContent::Image(image) => FrameZone::Widget {
                 idx,
                 id: Some(image.id),
             },
-            OwnedContent::MessageList(_) => FrameZone::MessageList { idx },
+            OwnedContent::MessageList(list) => FrameZone::Widget {
+                idx,
+                id: Some(list.id),
+            },
             OwnedContent::Minimap(minimap) => FrameZone::Widget {
                 idx,
                 id: Some(minimap.id),
             },
-            OwnedContent::PipelineView(_) => FrameZone::PipelineView { idx },
+            OwnedContent::PipelineView(view) => FrameZone::Widget {
+                idx,
+                id: Some(view.id),
+            },
             OwnedContent::Progress(_) => FrameZone::Progress { idx },
             OwnedContent::SidebarPanel(panel) => FrameZone::Widget {
                 idx,
                 id: Some(panel.id),
             },
             OwnedContent::Spinner(_) => FrameZone::Spinner { idx },
-            OwnedContent::SplitTree(_) => FrameZone::SplitTree { idx },
+            OwnedContent::SplitTree(_) => FrameZone::Widget { idx, id: None },
             OwnedContent::TextInput(ti) => FrameZone::Widget {
                 idx,
                 id: Some(ti.id),
@@ -1511,48 +1435,16 @@ impl OwnedFrame {
 /// Deserialize}` — it still keeps its own distinct [`FrameZone`] tag.
 fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) {
     match surface {
-        Surface::MultiSectionView { rect, view } => (
-            *rect,
-            Some(view.id),
-            OwnedContent::MultiSectionView(view.clone()),
-        ),
         Surface::List { rect, list } => (*rect, Some(list.id), OwnedContent::List(list.clone())),
-        Surface::Split { rect, split } => (*rect, None, OwnedContent::Split(split.clone())),
         Surface::Scrollbar { rect, sb } => (*rect, None, OwnedContent::Scrollbar(sb.clone())),
         Surface::FindReplace { rect, .. } => (*rect, None, OwnedContent::FindReplace),
-        Surface::DataTable { rect, table, .. } => (
-            *rect,
-            Some(table.id),
-            OwnedContent::DataTable(table.clone()),
-        ),
         Surface::Widget { rect, widget } => (*rect, widget.id().copied(), widget.capture()),
-        Surface::Chart { rect, chart, .. } => {
-            (*rect, Some(chart.id), OwnedContent::Chart(chart.clone()))
-        }
-        Surface::Canvas { rect, canvas } => (*rect, None, OwnedContent::Canvas(canvas.clone())),
-        Surface::Board { rect, model } => {
-            (*rect, Some(model.id), OwnedContent::Board(model.clone()))
-        }
-        Surface::DiffView { rect, view } => {
-            (*rect, Some(view.id), OwnedContent::DiffView(view.clone()))
-        }
-        Surface::MessageList { rect, list } => (
-            *rect,
-            Some(list.id),
-            OwnedContent::MessageList(list.clone()),
-        ),
-        Surface::PipelineView { rect, view } => (
-            *rect,
-            Some(view.id),
-            OwnedContent::PipelineView(view.clone()),
-        ),
         Surface::Progress { rect, bar } => (
             *rect,
             if bar.cancellable { Some(bar.id) } else { None },
             OwnedContent::Progress(bar.clone()),
         ),
         Surface::Spinner { rect, spinner } => (*rect, None, OwnedContent::Spinner(spinner.clone())),
-        Surface::SplitTree { rect, tree } => (*rect, None, OwnedContent::SplitTree(tree.clone())),
     }
 }
 
@@ -1820,7 +1712,10 @@ mod tests {
                 rows: Vec::new(),
                 scroll_top: 0,
             };
-            Surface::MessageList { rect, list }
+            Surface::Widget {
+                rect,
+                widget: Box::new(list),
+            }
             // `list`'s binding dies here; the `Surface` keeps the value.
         };
 
@@ -1832,7 +1727,10 @@ mod tests {
         assert_eq!(hit_map.zones()[0].0, rect);
         assert_eq!(
             hit_map.hit_test(3.0, 4.0),
-            FrameZone::MessageList { idx: 0 }
+            FrameZone::Widget {
+                idx: 0,
+                id: Some("ml".into())
+            }
         );
         assert_eq!(hit_map.hit_test(100.0, 100.0), FrameZone::Empty);
     }
@@ -1851,9 +1749,9 @@ mod tests {
                 scroll_top: 0,
             };
             let mut layout = ScreenLayout::new();
-            layout.push(Surface::MessageList {
+            layout.push(Surface::Widget {
                 rect: Rect::new(0.0, 0.0, 40.0, 10.0),
-                list,
+                widget: Box::new(list),
             });
             layout
         }
@@ -1862,10 +1760,15 @@ mod tests {
 
         let mut backend = RecordingBackend::new();
         let drawn = layout.draw(&mut backend);
-        assert!(backend.calls.contains(&"draw_message_list"));
 
         assert_eq!(drawn, layout.hit_map());
-        assert_eq!(drawn.hit_test(1.0, 1.0), FrameZone::MessageList { idx: 0 });
+        assert_eq!(
+            drawn.hit_test(1.0, 1.0),
+            FrameZone::Widget {
+                idx: 0,
+                id: Some("ml".into())
+            }
+        );
     }
 
     /// `tab_stops` derives Tab order from geometry (reading order),
@@ -1935,9 +1838,9 @@ mod tests {
             widget: Box::new(palette),
         });
         // Structural chrome: must not appear in tab order at all.
-        layout.push(Surface::Split {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 30.0, 100.0, 1.0),
-            split,
+            widget: Box::new(split),
         });
 
         let stops = layout.tab_stops();
@@ -2056,12 +1959,18 @@ mod tests {
 
         let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::Board { rect, model: board });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(board),
+        });
         layout.push(Surface::Widget {
             rect,
             widget: Box::new(cc),
         });
-        layout.push(Surface::DiffView { rect, view: diff });
+        layout.push(Surface::Widget {
+            rect,
+            widget: Box::new(diff),
+        });
         layout.push(Surface::Widget {
             rect: overlay.bounds(),
             widget: Box::new(overlay.clone()),
@@ -2070,17 +1979,17 @@ mod tests {
             rect,
             widget: Box::new(image),
         });
-        layout.push(Surface::MessageList {
+        layout.push(Surface::Widget {
             rect,
-            list: message_list,
+            widget: Box::new(message_list),
         });
         layout.push(Surface::Widget {
             rect,
             widget: Box::new(minimap),
         });
-        layout.push(Surface::PipelineView {
+        layout.push(Surface::Widget {
             rect,
-            view: pipeline,
+            widget: Box::new(pipeline),
         });
         layout.push(Surface::Progress {
             rect,
@@ -2091,9 +2000,9 @@ mod tests {
             widget: Box::new(sidebar),
         });
         layout.push(Surface::Spinner { rect, spinner });
-        layout.push(Surface::SplitTree {
+        layout.push(Surface::Widget {
             rect,
-            tree: split_tree,
+            widget: Box::new(split_tree),
         });
         layout.push(Surface::Widget {
             rect,
@@ -2108,7 +2017,13 @@ mod tests {
         assert_eq!(hit_map.len(), 14);
 
         let zones: Vec<&FrameZone> = hit_map.zones().iter().map(|(_, z)| z).collect();
-        assert_eq!(zones[0], &FrameZone::Board { idx: 0 });
+        assert_eq!(
+            zones[0],
+            &FrameZone::Widget {
+                idx: 0,
+                id: Some(WidgetId::new("board")),
+            }
+        );
         assert_eq!(
             zones[1],
             &FrameZone::Widget {
@@ -2116,7 +2031,13 @@ mod tests {
                 id: Some("cc".into())
             }
         );
-        assert_eq!(zones[2], &FrameZone::DiffView { idx: 2 });
+        assert_eq!(
+            zones[2],
+            &FrameZone::Widget {
+                idx: 2,
+                id: Some(WidgetId::new("diff")),
+            }
+        );
         assert_eq!(zones[3], &FrameZone::Widget { idx: 3, id: None });
         assert_eq!(
             zones[4],
@@ -2125,7 +2046,13 @@ mod tests {
                 id: Some(WidgetId::new("img")),
             }
         );
-        assert_eq!(zones[5], &FrameZone::MessageList { idx: 5 });
+        assert_eq!(
+            zones[5],
+            &FrameZone::Widget {
+                idx: 5,
+                id: Some(WidgetId::new("ml")),
+            }
+        );
         assert_eq!(
             zones[6],
             &FrameZone::Widget {
@@ -2133,7 +2060,13 @@ mod tests {
                 id: Some(WidgetId::new("mm")),
             }
         );
-        assert_eq!(zones[7], &FrameZone::PipelineView { idx: 7 });
+        assert_eq!(
+            zones[7],
+            &FrameZone::Widget {
+                idx: 7,
+                id: Some(WidgetId::new("pv")),
+            }
+        );
         assert_eq!(zones[8], &FrameZone::Progress { idx: 8 });
         assert_eq!(
             zones[9],
@@ -2143,7 +2076,7 @@ mod tests {
             }
         );
         assert_eq!(zones[10], &FrameZone::Spinner { idx: 10 });
-        assert_eq!(zones[11], &FrameZone::SplitTree { idx: 11 });
+        assert_eq!(zones[11], &FrameZone::Widget { idx: 11, id: None });
         assert_eq!(
             zones[12],
             &FrameZone::Widget {
@@ -2873,7 +2806,13 @@ mod tests {
     #[test]
     fn frame_hit_map_serde_round_trip() {
         let mut map = FrameHitMap::new();
-        map.push(Rect::new(0.0, 0.0, 10.0, 10.0), FrameZone::Board { idx: 0 });
+        map.push(
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+            FrameZone::Widget {
+                idx: 0,
+                id: Some(WidgetId::new("board")),
+            },
+        );
         map.push(Rect::new(0.0, 0.0, 5.0, 5.0), FrameZone::Spinner { idx: 1 });
 
         let json = serde_json::to_string(&map).expect("FrameHitMap serializes");

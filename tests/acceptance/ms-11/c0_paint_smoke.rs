@@ -196,7 +196,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_message_list",
+            method: "draw_dyn(MessageList)",
             needle: Some("c0msg"),
             paint: |b, area| {
                 let list = MessageList {
@@ -204,7 +204,7 @@ mod ms11_492_c0_paint_smoke {
                     rows: vec![MessageRow::new("c0msg", Color::rgb(220, 220, 220), 0.0)],
                     scroll_top: 0,
                 };
-                b.draw_message_list(area, &list);
+                let _ = b.draw_dyn(area, &list, &());
             },
         },
         PrimitiveCase {
@@ -278,7 +278,7 @@ mod ms11_492_c0_paint_smoke {
             },
         },
         PrimitiveCase {
-            method: "draw_pipeline_view",
+            method: "draw_dyn(PipelineView)",
             needle: Some("c0pipe"),
             paint: |b, area| {
                 let view = PipelineView {
@@ -290,11 +290,11 @@ mod ms11_492_c0_paint_smoke {
                     }],
                     focused_stage: None,
                 };
-                let _ = b.draw_pipeline_view(area, &view);
+                let _ = b.draw_dyn(area, &view, &());
             },
         },
         PrimitiveCase {
-            method: "draw_diff_view",
+            method: "draw_dyn(DiffView)",
             needle: Some("c0diff"),
             paint: |b, area| {
                 // Named by #492 itself: "including the current macOS
@@ -317,7 +317,7 @@ mod ms11_492_c0_paint_smoke {
                     focused_pane: DiffPane::Left,
                     has_focus: false,
                 };
-                let _ = b.draw_diff_view(area, &view);
+                let _ = b.draw_dyn(area, &view, &());
             },
         },
         PrimitiveCase {

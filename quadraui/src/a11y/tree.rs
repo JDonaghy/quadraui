@@ -2427,14 +2427,14 @@ mod tests {
     /// A surface whose capture carries no top-level `WidgetId` (the id
     /// lives on the primitive, not the `Surface` variant itself).
     fn canvas_surface() -> Surface {
-        Surface::Canvas {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            canvas: Canvas {
+            widget: Box::new(Canvas {
                 id: WidgetId::new("sketch"),
                 ops: Vec::new(),
                 regions: Vec::new(),
                 focusable: false,
-            },
+            }),
         }
     }
 
@@ -2442,9 +2442,9 @@ mod tests {
     /// `BoardModel` mapping (column/card roles and their independent
     /// position-in-set/set-size pairs).
     fn board_surface() -> Surface {
-        Surface::Board {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            model: BoardModel {
+            widget: Box::new(BoardModel {
                 id: WidgetId::new("sprint"),
                 columns: vec![
                     BoardColumn {
@@ -2490,7 +2490,7 @@ mod tests {
                 ],
                 selected_card_id: Some(WidgetId::new("card-2")),
                 col_scroll_offset: 0,
-            },
+            }),
         }
     }
 
@@ -3053,9 +3053,9 @@ mod tests {
             ],
             focused_stage: None,
         };
-        let frame = frame_with(vec![Surface::PipelineView {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 60.0, 4.0),
-            view,
+            widget: Box::new(view),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
@@ -3196,10 +3196,9 @@ mod tests {
             striped: false,
             glyphs: None,
         };
-        let frame = frame_with(vec![Surface::DataTable {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            table,
-            hovered: None,
+            widget: Box::new(table),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
@@ -3250,10 +3249,9 @@ mod tests {
             striped: false,
             glyphs: None,
         };
-        let frame = frame_with(vec![Surface::DataTable {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            table,
-            hovered: None,
+            widget: Box::new(table),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
 
@@ -3358,9 +3356,9 @@ mod tests {
             ],
             scroll_top: 0,
         };
-        let frame = frame_with(vec![Surface::MessageList {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 40.0, 6.0),
-            list,
+            widget: Box::new(list),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
@@ -3424,9 +3422,9 @@ mod tests {
             has_focus: false,
             panel_scroll: 0.0,
         };
-        let frame = frame_with(vec![Surface::MultiSectionView {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 40.0, 20.0),
-            view,
+            widget: Box::new(view),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(
@@ -3619,9 +3617,9 @@ mod tests {
             has_focus: false,
             panel_scroll: 0.0,
         };
-        let frame = frame_with(vec![Surface::MultiSectionView {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 40.0, 30.0),
-            view,
+            widget: Box::new(view),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(

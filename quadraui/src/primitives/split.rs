@@ -24,8 +24,6 @@ mod contract;
 #[cfg(feature = "tui")]
 pub(crate) mod junction;
 
-#[cfg(feature = "tui")]
-pub(crate) use contract::paint_tree_cells;
 pub use contract::{SplitDividerDrag, SplitState, SplitTreeState};
 
 /// Declarative description of a split container.

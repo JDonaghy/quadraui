@@ -11,10 +11,7 @@
 //! pixel backend (`gtk` or `win`) is enabled — there is no TUI
 //! rasteriser for this primitive yet.
 
-#[cfg(feature = "gtk")]
-use quadraui::gtk::scroll_view::{draw_scrollbar_for, paint_clipped};
-#[cfg(all(feature = "win", not(feature = "gtk")))]
-use quadraui::win::scroll_view::{draw_scrollbar_for, paint_clipped};
+use quadraui::primitives::scroll_view::{draw_scrollbar_for, paint_clipped};
 
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::{

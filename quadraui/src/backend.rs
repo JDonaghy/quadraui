@@ -48,29 +48,15 @@ use crate::power::{BlockerId, PowerSaveKind, ThermalState};
 use crate::primitive::{
     DynWidget, LayoutCtx, PaintEnv, PaintState, PaintTarget, Primitive, PrimitiveLayout, Units,
 };
-use crate::primitives::board::{BoardLayout, BoardModel};
-use crate::primitives::canvas::{Canvas, CanvasLayout};
-use crate::primitives::chart::{Chart, ChartLayout};
 use crate::primitives::context_menu::ContextMenu;
-use crate::primitives::data_table::{
-    DataTable, DataTableGlyphs, DataTableLayout, DataTablePaintState,
-};
 use crate::primitives::dialog::DialogSeverity;
-use crate::primitives::diff_view::{DiffMode, DiffView, DiffViewLayout};
 use crate::primitives::editor::CursorShape as EditorCursorShape;
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::image::ImageSource;
 use crate::primitives::list::{ListPaintState, ListViewLayout};
-use crate::primitives::message_list::MessageList;
-use crate::primitives::multi_section_view::{
-    MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
-};
-use crate::primitives::pipeline_view::{PipelineView, PipelineViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
-use crate::primitives::split::{Split, SplitLayout};
-use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
@@ -2426,7 +2412,7 @@ pub trait Backend: sealed::Sealed {
     /// [`crate::tui::backend::TuiBackend`] overrides this with the same
     /// cell-quantised clip bookkeeping [`crate::tui::canvas`] already
     /// uses for `Canvas`'s own `PushClip`/`PopClip` ops — see
-    /// [`crate::tui::canvas::TuiClipFrame`]'s doc for that backend's own
+    /// [`crate::tui::cell_surface::TuiClipFrame`]'s doc for that backend's own
     /// extra caveat (clipping is retroactive there, not a live scissor).
     /// [`crate::gtk::backend::GtkBackend`] overrides this too, forwarding
     /// straight to its own [`crate::PaintSurface::surface_push_clip`]
@@ -2494,75 +2480,6 @@ pub trait Backend: sealed::Sealed {
         #[allow(deprecated)]
         self.draw_list(rect, list)
     }
-    /// Draw `table` into `rect` and return its layout for hit-testing.
-    /// Coordinate frame: **LOCAL** — `hit_regions` / row bounds are
-    /// relative to `rect`'s origin, matching [`Self::data_table_layout`].
-    #[deprecated(
-        since = "0.12.0",
-        note = "use DrawsPrimitives::draw_primitive with DataTable; removal tracked in #2609"
-    )]
-    fn draw_data_table(
-        &mut self,
-        rect: Rect,
-        table: &DataTable,
-        hovered_idx: Option<usize>,
-    ) -> DataTableLayout;
-    /// [`Self::draw_data_table`], plus a pixel-precise scroll position via
-    /// [`DataTablePaintState::scroll_px`] instead of only
-    /// [`DataTable::scroll_offset`]'s whole-row value.
-    ///
-    /// Additive over [`Self::draw_data_table`], not a replacement — the
-    /// default forwards to it with `state.hovered_idx` (ignoring
-    /// `scroll_px`), so every existing call site and implementor keeps
-    /// compiling unchanged. `state.scroll_px: None` (the default a
-    /// `state` built with [`DataTablePaintState::default`] carries)
-    /// paints exactly as [`Self::draw_data_table`] already does;
-    /// `Some(px)` wins over `scroll_offset` and resolves via
-    /// [`DataTable::effective_scroll_offset`] /
-    /// [`DataTable::scroll_sub_row_px`].
-    fn draw_data_table_with_state(
-        &mut self,
-        rect: Rect,
-        table: &DataTable,
-        state: &DataTablePaintState,
-    ) -> DataTableLayout {
-        #[allow(deprecated)]
-        self.draw_data_table(rect, table, state.hovered_idx)
-    }
-    /// Draw `table` into `rect` with an optional [`DataTableGlyphs`]
-    /// override for the sort-ascending/sort-descending arrows. Returns
-    /// its layout for hit-testing, same contract as [`Self::draw_data_table`].
-    ///
-    /// Added rather than folded into [`Self::draw_data_table`]'s
-    /// signature, and given a default body, so it breaks no existing
-    /// `Backend` implementor and no existing call site.
-    ///
-    /// The default body **ignores `glyphs`** and delegates to
-    /// [`Self::draw_data_table`], i.e. renders the default sort arrows.
-    /// That is the correct fallback for a backend that hasn't opted in
-    /// to overrides yet. The TUI backend overrides it and honours
-    /// `glyphs` in full.
-    fn draw_data_table_with_glyphs(
-        &mut self,
-        rect: Rect,
-        table: &DataTable,
-        hovered_idx: Option<usize>,
-        glyphs: Option<&DataTableGlyphs>,
-    ) -> DataTableLayout {
-        let _ = glyphs;
-        #[allow(deprecated)]
-        self.draw_data_table(rect, table, hovered_idx)
-    }
-    /// Compute the data-table layout without painting. Coordinate frame:
-    /// **LOCAL** — relative to `rect`'s origin, `(0, 0)` at `rect`'s
-    /// top-left; callers subtract `rect.x` / `rect.y` from absolute
-    /// click coordinates before calling `hit_test` (see the module doc's
-    /// *Coordinate frames* section).
-    #[deprecated(
-        since = "0.12.0",
-        note = "use DrawsPrimitives::draw_primitive with DataTable; removal tracked in #2609"
-    )]
-    fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
     /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
     /// `None` when its content fits. Each backend supplies its native row
     /// height; the resolved track + thumb are the same values the
@@ -2594,39 +2511,6 @@ pub trait Backend: sealed::Sealed {
     )]
     fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
 
-    // Layout-passthrough primitives (per docs/decisions/BACKEND_TRAIT_PROPOSAL.md
-    // §6.2). Each backend computes the primitive's layout internally
-    // using its native measurer (cells for TUI, Pango / DirectWrite /
-    // Core Text pixels for the others) — apps don't have access to
-    // those handles, so layout precomputation can't live caller-side.
-    //
-    // Methods that produce hit-region data (clickable segments,
-    // close-button rects, link rects) return it directly so callers
-    // route clicks against the same data the rasteriser paints with.
-    /// Draw a [`MultiSectionView`]. The backend computes the layout
-    /// internally with native metrics (cells for TUI, pixels +
-    /// `line_height` for GTK) and dispatches each section's body to
-    /// the appropriate inner-primitive painter (tree, list, etc.).
-    /// Hosts that need to hit-test clicks call [`Self::msv_layout`]
-    /// for the same layout instance.
-    fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView);
-
-    /// Compute the layout the rasteriser would produce for `view` in
-    /// `rect`, using the backend's native metrics. Hosts call this
-    /// to drive hit-testing without re-deriving metrics — paint and
-    /// click consume one layout per frame, the source-of-truth
-    /// contract `MultiSectionView` exists to enforce.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — `hit_regions` / body bounds are
-    /// shifted by `rect.x` / `rect.y`; callers compare them directly
-    /// against raw click coordinates.
-    fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout;
-
-    /// Return the layout metrics this backend uses for MSV layout.
-    /// Compose helpers cache these to compute layouts without a Backend
-    /// reference at event-handling time.
-    fn msv_metrics(&self) -> MsvLayoutMetrics;
-
     /// Drive the terminal/OS **hardware** caret to match an
     /// [`crate::Editor`]'s [`EditorCursorShape`] — block for Normal/Visual, bar
     /// for Insert, underline for a pending replace-char command. This is
@@ -2652,12 +2536,6 @@ pub trait Backend: sealed::Sealed {
     /// `TestBackend`).
     fn set_caret_shape(&mut self, _shape: EditorCursorShape) {}
 
-    /// Draw a [`MessageList`] (chat-style streaming row history).
-    /// The backend pulls panel background from its current theme;
-    /// hosts that want a custom panel bg compose the primitive
-    /// directly via the backend crate's free function.
-    fn draw_message_list(&mut self, rect: Rect, list: &MessageList);
-
     /// Draw a [`FindReplacePanel`] (find/replace overlay sitting
     /// above the editor). The backend pulls the editor-relative
     /// origin from `rect.x` (TUI's `editor_left` parameter is
@@ -2669,117 +2547,6 @@ pub trait Backend: sealed::Sealed {
     /// per-section scrollbars MSV paints internally). The backend
     /// pulls cell/pixel background from its current theme.
     fn draw_scrollbar(&mut self, rect: Rect, scrollbar: &Scrollbar);
-
-    /// Draw a [`Split`] divider. The backend computes the layout with
-    /// its native divider thickness (1 cell for TUI, ~4px for GTK)
-    /// and returns the [`SplitLayout`] so hosts can route clicks and
-    /// drive drag operations. Pane content is NOT drawn — hosts paint
-    /// into `layout.first_bounds` / `layout.second_bounds`. Same
-    /// coordinate frame as [`Self::split_layout`] (ABSOLUTE).
-    fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout;
-
-    /// Compute the split layout without painting. Hosts call this in
-    /// drag handlers to recompute the ratio from cursor position.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — `first_bounds` / `divider_bounds`
-    /// / `second_bounds` are shifted by `rect.x` / `rect.y`.
-    fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout;
-
-    /// Draw a [`SplitTree`]'s dividers. The backend computes the
-    /// layout with its native divider thickness (1 cell for TUI, ~4px
-    /// for GTK) and returns the [`SplitTreeLayout`] so hosts can route
-    /// clicks (via [`SplitTreeLayout::hit_test_divider`] /
-    /// [`SplitTreeLayout::hit_test_divider_cell`] /
-    /// [`SplitTreeLayout::hit_test_leaf`]) and drive drag operations
-    /// via [`crate::DragTarget::SplitDivider`]. Leaf content is NOT
-    /// drawn — hosts paint into each `layout.leaves[i].1` rect. Same
-    /// coordinate frame as [`Self::split_tree_layout`] (ABSOLUTE).
-    fn draw_split_tree(&mut self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout;
-
-    /// Compute the split-tree layout without painting. Hosts call this
-    /// in drag handlers to recompute a divider's ratio from cursor
-    /// position without re-painting.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — leaf / divider bounds are
-    /// shifted by `rect.x` / `rect.y`.
-    fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout;
-
-    /// Draw a [`PipelineView`] (horizontal multi-stage workflow widget).
-    /// The backend paints stage boxes, status icons, labels, optional
-    /// action buttons, and arrow connectors. Returns the
-    /// [`PipelineViewLayout`] so hosts can route clicks via
-    /// `layout.hit_test(x, y)` without re-deriving metrics. Same
-    /// coordinate frame as [`Self::pipeline_view_layout`] (ABSOLUTE).
-    fn draw_pipeline_view(&mut self, rect: Rect, view: &PipelineView) -> PipelineViewLayout;
-
-    /// Compute pipeline-view layout without painting. Hosts call this in
-    /// click handlers to resolve hits against the same layout that was
-    /// painted — never re-derive with a hand-rolled measurer.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
-    fn pipeline_view_layout(&self, rect: Rect, view: &PipelineView) -> PipelineViewLayout;
-
-    /// Draw a [`DiffView`] (two-pane side-by-side or unified diff viewer).
-    /// Hunks are app-computed via [`crate::diff::compute_hunks`]; the backend
-    /// only rasterises. Returns [`DiffViewLayout`] for scroll clamping.
-    fn draw_diff_view(&mut self, rect: Rect, view: &DiffView) -> DiffViewLayout;
-
-    /// Compute the diff-view layout without painting — the no-paint twin
-    /// of [`Self::draw_diff_view`]. `visible_rows` uses this
-    /// backend's [`Self::line_height`] exactly as every backend's
-    /// `draw_diff_view` does today: in [`DiffMode::SideBySide`] one
-    /// `line_height` band is reserved for the header row when either
-    /// label is set (`view.left_label` / `view.right_label`); in
-    /// [`DiffMode::Unified`] every row — including each hunk's `@@ … @@`
-    /// header — scrolls as content, so no band is reserved.
-    /// `total_rows` matches [`DiffViewLayout::total_rows`]'s documented
-    /// contract (`view.total_rows()` in side-by-side mode, `+
-    /// hunk_count` in unified mode for the synthesized header lines).
-    ///
-    /// Frame: no coordinates are returned — `visible_rows` /
-    /// `total_rows` are counts, not positions — so there is no LOCAL vs
-    /// ABSOLUTE distinction to state.
-    ///
-    /// Default body: uniform for every backend, since it's a pure
-    /// function of `rect`, `view`, and `Self::line_height` — no backend
-    /// needs to override this.
-    fn diff_view_layout(&self, rect: Rect, view: &DiffView) -> DiffViewLayout {
-        if rect.width <= 0.0 || rect.height <= 0.0 {
-            return DiffViewLayout {
-                visible_rows: 0,
-                total_rows: view.total_rows(),
-            };
-        }
-        let lh = self.line_height();
-        match view.mode {
-            DiffMode::SideBySide => {
-                let has_header = view.left_label.is_some() || view.right_label.is_some();
-                let header_h = if has_header { lh } else { 0.0 };
-                let content_h = (rect.height - header_h).max(0.0);
-                let visible_rows = if lh > 0.0 {
-                    (content_h / lh).floor() as usize
-                } else {
-                    0
-                };
-                DiffViewLayout {
-                    visible_rows,
-                    total_rows: view.total_rows(),
-                }
-            }
-            DiffMode::Unified => {
-                let visible_rows = if lh > 0.0 {
-                    (rect.height / lh).floor() as usize
-                } else {
-                    0
-                };
-                let total_rows: usize = view.hunks.iter().map(|h| h.rows.len() + 1).sum();
-                DiffViewLayout {
-                    visible_rows,
-                    total_rows,
-                }
-            }
-        }
-    }
 
     /// Draw a [`ProgressBar`]. The backend paints the track, fill,
     /// optional label, and optional cancel affordance. Returns the
@@ -2801,99 +2568,6 @@ pub trait Backend: sealed::Sealed {
     ///
     /// Coordinate frame: **ABSOLUTE** — shifted by `rect.x` / `rect.y`.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout;
-
-    /// Draw a [`Chart`] (sparkline, line, or bar). `hovered_point`
-    /// carries per-frame hover state (series_idx, data_idx) so the
-    /// rasteriser can highlight the data point under the cursor.
-    /// Returns the [`ChartLayout`] so hosts can route clicks and
-    /// resolve nearest-point from mouse position. Same coordinate
-    /// frame as [`Self::chart_layout`] (ABSOLUTE).
-    fn draw_chart(
-        &mut self,
-        rect: Rect,
-        chart: &Chart,
-        hovered_point: Option<(usize, usize)>,
-        crosshair_x: Option<f64>,
-    ) -> ChartLayout;
-
-    /// Compute chart layout without painting.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — `bounds` / `hit_regions` /
-    /// `data_point_positions` are shifted by `rect.x` / `rect.y`.
-    fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout;
-
-    /// Draw a [`BoardModel`] (kanban/pipeline board widget).
-    ///
-    /// The backend paints columns side by side, each with a header title
-    /// and a vertical stack of card boxes. Each card shows the issue
-    /// title, an inline badge row, and an optional `hint` callout strip.
-    /// The selected card is highlighted.
-    ///
-    /// Returns a [`BoardLayout`] so hosts can route clicks via
-    /// `layout.hit_test(x, y)` and implement selection-follow clamping
-    /// (DataTable pattern: host reads `layout.columns[i].visible_cards`
-    /// and adjusts `column.scroll_offset` accordingly).
-    ///
-    /// No default impl — every backend implementer sees this as a compile
-    /// error and fills in a real rasteriser (`PRIMITIVE_RULES.md` rule 7).
-    /// A no-op default here would let a backend silently paint an empty
-    /// board instead of failing to build.
-    fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout;
-
-    /// Compute the board layout without painting — the no-paint twin of
-    /// [`Self::draw_board`]. Each backend routes through the exact same
-    /// helper `draw_board` calls
-    /// internally, using its own [`crate::primitives::board::BoardMeasure`]
-    /// (column/card sizing is backend-native, like `TreeStyle::row_height`
-    /// — not derivable from [`Self::char_width`] / [`Self::line_height`]
-    /// alone), so paint and no-paint can't drift apart.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — `columns[i].bounds` / card bounds
-    /// are shifted by `rect.x` / `rect.y`, matching [`BoardLayout::hit_test`].
-    ///
-    /// No default impl, same rule-7 reasoning as [`Self::draw_board`]: a
-    /// backend that forgets to override this would otherwise silently
-    /// report an empty board's worth of hit regions.
-    fn board_layout(&self, rect: Rect, model: &BoardModel) -> BoardLayout;
-
-    /// Paint a [`Canvas`]'s `ops` into `rect`. Every `DrawOp` coordinate
-    /// is LOCAL to `rect` — see [`Canvas`]'s own module doc for the full
-    /// coordinate-frame contract.
-    ///
-    /// The three pixel backends (GTK/macOS/Win) share one
-    /// implementation, [`crate::primitives::canvas::native_surface_paint::paint`],
-    /// routed through [`crate::paint_surface::PaintSurface`] — there is
-    /// no backend-specific *policy* here, only a passthrough, unlike
-    /// [`Self::draw_toast_overlay`] which resolves theme colours and
-    /// chrome metrics. TUI has no pixel grid, so it
-    /// rasterises the same ops into cells instead of reporting
-    /// `Unsupported` — see [`Canvas`]'s module doc's degrade table
-    /// (design decision D-014: `Canvas` is a **degrade** capability, not
-    /// N/A).
-    ///
-    /// No default impl — every backend implementer sees this as a
-    /// compile error, same as [`Self::draw_board`] (`PRIMITIVE_RULES.md`
-    /// rule 7).
-    fn draw_canvas(&mut self, rect: Rect, canvas: &Canvas) -> CanvasLayout;
-
-    /// Compute the canvas layout without painting.
-    ///
-    /// Coordinate frame: **ABSOLUTE** — `bounds` is exactly `rect` —
-    /// see [`CanvasLayout`]'s own doc for why no backend has any
-    /// further metric to add.
-    ///
-    /// Defaulted: a pure function of `rect` alone (`CanvasLayout {
-    /// bounds: rect }`), with no backend-specific input at all — a
-    /// stronger case for a default body than the layouts in
-    /// `tests/conformance/caps.rs`'s `ACCEPTED_DEFAULTS`,
-    /// which still depend on `char_width()`/`line_height()`. Every
-    /// backend takes this default; see `ACCEPTED_DEFAULTS`'s
-    /// `canvas_layout` entries for the from-scratch justification each
-    /// one records.
-    fn canvas_layout(&self, rect: Rect, canvas: &Canvas) -> CanvasLayout {
-        let _ = canvas;
-        CanvasLayout { bounds: rect }
-    }
 }
 
 /// `draw_*`-shaped entry point for any [`Primitive`]

@@ -91,7 +91,7 @@ impl AppLogic for MessageListApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let rect = Self::list_rect(backend);
-        backend.draw_message_list(rect, &self.list());
+        backend.draw_primitive(rect, &self.list());
 
         let status_rect = Rect::new(0.0, rect.height, vp.width, vp.height - rect.height);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());

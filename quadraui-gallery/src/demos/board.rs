@@ -207,7 +207,7 @@ impl Demo for BoardDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let board_rect = Self::board_rect(area, backend);
-        let _ = backend.draw_board(board_rect, self.model(variant));
+        let _ = backend.draw_primitive(board_rect, self.model(variant));
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(), &());
@@ -236,7 +236,7 @@ impl Demo for BoardDemo {
             }
             UiEvent::MouseDown { position, .. } => {
                 let board_rect = Self::board_rect(area, backend);
-                let layout = backend.board_layout(board_rect, self.model(variant));
+                let layout = backend.layout_primitive(board_rect, self.model(variant));
                 match layout.hit_test(position.x, position.y) {
                     BoardHit::Card(id) => {
                         let title = self

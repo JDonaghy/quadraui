@@ -118,8 +118,7 @@ impl AppLogic for SidebarRevealDemo {
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
         // `reveal` is backend-free and needs this cached first — see
         // `SidebarSystem::set_backend_info`.
-        self.sidebar
-            .set_backend_info(backend.line_height(), backend.msv_metrics());
+        self.sidebar.set_backend_info(backend.line_height());
 
         let rect = Self::sidebar_rect(backend);
         match self.sidebar.handle(&event, backend, rect) {

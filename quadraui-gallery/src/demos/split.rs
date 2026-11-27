@@ -117,7 +117,7 @@ impl Demo for SplitDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         if variant == 0 {
             let split = self.split();
-            let layout = backend.draw_split(area, &split);
+            let layout = backend.draw_primitive(area, &split);
             Self::fill_pane(
                 backend,
                 layout.first_bounds,
@@ -133,7 +133,7 @@ impl Demo for SplitDemo {
                 Color::rgb(100, 60, 60),
             );
         } else {
-            let layout = backend.draw_split_tree(area, &self.tree);
+            let layout = backend.draw_primitive(area, &self.tree);
             let colors = [
                 (Color::rgb(255, 255, 255), Color::rgb(60, 60, 100)),
                 (Color::rgb(255, 255, 255), Color::rgb(60, 100, 60)),
@@ -157,7 +157,7 @@ impl Demo for SplitDemo {
             match event {
                 UiEvent::MouseDown { position, .. } => {
                     let split = self.split();
-                    let layout = backend.split_layout(area, &split);
+                    let layout = backend.layout_primitive(area, &split);
                     if let SplitHit::Divider(_) = layout.hit_test(position.x, position.y) {
                         self.dragging = true;
                     }
@@ -199,7 +199,7 @@ impl Demo for SplitDemo {
         } else {
             match event {
                 UiEvent::MouseDown { position, .. } => {
-                    let layout = backend.split_tree_layout(area, &self.tree);
+                    let layout = backend.layout_primitive(area, &self.tree);
                     if let Some(split_index) = layout.hit_test_divider(*position, DIVIDER_TOLERANCE)
                     {
                         if let Some(div) = layout

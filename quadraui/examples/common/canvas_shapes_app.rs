@@ -211,7 +211,7 @@ impl AppLogic for CanvasShapesApp {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let rect = self.chart_rect(backend);
-        let _ = backend.draw_canvas(rect, &self.chart_canvas(rect));
+        let _ = backend.draw_primitive(rect, &self.chart_canvas(rect));
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());

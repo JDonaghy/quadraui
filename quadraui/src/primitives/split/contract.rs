@@ -166,6 +166,10 @@ impl Primitive for Split {
     type Layout = SplitLayout;
     type Event = SplitDividerDrag;
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Split(self.clone())
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }
@@ -269,6 +273,10 @@ impl Interactive for Split {
 impl Primitive for SplitTree {
     type Layout = SplitTreeLayout;
     type Event = SplitDividerDrag;
+
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::SplitTree(self.clone())
+    }
 
     /// [`SplitTree::cell_layout`] on a cell grid; on pixels, the shared
     /// pixel-backend divider thickness. Every leaf's rect is in the

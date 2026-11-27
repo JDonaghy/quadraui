@@ -201,7 +201,7 @@ impl Demo for PipelineDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let pv_rect = Self::pipeline_rect(area, backend);
-        let _ = backend.draw_pipeline_view(pv_rect, &self.view(variant));
+        let _ = backend.draw_primitive(pv_rect, &self.view(variant));
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(), &());
@@ -257,7 +257,7 @@ impl Demo for PipelineDemo {
             UiEvent::MouseDown { position, .. } => {
                 let pv_rect = Self::pipeline_rect(area, backend);
                 let view = self.view(variant);
-                let layout = backend.pipeline_view_layout(pv_rect, &view);
+                let layout = backend.layout_primitive(pv_rect, &view).layout;
                 match layout.hit_test(position.x, position.y) {
                     PipelineHit::Action(idx) => {
                         self.last_message =

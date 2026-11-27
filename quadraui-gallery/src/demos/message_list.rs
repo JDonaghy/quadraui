@@ -125,7 +125,7 @@ impl Demo for MessageListDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = Self::list_rect(area, backend);
-        backend.draw_message_list(rect, &self.list(variant));
+        backend.draw_primitive(rect, &self.list(variant));
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(variant), &());

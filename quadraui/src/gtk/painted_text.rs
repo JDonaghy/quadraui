@@ -89,7 +89,6 @@ pub(crate) fn show_layout(cr: &Context, layout: &pango::Layout) {
 mod tests {
     use crate::backend::Backend;
     use crate::gtk::backend::GtkBackend;
-    use crate::gtk::testing::GtkDriver;
     use crate::runner::{AppLogic, Reaction};
     use crate::types::WidgetId;
     use crate::{Rect, UiEvent};
@@ -100,10 +99,7 @@ mod tests {
     const ROW_H: f32 = 20.0;
 
     /// Two stacked one-column `DataTable`s whose header titles are the
-    /// needles — the data table records *both* a logical label (each
-    /// header cell, from `GtkBackend::draw_data_table`) and a
-    /// per-glyph-run record (from this module). Used to pin the ordering
-    /// contract.
+    /// needles, each recorded as one glyph run by this module.
     struct StackedBarsApp;
 
     impl AppLogic for StackedBarsApp {
@@ -132,14 +128,11 @@ mod tests {
                     striped: false,
                     glyphs: None,
                 };
-                // The logical-record ordering under test is what the
-                // DataTable rasteriser records, until DataTable paints
-                // through the widget contract.
-                #[allow(deprecated)]
-                let _ = backend.draw_data_table(
+                let _ = crate::backend::DrawsPrimitives::draw_dyn(
+                    backend,
                     Rect::new(0.0, i as f32 * ROW_H, W as f32, ROW_H),
                     &table,
-                    None,
+                    &(),
                 );
             }
         }
@@ -166,50 +159,11 @@ mod tests {
         crate::gtk::run::render_frame(&mut backend, &StackedBarsApp, &cr, W, H);
         let with = backend.painted_text_for_test().len();
 
-        // Only the two logical header records survive with the sink off;
-        // enabling it adds the frame's glyph runs on top.
-        assert_eq!(
-            without, 2,
-            "with recording off only the trait method's own records should land"
-        );
+        assert_eq!(without, 0, "with recording off nothing should land");
         assert!(
             with > without,
             "enabling recording should add the frame's painted glyph runs \
              ({with} vs {without})"
-        );
-    }
-
-    /// Ordering contract: a primitive that records a *logical* label must
-    /// keep winning `find_bounds`, because that rect is the one aligned
-    /// with the primitive's hit regions. The glyph run inside it is
-    /// vertically centred, so resolving to it instead would silently
-    /// change the y a `find`-driven click lands on.
-    #[test]
-    fn logical_records_precede_glyph_runs_in_the_map() {
-        let driver = GtkDriver::new(StackedBarsApp, W, H);
-
-        let row0 = driver.find_bounds("row zero").expect("row zero painted");
-        let row1 = driver.find_bounds("row one").expect("row one painted");
-
-        assert_eq!(
-            row0.y, 0.0,
-            "row 0 should resolve to the header's own record at the table's y"
-        );
-        assert_eq!(
-            row1.y, ROW_H,
-            "row 1 should resolve to its own bar's y, not row 0's"
-        );
-        // Both rows still contribute a glyph run — the same text appears
-        // twice in the map, the logical record first.
-        assert_eq!(
-            driver
-                .painted_texts()
-                .iter()
-                .filter(|t| t.contains("row zero"))
-                .count(),
-            2,
-            "expected one logical record plus one glyph run: {:?}",
-            driver.painted_texts()
         );
     }
 

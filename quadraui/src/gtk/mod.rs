@@ -112,14 +112,10 @@ pub(crate) fn test_render_guard() -> TestRenderGuard {
 
 mod app_font;
 pub mod backend;
-mod board;
-mod chart;
 mod combo_box;
 mod completions;
-mod data_table;
 mod date_picker;
 mod dialog;
-mod diff_view;
 pub mod events;
 mod list;
 // `MenuOverlay` is the module's only `pub` item and has zero reachers —
@@ -130,21 +126,15 @@ mod list;
 // not covered by semver" result without it.
 #[doc(hidden)]
 pub mod menu_overlay;
-mod message_list;
-mod multi_section_view;
 mod number_input;
 mod painted_text;
-mod pipeline_view;
 mod progress;
 mod rich_text_popup;
 mod run;
-pub mod scroll_view;
 mod scrollbar;
 pub mod services;
 pub mod shell_runner;
 mod spinner;
-mod split;
-mod split_tree;
 pub(crate) mod surface;
 pub mod testing;
 mod text_display;
@@ -169,10 +159,6 @@ pub use crate::primitives::tab_bar::TabBarHits;
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 pub use backend::GtkBackend;
 #[doc(hidden)]
-pub use board::gtk_board_layout;
-#[doc(hidden)]
-pub use chart::gtk_chart_layout;
-#[doc(hidden)]
 pub use completions::draw_completions;
 #[doc(hidden)]
 pub use dialog::draw_dialog;
@@ -182,14 +168,6 @@ pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
 pub use list::{draw_list, draw_list_with_state, gtk_list_layout};
 #[doc(hidden)]
 pub use menu_overlay::MenuOverlay;
-#[doc(hidden)]
-pub use message_list::draw_message_list;
-#[doc(hidden)]
-pub use multi_section_view::{
-    draw_multi_section_view, gtk_msv_layout, metrics_for as multi_section_view_metrics,
-};
-#[doc(hidden)]
-pub use pipeline_view::gtk_pipeline_view_layout;
 #[doc(hidden)]
 pub use progress::gtk_progress_layout;
 #[doc(hidden)]
@@ -201,10 +179,6 @@ pub use run::run_with;
 pub use run::{app_id_is_valid, display_available, run, GtkRunner, RunConfig, StepOutcome};
 #[doc(hidden)]
 pub use spinner::{draw_spinner, gtk_spinner_layout};
-#[doc(hidden)]
-pub use split::gtk_split_layout;
-#[doc(hidden)]
-pub use split_tree::gtk_split_tree_layout;
 #[doc(hidden)]
 pub use text_display::{draw_text_display, gtk_text_display_layout};
 #[doc(hidden)]

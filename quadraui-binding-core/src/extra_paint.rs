@@ -670,7 +670,7 @@ impl ExtraPaint for MessageList {
 
 impl ExtraPaint for MultiSectionView {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_multi_section_view(area, self);
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -1072,7 +1072,7 @@ impl ExtraPaint for Scrollbar {
 
 impl ExtraPaint for Canvas {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let _ = backend.draw_canvas(area, self);
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {

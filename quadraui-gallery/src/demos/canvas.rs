@@ -142,7 +142,7 @@ impl Demo for CanvasDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let rect = Self::gauge_rect(area, backend);
-        let _ = backend.draw_canvas(rect, &self.gauge_canvas(variant, rect));
+        let _ = backend.draw_primitive(rect, &self.gauge_canvas(variant, rect));
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
@@ -177,7 +177,7 @@ impl Demo for CanvasDemo {
                 ..
             } => {
                 let rect = Self::gauge_rect(area, backend);
-                let layout = backend.canvas_layout(rect, &self.gauge_canvas(variant, rect));
+                let layout = backend.layout_primitive(rect, &self.gauge_canvas(variant, rect));
                 if layout.hit_test(position.x, position.y) == CanvasHit::Inside {
                     let frac = ((position.x - layout.bounds.x) / layout.bounds.width.max(1.0))
                         .clamp(0.0, 1.0);

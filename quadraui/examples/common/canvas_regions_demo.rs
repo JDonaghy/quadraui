@@ -189,7 +189,7 @@ impl AppLogic for CanvasRegionsDemo {
         let lh = backend.line_height();
         let rect = self.canvas_rect(backend);
         *self.cached_canvas_rect.borrow_mut() = rect;
-        let _ = backend.draw_canvas(rect, &self.canvas(rect));
+        let _ = backend.draw_primitive(rect, &self.canvas(rect));
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
@@ -256,7 +256,7 @@ impl AppLogic for CanvasRegionsDemo {
                 // Same rect/`canvas()` both `render` and this handler
                 // build from, so paint and click-routing can never
                 // disagree — `canvas_app.rs`'s own doc comment.
-                let layout = backend.canvas_layout(rect, &canvas);
+                let layout = backend.layout_primitive(rect, &canvas);
                 if let CanvasHit::Region { id } =
                     layout.region_hit_test(&canvas, position.x, position.y)
                 {
@@ -271,7 +271,7 @@ impl AppLogic for CanvasRegionsDemo {
             UiEvent::MouseMoved { position, .. } => {
                 let rect = self.canvas_rect(backend);
                 let canvas = self.canvas(rect);
-                let layout = backend.canvas_layout(rect, &canvas);
+                let layout = backend.layout_primitive(rect, &canvas);
                 let shape = match layout.region_hit_test(&canvas, position.x, position.y) {
                     CanvasHit::Region { id } => self
                         .region_index(id)

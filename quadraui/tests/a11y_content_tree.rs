@@ -572,9 +572,9 @@ fn diff_view_exposes_read_only_labelled_panes() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::DiffView {
+    scenario.push(Surface::Widget {
         rect: rect(10.0),
-        view,
+        widget: Box::new(view),
     });
 
     scenario.snapshot().assert_matches(
@@ -603,9 +603,9 @@ fn diff_view_right_editable_pane_drops_readonly_token() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::DiffView {
+    scenario.push(Surface::Widget {
         rect: rect(10.0),
-        view,
+        widget: Box::new(view),
     });
 
     scenario.snapshot().assert_matches(
@@ -637,9 +637,9 @@ fn diff_view_unified_pane_stays_read_only_when_right_is_editable() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::DiffView {
+    scenario.push(Surface::Widget {
         rect: rect(10.0),
-        view,
+        widget: Box::new(view),
     });
 
     scenario.snapshot().assert_matches(
@@ -687,9 +687,9 @@ fn diff_view_unified_mode_exposes_single_pane_with_hunk_text() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::DiffView {
+    scenario.push(Surface::Widget {
         rect: rect(10.0),
-        view,
+        widget: Box::new(view),
     });
 
     scenario.snapshot().assert_matches(
@@ -726,11 +726,9 @@ fn chart_with_no_app_label_is_unlabelled() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Chart {
+    scenario.push(Surface::Widget {
         rect: rect(3.0),
-        chart,
-        hovered_point: None,
-        crosshair_x: None,
+        widget: Box::new(chart),
     });
 
     // No app-supplied label override: the chart's visual series data has
@@ -777,11 +775,9 @@ fn chart_with_legend_shown_uses_series_labels_as_name() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Chart {
+    scenario.push(Surface::Widget {
         rect: rect(3.0),
-        chart,
-        hovered_point: None,
-        crosshair_x: None,
+        widget: Box::new(chart),
     });
 
     scenario.snapshot().assert_matches(
@@ -817,11 +813,9 @@ fn chart_with_axis_label_prefers_it_over_legend() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Chart {
+    scenario.push(Surface::Widget {
         rect: rect(3.0),
-        chart,
-        hovered_point: None,
-        crosshair_x: None,
+        widget: Box::new(chart),
     });
 
     scenario.snapshot().assert_matches(
@@ -857,11 +851,9 @@ fn chart_falls_back_to_x_label_when_no_y_label() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Chart {
+    scenario.push(Surface::Widget {
         rect: rect(3.0),
-        chart,
-        hovered_point: None,
-        crosshair_x: None,
+        widget: Box::new(chart),
     });
 
     scenario.snapshot().assert_matches(
@@ -898,11 +890,9 @@ fn chart_with_legend_but_blank_series_labels_is_unlabelled() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Chart {
+    scenario.push(Surface::Widget {
         rect: rect(3.0),
-        chart,
-        hovered_point: None,
-        crosshair_x: None,
+        widget: Box::new(chart),
     });
 
     scenario.snapshot().assert_matches(
@@ -1000,9 +990,9 @@ fn canvas_with_no_app_label_is_unlabelled() {
     };
 
     let mut scenario = A11yScenario::new();
-    scenario.push(Surface::Canvas {
+    scenario.push(Surface::Widget {
         rect: rect(4.0),
-        canvas,
+        widget: Box::new(canvas),
     });
 
     scenario.snapshot().assert_matches(

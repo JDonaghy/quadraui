@@ -644,29 +644,10 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
         cells: &mut dyn quadraui::CellSurface,
         env: &quadraui::PaintEnv,
     ) {
-        let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(quadraui::primitive::CELL_BUFFER_REQUIRED);
         let ctx = LayoutCtx::new(1.0, 1.0, false);
-        let (canvas, _) = self.resolve_paint(&ctx, layout.rect, theme);
-        let area = q_rect_to_ratatui(layout.rect);
-        quadraui::tui::draw_canvas(buf, area, &canvas, theme);
+        let (canvas, canvas_layout) = self.resolve_paint(&ctx, layout.rect, env.theme());
+        canvas.paint_cells(&canvas_layout, cells, env);
     }
-}
-
-/// Converts a `quadraui::Rect` (f32, native-unit) into the
-/// `ratatui::layout::Rect` (u16 cells) [`quadraui::tui::draw_canvas`]
-/// takes — same rounding [`quadraui::tui::backend`]'s own (crate-private)
-/// conversion uses, reproduced here since that helper isn't part of this
-/// crate's public surface.
-fn q_rect_to_ratatui(r: Rect) -> ratatui::layout::Rect {
-    let x = r.x.max(0.0).round() as u16;
-    let y = r.y.max(0.0).round() as u16;
-    let w = r.width.max(0.0).round() as u16;
-    let h = r.height.max(0.0).round() as u16;
-    ratatui::layout::Rect::new(x, y, w, h)
 }
 
 /// Lets [`ScriptedPrimitive`] sit directly in [`crate::render::RenderFrame::extra`]

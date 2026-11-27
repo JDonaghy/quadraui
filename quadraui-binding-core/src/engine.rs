@@ -10434,9 +10434,10 @@ mod tests {
                 viewport.width,
                 (4.0 * line_height).min(viewport.height),
             );
-            let viewport_rows = backend
-                .data_table_layout(table_rect, &self.table)
-                .visible_rows;
+            let viewport_rows =
+                quadraui::DrawsPrimitives::layout_primitive(backend, table_rect, &self.table)
+                    .layout
+                    .visible_rows;
             let resolved =
                 resolve_data_table_cursor(self.engine.widget_state(), &self.table, viewport_rows);
 

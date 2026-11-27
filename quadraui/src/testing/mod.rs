@@ -1125,18 +1125,6 @@ impl crate::Backend for RecordingBackend {
     fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {
         self.record("draw_list");
     }
-    fn draw_data_table(
-        &mut self,
-        _r: Rect,
-        _t: &crate::DataTable,
-        _h: Option<usize>,
-    ) -> crate::DataTableLayout {
-        self.record("draw_data_table");
-        unimplemented!("RecordingBackend has no DataTable layout algorithm")
-    }
-    fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
-        unimplemented!("RecordingBackend has no DataTable layout algorithm")
-    }
     fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
         None
     }
@@ -1148,21 +1136,6 @@ impl crate::Backend for RecordingBackend {
             crate::primitives::list::ListItemMeasure::new(1.0)
         })
     }
-    /// Union note: `app_shell::MockBackend` was the only one with a real
-    /// body (`Vec::new()`); the other two `unimplemented!()`d.
-    fn draw_multi_section_view(&mut self, _r: Rect, v: &crate::MultiSectionView) {
-        self.record("draw_multi_section_view");
-        self.multi_section_view_calls.push(v.clone());
-    }
-    fn msv_layout(&self, _r: Rect, _v: &crate::MultiSectionView) -> crate::MultiSectionViewLayout {
-        unimplemented!("RecordingBackend has no MultiSectionView layout algorithm")
-    }
-    fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
-        unimplemented!("RecordingBackend has no MultiSectionView metrics")
-    }
-    fn draw_message_list(&mut self, _r: Rect, _l: &crate::primitives::message_list::MessageList) {
-        self.record("draw_message_list");
-    }
     fn draw_find_replace(
         &mut self,
         _r: Rect,
@@ -1172,39 +1145,6 @@ impl crate::Backend for RecordingBackend {
     }
     fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {
         self.record("draw_scrollbar");
-    }
-    fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-        self.record("draw_split");
-        unimplemented!("RecordingBackend has no Split layout algorithm")
-    }
-    fn split_layout(&self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-        unimplemented!("RecordingBackend has no Split layout algorithm")
-    }
-    fn draw_split_tree(&mut self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-        self.record("draw_split_tree");
-        unimplemented!("RecordingBackend has no SplitTree layout algorithm")
-    }
-    fn split_tree_layout(&self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-        unimplemented!("RecordingBackend has no SplitTree layout algorithm")
-    }
-    fn draw_canvas(&mut self, _r: Rect, _c: &crate::Canvas) -> crate::CanvasLayout {
-        self.record("draw_canvas");
-        unimplemented!("RecordingBackend has no Canvas paint algorithm")
-    }
-    fn draw_pipeline_view(
-        &mut self,
-        _r: Rect,
-        _v: &crate::PipelineView,
-    ) -> crate::PipelineViewLayout {
-        self.record("draw_pipeline_view");
-        unimplemented!("RecordingBackend has no PipelineView layout algorithm")
-    }
-    fn pipeline_view_layout(
-        &self,
-        _r: Rect,
-        _v: &crate::PipelineView,
-    ) -> crate::PipelineViewLayout {
-        unimplemented!("RecordingBackend has no PipelineView layout algorithm")
     }
     fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
         self.record("draw_progress");
@@ -1223,55 +1163,6 @@ impl crate::Backend for RecordingBackend {
     /// Union note: see `draw_spinner` above.
     fn spinner_layout(&self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
         crate::SpinnerLayout { bounds: r }
-    }
-    fn draw_chart(
-        &mut self,
-        _r: Rect,
-        _c: &crate::primitives::chart::Chart,
-        _h: Option<(usize, usize)>,
-        _x: Option<f64>,
-    ) -> crate::primitives::chart::ChartLayout {
-        self.record("draw_chart");
-        unimplemented!("RecordingBackend has no Chart layout algorithm")
-    }
-    fn chart_layout(
-        &self,
-        _r: Rect,
-        _c: &crate::primitives::chart::Chart,
-    ) -> crate::primitives::chart::ChartLayout {
-        unimplemented!("RecordingBackend has no Chart layout algorithm")
-    }
-    fn draw_diff_view(
-        &mut self,
-        _r: Rect,
-        view: &crate::primitives::diff_view::DiffView,
-    ) -> crate::primitives::diff_view::DiffViewLayout {
-        self.record("draw_diff_view");
-        crate::primitives::diff_view::DiffViewLayout {
-            visible_rows: 0,
-            total_rows: view.total_rows(),
-        }
-    }
-    fn draw_board(
-        &mut self,
-        _r: Rect,
-        _m: &crate::primitives::board::BoardModel,
-    ) -> crate::primitives::board::BoardLayout {
-        self.record("draw_board");
-        crate::primitives::board::BoardLayout {
-            bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-            columns: vec![],
-        }
-    }
-    fn board_layout(
-        &self,
-        _r: Rect,
-        _m: &crate::primitives::board::BoardModel,
-    ) -> crate::primitives::board::BoardLayout {
-        crate::primitives::board::BoardLayout {
-            bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-            columns: vec![],
-        }
     }
 }
 

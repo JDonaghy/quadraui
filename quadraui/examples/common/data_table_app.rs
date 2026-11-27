@@ -23,8 +23,8 @@ use quadraui::primitives::scrollbar::fit_thumb;
 use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableHit,
-    DataTableLayout, Key, NamedKey, Reaction, Rect, SortDirection, StatusBar, StatusBarSegment,
-    StyledText, UiEvent, WidgetId,
+    DataTableLayout, DataTablePaintState, Key, NamedKey, Reaction, Rect, SortDirection, StatusBar,
+    StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 pub struct DataTableApp {
@@ -314,7 +314,6 @@ impl DataTableApp {
 
     /// Public so driver tests can locate real hit-test targets (e.g. a
     /// column divider) instead of hardcoding per-backend coordinates.
-    #[allow(deprecated)]
     pub fn table_layout(&self, backend: &dyn Backend) -> DataTableLayout {
         let vp = backend.viewport();
         let lh = backend.line_height();
@@ -323,7 +322,7 @@ impl DataTableApp {
         let table_rect = Rect::new(0.0, 0.0, vp.width, vp.height - bar_h);
         let mut table = self.build_table();
         table.min_total_width = Some(80.0 * cw);
-        backend.data_table_layout(table_rect, &table)
+        backend.layout_primitive(table_rect, &table).layout
     }
 
     fn scrollbar_geometry(&self, backend: &dyn Backend) -> Option<(f32, f32, f32, f32, f32)> {
@@ -372,7 +371,6 @@ impl Default for DataTableApp {
 impl AppLogic for DataTableApp {
     type AreaId = ();
 
-    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let lh = backend.line_height();
@@ -381,7 +379,8 @@ impl AppLogic for DataTableApp {
         let table_rect = Rect::new(0.0, 0.0, vp.width, vp.height - bar_h);
         let mut table = self.build_table();
         table.min_total_width = Some(80.0 * cw);
-        let _layout = backend.draw_data_table(table_rect, &table, self.hovered_idx);
+        let state = DataTablePaintState::default().with_hovered_idx(self.hovered_idx);
+        let _ = backend.draw_dyn(table_rect, &table, &state);
 
         let bar_rect = Rect::new(0.0, vp.height - bar_h, vp.width, bar_h);
         let _ = backend.draw_dyn(bar_rect, &self.status_bar(), &());

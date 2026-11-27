@@ -297,21 +297,13 @@ fn draw_diff_view_paints_in_editor_font() {
             focused_pane: DiffPane::Left,
             has_focus: false,
         };
-        let _ = b.draw_diff_view(area, &view);
+        let _ = b.draw_primitive(area, &view);
     });
 }
 
-// `draw_data_table` is deliberately absent from this file: the bounds
-// `draw_data_table` records into `painted_text` (what `find_bounds`
-// reads) are derived from `DataTableLayout`'s declarative column
-// geometry, not re-measured Pango glyph extent (see
-// `GtkBackend::draw_data_table`'s own doc comment on that recording),
-// so a `find_bounds`-width probe can't tell which font shaped a cell's
-// glyphs — both runs report the same column width regardless of font
-// size. `gtk_backend_draw_data_table_uses_ui_font_not_editor_font` in
-// `src/gtk/backend.rs`'s own test module covers this primitive instead,
-// with a pixel-ink scan as the oracle — the same shape
-// `gtk_backend_draw_tree_uses_ui_font_not_editor_font` already uses.
+// `DataTable` is covered by `gtk_data_table_uses_ui_font_not_editor_font`
+// in `src/gtk/backend.rs`'s own test module, with a pixel-ink scan as the
+// oracle.
 
 #[test]
 fn draw_form_paints_in_chrome_font() {
@@ -488,6 +480,6 @@ fn draw_message_list_paints_in_chrome_font() {
             rows: vec![MessageRow::new(LABEL, Color::rgb(220, 220, 220), 0.0)],
             scroll_top: 0,
         };
-        b.draw_message_list(area, &list);
+        b.draw_primitive(area, &list);
     });
 }

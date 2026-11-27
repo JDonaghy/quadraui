@@ -114,7 +114,7 @@ impl AppLogic for CanvasApp {
         let viewport = backend.viewport();
         let lh = backend.line_height();
         let rect = self.gauge_rect(backend);
-        let _ = backend.draw_canvas(rect, &self.gauge_canvas(rect));
+        let _ = backend.draw_primitive(rect, &self.gauge_canvas(rect));
 
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
@@ -163,7 +163,7 @@ impl AppLogic for CanvasApp {
                 // twin) so paint and click-routing can never disagree,
                 // the same contract every other primitive's `*_layout`
                 // method carries.
-                let layout = backend.canvas_layout(rect, &self.gauge_canvas(rect));
+                let layout = backend.layout_primitive(rect, &self.gauge_canvas(rect));
                 if layout.hit_test(position.x, position.y) == CanvasHit::Inside {
                     let frac = ((position.x - layout.bounds.x) / layout.bounds.width.max(1.0))
                         .clamp(0.0, 1.0);

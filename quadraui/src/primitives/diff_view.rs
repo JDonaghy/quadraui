@@ -667,6 +667,10 @@ impl crate::primitive::Primitive for DiffView {
     type Layout = DiffViewPrimitiveLayout;
     type Event = DiffViewEvent;
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::DiffView(self.clone())
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }

@@ -214,13 +214,18 @@ impl Demo for ChartDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let chart_rect = Self::chart_rect(variant, area, backend);
-        let hp = if variant == 0 {
+        let hovered_point = if variant == 0 {
             None
         } else {
             self.hovered_point
         };
-        let cx = if variant == 0 { None } else { self.crosshair_x };
-        let _ = backend.draw_chart(chart_rect, &self.chart(variant), hp, cx);
+        let crosshair_x = if variant == 0 { None } else { self.crosshair_x };
+        let chart = Chart {
+            hovered_point,
+            crosshair_x,
+            ..self.chart(variant)
+        };
+        let _ = backend.draw_primitive(chart_rect, &chart);
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
@@ -250,7 +255,7 @@ impl Demo for ChartDemo {
             UiEvent::MouseMoved { position, .. } if variant != 0 => {
                 let chart_rect = Self::chart_rect(variant, area, backend);
                 let chart = self.chart(variant);
-                let layout = backend.chart_layout(chart_rect, &chart);
+                let layout = backend.layout_primitive(chart_rect, &chart).chart;
                 let snap = backend.line_height() * 2.0;
                 self.hovered_point = layout.nearest_point(position.x, position.y, snap);
                 let data_len = chart.max_data_len();

@@ -31,13 +31,8 @@
 //! `tests::NON_TRAIT_DRAW_FNS`.
 
 use quadraui::{
-    compute_hunks, AppLogic, Backend, BadgeStatus, BoardCard, BoardColumn, BoardModel, Canvas,
-    CardBadge, Chart, ChartKind, Color, Column, ColumnAlign, ColumnWidth, DataRow, DataTable,
-    Decoration, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, FindReplacePanel, ListItem,
-    ListView, MessageList, MessageRow, MsvAxis, MultiSectionView, PipelineStage, PipelineView,
-    ProgressBar, Reaction, Rect, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody,
-    SectionHeader, SectionSize, Series, Spinner, Split, SplitDirection, SplitTree, StageStatus,
-    StyledText, UiEvent, WidgetId,
+    AppLogic, Backend, Decoration, FindReplacePanel, ListItem, ListView, ProgressBar, Reaction,
+    Rect, ScrollAxis, Scrollbar, Spinner, StyledText, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -73,18 +68,6 @@ pub struct Case {
 /// ever stops being true in either direction. Adding a primitive to the
 /// trait is therefore one more entry here, not an optional one.
 pub const CASES: &[Case] = &[
-    Case {
-        method: "draw_message_list",
-        needle: Some("c0msg"),
-        paint: |b, area| {
-            let list = MessageList {
-                id: id("message-list"),
-                rows: vec![MessageRow::new("c0msg", Color::rgb(220, 220, 220), 0.0)],
-                scroll_top: 0,
-            };
-            b.draw_message_list(area, &list);
-        },
-    },
     Case {
         method: "draw_list",
         needle: Some("c0list"),
@@ -141,47 +124,6 @@ pub const CASES: &[Case] = &[
                 &quadraui::ListPaintState::default().with_hovered_idx(Some(0)),
                 false,
             );
-        },
-    },
-    Case {
-        method: "draw_pipeline_view",
-        needle: Some("c0pipe"),
-        paint: |b, area| {
-            let view = PipelineView {
-                id: id("pipeline"),
-                stages: vec![PipelineStage {
-                    label: "c0pipe".to_string(),
-                    status: StageStatus::Active,
-                    action: None,
-                }],
-                focused_stage: None,
-            };
-            let _ = b.draw_pipeline_view(area, &view);
-        },
-    },
-    Case {
-        method: "draw_diff_view",
-        needle: Some("c0diff"),
-        paint: |b, area| {
-            // The needle lives in the row content, not a pane label, so a
-            // backend that paints the chrome and drops the diff body still fails.
-            let left = "c0diff-old".to_string();
-            let right = "c0diff-new".to_string();
-            let hunks = compute_hunks(&left, &right);
-            let view = DiffView {
-                id: id("diff-view"),
-                left,
-                right,
-                left_label: None,
-                right_label: None,
-                hunks,
-                mode: DiffMode::Unified,
-                editability: DiffEditability::ReadOnly,
-                scroll_offset: 0,
-                focused_pane: DiffPane::Left,
-                has_focus: false,
-            };
-            let _ = b.draw_diff_view(area, &view);
         },
     },
     Case {
@@ -244,114 +186,6 @@ pub const CASES: &[Case] = &[
             let _ = area;
         },
     },
-    // ── The rest of the trait surface ─────────────────────────────────
-    //
-    // The 15 cases above were the original sample; everything below was
-    // added to close that gap. `tests::cases_cover_every_draw_method_on_
-    // the_trait` (bottom of this file) keeps the two in sync from here on.
-    Case {
-        method: "draw_data_table",
-        needle: Some("c0dtbl"),
-        paint: |b, area| {
-            let table = DataTable {
-                id: id("data-table"),
-                columns: vec![Column {
-                    title: "c0dtbl".to_string(),
-                    width: ColumnWidth::Flex(1.0),
-                    align: ColumnAlign::Left,
-                }],
-                rows: vec![DataRow {
-                    cells: vec![StyledText::plain("row")],
-                    decoration: Decoration::Normal,
-                }],
-                selected_idx: None,
-                scroll_offset: 0,
-                sort: None,
-                has_focus: false,
-                show_scrollbar: false,
-                min_total_width: None,
-                h_scroll: 0.0,
-                column_overrides: vec![],
-                footer: None,
-                bordered: false,
-                striped: false,
-                glyphs: None,
-            };
-            #[allow(deprecated)]
-            let _ = b.draw_data_table(area, &table, None);
-        },
-    },
-    // `draw_data_table_with_state`'s trait default forwards to
-    // `draw_data_table`, ignoring the hovered index, on any backend that
-    // doesn't override it (currently Win-GUI); gtk/macos/tui each
-    // override it to tint the hovered row. This row proves the method
-    // reaches a rasteriser and still paints observable content on every
-    // backend, default or overridden.
-    Case {
-        method: "draw_data_table_with_state",
-        needle: Some("c0dtblhv"),
-        paint: |b, area| {
-            let table = DataTable {
-                id: id("data-table-hover"),
-                columns: vec![Column {
-                    title: "c0dtblhv".to_string(),
-                    width: ColumnWidth::Flex(1.0),
-                    align: ColumnAlign::Left,
-                }],
-                rows: vec![DataRow {
-                    cells: vec![StyledText::plain("row")],
-                    decoration: Decoration::Normal,
-                }],
-                selected_idx: None,
-                scroll_offset: 0,
-                sort: None,
-                has_focus: false,
-                show_scrollbar: false,
-                min_total_width: None,
-                h_scroll: 0.0,
-                column_overrides: vec![],
-                footer: None,
-                bordered: false,
-                striped: false,
-                glyphs: None,
-            };
-            let _ = b.draw_data_table_with_state(
-                area,
-                &table,
-                &quadraui::DataTablePaintState::default().with_hovered_idx(Some(0)),
-            );
-        },
-    },
-    Case {
-        method: "draw_multi_section_view",
-        needle: Some("c0msv"),
-        paint: |b, area| {
-            let view = MultiSectionView {
-                id: id("msv"),
-                sections: vec![Section {
-                    id: "c0msv-section".to_string(),
-                    header: SectionHeader {
-                        title: StyledText::plain("c0msv"),
-                        ..Default::default()
-                    },
-                    body: SectionBody::Text(vec![StyledText::plain("body")]),
-                    aux: None,
-                    size: SectionSize::EqualShare,
-                    collapsed: false,
-                    min_size: None,
-                    max_size: None,
-                }],
-                active_section: None,
-                axis: MsvAxis::Vertical,
-                allow_resize: false,
-                allow_collapse: true,
-                scroll_mode: ScrollMode::PerSection,
-                has_focus: false,
-                panel_scroll: 0.0,
-            };
-            b.draw_multi_section_view(area, &view);
-        },
-    },
     Case {
         method: "draw_find_replace",
         needle: Some("c0find"),
@@ -384,140 +218,6 @@ pub const CASES: &[Case] = &[
                 hit_regions,
             };
             b.draw_find_replace(area, &panel);
-        },
-    },
-    // ── More chrome-only primitives ────────────────────────────────────
-    Case {
-        method: "draw_split",
-        needle: None,
-        paint: |b, area| {
-            let split = Split {
-                id: id("split"),
-                direction: SplitDirection::Horizontal,
-                ratio: 0.5,
-                first_min: 0.0,
-                second_min: 0.0,
-            };
-            let _ = b.draw_split(area, &split);
-        },
-    },
-    Case {
-        method: "draw_split_tree",
-        needle: None,
-        paint: |b, area| {
-            let tree = SplitTree::split(
-                SplitDirection::Horizontal,
-                0.5,
-                SplitTree::leaf(id("split-tree-a")),
-                SplitTree::leaf(id("split-tree-b")),
-            );
-            let _ = b.draw_split_tree(area, &tree);
-        },
-    },
-    Case {
-        method: "draw_canvas",
-        needle: Some("c0cnvs"),
-        paint: |b, area| {
-            let lh = b.line_height();
-            let canvas = Canvas {
-                id: id("canvas"),
-                ops: vec![DrawOp::TextRun {
-                    rect: Rect::new(0.0, 0.0, area.width, lh),
-                    text: "c0cnvs".to_string(),
-                    color: Color::rgb(255, 255, 255),
-                }],
-                regions: vec![],
-                focusable: false,
-            };
-            let _ = b.draw_canvas(area, &canvas);
-        },
-    },
-    Case {
-        method: "draw_chart",
-        needle: Some("c0chrt"),
-        paint: |b, area| {
-            let chart = Chart {
-                id: id("chart"),
-                kind: ChartKind::Line,
-                series: vec![Series {
-                    label: "c0chrt".to_string(),
-                    data: vec![1.0, 2.0, 3.0, 2.0, 4.0],
-                    color: None,
-                    fill: false,
-                }],
-                x_label: None,
-                y_label: None,
-                y_range: None,
-                x_range: None,
-                show_legend: true,
-                y_ticks: None,
-                x_ticks: None,
-                show_grid: false,
-                hovered_point: None,
-                crosshair_x: None,
-            };
-            let _ = b.draw_chart(area, &chart, None, None);
-        },
-    },
-    Case {
-        method: "draw_board",
-        needle: Some("c0board"),
-        paint: |b, area| {
-            let model = BoardModel {
-                id: id("board"),
-                columns: vec![BoardColumn {
-                    id: id("board-column"),
-                    title: "c0board".to_string(),
-                    cards: vec![BoardCard {
-                        id: id("card-1"),
-                        title: "card".to_string(),
-                        labels: vec![],
-                        badges: vec![CardBadge {
-                            label: "P".to_string(),
-                            status: BadgeStatus::Passed,
-                        }],
-                        hint: None,
-                    }],
-                    scroll_offset: 0,
-                }],
-                selected_card_id: None,
-                col_scroll_offset: 0,
-            };
-            let _ = b.draw_board(area, &model);
-        },
-    },
-    Case {
-        // Glyph-override counterpart to `draw_data_table`. `None`
-        // overrides exercises the default-delegating path every
-        // `Backend` implementor gets for free.
-        method: "draw_data_table_with_glyphs",
-        needle: Some("c0dtblg"),
-        paint: |b, area| {
-            let table = DataTable {
-                id: id("data-table-glyphs"),
-                columns: vec![Column {
-                    title: "c0dtblg".to_string(),
-                    width: ColumnWidth::Flex(1.0),
-                    align: ColumnAlign::Left,
-                }],
-                rows: vec![DataRow {
-                    cells: vec![StyledText::plain("row")],
-                    decoration: Decoration::Normal,
-                }],
-                selected_idx: None,
-                scroll_offset: 0,
-                sort: None,
-                has_focus: false,
-                show_scrollbar: false,
-                min_total_width: None,
-                h_scroll: 0.0,
-                column_overrides: vec![],
-                footer: None,
-                bordered: false,
-                striped: false,
-                glyphs: None,
-            };
-            let _ = b.draw_data_table_with_glyphs(area, &table, None, None);
         },
     },
 ];
@@ -689,7 +389,7 @@ mod tests {
     fn cases_cover_every_draw_method_on_the_trait() {
         let trait_methods: Vec<&str> = draw_fn_names(backend_trait_body());
         assert!(
-            trait_methods.len() >= 10,
+            trait_methods.len() >= 5,
             "sanity check failed: expected many `fn draw_*` trait methods in backend.rs, \
              found only {} — the line-based parser above likely broke against a reformatted \
              file rather than the trait actually shrinking: {trait_methods:?}",

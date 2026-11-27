@@ -456,6 +456,10 @@ impl crate::primitive::Primitive for PipelineView {
     type Layout = PipelineViewPrimitiveLayout;
     type Event = PipelineEvent;
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::PipelineView(self.clone())
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }

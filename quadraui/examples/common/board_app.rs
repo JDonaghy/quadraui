@@ -106,7 +106,7 @@ impl AppLogic for BoardApp {
 
         // Board fills the rest of the screen.
         let board_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - status_h);
-        let layout = backend.draw_board(board_rect, &self.model);
+        let layout = backend.draw_primitive(board_rect, &self.model);
 
         // Cache the layout so `handle` can hit-test mouse events without
         // calling `draw_board` outside a frame scope.

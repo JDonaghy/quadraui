@@ -505,58 +505,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          Win-GUI window keeps its native non-client titlebar, so no Win-drawn control overlaps \
          the app's title band; override this and delete this line when CSD lands",
     ),
-    // `diff_view_layout` ships with a trait default that is a pure function of
-    // `Backend::line_height()` and `DiffView::mode` — the exact same values every
-    // backend's own `draw_diff_view` already resolves them to. There is no
-    // backend-specific measurement it could add, unlike `board_layout` /
-    // `list_layout`, which route through backend-native constants and have no default at
-    // all. All four backends take the default as the honest answer.
-    //
-    // `diff_view_layout`'s default still holds after the row/pane geometry lift: its
-    // default body keeps its own copy of the pane math rather than delegating to
-    // `DiffView::layout`, differing only in one degenerate corner.
-    (
-        "tui",
-        "diff_view_layout",
-        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "gtk",
-        "diff_view_layout",
-        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "macos",
-        "diff_view_layout",
-        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    (
-        "win",
-        "diff_view_layout",
-        "pure fn of line_height() + DiffView::mode — see the block comment above (#506)",
-    ),
-    // `canvas_layout` is `CanvasLayout { bounds: rect }` — a pure function of `rect`
-    // alone, with no backend-specific metric. All four backends take the default.
-    (
-        "tui",
-        "canvas_layout",
-        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
-    ),
-    (
-        "gtk",
-        "canvas_layout",
-        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
-    ),
-    (
-        "macos",
-        "canvas_layout",
-        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
-    ),
-    (
-        "win",
-        "canvas_layout",
-        "pure identity fn of rect — Canvas::layout has no backend-specific metric (#1102)",
-    ),
     // `scrollbar_reserve` is the width of *toolkit* scrollbar chrome that a backend paints
     // over the content edge. GTK is the only backend that hosts its content inside
     // something with such chrome (a `ScrolledWindow`). The other three draw into a surface
@@ -1387,7 +1335,10 @@ mod tests {
             fn_name("fn cancel_text_selection_drag_impl(&mut self) {"),
             Some("cancel_text_selection_drag_impl")
         );
-        assert_eq!(fn_name("fn draw_chart<T>(&mut self) {"), Some("draw_chart"));
+        assert_eq!(
+            fn_name("fn draw_widget<T>(&mut self) {"),
+            Some("draw_widget")
+        );
         assert_eq!(fn_name("let x = 1;"), None);
     }
 }

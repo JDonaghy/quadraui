@@ -343,7 +343,8 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
         if let Some(rect) = band(4.0) {
             let state =
                 quadraui::DataTablePaintState::default().with_scroll_px(refs.data_table_scroll_px);
-            let layout = backend.draw_data_table_with_state(rect, data_table, &state);
+            let _ = backend.draw_dyn(rect, data_table, &state);
+            let layout = backend.layout_primitive(rect, data_table).layout;
             let viewport_rows = layout.visible_rows;
             hits.push(PaintedHit::DataTable {
                 id: data_table.id,
@@ -646,11 +647,11 @@ pub fn paint_layout_windowed(
             };
             // `Split::layout`'s own min-size clamping evaluates against
             // whatever rect it's handed, so the gap is carved out of
-            // `area` BEFORE calling `draw_split` -- `first_min`/
+            // `area` BEFORE laying the split out -- `first_min`/
             // `second_min` apply to the pane after the gap is already
             // subtracted, not before.
             let draw_area = shrink_main_axis(area, horizontal, gap);
-            let mut layout = backend.draw_split(draw_area, &native_split);
+            let mut layout = backend.draw_primitive(draw_area, &native_split);
             apply_split_gap(&mut layout, horizontal, gap);
             // Pushed before recursing so the divider/pane hit only wins
             // over a descendant primitive's own, more specific hit when
@@ -706,7 +707,7 @@ pub fn paint_layout_windowed(
             );
         }
         LayoutNode::SplitTree(split_tree) => {
-            let layout = backend.draw_split_tree(area, &split_tree.tree);
+            let layout = backend.draw_primitive(area, &split_tree.tree);
             hits.push(PaintedHit::SplitTree {
                 id: WidgetId::new(split_tree.id.as_str()),
                 layout: layout.clone(),
@@ -2063,14 +2064,12 @@ pub fn list_viewport_rows(backend: &mut dyn Backend, rect: Rect, list: &ListView
 /// mirroring [`tree_viewport_rows`]/[`list_viewport_rows`] for the
 /// identical reason: [`quadraui::DataTableLayout::visible_rows`] at
 /// `table`'s ACTUAL offset can be shorter near the end of a long table.
-/// Paints into no backend at all — only queries `Backend::data_table_layout`
-/// against a scratch clone — so computing this never disturbs the real
-/// paint.
-#[allow(deprecated)]
+/// Paints into no backend at all — only lays out a scratch clone — so
+/// computing this never disturbs the real paint.
 pub fn data_table_viewport_rows(backend: &mut dyn Backend, rect: Rect, table: &DataTable) -> usize {
     let mut shadow = table.clone();
     shadow.scroll_offset = 0;
-    backend.data_table_layout(rect, &shadow).visible_rows
+    backend.layout_primitive(rect, &shadow).layout.visible_rows
 }
 
 /// A `{start, total}` virtualised window lifted out of a `"list"`/`"tree"`/
@@ -2903,7 +2902,8 @@ pub fn paint_leaf_windowed(
             // `scroll_offset`/`total_rows` arguments, which a caller reads
             // off this hit's absolute fields — so unlike the `List`/`Tree`/
             // `TextDisplay` arms there is no layout index to shift back.
-            let layout = backend.draw_data_table_with_state(area, painted_table, &state);
+            let _ = backend.draw_dyn(area, painted_table, &state);
+            let layout = backend.layout_primitive(area, painted_table).layout;
             let viewport_rows = layout.visible_rows;
             hits.push(PaintedHit::DataTable {
                 id,

@@ -470,8 +470,7 @@ impl Demo for SidebarDemo {
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         match variant {
             0 => {
-                self.reveal_sidebar
-                    .set_backend_info(backend.line_height(), backend.msv_metrics());
+                self.reveal_sidebar.set_backend_info(backend.line_height());
                 let rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
                 match self.reveal_sidebar.handle(event, backend, rect) {
                     SidebarEvent::RowSelected { section, path } => {

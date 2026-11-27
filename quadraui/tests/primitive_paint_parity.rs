@@ -281,55 +281,42 @@ fn tree_paint_cells_follows_the_paint_state_scroll_px() {
     );
 }
 
-/// `DataTable`: [`Primitive::layout`] + [`Primitive::paint_cells`] match
-/// [`quadraui::tui::draw_data_table`] exactly at `hovered_idx: None`
-/// (what `DataTable`'s `Primitive::paint_cells` itself passes), and
-/// diverge from [`quadraui::tui::draw_data_table_with_state`] once a
-/// non-selected row is hovered — a state `paint_cells` has no parameter
-/// to carry.
+/// `DataTable`: [`Primitive::paint_cells`] follows the paint state's
+/// hovered row — hovering a non-selected row changes the painted cells.
 #[test]
-fn data_table_paint_cells_matches_draw_data_table_then_diverges_under_hover() {
+fn data_table_paint_cells_follows_the_paint_state_hover() {
     let table = sample_table();
     let theme = theme_with_distinct_hover_bg();
     let ctx = ctx();
+    let style = quadraui::Style::default();
 
     let layout = Primitive::layout(&table, &ctx, area());
-    let mut via_primitive = Buffer::empty(cell_area());
+    let mut at_default = Buffer::empty(cell_area());
     Primitive::paint_cells(
         &table,
         &layout,
-        &mut quadraui::tui::BufferCellSurface::new(&mut via_primitive),
-        &quadraui::PaintEnv::new(&theme, &quadraui::Style::default()),
+        &mut quadraui::tui::BufferCellSurface::new(&mut at_default),
+        &quadraui::PaintEnv::new(&theme, &style),
     );
-
-    let mut direct_default = Buffer::empty(cell_area());
-    quadraui::tui::draw_data_table(&mut direct_default, cell_area(), &table, &theme, None);
-
     assert_ne!(
-        via_primitive,
+        at_default,
         Buffer::empty(cell_area()),
         "the table must paint something for this comparison to be meaningful"
-    );
-    assert_eq!(
-        via_primitive, direct_default,
-        "Primitive::paint_cells must match quadraui::tui::draw_data_table at hovered_idx: None"
     );
 
     // Row 1, not row 2 (`table.selected_idx`) — hover tinting is
     // suppressed on the selected row, so hovering a different row is
     // what actually exercises it.
-    let state = DataTablePaintState::default().with_hovered_idx(Some(1));
-    let mut direct_hovered = Buffer::empty(cell_area());
-    quadraui::tui::draw_data_table_with_state(
-        &mut direct_hovered,
-        cell_area(),
+    let hovered_state = DataTablePaintState::default().with_hovered_idx(Some(1));
+    let mut hovered = Buffer::empty(cell_area());
+    Primitive::paint_cells(
         &table,
-        &theme,
-        &state,
+        &layout,
+        &mut quadraui::tui::BufferCellSurface::new(&mut hovered),
+        &quadraui::PaintEnv::new(&theme, &style).with_state(&hovered_state),
     );
     assert_ne!(
-        via_primitive, direct_hovered,
-        "Primitive::paint_cells has no hovered_idx parameter, so it can never match \
-         draw_data_table_with_state once a non-selected row is hovered"
+        at_default, hovered,
+        "a hovered non-selected row must tint the painted cells"
     );
 }

@@ -14,9 +14,9 @@
 //!    feature required). Column geometry doesn't depend on row count, so
 //!    this stage is a regression sentinel more than a scaling stress
 //!    test: it should stay flat regardless of `ROWS`.
-//! 3. **`paint`** — the TUI (`quadraui::tui::draw_data_table`) and GTK
-//!    (`Backend::draw_data_table` on a real `GtkBackend`, headless
-//!    in-memory Cairo) rasterisers. Both only paint `visible_rows`
+//! 3. **`paint`** — the TUI (`Primitive::paint_cells` over a ratatui
+//!    buffer) and GTK (`DrawsPrimitives::draw_dyn` on a real `GtkBackend`,
+//!    headless in-memory Cairo) paints. Both only paint `visible_rows`
 //!    (bounded by the viewport), so this proves the paint path stays
 //!    viewport-bound on a 100k-row table rather than accidentally
 //!    becoming O(rows).
@@ -99,25 +99,28 @@ criterion_group!(core_benches, bench_frame_build, bench_layout);
 #[cfg(feature = "tui")]
 mod tui_bench {
     use super::*;
-    use quadraui::tui::draw_data_table;
-    use quadraui::Theme;
+    use quadraui::tui::BufferCellSurface;
+    use quadraui::{DataTablePaintState, LayoutCtx, PaintEnv, Primitive, Style, Theme};
     use ratatui::buffer::Buffer;
     use ratatui::layout::Rect;
 
     pub fn bench_paint(c: &mut Criterion) {
         let table = build_table(ROWS, COLS);
         let theme = Theme::default();
+        let style = Style::default();
+        let state = DataTablePaintState::default().with_hovered_idx(Some(ROWS / 2));
         let area = Rect::new(0, 0, 120, 50);
+        let rect = quadraui::Rect::new(0.0, 0.0, 120.0, 50.0);
         c.bench_function("data_table_paint_tui_100k_rows", |b| {
             b.iter(|| {
                 let mut buf = Buffer::empty(area);
-                black_box(draw_data_table(
-                    &mut buf,
-                    area,
-                    &table,
-                    &theme,
-                    Some(ROWS / 2),
-                ));
+                let layout = Primitive::layout(&table, &LayoutCtx::new(1.0, 1.0, false), rect);
+                table.paint_cells(
+                    &layout,
+                    &mut BufferCellSurface::new(&mut buf),
+                    &PaintEnv::new(&theme, &style).with_state(&state),
+                );
+                black_box(layout);
             })
         });
     }
@@ -132,7 +135,7 @@ mod gtk_bench {
     use gtk4::pango;
     use pangocairo::cairo::{Context, Format, ImageSurface};
     use quadraui::gtk::GtkBackend;
-    use quadraui::{Backend, Rect};
+    use quadraui::{DataTablePaintState, DrawsPrimitives, Rect};
 
     pub fn bench_paint(c: &mut Criterion) {
         let table = build_table(ROWS, COLS);
@@ -146,13 +149,9 @@ mod gtk_bench {
         let rect = Rect::new(0.0, 0.0, 1200.0, 800.0);
         c.bench_function("data_table_paint_gtk_100k_rows", |b| {
             b.iter(|| {
+                let state = DataTablePaintState::default().with_hovered_idx(Some(ROWS / 2));
                 backend.enter_frame_scope(&cr, &layout, |b| {
-                    // `Backend::draw_data_table` is deprecated in favour of
-                    // `DrawsPrimitives::draw_primitive`, but still the real
-                    // path every pre-migration host calls each frame —
-                    // see this bench module's own doc.
-                    #[allow(deprecated)]
-                    black_box(b.draw_data_table(rect, &table, Some(ROWS / 2)));
+                    black_box(b.draw_dyn(rect, &table, &state));
                 });
             })
         });

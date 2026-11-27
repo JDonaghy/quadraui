@@ -6,9 +6,11 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{TreeTable, TreeTableLayout, TreeTableNode};
+use crate::primitives::data_table::paint_cells::{
+    draw_cell, draw_data_table_body, draw_row, resolve_row_colors, RowPaintCtx,
+};
 use crate::primitives::data_table::DataTablePaintState;
 use crate::theme::Theme;
-use crate::tui::{draw_cell, draw_data_table_body, draw_row, resolve_row_colors, RowPaintCtx};
 use crate::types::TreeStyle;
 
 /// Resolve the layout [`paint_tree_table_cells`] paints `table` at, without

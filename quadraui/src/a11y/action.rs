@@ -978,15 +978,15 @@ mod tests {
     #[test]
     fn increment_is_not_advertised_on_a_splitter_ratio() {
         let snapshot = A11yScenario::new()
-            .with_surface(Surface::Split {
+            .with_surface(Surface::Widget {
                 rect: Rect::new(0.0, 0.0, 20.0, 10.0),
-                split: Split {
+                widget: Box::new(Split {
                     id: WidgetId::new("main-split"),
                     direction: SplitDirection::Horizontal,
                     ratio: 0.5,
                     first_min: 1.0,
                     second_min: 1.0,
-                },
+                }),
             })
             .snapshot();
         let node = snapshot.find("Split").expect("split node").id;

@@ -1,4 +1,4 @@
-//! TUI rasteriser for [`crate::DataTable`].
+//! Cell-grid rasteriser for [`crate::DataTable`].
 //!
 //! Renders column headers with sort indicators, then body rows with
 //! per-cell text aligned within resolved column bounds. Selected row
@@ -13,22 +13,22 @@ use ratatui::layout::Rect;
 use ratatui::prelude::Position;
 use ratatui::style::{Color as RatatuiColor, Modifier, Style};
 
-use super::{align_offset, ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::data_table::{
     ColumnAlign, ColumnMeasure, DataRow, DataTable, DataTableGlyphs, DataTableLayout,
     DataTablePaintState, ResolvedColumn, SortDirection,
 };
 use crate::primitives::row_stack::stack_rows_from;
 use crate::theme::Theme;
+use crate::tui::{align_offset, ratatui_color, set_cell, set_cell_wide};
 
-/// Resolve the layout `draw_data_table` paints `table` at, without
-/// touching a buffer.
+/// Resolve the cell-grid layout [`draw_data_table_inner`] paints `table`
+/// at, without touching a buffer.
 ///
-/// This is the **single** definition of TUI DataTable geometry: both
-/// [`draw_data_table`] and `Backend::data_table_layout` go through it,
-/// so the layout a cache-free, layout-on-demand hit-test runs against is
-/// bit-for-bit the layout that was painted.
-pub fn data_table_layout(area: Rect, table: &DataTable) -> DataTableLayout {
+/// This is the **single** definition of TUI DataTable geometry: both the
+/// paint and [`DataTable`]'s `Primitive::layout` on a cell grid go
+/// through it, so the layout a hit-test runs against is bit-for-bit the
+/// layout that was painted.
+pub(crate) fn cell_data_table_layout(area: Rect, table: &DataTable) -> DataTableLayout {
     let mut layout = table.layout(
         area.width as f32,
         area.height as f32,
@@ -51,17 +51,18 @@ pub fn data_table_layout(area: Rect, table: &DataTable) -> DataTableLayout {
 /// hover state so the rasteriser can tint the hovered row. Returns
 /// the layout used for painting so callers can hit-test at the same
 /// coordinates.
-pub fn draw_data_table(
+#[cfg(test)]
+fn paint_hovered(
     buf: &mut Buffer,
     area: Rect,
     table: &DataTable,
     theme: &Theme,
     hovered_idx: Option<usize>,
 ) -> DataTableLayout {
-    draw_data_table_with_glyphs(buf, area, table, theme, hovered_idx, None, false)
+    paint_with_glyphs(buf, area, table, theme, hovered_idx, None, false)
 }
 
-/// [`draw_data_table`] with an optional app-supplied [`DataTableGlyphs`]
+/// [`paint_hovered`] with an optional app-supplied [`DataTableGlyphs`]
 /// override for the column-header sort-direction indicators;
 /// `nerd_fonts_enabled` picks each override [`Icon`][crate::Icon]'s
 /// `glyph` vs. `fallback` form (see
@@ -70,7 +71,8 @@ pub fn draw_data_table(
 /// `glyphs: None`, and any direction the override leaves `None`, keeps
 /// TUI's own plain Unicode `▲`/`▼` — not the GUI backends' codicon
 /// defaults (`crate::codicon::SORT_ASCENDING`/`SORT_DESCENDING`).
-pub fn draw_data_table_with_glyphs(
+#[cfg(test)]
+fn paint_with_glyphs(
     buf: &mut Buffer,
     area: Rect,
     table: &DataTable,
@@ -83,7 +85,7 @@ pub fn draw_data_table_with_glyphs(
     draw_data_table_inner(buf, area, table, theme, &state, glyphs, nerd_fonts_enabled)
 }
 
-/// [`draw_data_table`], plus a pixel-precise scroll position via
+/// [`paint_hovered`], plus a pixel-precise scroll position via
 /// [`DataTablePaintState::scroll_px`] instead of only
 /// [`DataTable::scroll_offset`]'s whole-row value.
 ///
@@ -93,7 +95,8 @@ pub fn draw_data_table_with_glyphs(
 /// so TUI never paints a partial row. `state.scroll_px: None` (the
 /// default a `state` built with [`DataTablePaintState::default`]
 /// carries) resolves to exactly the pre-existing whole-row behaviour.
-pub fn draw_data_table_with_state(
+#[cfg(test)]
+fn paint_with_state(
     buf: &mut Buffer,
     area: Rect,
     table: &DataTable,
@@ -390,7 +393,7 @@ pub(crate) fn draw_data_table_inner(
     glyphs: Option<&DataTableGlyphs>,
     nerd_fonts_enabled: bool,
 ) -> DataTableLayout {
-    let layout = data_table_layout(area, table);
+    let layout = cell_data_table_layout(area, table);
     draw_data_table_body(
         buf,
         area,
@@ -480,7 +483,7 @@ pub(crate) fn draw_data_table_body(
             1.0,
             layout.visible_rows as f32,
         );
-        super::draw_scrollbar(buf, &sb, theme, theme.background);
+        crate::tui::draw_scrollbar(buf, &sb, theme, theme.background);
     }
 
     // ── Horizontal scrollbar ─────────────────────────────────────────
@@ -497,7 +500,7 @@ pub(crate) fn draw_data_table_body(
             visible_w,
             1.0,
         );
-        super::draw_scrollbar(buf, &hsb, theme, theme.background);
+        crate::tui::draw_scrollbar(buf, &hsb, theme, theme.background);
     }
 
     // ── Footer (pinned summary row) ────────────────────────────────────
@@ -655,7 +658,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         // Header row at y=0 should contain "Name" somewhere
         let header: String = (0..40)
@@ -681,8 +684,8 @@ mod tests {
 
     /// An app-supplied [`DataTableGlyphs`] override replaces the
     /// sort-direction indicator appended to the sorted column's header;
-    /// with no override, [`draw_data_table_with_glyphs`] (what
-    /// [`draw_data_table`] always calls) appends the same `▲`/`▼` as
+    /// with no override, [`paint_with_glyphs`] (what
+    /// [`paint_hovered`] always calls) appends the same `▲`/`▼` as
     /// today's default.
     #[test]
     fn data_table_glyphs_override_swaps_sort_arrow_default_keeps_arrow() {
@@ -691,7 +694,7 @@ mod tests {
         // Default (no override): ascending sort shows '▲'.
         let table = make_table();
         let mut buf = Buffer::empty(area);
-        draw_data_table_with_glyphs(&mut buf, area, &table, &Theme::default(), None, None, false);
+        paint_with_glyphs(&mut buf, area, &table, &Theme::default(), None, None, false);
         let header: String = (0..40)
             .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
             .collect();
@@ -704,7 +707,7 @@ mod tests {
         // no longer appears in the header.
         let glyphs = DataTableGlyphs::new().with_sort_ascending_glyph("^");
         let mut buf = Buffer::empty(area);
-        draw_data_table_with_glyphs(
+        paint_with_glyphs(
             &mut buf,
             area,
             &table,
@@ -729,7 +732,7 @@ mod tests {
         let mut desc_table = make_table();
         desc_table.sort = Some((0, SortDirection::Descending));
         let mut buf = Buffer::empty(area);
-        draw_data_table_with_glyphs(
+        paint_with_glyphs(
             &mut buf,
             area,
             &desc_table,
@@ -750,7 +753,7 @@ mod tests {
         // no longer appears in the header.
         let desc_glyphs = DataTableGlyphs::new().with_sort_descending_glyph("v");
         let mut buf = Buffer::empty(area);
-        draw_data_table_with_glyphs(
+        paint_with_glyphs(
             &mut buf,
             area,
             &desc_table,
@@ -777,7 +780,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         // Row 0 at y=1 should contain "pod-abc"
         let row0: String = (0..40)
@@ -799,7 +802,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         let find_seps =
             |y: u16| -> Vec<u16> { (0..40).filter(|&x| buf[(x, y)].symbol() == "│").collect() };
@@ -834,7 +837,7 @@ mod tests {
         table.rows[0].cells[0] = StyledText::plain("x".repeat(22));
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         let sep_x = (layout.columns[0].x.round() as i32 + layout.columns[0].width.round() as i32
             - 1) as u16;
@@ -890,7 +893,7 @@ mod tests {
         };
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         let row: Vec<char> = (0..30)
             .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
@@ -960,7 +963,7 @@ mod tests {
         };
         let area = Rect::new(0, 0, 10, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         let row: Vec<char> = (0..10)
             .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
@@ -1016,7 +1019,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         // Find "Status" in the header row
         let header: String = (0..40)
@@ -1042,7 +1045,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(7, 13, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         let header: String = (area.x..area.x + 40)
             .map(|x| buf[(x, area.y)].symbol().chars().next().unwrap_or(' '))
@@ -1057,7 +1060,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         // Find "pod-xyz" in row 1 (y=2)
         let row1: String = (0..40)
@@ -1075,7 +1078,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(7, 13, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         // Row 1 paints on the *absolute* screen row `area.y + 2`.
         let row1: String = (area.x..area.x + 40)
@@ -1097,7 +1100,7 @@ mod tests {
         let cols_at = |origin_x: u16, origin_y: u16| {
             let area = Rect::new(origin_x, origin_y, 40, 10);
             let mut buf = Buffer::empty(area);
-            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
             layout
                 .columns
                 .iter()
@@ -1147,7 +1150,7 @@ mod tests {
         for scroll_offset in [0, 5, 30] {
             table.scroll_offset = scroll_offset;
             let mut buf = Buffer::empty(area);
-            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
             assert!(layout.footer_height > 0.0);
 
             // Footer text is always painted on the last row of the
@@ -1180,11 +1183,11 @@ mod tests {
         let theme = Theme::default();
 
         let mut unstriped = Buffer::empty(area);
-        draw_data_table(&mut unstriped, area, &table, &theme, None);
+        paint_hovered(&mut unstriped, area, &table, &theme, None);
 
         let mut striped_buf = Buffer::empty(area);
         let state = DataTablePaintState::default().with_striped(true);
-        draw_data_table_with_state(&mut striped_buf, area, &table, &theme, &state);
+        paint_with_state(&mut striped_buf, area, &table, &theme, &state);
 
         let body_bg = ratatui_color(theme.background);
         let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
@@ -1248,7 +1251,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
         let state = DataTablePaintState::default().with_scroll_px(Some(10.7)); // 10.7 cells deep → row 10, floored
-        draw_data_table_with_state(&mut buf, area, &table, &Theme::default(), &state);
+        paint_with_state(&mut buf, area, &table, &Theme::default(), &state);
 
         let first_body_row: String = (0..40)
             .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
@@ -1264,7 +1267,7 @@ mod tests {
         let mut via_offset = make_scrolling_table(50);
         via_offset.scroll_offset = 10;
         let mut buf2 = Buffer::empty(area);
-        draw_data_table(&mut buf2, area, &via_offset, &Theme::default(), None);
+        paint_hovered(&mut buf2, area, &via_offset, &Theme::default(), None);
         let first_body_row_via_offset: String = (0..40)
             .map(|x| buf2[(x, 1)].symbol().chars().next().unwrap_or(' '))
             .collect();
@@ -1286,7 +1289,7 @@ mod tests {
         });
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
         let footer_y = area.height - 1;
 
         let footer_line: String = (0..40)
@@ -1321,7 +1324,7 @@ mod tests {
         let area = Rect::new(0, 0, 40, 10);
         let layout = {
             let mut buf = Buffer::empty(area);
-            draw_data_table(&mut buf, area, &table, &Theme::default(), None)
+            paint_hovered(&mut buf, area, &table, &Theme::default(), None)
         };
 
         let hit = layout.hit_test(
@@ -1340,7 +1343,7 @@ mod tests {
         let table = make_scrolling_table(3);
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
         assert_eq!(layout.footer_height, 0.0);
         let row2: String = (0..40)
             .map(|x| buf[(x, 3)].symbol().chars().next().unwrap_or(' '))
@@ -1403,7 +1406,7 @@ mod tests {
             let mut table = make_h_scrolling_table();
             table.h_scroll = h_scroll;
             let mut buf = Buffer::empty(area);
-            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
             let header: String = (0..area.width)
                 .map(|x| buf[(x, 0)].symbol().chars().next().unwrap_or(' '))
@@ -1443,7 +1446,7 @@ mod tests {
             let mut table = make_h_scrolling_table();
             table.h_scroll = h_scroll;
             let mut buf = Buffer::empty(area);
-            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
             let row: String = (0..area.width)
                 .map(|x| buf[(x, 1)].symbol().chars().next().unwrap_or(' '))
@@ -1532,7 +1535,7 @@ mod tests {
         let mut table = make_wide_hscroll_table();
         table.h_scroll = 15.6;
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         assert_eq!(
             layout.h_scroll, 16.0,
@@ -1576,7 +1579,7 @@ mod tests {
         let mut table = make_wide_hscroll_table();
         table.h_scroll = 15.6;
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
         assert_eq!(
             layout.hit_test(14.0, 1.0, 0, table.rows.len()),
@@ -1596,7 +1599,7 @@ mod tests {
             let mut table = make_wide_hscroll_table();
             table.h_scroll = h_scroll;
             let mut buf = Buffer::empty(area);
-            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
             let h_off = h_scroll.round();
 
             for x in 0..60u16 {
@@ -1629,7 +1632,7 @@ mod tests {
             let mut table = make_h_scrolling_table();
             table.h_scroll = h_scroll;
             let mut buf = Buffer::empty(area);
-            let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+            let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
 
             // The rasteriser paints '│' on the right edge cell of every
             // column but the last, i.e. one cell *before* the boundary
@@ -1677,7 +1680,7 @@ mod tests {
         });
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_data_table(&mut buf, area, &table, &Theme::default(), None);
+        let layout = paint_hovered(&mut buf, area, &table, &Theme::default(), None);
         assert_eq!(layout.footer_height, 2.0);
         assert_eq!(layout.visible_rows, 7);
 
@@ -1717,7 +1720,7 @@ mod tests {
         let table = make_table();
         let area = Rect::new(0, 0, 40, 10);
         let mut buf = Buffer::empty(area);
-        let layout = data_table_layout(area, &table);
+        let layout = cell_data_table_layout(area, &table);
 
         let mut hook_calls: Vec<usize> = Vec::new();
         let mut hook = |buf: &mut Buffer, col_idx: usize, cell_rect: Rect| -> bool {
@@ -1827,12 +1830,12 @@ mod multi_select_driver_tests {
     impl AppLogic for TableApp {
         type AreaId = ();
 
-        #[allow(deprecated)]
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_data_table(
+            crate::backend::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),
                 &self.table,
-                None,
+                &(),
             );
         }
 

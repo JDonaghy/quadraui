@@ -52,7 +52,7 @@ use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
     Accelerator, AcceleratorId, Backend, DragState, ListView, ModalStack, PlatformServices, Point,
-    Rect as QRect, Split, TerminalCellSize, UiEvent, Viewport, WidgetId,
+    Rect as QRect, TerminalCellSize, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
 // only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs
@@ -354,7 +354,7 @@ pub struct TuiBackend {
     /// Cleared at the start of every frame by [`Self::begin_frame`] (same
     /// lifecycle as `zones`): an unbalanced push from a previous frame
     /// must never narrow the next one's painting.
-    clip_stack: Vec<super::canvas::TuiClipFrame>,
+    clip_stack: Vec<super::cell_surface::TuiClipFrame>,
     /// Opt-in retention of the frame this backend last painted, handed
     /// out by [`Backend::frame_capture`] and read by
     /// [`Backend::last_frame`]. Disabled and empty by default, so a live
@@ -2822,7 +2822,7 @@ impl Backend for TuiBackend {
         let outer = self
             .clip_stack
             .last()
-            .map(super::canvas::TuiClipFrame::active);
+            .map(super::cell_surface::TuiClipFrame::active);
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -2832,7 +2832,7 @@ impl Backend for TuiBackend {
         };
         let buf = frame.buffer_mut();
         let outer = outer.unwrap_or(buf.area);
-        let clip_frame = super::canvas::TuiClipFrame::push(buf, outer, rect);
+        let clip_frame = super::cell_surface::TuiClipFrame::push(buf, outer, rect);
         self.clip_stack.push(clip_frame);
     }
 
@@ -2913,89 +2913,6 @@ impl Backend for TuiBackend {
         crate::tui::draw_list_with_state(frame.buffer_mut(), area, list, &theme, nerd_fonts, state);
     }
 
-    fn draw_data_table(
-        &mut self,
-        rect: QRect,
-        table: &crate::DataTable,
-        hovered_idx: Option<usize>,
-    ) -> crate::DataTableLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_data_table called outside enter_frame_scope"
-            );
-            #[allow(deprecated)]
-            return self.data_table_layout(rect, table);
-        };
-        crate::tui::draw_data_table(frame.buffer_mut(), area, table, &theme, hovered_idx)
-    }
-
-    fn draw_data_table_with_glyphs(
-        &mut self,
-        rect: QRect,
-        table: &crate::DataTable,
-        hovered_idx: Option<usize>,
-        glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
-    ) -> crate::DataTableLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_data_table_with_glyphs called outside enter_frame_scope"
-            );
-            #[allow(deprecated)]
-            return self.data_table_layout(rect, table);
-        };
-        crate::tui::draw_data_table_with_glyphs(
-            frame.buffer_mut(),
-            area,
-            table,
-            &theme,
-            hovered_idx,
-            glyphs,
-            nerd_fonts,
-        )
-    }
-
-    /// Honours `state.scroll_px` via
-    /// `crate::tui::draw_data_table_with_state` (`#[doc(hidden)]`, so not
-    /// linked here) — TUI quantises it to
-    /// a whole row (never a partial one); see
-    /// [`DataTable::effective_scroll_offset`](crate::DataTable::effective_scroll_offset)'s
-    /// doc.
-    fn draw_data_table_with_state(
-        &mut self,
-        rect: QRect,
-        table: &crate::DataTable,
-        state: &crate::primitives::data_table::DataTablePaintState,
-    ) -> crate::DataTableLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_data_table_with_state called outside enter_frame_scope"
-            );
-            #[allow(deprecated)]
-            return self.data_table_layout(rect, table);
-        };
-        crate::tui::draw_data_table_with_state(frame.buffer_mut(), area, table, &theme, state)
-    }
-
-    fn data_table_layout(&self, rect: QRect, table: &crate::DataTable) -> crate::DataTableLayout {
-        // Must go through the same resolver `draw_data_table` uses — in
-        // particular the cell-granular `h_scroll.round()`. This is the
-        // cache-free, layout-on-demand path real apps hit-test through, so
-        // resolving the geometry independently here can cause fractional
-        // `h_scroll` mismatches.
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::data_table_layout(area, table)
-    }
-
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
         // Snap through the same u16 cell truncation `draw_list` uses so
         // the consumer's thumb hit-region matches the painted thumb.
@@ -3045,42 +2962,6 @@ impl Backend for TuiBackend {
 
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
 
-    fn draw_multi_section_view(
-        &mut self,
-        rect: QRect,
-        view: &crate::primitives::multi_section_view::MultiSectionView,
-    ) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_multi_section_view called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_multi_section_view(frame.buffer_mut(), area, view, &theme, nerd_fonts);
-    }
-
-    fn msv_layout(
-        &self,
-        rect: QRect,
-        view: &crate::primitives::multi_section_view::MultiSectionView,
-    ) -> crate::primitives::multi_section_view::MultiSectionViewLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_msv_layout(view, area)
-    }
-
-    fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
-        crate::primitives::multi_section_view::MsvLayoutMetrics {
-            header_size: 1.0,
-            divider_size: 0.0,
-            scrollbar_size: 1.0,
-            cell_quantum: 1.0,
-        }
-    }
-
     /// Steers the terminal emulator's hardware caret via DECSCUSR
     /// (crossterm's `SetCursorStyle`) — see [`Backend::set_caret_shape`]'s
     /// doc for why TUI is the one backend that overrides this (issue
@@ -3103,23 +2984,6 @@ impl Backend for TuiBackend {
             crate::EditorCursorShape::Bar => crate::CursorShape::Bar,
             crate::EditorCursorShape::Underline => crate::CursorShape::Underline,
         });
-    }
-
-    fn draw_message_list(
-        &mut self,
-        rect: QRect,
-        list: &crate::primitives::message_list::MessageList,
-    ) {
-        let area = q_rect_to_ratatui(rect);
-        let panel_bg = self.current_theme.background;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_message_list called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_message_list(frame.buffer_mut(), area, list, panel_bg);
     }
 
     fn draw_find_replace(
@@ -3167,137 +3031,6 @@ impl Backend for TuiBackend {
         // no-op default. Register the primitive's own id at its own
         // track bounds (not `_rect`, which the primitive ignores).
         self.register_zone(scrollbar.id, scrollbar.track);
-    }
-
-    fn draw_split(&mut self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_split called outside enter_frame_scope"
-            );
-            // No zone registration either — nothing was actually painted.
-            return self.split_layout(rect, split);
-        };
-        let layout = crate::tui::draw_split(frame.buffer_mut(), area, split, &theme);
-        // `Split` paints a divider only — no text of its own — so a
-        // registered zone is the only way this frame is attributable to
-        // the primitive rather than indistinguishable from the trait's
-        // no-op default (C0 paint smoke, contract §5b).
-        self.register_zone(split.id, rect);
-        layout
-    }
-
-    fn split_layout(&self, rect: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_split_layout(split, area)
-    }
-
-    fn draw_split_tree(
-        &mut self,
-        rect: QRect,
-        tree: &crate::primitives::split_tree::SplitTree,
-    ) -> crate::primitives::split_tree::SplitTreeLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_split_tree called outside enter_frame_scope"
-            );
-            // No zone registration either — nothing was actually painted.
-            return self.split_tree_layout(rect, tree);
-        };
-        let layout = crate::tui::draw_split_tree(frame.buffer_mut(), area, tree, &theme);
-        // Dividers only, and `SplitTree` (unlike `Split`) carries no
-        // id of its own — register a fixed chrome id, same pattern as
-        // the `DropOverlay` widget's host.
-        self.register_zone(WidgetId::new("chrome:split-tree"), rect);
-        layout
-    }
-
-    fn split_tree_layout(
-        &self,
-        rect: QRect,
-        tree: &crate::primitives::split_tree::SplitTree,
-    ) -> crate::primitives::split_tree::SplitTreeLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_split_tree_layout(tree, area)
-    }
-
-    fn draw_canvas(
-        &mut self,
-        rect: QRect,
-        canvas: &crate::primitives::canvas::Canvas,
-    ) -> crate::primitives::canvas::CanvasLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let kitty = self.kitty_graphics();
-        let truecolor = self.color_depth() == ColorDepth::TrueColor;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_canvas called outside enter_frame_scope"
-            );
-            return self.canvas_layout(rect, canvas);
-        };
-        // Raw pointer, not a kept-around `&mut Buffer`: the borrow
-        // checker ties `current_frame_mut`'s loan on `self` to every later
-        // use of anything derived from `frame`, so the
-        // `&mut self.image_graphics.kitty` borrow below would conflict with
-        // it. A raw pointer carries no such region for the checker to track.
-        let buf_ptr: *mut ratatui::buffer::Buffer = frame.buffer_mut();
-        // SAFETY: `buf_ptr` points at the real frame buffer
-        // `enter_frame_scope` set up for this call; nothing else aliases
-        // it for the duration of this method.
-        let layout = crate::tui::draw_canvas(unsafe { &mut *buf_ptr }, area, canvas, &theme);
-        #[cfg(feature = "tui-images")]
-        if let Some(kg) = kitty {
-            if truecolor {
-                // Upgrade every `DrawOp::Image` this canvas drew as
-                // fallback text above to real Kitty-graphics pixels,
-                // where the decode succeeds — see
-                // `crate::tui::canvas::draw_canvas_kitty_images`'s doc.
-                crate::tui::canvas::draw_canvas_kitty_images(
-                    unsafe { &mut *buf_ptr },
-                    area,
-                    canvas,
-                    &theme,
-                    kg.cell_px,
-                    &mut self.image_graphics.kitty,
-                );
-            }
-        }
-        #[cfg(not(feature = "tui-images"))]
-        let _ = (kitty, truecolor);
-        layout
-    }
-
-    fn draw_pipeline_view(
-        &mut self,
-        rect: QRect,
-        view: &crate::primitives::pipeline_view::PipelineView,
-    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_pipeline_view called outside enter_frame_scope"
-            );
-            return self.pipeline_view_layout(rect, view);
-        };
-        crate::tui::draw_pipeline_view(frame.buffer_mut(), area, view, &theme)
-    }
-
-    fn pipeline_view_layout(
-        &self,
-        rect: QRect,
-        view: &crate::primitives::pipeline_view::PipelineView,
-    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_pipeline_view_layout(view, area)
     }
 
     fn draw_progress(
@@ -3350,83 +3083,6 @@ impl Backend for TuiBackend {
     ) -> crate::primitives::spinner::SpinnerLayout {
         let area = q_rect_to_ratatui(rect);
         crate::tui::tui_spinner_layout(spinner, area)
-    }
-
-    fn draw_chart(
-        &mut self,
-        rect: QRect,
-        chart: &crate::primitives::chart::Chart,
-        hovered_point: Option<(usize, usize)>,
-        crosshair_x: Option<f64>,
-    ) -> crate::primitives::chart::ChartLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_chart called outside enter_frame_scope"
-            );
-            return self.chart_layout(rect, chart);
-        };
-        crate::tui::draw_chart(
-            frame.buffer_mut(),
-            area,
-            chart,
-            &theme,
-            hovered_point,
-            crosshair_x,
-        )
-    }
-
-    fn chart_layout(
-        &self,
-        rect: QRect,
-        chart: &crate::primitives::chart::Chart,
-    ) -> crate::primitives::chart::ChartLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_chart_layout(chart, area)
-    }
-
-    fn draw_diff_view(
-        &mut self,
-        rect: QRect,
-        view: &crate::primitives::diff_view::DiffView,
-    ) -> crate::primitives::diff_view::DiffViewLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_diff_view called outside enter_frame_scope"
-            );
-            return self.diff_view_layout(rect, view);
-        };
-        crate::tui::draw_diff_view(frame.buffer_mut(), area, view, &theme)
-    }
-
-    fn draw_board(
-        &mut self,
-        rect: QRect,
-        model: &crate::primitives::board::BoardModel,
-    ) -> crate::primitives::board::BoardLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_board called outside enter_frame_scope"
-            );
-            return self.board_layout(rect, model);
-        };
-        crate::tui::draw_board(frame.buffer_mut(), area, model, &theme)
-    }
-
-    fn board_layout(
-        &self,
-        rect: QRect,
-        model: &crate::primitives::board::BoardModel,
-    ) -> crate::primitives::board::BoardLayout {
-        crate::tui::tui_board_layout(model, q_rect_to_ratatui(rect))
     }
 
     // ─── Window control ─────────────────────────────────────────────────
@@ -3582,53 +3238,6 @@ mod tests {
             });
         }
 
-        fn draw_data_table(
-            &mut self,
-            _rect: QRect,
-            _table: &crate::DataTable,
-            _hovered_idx: Option<usize>,
-        ) -> crate::DataTableLayout {
-            crate::DataTableLayout {
-                header_height: 0.0,
-                row_height: 0.0,
-                columns: Vec::new(),
-                visible_rows: 0,
-                viewport_width: 0.0,
-                viewport_height: 0.0,
-                scrollbar_width: 0.0,
-                content_width: 0.0,
-                h_scrollbar_height: 0.0,
-                footer_height: 0.0,
-                h_scroll: 0.0,
-                inset_x: 0.0,
-                inset_y: 0.0,
-                v_scrollbar_track: None,
-                scroll_sub_px: 0.0,
-            }
-        }
-        fn data_table_layout(
-            &self,
-            _rect: QRect,
-            _table: &crate::DataTable,
-        ) -> crate::DataTableLayout {
-            crate::DataTableLayout {
-                header_height: 0.0,
-                row_height: 0.0,
-                columns: Vec::new(),
-                visible_rows: 0,
-                viewport_width: 0.0,
-                viewport_height: 0.0,
-                scrollbar_width: 0.0,
-                content_width: 0.0,
-                h_scrollbar_height: 0.0,
-                footer_height: 0.0,
-                h_scroll: 0.0,
-                inset_x: 0.0,
-                inset_y: 0.0,
-                v_scrollbar_track: None,
-                scroll_sub_px: 0.0,
-            }
-        }
         fn list_hscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
             None
         }
@@ -3664,38 +3273,6 @@ mod tests {
 
         // ── #13: stubs for the trait methods added with this issue ──
 
-        fn draw_multi_section_view(
-            &mut self,
-            _r: QRect,
-            _v: &crate::primitives::multi_section_view::MultiSectionView,
-        ) {
-        }
-
-        fn msv_layout(
-            &self,
-            r: QRect,
-            v: &crate::primitives::multi_section_view::MultiSectionView,
-        ) -> crate::primitives::multi_section_view::MultiSectionViewLayout {
-            // Mock returns the primitive's natural layout with default
-            // metrics — sufficient for cross-backend compile checks.
-            v.layout(
-                r,
-                crate::primitives::multi_section_view::MsvLayoutMetrics::default(),
-                |_| crate::primitives::multi_section_view::SectionMeasure::default(),
-            )
-        }
-
-        fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
-            crate::primitives::multi_section_view::MsvLayoutMetrics::default()
-        }
-
-        fn draw_message_list(
-            &mut self,
-            _r: QRect,
-            _l: &crate::primitives::message_list::MessageList,
-        ) {
-        }
-
         fn draw_find_replace(
             &mut self,
             _r: QRect,
@@ -3704,81 +3281,6 @@ mod tests {
         }
 
         fn draw_scrollbar(&mut self, _r: QRect, _s: &crate::primitives::scrollbar::Scrollbar) {}
-
-        fn draw_split(
-            &mut self,
-            _r: QRect,
-            split: &Split,
-        ) -> crate::primitives::split::SplitLayout {
-            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
-            split.layout(bounds, crate::primitives::split::SplitMeasure::new(1.0))
-        }
-
-        fn split_layout(&self, _r: QRect, split: &Split) -> crate::primitives::split::SplitLayout {
-            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
-            split.layout(bounds, crate::primitives::split::SplitMeasure::new(1.0))
-        }
-
-        fn draw_split_tree(
-            &mut self,
-            _r: QRect,
-            tree: &crate::primitives::split_tree::SplitTree,
-        ) -> crate::primitives::split_tree::SplitTreeLayout {
-            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
-            tree.layout(
-                bounds,
-                crate::primitives::split_tree::SplitTreeMeasure::new(1.0),
-            )
-        }
-
-        fn split_tree_layout(
-            &self,
-            _r: QRect,
-            tree: &crate::primitives::split_tree::SplitTree,
-        ) -> crate::primitives::split_tree::SplitTreeLayout {
-            let bounds = crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height);
-            tree.layout(
-                bounds,
-                crate::primitives::split_tree::SplitTreeMeasure::new(1.0),
-            )
-        }
-
-        fn draw_canvas(
-            &mut self,
-            r: QRect,
-            canvas: &crate::primitives::canvas::Canvas,
-        ) -> crate::primitives::canvas::CanvasLayout {
-            let bounds = crate::event::Rect::new(r.x, r.y, r.width, r.height);
-            canvas.layout(bounds)
-        }
-
-        fn draw_pipeline_view(
-            &mut self,
-            _r: QRect,
-            view: &crate::primitives::pipeline_view::PipelineView,
-        ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-            view.layout(
-                _r.x,
-                _r.y,
-                crate::primitives::pipeline_view::PipelineViewMeasure::new(
-                    _r.width, _r.height, 4.0, 10.0,
-                ),
-            )
-        }
-
-        fn pipeline_view_layout(
-            &self,
-            _r: QRect,
-            view: &crate::primitives::pipeline_view::PipelineView,
-        ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-            view.layout(
-                _r.x,
-                _r.y,
-                crate::primitives::pipeline_view::PipelineViewMeasure::new(
-                    _r.width, _r.height, 4.0, 10.0,
-                ),
-            )
-        }
 
         fn draw_progress(
             &mut self,
@@ -3826,69 +3328,6 @@ mod tests {
                 _r.y,
                 crate::primitives::spinner::SpinnerMeasure::new(_r.width, 1.0),
             )
-        }
-
-        fn draw_chart(
-            &mut self,
-            _r: QRect,
-            chart: &crate::primitives::chart::Chart,
-            _hovered_point: Option<(usize, usize)>,
-            _crosshair_x: Option<f64>,
-        ) -> crate::primitives::chart::ChartLayout {
-            chart.layout(
-                _r.x,
-                _r.y,
-                crate::primitives::chart::ChartMeasure {
-                    width: _r.width,
-                    height: _r.height,
-                    char_width: 1.0,
-                    line_height: 1.0,
-                },
-            )
-        }
-
-        fn chart_layout(
-            &self,
-            _r: QRect,
-            chart: &crate::primitives::chart::Chart,
-        ) -> crate::primitives::chart::ChartLayout {
-            chart.layout(
-                _r.x,
-                _r.y,
-                crate::primitives::chart::ChartMeasure {
-                    width: _r.width,
-                    height: _r.height,
-                    char_width: 1.0,
-                    line_height: 1.0,
-                },
-            )
-        }
-
-        fn draw_diff_view(
-            &mut self,
-            _r: QRect,
-            view: &crate::primitives::diff_view::DiffView,
-        ) -> crate::primitives::diff_view::DiffViewLayout {
-            crate::primitives::diff_view::DiffViewLayout {
-                visible_rows: 0,
-                total_rows: view.total_rows(),
-            }
-        }
-
-        fn draw_board(
-            &mut self,
-            r: QRect,
-            model: &crate::primitives::board::BoardModel,
-        ) -> crate::primitives::board::BoardLayout {
-            model.cell_layout(r)
-        }
-
-        fn board_layout(
-            &self,
-            r: QRect,
-            model: &crate::primitives::board::BoardModel,
-        ) -> crate::primitives::board::BoardLayout {
-            model.cell_layout(r)
         }
     }
 
@@ -4432,13 +3871,9 @@ mod tests {
         }
     }
 
-    /// #550 round 3: `Backend::data_table_layout` is the *cache-free,
-    /// layout-on-demand* hit-test path (see
-    /// `examples/common/data_table_app.rs`, which calls it from every
-    /// mouse handler without repainting). It resolved geometry with its
-    /// own `table.layout(..)` call and so returned the raw fractional
-    /// `h_scroll`, while `draw_data_table` painted at the rounded one —
-    /// reopening the original defect through a second entry point.
+    /// The no-paint layout a mouse handler hit-tests against must carry
+    /// the same rounded `h_scroll` the cell painter paints at, not the raw
+    /// fractional one a trackpad scroll leaves on the descriptor.
     #[test]
     fn data_table_layout_rounds_h_scroll_like_the_renderer() {
         let backend = TuiBackend::new();
@@ -4448,7 +3883,7 @@ mod tests {
         // A trackpad/wheel h-scroll lands on an arbitrary fraction; the
         // example's `UiEvent::Scroll` handler does no rounding at all.
         table.h_scroll = 23.7;
-        let layout = backend.data_table_layout(rect, &table);
+        let layout = backend.layout_primitive(rect, &table).layout;
         assert_eq!(
             layout.h_scroll, 24.0,
             "layout-on-demand must carry the same rounded offset the renderer paints at"
@@ -4456,7 +3891,7 @@ mod tests {
 
         // The review's exact repro value, and the click it misroutes.
         table.h_scroll = 15.6;
-        let layout = backend.data_table_layout(rect, &table);
+        let layout = backend.layout_primitive(rect, &table).layout;
         assert_eq!(layout.h_scroll, 16.0);
         assert_eq!(
             layout.column_hit(14.0),
@@ -4468,30 +3903,6 @@ mod tests {
             Some(0),
             "un-rounded 15.6 would put this at content x=29.6, inside c0"
         );
-    }
-
-    /// The two TUI entry points must be interchangeable: a consumer that
-    /// hit-tests against a repaint-free layout has to land on exactly
-    /// what the last `draw_data_table` put on screen.
-    #[test]
-    fn data_table_layout_matches_draw_data_table_at_every_fractional_offset() {
-        let backend = TuiBackend::new();
-        let rect = QRect::new(0.0, 0.0, 60.0, 3.0);
-        let area = q_rect_to_ratatui(rect);
-        let mut table = wide_hscroll_table();
-
-        for tenths in 0..=600u32 {
-            table.h_scroll = tenths as f32 / 10.0;
-            let on_demand = backend.data_table_layout(rect, &table);
-            let mut buf = ratatui::buffer::Buffer::empty(area);
-            let painted =
-                crate::tui::draw_data_table(&mut buf, area, &table, &backend.current_theme, None);
-            assert_eq!(
-                on_demand, painted,
-                "layouts diverged at h_scroll = {}",
-                table.h_scroll
-            );
-        }
     }
 
     #[test]
@@ -5643,13 +5054,12 @@ mod tests {
         let mut table_terminal = Terminal::new(TestBackend::new(80, 24)).expect("test terminal");
         table_terminal
             .draw(|frame| {
+                let table = crate::DataTable {
+                    glyphs: Some(table_glyphs.clone()),
+                    ..table.clone()
+                };
                 backend.enter_frame_scope(frame, |b| {
-                    b.draw_data_table_with_glyphs(
-                        QRect::new(0.0, 0.0, 40.0, 5.0),
-                        &table,
-                        None,
-                        Some(&table_glyphs),
-                    );
+                    b.draw_primitive(QRect::new(0.0, 0.0, 40.0, 5.0), &table);
                 });
             })
             .expect("draw");
@@ -5743,8 +5153,7 @@ mod tests {
 
     /// Issue #506: `list_layout` is documented **LOCAL** — a caller
     /// subtracts `rect.x`/`rect.y` itself before hit-testing — so a
-    /// non-zero origin must not change the returned geometry at all
-    /// (same regression shape as `gtk_backend_data_table_layout_ignores_rect_origin`).
+    /// non-zero origin must not change the returned geometry at all.
     #[test]
     fn list_layout_ignores_rect_origin() {
         let backend = TuiBackend::new();
@@ -5950,56 +5359,10 @@ mod tests {
         );
     }
 
-    /// `DataTable` painted through `crate::primitive::Primitive` must
-    /// match `TuiBackend::draw_data_table`'s own output byte-for-byte —
-    /// same TUI parity story as [`tree_view_primitive_paint_cells_matches_draw_tree`].
-    #[test]
-    fn data_table_primitive_paint_cells_matches_draw_data_table() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let table = sample_data_table();
-        let rect = QRect::new(2.0, 1.0, 30.0, 6.0);
-
-        let mut via_primitive_backend = TuiBackend::new();
-        let mut via_primitive_terminal =
-            Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
-        via_primitive_terminal
-            .draw(|frame| {
-                via_primitive_backend.enter_frame_scope(frame, |b| {
-                    let b: &mut dyn Backend = b;
-                    b.draw_primitive(rect, &table);
-                });
-            })
-            .expect("draw");
-
-        let mut via_draw_backend = TuiBackend::new();
-        let mut via_draw_terminal = Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
-        via_draw_terminal
-            .draw(|frame| {
-                via_draw_backend.enter_frame_scope(frame, |b| {
-                    b.draw_data_table(rect, &table, None);
-                });
-            })
-            .expect("draw");
-
-        assert_eq!(
-            via_primitive_terminal.backend().buffer(),
-            via_draw_terminal.backend().buffer(),
-            "DataTable painted through Primitive::paint_cells must match \
-             TuiBackend::draw_data_table byte-for-byte"
-        );
-        let screen = screen_text(via_primitive_terminal.backend().buffer());
-        assert!(
-            screen.contains("Name") && screen.contains("pod-0"),
-            "sanity: the table actually painted its header/rows, got: {screen}"
-        );
-    }
-
     /// [`DrawsPrimitives::draw_primitive`]'s returned
     /// [`crate::DataTablePrimitiveLayout`] must hit-test against the same
     /// absolute area it was just painted into, resolving to the same hit
-    /// [`TuiBackend::data_table_layout`] does for a click at that point.
+    /// the no-paint `layout_primitive` does for a click at that point.
     #[test]
     fn data_table_primitive_draw_primitive_layout_hit_tests_correctly() {
         use ratatui::backend::TestBackend;
@@ -6021,12 +5384,12 @@ mod tests {
             .expect("draw");
         let primitive_layout = captured.expect("draw_primitive ran inside the frame scope");
 
-        let no_paint_layout = backend.data_table_layout(rect, &table);
+        let no_paint_layout = backend.layout_primitive(rect, &table);
         assert_eq!(
             primitive_layout.hit_test(rect.x, rect.y),
-            no_paint_layout.hit_test(0.0, 0.0, table.scroll_offset, table.rows.len()),
-            "Primitive::layout's absolute hit_test must agree with \
-             TuiBackend::data_table_layout's local one at the same point"
+            no_paint_layout.hit_test(rect.x, rect.y),
+            "the painted layout's hit_test must agree with the no-paint \
+             layout_primitive one at the same point"
         );
     }
 
@@ -6063,133 +5426,6 @@ mod tests {
             no_paint_layout.hit_test(rect.x, rect.y),
             "the painted layout's hit_test must agree with the \
              no-paint layout_primitive one at the same point"
-        );
-    }
-
-    /// Issue #506: `board_layout` is documented **ABSOLUTE** — bounds
-    /// are shifted by `rect.x`/`rect.y`, matching `BoardLayout::hit_test`'s
-    /// contract that a caller compares it directly against raw click
-    /// coordinates. Also proves `board_layout` and `draw_board` agree
-    /// byte-for-byte, since both route through `tui_board_layout`.
-    #[test]
-    fn board_layout_is_absolute_and_matches_draw_board() {
-        let backend = TuiBackend::new();
-        let model = crate::primitives::board::BoardModel {
-            id: WidgetId::new("test:board"),
-            columns: vec![crate::primitives::board::BoardColumn {
-                id: WidgetId::new("col:a"),
-                title: "Backlog".into(),
-                cards: vec![crate::primitives::board::BoardCard {
-                    id: WidgetId::new("card:1"),
-                    title: "Do the thing".into(),
-                    labels: vec![],
-                    badges: vec![],
-                    hint: None,
-                }],
-                scroll_offset: 0,
-            }],
-            selected_card_id: None,
-            col_scroll_offset: 0,
-        };
-        let rect = QRect::new(5.0, 2.0, 40.0, 12.0);
-        let area = q_rect_to_ratatui(rect);
-
-        let no_paint = backend.board_layout(rect, &model);
-        assert_eq!(
-            no_paint.bounds,
-            crate::event::Rect::new(rect.x, rect.y, rect.width, rect.height),
-            "board_layout must fold rect's origin into `bounds` (ABSOLUTE, issue #505)"
-        );
-
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        let painted = crate::tui::draw_board(&mut buf, area, &model, &backend.current_theme);
-        assert_eq!(
-            no_paint, painted,
-            "board_layout must equal the exact layout draw_board painted with"
-        );
-    }
-
-    /// Minimal two-row-hunk `DiffView` fixture for `diff_view_layout`
-    /// parity tests below.
-    fn sample_diff_view(mode: crate::DiffMode, left_label: Option<String>) -> crate::DiffView {
-        crate::DiffView {
-            id: WidgetId::new("diff"),
-            left: String::new(),
-            right: String::new(),
-            left_label,
-            right_label: None,
-            hunks: vec![crate::DiffHunk {
-                left_start: 1,
-                right_start: 1,
-                rows: vec![
-                    crate::DiffRow {
-                        left: Some("alpha".into()),
-                        right: Some("ALPHA".into()),
-                        kind: crate::DiffRowKind::Changed,
-                    },
-                    crate::DiffRow {
-                        left: Some("beta".into()),
-                        right: Some("beta".into()),
-                        kind: crate::DiffRowKind::Same,
-                    },
-                ],
-            }],
-            mode,
-            editability: crate::DiffEditability::ReadOnly,
-            scroll_offset: 0,
-            focused_pane: crate::DiffPane::Left,
-            has_focus: false,
-        }
-    }
-
-    /// Issue #506 review fix: `diff_view_layout` is claimed to be
-    /// "verified byte-for-byte against each backend's real paint
-    /// formula" — this is the test that makes that claim true rather
-    /// than aspirational. `draw_diff_view` returns its `DiffViewLayout`
-    /// directly, so this compares the no-paint default body against the
-    /// exact value the real paint path produced, in `SideBySide` mode
-    /// with a header row reserved.
-    #[test]
-    fn diff_view_layout_matches_draw_diff_view_side_by_side_with_header() {
-        let backend = TuiBackend::new();
-        let view = sample_diff_view(crate::DiffMode::SideBySide, Some("left.txt".into()));
-        let rect = QRect::new(0.0, 0.0, 40.0, 5.0);
-        let area = q_rect_to_ratatui(rect);
-
-        let no_paint = backend.diff_view_layout(rect, &view);
-
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        let painted = crate::tui::draw_diff_view(&mut buf, area, &view, &backend.current_theme);
-
-        assert_eq!(
-            no_paint, painted,
-            "diff_view_layout must equal the exact layout draw_diff_view painted with"
-        );
-        assert_eq!(
-            no_paint.visible_rows, 4,
-            "a 5-row rect minus a 1-row header (left_label is set) leaves 4 content rows"
-        );
-    }
-
-    /// Same parity check in `Unified` mode, where no header row is
-    /// reserved and `total_rows` folds in one synthesized `@@` header
-    /// line per hunk.
-    #[test]
-    fn diff_view_layout_matches_draw_diff_view_unified() {
-        let backend = TuiBackend::new();
-        let view = sample_diff_view(crate::DiffMode::Unified, None);
-        let rect = QRect::new(0.0, 0.0, 40.0, 5.0);
-        let area = q_rect_to_ratatui(rect);
-
-        let no_paint = backend.diff_view_layout(rect, &view);
-
-        let mut buf = ratatui::buffer::Buffer::empty(area);
-        let painted = crate::tui::draw_diff_view(&mut buf, area, &view, &backend.current_theme);
-
-        assert_eq!(
-            no_paint, painted,
-            "diff_view_layout must equal the exact layout draw_diff_view painted with (unified \
-             mode reserves no header band)"
         );
     }
 

@@ -1651,7 +1651,7 @@ impl quadraui::AppLogic for CanvasAlphaProbe {
                 },
             ],
         };
-        let _ = backend.draw_canvas(rect, &canvas);
+        let _ = backend.draw_primitive(rect, &canvas);
     }
 
     fn handle(&mut self, _event: quadraui::UiEvent, _backend: &mut dyn Backend) -> Reaction {

@@ -544,15 +544,15 @@ fn purely_visual_parts_are_presentational_not_omitted() {
                 accent: None,
             },
         })
-        .with_surface(Surface::Split {
+        .with_surface(Surface::Widget {
             rect: rect(1.0, 10.0),
-            split: Split {
+            widget: Box::new(Split {
                 id: WidgetId::new("split"),
                 direction: SplitDirection::Horizontal,
                 ratio: 0.5,
                 first_min: 4.0,
                 second_min: 4.0,
-            },
+            }),
         })
         .with_surface(Surface::Scrollbar {
             rect: Rect::new(79.0, 1.0, 1.0, 10.0),
@@ -620,14 +620,14 @@ fn overlays_and_containers_report_their_own_structure() {
                 accent: None,
             },
         })
-        .with_surface(Surface::SplitTree {
+        .with_surface(Surface::Widget {
             rect: rect(9.0, 10.0),
-            tree: SplitTree::split(
+            widget: Box::new(SplitTree::split(
                 SplitDirection::Vertical,
                 0.25,
                 SplitTree::Leaf(WidgetId::new("editor")),
                 SplitTree::Leaf(WidgetId::new("terminal")),
-            ),
+            )),
         })
         .with_surface(Surface::Widget {
             rect: tooltip
@@ -679,9 +679,9 @@ window \"quadraui\" [focused]
 #[test]
 fn nested_split_of_splits_keeps_all_four_panes() {
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::SplitTree {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 10.0),
-            tree: SplitTree::split(
+            widget: Box::new(SplitTree::split(
                 SplitDirection::Horizontal,
                 0.5,
                 SplitTree::split(
@@ -696,7 +696,7 @@ fn nested_split_of_splits_keeps_all_four_panes() {
                     SplitTree::Leaf(WidgetId::new("top-right")),
                     SplitTree::Leaf(WidgetId::new("bottom-right")),
                 ),
-            ),
+            )),
         })
         .snapshot();
 

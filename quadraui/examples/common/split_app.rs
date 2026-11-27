@@ -107,7 +107,7 @@ impl AppLogic for SplitApp {
         let lh = backend.line_height();
         let split_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
         let split = self.split();
-        let layout = backend.draw_split(split_rect, &split);
+        let layout = backend.draw_primitive(split_rect, &split);
 
         let first_label = Rect::new(
             layout.first_bounds.x,
@@ -187,7 +187,7 @@ impl AppLogic for SplitApp {
                 let lh = backend.line_height();
                 let split_rect = Rect::new(0.0, 0.0, viewport.width, viewport.height - lh);
                 let split = self.split();
-                let layout = backend.split_layout(split_rect, &split);
+                let layout = backend.layout_primitive(split_rect, &split);
                 if let SplitHit::Divider(_) = layout.hit_test(position.x, position.y) {
                     self.dragging = true;
                 }

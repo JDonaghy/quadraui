@@ -1325,6 +1325,10 @@ impl crate::primitive::Primitive for BoardModel {
     type Layout = BoardLayout;
     type Event = BoardAction;
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Board(self.clone())
+    }
+
     fn id(&self) -> Option<&WidgetId> {
         Some(&self.id)
     }

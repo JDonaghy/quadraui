@@ -506,7 +506,7 @@ fn split_layout_at(
         first_min: 0.0,
         second_min: 0.0,
     };
-    driver.backend().split_layout(rect, &split)
+    driver.backend().layout_primitive(rect, &split)
 }
 
 #[test]
@@ -2263,7 +2263,7 @@ impl quadraui::AppLogic for CanvasAlphaProbe {
                 },
             ],
         };
-        let _ = backend.draw_canvas(rect, &canvas);
+        let _ = backend.draw_primitive(rect, &canvas);
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

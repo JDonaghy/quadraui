@@ -759,47 +759,102 @@ pub(crate) fn draw_image_halfblock(
 /// A [`BufferCellSurface`] that exposes only the [`CellSurface`] verbs and
 /// no backing buffer, so a test can show that a widget's cell painter
 /// paints through the verbs alone.
-#[cfg(test)]
-pub(crate) struct VerbsOnly<'a>(pub BufferCellSurface<'a>);
+/// One entry in [`crate::tui::backend::TuiBackend`]'s
+/// [`crate::Backend::push_clip`]/[`crate::Backend::pop_clip`] stack.
+///
+/// TUI has no per-cell scissor every `draw_*` call site checks, so this
+/// is a retroactive undo rather than a real filter: [`Self::push`]
+/// snapshots the region a push is about to put off-limits (`outer`),
+/// lets painting run unclipped, and [`Self::pop`] restores whatever part
+/// of `outer` still sits outside the narrowed `clip`. A `draw_*` that
+/// reads the buffer between push and pop (a translucent fill blending
+/// against what's "underneath", a test asserting mid-frame) sees
+/// unclipped content — this degrade is only sound for paint that writes
+/// once and is read back after the matching `pop`.
+///
+/// Expected call frequency: one push per visible viewport (a scroll
+/// container clipping one child), not one per row — each push clones a
+/// full `outer`-sized cell snapshot, so a per-row push pays that cost
+/// once per row.
+pub(crate) struct TuiClipFrame {
+    /// Absolute screen-cell area active just before this push — what
+    /// [`Self::pop`] restores, outside `clip`, to its pre-push contents.
+    outer: ratatui::layout::Rect,
+    /// This push's own narrowed clip: `rect` quantised outward to whole
+    /// cells (same rounding as [`crate::primitives::canvas::DrawOp::PushClip`], coarser than the
+    /// `.round()` every `draw_*` rect otherwise gets — a fractional
+    /// clip can let a child bleed up to one cell past it) and
+    /// intersected with `outer`.
+    clip: ratatui::layout::Rect,
+    /// `outer`'s cells, snapshotted at push time, row-major
+    /// (`outer.width` cells per row).
+    snapshot: Vec<ratatui::buffer::Cell>,
+}
 
-#[cfg(test)]
-impl CellSurface for VerbsOnly<'_> {
-    fn size(&self) -> (u16, u16) {
-        self.0.size()
+impl TuiClipFrame {
+    /// Snapshot `outer`'s cells from `buf`, then quantise `rect`
+    /// (absolute screen-cell units — the same space every
+    /// `Backend::draw_*` rect already uses) outward to whole cells and
+    /// intersect with `outer`, reusing [`crate::primitives::canvas::paint_cells::CellClip`]'s own math rather
+    /// than a second copy of it.
+    pub(crate) fn push(
+        buf: &ratatui::buffer::Buffer,
+        outer: ratatui::layout::Rect,
+        rect: crate::event::Rect,
+    ) -> Self {
+        let bound = crate::primitives::canvas::paint_cells::CellClip::from_cells(
+            outer.x,
+            outer.y,
+            outer.width,
+            outer.height,
+        )
+        .push(rect);
+        let clip = ratatui::layout::Rect::new(
+            bound.x0 as u16,
+            bound.y0 as u16,
+            bound.x1.saturating_sub(bound.x0).max(0) as u16,
+            bound.y1.saturating_sub(bound.y0).max(0) as u16,
+        );
+        let mut snapshot = Vec::with_capacity(outer.area() as usize);
+        for y in outer.y..outer.y.saturating_add(outer.height) {
+            for x in outer.x..outer.x.saturating_add(outer.width) {
+                snapshot.push(buf[(x, y)].clone());
+            }
+        }
+        Self {
+            outer,
+            clip,
+            snapshot,
+        }
     }
-    fn put_char(&mut self, x: u16, y: u16, ch: char, style: CellStyle) {
-        self.0.put_char(x, y, ch, style);
+
+    /// This push's own narrowed clip — what a nested push intersects
+    /// against, and what [`crate::Backend::push_clip`]'s caller sees as
+    /// "the active clip" until the matching [`Self::pop`].
+    pub(crate) fn active(&self) -> ratatui::layout::Rect {
+        self.clip
     }
-    fn put_wide(&mut self, x: u16, y: u16, ch: char, style: CellStyle) {
-        self.0.put_wide(x, y, ch, style);
-    }
-    fn put_grapheme(&mut self, x: u16, y: u16, grapheme: &str, style: CellStyle) {
-        self.0.put_grapheme(x, y, grapheme, style);
-    }
-    fn put_str_clipped(
-        &mut self,
-        x: u16,
-        y: u16,
-        text: &str,
-        max_cols: u16,
-        style: CellStyle,
-    ) -> u16 {
-        self.0.put_str_clipped(x, y, text, max_cols, style)
-    }
-    fn fill(&mut self, rect: crate::Rect, style: CellStyle) {
-        self.0.fill(rect, style);
-    }
-    fn draw_border(&mut self, rect: crate::Rect, set: BorderSet, style: CellStyle) {
-        self.0.draw_border(rect, set, style);
-    }
-    fn get(&self, x: u16, y: u16) -> Option<(char, CellStyle)> {
-        self.0.get(x, y)
-    }
-    fn set_cursor(&mut self, x: u16, y: u16, shape: CursorShape) {
-        self.0.set_cursor(x, y, shape);
-    }
-    fn color_depth(&self) -> ColorDepth {
-        self.0.color_depth()
+
+    /// Restore `buf`'s cells inside `outer` but outside `clip` to their
+    /// snapshotted contents — the donut a clipped-out paint could have
+    /// reached — leaving cells inside `clip` exactly as whatever painted
+    /// there left them.
+    pub(crate) fn pop(self, buf: &mut ratatui::buffer::Buffer) {
+        let clip = crate::primitives::canvas::paint_cells::CellClip::from_cells(
+            self.clip.x,
+            self.clip.y,
+            self.clip.width,
+            self.clip.height,
+        );
+        let mut i = 0;
+        for y in self.outer.y..self.outer.y.saturating_add(self.outer.height) {
+            for x in self.outer.x..self.outer.x.saturating_add(self.outer.width) {
+                if !clip.contains_cell(x as i32, y as i32) {
+                    buf[(x, y)] = self.snapshot[i].clone();
+                }
+                i += 1;
+            }
+        }
     }
 }
 

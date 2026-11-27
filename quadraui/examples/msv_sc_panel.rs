@@ -11,7 +11,7 @@
 //!   `scroll_offset` / `selected_path` / `collapsed` flags. None of this
 //!   state lives on the primitive — `build_view()` rebuilds a fresh
 //!   `MultiSectionView` every frame.
-//! - Routes clicks via [`tui_msv_layout`] + [`tui_tree_layout`] —
+//! - Routes clicks via [`chrome_layout`] + [`tui_tree_layout`] —
 //!   never re-derives bounds.
 //! - Routes keystrokes either to the commit input (when focused) or
 //!   to scroll/select handlers (otherwise). Esc blurs the input
@@ -49,13 +49,47 @@ use ratatui::crossterm::terminal::{
 use ratatui::layout::Rect;
 use ratatui::Terminal;
 
-use quadraui::tui::{draw_multi_section_view, tui_msv_layout, tui_tree_layout};
+use quadraui::primitives::multi_section_view::cell_msv_layout;
+use quadraui::tui::{tui_tree_layout, BufferCellSurface};
 use quadraui::{
     AuxHit, Decoration, HeaderHit, InlineInput, MsvAxis, MultiSectionView, MultiSectionViewHit,
     ScrollMode, ScrollbarHit, Section, SectionAux, SectionBody, SectionHeader, SectionId,
     SectionSize, SelectionMode, StyledText, Theme, TreePath, TreeRow, TreeView, TreeViewHit,
     WidgetId,
 };
+use quadraui::{LayoutCtx, MultiSectionViewLayout, PaintEnv, Primitive, Style};
+
+fn q_rect(area: Rect) -> quadraui::Rect {
+    quadraui::Rect::new(
+        area.x as f32,
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    )
+}
+
+/// The cell-grid chrome layout `view` paints with in `area`, for routing
+/// clicks against what was painted.
+fn chrome_layout(view: &MultiSectionView, area: Rect) -> MultiSectionViewLayout {
+    cell_msv_layout(view, q_rect(area))
+}
+
+/// Paint `view` into `area` on `buf` through the widget's own cell painter.
+fn paint_view(
+    buf: &mut ratatui::buffer::Buffer,
+    area: Rect,
+    view: &MultiSectionView,
+    theme: &Theme,
+) {
+    let ctx = LayoutCtx::new(1.0, 1.0, false);
+    let layout = Primitive::layout(view, &ctx, q_rect(area));
+    let style = Style::default();
+    view.paint_cells(
+        &layout,
+        &mut BufferCellSurface::new(buf),
+        &PaintEnv::new(theme, &style),
+    );
+}
 
 /// Per-section host state — same shape as #1's `TreeSection` plus a
 /// `collapsed` flag the host owns.
@@ -171,7 +205,7 @@ impl SCSidebar {
     /// Route a primary mouse-down at (x, y).
     pub fn click(&mut self, x: u16, y: u16, area: Rect) -> ClickAction {
         let view = self.build_view();
-        let layout = tui_msv_layout(&view, area);
+        let layout = chrome_layout(&view, area);
         match layout.hit_test(x as f32, y as f32) {
             MultiSectionViewHit::Aux {
                 section: _,
@@ -313,7 +347,7 @@ impl SCSidebar {
         };
         let viewport_rows = {
             let view = self.build_view();
-            let layout = tui_msv_layout(&view, area);
+            let layout = chrome_layout(&view, area);
             layout.sections[idx].body_bounds.height as usize
         };
         let row_count = self.sections[idx].rows.len();
@@ -467,13 +501,7 @@ fn run_loop(
             sidebar_area = Rect::new(0, 0, size.width, size.height.saturating_sub(1));
 
             let view = sidebar.build_view();
-            draw_multi_section_view(
-                frame.buffer_mut(),
-                sidebar_area,
-                &view,
-                theme,
-                /* nerd_fonts */ false,
-            );
+            paint_view(frame.buffer_mut(), sidebar_area, &view, theme);
 
             let status = format_status(sidebar, last_action.as_ref());
             let status_y = size.height.saturating_sub(1);

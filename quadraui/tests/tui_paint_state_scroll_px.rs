@@ -265,7 +265,7 @@ impl AppLogic for DataTableApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let state = DataTablePaintState::default().with_scroll_px(self.scroll_px);
-        backend.draw_data_table_with_state(VIEWPORT, &self.table, &state);
+        let _ = backend.draw_dyn(VIEWPORT, &self.table, &state);
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {

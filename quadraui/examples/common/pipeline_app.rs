@@ -113,7 +113,7 @@ impl AppLogic for PipelineApp {
         let pv_y = (viewport.height - lh - pv_h) / 2.0;
         let margin = lh * 2.0;
         let pv_rect = Rect::new(margin, pv_y, viewport.width - margin * 2.0, pv_h);
-        let _ = backend.draw_pipeline_view(pv_rect, &self.pipeline());
+        let _ = backend.draw_primitive(pv_rect, &self.pipeline());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
@@ -171,7 +171,7 @@ impl AppLogic for PipelineApp {
                 let margin = lh * 2.0;
                 let pv_rect = Rect::new(margin, pv_y, viewport.width - margin * 2.0, pv_h);
                 let view = self.pipeline();
-                let layout = backend.pipeline_view_layout(pv_rect, &view);
+                let layout = backend.layout_primitive(pv_rect, &view).layout;
                 match layout.hit_test(position.x, position.y) {
                     PipelineHit::Action(idx) => {
                         self.last_message =

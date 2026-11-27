@@ -1559,17 +1559,6 @@ mod tests {
             }
         }
         fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {}
-        fn draw_data_table(
-            &mut self,
-            _r: Rect,
-            _t: &crate::DataTable,
-            _h: Option<usize>,
-        ) -> crate::DataTableLayout {
-            unimplemented!()
-        }
-        fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
-            unimplemented!()
-        }
         fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
             None
         }
@@ -1581,23 +1570,6 @@ mod tests {
                 crate::primitives::list::ListItemMeasure::new(1.0)
             })
         }
-        fn draw_multi_section_view(&mut self, _r: Rect, _v: &crate::MultiSectionView) {}
-        fn msv_layout(
-            &self,
-            _r: Rect,
-            _v: &crate::MultiSectionView,
-        ) -> crate::MultiSectionViewLayout {
-            unimplemented!()
-        }
-        fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
-            unimplemented!()
-        }
-        fn draw_message_list(
-            &mut self,
-            _r: Rect,
-            _l: &crate::primitives::message_list::MessageList,
-        ) {
-        }
         fn draw_find_replace(
             &mut self,
             _r: Rect,
@@ -1605,35 +1577,6 @@ mod tests {
         ) {
         }
         fn draw_scrollbar(&mut self, _r: Rect, _s: &crate::Scrollbar) {}
-        fn draw_split(&mut self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-            unimplemented!()
-        }
-        fn split_layout(&self, _r: Rect, _s: &crate::Split) -> crate::SplitLayout {
-            unimplemented!()
-        }
-        fn draw_split_tree(&mut self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-            unimplemented!()
-        }
-        fn split_tree_layout(&self, _r: Rect, _t: &crate::SplitTree) -> crate::SplitTreeLayout {
-            unimplemented!()
-        }
-        fn draw_canvas(&mut self, _r: Rect, _c: &crate::Canvas) -> crate::CanvasLayout {
-            unimplemented!()
-        }
-        fn draw_pipeline_view(
-            &mut self,
-            _r: Rect,
-            _v: &crate::PipelineView,
-        ) -> crate::PipelineViewLayout {
-            unimplemented!()
-        }
-        fn pipeline_view_layout(
-            &self,
-            _r: Rect,
-            _v: &crate::PipelineView,
-        ) -> crate::PipelineViewLayout {
-            unimplemented!()
-        }
         fn draw_progress(&mut self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
             unimplemented!()
         }
@@ -1645,54 +1588,6 @@ mod tests {
         }
         fn spinner_layout(&self, _r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {
             unimplemented!()
-        }
-        fn draw_diff_view(
-            &mut self,
-            _r: Rect,
-            view: &crate::primitives::diff_view::DiffView,
-        ) -> crate::primitives::diff_view::DiffViewLayout {
-            crate::primitives::diff_view::DiffViewLayout {
-                visible_rows: 0,
-                total_rows: view.total_rows(),
-            }
-        }
-        fn draw_chart(
-            &mut self,
-            _r: Rect,
-            _c: &crate::primitives::chart::Chart,
-            _h: Option<(usize, usize)>,
-            _x: Option<f64>,
-        ) -> crate::primitives::chart::ChartLayout {
-            unimplemented!()
-        }
-        fn chart_layout(
-            &self,
-            _r: Rect,
-            _c: &crate::primitives::chart::Chart,
-        ) -> crate::primitives::chart::ChartLayout {
-            unimplemented!()
-        }
-
-        fn draw_board(
-            &mut self,
-            _r: Rect,
-            _m: &crate::primitives::board::BoardModel,
-        ) -> crate::primitives::board::BoardLayout {
-            crate::primitives::board::BoardLayout {
-                bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-                columns: vec![],
-            }
-        }
-
-        fn board_layout(
-            &self,
-            _r: Rect,
-            _m: &crate::primitives::board::BoardModel,
-        ) -> crate::primitives::board::BoardLayout {
-            crate::primitives::board::BoardLayout {
-                bounds: crate::event::Rect::new(_r.x, _r.y, _r.width, _r.height),
-                columns: vec![],
-            }
         }
     }
 

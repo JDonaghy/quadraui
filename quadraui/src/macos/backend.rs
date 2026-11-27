@@ -60,21 +60,11 @@ use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::board::{BoardLayout, BoardModel};
-use crate::primitives::canvas::{Canvas, CanvasLayout};
-use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::data_table::{DataTable, DataTableLayout};
 use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::menu_bar::MenuBar;
-use crate::primitives::message_list::MessageList;
-use crate::primitives::multi_section_view::{
-    MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
-};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::scrollbar::Scrollbar;
 use crate::primitives::spinner::{Spinner, SpinnerLayout};
-use crate::primitives::split::{Split, SplitLayout};
-use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::testing::{TextRun, ZoneRec};
 use crate::types::{Color, WidgetId};
 use crate::KeyBinding;
@@ -2389,125 +2379,6 @@ impl Backend for MacBackend {
             );
         }
     }
-    fn draw_data_table(
-        &mut self,
-        rect: Rect,
-        table: &DataTable,
-        hovered_idx: Option<usize>,
-    ) -> DataTableLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_data_table called outside enter_frame_scope",
-        );
-        // `DataTable` is chrome, not editor content — paint through
-        // `chrome_font`, matching `TreeView`'s paint's comment above.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.current_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::data_table::draw_data_table(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                table,
-                &theme,
-                line_height,
-                hovered_idx,
-            )
-        }
-    }
-    /// [`Self::draw_data_table`], but honouring an optional
-    /// [`crate::primitives::data_table::DataTableGlyphs`] override for the
-    /// sort-direction glyphs — `glyphs: None` reproduces
-    /// [`Self::draw_data_table`] exactly.
-    fn draw_data_table_with_glyphs(
-        &mut self,
-        rect: Rect,
-        table: &DataTable,
-        hovered_idx: Option<usize>,
-        glyphs: Option<&crate::primitives::data_table::DataTableGlyphs>,
-    ) -> DataTableLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_data_table_with_glyphs called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.current_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::data_table::draw_data_table_with_glyphs(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                table,
-                &theme,
-                line_height,
-                hovered_idx,
-                glyphs,
-                self.nerd_fonts_enabled,
-            )
-        }
-    }
-    /// [`Self::draw_data_table`], plus — when `state.scroll_px` is
-    /// `Some` — a pixel-precise scroll position instead of only
-    /// [`DataTable::scroll_offset`]'s whole-row value, via
-    /// [`super::data_table::draw_data_table_with_state`].
-    /// `state.scroll_px: None` paints pixel-identically to
-    /// [`Self::draw_data_table`].
-    fn draw_data_table_with_state(
-        &mut self,
-        rect: Rect,
-        table: &DataTable,
-        state: &crate::primitives::data_table::DataTablePaintState,
-    ) -> DataTableLayout {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_data_table_with_state called outside enter_frame_scope",
-        );
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.current_line_height);
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::data_table::draw_data_table_with_state(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                table,
-                &theme,
-                line_height,
-                state,
-            )
-        }
-    }
-    fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout {
-        // No-paint twin of `draw_data_table` — must agree with what
-        // that method painted.
-        let font = &self.chrome_font;
-        super::data_table::mac_data_table_layout(
-            table,
-            font,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.resolved_row_height(self.current_line_height),
-        )
-    }
     fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<crate::Scrollbar> {
         // `ListView::h_scroll` and `max_content_width` are in character columns,
         // but macOS works in pixels.  Convert with `current_char_width` so the
@@ -2560,70 +2431,6 @@ impl Backend for MacBackend {
         )
     }
 
-    fn draw_multi_section_view(&mut self, rect: Rect, view: &MultiSectionView) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_multi_section_view called outside enter_frame_scope",
-        );
-        // Section headers and Tree/List body rows are sidebar chrome
-        // (`ChromePrimitive::MultiSectionView`). The font swaps to chrome,
-        // and `line_height` uses the chrome metric so row spacing matches
-        // the compose layer's `chrome_line_height()`-based hit regions.
-        let font = &self.chrome_font;
-        let theme = self.current_theme;
-        let line_height = self.chrome_line_height;
-        let char_width = self.chrome_char_width;
-        let caret_visible = self.caret_visible.get();
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::multi_section_view::draw_multi_section_view(
-                ctx,
-                font,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                rect.height as f64,
-                view,
-                &theme,
-                &self.current_style,
-                line_height,
-                char_width,
-                caret_visible,
-            )
-        }
-    }
-    fn msv_layout(&self, rect: Rect, view: &MultiSectionView) -> MultiSectionViewLayout {
-        super::multi_section_view::mac_msv_layout(view, rect, self.chrome_line_height)
-    }
-    fn msv_metrics(&self) -> MsvLayoutMetrics {
-        super::multi_section_view::mac_msv_metrics(self.chrome_line_height, false)
-    }
-    fn draw_message_list(&mut self, rect: Rect, list: &MessageList) {
-        let ctx = self.current_cg();
-        debug_assert!(
-            !ctx.is_null(),
-            "MacBackend::draw_message_list called outside enter_frame_scope",
-        );
-        // `MessageList` is chrome, not editor content — see
-        // `draw_data_table`'s comment.
-        let font = &self.chrome_font;
-        let line_height = self.current_line_height;
-        // SAFETY: ctx is non-null inside the frame scope.
-        unsafe {
-            super::message_list::draw_message_list(
-                ctx,
-                font,
-                list,
-                rect.x as f64,
-                rect.y as f64,
-                rect.width as f64,
-                (rect.y + rect.height) as f64,
-                line_height,
-            );
-        }
-    }
-
     fn draw_find_replace(&mut self, _rect: Rect, panel: &FindReplacePanel) {
         debug_assert!(
             !self.current_cg().is_null(),
@@ -2646,80 +2453,6 @@ impl Backend for MacBackend {
         );
     }
 
-    fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
-        let layout = super::split::mac_split_layout(
-            split,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        let theme = self.current_theme;
-        crate::primitives::split::native_surface_paint::paint(&layout, self, &theme);
-        layout
-    }
-    fn split_layout(&self, rect: Rect, split: &Split) -> SplitLayout {
-        super::split::mac_split_layout(
-            split,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
-    fn draw_split_tree(&mut self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
-        let theme = self.current_theme;
-        let layout = super::split_tree::mac_split_tree_layout(
-            tree,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        );
-        crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
-        layout
-    }
-    fn split_tree_layout(&self, rect: Rect, tree: &SplitTree) -> SplitTreeLayout {
-        super::split_tree::mac_split_tree_layout(
-            tree,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
-    fn draw_canvas(&mut self, rect: Rect, canvas: &Canvas) -> CanvasLayout {
-        let layout = canvas.layout(rect);
-        crate::primitives::canvas::native_surface_paint::paint(canvas, &layout, self);
-        layout
-    }
-    /// Paint via the shared
-    /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
-    /// — see that fn's doc for the seven named divergences found while
-    /// unifying `gtk::pipeline_view::draw_pipeline_view`,
-    /// `macos::pipeline_view::draw_pipeline_view` and
-    /// `win::pipeline_view::draw_pipeline_view` into one implementation.
-    fn draw_pipeline_view(
-        &mut self,
-        rect: Rect,
-        view: &crate::primitives::pipeline_view::PipelineView,
-    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        let theme = self.current_theme;
-        crate::primitives::pipeline_view::native_surface_paint::paint(view, self, &theme, rect)
-    }
-    fn pipeline_view_layout(
-        &self,
-        rect: Rect,
-        view: &crate::primitives::pipeline_view::PipelineView,
-    ) -> crate::primitives::pipeline_view::PipelineViewLayout {
-        super::pipeline_view::mac_pipeline_view_layout(
-            view,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
-    }
     /// Paint via the shared
     /// [`crate::primitives::progress::native_surface_paint::paint`].
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
@@ -2752,96 +2485,6 @@ impl Backend for MacBackend {
         // method painted.
         let font = &self.chrome_font;
         super::spinner::mac_spinner_layout(spinner, font, rect.x as f64, rect.y as f64)
-    }
-    /// Shared chart painting lives in
-    /// [`crate::primitives::chart::paint`] now — see that fn's doc for
-    /// the divergences resolved while unifying `gtk::chart::draw_chart`,
-    /// `macos::chart::draw_chart` and `win::chart::draw_chart` into one
-    /// implementation.
-    fn draw_chart(
-        &mut self,
-        rect: Rect,
-        chart: &Chart,
-        hovered_point: Option<(usize, usize)>,
-        crosshair_x: Option<f64>,
-    ) -> ChartLayout {
-        let theme = self.current_theme;
-        let layout = self.chart_layout(rect, chart);
-        crate::primitives::chart::paint(chart, &layout, self, &theme, hovered_point, crosshair_x);
-        layout
-    }
-    /// Measured in `chrome_line_height`/`chrome_char_width`, not the
-    /// editor pitch: the geometry this returns reserves room for text —
-    /// the y-axis tick gutter is `char_width * (longest_label + 1)`, and
-    /// the x-tick, x-label and legend rows are each one `line_height`
-    /// tall — and every one of those labels is painted by
-    /// [`crate::primitives::chart::paint`] through plain `self`, whose
-    /// [`PaintSurface`] impl resolves `chrome_font` (see
-    /// [`Self::surface_measure_text`]). Sizing the gutter and rows from
-    /// the editor font while the glyphs that land in them come from the
-    /// chrome font is the metric mismatch the two cached widths exist to
-    /// avoid: axis and legend labels would clip against the plot area or
-    /// spill outside the chart's own bounds whenever the two fonts
-    /// differ in size. [`Self::surface_line_height`] reports the same
-    /// chrome pitch `paint` re-reads for the x-label offset, so layout
-    /// and paint agree on every row.
-    fn chart_layout(&self, rect: Rect, chart: &Chart) -> ChartLayout {
-        super::chart::mac_chart_layout(
-            chart,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            self.chrome_line_height,
-            self.chrome_char_width,
-        )
-    }
-
-    /// Paint via the shared
-    /// [`crate::primitives::diff_view::native_surface_paint::paint`] —
-    /// see that fn's doc for the two named divergences (row/header text
-    /// vertical alignment; header-label ellipsize vs. hard-clip) found
-    /// while unifying `gtk::diff_view::draw_diff_view`,
-    /// `macos::diff_view::draw_diff_view` and
-    /// `win::diff_view::draw_diff_view` into one implementation.
-    fn draw_diff_view(
-        &mut self,
-        rect: Rect,
-        view: &crate::primitives::diff_view::DiffView,
-    ) -> crate::primitives::diff_view::DiffViewLayout {
-        // `PaintSurface::surface_fill_rect`/`surface_draw_text_run` (etc)
-        // each debug_assert their own `!ctx.is_null()` internally, so
-        // this method needs no separate ctx/font fetch of its own.
-        //
-        // `DiffView` is editor-class — see `EditorSurface`'s doc.
-        let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
-        let mut surface = EditorSurface { backend: self };
-        crate::primitives::diff_view::native_surface_paint::paint(
-            view,
-            &mut surface,
-            &theme,
-            rect,
-            line_height,
-        )
-    }
-
-    /// Override of the trait's no-op default, which returns an empty
-    /// `BoardLayout` and paints nothing. Paint via the shared
-    /// [`crate::primitives::board::native_surface_paint::paint`].
-    fn draw_board(&mut self, rect: Rect, model: &BoardModel) -> BoardLayout {
-        let theme = self.current_theme;
-        crate::primitives::board::native_surface_paint::paint(model, self, &theme, rect)
-    }
-
-    fn board_layout(&self, rect: Rect, model: &BoardModel) -> BoardLayout {
-        super::board::mac_board_layout(
-            model,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-        )
     }
 
     // ─── Clipping ────────────────────────────────────────────────────────
