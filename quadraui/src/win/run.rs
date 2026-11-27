@@ -3695,27 +3695,22 @@ mod win32 {
         /// A real click at the File menu's position inside a combined
         /// title/menu band must reach the app as an ordinary `MouseDown`,
         /// not get swallowed as a title-bar drag. The test above proves
-        /// `nc_hit_test`'s classification is right when the band and its
-        /// widgets are painted directly (`LiveWindowApp::render` calls
-        /// `Backend::register_zone`/`draw_dyn` itself) — this one
-        /// proves the same real `WM_NCHITTEST` round trip when the band
-        /// comes from the actual consumer-shaped composition instead:
-        /// `ShellView`'s title-bar band (`ShellConfig::with_title_bar`)
-        /// hosting an `AppMenu` menu bar, run through the real
-        /// `win::shell_runner::run_with_shell` — the same path
-        /// `examples/win_shell_menu.rs` exercises. A gap in how
-        /// `ShellView::render`/`AppMenu::render` register their own
-        /// band-content zones (as opposed to a gap in `nc_hit_test`
-        /// itself, which the test above already covers) would show up
-        /// here even if that one still passed.
+        /// `nc_hit_test`'s classification when the band's widgets are
+        /// painted directly (`LiveWindowApp::render` calls
+        /// `Backend::register_zone`/`draw_dyn` itself); this one proves the
+        /// same real `WM_NCHITTEST` round trip when the band comes from a
+        /// consumer-shaped composition: `ShellView`'s title-bar band
+        /// (`ShellConfig::with_title_bar`) hosting an `AppMenu` menu bar,
+        /// run through `win::shell_runner::run_with_shell` as
+        /// `examples/win_shell_menu.rs` does. A gap in how `ShellView`/
+        /// `AppMenu` register their band-content zones shows up here.
         struct ShellProbeTargets {
             file_item: Option<(f32, f32)>,
             scale: f32,
         }
 
         struct LiveShellMenuApp {
-            menu: crate::AppMenu,
-            menu_state: crate::AppMenuState,
+            menu: (crate::AppMenu, crate::AppMenuState),
             targets: Arc<Mutex<ShellProbeTargets>>,
         }
 
@@ -3724,9 +3719,9 @@ mod win32 {
                 let Some(bar_rect) = layout.title_bar_bounds else {
                     return;
                 };
-                self.menu.render(backend, bar_rect);
+                self.menu.0.render(backend, bar_rect);
 
-                let bar = self.menu.build_menu_bar();
+                let bar = self.menu.0.build_menu_bar();
                 let menu_layout =
                     crate::DrawsPrimitives::layout_primitive(&*backend, bar_rect, &bar).layout;
                 let file_item = menu_layout
@@ -3757,10 +3752,8 @@ mod win32 {
                 let Some(bar_rect) = ctx.title_bar_bounds() else {
                     return Reaction::Continue;
                 };
-                match self
-                    .menu
-                    .handle_ui_event(&mut self.menu_state, &event, backend, bar_rect)
-                {
+                let (menu, state) = &mut self.menu;
+                match menu.handle_ui_event(state, &event, backend, bar_rect) {
                     crate::Handled::Ignored => Reaction::Continue,
                     _ => Reaction::Redraw,
                 }
@@ -3777,21 +3770,19 @@ mod win32 {
                 file_item: None,
                 scale: 1.0,
             }));
+            let menus = vec![crate::MenuDef {
+                id: crate::types::WidgetId::new("probe:file"),
+                label: "&File".into(),
+                disabled: false,
+                items: vec![crate::ContextMenuItem {
+                    id: Some(crate::types::WidgetId::new("probe:new")),
+                    label: crate::StyledText::plain("New File"),
+                    ..Default::default()
+                }],
+            }];
+            let menu = crate::AppMenu::new("probe".into(), menus);
             let app = LiveShellMenuApp {
-                menu: crate::AppMenu::new(
-                    crate::types::WidgetId::new("probe:menu"),
-                    vec![crate::MenuDef {
-                        id: crate::types::WidgetId::new("probe:file"),
-                        label: "&File".into(),
-                        disabled: false,
-                        items: vec![crate::ContextMenuItem {
-                            id: Some(crate::types::WidgetId::new("probe:new")),
-                            label: crate::StyledText::plain("New File"),
-                            ..Default::default()
-                        }],
-                    }],
-                ),
-                menu_state: crate::AppMenuState::default(),
+                menu: (menu, Default::default()),
                 targets: targets.clone(),
             };
             let title = format!(
