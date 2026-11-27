@@ -525,9 +525,11 @@ pub struct DataTableLayout {
     /// How far the first visible row is shifted up past the header, in
     /// the same units as [`Self::row_height`] — the sub-row remainder of a
     /// pixel-precise scroll ([`DataTable::scroll_sub_row_px`]). `0.0` from
-    /// [`DataTable::layout`]; a painter that scrolls by a fraction of a
-    /// row sets it on the layout it returns, so [`Self::hit_test`]
-    /// resolves rows at the offset they were painted at.
+    /// [`DataTable::layout`]; the widget's `Primitive::layout` sets it
+    /// from its paint state's `scroll_px`, as does a painter that scrolls
+    /// by a fraction of a row on the layout it returns, so
+    /// [`Self::hit_test`] resolves rows at the offset they were painted
+    /// at.
     pub scroll_sub_px: f32,
 }
 
@@ -2414,7 +2416,8 @@ pub struct DataTablePrimitiveLayout {
     pub nerd_fonts_enabled: bool,
     /// The table-local layout itself.
     pub layout: DataTableLayout,
-    /// [`DataTable::scroll_offset`] at the time [`Primitive::layout`]
+    /// The first painted row: [`DataTable::effective_scroll_offset`] for
+    /// the paint state's `scroll_px` at the time [`Primitive::layout`]
     /// was called — [`Self::hit_test`] needs this to resolve a `y` into
     /// an absolute row index, since [`DataTableLayout`] itself carries
     /// no row count or scroll position.

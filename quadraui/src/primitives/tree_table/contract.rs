@@ -44,7 +44,8 @@ pub struct TreeTablePrimitiveLayout {
     pub nerd_fonts_enabled: bool,
     /// The table-local layout itself.
     pub layout: TreeTableLayout,
-    /// `table.scroll_offset` at layout time.
+    /// The first painted row: `table.effective_scroll_offset` for the
+    /// paint state's `scroll_px` at layout time.
     pub scroll_offset: usize,
     /// `table.rows.len()` at layout time.
     pub total_rows: usize,
