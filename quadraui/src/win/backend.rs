@@ -1698,30 +1698,6 @@ impl WinBackend {
         }
     }
 
-    /// Builds a [`crate::paint_surface::PaintSurface`] from the live
-    /// `self.surface`/`self.dwrite` (preferring `self.chrome_dwrite`)
-    /// and runs `paint` with it, or returns `None` when no surface is
-    /// attached yet. A trait object rather than the concrete
-    /// [`super::surface::D2dSurface`] since that type is itself
-    /// `#[cfg(target_os = "windows")]`-gated and this signature must
-    /// type-check on every host.
-    fn with_chrome_surface<R>(
-        &self,
-        paint: impl FnOnce(&mut dyn crate::paint_surface::PaintSurface) -> R,
-    ) -> Option<R> {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            let mut surf = super::surface::D2dSurface {
-                target: &surface.target,
-                dwrite: Some(dwrite),
-            };
-            return Some(paint(&mut surf));
-        }
-        #[cfg(not(target_os = "windows"))]
-        let _ = &paint;
-        None
-    }
 }
 
 /// `GetDpiForWindow(hwnd) / 96.0` — the ratio `Viewport::scale` carries
