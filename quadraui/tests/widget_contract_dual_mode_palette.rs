@@ -45,8 +45,7 @@ impl BranchApp {
                 "Branches",
                 Some("New branch:".into()),
                 items(""),
-            )
-            .with_vim_keys(true),
+            ),
             area,
             confirmed: Vec::new(),
         }
@@ -150,8 +149,18 @@ mod tui {
     }
 
     #[test]
-    fn j_and_k_move_the_highlight_in_list_mode() {
+    fn j_and_k_type_into_the_list_query_by_default() {
         let mut driver = driver();
+        driver.type_char('j');
+        driver.type_char('k');
+        assert_eq!(driver.app().palette.query, "jk");
+        assert_eq!(driver.app().palette.selected, 0);
+    }
+
+    #[test]
+    fn with_vim_keys_j_and_k_move_the_highlight_in_list_mode() {
+        let mut driver = driver();
+        driver.app_mut().palette.vim_keys = true;
         driver.type_char('j');
         driver.type_char('j');
         driver.type_char('k');

@@ -1,13 +1,13 @@
 //! Backend-agnostic `AppLogic` for the AI-chat-transcript demo
 //! ([`tui_ai_transcript`] / [`gtk_ai_transcript`]).
 //!
-//! Demonstrates [`ChatController::push_turn_markdown`]: the recommended API
+//! Demonstrates [`Chat::push_turn_markdown`]: the recommended API
 //! for assistant-role messages.  Each canned reply is passed as raw markdown
 //! to `push_turn_markdown`; the adapter converts headings, **bold**, *italic*,
 //! `inline_code`, bulleted / numbered lists, fenced code blocks, links, and
 //! blockquotes to a [`StyledText`] stored inside the [`ChatTurn`].
 //!
-//! The `ChatController` renders the structured plain text in the transcript.
+//! The [`Chat`] renders the structured plain text in the transcript.
 //! Structural glyphs — list bullets `•`, blockquote bars `│`, and code-block
 //! content — survive as literal Unicode text cues in every backend.
 //! Per-span attributes (bold, italic, underline, foreground colour) are **not**
@@ -22,9 +22,10 @@
 //! - `Esc` — quit.
 
 use quadraui::{
-    AppLogic, Backend, ChatController, ChatControllerAction, ChatRole, Handled, Reaction, Rect,
-    StyledText, Theme, UiEvent,
+    AppLogic, Backend, Chat, ChatEvent, ChatRole, FrameTree, Reaction, Rect, ScreenLayout,
+    StyledText, Surface, Theme, UiEvent, WidgetId,
 };
+use std::cell::Cell;
 
 /// Canned (prompt, markdown-reply) pairs cycled through on each send.
 ///
@@ -45,8 +46,8 @@ Call `render_markdown_to_styled(input, &theme)`. It returns a
 - `line_text` — plain text, for hit-tests and search
 - `line_scales` — heading scale factors (H1=2.0, H2=1.5, H3=1.2)
 
-Then pass the markdown string to `ChatController::push_turn_markdown` and the
-controller stores the styled result as a [`ChatTurn`].
+Then pass the markdown string to `Chat::push_turn_markdown` and the
+chat stores the styled result as a [`ChatTurn`].
 
 > **Tip**: `snake_case` identifiers like render_markdown_to_styled stay
 > upright — the adapter honours CommonMark flanking rules.",
@@ -103,24 +104,25 @@ See [the quadraui docs](https://github.com/example/quadraui) for details.
     ),
 ];
 
-/// Demo app that drives a [`ChatController`] with `push_turn_markdown`.
+/// Demo app that owns a [`Chat`] and fills it with `push_turn_markdown`.
 pub struct AiTranscript {
-    controller: ChatController,
+    chat: Chat,
+    /// Where the chat painted last frame, for `frame_tree` to register.
+    area: Cell<Rect>,
     next_exchange: usize,
 }
 
 impl AiTranscript {
     pub fn new() -> Self {
-        let mut controller = ChatController::new("ai-transcript");
-        controller.set_status(StyledText::plain(
-            "AI transcript  ·  Ctrl+S to send  ·  PgUp/PgDn scroll  ·  Esc quit",
-        ));
+        let mut chat = Chat::new(WidgetId::new("ai-transcript"));
+        chat.status =
+            StyledText::plain("AI transcript  ·  Ctrl+S to send  ·  PgUp/PgDn scroll  ·  Esc quit");
         // TUI uses 1-cell-wide scrollbar; GTK uses ~8px.  Set to 1 so the
         // demo looks right in TUI without further config.
-        controller.set_scrollbar_width(Some(1.0));
+        chat.scrollbar_width = Some(1.0);
 
         // Seed with a system greeting so the view is not empty on launch.
-        controller.push_turn(
+        chat.push_turn(
             ChatRole::System,
             StyledText::plain(
                 "Connected. Press Ctrl+S or Alt+Enter to send the next canned prompt.",
@@ -128,7 +130,8 @@ impl AiTranscript {
         );
 
         Self {
-            controller,
+            chat,
+            area: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
             next_exchange: 0,
         }
     }
@@ -140,12 +143,12 @@ impl AiTranscript {
         self.next_exchange += 1;
 
         // User turn — plain text.
-        self.controller
+        self.chat
             .push_turn(ChatRole::User, StyledText::plain(prompt));
 
         // Assistant turn — markdown rendered via the adapter.
         let theme = Theme::default();
-        self.controller
+        self.chat
             .push_turn_markdown(ChatRole::Assistant, reply_md, &theme);
     }
 }
@@ -159,23 +162,44 @@ impl Default for AiTranscript {
 impl AppLogic for AiTranscript {
     type AreaId = ();
 
+    fn setup(&mut self, backend: &mut dyn Backend) {
+        backend.set_focus(Some(self.chat.id));
+    }
+
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let rect = Rect::new(0.0, 0.0, vp.width, vp.height);
-        self.controller.render(backend, rect);
+        self.area.set(rect);
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect,
+            widget: Box::new(self.chat.clone()),
+        });
+        frame.draw(backend);
     }
 
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        let vp = backend.viewport();
-        let rect = Rect::new(0.0, 0.0, vp.width, vp.height);
-        match self.controller.handle_event(&event, backend, rect) {
-            Handled::Event(ChatControllerAction::Submit { .. }) => {
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(self.chat.id, self.area.get(), Box::new(self.chat.clone()));
+        tree
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        let UiEvent::Chat(id, event) = event else {
+            return Reaction::Continue;
+        };
+        if id != self.chat.id {
+            return Reaction::Continue;
+        }
+        self.chat.apply(&event);
+        match event {
+            ChatEvent::Submit { .. } => {
                 self.send_next();
                 Reaction::Redraw
             }
-            Handled::Event(ChatControllerAction::Cancelled) => Reaction::Exit,
-            Handled::Consumed => Reaction::Redraw,
-            _ => Reaction::Continue,
+            ChatEvent::Cancelled => Reaction::Exit,
+            ChatEvent::KeyPressed { .. } | ChatEvent::TurnClicked { .. } => Reaction::Continue,
+            _ => Reaction::Redraw,
         }
     }
 }

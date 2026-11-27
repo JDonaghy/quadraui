@@ -7,7 +7,7 @@
 //! matcher in the crate ([`crate::compose::folder_picker`]'s directory
 //! filter, [`crate::compose::filter_help_actions`]) instead of each one
 //! carrying its own ad-hoc scorer, and so [`word_wrap`] gives
-//! [`crate::compose::chat_controller`] (and any other consumer that
+//! [`crate::compose::chat`] (and any other consumer that
 //! needs to wrap plain text to a column budget) real word-aware
 //! wrapping instead of a mid-word hard break.
 //!
@@ -487,7 +487,7 @@ pub fn fuzzy_score(haystack: &str, query: &str) -> Option<(i32, Vec<usize>)> {
 /// `text` is assumed to be a single logical line (no `\n`) — callers
 /// that need to wrap multi-line text should split on `\n` first and
 /// call this per line, same as
-/// [`crate::compose::chat_controller`] does.
+/// [`crate::compose::chat`] does.
 ///
 /// Zero budget or empty input is handled gracefully: `col_budget == 0`
 /// returns `text` unmodified as a single row (there's no sane way to

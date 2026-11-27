@@ -21,7 +21,7 @@
 //!    silent no-op — see [`HelpOverlay::help`].
 //! 3. **[`help_actions_to_palette_items`] / [`filter_help_actions`]** — feed
 //!    registered actions into the existing [`crate::Palette`] /
-//!    [`crate::DualModePaletteController`] so they're searchable by label
+//!    [`crate::DualModePalette`] so they're searchable by label
 //!    *and* description.
 //!
 //! # Cross-backend portability
@@ -503,7 +503,7 @@ fn build_help_body_and_table(help: Option<&ViewHelp>) -> (Vec<StyledText>, Optio
 // ── Command-palette integration ─────────────────────────────────────────
 
 /// Convert registered actions into [`PaletteItem`]s for
-/// [`crate::Palette`] / [`crate::DualModePaletteController`].
+/// [`crate::Palette`] / [`crate::DualModePalette`].
 ///
 /// Each item's primary text is `"{label}  — {description}"` (bold label
 /// span + dim description span) so the description is visibly searchable

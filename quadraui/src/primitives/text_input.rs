@@ -663,7 +663,7 @@ impl TextInput {
     ///
     /// Exposed so callers that need to pre-wrap text to a fixed width
     /// *before* calling [`Self::layout`] — e.g.
-    /// [`crate::compose::ChatController`]'s soft-wrapping, auto-growing
+    /// [`crate::compose::Chat`]'s soft-wrapping, auto-growing
     /// chat input — compute the same budget `layout` will
     /// end up rendering into, without duplicating the border/padding
     /// constants (and risking the two drifting apart).

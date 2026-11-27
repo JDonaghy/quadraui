@@ -19,7 +19,7 @@
 //!   N collapsible-tree sections, used by `tui_multi_tree` /
 //!   `gtk_multi_tree`. Demonstrates the consumer pattern for
 //!   per-section scroll/selection state.
-//! - [`ChatDemo`] (in [`chat_demo`]) — `ChatController` overlay with
+//! - [`ChatDemo`] (in [`chat_demo`]) — `Chat` overlay with
 //!   scrollable transcript, multi-line input, history, and spinner,
 //!   used by `tui_chat` / `gtk_chat`.
 //! - [`SidebarRevealDemo`] (in [`sidebar_reveal_demo`]) — single Tree

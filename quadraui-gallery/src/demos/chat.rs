@@ -1,17 +1,20 @@
 //! `Chat` demo — adapted from `quadraui/examples/common/chat_demo.rs` and
 //! `ai_transcript.rs`.
 //!
-//! Both source files drive a [`ChatController`]; the two variants below
-//! keep both usages since they exercise different parts of its surface:
-//! a fully interactive session (submit, simulated "thinking" reply,
-//! collapsible turns) and [`ChatController::push_turn_markdown`] (the
-//! recommended way to render assistant replies written in markdown).
+//! Both source files own a [`Chat`]; the two variants below keep both
+//! usages since they exercise different parts of its surface: a fully
+//! interactive session (submit, simulated "thinking" reply, collapsible
+//! turns) and [`Chat::push_turn_markdown`] (the recommended way to render
+//! assistant replies written in markdown).
+//!
+//! The gallery hands each demo raw events, so a variant drives its chat
+//! with [`drive_ui_event`] and applies every [`ChatEvent`] it reports.
 
 use std::time::Duration;
 
 use quadraui::{
-    Backend, ChatController, ChatControllerAction, ChatRole, ChatTurn, Color, Handled, Reaction,
-    Rect, StyledText, Theme, UiEvent,
+    drive_ui_event, Backend, Chat, ChatEvent, ChatRole, ChatState, ChatTurn, Color,
+    DrawsPrimitives, Handled, Reaction, Rect, StyledText, Theme, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -52,69 +55,101 @@ Inline **bold**, *italic*, and `inline_code` all render with correct spans.
     ),
 ];
 
+/// Drive `chat` with `event` laid out at `area`, applying every
+/// write-back it reports; the semantic event, if any, is returned under
+/// [`Handled::Event`].
+fn drive_chat(
+    chat: &mut Chat,
+    state: &mut ChatState,
+    event: &UiEvent,
+    backend: &dyn Backend,
+    area: Rect,
+) -> Handled<ChatEvent> {
+    let Some(driven) = drive_ui_event(chat, state, event, backend, area) else {
+        return Handled::Ignored;
+    };
+    for emitted in &driven.emitted {
+        if let UiEvent::Chat(_, write_back) = emitted {
+            chat.apply(write_back);
+        }
+    }
+    match driven.handled {
+        Handled::Event(event) => {
+            chat.apply(&event);
+            match event {
+                ChatEvent::InputChanged { .. }
+                | ChatEvent::TranscriptScrolled { .. }
+                | ChatEvent::FocusedTurnChanged { .. }
+                | ChatEvent::TurnCollapsed { .. } => Handled::Consumed,
+                semantic => Handled::Event(semantic),
+            }
+        }
+        other => other,
+    }
+}
+
 /// Variant 0 state: interactive session — echoes the user's message back
 /// as a simulated assistant reply after a short "thinking" delay.
 struct InteractiveState {
-    controller: ChatController,
+    chat: Chat,
+    state: ChatState,
     turns: Vec<ChatTurn>,
     thinking_ticks: usize,
     pending_reply: Option<String>,
-    spinner_frame: usize,
 }
 
 impl InteractiveState {
     fn new() -> Self {
-        let mut controller = ChatController::new("gallery:chat:interactive");
-        controller.set_status(StyledText::plain(
-            "Enter to send, Ctrl+C to quit demo input",
-        ));
-        controller.set_model_label("claude-opus-4-5");
-        controller.set_submit_on_enter(true);
-        controller.set_hint(Some(StyledText::plain(
+        let mut chat = Chat::new(WidgetId::new("gallery:chat:interactive"));
+        chat.status = StyledText::plain("Enter to send, Ctrl+C to quit demo input");
+        chat.model_label = "claude-opus-4-5".into();
+        chat.submit_on_enter = true;
+        chat.hint = Some(StyledText::plain(
             "Enter to send \u{b7} Shift+Enter for a newline",
-        )));
+        ));
         Self {
-            controller,
+            chat,
+            state: ChatState::default(),
             turns: Vec::new(),
             thinking_ticks: 0,
             pending_reply: None,
-            spinner_frame: 0,
         }
     }
 
     fn sync(&mut self) {
-        self.controller.set_transcript(self.turns.clone());
-        self.controller.set_busy(self.thinking_ticks > 0);
+        self.chat.transcript = self.turns.clone();
+        self.chat.busy = self.thinking_ticks > 0;
     }
 
     fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend, area: Rect) -> Reaction {
-        let ev = self.controller.handle_event(event, backend, area);
+        let ev = drive_chat(&mut self.chat, &mut self.state, event, backend, area);
         match ev {
-            Handled::Event(ChatControllerAction::Submit { text }) => {
+            Handled::Event(ChatEvent::Submit { text }) => {
                 self.turns.push(ChatTurn {
                     role: ChatRole::User,
                     text: StyledText::colored(text.clone(), Color::rgb(220, 220, 220)),
                     timestamp_unix: None,
                     line_scales: Vec::new(),
                 });
-                self.controller.clear_input();
+                self.chat.clear_input();
+                self.state.reset_history_navigation();
                 self.pending_reply = Some(format!("Echo: {text}"));
                 self.thinking_ticks = 5;
                 backend.request_frame_in(THINKING_TICK_INTERVAL);
                 self.sync();
                 Reaction::Redraw
             }
-            Handled::Event(ChatControllerAction::StopRequested) => {
+            Handled::Event(ChatEvent::StopRequested) => {
                 self.thinking_ticks = 0;
                 self.pending_reply = None;
                 self.sync();
                 Reaction::Redraw
             }
-            Handled::Event(ChatControllerAction::TurnClicked {
+            Handled::Event(ChatEvent::TurnClicked {
                 turn_idx,
                 row_in_turn: 0,
             }) => {
-                self.controller.toggle_turn_collapsed(turn_idx);
+                self.chat.toggle_turn_collapsed(turn_idx);
                 self.sync();
                 Reaction::Redraw
             }
@@ -134,8 +169,7 @@ impl InteractiveState {
             return Reaction::Continue;
         }
         self.thinking_ticks -= 1;
-        self.spinner_frame = self.spinner_frame.wrapping_add(1);
-        self.controller.set_spinner_frame(self.spinner_frame);
+        self.chat.spinner_frame = self.chat.spinner_frame.wrapping_add(1);
         if self.thinking_ticks == 0 {
             if let Some(reply) = self.pending_reply.take() {
                 self.turns.push(ChatTurn {
@@ -156,23 +190,24 @@ impl InteractiveState {
 /// Variant 1 state: canned markdown exchanges pushed via
 /// `push_turn_markdown`.
 struct TranscriptState {
-    controller: ChatController,
+    chat: Chat,
+    state: ChatState,
     next_exchange: usize,
 }
 
 impl TranscriptState {
     fn new() -> Self {
-        let mut controller = ChatController::new("gallery:chat:transcript");
-        controller.set_status(StyledText::plain(
-            "AI transcript \u{b7} Ctrl+S to send \u{b7} PgUp/PgDn scroll",
-        ));
-        controller.set_scrollbar_width(Some(1.0));
-        controller.push_turn(
+        let mut chat = Chat::new(WidgetId::new("gallery:chat:transcript"));
+        chat.status =
+            StyledText::plain("AI transcript \u{b7} Ctrl+S to send \u{b7} PgUp/PgDn scroll");
+        chat.scrollbar_width = Some(1.0);
+        chat.push_turn(
             ChatRole::System,
             StyledText::plain("Connected. Press Ctrl+S or Alt+Enter to send the next prompt."),
         );
         Self {
-            controller,
+            chat,
+            state: ChatState::default(),
             next_exchange: 0,
         }
     }
@@ -180,25 +215,21 @@ impl TranscriptState {
     fn send_next(&mut self) {
         let (prompt, reply_md) = EXCHANGES[self.next_exchange % EXCHANGES.len()];
         self.next_exchange += 1;
-        self.controller
+        self.chat
             .push_turn(ChatRole::User, StyledText::plain(prompt));
         let theme = Theme::default();
-        self.controller
+        self.chat
             .push_turn_markdown(ChatRole::Assistant, reply_md, &theme);
     }
 
-    /// Total turns pushed so far: the one `System` turn from [`Self::new`]
-    /// plus a (user, assistant) pair per completed [`Self::send_next`]
-    /// call. `ChatController` has no public turn-count accessor to read
-    /// this back from directly, so it's derived here instead of (wrongly)
-    /// reporting `transcript_scroll_top()` as if it were one.
+    /// Total turns pushed so far.
     fn turn_count(&self) -> usize {
-        1 + self.next_exchange * 2
+        self.chat.transcript.len()
     }
 
     fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend, area: Rect) -> Reaction {
-        match self.controller.handle_event(event, backend, area) {
-            Handled::Event(ChatControllerAction::Submit { .. }) => {
+        match drive_chat(&mut self.chat, &mut self.state, event, backend, area) {
+            Handled::Event(ChatEvent::Submit { .. }) => {
                 self.send_next();
                 Reaction::Redraw
             }
@@ -243,8 +274,12 @@ impl Demo for ChatDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         match variant {
-            1 => self.transcript.controller.render(backend, area),
-            _ => self.interactive.controller.render(backend, area),
+            1 => {
+                backend.draw_dyn(area, &self.transcript.chat, &());
+            }
+            _ => {
+                backend.draw_dyn(area, &self.interactive.chat, &());
+            }
         }
     }
 
@@ -281,7 +316,7 @@ impl Demo for ChatDemo {
             _ => serde_json::json!({
                 "turns": self.interactive.turns.len(),
                 "thinking_ticks": self.interactive.thinking_ticks,
-                "input": self.interactive.controller.input_text(),
+                "input": self.interactive.chat.input_text(),
             }),
         }
     }
@@ -299,8 +334,8 @@ mod tests {
         let mut backend = quadraui::testing::RecordingBackend::new();
         let area = Rect::new(0.0, 0.0, 60.0, 20.0);
         assert_eq!(demo.transcript.next_exchange, 0);
-        // `ChatController::try_submit` ignores Ctrl+S on an empty input
-        // buffer — type a character first, same as a real user would.
+        // The chat ignores Ctrl+S on an empty input buffer — type a
+        // character first, same as a real user would.
         demo.handle(1, &UiEvent::CharTyped('?'), &mut backend, area);
         let reaction = demo.handle(
             1,

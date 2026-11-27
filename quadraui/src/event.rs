@@ -1188,7 +1188,7 @@ pub enum UiEvent {
     ),
     /// A [`crate::Chat`] was submitted, cancelled or clicked, or one of
     /// its controlled fields changed — see [`crate::ChatEvent`].
-    Chat(WidgetId, crate::compose::chat_controller::ChatEvent),
+    Chat(WidgetId, crate::compose::chat::ChatEvent),
     /// A [`crate::Sidebar`] section, row or form field was used, or one of
     /// its controlled fields changed — see [`crate::SidebarAction`].
     Sidebar(WidgetId, crate::compose::sidebar_system::SidebarAction),

@@ -623,10 +623,10 @@ pub trait ConformanceDriver: Sized {
 //
 // Before this, an external developer who wanted to unit-test their own
 // `compose`-style controller (something that takes `&mut dyn Backend`,
-// the way `ChatController`/`ShellView` do) had nothing to
+// the way `ShellView` does) had nothing to
 // test against: the only full `impl Backend` mocks in this crate were
 // three near-identical private `MockBackend` copies, one each in
-// `compose::{tree_controller, chat_controller, app_shell}`'s own
+// `compose`'s own
 // `#[cfg(test)] mod tests`, invisible outside the crate. `RecordingBackend`
 // is that mock, promoted to a public, crate-external-friendly type, and
 // those three private copies delegate to (rather than duplicate) it.
@@ -1138,7 +1138,7 @@ impl crate::Backend for RecordingBackend {
     fn progress_layout(&self, _r: Rect, _b: &crate::ProgressBar) -> crate::ProgressBarLayout {
         unimplemented!("RecordingBackend has no ProgressBar layout algorithm")
     }
-    /// Union note: `chat_controller::MockBackend` was the only one with a
+    /// Union note: the chat tests' `MockBackend` was the only one with a
     /// real body (trivial `SpinnerLayout { bounds: r }`, needed so its
     /// render tests don't panic); the other two `unimplemented!()`d.
     fn draw_spinner(&mut self, r: Rect, _s: &crate::Spinner) -> crate::SpinnerLayout {

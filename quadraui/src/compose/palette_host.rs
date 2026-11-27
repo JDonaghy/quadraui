@@ -1,101 +1,99 @@
-//! [`route_palette_host`] — the keys a widget hosting a modal
-//! [`crate::Palette`] claims before the palette's own input sees them.
+//! The key prelude every widget that hosts a [`Palette`] routes through:
+//! [`DualModePalette`](crate::compose::DualModePalette) and the path
+//! pickers ([`FilePicker`](crate::compose::FilePicker),
+//! [`FolderPicker`](crate::compose::FolderPicker)).
 //!
-//! The filesystem pickers ([`crate::compose::PathPicker`]) and
-//! [`crate::compose::DualModePalette`] all compose a palette and resolve
-//! the same prelude first: Escape dismisses, Enter confirms, and — only
-//! when the host opts into vim keys — an unmodified `k`/`j` moves the
-//! highlight instead of typing. Everything the prelude does not claim is
-//! the palette's own query editing and list navigation.
+//! A palette host decides for itself what Escape and Enter mean, and may
+//! opt into vim-style `j`/`k` highlight moves; everything else is the
+//! palette's own input — query editing and list navigation. This module
+//! resolves one routed event into the [`PaletteHostInput`] it names, so
+//! every host interprets the same keys the same way and only maps the
+//! result onto its own action type.
 
-use crate::interactive::RoutedEvent;
+use crate::behaviour::nav::{FlatNav, NavKey};
+use crate::compose::Handled;
+use crate::interactive::{EventCx, Interactive, RoutedEvent};
+use crate::primitives::palette::{Palette, PaletteEvent, PalettePrimitiveLayout, PaletteState};
 use crate::{Key, NamedKey};
 
-/// A keystroke [`route_palette_host`] claimed for the host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PaletteHostKey {
-    /// Escape: dismiss the palette.
+/// What one routed event means to a palette host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum PaletteHostInput {
+    /// Escape, or the palette dismissed itself.
     Cancel,
-    /// Enter: confirm what the palette shows.
-    Confirm,
-    /// `k` with vim keys: move the highlight up one row.
-    Up,
-    /// `j` with vim keys: move the highlight down one row.
-    Down,
+    /// Enter (`None`), or the palette confirmed row `idx` itself
+    /// (`Some(idx)`, e.g. a double-click).
+    Confirm(Option<usize>),
+    /// Move the highlight to row `idx`.
+    Select(usize),
+    /// The query text is now `value`.
+    QueryChanged(String),
 }
 
-/// The prelude key `event` names, or `None` when the palette's own input
-/// should handle it.
+/// The row a vim-style `k` (`up`) or `j` moves the highlight to in a
+/// `len`-row list highlighting `selected`, clamped at either end.
+fn vim_row(len: usize, selected: usize, up: bool) -> usize {
+    let key = if up { NavKey::Up } else { NavKey::Down };
+    FlatNav::mv(len, Some(selected), key, false, |_| true).unwrap_or(selected)
+}
+
+/// Resolve one routed event for a host painting `palette`, whose list has
+/// `len` rows with row `selected` highlighted.
 ///
-/// Escape and Enter are claimed whatever modifiers are held. `k`/`j` are
-/// claimed only with `vim_keys` and no Ctrl/Cmd/Alt, so with vim keys off
-/// both letters type into the query like any other character.
-pub(crate) fn route_palette_host(event: &RoutedEvent, vim_keys: bool) -> Option<PaletteHostKey> {
-    let RoutedEvent::Key(key) = event else {
-        return None;
-    };
-    let modified = key.modifiers.ctrl || key.modifiers.cmd || key.modifiers.alt;
-    match key.key {
-        Key::Named(NamedKey::Escape) => Some(PaletteHostKey::Cancel),
-        Key::Named(NamedKey::Enter) => Some(PaletteHostKey::Confirm),
-        Key::Char('k') if vim_keys && !modified => Some(PaletteHostKey::Up),
-        Key::Char('j') if vim_keys && !modified => Some(PaletteHostKey::Down),
-        _ => None,
+/// Escape and Enter are the host's ([`PaletteHostInput::Cancel`],
+/// [`PaletteHostInput::Confirm`]`(None)`). With `vim_keys`, an unmodified
+/// `k`/`j` moves the highlight instead of typing. Every other event goes
+/// to the palette's own [`Interactive`], and the change it reports is
+/// handed to `answer`; an event the palette consumes without a change is
+/// [`Handled::Consumed`], one it ignores [`Handled::Ignored`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn route_palette_host<A>(
+    palette: &Palette,
+    state: &mut PaletteState,
+    event: &RoutedEvent,
+    layout: &PalettePrimitiveLayout,
+    cx: &mut EventCx,
+    (len, selected): (usize, usize),
+    vim_keys: bool,
+    answer: impl FnOnce(PaletteHostInput) -> Handled<A>,
+) -> Handled<A> {
+    if let RoutedEvent::Key(key) = event {
+        let modified = key.modifiers.ctrl || key.modifiers.cmd || key.modifiers.alt;
+        match key.key {
+            Key::Named(NamedKey::Escape) => return answer(PaletteHostInput::Cancel),
+            Key::Named(NamedKey::Enter) => return answer(PaletteHostInput::Confirm(None)),
+            Key::Char(c @ ('k' | 'j')) if vim_keys && !modified => {
+                return answer(PaletteHostInput::Select(vim_row(len, selected, c == 'k')));
+            }
+            _ => {}
+        }
+    }
+    match Interactive::handle(palette, state, event, layout, cx) {
+        Handled::Event(PaletteEvent::QueryChanged { value }) => {
+            answer(PaletteHostInput::QueryChanged(value))
+        }
+        Handled::Event(PaletteEvent::SelectionChanged { idx }) => {
+            answer(PaletteHostInput::Select(idx))
+        }
+        Handled::Event(PaletteEvent::ItemConfirmed { idx }) => {
+            answer(PaletteHostInput::Confirm(Some(idx)))
+        }
+        Handled::Event(PaletteEvent::Closed) => answer(PaletteHostInput::Cancel),
+        Handled::Event(_) | Handled::Consumed => Handled::Consumed,
+        Handled::Ignored => Handled::Ignored,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::interactive::KeyEvent;
-    use crate::Modifiers;
-
-    fn key(key: Key, modifiers: Modifiers) -> RoutedEvent {
-        RoutedEvent::Key(KeyEvent {
-            key,
-            modifiers,
-            repeat: false,
-        })
-    }
 
     #[test]
-    fn escape_and_enter_are_claimed_with_or_without_vim_keys() {
-        for vim in [false, true] {
-            let esc = key(Key::Named(NamedKey::Escape), Modifiers::default());
-            let enter = key(Key::Named(NamedKey::Enter), Modifiers::default());
-            assert_eq!(route_palette_host(&esc, vim), Some(PaletteHostKey::Cancel));
-            assert_eq!(
-                route_palette_host(&enter, vim),
-                Some(PaletteHostKey::Confirm)
-            );
-        }
-    }
-
-    #[test]
-    fn j_and_k_move_only_with_vim_keys_and_no_modifier() {
-        let j = key(Key::Char('j'), Modifiers::default());
-        let k = key(Key::Char('k'), Modifiers::default());
-        assert_eq!(route_palette_host(&j, true), Some(PaletteHostKey::Down));
-        assert_eq!(route_palette_host(&k, true), Some(PaletteHostKey::Up));
-        assert_eq!(route_palette_host(&j, false), None);
-        assert_eq!(route_palette_host(&k, false), None);
-        let ctrl_j = key(
-            Key::Char('j'),
-            Modifiers {
-                ctrl: true,
-                ..Default::default()
-            },
-        );
-        assert_eq!(route_palette_host(&ctrl_j, true), None);
-    }
-
-    #[test]
-    fn other_keys_and_non_key_events_are_left_to_the_palette() {
-        let a = key(Key::Char('a'), Modifiers::default());
-        assert_eq!(route_palette_host(&a, true), None);
-        assert_eq!(
-            route_palette_host(&RoutedEvent::Text("x".into()), true),
-            None
-        );
+    fn vim_rows_clamp_at_both_ends() {
+        assert_eq!(vim_row(3, 0, true), 0);
+        assert_eq!(vim_row(3, 1, true), 0);
+        assert_eq!(vim_row(3, 1, false), 2);
+        assert_eq!(vim_row(3, 2, false), 2);
+        assert_eq!(vim_row(0, 0, false), 0);
     }
 }

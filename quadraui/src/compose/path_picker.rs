@@ -33,7 +33,7 @@ use serde::{Deserialize, Serialize};
 use crate::a11y::{A11yChild, A11yInfo, A11yPrimitive};
 use crate::behaviour::nav::{FlatNav, NavKey as FlatNavKey};
 use crate::behaviour::scroll::ensure_visible;
-use crate::compose::palette_host::{route_palette_host, PaletteHostKey};
+use crate::compose::palette_host::{route_palette_host, PaletteHostInput};
 use crate::compose::widget_host;
 use crate::compose::Handled;
 use crate::interactive::{EventCx, FocusSpec, Interactive, RoutedEvent, SubTarget, WidgetAction};
@@ -367,12 +367,13 @@ pub(crate) fn painted_caret(query: &str, state: Option<&PaletteState>) -> usize 
 /// One routed event, resolved for a picker showing `paths` through
 /// `palette`.
 ///
-/// [`route_palette_host`] claims Escape (cancel), Enter (resolved through
-/// `confirm`) and, with `vim_keys`, an unmodified `k`/`j`; with
-/// `vim_keys` an unmodified `-` browses up too. Everything else is the
-/// palette's own input: its query editing and list navigation, reported
-/// as the browsing change it names. A reported navigation clears `state`,
-/// because the query it was editing is cleared with the old root.
+/// With `vim_keys`, an unmodified `-` browses up to the root's parent
+/// instead of typing. Everything else goes through the shared palette-host
+/// prelude ([`route_palette_host`]): Escape cancels, Enter resolves through
+/// `confirm`, `vim_keys` makes an unmodified `k`/`j` move the highlight, and
+/// the palette's own input reports the browsing change it names. A reported
+/// navigation clears `state`, because the query it was editing is cleared
+/// with the old root.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn handle_picker_event(
     paths: &PathPickerState,
@@ -402,13 +403,6 @@ fn resolve_picker_event(
     vim_keys: bool,
     confirm: impl Fn() -> Handled<PathPickerAction>,
 ) -> Handled<PathPickerAction> {
-    match route_palette_host(event, vim_keys) {
-        Some(PaletteHostKey::Cancel) => return Handled::Event(PathPickerAction::Cancelled),
-        Some(PaletteHostKey::Confirm) => return confirm(),
-        Some(PaletteHostKey::Up) => return select(paths, paths.row_above()),
-        Some(PaletteHostKey::Down) => return select(paths, paths.row_below()),
-        None => {}
-    }
     if let RoutedEvent::Key(key) = event {
         let modified = key.modifiers.ctrl || key.modifiers.cmd || key.modifiers.alt;
         if vim_keys && !modified && key.key == Key::Char('-') {
@@ -418,16 +412,23 @@ fn resolve_picker_event(
             };
         }
     }
-    match Interactive::handle(palette, state, event, layout, cx) {
-        Handled::Event(PaletteEvent::QueryChanged { value }) => {
-            Handled::Event(PathPickerAction::QueryChanged { query: value })
-        }
-        Handled::Event(PaletteEvent::SelectionChanged { idx }) => select(paths, idx),
-        Handled::Event(PaletteEvent::ItemConfirmed { .. }) => confirm(),
-        Handled::Event(PaletteEvent::Closed) => Handled::Event(PathPickerAction::Cancelled),
-        Handled::Event(_) | Handled::Consumed => Handled::Consumed,
-        Handled::Ignored => Handled::Ignored,
-    }
+    route_palette_host(
+        palette,
+        state,
+        event,
+        layout,
+        cx,
+        (paths.filtered.len(), paths.selected),
+        vim_keys,
+        |input| match input {
+            PaletteHostInput::Cancel => Handled::Event(PathPickerAction::Cancelled),
+            PaletteHostInput::Confirm(_) => confirm(),
+            PaletteHostInput::Select(idx) => select(paths, idx),
+            PaletteHostInput::QueryChanged(query) => {
+                Handled::Event(PathPickerAction::QueryChanged { query })
+            }
+        },
+    )
 }
 
 /// Report a move of the highlight to `idx`, or nothing when it is

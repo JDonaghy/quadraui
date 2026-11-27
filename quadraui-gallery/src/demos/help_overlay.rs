@@ -14,7 +14,7 @@
 //!
 //! The source example also drives a command palette from the same
 //! registry's actions via `p` — that's the exact behaviour the
-//! gallery's own "Command Palette" demo (`DualModePaletteController`)
+//! gallery's own "Command Palette" demo (`DualModePalette`)
 //! already covers, so it isn't duplicated here; this demo is scoped to
 //! [`HelpOverlay`] itself.
 
