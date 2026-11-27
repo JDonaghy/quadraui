@@ -93,7 +93,8 @@ rust-version = "1.92.0"
 #   stays shipping since it's reachable from `lib.rs`'s own rustdoc
 #   (`See [`Backend`]'s own rustdoc ... see BACKEND.md`).
 # - `docs/IME_INPUT_PROPOSAL.md`, `docs/ROWS_PROVIDER_PROPOSAL.md`,
-#   `docs/WEB_BACKEND_PROPOSAL.md` — unimplemented design proposals.
+#   `docs/WASM_BACKEND_PROPOSAL.md`, `docs/WEB_BACKEND_PROPOSAL.md` —
+#   unimplemented design proposals.
 # - `docs/LESSONS.md`, `docs/NATIVE_GUI_LESSONS.md` — contributor-facing
 #   "what not to do" postmortems from building the in-tree backends.
 # - `docs/PRIMITIVE_RULES.md` — rules for authoring a new primitive
@@ -188,6 +189,7 @@ exclude = [
     "docs/SMELL_AUDIT_2026-07.md",
     "docs/TESTING.md",
     "docs/UI_CRATE_DESIGN.md",
+    "docs/WASM_BACKEND_PROPOSAL.md",
     "docs/WEB_BACKEND_PROPOSAL.md",
     "docs/audits/",
     "docs/decisions/BINDING_CORE_PUBLISH_POLICY.md",
