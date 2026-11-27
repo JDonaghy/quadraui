@@ -37,8 +37,10 @@
 //!   `hovered_close_tab`/`hovered_tab`/`pressed_tab: Option<usize>` —
 //!   `TabItem` carries no [`WidgetId`] of its own, only `TabBar::id`
 //!   (one per *bar*), which can't name which tab is hovered or pressed
-//! - `draw_data_table(.., hovered_idx: Option<usize>)`
-//! - `draw_chart(.., hovered_point: Option<(usize, usize)>)`
+//! - a data table's paint state (`&DataTablePaintState`, carrying a
+//!   positional `hovered_idx: Option<usize>`)
+//! - [`crate::Chart::hovered_point`] (`Option<(usize, usize)>`, a
+//!   descriptor field the app owns)
 //! - [`crate::Backend::draw_list_with_state`] and a tree's paint state
 //!   (`&ListPaintState` / `&TreePaintState`, each carrying a positional `hovered_idx: Option<usize>`
 //!   / `pressed_idx: Option<usize>` plus an optional pixel-precise
@@ -52,8 +54,7 @@
 //! string per distinct (list id, row index) pair ever shown — an
 //! unbounded leak for a growing log pane. [`crate::compose::ListHoverTracker`]
 //! tracks the hovered row index
-//! instead, the same shape `draw_data_table`'s own host-side tracking
-//! already uses.
+//! instead.
 //!
 //! ## Ownership
 //!

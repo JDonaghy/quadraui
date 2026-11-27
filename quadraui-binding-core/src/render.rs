@@ -541,7 +541,7 @@ fn text_display_region(
 /// equal shares (rather than `draw_bands`'s fixed line-count bands) fill
 /// the whole area regardless of viewport size. A `Leaf` paints its one
 /// descriptor into the whole area its container gave it. A `Split` divides
-/// its area into two unequal panes at `ratio` via `Backend::draw_split`
+/// its area into two unequal panes at `ratio` via `draw_primitive`
 /// (the same divider paint/hit-test every backend already shares for the
 /// Rust-side `Split` primitive) and recurses into each with its resolved
 /// bounds. A `Tabs` reserves a top band for its tab strip (painted via
@@ -552,7 +552,7 @@ fn text_display_region(
 /// chrome (toolbar) through the `SidebarPanel` widget contract
 /// ([`paint_sidebar_panel`]) and recurses into `content_bounds` with its
 /// one content subtree; a
-/// `SplitTree` paints its dividers via `Backend::draw_split_tree` and
+/// `SplitTree` paints its dividers via `draw_primitive` and
 /// recurses into each resolved leaf rect. All three record a [`PaintedHit`]
 /// for their own chrome (divider / toolbar button), same as `Split`,
 /// so a later pointer event can resolve against it. A `Grid` resolves its
@@ -1899,7 +1899,7 @@ fn layout_container_rects_wrapped(
 }
 
 /// Shrinks `area`'s main-axis extent by `gap`, anchored at the same
-/// origin — the rect [`paint_layout`]'s `Split` arm feeds `Backend::draw_split`
+/// origin — the rect [`paint_layout`]'s `Split` arm feeds `draw_primitive`
 /// so `Split::layout`'s own ratio/min-size clamping evaluates against the
 /// space actually available once the gap between panes is carved out,
 /// matching `Split::first_min`/`second_min`'s "a minimum applies to the
@@ -1914,7 +1914,7 @@ pub(crate) fn shrink_main_axis(area: Rect, horizontal: bool, gap: f32) -> Rect {
 }
 
 /// Reinserts `gap` between a [`SplitLayout`]'s two panes after
-/// `Backend::draw_split` painted it into [`shrink_main_axis`]'s
+/// `draw_primitive` painted it into [`shrink_main_axis`]'s
 /// gap-reduced rect: the divider and first pane stay exactly where they
 /// were painted (so the divider's own visuals/hit region are untouched),
 /// and the second pane — its `second_bounds` plus its `SplitHit::SecondPane`
@@ -1940,7 +1940,7 @@ pub(crate) fn apply_split_gap(layout: &mut SplitLayout, horizontal: bool, gap: f
         }
     }
     // Widen `bounds` back out so it reports the real (pre-shrink) area
-    // this split occupies, not the gap-reduced rect fed to `draw_split`.
+    // this split occupies, not the gap-reduced rect fed to `draw_primitive`.
     layout.bounds = if horizontal {
         Rect::new(
             layout.bounds.x,
@@ -3276,7 +3276,7 @@ mod tests {
     }
 
     /// `gap: 0.0` is a no-op — [`apply_split_gap`] leaves every rect and
-    /// hit region exactly as `Backend::draw_split` returned it.
+    /// hit region exactly as `draw_primitive` returned it.
     #[test]
     fn split_gap_zero_is_a_no_op() {
         let area = Rect::new(0.0, 0.0, 100.0, 40.0);

@@ -2101,13 +2101,13 @@ mod tests {
         // non-cancellable `Progress` (no activatable affordance).
         let stops = layout.tab_stops();
         let stop_ids: Vec<&str> = stops.iter().map(|(id, _)| id.as_str()).collect();
-        for id in ["board", "cc", "diff", "ml", "pv", "ti"] {
+        for id in ["board", "cc", "diff", "pv", "ti"] {
             assert!(stop_ids.contains(&id), "{id} should be a tab stop");
         }
-        // A `SidebarPanel` and a `Minimap` are pointer-only
-        // (`FocusSpec::None`), and a toolbar with no button has nothing to
-        // focus.
-        for id in ["img", "mm", "sn", "pb", "leaf", "sp", "tb"] {
+        // A `SidebarPanel`, a `Minimap` and a `MessageList` are
+        // pointer-only (`FocusSpec::None`), and a toolbar with no button
+        // has nothing to focus.
+        for id in ["img", "mm", "ml", "sn", "pb", "leaf", "sp", "tb"] {
             assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
         }
         assert_eq!(stop_ids.len(), 6);

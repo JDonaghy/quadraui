@@ -453,7 +453,7 @@ mod tests {
     /// numbers here where a future palette-algorithm tweak would notice
     /// the drift before that pty test does (a much slower feedback loop).
     /// `Theme::default().{foreground, surface_bg}` are the `(fg, bg)` pair
-    /// `draw_pipeline_view` paints stage names with — `tests/tui_pty_smoke.rs`
+    /// a pipeline view paints stage names with — `tests/tui_pty_smoke.rs`
     /// asserts on the exact combined SGR sequence these two produce at
     /// each depth (`38;5;253;48;5;234` / `38;5;7;48;5;0` /
     /// `38;2;220;220;220;48;2;28;32;44`), so this pins the four numbers
@@ -475,7 +475,7 @@ mod tests {
     ///
     /// Goes the whole way a real frame goes *up to* the byte encoding:
     /// takes the same `Theme::default()` `(foreground, surface_bg)` pair
-    /// `draw_pipeline_view` paints stage names with, runs it through the
+    /// a pipeline view paints stage names with, runs it through the
     /// real [`super::super::ratatui_color`] conversion every rasteriser
     /// uses, paints it as a [`Cell`] through a real
     /// [`RtBackend::draw`] on a [`DepthLimitedBackend`], and asserts the

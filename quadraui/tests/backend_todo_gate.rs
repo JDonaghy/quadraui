@@ -111,16 +111,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_data_table",
-        "\"Direct2D data table rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn data_table_layout",
-        "\"DirectWrite data table layout (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_text_display",
         "\"Direct2D text display rasteriser (no surface attached yet)\"",
     ),
@@ -146,16 +136,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_multi_section_view",
-        "\"Direct2D MSV rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_message_list",
-        "\"Direct2D message list rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_rich_text_popup",
         "\"Direct2D rich text popup rasteriser (no surface attached yet)\"",
     ),
@@ -176,21 +156,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_split",
-        "\"Direct2D split rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_split_tree",
-        "\"Direct2D split-tree rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_board",
-        "\"Direct2D board rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_toast_overlay",
         "\"Direct2D toast stack rasteriser (no surface attached yet)\"",
     ),
@@ -198,11 +163,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
         "src/win/backend.rs",
         "fn toast_stack_layout",
         "\"DirectWrite toast stack layout (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_pipeline_view",
-        "\"Direct2D pipeline view rasteriser (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",
@@ -218,16 +178,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
         "src/win/backend.rs",
         "fn spinner_layout",
         "\"DirectWrite spinner layout (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_diff_view",
-        "\"Direct2D DiffView rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_chart",
-        "\"Direct2D chart rasteriser (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",
@@ -789,7 +739,7 @@ mod self_test {
         // statement does not gate the next statement.
         let src = r#"
             impl Backend for WinBackend {
-                fn draw_board(&mut self, rect: Rect, minimap: &Minimap) {
+                fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) {
                     #[cfg(target_os = "windows")]
                     if let Some(surface) = &self.surface { return; }
                     #[cfg(not(target_os = "windows"))]
@@ -815,9 +765,9 @@ mod self_test {
         // inside it, is still excluded from a native build.
         let src = r#"
             impl Backend for WinBackend {
-                fn board_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout {
+                fn minimap_layout(&self, rect: Rect, minimap: &Minimap) -> MinimapLayout {
                     #[cfg(target_os = "windows")]
-                    { win_board_layout(minimap, rect) }
+                    { win_minimap_layout(minimap, rect) }
                     #[cfg(not(target_os = "windows"))]
                     {
                         let _ = (rect, minimap);
@@ -920,7 +870,7 @@ mod self_test {
         // A bare `todo!()` with no cfg at all is dangerous.
         let src = r#"
             impl Backend for MacBackend {
-                fn draw_board(&mut self, rect: Rect, minimap: &Minimap) {
+                fn draw_minimap(&mut self, rect: Rect, minimap: &Minimap) {
                     todo!("not implemented yet")
                 }
             }

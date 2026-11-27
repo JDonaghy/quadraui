@@ -1374,7 +1374,7 @@ pub fn apply_split_divider_drag(
 /// at all keeps whatever [`apply_split_divider_drag`] persisted
 /// indefinitely. Call once per frame, before painting `split`; the
 /// returned [`Split`] is what a binding's render should hand to
-/// `Backend::draw_split`, not `split` itself.
+/// `draw_primitive`, not `split` itself.
 pub fn resolve_split_ratio(widget_state: &WidgetState, split: &Split) -> Split {
     let id = split_ratio_state_id(split.id, 0);
     let previous = widget_state.get::<SplitRatioState>(id);

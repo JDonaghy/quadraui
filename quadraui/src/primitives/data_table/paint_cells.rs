@@ -130,7 +130,7 @@ impl RowPaintCtx<'_> {
     }
 
     /// Column screen x + cell-rounded width after the rounded `h_scroll`
-    /// `data_table_layout` carries, or `None` when clipped fully outside
+    /// `layout_primitive` carries, or `None` when clipped fully outside
     /// [`Self::bounds`] or rounded to zero width.
     fn column(&self, rc: &ResolvedColumn) -> Option<(i32, u16)> {
         let (x0, x1) = self.bounds();
@@ -1033,7 +1033,7 @@ mod tests {
     }
 
     /// LESSONS.md non-zero-origin regression guard:
-    /// `data_table_layout` never reads `area.x`/`area.y` (see its doc
+    /// `layout_primitive` never reads `area.x`/`area.y` (see its doc
     /// comment) — it, and therefore `hit_test`, is table-**local**, unlike
     /// most of this batch's other layout fns which bake the origin in.
     /// Painting still happens at the absolute `area.x`/`area.y` (mirrors
@@ -1092,7 +1092,7 @@ mod tests {
     /// Direct "bounds do not move" guard, mirroring
     /// `tui/activity_bar.rs`'s `hit_regions_do_not_move_when_the_bar_does`:
     /// the resolved column bounds must be byte-for-byte identical no matter
-    /// where `area` sits on screen, since `data_table_layout` is table-local
+    /// where `area` sits on screen, since `layout_primitive` is table-local
     /// by construction.
     #[test]
     fn column_bounds_do_not_move_when_the_table_does() {

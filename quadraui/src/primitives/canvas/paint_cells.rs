@@ -592,7 +592,7 @@ mod tests {
 
     /// Lay `c` out over `area` and paint it into `buf`, the way the TUI
     /// backend does.
-    fn draw_canvas(buf: &mut Buffer, area: RRect, c: &Canvas, theme: &Theme) -> CanvasLayout {
+    fn paint_canvas(buf: &mut Buffer, area: RRect, c: &Canvas, theme: &Theme) -> CanvasLayout {
         let layout = layout_over(c, area);
         paint(c, &layout, &mut BufferCellSurface::new(buf), theme);
         layout
@@ -623,7 +623,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 2.0, 2.0),
             color: Color::rgb(200, 0, 0),
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
 
         assert_ne!(cell_char(&buf, 0, 0), ' ');
         assert_ne!(cell_char(&buf, 1, 1), ' ');
@@ -639,7 +639,7 @@ mod tests {
             radius: 50.0,
             color: Color::rgb(0, 200, 0),
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         // Same cell the plain-rect test above covers — radius is dropped,
         // not refused (module doc's degrade table).
         assert_ne!(cell_char(&buf, 0, 0), ' ');
@@ -655,7 +655,7 @@ mod tests {
             color: Color::rgb(0, 0, 200),
             stroke_width: 1.0,
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_ne!(cell_char(&buf, 0, 0), ' ');
         assert_ne!(cell_char(&buf, 5, 5), ' ');
     }
@@ -674,7 +674,7 @@ mod tests {
             stroke_width: 1.0,
             closed: true,
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         // The closing segment runs from (6,6) back to (0,0) — a dot
         // somewhere along that diagonal (e.g. near (3, 3)) proves the
         // extra segment was actually drawn, not just the two open-path
@@ -691,7 +691,7 @@ mod tests {
             text: "hi".into(),
             color: Color::rgb(255, 255, 255),
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         // 2.3 rounds to cell 2.
         assert_eq!(cell_char(&buf, 2, 1), 'h');
         assert_eq!(cell_char(&buf, 3, 1), 'i');
@@ -711,7 +711,7 @@ mod tests {
                 fallback_text: "[X]".into(),
             },
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), '[');
         assert_eq!(cell_char(&buf, 1, 0), 'X');
         assert_eq!(cell_char(&buf, 2, 0), ']');
@@ -731,7 +731,7 @@ mod tests {
             },
             DrawOp::PopClip,
         ]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_ne!(cell_char(&buf, 0, 0), ' ');
         assert_eq!(
             cell_char(&buf, 5, 5),
@@ -758,7 +758,7 @@ mod tests {
                 color: Color::rgb(0, 0, 0),
             },
         ]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), 'X');
     }
 
@@ -767,7 +767,7 @@ mod tests {
         let area = RRect::new(3, 4, 10, 10);
         let mut buf = Buffer::empty(RRect::new(0, 0, 20, 20));
         let c = canvas(vec![]);
-        let layout = draw_canvas(&mut buf, area, &c, &Theme::default());
+        let layout = paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_eq!(layout.hit_test(5.0, 5.0), CanvasHit::Inside);
         assert_eq!(layout.hit_test(0.0, 0.0), CanvasHit::Outside);
     }
@@ -880,7 +880,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             color: Color::rgb(1, 2, 3),
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_ne!(cell_char(&buf, 7, 3), ' ');
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
@@ -893,7 +893,7 @@ mod tests {
             rect: Rect::new(0.0, 0.0, 1.0, 1.0),
             color: Color::rgb(1, 2, 3),
         }]);
-        let _ = draw_canvas(&mut buf, area, &c, &Theme::default());
+        let _ = paint_canvas(&mut buf, area, &c, &Theme::default());
     }
 
     #[test]
@@ -901,7 +901,7 @@ mod tests {
         let area = RRect::new(0, 0, 5, 5);
         let mut buf = Buffer::empty(area);
         let c = canvas(vec![]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         for y in 0..5 {
             for x in 0..5 {
                 assert_eq!(cell_char(&buf, x, y), ' ');
@@ -922,7 +922,7 @@ mod tests {
             ],
             color: Color::rgb(10, 20, 30),
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_ne!(cell_char(&buf, 2, 2), ' ');
         assert_eq!(cell_char(&buf, 8, 8), ' ');
     }
@@ -937,7 +937,7 @@ mod tests {
             radius_y: 3.0,
             color: Color::rgb(1, 2, 3),
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_ne!(cell_char(&buf, 5, 5), ' ');
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
@@ -954,7 +954,7 @@ mod tests {
             color: Color::rgb(1, 2, 3),
             stroke_width: 1.0,
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_ne!(cell_char(&buf, 9, 5), ' ');
         assert_ne!(cell_char(&buf, 1, 5), ' ');
     }
@@ -971,7 +971,7 @@ mod tests {
             color: Color::rgb(1, 2, 3),
             stroke_width: 1.0,
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_ne!(cell_char(&buf, 0, 0), ' ');
         assert_ne!(cell_char(&buf, 8, 0), ' ');
     }
@@ -988,7 +988,7 @@ mod tests {
             dash_len: 2.0,
             gap_len: 2.0,
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         // dash_len == gap_len == 2.0 over a 10-unit line: dash 0-2, gap
         // 2-4, dash 4-6, gap 6-8, dash 8-10 — cell 0 falls in the first
         // dash, cell 3 falls in the first gap.
@@ -1009,7 +1009,7 @@ mod tests {
             color: Color::rgb(1, 2, 3),
             stroke_width: 2.0,
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         assert_ne!(cell_char(&buf, 1, 1), ' ');
         assert_ne!(cell_char(&buf, 7, 1), ' ');
         assert_ne!(cell_char(&buf, 1, 7), ' ');
@@ -1033,7 +1033,7 @@ mod tests {
             italic: true,
             size: Some(24.0),
         }]);
-        draw_canvas(&mut buf, area, &c, &Theme::default());
+        paint_canvas(&mut buf, area, &c, &Theme::default());
         // `role`/`italic`/`size` are dropped — identical to the plain
         // `TextRun` degrade above.
         assert_eq!(cell_char(&buf, 2, 1), 'h');

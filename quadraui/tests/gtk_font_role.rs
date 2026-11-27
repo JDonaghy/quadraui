@@ -54,7 +54,7 @@
 //! scope. A primitive is intentionally absent from this file if it is
 //! editor-class (paints in the editor font on purpose —
 //! `crate::font_role::EditorClassPrimitive::ALL`) or if it paints no
-//! text of its own (`draw_split`, `draw_split_tree`, `draw_scrollbar`).
+//! text of its own (`Split`, `SplitTree`, `draw_scrollbar`).
 
 #![cfg(feature = "gtk")]
 
@@ -469,12 +469,10 @@ fn draw_tooltip_paints_in_chrome_font() {
 /// `MessageList` rows are chrome — a transcript panel, not editor
 /// content. Absent from both `ChromePrimitive::ALL` and
 /// `EditorClassPrimitive::ALL` in `crate::font_role`, so per that
-/// module's policy it is chrome by default. Its GTK call site
-/// (`GtkBackend::draw_message_list`) paints through its own
-/// `(cr, pango_layout)` pair rather than `PaintSurface`.
+/// module's policy it is chrome by default.
 #[test]
 fn draw_message_list_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_message_list", |b, area| {
+    assert_paints_in_chrome_font("MessageList", |b, area| {
         let list = MessageList {
             id: id("message-list"),
             rows: vec![MessageRow::new(LABEL, Color::rgb(220, 220, 220), 0.0)],

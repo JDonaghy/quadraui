@@ -129,9 +129,9 @@ pub struct MessageList {
 }
 
 /// Backend-supplied row-height measurement for [`MessageList::hit_test`].
-/// Both rasterisers (`tui::draw_message_list`, `gtk::draw_message_list`)
-/// paint every row at a uniform `line_height` — see their module docs —
-/// so this mirrors the one number each already threads through.
+/// Both painters (the cell grid's and the pixel one) paint every row at
+/// a uniform `line_height`, so this mirrors the one number each already
+/// threads through.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MessageListMeasure {
     pub line_height: f32,
@@ -416,62 +416,29 @@ impl crate::interactive::Interactive for MessageList {
 
 // ── PaintSurface paint ──────────────────────────────────────────────
 //
-// `paint` below is the macOS and Windows rasterisers' painter and every
-// pixel backend's `Primitive::paint` for a `MessageList` painted as a
-// widget. `gtk::message_list::draw_message_list`, behind GTK's
-// `Backend::draw_message_list`, stays a full, bespoke Cairo + Pango
-// implementation. This mirrors the exception
-// `crate::primitives::rich_text_popup::native_surface_paint` already
-// documents and for the same underlying reason:
+// `paint` below is every pixel backend's `Primitive::paint` for a
+// `MessageList`. Each row paints its `spans` one run at a time with a
+// manual x-advance, falling back to flat `row.text` + `row.fg` when a row
+// has no spans. Per-span bold goes through
+// [`PaintSurface::surface_draw_text_run_styled`]; a surface that takes
+// that verb's default drops the style rather than failing.
 //
-// [`gtk::message_list::draw_message_list`](crate::gtk::message_list::draw_message_list)
-// renders each row's `spans` as **one** Pango call carrying a byte-ranged
-// `AttrList` (per-span fg/bold/italic/underline, plus a whole-row
-// `AttrFloat::new_scale` for markdown heading rows) — real shaped-line
-// glyph positions, immune to the "measure each span, advance x by its
-// width" drift that issue #214 fixed in `rich_text_popup`. `PaintSurface`
-// has no "shape one line with N attribute ranges" verb, only single-
-// style runs (`surface_draw_text_run(_styled)`), so migrating GTK onto
-// `paint` below would mean reintroducing that previously-fixed bug class.
-// This explicit limitation is documented to avoid silent tranche regressions.
-//
-// macOS and Windows never had that problem — both already painted
-// per-span with manual x-advance (the same shape `paint` below takes) —
-// so consolidating *their* two copies carries no such risk, and closes a
-// real, pre-existing gap between them:
-//
-// - **Spans ignored entirely.** macOS `message_list::draw_message_list`
-//   never read `row.spans` at all — every row painted flat `row.text` +
-//   `row.fg`, even when the caller supplied rich per-span styling.
-//   `paint` reads spans on both backends uniformly now.
-// - **Per-span bold.** Carried via [`PaintSurface::surface_draw_text_run_styled`]
-//   on both backends now. Windows's `D2dSurface` honours it for real
-//   (`DWrite::draw_text_styled`); macOS's `CgSurface` takes that verb's *default*,
-//   which drops style entirely — inert on macOS (no visual regression,
-//   no new bold either), the same posture `crate::primitives::status_bar`
-//   and `crate::primitives::rich_text_popup` already document.
-//
-// Not carried over on either backend, matching pre-existing limitations:
+// Not carried:
 //
 // - **Per-span italic / underline.** Passed through to
-//   `surface_draw_text_run_styled`, but dropped by both backends' current
-//   adapters (`D2dSurface` explicitly ignores them; `CgSurface` takes the
-//   style-dropping default) — no Direct2D italic text format or underline
-//   attribute is wired up today.
+//   `surface_draw_text_run_styled`; a surface adapter that does not wire
+//   an italic format or underline attribute drops them.
 // - **`MessageRow::scale`** (markdown heading rows). `PaintSurface` has
 //   no font-*size* verb (`surface_draw_text_run_styled`'s `scale_x` is a
 //   horizontal *stretch* of the same-size glyph, for the wide-CJK-glyph
-//   fix — see that verb's own doc — not a point-size change), so there is
-//   no way to honour it through this trait, matching
-//   `crate::primitives::rich_text_popup::native_surface_paint`'s
-//   identical gap for its own per-line font scale. Every row paints at
-//   its regular glyph size on both backends.
+//   fix — see that verb's own doc — not a point-size change), so every
+//   row paints at its regular glyph size, matching
+//   `crate::primitives::rich_text_popup::native_surface_paint`'s gap for
+//   its own per-line font scale.
 //
-// **Zero-size guard**, closed uniformly like every other
-// `native_surface_paint::paint` in this crate: `paint` takes no `w` —
-// each backend's thin wrapper keeps its own pre-paint check instead
-// (see `macos::message_list::draw_message_list`'s `if w <= 0.0` guard);
-// `paint` itself only needs `line_height > 0.0`.
+// **Zero-size guard**: `paint` takes no width and needs only
+// `line_height > 0.0`; `draw_primitive` clips the paint to the widget's
+// rect.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -483,9 +450,8 @@ pub(crate) mod native_surface_paint {
     use crate::event::Rect;
     use crate::paint_surface::PaintSurface;
 
-    /// Paint a [`MessageList`] into `rect` on `surface` — see this
-    /// module's doc for the full per-backend divergence survey this
-    /// closes/preserves. `rect.width` is unused (see the doc's "Zero-size
+    /// Paint a [`MessageList`] into `rect` on `surface` — see the comment
+    /// above this module for what it carries. `rect.width` is unused (see the doc's "Zero-size
     /// guard" note); only `rect.x`, `rect.y`, and `rect.height` (via
     /// `rect.y + rect.height` as the bottom clip) matter.
     ///

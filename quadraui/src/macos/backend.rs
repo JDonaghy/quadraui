@@ -1062,8 +1062,7 @@ impl MacBackend {
         &self.current_style
     }
 
-    /// Resolve the row pitch `draw_list`/`draw_data_table`
-    /// lay their rows out at: `Style::row_height` on a pixel backend
+    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
     /// (`candidate_line_height > 1.0`), floored at the font's own line
     /// height so a chrome/editor font large enough to need more than
     /// `Style::row_height` still gets it — a huge UI font size never
@@ -2471,8 +2470,7 @@ impl Backend for MacBackend {
     }
     /// Paint via the shared
     /// [`crate::primitives::spinner::native_surface_paint::paint`].
-    /// `Spinner` is chrome, not editor content — see `draw_data_table`'s
-    /// comment — so `self` (whose [`crate::paint_surface::PaintSurface`]
+    /// `Spinner` is chrome, not editor content, so `self` (whose [`crate::paint_surface::PaintSurface`]
     /// impl measures/draws through `chrome_font`) is the right surface.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         let theme = self.current_theme;
@@ -6328,13 +6326,11 @@ mod tests {
         );
     }
 
-    // ── #810: draw_chart real-pixel driver tests ────────────────────────
+    // ── Chart real-pixel driver tests ───────────────────────────────────
     //
-    // Ported from the deleted `macos::chart::tests` (that module already
-    // drove the real `MacBackend::draw_chart` via its own local
-    // `paint_via_backend` helper — the shape every other backend's #810
-    // migration now also uses) to live alongside every other
-    // `draw_*`-family driver test in this module.
+    // Drive a chart through `draw_primitive` end to end on a real
+    // CoreGraphics bitmap, alongside every other driver test in this
+    // module.
 
     use super::super::headless::BitmapSurface;
     use crate::primitives::chart::{
@@ -6590,7 +6586,7 @@ mod tests {
         );
     }
 
-    /// `chart_layout` reserves the y-axis tick gutter and the
+    /// The chart layout reserves the y-axis tick gutter and the
     /// x-tick/legend rows from cached font metrics, but every label that
     /// lands in those regions is painted by `primitives::chart::paint`
     /// through plain `self`, whose `PaintSurface` impl resolves

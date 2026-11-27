@@ -2342,7 +2342,6 @@ mod tests {
     use crate::frame::{ScreenLayout, Surface};
     use crate::layout::{Anchor, Side};
     use crate::primitives::board::{BoardCard, BoardColumn, BoardModel};
-    use crate::primitives::canvas::Canvas;
     #[cfg(any(
         feature = "gtk",
         feature = "tui",
@@ -2455,17 +2454,14 @@ mod tests {
         }
     }
 
-    /// A surface whose capture carries no top-level `WidgetId` (the id
-    /// lives on the primitive, not the `Surface` variant itself).
-    fn canvas_surface() -> Surface {
+    /// A surface whose widget carries no `WidgetId` of its own: a split
+    /// tree's dividers are structural chrome.
+    fn id_less_surface() -> Surface {
         Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            widget: Box::new(Canvas {
-                id: WidgetId::new("sketch"),
-                ops: Vec::new(),
-                regions: Vec::new(),
-                focusable: false,
-            }),
+            widget: Box::new(crate::primitives::split_tree::SplitTree::leaf(
+                WidgetId::new("pane"),
+            )),
         }
     }
 
@@ -2971,7 +2967,7 @@ mod tests {
 
     #[test]
     fn surfaces_without_a_widget_id_still_appear() {
-        let frame = frame_with(vec![canvas_surface()]);
+        let frame = frame_with(vec![id_less_surface()]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(tree.nodes().len(), 2, "root plus the id-less surface");
         assert_eq!(

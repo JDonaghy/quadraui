@@ -608,7 +608,7 @@ pub use primitives::activity_bar::{
     DEFAULT_ACTIVITY_ICON_SIZE_PX,
 };
 pub use primitives::board::{
-    board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
+    measured_board_layout, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardHit, BoardLayout,
     BoardMeasure, BoardModel, CardBadge, CardId, CardLayout, ColumnLayout, MoveDir,
 };
 pub use primitives::button::{

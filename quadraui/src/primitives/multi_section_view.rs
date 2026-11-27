@@ -20,7 +20,7 @@
 //! # Widget contract
 //!
 //! [`crate::primitive::Primitive::layout`] resolves the chrome layout
-//! ([`MultiSectionView::layout`] with the unit's own metrics: [`msv_metrics`]
+//! ([`MultiSectionView::layout`] with the unit's own metrics: [`pixel_msv_metrics`]
 //! on a pixel surface, [`cell_msv_metrics`] on a cell grid) and then lays
 //! every expanded, visible body out through that body widget's own
 //! `Primitive::layout`. Paint draws the chrome (headers, aux rows,
@@ -562,7 +562,9 @@ impl Default for MsvLayoutMetrics {
 }
 
 mod layout;
-pub use layout::{cell_msv_layout, cell_msv_metrics, msv_body_measure, msv_layout, msv_metrics};
+pub use layout::{
+    cell_msv_layout, cell_msv_metrics, msv_body_measure, pixel_msv_layout, pixel_msv_metrics,
+};
 #[cfg(any(
     feature = "gtk",
     feature = "tui",

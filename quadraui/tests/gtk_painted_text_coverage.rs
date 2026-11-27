@@ -13,8 +13,7 @@
 //! * **`Terminal`** — the cell-grid painter paints one Pango run *per
 //!   cell*, so a text needle spanning cells is never one recorded run. It
 //!   needs the cheaper row-coalescing path; see `src/gtk/painted_text.rs`.
-//! * **`draw_split` / `draw_split_tree` / `draw_scrollbar` /
-//!   `DropOverlay`** — these paint no text at all (dividers,
+//! * **`Split` / `SplitTree` / `draw_scrollbar` / `DropOverlay`** — these paint no text at all (dividers,
 //!   tracks, tint rects), so there is nothing to record. The labels a
 //!   `Split` appears to have belong to whatever the app paints into
 //!   `first_bounds` / `second_bounds`.
@@ -229,9 +228,9 @@ fn multi_tree_paints_locatable_section_headers_and_rows() {
     assert_locatable(
         &driver,
         &[
-            ("draw_multi_section_view", "VARIABLES"),
-            ("draw_multi_section_view", "WATCH"),
-            ("draw_multi_section_view", "CALL STACK"),
+            ("MultiSectionView", "VARIABLES"),
+            ("MultiSectionView", "WATCH"),
+            ("MultiSectionView", "CALL STACK"),
             ("TreeView", "frame0"),
             // The fourth section header ("BREAKPOINTS") is deliberately
             // absent: at this surface height the app paints it straddling
@@ -250,10 +249,10 @@ fn data_table_app_paints_locatable_header_body_and_footer_cells() {
     assert_locatable(
         &driver,
         &[
-            ("draw_data_table", "Restarts"),
-            ("draw_data_table", "nginx-7d9b8c66b-x2j4k"),
-            ("draw_data_table", "CrashLoopBackOff"),
-            ("draw_data_table", "20 pods"),
+            ("DataTable", "Restarts"),
+            ("DataTable", "nginx-7d9b8c66b-x2j4k"),
+            ("DataTable", "CrashLoopBackOff"),
+            ("DataTable", "20 pods"),
         ],
     );
 }
@@ -264,10 +263,10 @@ fn board_app_paints_locatable_columns_cards_and_hints() {
     assert_locatable(
         &driver,
         &[
-            ("draw_board", "Backlog"),
-            ("draw_board", "In Progress"),
-            ("draw_board", "Add dark-mode toggle"),
-            ("draw_board", "Waiting for design sign-off"),
+            ("BoardModel", "Backlog"),
+            ("BoardModel", "In Progress"),
+            ("BoardModel", "Add dark-mode toggle"),
+            ("BoardModel", "Waiting for design sign-off"),
         ],
     );
 }
@@ -278,9 +277,9 @@ fn diff_view_demo_paints_locatable_pane_labels_and_rows() {
     assert_locatable(
         &driver,
         &[
-            ("draw_diff_view", "original"),
-            ("draw_diff_view", "modified"),
-            ("draw_diff_view", "(a + b) as i64"),
+            ("DiffView", "original"),
+            ("DiffView", "modified"),
+            ("DiffView", "(a + b) as i64"),
         ],
     );
 }
@@ -308,14 +307,14 @@ fn ai_transcript_paints_locatable_message_rows_and_input() {
     assert_locatable(
         &driver,
         &[
-            ("draw_message_list", "Connected."),
+            ("MessageList", "Connected."),
             ("draw_text_input", "Type a message…"),
         ],
     );
 }
 
 // `MarkdownDemo::render` paints exclusively through
-// `backend.draw_rich_text_popup` (there is no `draw_message_list` call
+// `backend.draw_rich_text_popup` (there is no `draw_primitive` call
 // anywhere in that file) — this doubles as the `draw_rich_text_popup`
 // coverage exemplar.
 #[test]
@@ -377,11 +376,11 @@ fn chart_app_paints_locatable_axis_ticks_and_legend() {
     assert_locatable(
         &driver,
         &[
-            ("draw_chart", "CPU"),
-            ("draw_chart", "Memory"),
-            ("draw_chart", "Time (s)"),
-            ("draw_chart", "Usage"),
-            ("draw_chart", "100"),
+            ("Chart", "CPU"),
+            ("Chart", "Memory"),
+            ("Chart", "Time (s)"),
+            ("Chart", "Usage"),
+            ("Chart", "100"),
         ],
     );
 }

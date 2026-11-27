@@ -1,7 +1,7 @@
 //! Parity between `ListView`/`TreeView`/`DataTable`/`TreeTable`'s
 //! [`Primitive::paint_cells`] path and their TUI free-function
-//! rasterisers (`quadraui::tui::draw_list`/`TreeView`'s paint/`draw_data_table`/
-//! `TreeTable`'s paint), driven entirely through public API from a
+//! rasterisers (`quadraui::tui::draw_list`/`TreeView`'s paint/`DataTable`'s
+//! paint/`TreeTable`'s paint), driven entirely through public API from a
 //! separate compilation unit (`tests/`, outside the crate).
 //!
 //! Each test below does two things:
@@ -26,10 +26,8 @@
 //! `DataTablePaintState`) when it calls through to its own `draw_*`,
 //! even though the TUI free functions below accept a real one:
 //!
-//! - [`quadraui::tui::draw_data_table_with_state`]'s `hovered_idx`
-//!   tints a non-selected row's background —
-//!   `data_table_paint_cells_matches_draw_data_table_then_diverges_under_hover`
-//!   below shows the resulting buffers are not equal.
+//! `DataTable`, like `TreeView`, reads its hovered row from the paint
+//! state itself (`data_table_paint_cells_follows_the_paint_state_hover`).
 //! - [`quadraui::tui::draw_list_with_state`]'s `scroll_px` wins over
 //!   `scroll_offset` and can land on a different first visible row —
 //!   `list_paint_cells_matches_draw_list_then_diverges_under_scroll_px`

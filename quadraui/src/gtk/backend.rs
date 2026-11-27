@@ -107,9 +107,8 @@ pub(crate) fn default_ui_font_desc() -> String {
 
 /// One piece of text painted this frame, with its on-surface bounds in
 /// backend (pixel) coordinates. Recorded via
-/// [`GtkBackend::record_painted_text`] into [`GtkBackend::painted_text`].
-/// Either a whole logical label by the trait method that painted it,
-/// or per painted glyph run by [`super::painted_text`].
+/// [`GtkBackend::record_painted_text`] into [`GtkBackend::painted_text`],
+/// one per painted glyph run by [`super::painted_text`].
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PaintedText {
     pub(crate) text: String,
@@ -346,21 +345,15 @@ pub struct GtkBackend {
     /// an overlay drawn earlier in the same frame — tooltip/toast must stay
     /// topmost (see that method's own doc for the regression this guards).
     overlay_bounds_this_frame: Vec<QRect>,
-    /// The `(text, bounds)` map painted this frame — recorded by trait
-    /// methods that compute a label's on-surface rect so
+    /// The `(text, bounds)` map painted this frame, so
     /// [`super::testing::GtkDriver::find`] can locate a control without
     /// hardcoded coordinates. Cleared at the start of each frame by
-    /// [`Self::begin_frame`]; mirrors `text_regions`' lifecycle. Coverage
-    /// is incremental — only widgets whose trait method has been updated
-    /// to call [`Self::record_painted_text`] appear here; see that method's docs.
+    /// [`Self::begin_frame`]; mirrors `text_regions`' lifecycle.
     ///
-    /// Also fed, per painted glyph run, by [`super::painted_text::show_layout`]
-    /// — the choke point every GTK rasteriser routes its Pango painting through
-    /// — so every text-bearing primitive reports in, not just those whose trait
-    /// methods hand-roll a `record_painted_text` call. Hand-rolled (logical,
-    /// hit-test-aligned) records land here first, ahead of the frame's glyph runs,
-    /// so `find_bounds` keeps resolving them to the label rect a click needs.
-    /// Requires [`Self::set_painted_text_recording`].
+    /// Fed, per painted glyph run, by [`super::painted_text::show_layout`]
+    /// — the choke point every GTK rasteriser routes its Pango painting
+    /// through — so every text-bearing primitive reports in. Requires
+    /// [`Self::set_painted_text_recording`].
     pub(crate) painted_text: Vec<PaintedText>,
     /// Whether the per-glyph-run recording described on
     /// [`Self::painted_text`] is active. Off by default: a live app never
@@ -897,8 +890,7 @@ impl GtkBackend {
         &self.current_style
     }
 
-    /// Resolve the row pitch `draw_list`/`draw_data_table`
-    /// lay their rows out at: `Style::row_height` on a pixel backend
+    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
     /// (`candidate_line_height > 1.0`), floored at the font's own line
     /// height so a chrome font taller than the token isn't clipped — see
     /// `MacBackend::resolved_row_height`'s identical rationale.
@@ -2328,8 +2320,7 @@ impl Backend for GtkBackend {
     /// already resolves per role. Built against the stable
     /// widget-realized `pango_ctx`, not the per-frame `cr`/`layout` pair
     /// from [`Self::current_frame_refs`] — same "works outside a frame
-    /// too" posture as [`Self::data_table_layout`]'s own `pango_ctx` use,
-    /// since an app computing a `Dialog`/`ContextMenu` measure has no
+    /// too" posture as `measure_text`'s own `pango_ctx` use, since an app computing a `Dialog`/`ContextMenu` measure has no
     /// live frame to borrow from.
     ///
     /// With no `pango_ctx` set, a call inside a frame measures against
@@ -3101,7 +3092,7 @@ impl PaintSurface for GtkBackend {
 
     /// `self` is the surface every non-editor-class
     /// primitive measures/paints through unwrapped (`draw_toast_overlay`,
-    /// `draw_split`, …), so this forces `ui_font`
+    /// a data table, …), so this forces `ui_font`
     /// (the chrome font) explicitly rather than trusting whatever font
     /// the shared per-frame layout happens to carry in — that ambient
     /// font is the *editor* font by default (`gtk/run.rs::render_frame`
@@ -3249,7 +3240,7 @@ impl PaintSurface for GtkBackend {
     /// [`Self::surface_measure_text`]'s doc for why, and [`EditorSurface`]
     /// for the adapter the editor-class primitives (the terminal through
     /// [`PaintSurface::surface_with_editor_font`], `draw_text_display`,
-    /// `draw_diff_view`) paint through instead so their glyphs keep
+    /// a diff view) paint through instead so their glyphs keep
     /// painting in the editor font.
     fn surface_draw_text_run(&mut self, rect: QRect, text: &str, color: Color) {
         let (cr, layout) = self
@@ -8660,11 +8651,10 @@ mod tests {
         );
     }
 
-    /// Before unification, GTK's `draw_chart` had no clip, so overlay
-    /// elements painted outside `plot_area` (legend, crosshair, hover
-    /// marker) could bleed past the chart's rect. The unified
-    /// `primitives::chart::paint` now owns this clip for every backend.
-    /// This is the driver-tier proof for GTK.
+    /// Overlay elements painted outside `plot_area` (legend, crosshair,
+    /// hover marker) must not bleed past the chart's rect: the shared
+    /// chart painter owns that clip for every backend. This is the
+    /// driver-tier proof for GTK.
     #[test]
     fn gtk_chart_hover_marker_does_not_escape_chart_rect() {
         // origin=1.0 at index 0 → top edge; 0.0 at index 1 → bottom

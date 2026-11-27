@@ -473,7 +473,7 @@ fn shell_menu_activity_bar_click_still_switches_panel_when_no_modal_open() {
 // `split_bracket_keys_resize_the_divider_with_no_mouse_step`. `Split`
 // paints no glyph to `find` the way TUI's `│` divider does (see
 // `tests/gtk_example_driver.rs`'s `SplitApp` section doc), so the divider's
-// real pixel position is derived from `Backend::split_layout` — the same
+// real pixel position is derived from `layout_primitive` — the same
 // pure-geometry call `SplitApp::handle`'s own `MouseDown`/`MouseMoved` arms
 // use to hit-test — rather than a painted-text lookup or a hardcoded
 // coordinate.
@@ -491,7 +491,7 @@ fn split_area_rect(driver: &WinDriver<SplitApp>) -> Rect {
 }
 
 /// Resolve the divider's real painted bounds for a given `ratio` via the
-/// same `Backend::split_layout` the app itself calls — not a copy of the
+/// same `layout_primitive` the app itself calls — not a copy of the
 /// primitive's geometry math.
 fn split_layout_at(
     driver: &WinDriver<SplitApp>,
@@ -506,7 +506,7 @@ fn split_layout_at(
         first_min: 0.0,
         second_min: 0.0,
     };
-    driver.backend().layout_primitive(rect, &split)
+    quadraui::DrawsPrimitives::layout_primitive(driver.backend(), rect, &split)
 }
 
 #[test]
@@ -1859,7 +1859,7 @@ fn scroll_view_drag_scenario(width: u32, height: u32) {
 // ─── CanvasShapesApp: the Canvas v2 op set — real Win-GUI rendering ───────
 //
 // `tests/tui_example_driver.rs`'s `canvas_shapes_demo_*` tests already prove
-// the whole `Backend::draw_canvas` round trip reaches the screen for the new
+// the whole `draw_primitive` round trip reaches the screen for the new
 // op set generically (every op degrades to TUI's braille grid), and
 // `tests/gtk_example_driver.rs`/`tests/macos_example_driver.rs` prove it on
 // their own real rasterisers. These check *real* pixel colour and glyph
@@ -2235,7 +2235,7 @@ fn canvas_shapes_demo_escape_exits() {
 // Neither shipped Canvas example uses a translucent `Color` (every op uses
 // `Color::rgb`, always `a: 255`), so asserting against them alone would
 // never exercise alpha blending. This probe draws two overlapping
-// opaque/translucent `DrawOp::Rect`s through one `Backend::draw_canvas` call
+// opaque/translucent `DrawOp::Rect`s through one `draw_primitive` call
 // and checks the overlap is a genuine blend of the two.
 
 const ALPHA_PROBE_BASE: Color = Color::rgb(20, 20, 200);

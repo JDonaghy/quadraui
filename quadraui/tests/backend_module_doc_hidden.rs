@@ -52,7 +52,6 @@ const BACKENDS: &[BackendModule] = &[
         stable_flat_names: &[
             "ACTIVITY_ROW_PX",
             "GtkBackend",
-            "draw_data_table",
             "run",
             "app_id_is_valid",
             "display_available",
@@ -87,9 +86,6 @@ const BACKENDS: &[BackendModule] = &[
             "RunConfig",
             "StepOutcome",
             "TuiRunner",
-            "draw_data_table",
-            "draw_multi_section_view",
-            "tui_msv_layout",
             "tui_tree_layout",
         ],
     },
@@ -273,7 +269,7 @@ fn scanner_distinguishes_hidden_from_tracked() {
         vec!["run", "run_with", "RunConfig", "StepOutcome"]
     );
     assert_eq!(
-        names_from_pub_use("pub use multi_section_view::{draw_multi_section_view, metrics_for as multi_section_view_metrics};"),
-        vec!["draw_multi_section_view", "multi_section_view_metrics"]
+        names_from_pub_use("pub use widget::{draw_widget, metrics_for as widget_metrics};"),
+        vec!["draw_widget", "widget_metrics"]
     );
 }

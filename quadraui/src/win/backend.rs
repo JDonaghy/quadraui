@@ -954,8 +954,7 @@ impl WinBackend {
         }
     }
 
-    /// Resolve the row pitch `draw_list`/`draw_data_table`
-    /// lay their rows out at: `Style::row_height` on a pixel backend
+    /// Resolve the row pitch `draw_list` lays its rows out at: `Style::row_height` on a pixel backend
     /// (`candidate_line_height > 1.0`), floored at the font's own line
     /// height so a chrome font taller than the token isn't clipped — see
     /// `MacBackend::resolved_row_height`'s identical rationale.
@@ -1501,19 +1500,8 @@ impl WinBackend {
     // Thin delegation onto `self.caret_blink` — see that field's doc for
     // the full `CARET_BLINK_TIMER_ID` wiring in `super::run`.
 
-    /// Whether the `MultiSectionView` aux-row caret should currently
-    /// paint — read by [`super::multi_section_view::draw_multi_section_view`]
-    /// via [`Self::draw_multi_section_view`].
-    ///
-    /// `#[allow(dead_code)]`: this method's only non-test callers —
-    /// [`Self::draw_multi_section_view`]'s `target_os = "windows"` arm and
-    /// `mod win32`'s `WM_TIMER` handler — are both windows-gated, so on a
-    /// non-Windows host (`cargo check --features win` on the
-    /// `ubuntu-latest` CI leg) it has no caller outside this file's own
-    /// `#[cfg(test)]` module and would trip `-D warnings`' dead-code lint
-    /// there despite being genuinely used on the `windows-latest` leg —
-    /// same rationale as `win::run::dispatch_event`'s identical allow.
-    #[allow(dead_code)]
+    /// Current blink phase. Only this file's tests read it.
+    #[cfg(test)]
     pub(crate) fn caret_visible(&self) -> bool {
         self.caret_blink.visible()
     }
@@ -1523,8 +1511,9 @@ impl WinBackend {
     /// `true` when the phase flipped, telling the caller to invalidate
     /// the window.
     ///
-    /// `#[allow(dead_code)]`: see [`Self::caret_visible`]'s doc — this
-    /// method's only non-test caller is windows-gated too.
+    /// `#[allow(dead_code)]`: this method's only non-test caller is
+    /// windows-gated, so a non-Windows `--features win` build has no
+    /// caller outside this file's tests.
     #[allow(dead_code)]
     pub(crate) fn tick_caret_blink(&mut self, now: Instant) -> bool {
         self.caret_blink.tick(now)
@@ -1533,8 +1522,9 @@ impl WinBackend {
     /// The configured caret-blink period — the interval `super::run`
     /// arms `CARET_BLINK_TIMER_ID` at.
     ///
-    /// `#[allow(dead_code)]`: see [`Self::caret_visible`]'s doc — this
-    /// method's only non-test caller is windows-gated too.
+    /// `#[allow(dead_code)]`: this method's only non-test caller is
+    /// windows-gated, so a non-Windows `--features win` build has no
+    /// caller outside this file's tests.
     #[allow(dead_code)]
     pub(crate) fn caret_blink_period(&self) -> Duration {
         self.caret_blink.period()
@@ -2958,7 +2948,7 @@ impl Backend for WinBackend {
 
     /// Paint via the shared
     /// [`crate::primitives::progress::native_surface_paint::paint`] once
-    /// a surface is attached — mirrors [`Self::draw_diff_view`]. The
+    /// a surface is attached. The
     /// Windows backend now passes `self.current_theme` instead of painting
     /// `Theme::default()`, matching the macOS and GTK backends. See
     /// the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached yet"
@@ -3029,7 +3019,7 @@ impl Backend for WinBackend {
 
     /// Pure measurement — only needs `self.dwrite`, not a live
     /// render target, so this works as soon as a surface has ever been
-    /// attached — same posture as [`Self::data_table_layout`]. Prefers
+    /// attached. Prefers
     /// `chrome_dwrite`, matching [`Self::draw_spinner`]'s paint font.
     fn spinner_layout(&self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
@@ -3735,8 +3725,7 @@ impl PaintSurface for WinBackend {
     }
 
     /// `self` is the surface every non-editor-class primitive
-    /// measures/paints through unwrapped (`draw_data_table`'s shared
-    /// paint helper, `draw_toast_overlay`, …), so this
+    /// measures/paints through unwrapped (`draw_toast_overlay`, …), so this
     /// resolves `chrome_dwrite` — falling back to the editor `dwrite`
     /// handle only when no live chrome handle exists yet, the same
     /// "degrade, don't panic" convention
@@ -6475,7 +6464,7 @@ mod tests {
         );
     }
 
-    /// `draw_split`'s divider chrome must paint from the live theme rather
+    /// A split's divider chrome must paint from the live theme rather
     /// than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
@@ -6515,7 +6504,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = backend.draw_split(rect, &split);
+        let layout = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &split);
         backend.end_frame();
 
         let db = layout.divider_bounds;
@@ -6530,7 +6519,7 @@ mod tests {
         );
     }
 
-    /// `draw_split_tree`'s divider chrome must paint from the live theme
+    /// A split tree's divider chrome must paint from the live theme
     /// rather than a hardcoded `Theme::default()`.
     #[cfg(target_os = "windows")]
     #[test]
@@ -6570,7 +6559,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = backend.draw_split_tree(rect, &tree);
+        let layout = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &tree);
         backend.end_frame();
 
         let div = layout
@@ -7397,7 +7386,7 @@ mod tests {
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_multi_section_view_paints_header_titles_in_the_chrome_fonts_size() {
-        let view = MultiSectionView {
+        let view = crate::MultiSectionView {
             id: WidgetId::new("msv"),
             sections: vec![crate::primitives::multi_section_view::Section {
                 id: "alpha".into(),
@@ -7431,12 +7420,16 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_multi_section_view(Rect::new(0.0, 0.0, 200.0, 150.0), &view);
+                crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 150.0),
+                    &view,
+                );
             },
         );
         assert!(
             diff > 0,
-            "#1266: draw_multi_section_view must paint section header titles through \
+            "a MultiSectionView must paint section header titles through \
              chrome_dwrite, not the (unchanged) editor dwrite handle"
         );
     }
@@ -7773,22 +7766,24 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_diff_view(Rect::new(0.0, 0.0, 200.0, 80.0), &view);
+                let _ = crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 80.0),
+                    &view,
+                );
             },
         );
         assert_eq!(
             diff, 0,
-            "draw_diff_view is editor-class — it must keep painting through \
+            "a DiffView is editor-class — it must keep painting through \
              EditorSurface (the editor dwrite handle) regardless of the chrome \
              font's size"
         );
     }
 
-    /// `DataTable` builds its own `super::surface::D2dSurface` adapter
-    /// from whichever `dwrite` handle `WinBackend::draw_data_table` passes
-    /// in, so this call site isn't fixed by `impl PaintSurface for
-    /// WinBackend`'s own default — it needs the direct
-    /// `chrome_dwrite`-preferring swap this test pins.
+    /// A `DataTable` paints through `impl PaintSurface for WinBackend`,
+    /// which must resolve `chrome_dwrite` for chrome text — this test pins
+    /// that.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_data_table_paints_cell_text_in_the_chrome_fonts_size() {
@@ -7822,13 +7817,17 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_data_table(Rect::new(0.0, 0.0, 200.0, 120.0), &table, None);
+                let _ = crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 120.0),
+                    &table,
+                );
             },
         );
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_data_table must paint cell text through chrome_dwrite, not the \
+             a DataTable must paint cell text through chrome_dwrite, not the \
              (unchanged) editor dwrite handle"
         );
     }
@@ -7904,8 +7903,7 @@ mod tests {
         );
     }
 
-    /// Same "builds its own adapter from the passed `dwrite`" shape as
-    /// `draw_data_table` above.
+    /// Same chrome-font check as the data table test above.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_toast_overlay_paints_title_in_the_chrome_fonts_size() {
@@ -7944,8 +7942,7 @@ mod tests {
         );
     }
 
-    /// Same "builds its own adapter from the passed `dwrite`" shape as
-    /// `draw_data_table` above.
+    /// Same chrome-font check as the data table test above.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_text_input_paints_text_in_the_chrome_fonts_size() {
@@ -7974,7 +7971,7 @@ mod tests {
     }
 
     /// Same "builds its own adapter from the passed `dwrite`" shape as
-    /// `draw_data_table` above, painted into the box `Tooltip::layout`
+    /// the data table test above, painted into the box `Tooltip::layout`
     /// places for an anchor.
     #[cfg(target_os = "windows")]
     #[test]
@@ -8002,8 +7999,7 @@ mod tests {
         );
     }
 
-    /// Same "builds its own adapter from the passed `dwrite`" shape as
-    /// `draw_data_table` above.
+    /// Same chrome-font check as the data table test above.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_completions_paints_item_labels_in_the_chrome_fonts_size() {
@@ -8041,12 +8037,11 @@ mod tests {
         );
     }
 
-    /// Same "builds its own adapter from the passed `dwrite`" shape as
-    /// `draw_data_table` above.
+    /// Same chrome-font check as the data table test above.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_draw_message_list_paints_row_text_in_the_chrome_fonts_size() {
-        let list = MessageList {
+        let list = crate::MessageList {
             id: WidgetId::new("messages"),
             rows: vec![crate::MessageRow::new(
                 "hello world",
@@ -8061,13 +8056,17 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_message_list(Rect::new(0.0, 0.0, 200.0, 80.0), &list);
+                crate::DrawsPrimitives::draw_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 80.0),
+                    &list,
+                );
             },
         );
         assert!(
             diff > 0,
             "varying only the chrome font size must repaint different pixels — \
-             draw_message_list must paint row text through chrome_dwrite, not \
+             a MessageList must paint row text through chrome_dwrite, not \
              the (unchanged) editor dwrite handle"
         );
     }
@@ -8113,9 +8112,9 @@ mod tests {
         (make(ui_font_a, &measure), make(ui_font_b, &measure))
     }
 
-    /// `data_table_layout` must measure a `ColumnWidth::Content` column
-    /// against the same `chrome_dwrite`-preferring handle
-    /// `Self::draw_data_table` paints with — see that method's doc.
+    /// A `DataTable` layout must measure a `ColumnWidth::Content` column
+    /// against the same `chrome_dwrite`-preferring handle the table
+    /// paints with.
     #[cfg(target_os = "windows")]
     #[test]
     fn win_backend_data_table_layout_measures_a_content_column_in_the_chrome_fonts_size() {
@@ -8164,15 +8163,19 @@ mod tests {
                 // width never saturates that clamp, or both runs would
                 // read back the same clamped-to-`remaining` value
                 // regardless of font.
-                backend
-                    .data_table_layout(Rect::new(0.0, 0.0, 4000.0, 200.0), &table)
-                    .columns[0]
+                crate::DrawsPrimitives::layout_primitive(
+                    backend,
+                    Rect::new(0.0, 0.0, 4000.0, 200.0),
+                    &table,
+                )
+                .layout
+                .columns[0]
                     .width
             },
         );
         assert!(
             big > small * 2.0,
-            "data_table_layout must measure the Content column through \
+            "a DataTable layout must measure the Content column through \
              chrome_dwrite, not the (unchanged) editor dwrite handle: \
              small={small}, big={big}"
         );
@@ -8693,10 +8696,9 @@ mod tests {
         );
     }
 
-    // ── #810: draw_chart real-pixel driver tests ──────────────────────────────
+    // ── Chart real-pixel driver tests ─────────────────────────────────────────
     //
-    // Drive the real `Backend::draw_chart` → `primitives::chart::paint` path
-    // end to end, the same shape `set_theme_reaches_the_find_replace` above uses.
+    // Drive a chart through `draw_primitive` end to end, the same shape `set_theme_reaches_the_find_replace` above uses.
 
     #[cfg(target_os = "windows")]
     fn chart_line_fixture(data: Vec<f64>) -> crate::primitives::chart::Chart {
@@ -8728,7 +8730,7 @@ mod tests {
     /// painting with it as `hovered_point` must not panic.
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_chart_paint_and_nearest_point_round_trip() {
+    fn win_chart_paint_and_nearest_point_round_trip() {
         use crate::win::testing::HeadlessSurface;
 
         const W: u32 = 200;
@@ -8744,7 +8746,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let layout = backend.draw_chart(rect, &chart, None, None);
+        let layout = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &chart).chart;
         backend.end_frame();
 
         assert_eq!(layout.data_point_positions.len(), 5);
@@ -8755,16 +8757,21 @@ mod tests {
 
         // Painting with a hover marker + crosshair must not panic.
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_chart(rect, &chart, Some((0, 0)), Some(1.0));
+        let hovered = crate::primitives::chart::Chart {
+            hovered_point: Some((0, 0)),
+            crosshair_x: Some(1.0),
+            ..chart.clone()
+        };
+        crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &hovered);
         backend.end_frame();
     }
 
-    /// No-paint layout must agree byte-for-byte with what `draw_chart`
-    /// painted — the same contract `primitives::form::paint` documents
+    /// The no-paint layout must agree byte-for-byte with what the paint
+    /// returned — the same contract `primitives::form::paint` documents
     /// ("paint and hit-test can never disagree").
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_chart_no_paint_layout_matches_paint_layout() {
+    fn win_chart_no_paint_layout_matches_paint_layout() {
         use crate::win::testing::HeadlessSurface;
 
         const W: u32 = 200;
@@ -8780,21 +8787,21 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        let painted = backend.draw_chart(rect, &chart, None, None);
+        let painted = crate::DrawsPrimitives::draw_primitive(&mut backend, rect, &chart).chart;
         backend.end_frame();
 
-        let no_paint = backend.chart_layout(rect, &chart);
+        let no_paint = crate::DrawsPrimitives::layout_primitive(&backend, rect, &chart).chart;
         assert_eq!(painted, no_paint);
     }
 
-    /// `win::chart::draw_chart` never clipped before #810 unified all three
-    /// backends onto the shared `primitives::chart::paint`, which always brackets
-    /// its body in `surface_push_clip`/`surface_pop_clip`. Mirrors
-    /// `gtk::backend::tests::gtk_backend_draw_chart_hover_marker_does_not_escape_chart_rect`
+    /// The shared chart painter brackets its body in
+    /// `surface_push_clip`/`surface_pop_clip`, so a hover marker never
+    /// escapes the chart's rect. Mirrors
+    /// `gtk::backend::tests::gtk_chart_hover_marker_does_not_escape_chart_rect`
     /// pixel-for-pixel (same fixture, same geometry).
     #[cfg(target_os = "windows")]
     #[test]
-    fn win_backend_draw_chart_hover_marker_does_not_escape_chart_rect() {
+    fn win_chart_hover_marker_does_not_escape_chart_rect() {
         use crate::primitives::chart::{ChartKind, Series};
         use crate::win::testing::HeadlessSurface;
         use crate::Color;
@@ -8839,11 +8846,14 @@ mod tests {
             Rect::new(0.0, 0.0, CANVAS_W as f32, CANVAS_H as f32),
             sentinel,
         );
-        backend.draw_chart(
+        let chart = crate::primitives::chart::Chart {
+            hovered_point: Some((0, 0)),
+            ..chart
+        };
+        crate::DrawsPrimitives::draw_primitive(
+            &mut backend,
             Rect::new(chart_x, chart_y, chart_w, chart_h),
             &chart,
-            Some((0, 0)),
-            None,
         );
         backend.end_frame();
 
@@ -9443,7 +9453,7 @@ mod tests {
 
         // `()` category. None of these types derive `Default`, so build
         // each with an empty/idle content set instead.
-        let msv = MultiSectionView {
+        let msv = crate::MultiSectionView {
             id: WidgetId::new("msv"),
             sections: Vec::new(),
             active_section: None,
@@ -9454,7 +9464,7 @@ mod tests {
             has_focus: false,
             panel_scroll: 0.0,
         };
-        backend.draw_multi_section_view(rect, &msv);
+        let _ = crate::DrawsPrimitives::draw_dyn(&mut backend, rect, &msv, &());
 
         // Widget-contract rail (fixed row geometry, no measurer).
         let activity_bar = ActivityBar {

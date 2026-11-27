@@ -26,7 +26,7 @@
 //! divider chrome.** Like `Split`, `SplitTree` describes leaf rects and
 //! divider geometry; hosts paint leaf content into the returned leaf
 //! rects. Backends draw only the divider lines, using the same visual
-//! convention as `Split` (see `tui::draw_split_tree` / `gtk::draw_split_tree`).
+//! convention as `Split`.
 //!
 //! # One source of truth
 //!
@@ -765,7 +765,7 @@ impl SplitTreeLayout {
 // the layout once and reuse it for both paint and hit-test.
 //
 // `#[allow(dead_code)]`: only called when a pixel backend is compiled in,
-// exercised by each backend's own `Backend::draw_split_tree` call site.
+// exercised through `SplitTree`'s own `Primitive::paint`.
 #[cfg(any(
     feature = "gtk",
     feature = "win",

@@ -1,7 +1,7 @@
 //! `Canvas` v2 op demo ([`tui_canvas_shapes`] / [`gtk_canvas_shapes`]).
 //!
 //! A chart-style gauge drawn entirely from the `Canvas` v2 op set, one
-//! `Backend::draw_canvas` call, on every backend:
+//! `draw_primitive` call, on every backend:
 //! - [`DrawOp::StrokeRect`] — the plot border.
 //! - [`DrawOp::DashedLine`] — horizontal gridlines.
 //! - [`DrawOp::Polygon`] — tapered bars (a trapezoid per bar, not a

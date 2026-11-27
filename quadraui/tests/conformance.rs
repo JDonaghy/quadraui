@@ -451,7 +451,7 @@ fn classify_c0_case(
 /// `MacBackend` is deliberately *not* added to this tier's `columns`:
 /// it lacks a real `ConformanceDriver` and its known fakes would turn
 /// straight into failures on macOS, which is its own follow-up.
-/// The `draw_diff_view` row is proven on TUI and GTK only. Until the macOS
+/// The `DiffView` row is proven on TUI and GTK only. Until the macOS
 /// `ConformanceDriver` lands, C0's coverage claim is "every primitive, on
 /// every backend wired into this tier", not "on every backend".
 // `vec_init_then_push`: each push is behind its own `#[cfg]`, so the
@@ -1138,7 +1138,7 @@ mod c0_verdict_tests {
 
     #[test]
     fn survived_text_ok_observable_is_a_clean_pass() {
-        let v = classify_c0_case(&outcome(true, true, true), "draw_split", None, "win");
+        let v = classify_c0_case(&outcome(true, true, true), "draw_list", None, "win");
         assert_eq!(v.cell, "pass");
         assert!(v.gap_line.is_none());
     }
@@ -1148,11 +1148,11 @@ mod c0_verdict_tests {
         // `survived: false` must win even when the other two flags claim
         // success — a panic mid-paint means those flags describe a frame
         // that was never actually produced.
-        let v = classify_c0_case(&outcome(false, true, true), "draw_board", None, "win");
+        let v = classify_c0_case(&outcome(false, true, true), "draw_spinner", None, "win");
         assert_eq!(v.cell, "PANIC");
         assert_eq!(
             v.gap_line.as_deref(),
-            Some("win/draw_board: panicked mid-paint")
+            Some("win/draw_spinner: panicked mid-paint")
         );
     }
 

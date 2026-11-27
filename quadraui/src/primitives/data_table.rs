@@ -33,9 +33,10 @@
 //!
 //! [`ResolvedColumn::x`] lives in **content space**: it always starts at
 //! `0.0` for the first column and runs to `content_width`, which may be
-//! wider than the viewport when `min_total_width` is set. Backends paint
-//! a column at `rc.x - h_scroll` (see `tui::data_table::draw_data_table`
-//! and its GTK/macOS peers), so **viewport space** — the space every
+//! wider than the viewport when `min_total_width` is set. Every painter
+//! (the cell-grid one in [`paint_cells`] and the pixel one in
+//! `native_surface_paint`) paints a column at `rc.x - h_scroll`, so
+//! **viewport space** — the space every
 //! click arrives in — is content space shifted left by `h_scroll`.
 //!
 //! Everything on [`DataTableLayout`] that takes an `x` from a pointer
@@ -56,22 +57,18 @@
 //! the `h_scroll` carried on the layout `hit_test` runs against, because
 //! `hit_test` does no rounding of its own.
 //!
-//! Pixel backends (GTK/macOS) paint at the exact fractional `h_scroll`,
-//! so the layout's `h_scroll` — copied verbatim from `DataTable::h_scroll`
-//! in [`DataTable::layout`] — already matches, and both their
-//! `draw_data_table` and their `Backend::data_table_layout` are
-//! self-consistent for free.
+//! Pixel backends paint at the exact fractional `h_scroll`, so the
+//! layout's `h_scroll` — copied verbatim from `DataTable::h_scroll` in
+//! [`DataTable::layout`] — already matches.
 //!
-//! The TUI backend is cell-granular: it paints at `h_scroll.round()`
-//! (`tui::data_table`'s `h_off`), so it must overwrite the returned
-//! layout's `h_scroll` with that same rounded value. It does that in one
-//! place — `tui::data_table_layout` (`#[doc(hidden)]`, so not linked
-//! here) — which **both** `tui::data_table::draw_data_table` and
-//! `Backend::data_table_layout` route through, so the layout-on-demand
-//! hit-test path (no repaint) agrees with the paint path bit-for-bit.
-//! Adding a third TUI entry point that calls [`DataTable::layout`]
-//! directly would reopen that issue; go through `tui::data_table_layout`
-//! instead. The same applies to any caller that hand-builds a
+//! A cell grid paints at `h_scroll.round()`, so the cell-grid layout
+//! overwrites the returned layout's `h_scroll` with that same rounded
+//! value. It does that in one place — `paint_cells::cell_data_table_layout`
+//! — which both the cell paint and the `Primitive::layout` a hit-test
+//! reads route through, so the layout-on-demand hit-test path (no
+//! repaint) agrees with the paint bit-for-bit. A cell-grid caller that
+//! calls [`DataTable::layout`] directly would reopen that mismatch; go
+//! through `Primitive::layout` instead. The same applies to any caller that hand-builds a
 //! `DataTableLayout` for a cell-granular surface: it must apply the
 //! rounding itself.
 //!
@@ -332,8 +329,8 @@ pub struct DataTable {
     /// would otherwise overwrite the table's own header, first column
     /// and last row. Set this when the table can receive that ring.
     ///
-    /// **Currently only the TUI rasteriser (`crate::tui::draw_data_table`)
-    /// paints the reserved margin as a border** — same opt-in-per-backend
+    /// **Currently only the cell-grid painter paints the reserved margin
+    /// as a border** — same opt-in-per-backend
     /// precedent as `TreeStyle::bordered`. GTK/macOS/Win rasterisers don't
     /// yet draw a frame in the reserved space, but [`DataTable::layout`]
     /// applies the inset unconditionally, so on those backends setting
@@ -493,10 +490,8 @@ pub struct DataTableLayout {
     /// from each column's `x` — because `hit_test`/`column_hit` add this
     /// field back with no rounding of their own; a mismatch here
     /// misroutes clicks whenever `DataTable::h_scroll`'s fractional part
-    /// crosses 0.5. Both TUI entry points that produce a layout —
-    /// `tui::data_table::draw_data_table` and `Backend::data_table_layout`
-    /// — apply it via `tui::data_table_layout` (`#[doc(hidden)]`, so not
-    /// linked here).
+    /// crosses 0.5. The cell-grid layout `Primitive::layout` returns
+    /// applies it, so the paint and every hit-test agree.
     pub h_scroll: f32,
     /// Margin reserved on the left/right edges when [`DataTable::bordered`]
     /// is set — `1.0` in surface-native units (1 cell on TUI), `0.0`
@@ -1141,19 +1136,12 @@ where
 #[cfg(feature = "tui")]
 pub(crate) mod paint_cells;
 
-// The shared paint implementation [`crate::GtkBackend`](crate::gtk::GtkBackend)'s
-// `draw_data_table` family forwards to through [`crate::gtk::GtkBackend::with_chrome_surface`]
-// — GTK has no bespoke Cairo+Pango `DataTable` painter of its own anymore.
-// macOS's and Windows' own `Backend::draw_data_table` methods still paint
-// through their bespoke `macos::data_table`/`win::data_table` modules
-// instead, each painting a cell's spans as one shaped text call rather than
-// this module's per-span `surface_draw_text_run` loop; both still reach this
-// module via `Primitive::paint`'s generic `draw_primitive` path and via
-// [`crate::primitives::tree_table::native_surface_paint`], which builds on
-// [`paint_with_layout`]/[`paint_row`]/[`paint_cell`] for `TreeTable` on every
-// GUI backend since `TreeTable` has no bespoke per-backend twin of its own to
-// prefer instead. The contract every backend reaching this module holds to
-// for a plain `DataTable`:
+// The pixel painter every pixel backend reaches through `Primitive::paint`,
+// painting a cell's spans with a per-span `surface_draw_text_run` loop.
+// [`crate::primitives::tree_table::native_surface_paint`] builds on
+// [`paint_with_layout`]/[`paint_row`]/[`paint_cell`] for `TreeTable` too.
+// The contract every backend reaching this module holds to for a plain
+// `DataTable`:
 //
 // * Selection/hover row tints alpha-blend via `surface_fill_rect_alpha`, so
 //   they composite over whatever is already painted underneath.
@@ -1536,7 +1524,7 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a [`DataTable`] into `rect` on `surface` and return the
     /// resolved [`DataTableLayout`] — the one entry point every
-    /// `PaintSurface`-backed backend's `draw_data_table` goes through. A
+    /// `PaintSurface`-backed backend's `Primitive::paint` goes through. A
     /// non-positive `rect.width`/`rect.height` short-circuits to the
     /// no-paint layout without touching `surface` at all.
     ///
@@ -2383,9 +2371,9 @@ pub(crate) mod native_surface_paint {
 //
 // Mirrors `crate::primitives::list::ListView`'s pilot impl (see that
 // type's own "Primitive pilot" section): `paint`'s pixel-backend branch
-// needs `native_surface_paint`; `paint_cells` needs
-// `crate::tui::draw_data_table`/`ratatui` — gated to whichever of those
-// a build actually has, same as those modules themselves.
+// needs `native_surface_paint`; `paint_cells` needs [`paint_cells`] and
+// `ratatui` — gated to whichever of those a build actually has, same as
+// those modules themselves.
 
 /// [`crate::primitive::Primitive::Layout`] for [`DataTable`] — the
 /// resolved [`DataTableLayout`] paired with the absolute area it was
@@ -3246,7 +3234,7 @@ mod tests {
     /// `FixedCells(10.0)` on a cell-grid backend (`row_height <= 1.5`) is
     /// exactly 10 native units — unaffected by the measurer, which a
     /// cell-grid backend always drives with a character-count closure
-    /// anyway (see `tui::data_table::data_table_layout`). Column 0 is not
+    /// anyway (see `paint_cells::cell_data_table_layout`). Column 0 is not
     /// the last column, so pass 4's "stretch the last column to fill the
     /// viewport" never masks its declared width with the leftover space.
     #[test]

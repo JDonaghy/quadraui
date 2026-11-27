@@ -3203,7 +3203,7 @@ fn tab_group_drag_start_does_not_panic() {
 /// The default two-pane layout's root divider lands on a half-cell
 /// position at this driver width: `content width = 120`, divider
 /// thickness 1 → `available = 119`, `ratio = 0.5` → `position = 59.5`,
-/// which `tui::split::draw_split` paints at the truncated cell `59`.
+/// which the split's cell paint lands on the truncated cell `59`.
 /// `TabGroupController::handle_drag_start` hit-tests
 /// `DividerInfo::divider_bounds` by hand (not through
 /// `SplitLayout::hit_test`), so it must use the backend's snapped click
@@ -4766,14 +4766,14 @@ fn help_layer_demo_no_registered_help_still_dismisses_via_escape() {
 /// that field every frame. Tracking the divider glyph's own painted
 /// column (rather than reading `SplitApp.ratio` directly, which has no
 /// public accessor) is what makes this a real paint round-trip: a drag
-/// handler that updated `ratio` but never affected `backend.draw_split`'s
+/// handler that updated `ratio` but never affected `draw_primitive`'s
 /// layout — or vice versa — would fail this, not just a hand-inspected
 /// field.
 ///
 /// Clicks land on `find_bounds("│")`'s left edge, not its center like
 /// most tests in this file: an 80-wide area with a 1-cell divider gives
 /// `available = 79`, so a 0.5 ratio places the divider at the half-cell
-/// position `39.5`. `tui/split.rs::draw_split` paints the glyph at the
+/// position `39.5`. The split's cell paint puts the glyph at the
 /// truncated cell `39`, and the click target
 /// (`SplitLayout::divider_hit_bounds()`) is snapped to that same cell —
 /// `[39.0, 40.0)` — so either the left edge (`39.0`, used here) or the
@@ -9444,7 +9444,7 @@ fn image_demo_q_exits() {
 // ─── CanvasApp: the `Canvas` primitive's custom gauge ─────────────────────
 //
 // `Canvas` degrades on TUI: `DrawOp::Rect`/`DrawOp::TextRun` ops reach the
-// screen end to end through `Backend::draw_canvas` and `Backend::canvas_layout`.
+// screen end to end through `draw_primitive` and `layout_primitive`.
 
 #[test]
 fn canvas_demo_paints_the_initial_gauge_label() {
@@ -9512,7 +9512,7 @@ fn canvas_demo_value_never_exceeds_100_or_drops_below_0() {
 }
 
 /// Clicking inside the gauge jumps straight to that position's value —
-/// the same `rect`/`Backend::canvas_layout` both `render` and this
+/// the same `rect`/`layout_primitive` both `render` and this
 /// handler build the canvas from, so paint and click-routing can never
 /// disagree (`examples/common/canvas_app.rs`'s own doc comment). The
 /// gauge spans `x` in `[1, 99)` at `y = 2` on a 100-wide viewport
@@ -9561,7 +9561,7 @@ fn canvas_demo_q_exits() {
 // DashedLine/StrokeRect/StyledTextRun) on a chart-style demo ───────────────
 //
 // Every new op degrades to the sub-cell braille grid on TUI; this just
-// proves the whole `Backend::draw_canvas` round trip reaches the screen
+// proves the whole `draw_primitive` round trip reaches the screen
 // end to end for the new descriptor shape, same as `CanvasApp` above does
 // for the original op set.
 
@@ -9615,7 +9615,7 @@ fn canvas_shapes_demo_escape_exits() {
 //
 // `examples/common/canvas_regions_demo.rs`'s module doc names the three
 // things these assertions prove end to end through
-// `Backend::canvas_layout`/`CanvasLayout::region_hit_test`: click-per-
+// `layout_primitive`/`CanvasLayout::region_hit_test`: click-per-
 // region toggling, Tab-to-focus via a hand-rolled `AppLogic::tab_stops`,
 // and a key press reaching the focused canvas. On a 100x10 viewport
 // (`line_height() == 1.0` on TUI) the canvas rect is

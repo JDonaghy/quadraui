@@ -22,9 +22,6 @@
 //!   coordinates comparable directly against raw click coordinates. Used by
 //!   primitives painted as a freestanding widget at their own screen rect.
 //!
-//! A third case returns no coordinates at all — `diff_view_layout` returns
-//! row *counts*, not positions — and its own doc says so explicitly.
-//!
 //! Both frames are legitimate; what this file enforces is that each method's
 //! doc states its frame and every backend implementation actually returns
 //! that frame (see `quadraui/docs/PRIMITIVE_RULES.md` "Coordinate frames for
@@ -1219,7 +1216,7 @@ pub trait Backend: sealed::Sealed {
     }
 
     /// Sync the nerd-fonts flag so icon-bearing surfaces (trees,
-    /// `draw_multi_section_view`, the activity bar, etc.) render
+    /// multi-section views, the activity bar, etc.) render
     /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.
     ///
     /// `TuiBackend` starts at `false` (fallback): Nerd Font availability in
@@ -2484,8 +2481,8 @@ pub trait Backend: sealed::Sealed {
     /// `None` when its content fits. Each backend supplies its native row
     /// height; the resolved track + thumb are the same values the
     /// rasteriser paints, so consumers hit-test the returned thumb to
-    /// implement drag without re-deriving geometry. Mirrors
-    /// [`Backend::data_table_layout`]; see [`ListView::hscrollbar`].
+    /// implement drag without re-deriving geometry. See
+    /// [`ListView::hscrollbar`].
     fn list_hscrollbar(&self, rect: Rect, list: &ListView) -> Option<Scrollbar>;
     /// Vertical scrollbar geometry for `list` rendered into `rect`, or
     /// `None` when `show_v_scrollbar` is `false` or all items fit. Each
@@ -2601,9 +2598,8 @@ pub trait DrawsPrimitives: Backend {
     /// `line_height` additionally floored at the active
     /// [`crate::Style::row_height`] token via
     /// [`crate::primitive::LayoutCtx::resolve_row_height`], the same
-    /// resolution every bespoke `draw_list`/`draw_data_table`
-    /// path already applies through its own private `resolved_row_height`
-    /// helper, so a `Primitive`'s `layout()` never under-sizes a row
+    /// resolution the bespoke `draw_list` path applies through its own
+    /// private `resolved_row_height` helper, so a `Primitive`'s `layout()` never under-sizes a row
     /// against a chrome font taller than that token.
     ///
     /// On the [`Backend::paint_surface`] path, paints inside a

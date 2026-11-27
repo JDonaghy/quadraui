@@ -9,7 +9,7 @@
 //!
 //! Every built-in primitive (`ListView`, `TreeView`, `DataTable`, …)
 //! gets its own pair of [`crate::Backend`] methods — `draw_list` /
-//! `list_layout`, `draw_data_table` / `data_table_layout`, and so on — because
+//! `list_layout`, and so on — because
 //! `Backend` is sealed and each pair is a deliberate, versioned
 //! addition reviewed per primitive (see `docs/decisions/
 //! BACKEND_TRAIT_PROPOSAL.md` §4). A consumer that wants to paint its
@@ -404,8 +404,7 @@ impl<'a> LayoutCtx<'a> {
 
     /// Floor `line_height` at `style.row_height`, the same row-pitch
     /// resolution every pixel backend's own private `resolved_row_height`
-    /// helper already applies on its bespoke `draw_list`/
-    /// `draw_data_table` paths (e.g. `GtkBackend::resolved_row_height`,
+    /// helper already applies on its bespoke `draw_list` path (e.g. `GtkBackend::resolved_row_height`,
     /// `MacBackend::resolved_row_height`) before laying out rows — a
     /// chrome font taller than the theme's `row_height` token must never
     /// be clipped.

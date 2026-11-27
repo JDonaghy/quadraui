@@ -13,14 +13,13 @@
 //! # Coordinate frame
 //!
 //! `DrawOp` coordinates are **LOCAL** to the canvas: `(0, 0)` is the
-//! top-left corner of whatever `rect` [`Backend::draw_canvas`]
-//! (`crate::Backend`) was given, in that backend's own native units —
+//! top-left corner of whatever `rect` the canvas is painted into, in the
+//! backend's own native units —
 //! the same "native units" contract every other `Rect`/`Point` in this
 //! crate already carries (see [`crate::event::Point`]'s own doc): pixels
 //! on GTK/macOS/Win, cells on TUI. An app does not need to know which
 //! backend is live to build a `Canvas` — it authors ops against
-//! whatever unit the active backend's `canvas_layout`/`draw_canvas`
-//! rect is already expressed in, exactly as it would size a `Terminal`
+//! whatever unit the rect it is painted into is already expressed in, exactly as it would size a `Terminal`
 //! or `Editor` rect.
 //!
 //! # TUI story: degrade (design decision D-014)
@@ -84,9 +83,8 @@
 //! [`CanvasLayout::region_hit_test`] resolves a click straight to
 //! [`CanvasHit::Region`]'s `id`, no per-op bookkeeping required. A region
 //! plays no part in painting; it is pure hit-test metadata layered on top
-//! of the same `ops` list, resolved through the same
-//! `Backend::canvas_layout`/`draw_canvas` seam every other `Canvas` click
-//! already goes through.
+//! of the same `ops` list, resolved against the same [`CanvasLayout`] the
+//! paint used.
 
 use crate::event::{Point, Rect};
 use crate::primitives::image::Image;
@@ -577,9 +575,7 @@ pub(crate) fn dash_segments(
 /// Resolved geometry for a [`Canvas`] — just its own bounds, since
 /// `DrawOp` coordinates are already LOCAL to them (module doc). A pure,
 /// backend-independent function of the `rect` passed to
-/// [`Canvas::layout`] — every backend's `Backend::canvas_layout` takes
-/// the trait's default body for exactly this reason (no backend-specific
-/// metric exists to add).
+/// [`Canvas::layout`]; no backend-specific metric exists to add.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CanvasLayout {
     pub bounds: Rect,

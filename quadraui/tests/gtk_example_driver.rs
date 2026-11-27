@@ -798,7 +798,7 @@ fn workspace_ctrl_tab_cycles_and_wraps() {
 // Driver-tier cover for `primitives::split::native_surface_paint::paint`,
 // the shared implementation for divider fills. The GTK backend drives the
 // *same* backend-agnostic `SplitApp` the `gtk_split` example runs through
-// `GtkBackend::draw_split` -> the shared paint, and asserts on real Cairo
+// `draw_primitive` -> the shared paint, and asserts on real Cairo
 // pixels rather than on a recorded call list.
 //
 // `Split` paints no text at all (see `GtkDriver::painted_texts`' doc), so
@@ -865,7 +865,7 @@ fn split_divider_paints_a_separator_band_through_the_shared_paint_surface_path()
     let row = H / 2;
 
     let (x, len) = separator_run_in_row(&mut driver, row)
-        .expect("GtkBackend::draw_split should paint a separator-coloured divider sash");
+        .expect("the split should paint a separator-coloured divider sash");
 
     assert!(
         (1..=2).contains(&len),
@@ -917,7 +917,7 @@ fn split_toggling_direction_repaints_the_divider_as_a_horizontal_band() {
 /// Paint↔hit-test round trip across the shared path: a drag that starts on
 /// the *painted* divider must be recognised as `SplitHit::Divider` by the
 /// layout that painted it, and the next frame must repaint the band at the
-/// new ratio. A paint that drifted from `Backend::split_layout`'s geometry
+/// new ratio. A paint that drifted from `layout_primitive`'s geometry
 /// would fail here even though both halves looked right in isolation.
 #[test]
 fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
@@ -1716,7 +1716,7 @@ fn canvas_demo_gtk_escape_exits() {
 // ─── CanvasShapesApp: the Canvas v2 op set — real GTK rendering (#1627) ────
 //
 // `tests/tui_example_driver.rs`'s `canvas_shapes_demo_*` tests already prove
-// the whole `Backend::draw_canvas` round trip reaches the screen for the new
+// the whole `draw_primitive` round trip reaches the screen for the new
 // op set generically (every op degrades to TUI's braille grid). These check
 // *real* pixel colour and glyph runs — the GTK rasteriser actually painting
 // each new op (`Polygon` / `Ellipse` / `Arc` / `Bezier` / `DashedLine` /
@@ -2036,7 +2036,7 @@ fn canvas_shapes_demo_gtk_escape_exits() {
 // Neither shipped Canvas example uses a translucent `Color` (every op uses
 // `Color::rgb`, always `a: 255`), so asserting against them alone would
 // never exercise alpha blending. This probe draws two overlapping
-// opaque/translucent `DrawOp::Rect`s through one `Backend::draw_canvas`
+// opaque/translucent `DrawOp::Rect`s through one `draw_primitive`
 // call and checks the overlap is a genuine blend of the two — the same
 // inline-probe pattern `SolidFillVsStatusBarProbe` above established for a
 // narrow mechanism check no shipped demo exercises.

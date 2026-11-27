@@ -137,11 +137,11 @@ impl AppLogic for DiffViewApp {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let rect = Self::diff_rect(backend);
-        let geometry = backend.draw_primitive(rect, &self.view).geometry;
-        self.last_layout.set(DiffViewLayout {
-            visible_rows: geometry.visible_rows,
-            total_rows: geometry.total_rows,
-        });
+        let layout = backend
+            .draw_primitive(rect, &self.view)
+            .geometry
+            .as_layout();
+        self.last_layout.set(layout);
 
         let status_rect = Rect::new(0.0, rect.height, vp.width, vp.height - rect.height);
         let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());

@@ -849,10 +849,10 @@ pub fn pixel_pipeline_view_layout(
 /// the last bit of drift, the three near-identical wrapper calls.
 pub fn pixel_board_layout(model: &BoardModel, x: f32, y: f32, w: f32, h: f32) -> BoardLayout {
     use crate::primitives::board::{
-        board_layout, BOARD_CARD_GAP_PX, BOARD_CARD_H_PX, BOARD_COL_GAP_PX, BOARD_COL_MIN_PX,
-        BOARD_HEADER_H_PX,
+        measured_board_layout, BOARD_CARD_GAP_PX, BOARD_CARD_H_PX, BOARD_COL_GAP_PX,
+        BOARD_COL_MIN_PX, BOARD_HEADER_H_PX,
     };
-    board_layout(
+    measured_board_layout(
         model,
         x,
         y,

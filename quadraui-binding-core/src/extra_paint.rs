@@ -2598,8 +2598,8 @@ mod tests {
     /// every other `ExtraBody` hit; a click on the chevron itself resolves
     /// through [`crate::hit::PaintedHit::Extra::tree_table_hit`] to a real
     /// [`quadraui::UiEvent::TreeTable`]`(`[`quadraui::TreeTableEvent::ToggleExpanded`]`)`.
-    /// A `message_list` extra paints through the widget contract rather
-    /// than the bespoke `Backend::draw_message_list`, on a pixel backend
+    /// A `message_list` extra paints through the widget contract, on a
+    /// pixel backend
     /// whose editor line height differs from its chrome row height.
     #[test]
     fn message_list_extra_paints_through_the_widget_contract() {
@@ -2629,8 +2629,8 @@ mod tests {
         };
         ExtraPaint::paint(&list, &mut backend, Rect::new(0.0, 0.0, 200.0, 64.0));
         assert!(
-            !backend.calls.contains(&"draw_message_list"),
-            "painted through Backend::draw_message_list: {:?}",
+            backend.calls.is_empty(),
+            "painted through a bespoke Backend method: {:?}",
             backend.calls
         );
     }

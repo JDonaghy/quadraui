@@ -14,8 +14,8 @@
 //! answer and paints it through the identical code every built-in `Canvas`
 //! leaf already paints through:
 //! [`quadraui::primitives::canvas::native_surface_paint::paint`] on a
-//! pixel backend's [`quadraui::PaintSurface`], [`quadraui::tui::draw_canvas`]
-//! on TUI's cell buffer. Region hit-testing reuses
+//! pixel backend's [`quadraui::PaintSurface`], `Canvas`'s own
+//! `Primitive::paint_cells` on TUI's cell grid. Region hit-testing reuses
 //! [`quadraui::CanvasLayout::region_hit_test`] the same way.
 //!
 //! # Caching — one FFI round trip per widget per frame at most
@@ -628,8 +628,8 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
             surface.surface_char_width(),
             false,
         );
-        let (canvas, canvas_layout) = self.resolve_paint(&ctx, layout.rect, theme);
-        native_surface_paint::paint(&canvas, &canvas_layout, surface);
+        let (canvas, resolved) = self.resolve_paint(&ctx, layout.rect, theme);
+        native_surface_paint::paint(&canvas, &resolved, surface);
     }
 
     // No `#[cfg(feature = "tui")]` here: unlike `quadraui`'s own
@@ -645,8 +645,8 @@ impl<W: ScriptWidget> Primitive for ScriptedPrimitive<W> {
         env: &quadraui::PaintEnv,
     ) {
         let ctx = LayoutCtx::new(1.0, 1.0, false);
-        let (canvas, canvas_layout) = self.resolve_paint(&ctx, layout.rect, env.theme());
-        canvas.paint_cells(&canvas_layout, cells, env);
+        let (canvas, resolved) = self.resolve_paint(&ctx, layout.rect, env.theme());
+        canvas.paint_cells(&resolved, cells, env);
     }
 }
 

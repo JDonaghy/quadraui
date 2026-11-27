@@ -5861,51 +5861,6 @@ mod tests {
         );
     }
 
-    // ─── Issue #1117: setup-order panics degrade instead of aborting ────
-    //
-    // `.expect()` used to fire in every build profile, not just debug —
-    // `current_frame_mut`'s own doc claimed "panic in dev, silent return
-    // otherwise" while every real call site ignored that and panicked
-    // unconditionally. The fix routes through `debug_assert!` (loud in
-    // dev, matching every sibling "outside enter_frame_scope" contract
-    // elsewhere in this file/`gtk`/`macos`) plus a per-method graceful
-    // default. `cargo test`'s default profile has `debug_assertions`
-    // on, so the panic-in-dev half is exercised by an ordinary
-    // `#[should_panic]` test below; the release half — the actual
-    // behavioural change — needs `debug_assertions` off to reach the
-    // non-panicking branch at all, so those tests are gated
-    // `cfg(not(debug_assertions))` and verified with:
-    //   RUSTFLAGS="-C debug-assertions=off" cargo test --features tui \
-    //     -p quadraui --lib tui::backend::tests::draw_ -- --ignored
-    // (they aren't `--ignored`; that invocation is just illustrative —
-    // any `cargo test` run built with debug-assertions off runs them
-    // normally). They compile to nothing, and therefore never run,
-    // under this repo's ordinary `cargo test --features tui` gate.
-
-    // Gated on `debug_assertions` to mirror its release-mode sibling below:
-    // the loud-panic contract only exists while `debug_assert!` is live, so
-    // an ungated `#[should_panic]` here fails any `cargo test --release`.
-
-    #[test]
-    #[cfg(not(debug_assertions))]
-    fn draw_pipeline_view_outside_frame_scope_degrades_to_pure_layout() {
-        let mut backend = TuiBackend::new();
-        let view = crate::primitives::pipeline_view::PipelineView {
-            id: WidgetId::new("pipeline"),
-            stages: Vec::new(),
-            focused_stage: None,
-        };
-        let rect = QRect::new(0.0, 0.0, 40.0, 10.0);
-
-        let degraded = backend.draw_pipeline_view(rect, &view);
-        let pure = backend.pipeline_view_layout(rect, &view);
-        assert_eq!(
-            degraded, pure,
-            "a missing frame must fall back to exactly what the pure \
-             `pipeline_view_layout` twin would have computed"
-        );
-    }
-
     // ── Kitty graphics protocol ─────────────────────────────────────────
 
     /// `kitty_graphics` is `None` until both halves of its state are set —

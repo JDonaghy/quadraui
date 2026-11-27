@@ -652,8 +652,7 @@ pub(crate) mod native_surface_paint {
     }
 
     /// Paint a [`PipelineView`] into `rect` on `surface`, returning
-    /// [`PipelineViewLayout`] for host click dispatch — same contract as
-    /// every deleted per-backend `draw_pipeline_view`.
+    /// [`PipelineViewLayout`] for host click dispatch.
     pub(crate) fn paint(
         view: &PipelineView,
         surface: &mut dyn PaintSurface,

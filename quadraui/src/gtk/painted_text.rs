@@ -35,12 +35,7 @@
 //! runners leave it off so a live app never allocates a `String` per
 //! painted text run. When enabled, `GtkBackend::enter_frame_scope`
 //! installs a fresh sink for the duration of the frame's paint pass and
-//! drains it into `GtkBackend::painted_text` afterwards. Draining *after*
-//! the frame keeps the pre-existing logical records (whole status-bar
-//! segments, whole data-table cells) ahead of the per-glyph-run records
-//! in the map, so `find_bounds` still resolves those primitives to their
-//! hit-testable label rect rather than to a vertically-centred glyph run
-//! inside it.
+//! drains it into `GtkBackend::painted_text` afterwards.
 
 use gtk4::cairo::Context;
 use gtk4::pango;

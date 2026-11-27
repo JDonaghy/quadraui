@@ -645,8 +645,7 @@ pub trait ConformanceDriver: Sized {
 /// Every `draw_*` call appends its method name to [`Self::calls`] — the
 /// "recording" in the name — so a test can assert *what* got painted
 /// (`backend.calls.contains(&"draw_list")`) without a real
-/// rasteriser. Layout getters (`list_layout`, `data_table_layout`, …)
-/// are not recorded: they're queries, not paint events, and controllers
+/// rasteriser. Layout getters (`list_layout`, …) are not recorded: they're queries, not paint events, and controllers
 /// call them freely (sometimes more than once a frame) as part of
 /// ordinary hit-testing.
 ///
@@ -729,12 +728,6 @@ pub struct RecordingBackend {
     /// `compose::menu_system`'s `dropdown_width` and
     /// `compose::sidebar_system`'s `render` both use.
     pub font_families: std::collections::HashSet<&'static str>,
-    /// Every [`crate::MultiSectionView`] passed to
-    /// [`Backend::draw_multi_section_view`], in call order — lets a test
-    /// inspect what got painted (e.g. a section header's title text)
-    /// without a real rasteriser, mirroring what [`Self::calls`] does for
-    /// the method name alone.
-    pub multi_section_view_calls: Vec<crate::MultiSectionView>,
 }
 
 impl Default for RecordingBackend {
@@ -757,7 +750,6 @@ impl Default for RecordingBackend {
             notifications_capable: false,
             notification_send_result: Ok(()),
             font_families: std::collections::HashSet::new(),
-            multi_section_view_calls: Vec::new(),
         }
     }
 }

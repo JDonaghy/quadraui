@@ -8,7 +8,7 @@
 //! `examples/common/canvas_app.rs`'s gauge does for its single value.
 //!
 //! Three things this demo exercises, all resolved through
-//! `Backend::canvas_layout`/[`CanvasLayout::region_hit_test`] — the same
+//! `layout_primitive`/[`CanvasLayout::region_hit_test`] — the same
 //! seam `canvas_app.rs` already resolves plain clicks through:
 //!
 //! 1. **Click-per-region** — clicking inside `A` or `B` toggles that

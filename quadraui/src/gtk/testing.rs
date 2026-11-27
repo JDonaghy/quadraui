@@ -491,8 +491,8 @@ impl<A: AppLogic> GtkDriver<A> {
     /// within a span, the way [`Self::screen_contains`] does, rather than
     /// on a phrase that straddles a style change. A terminal's cell grid
     /// reports one run per cell. The exceptions are the primitives that
-    /// paint no text at all (`draw_split`, `draw_split_tree`,
-    /// `draw_scrollbar`, and the `DropOverlay` widget).
+    /// paint no text at all (`Split`, `SplitTree`, `draw_scrollbar`, and
+    /// the `DropOverlay` widget).
     pub fn painted_texts(&self) -> Vec<&str> {
         self.core
             .backend()

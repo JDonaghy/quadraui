@@ -242,8 +242,7 @@ exclude = [
 # removing the item. Downgraded to `allow` here so hiding — or later
 # moving/splitting — a painter internal never requires a version bump; the
 # handful of re-exports a consumer actually depends on (`crate::macos::
-# MacBackend`, `crate::tui::TuiBackend`, `crate::gtk::draw_data_table`'s
-# siblings, …) are untouched by `#[doc(hidden)]` on their source and stay
+# MacBackend`, `crate::tui::TuiBackend`, …) are untouched by `#[doc(hidden)]` on their source and stay
 # fully tracked. Every name below is confirmed against a real `cargo
 # semver-checks --list` run (v0.51.0) — none are guessed.
 [package.metadata.cargo-semver-checks.lints]

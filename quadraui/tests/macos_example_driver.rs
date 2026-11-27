@@ -1269,7 +1269,7 @@ fn canvas_demo_escape_exits() {
 // ─── CanvasShapesApp: the Canvas v2 op set — real macOS rendering ──────────
 //
 // `tests/tui_example_driver.rs`'s `canvas_shapes_demo_*` tests already prove
-// the whole `Backend::draw_canvas` round trip reaches the screen for the new
+// the whole `draw_primitive` round trip reaches the screen for the new
 // op set generically (every op degrades to TUI's braille grid), and
 // `tests/gtk_example_driver.rs` proves it on GTK's real rasteriser. These
 // check *real* pixel colour and glyph runs on macOS — `impl PaintSurface for
@@ -1623,7 +1623,7 @@ fn canvas_shapes_demo_escape_exits() {
 // Neither shipped Canvas example uses a translucent `Color` (every op uses
 // `Color::rgb`, always `a: 255`), so asserting against them alone would
 // never exercise alpha blending. This probe draws two overlapping
-// opaque/translucent `DrawOp::Rect`s through one `Backend::draw_canvas` call
+// opaque/translucent `DrawOp::Rect`s through one `draw_primitive` call
 // and checks the overlap is a genuine blend of the two.
 
 const ALPHA_PROBE_BASE: quadraui::Color = quadraui::Color::rgb(20, 20, 200);

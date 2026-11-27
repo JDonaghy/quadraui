@@ -5,7 +5,7 @@
 //! reason to exist: a track ([`DrawOp::Rect`]), a proportional fill
 //! ([`DrawOp::Rect`]), a 50% tick mark ([`DrawOp::Line`]), and a
 //! percentage label painted on top ([`DrawOp::TextRun`]) — all through
-//! one `Backend::draw_canvas` call, on every backend.
+//! one `draw_primitive` call, on every backend.
 //!
 //! Controls:
 //! - `+` / Up            raise the value by 10
@@ -159,7 +159,7 @@ impl AppLogic for CanvasApp {
             } => {
                 let rect = self.gauge_rect(backend);
                 // Same rect both `render` and this handler build the
-                // canvas from — `Backend::canvas_layout` (the no-paint
+                // canvas from — `layout_primitive` (the no-paint
                 // twin) so paint and click-routing can never disagree,
                 // the same contract every other primitive's `*_layout`
                 // method carries.
