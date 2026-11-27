@@ -175,7 +175,7 @@ pub(crate) unsafe fn fill_frame_background(
 /// callbacks. Built once per [`run`] call from the concrete `A:
 /// AppLogic`; from `define_class!`'s perspective they're just two
 /// `Box<dyn Fn>` smart pointers.
-type PaintFn = Box<dyn Fn(Viewport, CGContextRef) + 'static>;
+type PaintFn = Box<dyn Fn(Viewport, CGContextRef) -> bool + 'static>;
 /// `Rc`, not `Box` — the `handle` closure is shared between
 /// `QuadraView` (every responder-method dispatch) and `QuadraAppDelegate`
 /// (`applicationShouldTerminate:`), so both can run the same
@@ -396,12 +396,7 @@ pub(crate) fn control_dispatch<A: AppLogic>(
 ) -> Reaction {
     let caret_visible = backend.caret_visible_handle();
     let caret_pause = backend.caret_blink_pause_handle();
-    match dispatch_event(event, backend, app, &caret_visible, &caret_pause) {
-        EventOutcome::Continue => Reaction::Continue,
-        EventOutcome::Redraw => Reaction::Redraw,
-        EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
-        EventOutcome::Exit => Reaction::Exit,
-    }
+    dispatch_event(event, backend, app, &caret_visible, &caret_pause)
 }
 
 /// Render one frame: `begin_frame` + [`MacBackend::enter_frame_scope`] +
@@ -637,6 +632,8 @@ pub(crate) struct QuadraViewIvars {
     /// `NSTrackingAreaOptions::InVisibleRect` area, installed once,
     /// never needs replacing on resize.
     cursor_tracking_area: RefCell<Option<Retained<NSTrackingArea>>>,
+    /// A frame skipped under re-entrant borrow contention — see [`app_closures`].
+    paint_deferred: crate::desktop::DeferredPaint,
 }
 
 define_class!(
@@ -710,13 +707,14 @@ define_class!(
             // for anything else `paint` runs (`tab_stops`, `begin_frame`/
             // `end_frame`), so a panic there degrades to "this frame is
             // blank" instead of aborting the host process.
-            if let Err(payload) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                (self.ivars().paint)(viewport, cg_ref);
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                (self.ivars().paint)(viewport, cg_ref)
             })) {
-                crate::desktop::report_caught_panic_once(
+                Ok(painted) => self.ivars().paint_deferred.record(painted),
+                Err(payload) => crate::desktop::report_caught_panic_once(
                     "macos::run::QuadraView::draw_rect (paint)",
                     payload.as_ref(),
-                );
+                ),
             }
         }
 
@@ -860,7 +858,9 @@ define_class!(
             // an owned `Retained<NSEvent>` that can outlive this call,
             // unlike the borrowed `event: &NSEvent` parameter.
             let retained: Retained<NSEvent> = event.retain();
-            self.ivars().backend.borrow_mut().stash_window_press(retained);
+            if let Ok(mut backend) = self.ivars().backend.try_borrow_mut() {
+                backend.stash_window_press(retained);
+            }
 
             let (x, y, flags) = self.locate(event);
             let button = event.buttonNumber() as i64;
@@ -1383,6 +1383,7 @@ impl QuadraView {
             momentum_timer: RefCell::new(None),
             appearance_change_seen: Cell::new(false),
             cursor_tracking_area: RefCell::new(None),
+            paint_deferred: Default::default(),
         });
         unsafe { msg_send![super(this), init] }
     }
@@ -1713,6 +1714,13 @@ impl QuadraView {
     /// [`ReactionSink`] impl below.
     fn apply_reaction(&self, reaction: Reaction) {
         runtime::apply_outcome(reaction, self);
+        if self
+            .ivars()
+            .paint_deferred
+            .take_if_free(&self.ivars().backend)
+        {
+            self.setNeedsDisplay(true);
+        }
     }
 }
 
@@ -1763,7 +1771,10 @@ impl ReactionSink for QuadraView {
     }
 
     fn request_frame_in(&self, delay: std::time::Duration) {
-        self.ivars().backend.borrow().request_frame_in(delay);
+        match self.ivars().backend.try_borrow() {
+            Ok(backend) => backend.request_frame_in(delay),
+            Err(_) => self.ivars().paint_deferred.defer(),
+        }
     }
 }
 
@@ -2456,6 +2467,36 @@ struct ControlSlot {
     port: Rc<RefCell<Option<control::ControlPort>>>,
 }
 
+/// Build the `paint`/`handle`/`tick` closures. A modal service called from
+/// `tick`/`handle` (`NSAlert`, open/save panels, `NSMenu` popups) runs a nested
+/// loop that repaints and re-dispatches while `backend`/`app` are still held,
+/// so each closure skips under contention: `paint` returns `false`
+/// (re-requested once the borrow ends), `handle`/`tick` `Continue`.
+fn app_closures<A: AppLogic + 'static>(
+    app: Rc<RefCell<A>>,
+    backend: Rc<RefCell<MacBackend>>,
+    caret_visible: Rc<Cell<bool>>,
+    caret_pause: Rc<Cell<std::time::Instant>>,
+) -> (PaintFn, HandleFn, TickFn) {
+    use crate::desktop::{try_with_both, try_with_both_ref};
+    let (b, a) = (backend.clone(), app.clone());
+    let paint: PaintFn = Box::new(move |viewport, cg| {
+        try_with_both_ref(&b, &a, |b, a| render_frame(b, a, viewport, cg)).is_some()
+    });
+    let (b, a) = (backend.clone(), app.clone());
+    let handle: HandleFn = Rc::new(move |ev| {
+        try_with_both(&b, &a, |b, a| {
+            dispatch_event(ev, b, a, &caret_visible, &caret_pause)
+        })
+        .unwrap_or(Reaction::Continue)
+    });
+    // See `TickFn`'s doc for what this closure bridges.
+    let tick: TickFn = Box::new(move || {
+        try_with_both(&backend, &app, |b, a| a.tick(b)).unwrap_or(Reaction::Continue)
+    });
+    (paint, handle, tick)
+}
+
 fn bootstrap<A: AppLogic + 'static>(
     app: A,
     config: RunConfig,
@@ -2485,61 +2526,18 @@ fn bootstrap<A: AppLogic + 'static>(
         app_mut.setup(&mut *backend_mut);
     }
 
-    // ── Build the type-erased paint + handle closures ────────────
-    let paint: PaintFn = {
-        let app = app.clone();
-        let backend = backend.clone();
-        Box::new(move |viewport: Viewport, cg_ref: CGContextRef| {
-            let mut backend_mut = backend.borrow_mut();
-            let app_ref = app.borrow();
-            render_frame(&mut backend_mut, &*app_ref, viewport, cg_ref);
-        })
-    };
+    // ── Build the type-erased paint + handle + tick closures ─────
     // Caret-blink state is shared between the backend (read each
     // frame in paint_aux), the blink timer (toggled every ~530 ms),
     // and the key handler (which pauses the blink during typing).
     let caret_visible = backend.borrow().caret_visible_handle();
     let caret_pause = backend.borrow().caret_blink_pause_handle();
-
-    let handle: HandleFn = {
-        let app = app.clone();
-        let backend = backend.clone();
-        let caret_visible = caret_visible.clone();
-        let caret_pause = caret_pause.clone();
-        Rc::new(move |ev: UiEvent| -> Reaction {
-            let mut backend_mut = backend.borrow_mut();
-            let mut app_mut = app.borrow_mut();
-            match dispatch_event(
-                ev,
-                &mut backend_mut,
-                &mut *app_mut,
-                &caret_visible,
-                &caret_pause,
-            ) {
-                EventOutcome::Continue => Reaction::Continue,
-                EventOutcome::Redraw => Reaction::Redraw,
-                // Pass the deadline through unchanged —
-                // `dispatch`/`apply_reaction` routes it to
-                // `ReactionSink::request_frame_in` exactly like any other
-                // `Reaction::RedrawAfter`.
-                EventOutcome::RedrawAfter(d) => Reaction::RedrawAfter(d),
-                EventOutcome::Exit => Reaction::Exit,
-            }
-        })
-    };
-
-    // ── App tick hook ─────────────────────────────────────────────
-    // Bridges `QuadraView::dispatch_tick` to `AppLogic::tick` — see
-    // `TickFn`'s doc for what this closure does.
-    let tick: TickFn = {
-        let app = app.clone();
-        let backend = backend.clone();
-        Box::new(move || -> Reaction {
-            let mut backend_mut = backend.borrow_mut();
-            let mut app_mut = app.borrow_mut();
-            app_mut.tick(&mut *backend_mut)
-        })
-    };
+    let (paint, handle, tick) = app_closures(
+        app.clone(),
+        backend.clone(),
+        caret_visible.clone(),
+        caret_pause.clone(),
+    );
 
     // ── AppKit bootstrap ─────────────────────────────────────────
     let ns_app = NSApplication::sharedApplication(mtm);
@@ -4076,5 +4074,89 @@ mod text_selection_dispatch_tests {
              there is no PRIMARY selection to paste, got {:?}",
             app.events
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Counts every call the closures forward, so a test can prove a
+    /// contended call never reached the app.
+    #[derive(Default)]
+    struct CountingApp {
+        calls: Rc<Cell<usize>>,
+    }
+
+    impl AppLogic for CountingApp {
+        type AreaId = ();
+
+        fn render(&self, _backend: &mut dyn Backend, _area: ()) {
+            self.calls.set(self.calls.get() + 1);
+        }
+
+        fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            self.calls.set(self.calls.get() + 1);
+            Reaction::Redraw
+        }
+
+        fn tick(&mut self, _backend: &mut dyn Backend) -> Reaction {
+            self.calls.set(self.calls.get() + 1);
+            Reaction::Redraw
+        }
+    }
+
+    type Fixture = (
+        Rc<RefCell<CountingApp>>,
+        Rc<RefCell<MacBackend>>,
+        (PaintFn, HandleFn, TickFn),
+    );
+
+    fn closures() -> Fixture {
+        let app = Rc::new(RefCell::new(CountingApp::default()));
+        let backend = Rc::new(RefCell::new(MacBackend::new()));
+        let (visible, pause) = {
+            let b = backend.borrow();
+            (b.caret_visible_handle(), b.caret_blink_pause_handle())
+        };
+        let trio = app_closures(app.clone(), backend.clone(), visible, pause);
+        (app, backend, trio)
+    }
+
+    /// vimcode#2206: `tick` showed an `NSAlert`, whose nested run loop
+    /// repainted the window while `tick` still held `backend` mutably —
+    /// `paint`'s `borrow_mut` panicked. Every closure must skip instead.
+    #[test]
+    fn closures_skip_while_backend_is_held_by_an_outer_tick() {
+        let (app, backend, (paint, handle, tick)) = closures();
+        let calls = app.borrow().calls.clone();
+        let _outer = backend.borrow_mut();
+
+        // The contended path returns before touching the context.
+        assert!(!paint(Viewport::default(), std::ptr::null_mut()));
+        assert_eq!(tick(), Reaction::Continue);
+        assert_eq!(handle(UiEvent::WindowClose), Reaction::Continue);
+        assert_eq!(calls.get(), 0, "no contended call may reach the app");
+    }
+
+    /// Same, with only `app` held — `backend` is free, so this proves the
+    /// closures don't take `backend` and then panic on `app`.
+    #[test]
+    fn closures_skip_while_app_is_held_by_an_outer_tick() {
+        let (app, _backend, (paint, handle, tick)) = closures();
+        let calls = app.borrow().calls.clone();
+        let _outer = app.borrow_mut();
+
+        assert!(!paint(Viewport::default(), std::ptr::null_mut()));
+        assert_eq!(tick(), Reaction::Continue);
+        assert_eq!(handle(UiEvent::WindowClose), Reaction::Continue);
+        assert_eq!(calls.get(), 0);
+    }
+
+    #[test]
+    fn uncontended_tick_reaches_the_app() {
+        let (app, _backend, (_paint, _handle, tick)) = closures();
+        assert_eq!(tick(), Reaction::Redraw);
+        assert_eq!(app.borrow().calls.get(), 1);
     }
 }

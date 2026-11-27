@@ -200,7 +200,7 @@ const BACKEND_BASELINES: &[BackendBaseline] = &[
     },
     BackendBaseline {
         dir: "macos",
-        non_test_lines: 12592,
+        non_test_lines: 12591,
     },
     BackendBaseline {
         dir: "win",
