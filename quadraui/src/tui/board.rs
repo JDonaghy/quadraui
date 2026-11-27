@@ -29,38 +29,18 @@ use ratatui::layout::Rect;
 use ratatui::style::Color as RatatuiColor;
 
 use super::{ratatui_color, set_cell};
-use crate::primitives::board::{
-    badge_fg_color, badge_icon, board_layout, BoardLayout, BoardMeasure, BoardModel, CardBadge,
-};
+use crate::primitives::board::{badge_fg_color, badge_icon, BoardLayout, BoardModel, CardBadge};
 use crate::theme::Theme;
 
-/// Minimum column width in TUI cells.
-pub(crate) const TUI_BOARD_COL_MIN_CELLS: f32 = 20.0;
-/// Gap between adjacent columns in TUI cells.
-const TUI_BOARD_COL_GAP: f32 = 1.0;
-/// Column header height in TUI cells (one row for title).
-const TUI_BOARD_HEADER_H: f32 = 1.0;
-/// Card height in TUI cells: top_border + title + badge + hint + bottom_border = 5.
-pub(crate) const TUI_BOARD_CARD_H: f32 = 5.0;
-/// Vertical gap between cards in TUI cells.
-const TUI_BOARD_CARD_GAP: f32 = 0.0;
-
-/// Compute the TUI cell-unit layout for a [`BoardModel`] without painting.
+/// Compute the TUI cell-unit layout for a [`BoardModel`] without painting
+/// — [`BoardModel::cell_layout`].
 pub fn tui_board_layout(model: &BoardModel, area: Rect) -> BoardLayout {
-    board_layout(
-        model,
+    model.cell_layout(crate::event::Rect::new(
         area.x as f32,
         area.y as f32,
         area.width as f32,
         area.height as f32,
-        BoardMeasure::new(
-            TUI_BOARD_COL_MIN_CELLS,
-            TUI_BOARD_COL_GAP,
-            TUI_BOARD_HEADER_H,
-            TUI_BOARD_CARD_H,
-            TUI_BOARD_CARD_GAP,
-        ),
-    )
+    ))
 }
 
 /// Draw a [`BoardModel`] into `area` on `buf`. Returns the layout for

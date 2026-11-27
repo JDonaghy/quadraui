@@ -652,8 +652,8 @@ pub use primitives::dialog::{
 };
 pub use primitives::diff_view::{
     DiffDisplayLine, DiffEditability, DiffHeaderGeometry, DiffHunk, DiffLineContent, DiffMode,
-    DiffPane, DiffPaneGeometry, DiffRow, DiffRowKind, DiffView, DiffViewGeometry, DiffViewHit,
-    DiffViewLayout,
+    DiffPane, DiffPaneGeometry, DiffRow, DiffRowKind, DiffView, DiffViewEvent, DiffViewGeometry,
+    DiffViewHit, DiffViewLayout,
 };
 pub use primitives::drop_zone::{
     compute_drop_zone, drop_zone_hit_test, drop_zone_overlay, DropEdge, DropGroupRect, DropOverlay,
@@ -712,8 +712,8 @@ pub use primitives::menu_bar::{
     VisibleMenuBarItem, BAR_HEIGHT,
 };
 pub use primitives::message_list::{
-    MessageList, MessageListHit, MessageListLayout, MessageListMeasure, MessageRow,
-    VisibleMessageRow,
+    MessageList, MessageListEvent, MessageListHit, MessageListLayout, MessageListMeasure,
+    MessageRow, VisibleMessageRow,
 };
 pub use primitives::minimap::{
     aggregate_spans, reserved_width, sample_blocks, sample_window, window_start_line, Minimap,
@@ -735,7 +735,7 @@ pub use primitives::palette::{
 };
 pub use primitives::pipeline_view::{
     PipelineEvent, PipelineHit, PipelineStage, PipelineView, PipelineViewLayout,
-    PipelineViewMeasure, StageBounds, StageStatus,
+    PipelineViewMeasure, PipelineViewPrimitiveLayout, StageBounds, StageStatus,
 };
 pub use primitives::progress::{
     ProgressBar, ProgressBarHit, ProgressBarLayout, ProgressBarMeasure,
@@ -757,7 +757,10 @@ pub use primitives::sidebar_panel::{
     SidebarPanel, SidebarPanelAction, SidebarPanelHit, SidebarPanelLayout, SidebarPanelState,
 };
 pub use primitives::spinner::{Spinner, SpinnerHit, SpinnerLayout, SpinnerMeasure};
-pub use primitives::split::{Split, SplitDirection, SplitHit, SplitLayout, SplitMeasure};
+pub use primitives::split::{
+    Split, SplitDirection, SplitDividerDrag, SplitHit, SplitLayout, SplitMeasure, SplitState,
+    SplitTreeState,
+};
 pub use primitives::split_tree::{
     SplitTree, SplitTreeDivider, SplitTreeLayout, SplitTreeMeasure,
     MAX_RATIO as SPLIT_TREE_MAX_RATIO, MIN_RATIO as SPLIT_TREE_MIN_RATIO,

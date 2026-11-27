@@ -27,39 +27,24 @@ use ratatui::layout::Rect;
 
 use super::{ratatui_color, set_cell};
 use crate::primitives::pipeline_view::{
-    status_color, status_glyph, PipelineView, PipelineViewLayout, PipelineViewMeasure,
+    status_color, status_glyph, PipelineView, PipelineViewLayout,
 };
 use crate::theme::Theme;
 
-/// Width of the arrow connector in TUI cells.
-const TUI_ARROW_WIDTH: f32 = 4.0;
-/// Height reserved for the action button row (cells). `0` = no actions.
-const TUI_ACTION_HEIGHT: f32 = 1.0;
-/// Height reserved above stage boxes for the focus indicator (cells).
-const TUI_FOCUS_INDICATOR_H: u16 = 1;
+/// Rows reserved above the stage boxes for the focus caret.
+#[cfg(test)]
+const TUI_FOCUS_INDICATOR_H: u16 =
+    crate::primitives::pipeline_view::PIPELINE_FOCUS_INDICATOR_CELLS as u16;
 
-/// Compute the TUI cell-unit layout for a [`PipelineView`] without painting.
+/// Compute the TUI cell-unit layout for a [`PipelineView`] without painting
+/// — [`PipelineView::cell_layout`].
 pub fn tui_pipeline_view_layout(view: &PipelineView, area: Rect) -> PipelineViewLayout {
-    let action_h = if view.stages.iter().any(|s| s.action.is_some()) {
-        TUI_ACTION_HEIGHT
-    } else {
-        0.0
-    };
-    // Note: the returned layout (incl. `bounds`) is offset down by
-    // `TUI_FOCUS_INDICATOR_H`, so `bounds.y` starts below the reserved caret
-    // row. The focus caret is drawn in that reserved row (above `bounds.y`);
-    // a host that clips drawing to `layout.bounds` would clip it — clip to the
-    // original `area` instead.
-    view.layout(
+    view.cell_layout(crate::event::Rect::new(
         area.x as f32,
-        (area.y + TUI_FOCUS_INDICATOR_H) as f32,
-        PipelineViewMeasure::new(
-            area.width as f32,
-            area.height.saturating_sub(TUI_FOCUS_INDICATOR_H) as f32,
-            TUI_ARROW_WIDTH,
-            action_h,
-        ),
-    )
+        area.y as f32,
+        area.width as f32,
+        area.height as f32,
+    ))
 }
 
 /// Compute the first (inclusive) and last (exclusive) TUI row available for

@@ -73,7 +73,6 @@ pub mod shell_runner;
 mod solid_fill;
 mod spinner;
 mod split;
-mod split_junction;
 mod split_tree;
 pub mod testing;
 pub mod text;

@@ -32,6 +32,7 @@ use crate::primitive::{LayoutCtx, PaintEnv, Primitive, Units};
 use crate::primitives::activity_bar::{
     ActivityBar, ActivityBarAction, ActivityBarPrimitiveLayout, ActivityBarState, ActivityItem,
 };
+use crate::primitives::split::{sash_paint_rect, SplitDirection};
 use crate::primitives::status_bar::{StatusBar, StatusBarPrimitiveLayout, StatusBarSegment};
 use crate::types::{Color, Icon, Modifiers, WidgetId};
 #[cfg(feature = "tui")]
@@ -1881,7 +1882,10 @@ impl Primitive for ShellView {
             }
         }
         if let Some(divider) = layout.shell.divider_bounds {
-            surface.surface_fill_rect(shell_layout::divider_paint_bounds(divider), theme.separator);
+            surface.surface_fill_rect(
+                sash_paint_rect(divider, SplitDirection::Horizontal),
+                theme.separator,
+            );
         }
     }
 
@@ -1905,7 +1909,7 @@ impl Primitive for ShellView {
         }
         if let Some(divider) = layout.shell.divider_bounds {
             cells.fill(
-                shell_layout::divider_paint_bounds(divider),
+                sash_paint_rect(divider, SplitDirection::Horizontal),
                 crate::cell_surface::CellStyle {
                     fg: Some(theme.separator),
                     bg: Some(theme.separator),

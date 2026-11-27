@@ -214,10 +214,38 @@ impl SplitTree {
     /// divider position derived from two different formulas (see
     /// module docs).
     pub fn layout(&self, bounds: Rect, measure: SplitTreeMeasure) -> SplitTreeLayout {
+        self.layout_snapped(bounds, measure, false)
+    }
+
+    /// [`Self::layout`] on a cell grid: one-cell dividers, each placed at
+    /// the whole cell its unrounded position truncates to (the cell
+    /// [`SplitTreeDivider::cell_position`] names), with both neighbouring
+    /// sub-trees laid out against that cell. A leaf rect therefore ends
+    /// exactly at the divider cell painted beside it and the next one
+    /// starts right after it, so leaf content never paints over a divider
+    /// and a click on the divider cell resolves to the divider, not a
+    /// leaf.
+    pub fn cell_layout(&self, bounds: Rect) -> SplitTreeLayout {
+        self.layout_snapped(bounds, SplitTreeMeasure::new(CELL_DIVIDER_THICKNESS), true)
+    }
+
+    fn layout_snapped(
+        &self,
+        bounds: Rect,
+        measure: SplitTreeMeasure,
+        snap: bool,
+    ) -> SplitTreeLayout {
         let mut leaves = Vec::new();
         let mut dividers = Vec::new();
         let mut counter = 0usize;
-        self.layout_into(bounds, measure, &mut counter, &mut leaves, &mut dividers);
+        self.layout_into(
+            bounds,
+            measure,
+            snap,
+            &mut counter,
+            &mut leaves,
+            &mut dividers,
+        );
         SplitTreeLayout {
             bounds,
             leaves,
@@ -229,6 +257,7 @@ impl SplitTree {
         &self,
         bounds: Rect,
         measure: SplitTreeMeasure,
+        snap: bool,
         counter: &mut usize,
         leaves: &mut Vec<(WidgetId, Rect)>,
         dividers: &mut Vec<SplitTreeDivider>,
@@ -247,65 +276,53 @@ impl SplitTree {
                 *counter += 1;
                 let clamped = ratio.clamp(0.0, 1.0);
                 let thickness = measure.divider_thickness;
+                let (axis_start, axis_size) = match direction {
+                    SplitDirection::Horizontal => (bounds.x, bounds.width),
+                    SplitDirection::Vertical => (bounds.y, bounds.height),
+                };
+                let available = (axis_size - thickness).max(0.0);
+                let raw =
+                    axis_start + resolve_pane_size(available, clamped, *first_min, *second_min);
+                // A ratio read back from a cell (`SplitTreeDivider::ratio_at`) can
+                // land a hair under the whole cell it names after the f32
+                // round trip; the tolerance keeps it on that cell.
+                let position = if snap {
+                    (raw + CELL_SNAP_TOLERANCE).max(0.0).trunc()
+                } else {
+                    raw
+                };
+                let first_len = (position - axis_start).max(0.0);
+                let second_len = (axis_size - first_len - thickness).max(0.0);
 
-                let (first_bounds, second_bounds, divider) = match direction {
-                    SplitDirection::Horizontal => {
-                        // Side-by-side (first = left, second = right) —
-                        // matches Split::layout's Horizontal case.
-                        let available = (bounds.width - thickness).max(0.0);
-                        let first_w =
-                            resolve_pane_size(available, clamped, *first_min, *second_min);
-                        let position = bounds.x + first_w;
-                        let divider = SplitTreeDivider {
-                            split_index: idx,
-                            direction: *direction,
-                            position,
-                            axis_start: bounds.x,
-                            axis_size: bounds.width,
-                            cross_start: bounds.y,
-                            cross_size: bounds.height,
-                            thickness,
-                        };
-                        let first_bounds = Rect::new(bounds.x, bounds.y, first_w, bounds.height);
-                        let second_bounds = Rect::new(
-                            position + thickness,
-                            bounds.y,
-                            (bounds.width - first_w - thickness).max(0.0),
-                            bounds.height,
-                        );
-                        (first_bounds, second_bounds, divider)
-                    }
-                    SplitDirection::Vertical => {
-                        // Stacked (first = top, second = bottom) —
-                        // matches Split::layout's Vertical case.
-                        let available = (bounds.height - thickness).max(0.0);
-                        let first_h =
-                            resolve_pane_size(available, clamped, *first_min, *second_min);
-                        let position = bounds.y + first_h;
-                        let divider = SplitTreeDivider {
-                            split_index: idx,
-                            direction: *direction,
-                            position,
-                            axis_start: bounds.y,
-                            axis_size: bounds.height,
-                            cross_start: bounds.x,
-                            cross_size: bounds.width,
-                            thickness,
-                        };
-                        let first_bounds = Rect::new(bounds.x, bounds.y, bounds.width, first_h);
-                        let second_bounds = Rect::new(
-                            bounds.x,
-                            position + thickness,
-                            bounds.width,
-                            (bounds.height - first_h - thickness).max(0.0),
-                        );
-                        (first_bounds, second_bounds, divider)
-                    }
+                let (first_bounds, second_bounds, cross_start, cross_size) = match direction {
+                    // Side-by-side: first = left, second = right.
+                    SplitDirection::Horizontal => (
+                        Rect::new(bounds.x, bounds.y, first_len, bounds.height),
+                        Rect::new(position + thickness, bounds.y, second_len, bounds.height),
+                        bounds.y,
+                        bounds.height,
+                    ),
+                    // Stacked: first = top, second = bottom.
+                    SplitDirection::Vertical => (
+                        Rect::new(bounds.x, bounds.y, bounds.width, first_len),
+                        Rect::new(bounds.x, position + thickness, bounds.width, second_len),
+                        bounds.x,
+                        bounds.width,
+                    ),
                 };
 
-                dividers.push(divider);
-                first.layout_into(first_bounds, measure, counter, leaves, dividers);
-                second.layout_into(second_bounds, measure, counter, leaves, dividers);
+                dividers.push(SplitTreeDivider {
+                    split_index: idx,
+                    direction: *direction,
+                    position,
+                    axis_start,
+                    axis_size,
+                    cross_start,
+                    cross_size,
+                    thickness,
+                });
+                first.layout_into(first_bounds, measure, snap, counter, leaves, dividers);
+                second.layout_into(second_bounds, measure, snap, counter, leaves, dividers);
             }
         }
     }
@@ -478,6 +495,13 @@ fn resolve_pane_size(available: f32, ratio: f32, first_min: f32, second_min: f32
     }
 }
 
+/// Divider thickness on a cell grid: one cell.
+pub(crate) const CELL_DIVIDER_THICKNESS: f32 = 1.0;
+
+/// How far under a whole cell [`SplitTree::cell_layout`] still places a
+/// divider on that cell.
+const CELL_SNAP_TOLERANCE: f32 = 1e-3;
+
 /// Divider dimensions — mirrors [`crate::primitives::split::SplitMeasure`].
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct SplitTreeMeasure {
@@ -508,10 +532,10 @@ pub struct SplitTreeDivider {
     /// for the TUI convention.
     pub position: f32,
     /// Start of the *parent* rect along the split axis. Combine with
-    /// `axis_size` to convert a drag cursor position back to a ratio:
-    /// `ratio = (cursor_axis - axis_start) / axis_size`. This is
-    /// exactly what [`crate::DragTarget::SplitDivider`] carries so a
-    /// drag can be resumed without re-running `layout()` on every
+    /// `axis_size` and `thickness` to convert a drag cursor position back
+    /// to a ratio. This is
+    /// what [`Self::ratio_at`] reads, so a drag can be resumed from a
+    /// snapshotted divider without re-running `layout()` on every
     /// mouse-move.
     pub axis_start: f32,
     /// Size of the *parent* rect along the split axis. See `axis_start`.
@@ -544,6 +568,41 @@ impl SplitTreeDivider {
     pub fn hit_tolerant(&self, axis_point: f32, tolerance: f32) -> bool {
         axis_point >= self.position - tolerance
             && axis_point < self.position + self.thickness + tolerance
+    }
+
+    /// The ratio that places this divider's leading edge at `point`
+    /// (same frame as the layout), clamped to `0.0..=1.0` — the exact
+    /// inverse of [`SplitTree::layout`]'s placement, which spends `ratio`
+    /// of the parent's span *minus the divider's own thickness*. A drag
+    /// that writes this back lands the divider under the pointer, on
+    /// every backend and at every divider thickness. `None` when the
+    /// parent leaves no room to move the divider in.
+    pub fn ratio_at(&self, point: Point) -> Option<f32> {
+        let axis_point = match self.direction {
+            SplitDirection::Horizontal => point.x,
+            SplitDirection::Vertical => point.y,
+        };
+        let available = self.axis_size - self.thickness;
+        (available > 0.0).then(|| ((axis_point - self.axis_start) / available).clamp(0.0, 1.0))
+    }
+
+    /// The divider's full hit-testable band, `[position, position +
+    /// thickness)` along its axis by its whole cross-axis extent.
+    pub fn band(&self) -> Rect {
+        match self.direction {
+            SplitDirection::Horizontal => Rect::new(
+                self.position,
+                self.cross_start,
+                self.thickness,
+                self.cross_size,
+            ),
+            SplitDirection::Vertical => Rect::new(
+                self.cross_start,
+                self.position,
+                self.cross_size,
+                self.thickness,
+            ),
+        }
     }
 
     /// True if `cross_point` falls within this divider's cross-axis
@@ -630,62 +689,22 @@ impl SplitTreeLayout {
 ))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
-    use super::{SplitDirection, SplitTreeDivider, SplitTreeLayout};
+    use super::SplitTreeLayout;
     use crate::paint_surface::PaintSurface;
+    use crate::primitives::split::sash_paint_rect;
     use crate::theme::Theme;
-    use crate::Rect;
-
-    /// Visual width of each painted sash line — VS Code's single-pixel
-    /// resize affordance. A divider's hit-testable band
-    /// ([`SplitTreeDivider::thickness`], what [`SplitTreeLayout::hit_test_divider`]
-    /// and [`SplitTreeLayout::hit_test_divider_cell`] use) stays the full
-    /// configured thickness; only the painted line is thinned to this and
-    /// centred within that band. Mirrors
-    /// [`crate::primitives::split::native_surface_paint::SASH_PAINT_WIDTH`]
-    /// so the two primitives read as the same visual weight.
-    pub(crate) const SASH_PAINT_WIDTH: f32 = 1.0;
 
     /// Paint a [`SplitTreeLayout`]'s dividers onto `surface` as filled
     /// rectangles in `theme.separator`. `layout` must be the same
-    /// [`SplitTreeLayout`] the caller uses for hit-testing (typically
-    /// `Backend::split_tree_layout`'s return value, or the value this
-    /// fn's own caller — `Backend::draw_split_tree` — returns) so paint
-    /// and hit-test can never disagree. Leaf content is NOT painted —
-    /// every backend leaves the leaf rects (`layout.leaves`) to the
-    /// host, same contract as before this migration. Each painted rect
-    /// is [`SASH_PAINT_WIDTH`] wide, centred within the divider's full
-    /// hit-testable band (see [`sash_rect`]).
+    /// [`SplitTreeLayout`] the caller hit-tests against, so paint and
+    /// hit-test can never disagree. Leaf content is NOT painted — the
+    /// leaf rects (`layout.leaves`) are the host's. Each painted rect is
+    /// the thin sash [`sash_paint_rect`] centres within the divider's
+    /// full hit-testable band.
     pub(crate) fn paint(layout: &SplitTreeLayout, surface: &mut dyn PaintSurface, theme: &Theme) {
         for div in &layout.dividers {
-            surface.surface_fill_rect(sash_rect(div), theme.separator);
+            surface.surface_fill_rect(sash_paint_rect(div.band(), div.direction), theme.separator);
         }
-    }
-
-    /// Centre a [`SASH_PAINT_WIDTH`]-thick line inside `div`'s
-    /// `[position, position + thickness)` band, along `div.direction`'s
-    /// thickness axis, snapped to the nearest whole device pixel — see
-    /// [`centered_pixel_aligned`]'s doc for why a hairline needs the
-    /// snap. `crate::primitives::split`'s own `native_surface_paint`
-    /// module carries the identical formula for the two-pane primitive.
-    fn sash_rect(div: &SplitTreeDivider) -> Rect {
-        let width = SASH_PAINT_WIDTH.min(div.thickness.max(0.0));
-        let pos = centered_pixel_aligned(div.position, div.thickness, width);
-        match div.direction {
-            SplitDirection::Horizontal => Rect::new(pos, div.cross_start, width, div.cross_size),
-            SplitDirection::Vertical => Rect::new(div.cross_start, pos, div.cross_size, width),
-        }
-    }
-
-    /// Resolve the leading edge of a `width`-wide line centred inside
-    /// `[band_start, band_start + band_len)`, snapped to the nearest
-    /// whole device pixel so a 1px sash renders as a crisp line rather
-    /// than a blurred, anti-aliased straddle across two pixels — then
-    /// clamped back into the band so the snap can never push the line
-    /// outside the hit-testable area it's meant to sit inside.
-    fn centered_pixel_aligned(band_start: f32, band_len: f32, width: f32) -> f32 {
-        let center = band_start + band_len / 2.0;
-        let aligned = (center - width / 2.0).round();
-        aligned.clamp(band_start, (band_start + band_len - width).max(band_start))
     }
 
     #[cfg(test)]
@@ -693,9 +712,10 @@ pub(crate) mod native_surface_paint {
         use super::*;
         use crate::backend::ImagePaintResult;
         use crate::event::{Rect as QRect, Viewport};
+        use crate::primitives::split::{SplitDirection, SASH_PAINT_WIDTH};
         use crate::primitives::split_tree::{SplitTree, SplitTreeMeasure};
         use crate::types::{Color, WidgetId};
-        use crate::Image;
+        use crate::{Image, Rect};
 
         /// Records every `surface_fill_rect` call — mirrors
         /// `primitives::scrollbar`'s `RecordingSurface` test double,

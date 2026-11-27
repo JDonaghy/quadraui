@@ -1275,6 +1275,202 @@ pub(crate) mod native_surface_paint {
     }
 }
 
+// ── Cell layout ───────────────────────────────────────────────────────────────
+
+/// Minimum column width on a cell grid.
+pub(crate) const BOARD_COL_MIN_CELLS: f32 = 20.0;
+/// Gap between adjacent columns on a cell grid.
+const BOARD_COL_GAP_CELLS: f32 = 1.0;
+/// Column header height on a cell grid: one title row.
+const BOARD_HEADER_H_CELLS: f32 = 1.0;
+/// Card height on a cell grid: top border, title, badge row, hint,
+/// bottom border.
+pub(crate) const BOARD_CARD_H_CELLS: f32 = 5.0;
+/// Vertical gap between cards on a cell grid.
+const BOARD_CARD_GAP_CELLS: f32 = 0.0;
+
+impl BoardModel {
+    /// [`board_layout`] over `rect` at the cell-grid measure: the layout
+    /// the TUI painter paints from and hit-tests against.
+    pub fn cell_layout(&self, rect: Rect) -> BoardLayout {
+        board_layout(
+            self,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            BoardMeasure::new(
+                BOARD_COL_MIN_CELLS,
+                BOARD_COL_GAP_CELLS,
+                BOARD_HEADER_H_CELLS,
+                BOARD_CARD_H_CELLS,
+                BOARD_CARD_GAP_CELLS,
+            ),
+        )
+    }
+}
+
+// ── Widget contract ───────────────────────────────────────────────────────────
+
+impl crate::interactive::WidgetAction for BoardAction {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::Board(id, self)
+    }
+}
+
+impl crate::primitive::Primitive for BoardModel {
+    type Layout = BoardLayout;
+    type Event = BoardAction;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// [`BoardModel::cell_layout`] on a cell grid; the shared pixel
+    /// measure everywhere else.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> BoardLayout {
+        match ctx.units() {
+            crate::primitive::Units::Cells => self.cell_layout(rect),
+            _ => crate::primitives::layout_metrics::pixel_board_layout(
+                self,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
+            ),
+        }
+    }
+
+    fn paint(
+        &self,
+        layout: &BoardLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        native_surface_paint::paint(self, surface, env.theme(), layout.bounds);
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, env);
+    }
+
+    /// The TUI rasteriser over the backing buffer.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &BoardLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        // CSR: ratatui_buffer escape hatch
+        let buf = cells
+            .ratatui_buffer()
+            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
+        crate::tui::draw_board(
+            buf,
+            crate::tui::backend::q_rect_to_ratatui(layout.bounds),
+            self,
+            env.theme(),
+        );
+    }
+}
+
+impl crate::interactive::Interactive for BoardModel {
+    type State = ();
+    type Action = BoardAction;
+
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// Every card's rect, named by its index in [`BoardLayout::columns`]'
+    /// flattened card order.
+    fn sub_regions(&self, layout: &BoardLayout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        layout
+            .columns
+            .iter()
+            .flat_map(|col| col.cards.iter())
+            .enumerate()
+            .map(|(i, card)| {
+                let b = card.bounds;
+                (
+                    Rect::new(
+                        b.x - layout.bounds.x,
+                        b.y - layout.bounds.y,
+                        b.width,
+                        b.height,
+                    ),
+                    crate::interactive::SubTarget(i as u64),
+                )
+            })
+            .collect()
+    }
+
+    /// - A key is [`BoardModel::handle_key`]'s navigation map; the host
+    ///   answers each request by writing `selected_card_id` and the
+    ///   scroll offsets back. Any other key bubbles.
+    /// - A left press on a card selects it; a double-click opens it; a
+    ///   right press asks for its context menu at the pointer. Every
+    ///   press takes focus.
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &crate::interactive::RoutedEvent,
+        layout: &BoardLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<BoardAction> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+        use crate::{Handled, MouseButton};
+
+        match event {
+            RoutedEvent::Key(key) => {
+                let name = match &key.key {
+                    crate::Key::Char(c) => c.to_string(),
+                    crate::Key::Named(named) => named.name().into_owned(),
+                };
+                match self.handle_key(&name, key.modifiers) {
+                    Some(action) => Handled::Event(action),
+                    None => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Pointer { kind, local, .. } => {
+                let point = Point::new(local.x + layout.bounds.x, local.y + layout.bounds.y);
+                let card = match layout.hit_test(point.x, point.y) {
+                    BoardHit::Card(id) => Some(id),
+                    _ => None,
+                };
+                match kind {
+                    PointerKind::Down(MouseButton::Left) => {
+                        cx.request_focus(None);
+                        card.map_or(Handled::Consumed, |id| {
+                            Handled::Event(BoardAction::SelectCard(id))
+                        })
+                    }
+                    PointerKind::Down(MouseButton::Right) => {
+                        cx.request_focus(None);
+                        card.map_or(Handled::Consumed, |id| {
+                            Handled::Event(BoardAction::ContextMenu(id, point))
+                        })
+                    }
+                    PointerKind::DoubleClick(MouseButton::Left) => card
+                        .map_or(Handled::Ignored, |id| {
+                            Handled::Event(BoardAction::OpenIssue(id))
+                        }),
+                    _ => Handled::Ignored,
+                }
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
