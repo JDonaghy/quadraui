@@ -2016,6 +2016,231 @@ mod tests {
         );
         assert_eq!(layout.overflowed_items().len(), 2);
     }
+
+    /// Every toolbar painter, over one fixture of each item shape and
+    /// each paint state, cell-for-cell against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::primitives::toolbar::{
+            ToolbarItemWidth, ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow,
+            ToolbarOverflowPriorities, ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign,
+        };
+        use crate::tui::cell_surface::oracle;
+
+        let theme = Theme::default();
+        let mut danger = crate::primitives::button::ButtonSpec::new("Del");
+        danger.variant = crate::primitives::button::ButtonVariant::Danger;
+        let mut active = mk_action_with_icon("act", "Run", "\u{25b6}");
+        if let ToolbarButton::Action {
+            is_active,
+            key_hint,
+            ..
+        } = &mut active
+        {
+            *is_active = true;
+            *key_hint = Some("F5".into());
+        }
+        let buttons = vec![
+            mk_action("a", "Open", true),
+            ToolbarButton::Separator,
+            mk_action("b", "Off", false),
+            active,
+            ToolbarButton::Action {
+                spec: Some(danger),
+                id: WidgetId::new("del"),
+                label: "Del".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            },
+            ToolbarButton::Label {
+                text: "lbl".into(),
+                fg: Some(crate::Color::rgb(10, 200, 30)),
+            },
+            mk_group(
+                "g",
+                true,
+                vec![
+                    mk_action("g1", "x", true),
+                    {
+                        let mut c = mk_action("g2", "y", true);
+                        if let ToolbarButton::Action { is_active, .. } = &mut c {
+                            *is_active = true;
+                        }
+                        c
+                    },
+                    mk_action_with_icon("g3", "", "\u{4e2d}"),
+                ],
+            ),
+            ToolbarButton::Spacer,
+            ToolbarButton::Field {
+                id: WidgetId::new("f"),
+                field: crate::TextField::new(WidgetId::new("f")).with_value("query"),
+                width: ToolbarItemWidth::Fixed(10.0),
+            },
+            ToolbarButton::MenuButton {
+                id: WidgetId::new("m"),
+                label: "More".into(),
+                icon: Some("\u{2630}".into()),
+                menu: vec![],
+            },
+        ];
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: buttons.clone(),
+            bg: None,
+            focused_index: Some(0),
+            ..Default::default()
+        };
+        let bg_bar = Toolbar {
+            bg: Some(crate::Color::rgb(40, 40, 90)),
+            focused_index: None,
+            ..bar.clone()
+        };
+        let hovered = WidgetId::new("a");
+        let pressed = WidgetId::new("g1");
+        let none = ToolbarOverflowPriorities::default();
+
+        let plain = oracle::paint(90, 1, |s| {
+            draw_toolbar(s, Rect::new(0, 0, 90, 1), &bar, &theme, None, None);
+        });
+        let states = oracle::paint(90, 1, |s| {
+            draw_toolbar(
+                s,
+                Rect::new(0, 0, 90, 1),
+                &bg_bar,
+                &theme,
+                Some(&hovered),
+                Some(&pressed),
+            );
+        });
+        let offset = oracle::paint(96, 4, |s| {
+            draw_toolbar(s, Rect::new(3, 2, 90, 1), &bar, &theme, None, Some(&hovered));
+        });
+        let narrow = oracle::paint(24, 1, |s| {
+            draw_toolbar(s, Rect::new(0, 0, 24, 1), &bar, &theme, None, None);
+        });
+        let centred = oracle::paint(90, 3, |s| {
+            draw_toolbar_with_options(
+                s,
+                Rect::new(0, 0, 90, 3),
+                &bar,
+                &theme,
+                None,
+                None,
+                ToolbarPaintOptions {
+                    valign: ToolbarVAlign::Center,
+                },
+            );
+        });
+        let vertical = oracle::paint(16, 14, |s| {
+            draw_toolbar_oriented(
+                s,
+                Rect::new(1, 1, 14, 12),
+                &bar,
+                &theme,
+                Some(&hovered),
+                None,
+                ToolbarLayoutOptions {
+                    orientation: ToolbarOrientation::Vertical,
+                    ..Default::default()
+                },
+            );
+        });
+        let wrap = oracle::paint(30, 6, |s| {
+            draw_toolbar_with_overflow(
+                s,
+                Rect::new(0, 0, 30, 6),
+                &bar,
+                &theme,
+                None,
+                Some(&pressed),
+                ToolbarLayoutOptions {
+                    overflow: ToolbarOverflow::Wrap,
+                    ..Default::default()
+                },
+                &none,
+            );
+        });
+        let menu = oracle::paint(30, 1, |s| {
+            draw_toolbar_with_overflow(
+                s,
+                Rect::new(0, 0, 30, 1),
+                &bar,
+                &theme,
+                Some(&hovered),
+                None,
+                ToolbarLayoutOptions {
+                    overflow: ToolbarOverflow::Menu,
+                    ..Default::default()
+                },
+                &none,
+            );
+        });
+        let rail_bar = Toolbar {
+            id: WidgetId::new("rail"),
+            buttons: vec![
+                mk_action_with_icon("r1", "", "\u{f07c}"),
+                {
+                    let mut c = mk_action_with_icon("r2", "", "S");
+                    if let ToolbarButton::Action { is_active, .. } = &mut c {
+                        *is_active = true;
+                    }
+                    c
+                },
+                mk_action_with_icon("r3", "", "\u{4e2d}"),
+                ToolbarButton::Spacer,
+                mk_action_with_icon("r4", "", "G"),
+            ],
+            focused_index: Some(2),
+            orientation: ToolbarOrientation::Vertical,
+            ..Default::default()
+        };
+        let rail_full = ToolbarRailStyle::default()
+            .with_active_bg(crate::Color::rgb(60, 60, 60))
+            .with_active_accent(crate::Color::rgb(0, 120, 255))
+            .with_selection_bg(crate::Color::rgb(90, 20, 20))
+            .with_trailing_separator(crate::Color::rgb(70, 70, 70));
+        let hovered_rail = WidgetId::new("r1");
+        let rail_styled = oracle::paint(5, 9, |s| {
+            draw_toolbar_with_rail_style(
+                s,
+                Rect::new(1, 0, 3, 9),
+                &rail_bar,
+                &rail_full,
+                &theme,
+                Some(&hovered_rail),
+            );
+        });
+        let rail_plain = oracle::paint(3, 9, |s| {
+            draw_toolbar_with_rail_style(
+                s,
+                Rect::new(0, 0, 3, 9),
+                &rail_bar,
+                &ToolbarRailStyle::default(),
+                &theme,
+                None,
+            );
+        });
+
+        oracle::assert_golden(
+            "toolbar",
+            &[
+                ("plain", &plain),
+                ("states", &states),
+                ("offset", &offset),
+                ("narrow", &narrow),
+                ("centred", &centred),
+                ("vertical", &vertical),
+                ("wrap", &wrap),
+                ("menu", &menu),
+                ("rail_styled", &rail_styled),
+                ("rail_plain", &rail_plain),
+            ],
+        );
+    }
 }
 
 /// Paint a [`ToolbarButton::Field`]'s embedded [`crate::TextField`] into

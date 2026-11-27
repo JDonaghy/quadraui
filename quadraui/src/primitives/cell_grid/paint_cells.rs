@@ -1120,4 +1120,36 @@ mod tests {
         assert_eq!(buf[(cx, cy)].fg, ratatui_color(theme.muted_fg));
         assert_eq!(buf[(cx, cy)].bg, ratatui_color(theme.selection_bg));
     }
+
+    /// The grid painter with frozen panes (the row boundary underlined in
+    /// place, including over a wide glyph), a scrolled body, the cursor
+    /// and a selection, cell for cell against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+
+        let theme = Theme::default();
+        let mut g = grid();
+        g.cells[0][2] = cell_at("\u{4e2d}\u{6587}x");
+        g.row_scroll = 1;
+        g.col_scroll = 1;
+        g.cursor = (3, 3);
+        g.selection_anchor = Some((2, 2));
+        let mut plain = grid();
+        plain.column_separators = true;
+        plain.striped = true;
+        let paint = |g: &CellGrid, area: Rect, w, h| {
+            oracle::paint(w, h, |s| {
+                let _ = draw_cell_grid(s, area, g, &theme);
+            })
+        };
+        oracle::assert_golden(
+            "cell_grid",
+            &[
+                ("frozen_scrolled", &paint(&g, Rect::new(0, 0, 40, 8), 40, 8)),
+                ("offset", &paint(&g, Rect::new(2, 1, 30, 6), 33, 8)),
+                ("separators", &paint(&plain, Rect::new(0, 0, 40, 8), 40, 8)),
+            ],
+        );
+    }
 }

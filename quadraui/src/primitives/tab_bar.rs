@@ -4220,6 +4220,96 @@ mod interactive_tests {
         );
         assert_eq!(other_tab, crate::tui::ratatui_color(theme.tab_active_bg));
     }
+
+    /// The tab-strip cell painter, over every tab decoration and pointer
+    /// state, cell-for-cell against the golden.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+
+        let theme = crate::theme::Theme::default();
+        let style = crate::Style::default();
+        let mut b = bar(&["src: main.rs", "lib.rs", "\u{4e2d}\u{6587}.txt", "notes"], 0);
+        b.active_accent = Some(crate::Color::rgb(0, 140, 255));
+        b.tabs[1].is_dirty = true;
+        b.tabs[2].is_preview = true;
+        b.tabs[3].is_closable = false;
+        b.icons = vec![
+            Some(TabIcon {
+                glyph: "\u{e7a8}".into(),
+                color: crate::Color::rgb(220, 100, 30),
+            }),
+            None,
+            Some(TabIcon {
+                glyph: "\u{4e2d}".into(),
+                color: crate::Color::rgb(30, 200, 90),
+            }),
+        ];
+        b.right_segments = vec![
+            TabBarSegment {
+                text: " \u{2026} ".into(),
+                width_cells: 3,
+                id: Some(WidgetId::new("more")),
+                is_active: false,
+            },
+            TabBarSegment {
+                text: "\u{21c5}".into(),
+                width_cells: 1,
+                id: None,
+                is_active: true,
+            },
+        ];
+        let mut framed = b.clone();
+        framed.chrome.active_frame = TabFrame::Brackets;
+        framed.chrome.focused_index = Some(1);
+        framed.glyphs = TabBarGlyphs::new().with_close_glyph(Icon::new("\u{f00d}", "x"));
+        let mut ruled = b.clone();
+        ruled.chrome.separator = TabSeparator::None;
+        ruled.tabs[0].is_active = false;
+        ruled.tabs[2].is_active = true;
+
+        let paint = |bar: &TabBar, width: f32, origin: (f32, f32), interaction| {
+            let ctx = LayoutCtx::new(1.0, 1.0, false);
+            let layout = Primitive::layout(bar, &ctx, Rect::new(origin.0, origin.1, width, 1.0));
+            let mut buf = ratatui::buffer::Buffer::empty(ratatui::layout::Rect::new(
+                0,
+                0,
+                width as u16 + origin.0 as u16,
+                1 + origin.1 as u16,
+            ));
+            Primitive::paint_cells(
+                bar,
+                &layout,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                &crate::PaintEnv::new(&theme, &style).with_interaction(&interaction),
+            );
+            buf
+        };
+        let hover = |tab: usize, pressed: bool| {
+            let target = (b.id, Some(TabBarSubPart::Tab(tab).sub_target()));
+            crate::InteractionState::from_targets(Some(target), pressed.then_some(target))
+        };
+        let none = crate::InteractionState::new;
+
+        let plain = paint(&b, 70.0, (0.0, 0.0), none());
+        let hovered = paint(&b, 70.0, (0.0, 0.0), hover(1, false));
+        let pressed = paint(&b, 70.0, (2.0, 1.0), hover(2, true));
+        let narrow = paint(&b, 22.0, (0.0, 0.0), none());
+        let framed_cells = paint(&framed, 70.0, (0.0, 0.0), hover(0, false));
+        let ruled_cells = paint(&ruled, 70.0, (0.0, 0.0), none());
+        oracle::assert_golden(
+            "tab_bar",
+            &[
+                ("plain", &plain),
+                ("hovered", &hovered),
+                ("pressed_offset", &pressed),
+                ("narrow", &narrow),
+                ("framed", &framed_cells),
+                ("ruled", &ruled_cells),
+            ],
+        );
+    }
 }
 
 #[cfg(test)]

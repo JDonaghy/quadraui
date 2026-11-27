@@ -1751,6 +1751,95 @@ mod tests {
         assert!(find_char_pos(&row, "Running").is_some());
         assert!(find_char_pos(&row, "3d").is_some());
     }
+    /// The table painter over headers with both sort glyphs, styled and
+    /// wide cells, every decoration, hovered/pressed/striped rows, the
+    /// border, both scrollbars and the footer, cell for cell against the
+    /// golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+        use crate::types::{Icon, StyledSpan};
+
+        let theme = Theme::default();
+        let mut table = make_table();
+        table.rows.push(DataRow {
+            cells: vec![
+                StyledText {
+                    spans: vec![
+                        StyledSpan::with_fg("err", crate::Color::rgb(230, 20, 20)),
+                        StyledSpan::plain("-and-a-long-tail"),
+                    ],
+                },
+                StyledText::plain("\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}"),
+                StyledText::plain("12345678"),
+            ],
+            decoration: Decoration::Error,
+        });
+        for (i, dec) in [
+            Decoration::Muted,
+            Decoration::Header,
+            Decoration::Warning,
+            Decoration::Modified,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            table.rows.push(DataRow {
+                cells: vec![
+                    StyledText::plain(format!("row-{i}")),
+                    StyledText::plain("ok"),
+                    StyledText::plain(format!("{i}m")),
+                ],
+                decoration: dec,
+            });
+        }
+        let mut fancy = table.clone();
+        fancy.bordered = true;
+        fancy.show_scrollbar = true;
+        fancy.min_total_width = Some(50.0);
+        fancy.h_scroll = 4.0;
+        fancy.sort = Some((2, SortDirection::Descending));
+        fancy.footer = Some(DataRow {
+            cells: vec![
+                StyledText::plain("total"),
+                StyledText::plain(""),
+                StyledText::plain("9"),
+            ],
+            decoration: Decoration::Normal,
+        });
+        fancy.glyphs = Some(
+            DataTableGlyphs::new()
+                .with_sort_ascending_glyph(Icon::new("\u{f0de}", "^"))
+                .with_sort_descending_glyph(Icon::new("\u{f0dd}", "v")),
+        );
+        let mut unfocused = table.clone();
+        unfocused.has_focus = false;
+        unfocused.selected_idx = Some(2);
+        unfocused.scroll_offset = 1;
+        unfocused.column_overrides = vec![Some(6.0), None, None];
+
+        let hovered = DataTablePaintState::default()
+            .with_hovered_idx(Some(1))
+            .with_pressed_idx(Some(3));
+        let striped = DataTablePaintState::default().with_striped(true);
+        let paint = |t: &DataTable, area: Rect, st: &DataTablePaintState, nerd: bool, w, h| {
+            oracle::paint(w, h, |s| {
+                draw_data_table_inner(s, area, t, &theme, st, t.glyphs.as_ref(), nerd);
+            })
+        };
+        let rest = DataTablePaintState::default();
+        oracle::assert_golden(
+            "data_table",
+            &[
+                ("plain", &paint(&table, Rect::new(0, 0, 36, 9), &rest, false, 36, 9)),
+                ("hovered_offset", &paint(&table, Rect::new(2, 1, 30, 8), &hovered, false, 33, 10)),
+                ("striped", &paint(&table, Rect::new(0, 0, 36, 9), &striped, false, 36, 9)),
+                ("fancy_nerd", &paint(&fancy, Rect::new(0, 0, 30, 8), &hovered, true, 30, 8)),
+                ("fancy_fallback", &paint(&fancy, Rect::new(0, 0, 30, 8), &rest, false, 30, 8)),
+                ("unfocused", &paint(&unfocused, Rect::new(0, 0, 20, 5), &rest, false, 20, 5)),
+            ],
+        );
+    }
 }
 
 /// Multi-select keyboard wiring over [`crate::tui::testing::TuiDriver`].
@@ -1942,4 +2031,5 @@ mod multi_select_driver_tests {
             })
         );
     }
+
 }

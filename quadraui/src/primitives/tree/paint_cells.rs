@@ -1316,6 +1316,84 @@ mod tests {
             "cursor cell bg should be the row fg (inverted)"
         );
     }
+    /// The tree row painter over chevrons, icons, badges (with the
+    /// ellipsis clamp, including on a wide glyph), header rows, inline
+    /// rename editors, the border and scroll, cell for cell against the
+    /// golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::primitives::tree::TreeRowEditState;
+        use crate::tui::cell_surface::oracle;
+        use crate::types::Badge;
+
+        let theme = Theme::default();
+        let mut tree = make_tree();
+        tree.rows[0].decoration = Decoration::Header;
+        tree.rows[1].icon = Some(Icon::new("\u{e7a8}", "r"));
+        tree.rows[1].badge = Some(Badge {
+            text: "M".into(),
+            fg: Some(crate::Color::rgb(200, 180, 0)),
+            bg: None,
+        });
+        tree.rows.push(TreeRow {
+            badge: Some(Badge::plain("12")),
+            decoration: Decoration::Muted,
+            ..row(&[0, 2], 1, "a-label-long-enough-to-clamp.rs", None)
+        });
+        tree.rows.push(TreeRow {
+            badge: Some(Badge::plain("\u{4e2d}")),
+            icon: Some(Icon::new("\u{4e2d}", "w")),
+            ..row(&[0, 3], 1, "ab\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}", None)
+        });
+        tree.rows.push(TreeRow {
+            edit: Some(TreeRowEditState {
+                text: "renamed.rs".into(),
+                cursor: 3,
+                selection_anchor: Some(7),
+                placeholder: None,
+            }),
+            ..row(&[0, 4], 1, "old.rs", None)
+        });
+        tree.rows.push(TreeRow {
+            edit: Some(TreeRowEditState {
+                text: String::new(),
+                cursor: 0,
+                selection_anchor: None,
+                placeholder: Some("new file".into()),
+            }),
+            ..row(&[0, 5], 1, "", None)
+        });
+        tree.rows.push(row(&[1], 0, "collapsed", Some(false)));
+        tree.rows.push(TreeRow {
+            text: StyledText {
+                spans: vec![
+                    StyledSpan::with_fg("red", crate::Color::rgb(220, 0, 0)),
+                    StyledSpan::plain(" plain"),
+                ],
+            },
+            ..row(&[2], 0, "", None)
+        });
+        let mut bordered = tree.clone();
+        bordered.style.bordered = true;
+        bordered.has_focus = false;
+        bordered.scroll_offset = 1;
+
+        let paint = |t: &TreeView, area: Rect, nerd: bool, scroll: Option<f32>, w, h| {
+            oracle::paint(w, h, |s| {
+                paint_tree_rows_with_scroll_px(s, area, t, &theme, nerd, scroll);
+            })
+        };
+        oracle::assert_golden(
+            "tree",
+            &[
+                ("plain", &paint(&tree, Rect::new(0, 0, 22, 10), true, None, 22, 10)),
+                ("fallback_offset", &paint(&tree, Rect::new(2, 1, 22, 10), false, None, 25, 12)),
+                ("narrow", &paint(&tree, Rect::new(0, 0, 9, 10), true, None, 9, 10)),
+                ("bordered", &paint(&bordered, Rect::new(0, 0, 24, 8), true, None, 24, 8)),
+                ("scroll_px", &paint(&tree, Rect::new(0, 0, 22, 5), false, Some(2.5), 22, 5)),
+            ],
+        );
+    }
 }
 
 /// Multi-select keyboard wiring over [`crate::tui::testing::TuiDriver`].
@@ -1513,4 +1591,5 @@ mod multi_select_driver_tests {
             })
         );
     }
+
 }

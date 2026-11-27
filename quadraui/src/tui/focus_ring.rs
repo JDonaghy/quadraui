@@ -171,4 +171,44 @@ mod tests {
             }
         }
     }
+
+    /// The ring over a styled buffer — a box, a one-row underline and a
+    /// box running off the buffer's edge — cell for cell against the
+    /// golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+
+        let theme = Theme::default();
+        let prefill = |buf: &mut Buffer| {
+            for y in 0..buf.area.height {
+                for x in 0..buf.area.width {
+                    super::set_cell(
+                        buf,
+                        x,
+                        y,
+                        'x',
+                        RatatuiColor::Rgb(200, 200, 200),
+                        RatatuiColor::Rgb(10, 20 + x as u8, 30 + y as u8),
+                    );
+                }
+            }
+        };
+        let boxed = oracle::paint(10, 6, |buf| {
+            prefill(buf);
+            draw_focus_ring(buf, RRect::new(1, 1, 5, 4), &theme);
+        });
+        let row = oracle::paint(10, 3, |buf| {
+            prefill(buf);
+            draw_focus_ring(buf, RRect::new(2, 1, 6, 1), &theme);
+        });
+        let clipped = oracle::paint(6, 4, |buf| {
+            prefill(buf);
+            draw_focus_ring(buf, RRect::new(3, 2, 6, 4), &theme);
+        });
+        oracle::assert_golden(
+            "focus_ring",
+            &[("boxed", &boxed), ("row", &row), ("clipped", &clipped)],
+        );
+    }
 }

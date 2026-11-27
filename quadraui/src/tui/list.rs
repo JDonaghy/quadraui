@@ -1454,6 +1454,95 @@ mod tests {
         );
         assert_eq!(cell_char(&buf, 2, 0), 'D');
     }
+    /// The list rasteriser over every row shape — title, border, icons,
+    /// details, styled spans, decorations, wide glyphs, horizontal
+    /// scroll, both overflow modes, stripes and the scrollbar — cell for
+    /// cell against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::primitives::list::ListPaintState;
+        use crate::tui::cell_surface::oracle;
+        use crate::types::Icon;
+
+        let theme = Theme::default();
+        let mut list = make_list(1);
+        list.title = Some(StyledText::plain("Title \u{4e2d}"));
+        list.items.push(ListItem {
+            text: StyledText {
+                spans: vec![
+                    StyledSpan::with_fg("red ", Color::rgb(200, 30, 30)),
+                    StyledSpan {
+                        bg: Some(Color::rgb(10, 60, 10)),
+                        ..StyledSpan::plain("on-green")
+                    },
+                    StyledSpan::plain(" tail that runs well past the band"),
+                ],
+            },
+            detail: Some(StyledText::plain("detail")),
+            icon: Some(Icon::new("\u{f15b}", "F")),
+            decoration: Decoration::Muted,
+        });
+        list.items.push(ListItem {
+            icon: Some(Icon::new("\u{4e2d}", "*")),
+            ..item("\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}\u{4e2d}\u{6587}xyz", Decoration::Error)
+        });
+        list.items.push(item("header row", Decoration::Header));
+        list.items.push(item("warn", Decoration::Warning));
+        list.items.push(item("mod", Decoration::Modified));
+        for i in 0..6 {
+            list.items.push(item(&format!("filler {i}"), Decoration::Normal));
+        }
+        let plain_state = ListPaintState::default();
+        let striped = ListPaintState::default().with_striped(true);
+        let scrolled = ListPaintState::default().with_scroll_px(Some(2.0));
+
+        let mut bordered = list.clone();
+        bordered.bordered = true;
+        bordered.show_v_scrollbar = true;
+        let mut hscrolled = list.clone();
+        hscrolled.h_scroll = 3;
+        hscrolled.max_content_width = Some(60);
+        hscrolled.has_focus = false;
+        hscrolled.title = None;
+        let mut offset = list.clone();
+        offset.scroll_offset = 2;
+        offset.show_v_scrollbar = true;
+
+        let paint = |l: &ListView, area: Rect, nerd: bool, st: &ListPaintState, o, w, h| {
+            oracle::paint(w, h, |s| {
+                draw_list_with_overflow(s, area, l, &theme, nerd, st, o);
+            })
+        };
+        oracle::assert_golden(
+            "list",
+            &[
+                (
+                    "plain",
+                    &paint(&list, Rect::new(0, 0, 24, 10), true, &plain_state, CellOverflow::Ellipsis, 24, 10),
+                ),
+                (
+                    "clip_fallback",
+                    &paint(&list, Rect::new(1, 1, 24, 10), false, &plain_state, CellOverflow::Clip, 26, 12),
+                ),
+                (
+                    "bordered_striped",
+                    &paint(&bordered, Rect::new(0, 0, 22, 9), true, &striped, CellOverflow::Ellipsis, 22, 9),
+                ),
+                (
+                    "hscrolled",
+                    &paint(&hscrolled, Rect::new(0, 0, 18, 8), true, &plain_state, CellOverflow::Ellipsis, 18, 8),
+                ),
+                (
+                    "offset_scroll_px",
+                    &paint(&offset, Rect::new(0, 0, 20, 6), false, &scrolled, CellOverflow::Ellipsis, 20, 6),
+                ),
+                (
+                    "narrow",
+                    &paint(&list, Rect::new(0, 0, 3, 4), true, &plain_state, CellOverflow::Ellipsis, 3, 4),
+                ),
+            ],
+        );
+    }
 }
 
 /// Multi-select keyboard wiring over [`crate::tui::testing::TuiDriver`].
@@ -1639,4 +1728,5 @@ mod multi_select_driver_tests {
             })
         );
     }
+
 }

@@ -355,4 +355,39 @@ mod tests {
         assert_ne!(buf[(20, 2)].bg, plain_buf[(20, 2)].bg, "odd row tinted");
         assert_eq!(buf[(20, 1)].bg, plain_buf[(20, 1)].bg, "even row untouched");
     }
+    /// The tree-table painter — tree cells with icons and chevrons in
+    /// column 0, plain rows past the tree, hover/press/stripes and the
+    /// selection — cell for cell against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+        use crate::types::Icon;
+
+        let theme = Theme::default();
+        let mut table = make_tree_table();
+        table.tree[1].icon = Some(Icon::new("\u{e7a8}", "r"));
+        table.tree[0].icon = Some(Icon::new("\u{4e2d}", "d"));
+        table.table.selected_idx = Some(1);
+        table.table.rows.push(DataRow {
+            cells: vec![StyledText::plain("orphan"), StyledText::plain("1b")],
+            decoration: Decoration::Muted,
+        });
+        let state = DataTablePaintState::default()
+            .with_hovered_idx(Some(2))
+            .with_pressed_idx(Some(0))
+            .with_striped(true);
+        let paint = |area: Rect, st: &DataTablePaintState, nerd: bool, w, h| {
+            oracle::paint(w, h, |s| {
+                paint_laid_out(s, area, &table, &theme, st, nerd, cell_tree_table_layout(area, &table));
+            })
+        };
+        oracle::assert_golden(
+            "tree_table",
+            &[
+                ("plain", &paint(Rect::new(0, 0, 26, 7), &DataTablePaintState::default(), false, 26, 7)),
+                ("states_nerd", &paint(Rect::new(1, 1, 26, 7), &state, true, 28, 9)),
+                ("narrow", &paint(Rect::new(0, 0, 9, 7), &state, false, 9, 7)),
+            ],
+        );
+    }
 }

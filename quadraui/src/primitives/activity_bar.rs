@@ -2413,6 +2413,47 @@ mod cell_paint_tests {
         assert_eq!(via_contract(&on_row(2)), direct(Some(2)));
     }
 
+    /// The rail painter, over active, keyboard-selected, accented and
+    /// hovered rows with and without Nerd Font glyphs, cell-for-cell
+    /// against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+
+        let theme = Theme::default();
+        let mut b = bar();
+        b.top_items[0].is_active = true;
+        b.top_items[1].is_keyboard_selected = true;
+        b.top_items[2].icon = Icon::new("\u{e702}", "G");
+        b.is_keyboard_focused = true;
+        let mut accented = b.clone();
+        accented.active_accent = Some(Color::rgb(0, 122, 204));
+        accented.selection_bg = Some(Color::rgb(80, 30, 30));
+        accented.style = ActivityBarStyle::new().with_active_bg(Color::rgb(50, 50, 50));
+
+        let plain = oracle::paint(5, 10, |s| {
+            draw_activity_bar(s, Rect::new(1, 0, 3, 10), &b, &theme, None, false);
+        });
+        let hovered = oracle::paint(3, 10, |s| {
+            draw_activity_bar(s, Rect::new(0, 0, 3, 10), &b, &theme, Some(1), true);
+        });
+        let styled = oracle::paint(4, 12, |s| {
+            draw_activity_bar(s, Rect::new(0, 1, 4, 10), &accented, &theme, Some(0), true);
+        });
+        let short = oracle::paint(3, 3, |s| {
+            draw_activity_bar(s, Rect::new(0, 0, 3, 3), &accented, &theme, None, false);
+        });
+        oracle::assert_golden(
+            "activity_bar",
+            &[
+                ("plain", &plain),
+                ("hovered", &hovered),
+                ("styled", &styled),
+                ("short", &short),
+            ],
+        );
+    }
+
     /// Hit regions are **bar-relative**, not absolute, so the top row
     /// starts at `0.0` no matter where the bar is painted.
     ///

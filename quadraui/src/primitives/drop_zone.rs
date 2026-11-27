@@ -596,6 +596,32 @@ pub(crate) mod cell_paint {
                 "the bar's bottom edge is exclusive"
             );
         }
+        /// The overlay painter over a buffer already holding styled and
+        /// wide glyphs, cell for cell against the golden.
+        #[test]
+        fn cell_paint_matches_the_golden() {
+            use crate::tui::cell_surface::oracle;
+            use crate::tui::{ratatui_color, set_cell, set_cell_wide};
+
+            let theme = Theme::default();
+            let overlay = DropOverlay {
+                highlight: Some(Rect::new(1.0, 0.0, 6.0, 3.0)),
+                insertion_bar: Some(Rect::new(8.0, 0.0, 1.0, 3.0)),
+                ghost_position: None,
+            };
+            let painted = oracle::paint(12, 4, |buf| {
+                let (fg, bg) = (
+                    ratatui_color(crate::Color::rgb(200, 200, 200)),
+                    ratatui_color(crate::Color::rgb(20, 20, 20)),
+                );
+                for x in 0..12 {
+                    set_cell(buf, x, 1, 'a', fg, bg);
+                }
+                set_cell_wide(buf, 3, 1, '\u{4e2d}', fg, bg);
+                paint_into(&overlay, buf, &theme);
+            });
+            oracle::assert_golden("drop_zone", &[("overlay", &painted)]);
+        }
     }
 }
 

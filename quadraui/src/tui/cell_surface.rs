@@ -870,6 +870,114 @@ impl TuiClipFrame {
     }
 }
 
+/// Golden-file oracle for cell painters: a painted [`Buffer`] serialised
+/// cell for cell (glyph, colours, modifiers, underline colour) and
+/// compared against a snapshot under `tests/fixtures/cell_oracle/`. A
+/// painter rewritten onto different [`CellSurface`] verbs keeps its
+/// golden byte-identical, so any cell it paints differently fails here.
+///
+/// Run with `QUADRAUI_BLESS_CELLS=1` to (re)write the snapshots.
+#[cfg(test)]
+pub(crate) mod oracle {
+    use std::fmt::Write as _;
+
+    use ratatui::buffer::Buffer;
+
+    /// `buf` as text: the glyph grid, then one line per run of cells in
+    /// a row that share a style.
+    pub(crate) fn snapshot(buf: &Buffer) -> String {
+        let area = buf.area;
+        let mut out = String::new();
+        let _ = writeln!(out, "area {} {} {} {}", area.x, area.y, area.width, area.height);
+        for y in area.y..area.y + area.height {
+            out.push('|');
+            for x in area.x..area.x + area.width {
+                let sym = buf[(x, y)].symbol();
+                out.push_str(if sym.is_empty() { "\u{2400}" } else { sym });
+            }
+            out.push_str("|\n");
+        }
+        for y in area.y..area.y + area.height {
+            let mut x = area.x;
+            while x < area.x + area.width {
+                let c = &buf[(x, y)];
+                let key = (c.fg, c.bg, c.modifier, c.underline_color);
+                let start = x;
+                while x < area.x + area.width {
+                    let d = &buf[(x, y)];
+                    if (d.fg, d.bg, d.modifier, d.underline_color) != key {
+                        break;
+                    }
+                    x += 1;
+                }
+                let _ = writeln!(
+                    out,
+                    "{y} {start}..{x} fg={:?} bg={:?} mod={:?} ul={:?}",
+                    key.0, key.1, key.2, key.3
+                );
+            }
+        }
+        out
+    }
+
+    /// Assert `cases` — `(label, painted buffer)` pairs — match the
+    /// golden `tests/fixtures/cell_oracle/<name>.txt`.
+    pub(crate) fn assert_golden(name: &str, cases: &[(&str, &Buffer)]) {
+        let mut actual = String::new();
+        for (label, buf) in cases {
+            let _ = writeln!(actual, "== {label}");
+            actual.push_str(&snapshot(buf));
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/cell_oracle")
+            .join(format!("{name}.txt"));
+        if std::env::var_os("QUADRAUI_BLESS_CELLS").is_some() {
+            std::fs::create_dir_all(path.parent().expect("fixture dir")).expect("mkdir");
+            std::fs::write(&path, &actual).expect("write golden");
+            return;
+        }
+        let expected = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read golden {}: {e}", path.display()));
+        if expected != actual {
+            let first = expected
+                .lines()
+                .zip(actual.lines())
+                .enumerate()
+                .find(|(_, (e, a))| e != a);
+            match first {
+                Some((i, (e, a))) => panic!(
+                    "{name}: cell paint differs from the golden at line {}\n  golden: {e}\n  actual: {a}",
+                    i + 1
+                ),
+                None => panic!(
+                    "{name}: golden has {} lines, paint has {}",
+                    expected.lines().count(),
+                    actual.lines().count()
+                ),
+            }
+        }
+    }
+
+    /// `paint` run against a fresh `width × height` buffer at the origin.
+    pub(crate) fn paint(width: u16, height: u16, paint: impl FnOnce(&mut Buffer)) -> Buffer {
+        let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
+        paint(&mut buf);
+        buf
+    }
+
+    /// `paint` run against a fresh `width × height` buffer at the origin,
+    /// through a [`super::BufferCellSurface`].
+    pub(crate) fn paint_cells(
+        width: u16,
+        height: u16,
+        paint: impl FnOnce(&mut dyn crate::CellSurface),
+    ) -> Buffer {
+        let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
+        paint(&mut super::BufferCellSurface::new(&mut buf));
+        buf
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

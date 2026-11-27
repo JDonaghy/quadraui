@@ -1,0 +1,22 @@
+== overlay
+area 0 0 12 4
+|        │   |
+|aaa中␀aaa│aaa|
+|        │   |
+|            |
+0 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+0 1..7 fg=Reset bg=Rgb(170, 230, 255) mod=NONE ul=Reset
+0 7..8 fg=Reset bg=Reset mod=NONE ul=Reset
+0 8..9 fg=Rgb(140, 200, 240) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 9..12 fg=Reset bg=Reset mod=NONE ul=Reset
+1 0..1 fg=Rgb(200, 200, 200) bg=Rgb(20, 20, 20) mod=NONE ul=Reset
+1 1..7 fg=Rgb(200, 200, 200) bg=Rgb(170, 230, 255) mod=NONE ul=Reset
+1 7..8 fg=Rgb(200, 200, 200) bg=Rgb(20, 20, 20) mod=NONE ul=Reset
+1 8..9 fg=Rgb(140, 200, 240) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 9..12 fg=Rgb(200, 200, 200) bg=Rgb(20, 20, 20) mod=NONE ul=Reset
+2 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+2 1..7 fg=Reset bg=Rgb(170, 230, 255) mod=NONE ul=Reset
+2 7..8 fg=Reset bg=Reset mod=NONE ul=Reset
+2 8..9 fg=Rgb(140, 200, 240) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 9..12 fg=Reset bg=Reset mod=NONE ul=Reset
+3 0..12 fg=Reset bg=Reset mod=NONE ul=Reset

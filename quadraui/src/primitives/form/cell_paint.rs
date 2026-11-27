@@ -3562,4 +3562,249 @@ mod tests {
             "expected the long-label row's item further right than the short-label row's"
         );
     }
+    /// The form painter over every field kind, focused and not, with
+    /// validation, disabled rows and each label placement, plus the bare
+    /// single-control painter — cell for cell against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::primitives::combo_box::ComboBox;
+        use crate::primitives::date_picker::{CalendarDate, DatePicker};
+        use crate::primitives::form::{
+            ButtonRowItem, LabelPosition, ToggleGroupItem, ValidationState,
+        };
+        use crate::primitives::number_input::NumberInput;
+        use crate::primitives::radio_group::{RadioGroup, RadioOption};
+        use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+        use crate::tui::cell_surface::oracle;
+
+        fn fld(id: &str, text: &str, kind: FieldKind) -> FormField {
+            FormField {
+                id: WidgetId::new(id),
+                label: label(text),
+                kind,
+                disabled: false,
+                validation: None,
+                hint: label(""),
+                label_position: None,
+                label_align: None,
+                label_width: None,
+                tab_index: None,
+                control_width: None,
+                min_control_width: None,
+                row_align: None,
+            }
+        }
+        let theme = Theme::default();
+        let mut fields = vec![
+            fld("hdr", "Section", FieldKind::Label),
+            fld("tog", "toggle", FieldKind::Toggle { value: false }),
+            fld(
+                "txt",
+                "name",
+                FieldKind::TextInput {
+                    value: "hello \u{4e2d}".into(),
+                    placeholder: "type".into(),
+                    cursor: Some(2),
+                    selection_anchor: Some(4),
+                },
+            ),
+            fld(
+                "empty",
+                "empty",
+                FieldKind::TextInput {
+                    value: String::new(),
+                    placeholder: "placeholder".into(),
+                    cursor: None,
+                    selection_anchor: None,
+                },
+            ),
+            fld("btn", "Apply", FieldKind::Button),
+            fld(
+                "ro",
+                "read",
+                FieldKind::ReadOnly {
+                    value: StyledText {
+                        spans: vec![
+                            StyledSpan::with_fg("red", crate::Color::rgb(220, 10, 10)),
+                            StyledSpan::plain(" value"),
+                        ],
+                    },
+                },
+            ),
+            fld(
+                "sl",
+                "slider",
+                FieldKind::Slider {
+                    value: 0.4,
+                    min: 0.0,
+                    max: 1.0,
+                    step: 0.1,
+                },
+            ),
+            fld(
+                "col",
+                "colour",
+                FieldKind::ColorPicker {
+                    value: crate::Color::rgb(10, 120, 200),
+                },
+            ),
+            fld(
+                "dd",
+                "drop",
+                FieldKind::Dropdown {
+                    options: vec![label("one"), label("two"), label("three")],
+                    selected_idx: 1,
+                },
+            ),
+            fld(
+                "ta",
+                "area",
+                FieldKind::TextArea {
+                    value: "line one\nline two that is long".into(),
+                    placeholder: String::new(),
+                    cursor: Some(3),
+                    visible_rows: 2,
+                },
+            ),
+            fld(
+                "pw",
+                "pass",
+                FieldKind::PasswordInput {
+                    value: "secret".into(),
+                    placeholder: String::new(),
+                    cursor: Some(6),
+                    mask_char: '*',
+                },
+            ),
+            fld(
+                "seg",
+                "mode",
+                FieldKind::SegmentedControl {
+                    options: vec!["A".into(), "Bee".into(), "C".into()],
+                    selected_idx: 1,
+                },
+            ),
+            fld(
+                "tg",
+                "",
+                FieldKind::ToggleGroup {
+                    toggles: vec![
+                        ToggleGroupItem {
+                            id: WidgetId::new("aa"),
+                            label: "Aa".into(),
+                            value: true,
+                        },
+                        ToggleGroupItem {
+                            id: WidgetId::new("re"),
+                            label: ".*".into(),
+                            value: false,
+                        },
+                    ],
+                },
+            ),
+            fld(
+                "br",
+                "",
+                FieldKind::ButtonRow {
+                    buttons: vec![
+                        ButtonRowItem {
+                            spec: None,
+                            id: WidgetId::new("ok"),
+                            label: "OK".into(),
+                            disabled: false,
+                            icon: None,
+                        },
+                        ButtonRowItem {
+                            spec: None,
+                            id: WidgetId::new("no"),
+                            label: "No".into(),
+                            disabled: true,
+                            icon: None,
+                        },
+                    ],
+                },
+            ),
+            fld(
+                "tb",
+                "tools",
+                FieldKind::Toolbar(Toolbar::new(WidgetId::new("tb")).with_buttons(vec![
+                    ToolbarButton::Separator,
+                    ToolbarButton::Label {
+                        text: "x".into(),
+                        fg: None,
+                    },
+                ])),
+            ),
+            fld(
+                "date",
+                "date",
+                FieldKind::DatePicker(DatePicker::new(
+                    WidgetId::new("date"),
+                    CalendarDate::new(2026, 11, 27),
+                )),
+            ),
+            fld(
+                "combo",
+                "combo",
+                FieldKind::ComboBox(ComboBox::new(
+                    WidgetId::new("combo"),
+                    vec!["apple".into(), "banana".into()],
+                )),
+            ),
+            fld(
+                "num",
+                "num",
+                FieldKind::NumberInput(NumberInput::new(WidgetId::new("num"), 0.0, 10.0)),
+            ),
+            fld(
+                "radio",
+                "radio",
+                FieldKind::RadioGroup(RadioGroup::new(
+                    WidgetId::new("radio"),
+                    vec![
+                        RadioOption::new(WidgetId::new("r1"), "first"),
+                        RadioOption::new(WidgetId::new("r2"), "second"),
+                    ],
+                )),
+            ),
+        ];
+        fields[1].validation = Some(ValidationState::Error("bad".into()));
+        fields[4].validation = Some(ValidationState::Warning("hmm".into()));
+        fields[5].disabled = true;
+        fields[6].label_position = Some(LabelPosition::Top);
+        fields[7].label_position = Some(LabelPosition::Inline);
+        let mut form = make_form();
+        form.fields = fields;
+        form.focused_field = Some(WidgetId::new("txt"));
+        let mut dd_focus = form.clone();
+        dd_focus.focused_field = Some(WidgetId::new("dd"));
+        dd_focus.scroll_offset = 6;
+        let mut top = form.clone();
+        top.label_position = LabelPosition::Top;
+        top.has_focus = false;
+
+        let paint = |f: &Form, area: Rect, w, h| {
+            oracle::paint(w, h, |s| draw_form(s, area, f, &theme))
+        };
+        let bare = |kind: &FieldKind, disabled, focused| {
+            oracle::paint(16, 2, |s| {
+                paint_bare_field(s, Rect::new(0, 0, 16, 2), kind, disabled, focused, None, &theme)
+            })
+        };
+        oracle::assert_golden(
+            "form",
+            &[
+                ("all_kinds", &paint(&form, Rect::new(0, 0, 40, 40), 40, 40)),
+                ("offset", &paint(&form, Rect::new(2, 1, 30, 20), 33, 22)),
+                ("dropdown_open", &paint(&dd_focus, Rect::new(0, 0, 36, 14), 36, 14)),
+                ("labels_on_top", &paint(&top, Rect::new(0, 0, 28, 30), 28, 30)),
+                ("bare_toggle", &bare(&form.fields[1].kind, false, true)),
+                ("bare_text", &bare(&form.fields[2].kind, false, true)),
+                ("bare_slider", &bare(&form.fields[6].kind, true, false)),
+                ("bare_dropdown", &bare(&form.fields[8].kind, false, true)),
+                ("bare_password", &bare(&form.fields[10].kind, false, false)),
+                ("bare_area", &bare(&form.fields[9].kind, false, true)),
+            ],
+        );
+    }
 }
