@@ -1130,9 +1130,11 @@ mod split_tree_cell_tests {
         // otherwise a click on the visually-painted divider misses.
         let area = RRect::new(origin_x, origin_y, 101, 10); // available = 100
         let mut buf = Buffer::empty(area);
-        let tree = two_pane(SplitDirection::Horizontal, 0.207); // position = origin_x + 20.7
+        // Unrounded position origin_x + 20.7; the cell layout places the
+        // divider on the whole cell it truncates to.
+        let tree = two_pane(SplitDirection::Horizontal, 0.207);
         let layout = draw_split_tree(&mut buf, area, &tree, &Theme::default());
-        assert!((layout.dividers[0].position - (origin_x as f32 + 20.7)).abs() < 0.01);
+        assert_eq!(layout.dividers[0].position, origin_x as f32 + 20.0);
 
         let cross_row = origin_y + 5;
         // Find the column the divider glyph actually painted at —
