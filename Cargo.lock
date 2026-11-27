@@ -3419,6 +3419,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quadraui-parity"
+version = "0.0.0"
+dependencies = [
+ "quadraui",
+ "serde_json",
+]
+
+[[package]]
 name = "quadraui-py"
 version = "0.11.0"
 dependencies = [

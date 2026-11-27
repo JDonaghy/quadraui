@@ -1463,6 +1463,43 @@ jobs:
       - name: Build (maturin develop) + pytest
         run: scripts/test_quadraui_py.sh
 
+  parity:
+    # The same small app (examples/parity/{rust,python,node}: a text field,
+    # a list, two buttons and a status bar) runs headless on the TUI backend
+    # in all three languages, driven by one input script
+    # (examples/parity/script.json). `scripts/parity_check.py` fails unless
+    # every step renders the same cell grid (glyph, fg, bg) and fires the
+    # same app updates in each language. Rust differences already recorded
+    # in examples/parity/known_divergences.json are allowed only where and
+    # when that file says, and an entry that stops reproducing fails the
+    # job until it is removed.
+    name: Cross-language parity (Rust / Python / Node, TUI)
+    runs-on: ubuntu-latest
+    needs: bump-shape
+    if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
+    # A cold Rust build of the tracer, the Python extension and the Node
+    # addon; a warm run takes a few minutes.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - uses: Swatinem/rust-cache@v2
+      - name: Build the three apps + compare their frames
+        run: scripts/parity_ci.sh --save "$RUNNER_TEMP/parity-traces"
+      - name: Upload parity traces
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: parity-traces
+          path: ${{ runner.temp }}/parity-traces
+          if-no-files-found: warn
+
   msrv:
     # `quadraui/Cargo.toml`'s `rust-version` is the oldest compiler a
     # *consumer* can build this crate with — a different question from
