@@ -152,6 +152,11 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("Spinner", "draw_spinner"),
     ("Spinner", "spinner_layout"),
     ("Scrollbar", "draw_scrollbar"),
+    // Group-F ports, kept until the group's cleanup deletes them.
+    ("Chart", "draw_chart"),
+    ("Chart", "chart_layout"),
+    ("Canvas", "draw_canvas"),
+    ("Canvas", "canvas_layout"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
