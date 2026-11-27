@@ -1964,17 +1964,12 @@ impl PlatformServices for TuiPlatformServices {
         self.run_path_picker(FolderPicker::rooted_at(root, Vec::new()))
     }
 
-    /// Nested draw-and-read loop over a [`crate::compose::MessageDialog`]
-    /// painted over the whole viewport — see the module doc's "Dialogs"
-    /// section and [`Self::show_file_open_dialog`]'s doc for the shared
-    /// shape.
+    /// Nested draw-and-read loop over a [`crate::compose::MessageDialog`] —
+    /// see the module doc's "Dialogs" section.
     fn show_message_dialog(&self, opts: MessageDialogOptions) -> Option<MessageDialogChoice> {
-        let dialog = MessageDialog::new(opts);
-        let mut state = MessageDialogState::default();
+        let (dialog, mut state) = (MessageDialog::new(opts), MessageDialogState::default());
         self.run_nested_dialog_loop(
-            |backend, _viewport| {
-                backend.draw_dyn(backend.viewport().rect(), &dialog, &());
-            },
+            |backend, viewport| _ = backend.draw_dyn(viewport, &dialog, &()),
             |event, backend, _viewport| match dialog.handle_event(&mut state, event, backend) {
                 Handled::Event(id) => NestedDialogStep::Resolved(id),
                 Handled::Consumed | Handled::Ignored => NestedDialogStep::Continue,

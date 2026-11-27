@@ -2823,18 +2823,22 @@ def test_canvas_region_hover_emits_region_hovered_alongside_mouse_entered_and_le
 
     received.clear()
     # (30, 10) is still inside the canvas but outside the declared region.
-    # Hover is tracked per widget, as on the native runtime, so a move that
-    # stays on the canvas reports nothing beyond the move itself.
+    # The canvas opts into pointer moves while it is hovered, so a move that
+    # stays on the canvas but leaves the region reports the region change
+    # (`None`) ahead of the move itself.
     app.push_event(
         {"MouseMoved": {"position": {"x": 30.0, "y": 10.0}, "buttons": {}}}
     )
     app.run(1)
-    assert len(received) == 1
-    assert "MouseMoved" in received[0]
+    assert len(received) == 2
+    widget_id, canvas_event = received[0]["Canvas"]
+    assert widget_id == "canvas:regions"
+    assert canvas_event == {"RegionHovered": {"region": None}}
+    assert "MouseMoved" in received[1]
 
     received.clear()
-    # Leaving the canvas reports `MouseLeft` and the region-leaving
-    # `RegionHovered`.
+    # Leaving the canvas reports `MouseLeft`; the hovered region is already
+    # `None`, so no further `RegionHovered` follows.
     app.push_event(
         {"MouseMoved": {"position": {"x": 60.0, "y": 30.0}, "buttons": {}}}
     )
@@ -2843,9 +2847,7 @@ def test_canvas_region_hover_emits_region_hovered_alongside_mouse_entered_and_le
         "MouseLeft": {"widget": "canvas:regions"},
         "hit": {"kind": "widget_body"},
     }
-    widget_id, canvas_event = received[1]["Canvas"]
-    assert widget_id == "canvas:regions"
-    assert canvas_event == {"RegionHovered": {"region": None}}
+    assert not any("Canvas" in event for event in received), received
 
 
 def _click(app, x, y):
