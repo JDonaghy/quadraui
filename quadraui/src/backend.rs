@@ -3423,7 +3423,7 @@ pub(crate) fn viewport_rect(viewport: Viewport) -> Rect {
 /// needs a per-widget "…_with_font_role" entry point. A surface with no
 /// editor twin (and every [`crate::FontRole::Chrome`]/
 /// [`crate::FontRole::Icon`] widget) paints straight through.
-fn paint_in_role(
+pub(crate) fn paint_in_role(
     surface: &mut dyn crate::paint_surface::PaintSurface,
     role: crate::FontRole,
     paint: &mut dyn FnMut(&mut dyn crate::paint_surface::PaintSurface),

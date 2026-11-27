@@ -292,6 +292,8 @@ pub struct GtkBackend {
     /// `form_layout()` and other `_layout()` methods that need exact
     /// Pango measurement rather than the `current_char_width` approximation.
     pango_ctx: Option<pango::Context>,
+    /// The Pango context of the frame being (or last) painted.
+    frame_pango_ctx: Option<pango::Context>,
     /// Whether nerd-font glyphs should be used by primitives that
     /// have icon variants. Apps wire this from their own setting
     /// (vimcode reads `engine.settings.use_nerd_fonts`); kubeui has
@@ -563,6 +565,7 @@ impl GtkBackend {
             // `list_char_width()`, same posture as `current_char_width`.
             current_chrome_char_width: 8.0,
             pango_ctx: None,
+            frame_pango_ctx: None,
             nerd_fonts_enabled: true,
             ui_font: default_ui_font_desc(),
             editor_font_family: "Monospace".to_string(),
@@ -837,34 +840,9 @@ impl GtkBackend {
     ///
     /// Public since consumers may paint editor content themselves (bespoke
     /// Cairo, not the `Editor` widget) and need this to build their own
-    /// paint-time layout from the exact same family/size [`Self::editor_pango_layout`]
-    /// resolves for click-time measurement.
+    /// paint-time layout from the exact same family/size.
     pub fn editor_font_pango_string(&self) -> String {
         format!("{} {}", self.editor_font_family, self.editor_font_size_pt)
-    }
-
-    /// Build a `pango::Layout` carrying the *live* editor font — the
-    /// same `editor_font_family` / `editor_font_size_pt` [`Self::set_editor_font`]
-    /// stores and `gtk/run.rs`'s per-frame draw closure reads via
-    /// [`Self::editor_font_pango_string`] — from the stable widget Pango
-    /// context ([`Self::set_pango_context`]).
-    ///
-    /// A consumer that measures editor text outside a frame (mapping a
-    /// click x-coordinate to a column, say) reads the current
-    /// [`Backend::set_editor_font`] here, at any size, without an
-    /// in-progress frame. Single-line, no-wrap (`set_width(-1)`), matching
-    /// the recipe `gtk/run.rs::render_frame` uses to build the frame's
-    /// shared editor layout. Returns `None` if no Pango context has been
-    /// stored (mirrors [`Self::create_stable_pango_layout`]).
-    pub fn editor_pango_layout(&self) -> Option<pango::Layout> {
-        #[cfg(test)]
-        let _test_render_guard = super::test_render_guard();
-        let ctx = self.pango_ctx.as_ref()?;
-        let layout = pango::Layout::new(ctx);
-        let font_desc = pango::FontDescription::from_string(&self.editor_font_pango_string());
-        layout.set_font_description(Some(&font_desc));
-        layout.set_width(-1);
-        Some(layout)
     }
 
     /// Shared handle to the modal stack. The App and widget callbacks
@@ -1118,6 +1096,7 @@ impl GtkBackend {
         let layout_ptr = layout as *const pango::Layout as *const ();
         let prev_cr = self.current_cr_ptr.replace(cr_ptr);
         let prev_layout = self.current_layout_ptr.replace(layout_ptr);
+        self.frame_pango_ctx = Some(layout.context());
         // Paint-time text recording is scoped to exactly
         // this paint pass: install the sink before the rasterisers run,
         // drain it after. See `painted_text`'s docs for why the drain
@@ -1884,6 +1863,31 @@ fn with_role_layout<R>(
     let out = f(cr, layout);
     layout.set_font_description(saved.as_ref());
     out
+}
+
+/// [`crate::PaintSurface::surface_text_x_at_index`] for `b` in `role`, on
+/// the Pango context of the frame being (or last) painted, else the widget's
+/// own; monospace before either exists.
+fn role_text_x_at_index(
+    b: &GtkBackend,
+    role: FontRole,
+    text: &str,
+    runs: &[crate::TextRunStyle],
+    byte_idx: usize,
+) -> f32 {
+    #[cfg(test)]
+    let _test_render_guard = super::test_render_guard();
+    let Some(ctx) = b.frame_pango_ctx.as_ref().or(b.pango_ctx.as_ref()) else {
+        return crate::paint_surface::monospace_text_x(
+            text,
+            runs,
+            byte_idx,
+            Backend::char_width(b),
+        );
+    };
+    let layout = pango::Layout::new(ctx);
+    layout.set_font_description(Some(&role_font_description(b, role)));
+    super::surface::text_x_at_index(&layout, text, runs, byte_idx)
 }
 
 impl Backend for GtkBackend {
@@ -3715,9 +3719,7 @@ impl PaintSurface for EditorSurface<'_> {
         _role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
-        with_role_layout(self.backend, FontRole::Editor, |_, layout| {
-            super::surface::text_x_at_index(layout, text, runs, byte_idx)
-        })
+        role_text_x_at_index(self.backend, FontRole::Editor, text, runs, byte_idx)
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {
@@ -4144,9 +4146,7 @@ impl PaintSurface for GtkBackend {
         role: crate::FontRole,
         byte_idx: usize,
     ) -> f32 {
-        with_role_layout(self, role, |_, layout| {
-            super::surface::text_x_at_index(layout, text, runs, byte_idx)
-        })
+        role_text_x_at_index(self, role, text, runs, byte_idx)
     }
 
     fn surface_draw_line(&mut self, from: Point, to: Point, color: Color, stroke_width: f32) {

@@ -135,10 +135,9 @@ pub fn char_to_byte_idx(text: &str, char_idx: usize) -> usize {
 /// column past the end of the line's content simply measures the whole
 /// line.
 ///
-/// Every non-tab character advances the visual column by exactly one
-/// cell (this does *not* account for double-width CJK/emoji glyphs —
-/// callers that need display-width-aware measurement should use
-/// [`display_width`] instead).
+/// Every non-tab character advances the visual column by its
+/// [`char_cell_width`]: two cells for a double-width CJK/emoji glyph, none
+/// for a zero-width combining mark.
 pub fn char_col_to_visual(raw_text: &str, char_col: usize, tabstop: usize) -> usize {
     let tabstop = tabstop.max(1);
     let mut vis = 0usize;
@@ -152,7 +151,7 @@ pub fn char_col_to_visual(raw_text: &str, char_col: usize, tabstop: usize) -> us
         if ch == '\t' {
             vis = ((vis / tabstop) + 1) * tabstop;
         } else {
-            vis += 1;
+            vis += char_cell_width(ch) as usize;
         }
     }
     vis
@@ -907,13 +906,16 @@ mod tests {
     }
 
     #[test]
-    fn char_col_to_visual_multibyte_chars_count_as_one_cell_each() {
-        // char_col_to_visual counts *characters*, not display width — a
-        // CJK char still advances the visual column by 1 here (unlike
-        // display_width, which would count 2).
+    fn char_col_to_visual_counts_display_width() {
+        // A CJK char or emoji spans two cells and a combining mark none,
+        // matching `display_width`.
         let s = "中x";
-        assert_eq!(char_col_to_visual(s, 1, 4), 1);
-        assert_eq!(char_col_to_visual(s, 2, 4), 2);
+        assert_eq!(char_col_to_visual(s, 1, 4), 2);
+        assert_eq!(char_col_to_visual(s, 2, 4), 3);
+        let s = "a\u{2705}e\u{301}b";
+        assert_eq!(char_col_to_visual(s, 2, 4), 3);
+        assert_eq!(char_col_to_visual(s, 4, 4), 4);
+        assert_eq!(char_col_to_visual(s, 5, 4), display_width(s));
     }
 
     #[test]

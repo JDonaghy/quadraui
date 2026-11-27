@@ -6,9 +6,10 @@
 //! landed ([`EditorEvent`]) and lets every key and committed text bubble
 //! to the app unconsumed.
 //!
-//! The column a pointer event carries is [`EditorLayout::col_at_x`]'s
-//! monospace column: exact on a cell grid, and an approximation on a
-//! pixel surface whose spans change the glyph advance.
+//! The column a pointer event carries is [`EditorLayout::col_at_x`]'s,
+//! measured through the host's text surface
+//! ([`crate::interactive::EventCx::text_surface`]) on a pixel backend and
+//! in display cells on a cell grid.
 
 use super::{Editor, EditorHit, EditorLayout};
 use crate::event::{Point, Rect};
@@ -23,8 +24,9 @@ use serde::{Deserialize, Serialize};
 pub enum EditorEvent {
     /// A pointer press, double-click, release, or a move while a drag is
     /// in progress. `hit` is the zone under the pointer
-    /// ([`EditorLayout::hit_test`]); `col` is the buffer column at the
-    /// pointer's x on the hit row ([`EditorLayout::col_at_x`]). While a
+    /// ([`EditorLayout::hit_test`]); `col` is the buffer column of the
+    /// glyph under the pointer's x on the hit row
+    /// ([`EditorLayout::col_at_x`]), which a text-area hit carries too. While a
     /// drag is captured the pointer is clamped onto the text area, so a
     /// drag past an edge reports the edge row or column.
     Pointer {
@@ -130,10 +132,19 @@ impl EditorLayout {
         Some(((at - start) / len).clamp(0.0, 1.0))
     }
 
-    /// The hit and monospace column at absolute `p`.
-    fn resolve(&self, editor: &Editor, p: Point) -> (EditorHit, usize) {
-        let hit = self.hit_test(p.x, p.y);
-        let col = self.col_at_x(editor, self.view_row_at(p.y), p.x);
+    /// The hit and text column at absolute `p`, the column measured
+    /// through `text` and carried by a text-area hit too.
+    fn resolve(
+        &self,
+        editor: &Editor,
+        p: Point,
+        text: Option<&mut dyn crate::PaintSurface>,
+    ) -> (EditorHit, usize) {
+        let mut hit = self.hit_test(p.x, p.y);
+        let col = self.col_at_x(editor, self.view_row_at(p.y), p.x, text);
+        if let EditorHit::BufferPos { col: hit_col, .. } = &mut hit {
+            *hit_col = col;
+        }
         (hit, col)
     }
 }
@@ -261,7 +272,7 @@ impl crate::interactive::Interactive for Editor {
             } => {
                 cx.request_focus(None);
                 let p = absolute(local);
-                let (hit, col) = layout.resolve(self, p);
+                let (hit, col) = layout.resolve(self, p, cx.text_surface());
                 let axis = match hit {
                     EditorHit::VScrollbar => Some(ScrollAxis::Vertical),
                     EditorHit::HScrollbar => Some(ScrollAxis::Horizontal),
@@ -303,7 +314,7 @@ impl crate::interactive::Interactive for Editor {
                 mods,
                 ..
             } => {
-                let (hit, col) = layout.resolve(self, absolute(local));
+                let (hit, col) = layout.resolve(self, absolute(local), cx.text_surface());
                 Handled::Event(EditorEvent::Pointer {
                     hit,
                     col,
@@ -331,7 +342,11 @@ impl crate::interactive::Interactive for Editor {
                 if state.drag_anchor.is_none() {
                     return Handled::Ignored;
                 }
-                let (hit, col) = layout.resolve(self, layout.clamp_to_text(absolute(local)));
+                let (hit, col) = layout.resolve(
+                    self,
+                    layout.clamp_to_text(absolute(local)),
+                    cx.text_surface(),
+                );
                 Handled::Event(EditorEvent::Pointer {
                     hit,
                     col,
@@ -361,7 +376,11 @@ impl crate::interactive::Interactive for Editor {
                     return Handled::Ignored;
                 }
                 cx.release_pointer();
-                let (hit, col) = layout.resolve(self, layout.clamp_to_text(absolute(local)));
+                let (hit, col) = layout.resolve(
+                    self,
+                    layout.clamp_to_text(absolute(local)),
+                    cx.text_surface(),
+                );
                 Handled::Event(EditorEvent::Pointer {
                     hit,
                     col,
@@ -406,5 +425,308 @@ impl crate::interactive::Interactive for Editor {
             A11yAction::ScrollUp,
             A11yAction::ScrollDown,
         ]
+    }
+}
+
+/// Click-to-column and caret placement on every pixel backend's headless
+/// driver, through the runtime's widget routing: for each column the
+/// painted caret's x is read back from the frame, the host API
+/// ([`EditorLayout::x_at_col`] over [`crate::Backend::paint_surface`])
+/// must agree with it, and a click a quarter and three quarters into each
+/// glyph must come back as that glyph's column.
+#[cfg(all(
+    test,
+    any(
+        feature = "gtk",
+        all(feature = "macos", target_os = "macos"),
+        all(feature = "win", target_os = "windows")
+    )
+))]
+mod pixel_driver_tests {
+    use super::super::{CursorPos, CursorShape, EditorCursor, EditorLine, EditorStyledSpan, Style};
+    use super::*;
+    use crate::{AppLogic, Backend, FrameTree, Reaction, ScreenLayout, Surface, UiEvent};
+
+    const RECT: Rect = Rect::new(12.0, 6.0, 560.0, 60.0);
+
+    /// One editor with a one-line buffer, recording each pointer column.
+    pub(super) struct ClickApp {
+        editor: Editor,
+        font: Option<&'static str>,
+        cols: Vec<usize>,
+    }
+
+    /// `(start, end, bold, italic, scale)` styles over byte ranges.
+    type Spans<'a> = &'a [(usize, usize, bool, bool, f32)];
+
+    impl ClickApp {
+        pub(super) fn new(text: &str, spans: Spans, font: Option<&'static str>) -> Self {
+            let style = |bold, italic, font_scale| Style {
+                fg: crate::Color::rgb(200, 40, 40),
+                bg: None,
+                bold,
+                italic,
+                font_scale,
+            };
+            let mut all = vec![EditorStyledSpan {
+                start_byte: 0,
+                end_byte: text.len(),
+                style: style(false, false, 1.0),
+            }];
+            all.extend(spans.iter().map(|&(s, e, b, i, k)| EditorStyledSpan {
+                start_byte: s,
+                end_byte: e,
+                style: style(b, i, k),
+            }));
+            let line = EditorLine {
+                raw_text: text.to_string(),
+                gutter_text: String::new(),
+                spans: all,
+                line_idx: 0,
+                is_current_line: false,
+                is_fold_header: false,
+                folded_line_count: 0,
+                git_diff: None,
+                diff_status: None,
+                diagnostics: vec![],
+                spell_errors: vec![],
+                is_breakpoint: false,
+                is_conditional_bp: false,
+                is_dap_current: false,
+                is_wrap_continuation: false,
+                segment_col_offset: 0,
+                annotation: None,
+                ghost_suffix: None,
+                is_ghost_continuation: false,
+                indent_guides: vec![],
+                colorcolumns: vec![],
+            };
+            let editor = Editor::new(WidgetId::new("editor:click"), RECT)
+                .with_lines(vec![line])
+                .with_total_lines(1);
+            Self {
+                editor,
+                font,
+                cols: Vec::new(),
+            }
+        }
+
+        fn set_caret(&mut self, col: Option<usize>) {
+            self.editor.cursor = col.map(|col| EditorCursor {
+                pos: CursorPos { view_line: 0, col },
+                shape: CursorShape::Bar,
+            });
+        }
+    }
+
+    impl AppLogic for ClickApp {
+        type AreaId = ();
+
+        fn setup(&mut self, backend: &mut dyn Backend) {
+            if let Some(font) = self.font {
+                backend.set_editor_font(font, 14.0);
+            }
+        }
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            let mut frame = ScreenLayout::new();
+            frame.push(Surface::Widget {
+                rect: RECT,
+                widget: Box::new(self.editor.clone()),
+            });
+            frame.draw(backend);
+        }
+
+        fn frame_tree(&self, _area: ()) -> FrameTree {
+            let mut tree = FrameTree::new();
+            tree.push(self.editor.id, RECT, Box::new(self.editor.clone()));
+            tree
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            if let UiEvent::Editor(_, EditorEvent::Pointer { col, .. }) = event {
+                self.cols.push(col);
+            }
+            Reaction::Continue
+        }
+    }
+
+    /// What a test needs from a backend's headless driver.
+    pub(super) trait ClickDriver {
+        fn app(&mut self) -> &mut ClickApp;
+        fn repaint(&mut self);
+        fn click_at(&mut self, x: f32, y: f32);
+        /// The painted RGB at `(x, y)`.
+        fn rgb(&mut self, x: u32, y: u32) -> (u8, u8, u8);
+        /// `col`'s x through the host API, outside any frame.
+        fn host_x_at_col(&mut self, col: usize) -> f32;
+    }
+
+    /// The editor row's pixels along `y`, as last painted.
+    fn row(d: &mut dyn ClickDriver, y: u32) -> Vec<(u8, u8, u8)> {
+        (RECT.x as u32..(RECT.x + RECT.width) as u32)
+            .map(|x| d.rgb(x, y))
+            .collect()
+    }
+
+    /// The painted caret's left edge, in whole pixels: the first pixel
+    /// along `y` that differs from `bare`, the row painted with no caret.
+    fn painted_caret_x(d: &mut dyn ClickDriver, y: u32, bare: &[(u8, u8, u8)]) -> f32 {
+        let at = row(d, y)
+            .iter()
+            .zip(bare)
+            .position(|(a, b)| a != b)
+            .expect("the bar caret paints on the row");
+        RECT.x + at as f32
+    }
+
+    /// Every column of the app's line: the caret paints where the host
+    /// API places it, and clicks inside each glyph resolve to it.
+    pub(super) fn assert_columns_follow_glyphs(d: &mut dyn ClickDriver, case: &str) {
+        let text = d.app().editor.lines[0].raw_text.clone();
+        let n = text.chars().count();
+        let caret_y = (RECT.y + 3.0) as u32;
+        d.app().set_caret(None);
+        d.repaint();
+        let bare = row(d, caret_y);
+        let xs: Vec<f32> = (0..=n)
+            .map(|col| {
+                d.app().set_caret(Some(col));
+                d.repaint();
+                let painted = painted_caret_x(d, caret_y, &bare);
+                let host = d.host_x_at_col(col);
+                assert!(
+                    (painted - host).abs() <= 1.0,
+                    "{case}: caret at col {col} painted at x={painted}, host API says {host}"
+                );
+                host
+            })
+            .collect();
+        let widths: Vec<f32> = xs.windows(2).map(|w| w[1] - w[0]).collect();
+        assert!(
+            widths.iter().any(|w| (w - widths[0]).abs() > 1.0),
+            "{case}: every glyph is one advance wide ({widths:?}), so the case proves nothing"
+        );
+        let y = RECT.y + 3.0;
+        for (col, (&x, &w)) in xs.iter().zip(&widths).enumerate() {
+            if w <= 0.0 {
+                continue;
+            }
+            for frac in [0.25, 0.75] {
+                d.click_at(x + w * frac, y);
+                let got = d.app().cols.last().copied();
+                assert_eq!(
+                    got,
+                    Some(col),
+                    "{case}: click {frac} into {:?} (col {col}, x {x}..{})",
+                    text.chars().nth(col),
+                    x + w
+                );
+            }
+        }
+    }
+
+    /// The four lines every backend runs: wide glyphs in the monospace
+    /// editor font, a proportional font, and bold, italic and scaled runs.
+    pub(super) fn run_all(make: &mut dyn FnMut(ClickApp) -> Box<dyn ClickDriver>) {
+        let wide = "a\u{2705}b\u{4e2d}\u{6587}x";
+        assert_columns_follow_glyphs(&mut *make(ClickApp::new(wide, &[], None)), "wide glyphs");
+        let prop = "iiWWmil.";
+        assert_columns_follow_glyphs(
+            &mut *make(ClickApp::new(prop, &[], Some("sans-serif"))),
+            "proportional font",
+        );
+        let styled = "abcdefghij";
+        let spans: Spans = &[
+            (0, 2, true, false, 1.0),
+            (2, 4, false, true, 1.0),
+            (4, 6, false, false, 1.25),
+            (6, 8, true, true, 1.0),
+        ];
+        assert_columns_follow_glyphs(
+            &mut *make(ClickApp::new(styled, spans, Some("sans-serif"))),
+            "bold, italic and scaled runs",
+        );
+        assert_columns_follow_glyphs(
+            &mut *make(ClickApp::new(wide, &[(0, 4, true, false, 1.0)], None)),
+            "a bold wide glyph",
+        );
+    }
+
+    /// Implements [`ClickDriver`] for a driver type whose `pixel` read is
+    /// adapted by `$rgb`.
+    macro_rules! click_driver {
+        ($driver:ty, $rgb:expr) => {
+            impl ClickDriver for $driver {
+                fn app(&mut self) -> &mut ClickApp {
+                    self.app_mut()
+                }
+                fn repaint(&mut self) {
+                    self.render();
+                }
+                fn click_at(&mut self, x: f32, y: f32) {
+                    self.click(x, y);
+                }
+                fn rgb(&mut self, x: u32, y: u32) -> (u8, u8, u8) {
+                    let rgb: fn(&mut $driver, u32, u32) -> (u8, u8, u8) = $rgb;
+                    rgb(self, x, y)
+                }
+                fn host_x_at_col(&mut self, col: usize) -> f32 {
+                    use crate::backend::DrawsPrimitives;
+                    let (backend, app) = self.parts_mut();
+                    let layout = backend.layout_primitive(RECT, &app.editor);
+                    layout.x_at_col(&app.editor, 0, col, backend.paint_surface())
+                }
+            }
+        };
+    }
+
+    #[cfg(feature = "gtk")]
+    click_driver!(crate::gtk::testing::GtkDriver<ClickApp>, |d, x, y| d
+        .pixel(x as i32, y as i32));
+
+    #[cfg(feature = "gtk")]
+    #[test]
+    fn gtk_clicks_and_carets_follow_shaped_glyphs() {
+        run_all(&mut |app| {
+            let mut d = crate::gtk::testing::GtkDriver::new(app, 600, 80);
+            d.set_double_click_folding(false);
+            Box::new(d)
+        });
+    }
+
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    click_driver!(crate::macos::testing::MacDriver<ClickApp>, |d, x, y| {
+        let (r, g, b, _) = d.pixel(x, y);
+        (r, g, b)
+    });
+
+    #[cfg(all(feature = "macos", target_os = "macos"))]
+    #[test]
+    fn macos_clicks_and_carets_follow_shaped_glyphs() {
+        run_all(&mut |app| Box::new(crate::macos::testing::MacDriver::new(app, 600, 80)));
+    }
+
+    #[cfg(all(feature = "win", target_os = "windows"))]
+    click_driver!(crate::win::testing::WinDriver<ClickApp>, |d, x, y| {
+        let c = d.pixel(x, y);
+        (c.r, c.g, c.b)
+    });
+
+    #[cfg(all(feature = "win", target_os = "windows"))]
+    #[test]
+    fn win_clicks_and_carets_follow_shaped_glyphs() {
+        run_all(&mut |app| {
+            let mut d = crate::win::testing::WinDriver::new(app, 600, 80);
+            // The DirectWrite formats are built when a surface attaches,
+            // which precedes `setup`'s font choice in the driver, so
+            // attach again to paint in that font.
+            let target = d.surface().target().clone();
+            d.backend_mut()
+                .attach_headless(target, 600, 80)
+                .expect("re-attach the headless surface");
+            d.render();
+            Box::new(d)
+        });
     }
 }
