@@ -769,9 +769,11 @@ pub(crate) mod cell_paint {
             // overflows only by the trailing space a consumer padded it
             // with is clipped instead, keeping the character the `…`
             // would have eaten.
-            let cells = vs.bounds.width.max(0.0).round() as u16;
             let paint_text = match overflow {
-                StatusBarOverflow::Clip => std::borrow::Cow::Borrowed(seg.text.as_str()),
+                StatusBarOverflow::Clip => {
+                    let kept = vs.bounds.width.max(0.0).round() as usize;
+                    std::borrow::Cow::Owned(seg.text.chars().take(kept).collect())
+                }
                 _ => crate::text_util::truncate_padded_with_ellipsis(
                     &seg.text,
                     vs.bounds.width,
@@ -782,7 +784,7 @@ pub(crate) mod cell_paint {
                 start_x,
                 y,
                 &paint_text,
-                cells.min(bar_end - start_x),
+                bar_end - start_x,
                 ink(seg.fg, effective_bg, seg.bold),
             );
         }
