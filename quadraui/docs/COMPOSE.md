@@ -403,33 +403,6 @@ dialog.
 
 ---
 
-## `FocusGroup` — `src/compose/focus_group.rs`
-
-**Owns:** Tab/Shift+Tab cycling between N focusable regions **by index**,
-with a dynamic count. `SidebarSystem` and `TabGroupController` use it for
-their own section and pane cycling.
-
-**Not for app code.** For keyboard focus between widgets, return them
-from `AppLogic::frame_tree` and list their ids and rects in
-`AppLogic::extra_tab_stops`. A click focuses any `frame_tree` widget with
-an `Interactive::focus` stop; Tab and Shift+Tab cycle only through the
-widgets `extra_tab_stops` names, and reach `AppLogic::handle` unclaimed
-while it returns nothing. Focus is tracked in the backend's `FocusTree`.
-
-**API:** `FocusGroup::new(count)`, `active()`, `set_active(idx)`,
-`count()`, `set_count(count)`, `cycle(delta)`. No events.
-
-<!-- TODO(0.12 final pass): W6 (#2955/#2971, with #2953) deletes `FocusGroup`.
-Once `src/compose/focus_group.rs` is gone, delete this section
-(`readme_truth`'s `docs_compose_md_covers_every_compose_module` only requires a
-section for modules that still exist). -->
-
-**Example:** none standalone — exercised inside `SidebarSystem`
-(`examples/msv_multi_tree.rs`) and `TabGroupController`
-(`examples/tui_tabgroup.rs`).
-
----
-
 ## `FolderPicker` — `src/compose/folder_picker.rs`
 
 **Owns:** an interactive directory-browsing modal — filesystem walking,

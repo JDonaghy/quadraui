@@ -405,6 +405,90 @@ impl SplitTree {
         }
     }
 
+    /// Replace leaf `target` with an even split along `direction` between
+    /// it and a new leaf `new_leaf` — `new_leaf` takes the first (left /
+    /// top) side when `new_first`, the second otherwise. Returns `false`,
+    /// leaving the tree unchanged, when no leaf is `target`.
+    ///
+    /// ```
+    /// use quadraui::{SplitDirection, SplitTree, WidgetId};
+    ///
+    /// let (a, b) = (WidgetId::new("a"), WidgetId::new("b"));
+    /// let mut tree = SplitTree::leaf(a);
+    /// assert!(tree.split_leaf(&a, b, SplitDirection::Horizontal, false));
+    /// assert_eq!(tree.leaf_ids(), vec![a, b]);
+    /// ```
+    pub fn split_leaf(
+        &mut self,
+        target: &WidgetId,
+        new_leaf: WidgetId,
+        direction: SplitDirection,
+        new_first: bool,
+    ) -> bool {
+        match self {
+            SplitTree::Leaf(id) if id == target => {
+                let (first, second) = if new_first {
+                    (new_leaf, *id)
+                } else {
+                    (*id, new_leaf)
+                };
+                *self = SplitTree::split(
+                    direction,
+                    0.5,
+                    SplitTree::leaf(first),
+                    SplitTree::leaf(second),
+                );
+                true
+            }
+            SplitTree::Leaf(_) => false,
+            SplitTree::Split { first, second, .. } => {
+                first.split_leaf(target, new_leaf, direction, new_first)
+                    || second.split_leaf(target, new_leaf, direction, new_first)
+            }
+        }
+    }
+
+    /// Remove leaf `target`, giving its space to its sibling: the parent
+    /// split is replaced by the sibling sub-tree. Returns `false`,
+    /// leaving the tree unchanged, when no leaf is `target` or the tree
+    /// is that one leaf (a tree never becomes empty).
+    ///
+    /// ```
+    /// use quadraui::{SplitDirection, SplitTree, WidgetId};
+    ///
+    /// let (a, b) = (WidgetId::new("a"), WidgetId::new("b"));
+    /// let mut tree = SplitTree::split(
+    ///     SplitDirection::Horizontal,
+    ///     0.5,
+    ///     SplitTree::leaf(a),
+    ///     SplitTree::leaf(b),
+    /// );
+    /// assert!(tree.remove_leaf(&a));
+    /// assert_eq!(tree, SplitTree::leaf(b));
+    /// assert!(!tree.remove_leaf(&b));
+    /// ```
+    pub fn remove_leaf(&mut self, target: &WidgetId) -> bool {
+        let SplitTree::Split { first, second, .. } = self else {
+            return false;
+        };
+        let sibling = match (first.as_ref(), second.as_ref()) {
+            (SplitTree::Leaf(id), _) if id == target => {
+                Some(std::mem::replace(second.as_mut(), SplitTree::Leaf(*target)))
+            }
+            (_, SplitTree::Leaf(id)) if id == target => {
+                Some(std::mem::replace(first.as_mut(), SplitTree::Leaf(*target)))
+            }
+            _ => None,
+        };
+        match sibling {
+            Some(sibling) => {
+                *self = sibling;
+                true
+            }
+            None => first.remove_leaf(target) || second.remove_leaf(target),
+        }
+    }
+
     /// Find the parent split of a leaf. Returns
     /// `(split_index, direction, is_first_child)`.
     pub fn parent_split_of(&self, target: &WidgetId) -> Option<(usize, SplitDirection, bool)> {
@@ -1341,5 +1425,47 @@ mod tests {
             }
             SplitTree::Leaf(_) => panic!("expected Split"),
         }
+    }
+
+    #[test]
+    fn split_leaf_wraps_a_nested_leaf_on_the_requested_side() {
+        let mut tree = SplitTree::split(
+            SplitDirection::Horizontal,
+            0.3,
+            SplitTree::leaf(wid("a")),
+            SplitTree::leaf(wid("b")),
+        );
+        assert!(tree.split_leaf(&wid("b"), wid("c"), SplitDirection::Vertical, true));
+        assert_eq!(tree.leaf_ids(), vec![wid("a"), wid("c"), wid("b")]);
+        assert_eq!(tree.ratio_at_index(0), Some(0.3));
+        assert_eq!(tree.ratio_at_index(1), Some(0.5));
+        assert_eq!(
+            tree.parent_split_of(&wid("c")),
+            Some((1, SplitDirection::Vertical, true))
+        );
+        assert!(!tree.split_leaf(&wid("zz"), wid("d"), SplitDirection::Vertical, false));
+        assert_eq!(tree.leaf_count(), 3);
+    }
+
+    #[test]
+    fn remove_leaf_promotes_the_sibling_subtree() {
+        let mut tree = SplitTree::split(
+            SplitDirection::Horizontal,
+            0.3,
+            SplitTree::leaf(wid("a")),
+            SplitTree::split(
+                SplitDirection::Vertical,
+                0.6,
+                SplitTree::leaf(wid("b")),
+                SplitTree::leaf(wid("c")),
+            ),
+        );
+        assert!(tree.remove_leaf(&wid("a")));
+        assert_eq!(tree.leaf_ids(), vec![wid("b"), wid("c")]);
+        assert_eq!(tree.ratio_at_index(0), Some(0.6));
+        assert!(tree.remove_leaf(&wid("c")));
+        assert_eq!(tree, SplitTree::leaf(wid("b")));
+        assert!(!tree.remove_leaf(&wid("b")));
+        assert!(!tree.remove_leaf(&wid("zz")));
     }
 }

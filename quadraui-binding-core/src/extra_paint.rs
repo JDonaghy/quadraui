@@ -2669,13 +2669,13 @@ mod tests {
             striped: false,
             glyphs: None,
         };
-        let tree_table = TreeTable {
+        let tree_table = TreeTable::new(
             table,
-            tree: vec![
+            vec![
                 quadraui::TreeTableNode::new(vec![0], 0).with_expanded(true),
                 quadraui::TreeTableNode::new(vec![0, 0], 1),
             ],
-        };
+        );
 
         let mut driver = single_leaf_driver(id, Rc::new(tree_table));
         assert!(driver.screen_contains("src"), "{}", driver.screen());
@@ -2689,7 +2689,7 @@ mod tests {
         let area = leaf_area(&driver, id);
         // Row 0 is the header; "src" (the only expanded branch, indent 0)
         // paints its chevron at column 0 of row 1 — see
-        // `tui::data_table::tree_table_tests::branch_row_paints_a_chevron_and_the_label_still_appears`.
+        // `tree_table::paint_cells::tests::branch_row_paints_a_chevron_and_the_label_still_appears`.
         driver.click(area.x, area.y + 1.0);
         {
             let dispatched = &driver.app().sink.borrow().dispatched;

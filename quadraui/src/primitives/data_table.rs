@@ -2514,7 +2514,7 @@ impl DataTable {
     /// pointer state for this table (falling back to the caller's own
     /// [`crate::primitive::PaintState`]), and the caller's pixel-precise
     /// scroll, press and stripe.
-    fn row_paint_state(&self, env: &crate::PaintEnv) -> DataTablePaintState {
+    pub(crate) fn row_paint_state(&self, env: &crate::PaintEnv) -> DataTablePaintState {
         let in_range = |i: usize| (i < self.rows.len()).then_some(i);
         let row_of = |sub: Option<crate::interactive::SubTarget>| {
             sub.and_then(DataTableSubPart::from_sub_target)

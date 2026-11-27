@@ -1,12 +1,21 @@
-//! `ChatController` — composed chat overlay controller.
+//! Chat: a transcript, a status strip and a multi-line input, as one
+//! composite widget ([`Chat`]) and its controller ([`ChatController`]).
 //!
-//! Owns all interaction state for a chat overlay: a scrollable transcript,
-//! a multi-line input box with history navigation, and a status strip.
+//! [`Chat`] is a controlled descriptor: the transcript, the status strip,
+//! the input buffer and caret, the transcript scroll position, the
+//! focused turn and the collapsed turns are its fields, and every change
+//! a gesture makes comes back as a [`ChatEvent`] the app writes onto
+//! them ([`Chat::apply`] does that). [`ChatState`] holds only what no
+//! app reads: the input history ring and the gesture in flight.
 //!
-//! Apps push transcript turns per frame via
-//! [`ChatController::set_transcript`], call
-//! [`ChatController::render`] + [`ChatController::handle`], and match on
-//! [`ChatControllerEvent`] for semantic actions.
+//! Each part is its own widget, painted through its own `Primitive` and
+//! driven through its own `Interactive`: the status strip, transcript
+//! and hint are [`MessageList`]s, the busy indicator is a [`Spinner`],
+//! the transcript scrollbar a [`Scrollbar`], the input a [`TextInput`]
+//! and the Send/Stop segment a [`Button`].
+//!
+//! [`ChatController`] holds a [`Chat`] plus its [`ChatState`], applies
+//! the write-back events itself, and answers [`ChatControllerAction`]s.
 //!
 //! # Keyboard behaviour
 //!
@@ -30,121 +39,98 @@
 //!
 //! In both modes:
 //!
-//! - `Esc` — emit [`ChatControllerEvent::Cancelled`]; the app decides
-//!   whether to close the overlay.
-//! - The input soft-wraps long lines to fit the box, and `↑`/`↓`
-//!   move by **visual** row, not logical line — see this module's *Input
-//!   soft-wrap and auto-grow* section on [`ChatController`].
+//! - `Esc` — emit [`ChatEvent::Cancelled`]; the app decides whether to
+//!   close the overlay.
+//! - The input soft-wraps long lines to fit the box, and `↑`/`↓` move by
+//!   **visual** row, not logical line.
 //! - `↑` (when the cursor is on the first visual row of the whole
 //!   buffer) — navigate to the previous history entry.
 //! - `↓` (when the cursor is on the last visual row of the whole buffer)
 //!   — navigate to the next history entry or restore the saved input.
 //! - `PageUp` / `PageDown` — scroll the transcript.
-//! - `↑` / `↓` when the cursor is not on the first/last visual row — move
-//!   the cursor within the input (by visual row, so it can move within a
-//!   single wrapped logical line).
-//! - `Ctrl+A` — move the cursor to the beginning of the current line
-//!   (readline convention).
-//! - `Ctrl+E` — move the cursor to the end of the current line
-//!   (readline convention).
+//! - Every other editing key goes through the shared text-edit core
+//!   ([`crate::behaviour::text_edit`]), the same one every other text
+//!   widget uses: `Ctrl+Left`/`Ctrl+Right`/`Ctrl+Backspace`/
+//!   `Ctrl+Delete` work by word (letters, digits and `_`), `Ctrl+A`
+//!   selects all, `Ctrl+C`/`Ctrl+X` copy and cut a selection, and a
+//!   press or drag in the input places the caret or selects.
 //!
 //! # Scroll behaviour
 //!
 //! Mouse-wheel events (positive `delta.y` = scroll up) scroll the
-//! transcript by 3 rows per tick. Backends normalise their native
-//! scroll direction before emitting [`crate::UiEvent::Scroll`].
+//! transcript through the transcript [`MessageList`]'s own wheel
+//! handling. While [`Chat::stuck_to_bottom`] is set the transcript
+//! follows its tail: the painted position is the last page, whatever
+//! [`Chat::transcript_scroll_top`] says.
 //!
 //! # Send / Stop segment
 //!
-//! A clickable segment is painted at the right of the input row —
-//! reusing [`crate::Form`]'s existing `FieldKind::Button` rasteriser so no
-//! new [`Backend`] trait method is needed, same rationale as
-//! [`render`](Self::render)'s doc. It reads **Send** normally and **Stop**
-//! while [`set_busy`](Self::set_busy)`(true)` is in effect. Clicking it:
-//!
-//! - while idle — behaves exactly like a keyboard submit (same
-//!   history-push and [`ChatControllerEvent::Submit`] emission), or is
-//!   ignored when the input is empty;
-//! - while busy — emits [`ChatControllerEvent::StopRequested`] instead
-//!   of touching the input buffer at all.
-//!
-//! The segment is omitted (and the `TextInput` takes the full row width)
-//! when the row is too narrow to fit both.
+//! A [`Button`] is painted at the right of the input row. It reads
+//! **Send** normally and **Stop** while [`Chat::busy`] is set. Clicking
+//! it while idle behaves exactly like a keyboard submit (or is ignored
+//! when the input is empty, where the button is disabled); while busy it
+//! emits [`ChatEvent::StopRequested`] instead. The segment is omitted
+//! (and the input takes the full row width) when the row is too narrow
+//! to fit both.
 //!
 //! # Persistent hint line
 //!
-//! [`set_hint`](Self::set_hint) configures an optional one-row hint
-//! painted directly above the input box. Unlike the `TextInput`
-//! placeholder (which only shows while the buffer is empty and vanishes
-//! on the first keystroke), the hint stays visible while typing — the
-//! spot for a persistent "Enter to send, Shift+Enter for newline" style
-//! affordance. `None` (default) omits the row entirely, so the layout is
-//! unchanged for callers that don't opt in.
+//! [`Chat::hint`] is an optional one-row hint painted directly above the
+//! input box. Unlike the input placeholder it stays visible while typing.
 //!
 //! # Collapsible turns and per-turn hit regions
 //!
-//! Per-turn collapsed/summary state lives on **`ChatController`**, keyed by
-//! transcript index — not as fields on [`ChatTurn`] itself. Both downstream
-//! consumers construct `ChatTurn` via exhaustive struct literals, so adding
-//! public fields to that struct is a breaking change with no in-repo
-//! migration path; keeping the state on the controller instead means
-//! `ChatTurn`'s field set (and every existing constructor) is untouched by
-//! this feature. See [`is_turn_collapsed`](Self::is_turn_collapsed),
-//! [`set_turn_collapsed`](Self::set_turn_collapsed),
-//! [`toggle_turn_collapsed`](Self::toggle_turn_collapsed),
-//! [`set_turn_summary`](Self::set_turn_summary), and
-//! [`turn_summary_line`](Self::turn_summary_line). A collapsed turn paints
-//! as a one-line card — the role header (with a `▸` fold indicator) plus
-//! [`turn_summary_line`](Self::turn_summary_line) — instead of its full
-//! body. Every turn starts expanded, so existing callers are visually
-//! unchanged.
+//! Per-turn collapsed/summary state lives on the [`Chat`] descriptor,
+//! keyed by transcript index, not on [`ChatTurn`]. A collapsed turn
+//! paints as a one-line card — the role header with a `▸` fold indicator
+//! plus [`Chat::turn_summary_line`] — instead of its full body.
 //!
 //! A click anywhere in the transcript resolves to the turn and in-turn row
-//! it landed on: [`handle`](Self::handle) returns
-//! [`ChatControllerEvent::TurnClicked`]`{ turn_idx, row_in_turn }`, and also
-//! moves [`focused_turn`](Self::focused_turn) to `Some(turn_idx)` so a
-//! following keyboard `Enter` acts on the same turn the mouse just landed
-//! on. **Caveat:** each turn's row block ends with the blank inter-turn
-//! separator row, which is folded into the *preceding* turn — for a
-//! single-line turn, `row_in_turn == 0` is the header, `1` is the body, and
-//! `2` is that trailing blank separator, all attributed to that turn. A
-//! consumer resolving `row_in_turn > 0` to a `path:line` location should
-//! account for this rather than assume every `row_in_turn` maps to real
-//! content. The controller does not itself toggle `collapsed` on click —
-//! that decision (fold the card vs. jump to a `path:line` location inside
-//! it) is app/consumer-specific — but
-//! [`toggle_turn_collapsed`](Self::toggle_turn_collapsed) /
-//! [`set_turn_collapsed`](Self::set_turn_collapsed) are there to act on it.
+//! it landed on: [`ChatEvent::TurnClicked`]`{ turn_idx, row_in_turn }`,
+//! and also moves [`Chat::focused_turn`] to `Some(turn_idx)` so a
+//! following keyboard `Enter` acts on the same turn. Each turn's row
+//! block ends with the blank inter-turn separator row, folded into the
+//! *preceding* turn. The widget does not toggle `collapsed` on click;
+//! that decision is the app's.
 //!
-//! [`focused_turn`](Self::focused_turn) is a keyboard cursor into the
-//! transcript: `Tab` (and `Shift+Tab` / `BackTab`) cycle it through
-//! `None` (input has focus) → turn `0` → … → the last turn → back to
-//! `None`. While a turn is focused, plain `Enter` toggles that turn's
-//! collapsed state instead of submitting or inserting a newline — so
-//! the whole interaction works without a mouse. Typing a character (or
-//! pasting) always returns focus to the input, regardless of where `Tab`
-//! or a transcript click last parked the cursor.
+//! [`Chat::focused_turn`] is a keyboard cursor into the transcript: `Tab`
+//! (and `Shift+Tab` / `BackTab`) cycle it through `None` (input has
+//! focus) → turn `0` → … → the last turn → back to `None`. While a turn
+//! is focused, plain `Enter` toggles that turn's collapsed state instead
+//! of submitting or inserting a newline. Editing the input always
+//! returns focus to the input.
 
-use crate::backend::DrawsPrimitives;
+use crate::a11y::{A11yInfo, A11yPrimitive, A11yRole};
+use crate::behaviour::text_edit::{
+    handle_lines_edit_event, Caret, EditIntent, EditView, FlatEditOutcome, LinesEditState,
+};
 use crate::compose::markdown::render_markdown_to_styled;
+use crate::compose::widget_host::{self, ChildHost};
 use crate::compose::Handled;
-use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
+use crate::interaction::InteractionState;
+use crate::interactive::{
+    EventCx, FocusSpec, FocusStop, Interactive, KeyEvent, PointerKind, RoutedEvent, SubTarget,
+    WidgetAction,
+};
+use crate::primitive::{LayoutCtx, PaintEnv, Primitive};
+use crate::primitives::button::{Button, ButtonEvent, ButtonLayout};
+use crate::primitives::message_list::{MessageListEvent, MessageListLayout};
+use crate::primitives::scrollbar::{
+    scroll_by_clamped, ScrollbarEvent, ScrollbarLayout, ScrollbarState,
+};
+use crate::primitives::spinner::SpinnerLayout;
+use crate::primitives::text_input::TextInputPrimitiveLayout;
 use crate::text_util::{wrap_spans, WrapPolicy};
 use crate::theme::Theme;
 use crate::types::StyledSpan;
 use crate::{
-    Backend, ButtonMask, Color, EditOp, FieldKind, Form, FormField, Key, MessageList,
-    MessageListHit, MessageListMeasure, MessageRow, Modifiers, MouseButton, NamedKey, Point, Rect,
-    Scrollbar, Spinner, StyledText, TextEditor, TextInput, UiEvent, WidgetId,
+    Backend, Color, EditOp, Key, MessageList, MessageListHit, MessageListMeasure, MessageRow,
+    Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar, Spinner, StyledText, TextInput,
+    UiEvent, WidgetId,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::Cell;
-use std::collections::{HashMap, HashSet};
-
-/// Transcript rows moved by one notch of a classic mouse wheel
-/// (`ScrollDelta::y == ±1.0`). A finer-grained trackpad delta scrolls
-/// proportionally less, a coarser one proportionally more.
-const TRANSCRIPT_ROWS_PER_NOTCH: f32 = 3.0;
+use std::collections::{BTreeMap, BTreeSet};
 
 // ── Public types ───────────────────────────────────────────────────────────────
 
@@ -161,21 +147,13 @@ pub enum ChatRole {
 
 /// A single turn in the chat transcript.
 ///
-/// `text` is a [`StyledText`] so rich markdown-derived colouring can be added
-/// in a future pass. When `line_scales` is non-empty (turns created via
-/// [`ChatController::push_turn_markdown`]), the transcript renderer builds
-/// styled [`MessageRow`]s with per-span fg/bold/italic and per-line heading
-/// scale; otherwise it falls back to concatenating span text (the flat path).
+/// When `line_scales` is non-empty (turns created via
+/// [`Chat::push_turn_markdown`]), the transcript builds styled
+/// [`MessageRow`]s with per-span fg/bold/italic and per-line heading
+/// scale; otherwise it concatenates span text (the flat path).
 ///
-/// **Collapsed/summary state deliberately lives on
-/// [`ChatController`], not here.** Both downstream consumers construct
-/// `ChatTurn` via exhaustive struct literals (no `..Default::default()`),
-/// so adding fields to this struct is a hard breaking change with no
-/// migration path available from within this repo — see
-/// [`ChatController::is_turn_collapsed`], [`ChatController::set_turn_collapsed`],
-/// and [`ChatController::turn_summary_line`] for the equivalent per-turn
-/// state, keyed by transcript index instead of carried on the turn value
-/// itself.
+/// Collapsed/summary state lives on [`Chat`], keyed by transcript index,
+/// not here.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChatTurn {
     pub role: ChatRole,
@@ -184,63 +162,82 @@ pub struct ChatTurn {
     pub timestamp_unix: Option<f64>,
     /// Per-line font-scale factors, parallel to the logical lines in `text`.
     ///
-    /// Non-empty only for turns created by [`ChatController::push_turn_markdown`]
+    /// Non-empty only for turns created by [`Chat::push_turn_markdown`]
     /// (where the markdown adapter supplies one scale per input line).  `1.0` for
     /// body lines; `2.0` / `1.5` / `1.2` for H1 / H2 / H3 headings.
-    ///
-    /// When empty the transcript renderer uses the flat (legacy) path so that
-    /// turns created via [`ChatController::push_turn`] or
-    /// [`ChatController::set_transcript`] are visually unchanged.
     #[serde(default)]
     pub line_scales: Vec<f32>,
 }
 
-/// Semantic payloads returned under [`Handled::Event`] by
-/// [`ChatController::handle_event`].
+/// What a [`Chat`] reports.
 ///
-/// Carries the same variants [`ChatControllerEvent`] used to mix with its
-/// own baked-in `Consumed`/`Ignored` — those two are now
-/// [`Handled::Consumed`]/[`Handled::Ignored`] instead.
+/// The first six are the chat's own semantic events. The rest are the
+/// controlled-state write-backs: each names a descriptor field a gesture
+/// changed, for the app to store ([`Chat::apply`] stores them all).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum ChatEvent {
+    /// The input was submitted. Carries the full input text (with `\n`
+    /// between lines). The app appends it to its transcript and clears
+    /// the input.
+    Submit { text: String },
+    /// Stream chunk (reserved for a backend-push path; an app that owns
+    /// the session pipe updates [`Chat::transcript`] directly).
+    StreamChunk { text: String },
+    /// `Esc` was pressed. The app decides whether to close the overlay.
+    Cancelled,
+    /// The Send/Stop segment was clicked while [`Chat::busy`] was set:
+    /// the app stops its in-flight generation. The input is untouched.
+    StopRequested,
+    /// A key press the chat did not consume, for the app's own hotkeys.
+    KeyPressed { key: String, modifiers: Modifiers },
+    /// A click landed on transcript row `row_in_turn` of turn `turn_idx`
+    /// (`0` = the role header row; the trailing blank separator row
+    /// counts as part of the turn).
+    TurnClicked { turn_idx: usize, row_in_turn: usize },
+    /// The input buffer, caret or selection changed.
+    InputChanged {
+        lines: Vec<String>,
+        cursor: Caret,
+        anchor: Option<Caret>,
+    },
+    /// The transcript scrolled to `scroll_top`; `stuck_to_bottom` says
+    /// whether it now follows the tail.
+    TranscriptScrolled {
+        scroll_top: usize,
+        stuck_to_bottom: bool,
+    },
+    /// The keyboard focus cursor moved onto turn `turn`, or back to the
+    /// input (`None`).
+    FocusedTurnChanged { turn: Option<usize> },
+    /// Turn `turn_idx` was collapsed or expanded from the keyboard.
+    TurnCollapsed { turn_idx: usize, collapsed: bool },
+}
+
+impl WidgetAction for ChatEvent {
+    fn into_ui_event(self, id: WidgetId) -> UiEvent {
+        UiEvent::Chat(id, self)
+    }
+}
+
+/// What [`ChatController::handle_event`] answers under
+/// [`Handled::Event`]: [`ChatEvent`]'s semantic cases. The write-backs
+/// are applied by the controller and answer [`Handled::Consumed`].
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatControllerAction {
-    /// User submitted a message (`Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter`). Contains the full input text
-    /// (with embedded `\n` for multi-line messages). Apps should:
-    /// 1. Append the text as a `User` turn to their own transcript.
-    /// 2. Call [`ChatController::clear_input`].
-    /// 3. Start their backend session continuation (subprocess, API call, etc.).
+    /// See [`ChatEvent::Submit`]. Apps call
+    /// [`ChatController::clear_input`] after handling it.
     Submit { text: String },
-    /// Stream chunk (reserved for the backend-push path; apps that own
-    /// the session pipe call [`ChatController::set_transcript`] directly).
+    /// See [`ChatEvent::StreamChunk`].
     StreamChunk { text: String },
-    /// User pressed `Esc`. The app decides whether to close the overlay,
-    /// show a confirmation dialog, or ignore it.
+    /// See [`ChatEvent::Cancelled`].
     Cancelled,
-    /// User clicked the Send/Stop segment while [`ChatController::set_busy`]
-    /// was `true`. Distinct from [`Cancelled`](Self::Cancelled),
-    /// which is about closing the overlay — this is about interrupting an
-    /// in-flight generation. The app should stop its backend session
-    /// continuation (kill the subprocess, cancel the API call, etc.); the
-    /// input buffer is left untouched.
+    /// See [`ChatEvent::StopRequested`].
     StopRequested,
-    /// A key press that the chat controller did not consume. Apps can
-    /// bind hotkeys here (e.g. `'c'` to copy the last assistant turn).
+    /// See [`ChatEvent::KeyPressed`].
     KeyPressed { key: String, modifiers: Modifiers },
-    /// A click landed on a transcript row belonging to `turn_idx`, at
-    /// `row_in_turn` rows into that turn's block (`0` = the role header
-    /// row). Also moves [`ChatController::focused_turn`] to
-    /// `Some(turn_idx)`, so a keyboard `Enter` right after the click acts on
-    /// the same turn. The controller does not itself toggle the turn's
-    /// collapsed state on click — apps decide what a click means (toggle
-    /// the card when `row_in_turn == 0`, resolve a `path:line` location
-    /// elsewhere in the body, etc.) and call
-    /// [`ChatController::toggle_turn_collapsed`] /
-    /// [`ChatController::set_turn_collapsed`] themselves.
-    ///
-    /// **`row_in_turn` includes the trailing blank separator row** between
-    /// this turn and the next, attributed to *this* turn (e.g. for a
-    /// 1-line turn, `0` = header, `1` = body, `2` = the blank separator) —
-    /// see this module's *Collapsible turns and per-turn hit regions*
-    /// section.
+    /// See [`ChatEvent::TurnClicked`]. The controller has already moved
+    /// [`ChatController::focused_turn`] onto the turn.
     TurnClicked { turn_idx: usize, row_in_turn: usize },
 }
 
@@ -251,44 +248,17 @@ pub enum ChatControllerAction {
 )]
 #[derive(Debug, Clone, PartialEq)]
 pub enum ChatControllerEvent {
-    /// User submitted a message (`Ctrl+S`, `Alt+Enter`, or `Ctrl+Enter`). Contains the full input text
-    /// (with embedded `\n` for multi-line messages). Apps should:
-    /// 1. Append the text as a `User` turn to their own transcript.
-    /// 2. Call [`ChatController::clear_input`].
-    /// 3. Start their backend session continuation (subprocess, API call, etc.).
+    /// See [`ChatControllerAction::Submit`].
     Submit { text: String },
-    /// Stream chunk (reserved for the backend-push path; apps that own
-    /// the session pipe call [`ChatController::set_transcript`] directly).
+    /// See [`ChatControllerAction::StreamChunk`].
     StreamChunk { text: String },
-    /// User pressed `Esc`. The app decides whether to close the overlay,
-    /// show a confirmation dialog, or ignore it.
+    /// See [`ChatControllerAction::Cancelled`].
     Cancelled,
-    /// User clicked the Send/Stop segment while [`ChatController::set_busy`]
-    /// was `true`. Distinct from [`Cancelled`](Self::Cancelled),
-    /// which is about closing the overlay — this is about interrupting an
-    /// in-flight generation. The app should stop its backend session
-    /// continuation (kill the subprocess, cancel the API call, etc.); the
-    /// input buffer is left untouched.
+    /// See [`ChatControllerAction::StopRequested`].
     StopRequested,
-    /// A key press that the chat controller did not consume. Apps can
-    /// bind hotkeys here (e.g. `'c'` to copy the last assistant turn).
+    /// See [`ChatControllerAction::KeyPressed`].
     KeyPressed { key: String, modifiers: Modifiers },
-    /// A click landed on a transcript row belonging to `turn_idx`, at
-    /// `row_in_turn` rows into that turn's block (`0` = the role header
-    /// row). Also moves [`ChatController::focused_turn`] to
-    /// `Some(turn_idx)`, so a keyboard `Enter` right after the click acts on
-    /// the same turn. The controller does not itself toggle the turn's
-    /// collapsed state on click — apps decide what a click means (toggle
-    /// the card when `row_in_turn == 0`, resolve a `path:line` location
-    /// elsewhere in the body, etc.) and call
-    /// [`ChatController::toggle_turn_collapsed`] /
-    /// [`ChatController::set_turn_collapsed`] themselves.
-    ///
-    /// **`row_in_turn` includes the trailing blank separator row** between
-    /// this turn and the next, attributed to *this* turn (e.g. for a
-    /// 1-line turn, `0` = header, `1` = body, `2` = the blank separator) —
-    /// see this module's *Collapsible turns and per-turn hit regions*
-    /// section.
+    /// See [`ChatControllerAction::TurnClicked`].
     TurnClicked { turn_idx: usize, row_in_turn: usize },
     /// Event was consumed (state changed, caller should redraw).
     Consumed,
@@ -296,361 +266,152 @@ pub enum ChatControllerEvent {
     Ignored,
 }
 
-#[allow(deprecated)] // `ChatControllerEvent` is `#[deprecated]`; this is its own adapter.
-fn handled_from_chat_controller_event(event: ChatControllerEvent) -> Handled<ChatControllerAction> {
-    match event {
-        ChatControllerEvent::Submit { text } => {
-            Handled::Event(ChatControllerAction::Submit { text })
-        }
-        ChatControllerEvent::StreamChunk { text } => {
-            Handled::Event(ChatControllerAction::StreamChunk { text })
-        }
-        ChatControllerEvent::Cancelled => Handled::Event(ChatControllerAction::Cancelled),
-        ChatControllerEvent::StopRequested => Handled::Event(ChatControllerAction::StopRequested),
-        ChatControllerEvent::KeyPressed { key, modifiers } => {
-            Handled::Event(ChatControllerAction::KeyPressed { key, modifiers })
-        }
-        ChatControllerEvent::TurnClicked {
-            turn_idx,
-            row_in_turn,
-        } => Handled::Event(ChatControllerAction::TurnClicked {
-            turn_idx,
-            row_in_turn,
-        }),
-        ChatControllerEvent::Consumed => Handled::Consumed,
-        ChatControllerEvent::Ignored => Handled::Ignored,
-    }
-}
+// ── Descriptor ─────────────────────────────────────────────────────────────────
 
-// ── Internal types ─────────────────────────────────────────────────────────────
-
-/// Pre-computed rect zones for one render/handle pass.
-struct ChatLayout {
-    status: Rect,
-    transcript: Rect,
-    scrollbar: Option<Rect>,
-    /// Spinner rect within the status strip (rightmost `line_height` px).
-    spinner: Option<Rect>,
-    /// Persistent hint row directly above the input box. `None`
-    /// when [`ChatController::set_hint`] hasn't been called.
-    hint: Option<Rect>,
-    input: Rect,
-    /// Clickable Send/Stop segment at the right of the input row.
-    /// `None` when the row is too narrow to fit both it and the
-    /// `TextInput`.
-    send: Option<Rect>,
-}
-
-// ── Controller ─────────────────────────────────────────────────────────────────
-
-/// Cross-backend compose controller for a chat overlay.
+/// A chat overlay: a 1-row status strip at the top, a scrollable
+/// transcript in the middle, an optional hint row and a multi-line input
+/// with a Send/Stop segment at the bottom.
 ///
-/// Renders a 3-zone modal over its host rect: a 1-row status strip at the top,
-/// a scrollable transcript in the middle, and a multi-line `TextInput` at the
-/// bottom. All rendering is delegated to existing [`Backend`] trait methods —
-/// `draw_message_list`, `draw_scrollbar`, `draw_text_input`, `draw_spinner` —
-/// so no new trait method is needed.
-///
-/// State ownership follows the [`TreeController`](super::tree_controller::TreeController)
-/// pattern: the app pushes transcript turns per frame via
-/// [`set_transcript`](Self::set_transcript), and the controller owns only
-/// interaction state (scroll position, input buffer, history ring).
+/// Every visible piece of state is a field; see the module doc for the
+/// controlled-state convention and the keyboard map.
 ///
 /// # Wrapping
 ///
-/// Plain-text turns (from [`push_turn`](Self::push_turn) /
-/// [`set_transcript`](Self::set_transcript)) are **word-wrapped** via
-/// [`crate::text_util::word_wrap`]: rows break at whitespace where
-/// possible, and only a single word wider than the column budget falls
-/// back to a mid-word hard break (e.g. with a 10-column budget
-/// `"implementation"` becomes `"implementa"` + `"tion"`).
-///
-/// Styled turns (from [`push_turn_markdown`](Self::push_turn_markdown))
-/// wrap per-span at exactly the display-width budget, ignoring word
-/// boundaries — [`crate::text_util::wrap_spans`] with
-/// [`crate::text_util::WrapPolicy::Char`]. `Word` wrapping is available
-/// on the same function (markdown rendering uses it — see
-/// [`crate::compose::markdown`]) but is intentionally not used here yet.
+/// Plain-text turns are **word-wrapped** via
+/// [`crate::text_util::word_wrap`]. Styled turns (from
+/// [`Self::push_turn_markdown`]) wrap per-span at exactly the
+/// display-width budget ([`crate::text_util::wrap_spans`] with
+/// [`WrapPolicy::Char`]).
 ///
 /// # Input soft-wrap and auto-grow
 ///
-/// The input box's `TextInput` is built from the *wrapped* buffer, not the
-/// raw one: [`build_text_input`](Self::build_text_input) soft-wraps
-/// `input_editor`'s logical lines to [`TextInput::content_cols`] before
-/// handing them to the primitive, so long lines wrap inside the box instead
-/// of scrolling horizontally. Wrapping is exact — a visual row is always a
-/// contiguous char range of its logical line, with no whitespace collapsed
-/// or dropped (unlike [`crate::text_util::word_wrap`]'s transcript
-/// wrapping, which *is* lossy at wrap points) — so cursor positions map
-/// losslessly between logical `(line, char column)` space (what
-/// `input_editor`'s [`TextEditor`] stores) and visual `(row, char column)`
-/// space (what the painted `TextInput` shows).
+/// The painted [`TextInput`] is built from the *wrapped* buffer: the
+/// logical [`Self::input_lines`] are soft-wrapped to the box's width, so
+/// long lines wrap instead of scrolling horizontally. Wrapping is exact —
+/// a visual row is always a contiguous char range of its logical line —
+/// so caret positions map losslessly between the logical `(line, col)`
+/// space [`Self::input_cursor`] is in and the visual rows painted.
 ///
-/// `↑`/`↓` move the cursor by **visual** row, not logical line: pressing
-/// `↑` partway through a wrapped paragraph moves to the previous visual
-/// row within it; history recall only triggers at the *first* / *last*
-/// visual row of the whole buffer (see the `Key::Named(NamedKey::Up)` /
-/// `Down` arms of [`Self::handle_key`]).
-///
-/// The input box's painted height auto-grows with content: it's the
-/// wrapped visual row count, clamped to
-/// [`input_min_rows`, `input_max_rows`](Self::set_input_height_range)
-/// (default `1..=8`). Once the row count exceeds `input_max_rows` the box
-/// stops growing and [`TextInput::layout`]'s own vertical auto-scroll
-/// keeps the cursor in view, same as any other overflowing `TextInput`.
-pub struct ChatController {
-    id: WidgetId,
-    // ── Per-frame data pushed by the app ──────────────────────────────
-    transcript: Vec<ChatTurn>,
-    status_label: StyledText,
-    busy: bool,
-    model_label: String,
-    spinner_frame: usize,
-    // ── Input buffer ─────────────────────────────────────────────────
-    /// Editing session for the input box: logical lines, cursor, selection
-    /// and undo history. Every edit (insert, delete, cursor move, word
-    /// op) routes through [`EditOp`]/[`TextEditor::apply`] — see
-    /// [`apply_input_op`](Self::apply_input_op) — rather than hand-rolled
-    /// byte-offset arithmetic, so the input box gets shift-select and
-    /// word ops for free.
-    input_editor: TextEditor,
-    /// `input_editor.input.lines.join("\n")`, kept in sync by every write
-    /// path (see `apply_input_op`/`set_input_text`) so
-    /// [`input_text`](Self::input_text) can keep returning a plain `&str`
-    /// without borrowing from a `Vec<String>`.
-    input_buf: String,
-    /// Vertical scroll offset forwarded to [`TextInput::scroll_offset`].
-    input_scroll_offset: usize,
-    /// Whether the input has keyboard focus (controls cursor visibility).
-    input_has_focus: bool,
-    // ── Input history ─────────────────────────────────────────────────
-    /// Past submitted messages (most-recent last).
-    history: Vec<String>,
-    /// Position in `history` when navigating, or `None` when not in
-    /// history navigation mode.
-    history_pos: Option<usize>,
-    /// Input state saved when the user first pressed `↑` to enter history
-    /// navigation — `(text, cursor_line, cursor_col)`. Restored on `↓`
-    /// past the newest history entry.
-    saved_input: Option<(String, usize, usize)>,
-    // ── Transcript scroll ─────────────────────────────────────────────
-    /// First visible wrapped row.
-    ///
-    /// Stored in a [`Cell`] so that [`render`](Self::render) (which takes
-    /// `&self` to satisfy the [`AppLogic`] trait contract) can update the
-    /// position when follow-tail is engaged — without requiring the caller to
-    /// hold a `&mut` reference.
-    transcript_scroll_top: Cell<usize>,
-    transcript_drag: Option<ThumbDrag>,
-    /// When `true` the viewport is pinned to the tail: each [`render`] call
-    /// drives `transcript_scroll_top` to `total_rows − visible_rows` so
-    /// freshly-appended content stays visible.
-    ///
-    /// Starts `true` on construction.  Disengaged whenever the user scrolls
-    /// up (via wheel, PageUp, or scrollbar drag); re-engaged whenever the
-    /// user scrolls back down to the bottom row.
-    ///
-    /// [`render`]: Self::render
-    stuck_to_bottom: bool,
-    /// Keyboard cursor into the transcript: `Some(turn_idx)` when
-    /// `Tab`/`Shift+Tab` (or a transcript click) has moved focus off the
-    /// input and onto a turn, so `Enter` toggles that turn's collapsed
-    /// state instead of submitting/inserting a newline. `None` means the
-    /// input has focus (the default). See
-    /// [`focus_next_turn`](Self::focus_next_turn).
-    focused_turn: Option<usize>,
-    /// Per-turn collapsed state, keyed by transcript index —
-    /// deliberately *not* a field on [`ChatTurn`] itself; see this
-    /// struct's *Collapsible turns and per-turn hit regions* doc section
-    /// for why. Absence means expanded (the default). Entries are not
-    /// remapped when [`set_transcript`](Self::set_transcript) replaces the
-    /// transcript with turns in a different order — see
-    /// [`is_turn_collapsed`](Self::is_turn_collapsed).
-    turn_collapsed: HashSet<usize>,
-    /// Per-turn summary-line override, keyed the same way as
-    /// `turn_collapsed`. See
-    /// [`turn_summary_line`](Self::turn_summary_line).
-    turn_summary: HashMap<usize, String>,
-    // ── Config ────────────────────────────────────────────────────────
-    /// Auto-grow floor: the input area is never shorter than this many
-    /// rows, even when empty. Default: `1`. See
-    /// [`set_input_height_range`](Self::set_input_height_range).
-    input_min_rows: usize,
-    /// Auto-grow ceiling: the input area stops growing at this many rows;
-    /// beyond it, content scrolls inside a fixed-height box instead.
-    /// Default: `8`. See
-    /// [`set_input_height_range`](Self::set_input_height_range).
-    input_max_rows: usize,
-    /// Fixed scrollbar track width in surface units, or `None` to use
-    /// `backend.line_height()` (same convention as `TreeController`).
-    scrollbar_width: Option<f32>,
-    /// When `true`, `Enter` submits and `Shift+Enter` (or `Alt+Enter` as a
-    /// fallback) inserts a newline. Default `false` — `Enter` always inserts
-    /// a newline. See [`set_submit_on_enter`](Self::set_submit_on_enter).
-    submit_on_enter: bool,
-    /// Persistent hint row painted above the input box, or `None` to omit
-    /// it. See [`set_hint`](Self::set_hint).
-    hint: Option<StyledText>,
+/// The input box's height is the wrapped visual row count, clamped to
+/// [`Self::input_rows`] (default `1..=8`); beyond the ceiling the box
+/// stops growing and the input scrolls inside it.
+#[derive(Debug, Clone)]
+pub struct Chat {
+    pub id: WidgetId,
+    /// The transcript, oldest turn first.
+    pub transcript: Vec<ChatTurn>,
+    /// The status-strip context label (e.g. `"Refining issue #N"`).
+    pub status: StyledText,
+    /// Whether a generation is in flight: shows the spinner and turns
+    /// the Send segment into Stop.
+    pub busy: bool,
+    /// The model chip in the status strip; empty for none.
+    pub model_label: String,
+    /// The spinner's animation frame.
+    pub spinner_frame: usize,
+    /// The input buffer's logical lines; never empty.
+    pub input_lines: Vec<String>,
+    /// The input caret, as a logical `(line, char column)`.
+    pub input_cursor: Caret,
+    /// The input selection's fixed end, if a selection is active.
+    pub input_anchor: Option<Caret>,
+    /// First visible visual row of the input box.
+    pub input_scroll_offset: usize,
+    /// Whether the input shows its caret.
+    pub input_has_focus: bool,
+    /// The transcript's keyboard focus cursor: `Some(turn)` while `Tab`
+    /// or a transcript click parked focus on a turn.
+    pub focused_turn: Option<usize>,
+    /// Transcript indices of the collapsed turns.
+    pub collapsed_turns: BTreeSet<usize>,
+    /// Per-turn summary-line overrides, keyed by transcript index.
+    pub turn_summaries: BTreeMap<usize, String>,
+    /// First visible wrapped transcript row, while not following the tail.
+    pub transcript_scroll_top: usize,
+    /// Whether the transcript follows its tail.
+    pub stuck_to_bottom: bool,
+    /// The input box's auto-grow `(min, max)` visual row clamp.
+    pub input_rows: (usize, usize),
+    /// Fixed scrollbar track width, or `None` for one line height.
+    pub scrollbar_width: Option<f32>,
+    /// Whether plain `Enter` submits (and `Shift+Enter` breaks the line).
+    pub submit_on_enter: bool,
+    /// The persistent hint row above the input; `None` omits the row.
+    pub hint: Option<StyledText>,
 }
 
-// `handle` (deprecated) and its private helpers (`handle_key`,
-// `handle_click`, `handle_drag`) still speak `ChatControllerEvent`
-// internally — only the public boundary (`handle`/`handle_event`) changed
-// shape. `handle_event` wraps the deprecated result via
-// `handled_from_chat_controller_event` rather than threading
-// `ChatControllerAction` through every one of these private methods.
-#[allow(deprecated)]
-impl ChatController {
-    /// Create a new controller. `id` is used to namespace widget IDs for all
-    /// sub-primitives (transcript, scrollbar, input, spinner).
-    pub fn new(id: impl Into<String>) -> Self {
-        let id = WidgetId::new(id);
-        let input_editor = TextEditor::new(TextInput::new(WidgetId::new(format!("{id}-input"))));
+impl Chat {
+    /// An empty chat: no transcript, an empty focused input, following
+    /// the tail.
+    pub fn new(id: impl Into<WidgetId>) -> Self {
         Self {
-            id,
+            id: id.into(),
             transcript: Vec::new(),
-            status_label: StyledText::plain(""),
+            status: StyledText::plain(""),
             busy: false,
             model_label: String::new(),
             spinner_frame: 0,
-            input_editor,
-            input_buf: String::new(),
+            input_lines: vec![String::new()],
+            input_cursor: (0, 0),
+            input_anchor: None,
             input_scroll_offset: 0,
             input_has_focus: true,
-            history: Vec::new(),
-            history_pos: None,
-            saved_input: None,
-            transcript_scroll_top: Cell::new(0),
-            transcript_drag: None,
-            stuck_to_bottom: true,
             focused_turn: None,
-            turn_collapsed: HashSet::new(),
-            turn_summary: HashMap::new(),
-            input_min_rows: 1,
-            input_max_rows: 8,
+            collapsed_turns: BTreeSet::new(),
+            turn_summaries: BTreeMap::new(),
+            transcript_scroll_top: 0,
+            stuck_to_bottom: true,
+            input_rows: (1, 8),
             scrollbar_width: None,
             submit_on_enter: false,
             hint: None,
         }
     }
 
-    // ── Per-frame data setters ────────────────────────────────────────
-
-    /// Replace the transcript for the next render pass.
-    ///
-    /// This is the primary streaming hook: the app calls this on every
-    /// chunk received from the assistant and then triggers a redraw.
-    /// The controller does not hold a reference to the app's turns —
-    /// it re-renders from the fresh slice each frame.
-    pub fn set_transcript(&mut self, turns: Vec<ChatTurn>) {
-        self.transcript = turns;
+    /// Store a write-back event's new field values. The semantic events
+    /// change nothing.
+    pub fn apply(&mut self, event: &ChatEvent) {
+        match event {
+            ChatEvent::InputChanged {
+                lines,
+                cursor,
+                anchor,
+            } => {
+                self.input_lines = if lines.is_empty() {
+                    vec![String::new()]
+                } else {
+                    lines.clone()
+                };
+                self.input_cursor = *cursor;
+                self.input_anchor = *anchor;
+            }
+            ChatEvent::TranscriptScrolled {
+                scroll_top,
+                stuck_to_bottom,
+            } => {
+                self.transcript_scroll_top = *scroll_top;
+                self.stuck_to_bottom = *stuck_to_bottom;
+            }
+            ChatEvent::FocusedTurnChanged { turn } => {
+                self.focused_turn = *turn;
+                self.input_has_focus = turn.is_none();
+            }
+            ChatEvent::TurnCollapsed {
+                turn_idx,
+                collapsed,
+            } => {
+                self.set_turn_collapsed(*turn_idx, *collapsed);
+            }
+            _ => {}
+        }
     }
 
-    /// Set the status-strip context label (e.g. `"Refining issue #N"`).
-    pub fn set_status(&mut self, label: StyledText) {
-        self.status_label = label;
+    /// The input buffer as one string, with `\n` between lines.
+    pub fn input_text(&self) -> String {
+        self.input_lines.join("\n")
     }
 
-    /// Enable or disable the busy spinner in the status strip.
-    pub fn set_busy(&mut self, busy: bool) {
-        self.busy = busy;
-    }
-
-    /// Set the model chip label in the status strip (e.g. `"claude-opus-4-5"`).
-    pub fn set_model_label(&mut self, label: &str) {
-        self.model_label = label.to_string();
-    }
-
-    /// Advance the spinner animation frame. Apps increment this on their own
-    /// ticker (~100 ms per frame for a braille-style spinner).
-    pub fn set_spinner_frame(&mut self, frame: usize) {
-        self.spinner_frame = frame;
-    }
-
-    // ── Input accessors ───────────────────────────────────────────────
-
-    /// The current input buffer text, with `\n` separating lines.
-    pub fn input_text(&self) -> &str {
-        &self.input_buf
-    }
-
-    /// Clear the input buffer and reset cursor + selection + scroll state.
-    ///
-    /// Apps call this after handling a [`ChatControllerEvent::Submit`].
-    pub fn clear_input(&mut self) {
-        self.set_input_text("");
-        self.input_scroll_offset = 0;
-        self.history_pos = None;
-        self.saved_input = None;
-    }
-
-    /// Whether the input area currently has keyboard focus.
-    pub fn input_has_focus(&self) -> bool {
-        self.input_has_focus
-    }
-
-    /// Set keyboard focus on the input area.
-    pub fn set_input_has_focus(&mut self, focus: bool) {
-        self.input_has_focus = focus;
-    }
-
-    /// Configure the input area's auto-grow row-count clamp.
-    ///
-    /// The input box's painted height is the wrapped visual row count of
-    /// the current buffer, clamped to `[min, max]`, plus the fixed 2-row
-    /// border (see [`Self::compute_layout`]). `min` is floored to `1`
-    /// (the box never fully collapses); `max` is floored to `min`.
-    /// Default: `1..=8`.
-    pub fn set_input_height_range(&mut self, min: usize, max: usize) {
-        let min = min.max(1);
-        let max = max.max(min);
-        self.input_min_rows = min;
-        self.input_max_rows = max;
-    }
-
-    /// Override the scrollbar track width.
-    ///
-    /// Pass `Some(8.0)` for GTK, `Some(1.0)` for TUI (matching MSV).
-    /// `None` (default) falls back to `backend.line_height()`.
-    pub fn set_scrollbar_width(&mut self, width: Option<f32>) {
-        self.scrollbar_width = width;
-    }
-
-    /// Toggle Zed-style "Enter to send" behaviour.
-    ///
-    /// `true` — `Enter` submits, `Shift+Enter`/`Alt+Enter` insert a
-    /// newline. `false` (default) — `Enter` always inserts a newline;
-    /// submit is `Ctrl+S` / `Alt+Enter` / `Ctrl+Enter`.
-    pub fn set_submit_on_enter(&mut self, submit_on_enter: bool) {
-        self.submit_on_enter = submit_on_enter;
-    }
-
-    /// Whether `Enter` currently submits (`true`) or inserts a newline
-    /// (`false`). See [`set_submit_on_enter`](Self::set_submit_on_enter).
-    pub fn submit_on_enter(&self) -> bool {
-        self.submit_on_enter
-    }
-
-    /// Set (or clear) the persistent hint row painted above the input box.
-    /// Pass `None` to omit the row (default).
-    ///
-    /// Unlike the `TextInput` placeholder, this stays visible while
-    /// typing — see this struct's *Persistent hint line* doc section.
-    pub fn set_hint(&mut self, hint: Option<StyledText>) {
-        self.hint = hint;
-    }
-
-    // ── Transcript push helpers ───────────────────────────────────────
-
-    /// Append a pre-styled turn to the controller's internal transcript.
-    ///
-    /// This is an alternative to [`set_transcript`] for apps that build the
-    /// transcript incrementally rather than replacing it each frame.  Do not
-    /// mix `push_turn` and `set_transcript` on the same controller — use one
-    /// model consistently.
-    ///
-    /// For markdown-formatted assistant messages, prefer
-    /// [`push_turn_markdown`].
+    /// Append a pre-styled turn.
     pub fn push_turn(&mut self, role: ChatRole, text: StyledText) {
         self.transcript.push(ChatTurn {
             role,
@@ -660,27 +421,12 @@ impl ChatController {
         });
     }
 
-    /// Append a turn whose body is markdown text.
-    ///
-    /// This is the **recommended API for assistant-role messages**.  The
-    /// markdown adapter ([`render_markdown_to_styled`]) converts headings,
-    /// bold, italic, inline code, bulleted and numbered lists, blockquotes,
-    /// links, and fenced code blocks to a [`StyledText`] with colours and
-    /// decorations baked in.  The resulting [`ChatTurn`] is appended to the
-    /// controller's internal transcript.
-    ///
-    /// Use [`set_transcript`] instead if your app maintains its own
-    /// transcript vector and passes it each frame.  Do not mix `push_turn*`
-    /// and `set_transcript` on the same controller.
-    ///
-    /// Markdown lines are interleaved into a single [`StyledText`] with
-    /// `'\n'` separator spans so the transcript renderer can split them for
-    /// wrapping, preserving the structure produced by the adapter (list
-    /// markers, blockquote rules, etc.) as plain-text cues.
+    /// Append a turn whose body is markdown, rendered through
+    /// [`render_markdown_to_styled`]. The rendered lines are joined into
+    /// one [`StyledText`] with `'\n'` separator spans, and their heading
+    /// scales are kept as [`ChatTurn::line_scales`].
     pub fn push_turn_markdown(&mut self, role: ChatRole, markdown: &str, theme: &Theme) {
         let rendered = render_markdown_to_styled(markdown, theme);
-        // Preserve line-scale metadata so the transcript renderer can build
-        // styled rows with heading sizes.
         let line_scales = rendered.line_scales.clone();
         let mut spans: Vec<StyledSpan> = Vec::new();
         for (i, line) in rendered.lines.into_iter().enumerate() {
@@ -697,91 +443,30 @@ impl ChatController {
         });
     }
 
-    /// Current transcript scroll offset (first visible wrapped row).
-    ///
-    /// After [`render`](Self::render) runs with follow-tail engaged, this
-    /// reflects the position that was actually painted (tail row).
-    pub fn transcript_scroll_top(&self) -> usize {
-        self.transcript_scroll_top.get()
-    }
-
-    /// Programmatically override the transcript scroll position.
-    ///
-    /// This does **not** change the [`stuck_to_bottom`](Self) flag.  If you
-    /// want to re-engage follow-tail, call
-    /// [`scroll_transcript_by`](Self::scroll_transcript_by) with a large
-    /// positive delta so the flag is recomputed against a known `total_rows`
-    /// and `visible_rows`.
-    pub fn set_transcript_scroll_top(&mut self, top: usize) {
-        self.transcript_scroll_top.set(top);
-    }
-
-    // ── Collapsible turns ───────────────────────────────────────────────
-    //
-    // Collapsed/summary state is kept on the controller (`turn_collapsed` /
-    // `turn_summary`, keyed by transcript index) rather than as fields on
-    // `ChatTurn` — see the module doc's *Collapsible turns and per-turn hit
-    // regions* section for why.
-
-    /// Whether `transcript[turn_idx]` is currently rendered collapsed.
-    /// `false` (including out-of-range `turn_idx`) when there is no such
-    /// turn.
+    /// Whether `transcript[turn_idx]` is collapsed; `false` for an
+    /// out-of-range index.
     pub fn is_turn_collapsed(&self, turn_idx: usize) -> bool {
-        turn_idx < self.transcript.len() && self.turn_collapsed.contains(&turn_idx)
+        turn_idx < self.transcript.len() && self.collapsed_turns.contains(&turn_idx)
     }
 
-    /// Set `transcript[turn_idx]`'s collapsed state directly. A no-op if
-    /// `turn_idx` is out of range.
+    /// Collapse or expand `transcript[turn_idx]`; a no-op out of range.
     pub fn set_turn_collapsed(&mut self, turn_idx: usize, collapsed: bool) {
         if turn_idx >= self.transcript.len() {
             return;
         }
         if collapsed {
-            self.turn_collapsed.insert(turn_idx);
+            self.collapsed_turns.insert(turn_idx);
         } else {
-            self.turn_collapsed.remove(&turn_idx);
+            self.collapsed_turns.remove(&turn_idx);
         }
     }
 
-    /// Flip `transcript[turn_idx]`'s collapsed state. A no-op if `turn_idx`
-    /// is out of range.
-    ///
-    /// Apps call this in response to a [`ChatControllerEvent::TurnClicked`]
-    /// (typically when `row_in_turn == 0`, the role header row) or to
-    /// mirror the keyboard toggle described on [`focused_turn`](Self::focused_turn).
-    pub fn toggle_turn_collapsed(&mut self, turn_idx: usize) {
-        if turn_idx >= self.transcript.len() {
-            return;
-        }
-        if !self.turn_collapsed.insert(turn_idx) {
-            self.turn_collapsed.remove(&turn_idx);
-        }
-    }
-
-    /// Override `transcript[turn_idx]`'s summary line — see
-    /// [`turn_summary_line`](Self::turn_summary_line). Pass `None` to fall
-    /// back to the turn's first non-blank content line. A no-op (but not an
-    /// error) if `turn_idx` is currently out of range — e.g. an app may set
-    /// this ahead of a [`set_transcript`](Self::set_transcript) call that
-    /// grows the transcript to include it.
-    pub fn set_turn_summary(&mut self, turn_idx: usize, summary: Option<String>) {
-        match summary {
-            Some(s) => {
-                self.turn_summary.insert(turn_idx, s);
-            }
-            None => {
-                self.turn_summary.remove(&turn_idx);
-            }
-        }
-    }
-
-    /// The line shown when `transcript[turn_idx]` is
-    /// [collapsed](Self::is_turn_collapsed): the
-    /// [`set_turn_summary`](Self::set_turn_summary) override if set,
-    /// otherwise the first non-blank line of the turn's plain text. Empty
-    /// string for an out-of-range `turn_idx` or a turn with no content.
+    /// The line a collapsed `transcript[turn_idx]` shows: its
+    /// [`Self::turn_summaries`] override, else the first non-blank line of
+    /// its plain text. Empty for an out-of-range index or a turn with no
+    /// content.
     pub fn turn_summary_line(&self, turn_idx: usize) -> String {
-        if let Some(s) = self.turn_summary.get(&turn_idx) {
+        if let Some(s) = self.turn_summaries.get(&turn_idx) {
             return s.clone();
         }
         let Some(turn) = self.transcript.get(turn_idx) else {
@@ -795,435 +480,71 @@ impl ChatController {
             .to_string()
     }
 
-    /// The transcript's keyboard focus cursor: `Some(turn_idx)`
-    /// when `Tab`/`Shift+Tab` has moved focus onto a turn (so `Enter`
-    /// toggles its collapsed state instead of acting on the input),
-    /// `None` when the input has focus (the default).
-    pub fn focused_turn(&self) -> Option<usize> {
-        self.focused_turn
-    }
-
-    /// Programmatically set the transcript's keyboard focus cursor. Pass
-    /// `None` to return focus to the input.
-    pub fn set_focused_turn(&mut self, turn: Option<usize>) {
-        self.focused_turn = turn;
-        if turn.is_some() {
-            self.input_has_focus = false;
-        }
-    }
-
-    // ── Render ────────────────────────────────────────────────────────
-
-    /// Paint all three zones into `rect` using `backend`.
-    ///
-    /// Call this inside [`crate::AppLogic::render`] after resolving the
-    /// overlay rect. The controller calls `begin_frame` / `end_frame`
-    /// _around_ the draw calls if your app's render path wraps frames
-    /// inside the overlay rect — otherwise just call it inline.
-    pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        let layout = self.compute_layout(backend, rect);
-
-        // ── 1. Status strip ───────────────────────────────────────────
-        let status_rows = self.build_status_rows();
-        let status_list = MessageList {
-            id: WidgetId::new(format!("{}-status", self.id)),
-            rows: status_rows,
-            scroll_top: 0,
-        };
-        backend.draw_message_list(layout.status, &status_list);
-
-        // ── 2. Spinner (overlaid at the right end of the status strip) ─
-        if self.busy {
-            if let Some(sp_rect) = layout.spinner {
-                let spinner = Spinner {
-                    id: WidgetId::new(format!("{}-spinner", self.id)),
-                    label: String::new(),
-                    frame_idx: self.spinner_frame,
-                    accent: None,
-                };
-                backend.draw_spinner(sp_rect, &spinner);
-            }
-        }
-
-        // ── 3. Transcript ─────────────────────────────────────────────
-        let col_budget = self.transcript_col_budget(backend.char_width(), layout.transcript);
-        let wrapped_rows = self.build_transcript_rows(col_budget);
-        let total_rows = wrapped_rows.len();
-        // Hoist visible_rows so follow-tail can use it before building MessageList.
-        let visible_rows =
-            Self::transcript_visible_rows_for(backend.line_height(), layout.transcript);
-
-        // Follow-tail: if stuck to the bottom, pin scroll_top to the last page
-        // so newly-appended rows are always visible.  This is a no-op when the
-        // content fits entirely in the viewport (total ≤ visible → max = 0).
-        // `transcript_scroll_top` is a `Cell<usize>` so we can update it here
-        // while `render` takes `&self` (required by the `AppLogic` trait).
-        if self.stuck_to_bottom {
-            self.transcript_scroll_top
-                .set(transcript_max_offset(total_rows, visible_rows));
-        }
-
-        let list = MessageList {
-            id: WidgetId::new(format!("{}-transcript", self.id)),
-            rows: wrapped_rows,
-            scroll_top: self.transcript_scroll_top.get(),
-        };
-        backend.draw_message_list(layout.transcript, &list);
-
-        // ── 4. Scrollbar ──────────────────────────────────────────────
-        if let Some(sb_rect) = layout.scrollbar {
-            let track_w = self.scrollbar_track_width(backend.line_height());
-            let sb = build_scrollbar(
-                format!("{}-sb", self.id),
-                sb_rect,
-                self.transcript_scroll_top.get(),
-                total_rows,
-                visible_rows,
-                self.transcript_drag.is_some(),
-                track_w.max(1.0),
-            );
-            backend.draw_scrollbar(sb_rect, &sb);
-        }
-
-        // ── 5. Hint row ──────────────────────────────────────────────────
-        if let Some(hint_rect) = layout.hint {
-            let hint_text: String = self
-                .hint
-                .as_ref()
-                .map(|h| h.spans.iter().map(|s| s.text.as_str()).collect())
-                .unwrap_or_default();
-            let hint_list = MessageList {
-                id: WidgetId::new(format!("{}-hint", self.id)),
-                rows: vec![MessageRow::new(hint_text, Color::rgb(140, 140, 140), 0.0)],
-                scroll_top: 0,
-            };
-            backend.draw_message_list(hint_rect, &hint_list);
-        }
-
-        // ── 6. Text input ─────────────────────────────────────────────
-        let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
-        let ti = self.build_text_input(col_budget);
-        backend.draw_dyn(layout.input, &ti, &());
-
-        // ── 7. Send / Stop segment ───────────────────────────────────────
-        if let Some(send_rect) = layout.send {
-            crate::backend::DrawsPrimitives::draw_primitive(
-                backend,
-                send_rect,
-                &self.build_send_form(),
-            );
-        }
-    }
-
-    // ── Handle ────────────────────────────────────────────────────────
-
-    /// Dispatch a [`UiEvent`] to the controller.
-    ///
-    /// Keyboard events mutate the input buffer; scroll events mutate the
-    /// transcript scroll position. Returns a semantic
-    /// [`Handled<ChatControllerAction>`] for the app to act on.
-    ///
-    /// `backend` is used only for layout measurements (line_height,
-    /// char_width, text_input_layout) — no drawing happens here.
-    pub fn handle_event(
-        &mut self,
-        event: &UiEvent,
-        backend: &dyn Backend,
-        rect: Rect,
-    ) -> Handled<ChatControllerAction> {
-        handled_from_chat_controller_event(self.handle(event, backend, rect))
-    }
-
-    /// Dispatch a [`UiEvent`] to the controller.
-    ///
-    /// Keyboard events mutate the input buffer; scroll events mutate the
-    /// transcript scroll position. Returns a semantic
-    /// [`ChatControllerEvent`] for the app to act on.
-    ///
-    /// `backend` is used only for layout measurements (line_height,
-    /// char_width, text_input_layout) — no drawing happens here.
-    #[deprecated(
-        since = "0.9.0",
-        note = "use `handle_event`, which returns `Handled<ChatControllerAction>` instead of `ChatControllerEvent`"
-    )]
-    pub fn handle(
-        &mut self,
-        event: &UiEvent,
-        backend: &dyn Backend,
-        rect: Rect,
-    ) -> ChatControllerEvent {
-        let layout = self.compute_layout(backend, rect);
-        match event {
-            UiEvent::CharTyped(ch) => {
-                self.focus_input();
-                self.input_insert_char(*ch);
-                ChatControllerEvent::Consumed
-            }
-
-            UiEvent::ClipboardPaste(text) => {
-                self.focus_input();
-                self.input_insert_str(text);
-                ChatControllerEvent::Consumed
-            }
-
-            UiEvent::KeyPressed { key, modifiers, .. } => {
-                self.handle_key(key, modifiers, backend, &layout)
-            }
-
-            UiEvent::Scroll { delta, .. } => {
-                let visible =
-                    Self::transcript_visible_rows_for(backend.line_height(), layout.transcript);
-                let col_budget =
-                    self.transcript_col_budget(backend.char_width(), layout.transcript);
-                let total = self.build_transcript_rows(col_budget).len();
-                // Three rows per wheel notch; a larger trackpad delta
-                // scrolls proportionally further.
-                let rows = wheel_row_delta(delta.y, TRANSCRIPT_ROWS_PER_NOTCH);
-                self.scroll_transcript_by(rows, total, visible);
-                ChatControllerEvent::Consumed
-            }
-
-            UiEvent::MouseDown {
-                button: MouseButton::Left,
-                position,
-                ..
-            } => self.handle_click(backend, &layout, position.x, position.y),
-
-            UiEvent::MouseMoved {
-                position,
-                buttons: ButtonMask { left: true, .. },
-            } => self.handle_drag(position.y),
-
-            UiEvent::MouseUp {
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.transcript_drag = None;
-                ChatControllerEvent::Ignored
-            }
-
-            _ => ChatControllerEvent::Ignored,
-        }
-    }
-
-    // ── Transcript scroll (pub for external use) ───────────────────────
-
-    /// Scroll the transcript by `delta` wrapped rows, clamped to valid range.
-    ///
-    /// Exposed so callers can drive transcript scrolling without synthesising
-    /// a [`UiEvent::Scroll`].
-    ///
-    /// After clamping, [`stuck_to_bottom`](Self) is recomputed: scrolling up
-    /// disengages follow-tail; scrolling back to the last page re-engages it.
-    pub fn scroll_transcript_by(&mut self, delta: isize, total_rows: usize, visible_rows: usize) {
+    /// The scroll event that moves the transcript by `delta` wrapped rows
+    /// from where it is painted, clamped to the last page; reaching the
+    /// last page re-engages following the tail.
+    pub fn scroll_transcript_by(
+        &self,
+        delta: isize,
+        total_rows: usize,
+        visible_rows: usize,
+    ) -> ChatEvent {
         let max = transcript_max_offset(total_rows, visible_rows);
-        let new = scroll_by_clamped(self.transcript_scroll_top.get(), delta, max);
-        self.transcript_scroll_top.set(new);
-        // Re-engage follow-tail when scrolled to (or past) the last page;
-        // disengage it when scrolled up from there.
-        self.stuck_to_bottom = transcript_reached_bottom(self.transcript_scroll_top.get(), max);
-    }
-
-    // ── Focused-turn cursor ─────────────────────────────────────────────
-
-    /// Advance the transcript's focused-turn cursor one step forward — see
-    /// [`focused_turn`](Self::focused_turn)'s doc for the cycle order.
-    fn focus_next_turn(&mut self) {
-        if self.transcript.is_empty() {
-            self.focused_turn = None;
-            self.input_has_focus = true;
-            return;
-        }
-        self.focused_turn = match self.focused_turn {
-            None => Some(0),
-            Some(i) if i + 1 < self.transcript.len() => Some(i + 1),
-            Some(_) => None,
-        };
-        self.input_has_focus = self.focused_turn.is_none();
-    }
-
-    /// Retreat the transcript's focused-turn cursor one step — the inverse
-    /// of [`focus_next_turn`](Self::focus_next_turn).
-    fn focus_prev_turn(&mut self) {
-        if self.transcript.is_empty() {
-            self.focused_turn = None;
-            self.input_has_focus = true;
-            return;
-        }
-        self.focused_turn = match self.focused_turn {
-            None => Some(self.transcript.len() - 1),
-            Some(0) => None,
-            Some(i) => Some(i - 1),
-        };
-        self.input_has_focus = self.focused_turn.is_none();
-    }
-
-    /// Return keyboard focus to the input, clearing the focused-turn
-    /// cursor. Called whenever the user edits the input buffer, so typing
-    /// always means "I'm back in the input" regardless of where `Tab` had
-    /// last parked the cursor.
-    fn focus_input(&mut self) {
-        self.focused_turn = None;
-        self.input_has_focus = true;
-    }
-
-    // ── Internal helpers ──────────────────────────────────────────────
-
-    fn compute_layout(&self, backend: &dyn Backend, rect: Rect) -> ChatLayout {
-        let lh = backend.line_height().max(1.0);
-        let status_h = lh;
-
-        // Send/Stop segment: reserve a fixed-width column at the
-        // right of the input row when there's room for it alongside a
-        // usable `TextInput`.
-        let send_w = self.send_segment_width(backend.char_width());
-        let show_send = rect.width > send_w * 2.0;
-        let input_row_w = if show_send {
-            rect.width - send_w
+        let from = if self.stuck_to_bottom {
+            max
         } else {
-            rect.width
+            self.transcript_scroll_top
         };
-
-        // Auto-grow: height tracks the wrapped visual row count of
-        // the current buffer, clamped to [input_min_rows, input_max_rows].
-        // TextInput draws a 1-unit border on top and bottom plus content
-        // rows. Wraps against `input_row_w`, not the full row width, so
-        // auto-grow accounts for the Send/Stop segment eating into it.
-        let col_budget = TextInput::content_cols(input_row_w, backend.char_width());
-        let visual_rows = wrap_input_rows(&self.input_editor.input.lines, col_budget)
-            .len()
-            .max(1);
-        let input_rows = visual_rows.clamp(self.input_min_rows, self.input_max_rows);
-        // The rows at the pitch the painted `TextInput` lays them out at,
-        // which on a pixel backend can exceed the editor line height.
-        let input_row_h = crate::backend::primitive_layout_ctx(backend)
-            .line_height
-            .max(1.0);
-        let input_h = input_rows as f32 * input_row_h + 2.0;
-
-        // Persistent hint row: a fixed one-row strip directly
-        // above the input box, present only when `set_hint` was called.
-        let hint_h = if self.hint.is_some() { lh } else { 0.0 };
-
-        let middle_h = (rect.height - status_h - input_h - hint_h).max(0.0);
-
-        let status = Rect::new(rect.x, rect.y, rect.width, status_h);
-        let input_y = rect.y + rect.height - input_h;
-        let input = Rect::new(rect.x, input_y, input_row_w, input_h);
-        let send = if show_send {
-            Some(Rect::new(rect.x + input_row_w, input_y, send_w, input_h))
-        } else {
-            None
-        };
-        let hint = if hint_h > 0.0 {
-            Some(Rect::new(rect.x, input_y - hint_h, rect.width, hint_h))
-        } else {
-            None
-        };
-
-        // Spinner rect: rightmost `lh × lh` square inside the status strip.
-        let spinner = if self.busy && rect.width > lh {
-            Some(Rect::new(rect.x + rect.width - lh, rect.y, lh, status_h))
-        } else {
-            None
-        };
-
-        // Show scrollbar when transcript has any content and there is room.
-        let track_w = self.scrollbar_track_width(backend.line_height());
-        let (transcript, scrollbar) = if !self.transcript.is_empty() && rect.width > track_w {
-            let t = Rect::new(rect.x, rect.y + status_h, rect.width - track_w, middle_h);
-            let s = Rect::new(
-                rect.x + rect.width - track_w,
-                rect.y + status_h,
-                track_w,
-                middle_h,
-            );
-            (t, Some(s))
-        } else {
-            let t = Rect::new(rect.x, rect.y + status_h, rect.width, middle_h);
-            (t, None)
-        };
-
-        ChatLayout {
-            status,
-            transcript,
-            scrollbar,
-            spinner,
-            hint,
-            input,
-            send,
+        let scroll_top = scroll_by_clamped(from, delta, max);
+        ChatEvent::TranscriptScrolled {
+            scroll_top,
+            stuck_to_bottom: transcript_reached_bottom(scroll_top, max),
         }
     }
 
-    fn scrollbar_track_width(&self, line_height: f32) -> f32 {
-        self.scrollbar_width.unwrap_or(line_height)
+    /// The edit event `op` makes on the input, or `None` when it changes
+    /// nothing.
+    pub fn edit_input(&self, op: &EditOp) -> Option<ChatEvent> {
+        let mut lines = self.input_lines.clone();
+        let (mut line, mut col) = self.input_cursor;
+        let mut anchor = self.input_anchor;
+        let changed = EditView {
+            lines: &mut lines,
+            cursor_line: &mut line,
+            cursor_col: &mut col,
+            anchor: &mut anchor,
+        }
+        .apply(op);
+        changed.then_some(ChatEvent::InputChanged {
+            lines,
+            cursor: (line, col),
+            anchor,
+        })
     }
 
-    /// Width of the Send/Stop segment reserved at the right of the input
-    /// row. 8 columns comfortably fits either "Send" or "Stop"
-    /// plus padding on every backend's default font.
-    fn send_segment_width(&self, char_width: f32) -> f32 {
-        const SEND_SEGMENT_COLS: f32 = 8.0;
-        SEND_SEGMENT_COLS * char_width.max(1.0)
-    }
-
-    /// Build the single-button [`Form`] painted into the Send/Stop segment.
-    /// Reuses `FieldKind::Button`'s existing cross-backend
-    /// rasteriser — see this struct's *Send / Stop segment* doc section.
-    fn build_send_form(&self) -> Form {
-        let disabled = !self.busy && self.input_buf.trim().is_empty();
-        Form {
-            id: WidgetId::new(format!("{}-send-form", self.id)),
-            fields: vec![FormField {
-                id: WidgetId::new(format!("{}-send-btn", self.id)),
-                label: StyledText::plain(if self.busy { "Stop" } else { "Send" }),
-                kind: FieldKind::Button,
-                hint: StyledText::plain(""),
-                disabled,
-                validation: None,
-                label_position: None,
-                label_align: None,
-                label_width: None,
-                tab_index: None,
-                control_width: None,
-                min_control_width: None,
-                row_align: None,
-            }],
-            focused_field: None,
-            scroll_offset: 0,
-            has_focus: false,
-            label_position: Default::default(),
-            label_align: Default::default(),
-            label_width: None,
-            control_width: Default::default(),
-            min_control_width: None,
-            spacing: Default::default(),
+    /// The event that replaces the whole input with `text`, the caret at
+    /// `cursor` (clamped) or at the end, and no selection.
+    pub fn set_input(&self, text: &str, cursor: Option<Caret>) -> ChatEvent {
+        let lines: Vec<String> = text.split('\n').map(str::to_string).collect();
+        let last = lines.len() - 1;
+        let cursor = match cursor {
+            Some((line, col)) => {
+                let line = line.min(last);
+                (line, col.min(lines[line].chars().count()))
+            }
+            None => (last, lines[last].chars().count()),
+        };
+        ChatEvent::InputChanged {
+            lines,
+            cursor,
+            anchor: None,
         }
     }
 
-    fn transcript_visible_rows_for(line_height: f32, rect: Rect) -> usize {
-        if line_height <= 0.0 {
-            0
-        } else {
-            (rect.height / line_height).floor() as usize
-        }
-    }
+    // ── Row builders ──────────────────────────────────────────────────
 
-    fn transcript_col_budget(&self, char_width: f32, rect: Rect) -> usize {
-        if char_width <= 0.0 {
-            80
-        } else {
-            ((rect.width / char_width).floor() as usize).max(1)
-        }
-    }
-
-    fn build_status_rows(&self) -> Vec<MessageRow> {
-        let label: String = self
-            .status_label
-            .spans
-            .iter()
-            .map(|s| s.text.as_str())
-            .collect();
+    fn status_rows(&self) -> Vec<MessageRow> {
+        let label: String = self.status.spans.iter().map(|s| s.text.as_str()).collect();
         let text = if self.model_label.is_empty() {
             label
         } else {
@@ -1232,20 +553,10 @@ impl ChatController {
         vec![MessageRow::new(text, Color::rgb(180, 180, 180), 0.0)]
     }
 
-    fn build_transcript_rows(&self, col_budget: usize) -> Vec<MessageRow> {
-        self.build_transcript_rows_indexed(col_budget).0
-    }
-
-    /// Same rows as [`Self::build_transcript_rows`], plus — for each
-    /// `self.transcript` turn, in order — the row index where that turn's
-    /// block begins. `turn_starts[i]..turn_starts.get(i + 1)`
-    /// (or the end of `rows` for the last turn) is turn `i`'s row range;
-    /// `row_idx - turn_starts[i]` is that row's `row_in_turn`.
-    ///
-    /// [`Self::handle_click`] uses this to map a clicked transcript row
-    /// back to `(turn_idx, row_in_turn)` for
-    /// [`ChatControllerEvent::TurnClicked`].
-    fn build_transcript_rows_indexed(&self, col_budget: usize) -> (Vec<MessageRow>, Vec<usize>) {
+    /// The transcript's wrapped rows, plus the row each turn's block
+    /// begins at: `turn_starts[i]..turn_starts[i + 1]` (or the end) is
+    /// turn `i`'s row range.
+    fn transcript_rows(&self, col_budget: usize) -> (Vec<MessageRow>, Vec<usize>) {
         let mut rows = Vec::new();
         let mut turn_starts = Vec::with_capacity(self.transcript.len());
         for (idx, turn) in self.transcript.iter().enumerate() {
@@ -1262,9 +573,6 @@ impl ChatController {
             };
 
             let collapsed = self.is_turn_collapsed(idx);
-
-            // Role header row (no indent). Collapsed turns get a
-            // fold indicator appended so the card reads as expandable.
             let header = if collapsed {
                 format!("{role_label} \u{25b8}")
             } else {
@@ -1273,8 +581,6 @@ impl ChatController {
             rows.push(MessageRow::new(header, role_fg, 0.0));
 
             if collapsed {
-                // ── Collapsed path ───────────────────────────────────────
-                // Render exactly one summary row instead of the full body.
                 rows.push(MessageRow::new(
                     self.turn_summary_line(idx),
                     content_fg,
@@ -1282,20 +588,13 @@ impl ChatController {
                 ));
             } else {
                 let content_budget = col_budget.saturating_sub(2);
-
                 if !turn.line_scales.is_empty() {
-                    // ── Styled path ──────────────────────────────────────
-                    // Turns created by `push_turn_markdown` carry per-line
-                    // span lists (separated by plain `\n` spans) and
-                    // matching scale factors.  Build styled MessageRows so
-                    // rasterisers can apply per-span fg/bold/italic and
-                    // heading font sizes.
-                    let lines_spans = split_spans_by_newline(&turn.text.spans);
-                    for (i, line_spans) in lines_spans.iter().enumerate() {
+                    // Styled path: per-line span lists with heading scales.
+                    for (i, line_spans) in
+                        split_spans_by_newline(&turn.text.spans).iter().enumerate()
+                    {
                         let scale = turn.line_scales.get(i).copied().unwrap_or(1.0);
-                        let wrapped_groups =
-                            wrap_spans(line_spans, content_budget, WrapPolicy::Char);
-                        for group in wrapped_groups {
+                        for group in wrap_spans(line_spans, content_budget, WrapPolicy::Char) {
                             let text: String = group.iter().map(|s| s.text.as_str()).collect();
                             rows.push(MessageRow {
                                 text,
@@ -1307,12 +606,7 @@ impl ChatController {
                         }
                     }
                 } else {
-                    // ── Flat path (unchanged) ─────────────────────────────
-                    // Turns created by `push_turn` or `set_transcript` have
-                    // empty `line_scales`.  Output is byte-for-byte
-                    // identical to the pre-styled-row behaviour — existing
-                    // callers (vimcode debug / AI sidebar) are visually
-                    // unchanged.
+                    // Flat path: plain text, word-wrapped.
                     let plain: String = turn.text.spans.iter().map(|s| s.text.as_str()).collect();
                     for raw_line in plain.split('\n') {
                         for wrapped in wrap_text(raw_line, content_budget) {
@@ -1322,40 +616,21 @@ impl ChatController {
                 }
             }
 
-            // Blank separator between turns.
             rows.push(MessageRow::new("", Color::rgb(50, 50, 50), 0.0));
         }
         (rows, turn_starts)
     }
 
-    /// Soft-wrap `input_editor`'s logical lines to `col_budget` and build
-    /// the `TextInput` the rasterisers paint — see this struct's *Input
-    /// soft-wrap and auto-grow* doc section.
-    fn build_text_input(&self, col_budget: usize) -> TextInput {
-        let rows = wrap_input_rows(&self.input_editor.input.lines, col_budget);
-        self.text_input_from_rows(&rows)
-    }
-
-    /// Build the paint-time `TextInput` from an already-wrapped `rows`
-    /// (shared by [`Self::build_text_input`] and
-    /// [`Self::handle_click`], which both need the same wrap pass — the
-    /// click handler additionally uses `rows` to map the click back to a
-    /// logical line/column).
-    fn text_input_from_rows(&self, rows: &[InputRow]) -> TextInput {
-        let lines: Vec<String> = rows.iter().map(|r| r.text.clone()).collect();
-        let (visual_row, visual_col) = input_logical_to_visual(
-            rows,
-            self.input_editor.input.cursor_line,
-            self.input_editor.input.cursor_col,
-        );
+    /// The painted input: `rows` (the wrapped buffer) with the caret
+    /// mapped into visual space.
+    fn text_input(&self, rows: &[InputRow]) -> TextInput {
+        let (visual_row, visual_col) =
+            input_logical_to_visual(rows, self.input_cursor.0, self.input_cursor.1);
         let mut ti = TextInput::new(WidgetId::new(format!("{}-input", self.id)));
-        ti.lines = lines;
+        ti.lines = rows.iter().map(|r| r.text.clone()).collect();
         ti.cursor_line = visual_row;
         ti.cursor_col = visual_col;
-        // The placeholder advertises the *live* submit binding: in
-        // `submit_on_enter` mode plain `Enter` sends and
-        // `Shift+Enter` breaks the line, so the default hint would tell
-        // the user the exact opposite of what the keymap does.
+        // The placeholder advertises the live submit binding.
         ti.placeholder = Some(
             if self.submit_on_enter {
                 "Type a message\u{2026} (Enter to send, Shift+Enter for newline, Esc to cancel)"
@@ -1365,609 +640,1227 @@ impl ChatController {
             .into(),
         );
         ti.scroll_offset = self.input_scroll_offset;
-        // No horizontal scroll: `rows` is already wrapped to fit the box's
-        // width, so every visual row fits within `col_budget` columns.
         ti.scroll_col = 0;
         ti.has_focus = self.input_has_focus;
         ti
     }
 
-    // ── Key handling ──────────────────────────────────────────────────
-
-    fn handle_key(
-        &mut self,
-        key: &Key,
-        modifiers: &Modifiers,
-        backend: &dyn Backend,
-        layout: &ChatLayout,
-    ) -> ChatControllerEvent {
-        match key {
-            // Cycle order: input focus (`None`) → turn 0 → turn 1 → … →
-            // last turn → back to input focus. No-op when the transcript is empty.
-            Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && !modifiers.shift => {
-                self.focus_next_turn();
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::Tab) if !modifiers.ctrl && !modifiers.alt && modifiers.shift => {
-                self.focus_prev_turn();
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::BackTab) if !modifiers.ctrl && !modifiers.alt => {
-                self.focus_prev_turn();
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Enter while a turn (not the input) has keyboard focus:
-            //    toggle its collapsed state instead of submitting/
-            //    inserting a newline. Excludes `Ctrl+Enter` so the
-            //    universal submit chord still works even while a turn is
-            //    focused.
-            Key::Named(NamedKey::Enter)
-                if !modifiers.ctrl && self.focused_turn.is_some() && !self.input_has_focus =>
-            {
-                if let Some(idx) = self.focused_turn {
-                    self.toggle_turn_collapsed(idx);
-                }
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Submit: Ctrl+S ──────────────────────────────────────────
-            // Works on all terminals in both `submit_on_enter` modes; see
-            // this arm's note on `stty -ixon` in the module doc.
-            Key::Char('s') if modifiers.ctrl => self.try_submit(),
-
-            // `Ctrl+Enter` always submits. `Alt+Enter` submits in default mode
-            // (`submit_on_enter == false`); in `submit_on_enter == true` mode,
-            // `Shift+Enter` inserts a newline, with `Alt+Enter` as a fallback for
-            // terminals that can't report `Shift+Enter`. Plain `Enter` means newline
-            // in default mode, submit in `submit_on_enter == true` mode.
-            Key::Named(NamedKey::Enter) if modifiers.ctrl => self.try_submit(),
-            Key::Named(NamedKey::Enter)
-                if self.submit_on_enter && (modifiers.shift || modifiers.alt) =>
-            {
-                self.input_insert_char('\n');
-                self.history_pos = None;
-                self.saved_input = None;
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::Enter) if !self.submit_on_enter && modifiers.alt => {
-                self.try_submit()
-            }
-            Key::Named(NamedKey::Enter) if self.submit_on_enter => self.try_submit(),
-
-            // ── Cancel: Esc ────────────────────────────────────────────
-            Key::Named(NamedKey::Escape) => ChatControllerEvent::Cancelled,
-
-            // Plain `Enter` when `submit_on_enter == false` inserts a newline
-            Key::Named(NamedKey::Enter) => {
-                self.input_insert_char('\n');
-                // Typing resets history navigation.
-                self.history_pos = None;
-                self.saved_input = None;
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Backspace / Ctrl+Backspace (delete previous word) ──────
-            Key::Named(NamedKey::Backspace) if modifiers.ctrl => {
-                self.input_delete_word_backward();
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::Backspace) => {
-                self.apply_input_op(EditOp::DeleteBackward);
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Delete / Ctrl+Delete (delete next word) ─────────────────
-            Key::Named(NamedKey::Delete) if modifiers.ctrl => {
-                self.input_delete_word_forward();
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::Delete) => {
-                self.apply_input_op(EditOp::DeleteForward);
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Cursor movement — plain moves the cursor, `Shift` extends
-            //    the selection, `Ctrl` jumps by word (`Ctrl+Shift` both) ──
-            Key::Named(NamedKey::Left) if modifiers.ctrl => {
-                self.input_move_word(false, modifiers.shift);
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::Right) if modifiers.ctrl => {
-                self.input_move_word(true, modifiers.shift);
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::Left) => {
-                self.apply_input_op(EditOp::MoveLeft {
-                    extend: modifiers.shift,
-                });
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::Right) => {
-                self.apply_input_op(EditOp::MoveRight {
-                    extend: modifiers.shift,
-                });
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::Home) => {
-                self.apply_input_op(EditOp::MoveLineStart {
-                    extend: modifiers.shift,
-                });
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::End) => {
-                self.apply_input_op(EditOp::MoveLineEnd {
-                    extend: modifiers.shift,
-                });
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Up: history navigation or cursor up (by VISUAL row —
-            //    A wrapped paragraph's interior rows move the
-            //    cursor; history recall only fires on the first visual
-            //    row of the whole buffer) ─────────────────────────────
-            Key::Named(NamedKey::Up) => {
-                let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
-                let rows = wrap_input_rows(&self.input_editor.input.lines, col_budget);
-                let (row_idx, col) = input_logical_to_visual(
-                    &rows,
-                    self.input_editor.input.cursor_line,
-                    self.input_editor.input.cursor_col,
-                );
-                if row_idx == 0 {
-                    self.history_prev()
-                } else {
-                    let (line, col) = input_visual_to_logical(&rows, row_idx - 1, col);
-                    self.apply_input_op(EditOp::SetCursor {
-                        line,
-                        col,
-                        extend: modifiers.shift,
-                    });
-                    ChatControllerEvent::Consumed
-                }
-            }
-
-            // ── Down: history navigation or cursor down (by VISUAL row —
-            //    see the `Up` arm above) ─────────────────────────────────
-            Key::Named(NamedKey::Down) => {
-                let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
-                let rows = wrap_input_rows(&self.input_editor.input.lines, col_budget);
-                let (row_idx, col) = input_logical_to_visual(
-                    &rows,
-                    self.input_editor.input.cursor_line,
-                    self.input_editor.input.cursor_col,
-                );
-                if row_idx + 1 >= rows.len() {
-                    self.history_next()
-                } else {
-                    let (line, col) = input_visual_to_logical(&rows, row_idx + 1, col);
-                    self.apply_input_op(EditOp::SetCursor {
-                        line,
-                        col,
-                        extend: modifiers.shift,
-                    });
-                    ChatControllerEvent::Consumed
-                }
-            }
-
-            // ── PageUp / PageDown: scroll transcript ───────────────────
-            Key::Named(NamedKey::PageUp) => {
-                let visible =
-                    Self::transcript_visible_rows_for(backend.line_height(), layout.transcript);
-                let col_budget =
-                    self.transcript_col_budget(backend.char_width(), layout.transcript);
-                let total = self.build_transcript_rows(col_budget).len();
-                let jump = (visible.max(1) - 1).max(1) as isize;
-                self.scroll_transcript_by(-jump, total, visible);
-                ChatControllerEvent::Consumed
-            }
-            Key::Named(NamedKey::PageDown) => {
-                let visible =
-                    Self::transcript_visible_rows_for(backend.line_height(), layout.transcript);
-                let col_budget =
-                    self.transcript_col_budget(backend.char_width(), layout.transcript);
-                let total = self.build_transcript_rows(col_budget).len();
-                let jump = (visible.max(1) - 1).max(1) as isize;
-                self.scroll_transcript_by(jump, total, visible);
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Ctrl+A: move cursor to beginning of line (readline) ────
-            Key::Char('a') if modifiers.ctrl => {
-                self.apply_input_op(EditOp::MoveLineStart { extend: false });
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Ctrl+E: move cursor to end of line (readline) ──────────
-            Key::Char('e') if modifiers.ctrl => {
-                self.apply_input_op(EditOp::MoveLineEnd { extend: false });
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Regular char: insert (no ctrl/alt/cmd) ─────────────────
-            // `cmd` is excluded alongside `ctrl`/`alt` so a Cmd-modified
-            // letter (the macOS accelerator convention — every backend
-            // delivers it as `Key::Char` with the modifier set, not a
-            // dedicated key variant) falls through to the `KeyPressed`
-            // event below instead of being typed into the input buffer as
-            // a literal character.
-            Key::Char(c) if !modifiers.ctrl && !modifiers.alt && !modifiers.cmd => {
-                self.focus_input();
-                self.input_insert_char(*c);
-                // Any typing resets history navigation.
-                self.history_pos = None;
-                self.saved_input = None;
-                ChatControllerEvent::Consumed
-            }
-
-            // ── Anything else: pass to app ─────────────────────────────
-            _ => ChatControllerEvent::KeyPressed {
-                key: format!("{key:?}"),
-                modifiers: *modifiers,
-            },
-        }
+    fn send_button(&self) -> Button {
+        let mut button = Button::new(
+            WidgetId::new(format!("{}-send", self.id)),
+            if self.busy { "Stop" } else { "Send" },
+        );
+        button.disabled = !self.busy && self.input_text().trim().is_empty();
+        button
     }
 
-    /// Shared submit path for every submit trigger — `Ctrl+S`, `Alt+Enter`
-    /// / `Ctrl+Enter` / plain `Enter` (depending on
-    /// [`submit_on_enter`](Self::submit_on_enter)), and a click on the
-    /// Send segment while idle. Pushes the current input to
-    /// history (skipping empty/duplicate entries) and resets history
-    /// navigation state; ignores the request when the input is empty.
-    fn try_submit(&mut self) -> ChatControllerEvent {
-        if self.input_buf.is_empty() {
-            return ChatControllerEvent::Ignored;
-        }
-        let text = self.input_buf.clone();
-        if !text.trim().is_empty() && self.history.last() != Some(&text) {
-            self.history.push(text.clone());
-        }
+    fn scrollbar_track_width(&self, line_height: f32) -> f32 {
+        self.scrollbar_width.unwrap_or(line_height)
+    }
+}
+
+/// Width of the Send/Stop segment: 8 columns fits either label plus its
+/// button chrome.
+fn send_segment_width(char_width: f32) -> f32 {
+    const SEND_SEGMENT_COLS: f32 = 8.0;
+    SEND_SEGMENT_COLS * char_width.max(1.0)
+}
+
+fn transcript_col_budget(char_width: f32, rect: Rect) -> usize {
+    if char_width <= 0.0 {
+        80
+    } else {
+        ((rect.width / char_width).floor() as usize).max(1)
+    }
+}
+
+fn transcript_visible_rows(line_height: f32, rect: Rect) -> usize {
+    if line_height <= 0.0 {
+        0
+    } else {
+        (rect.height / line_height).floor() as usize
+    }
+}
+
+// ── State and layout ───────────────────────────────────────────────────────────
+
+/// A pointer gesture the chat captured the pointer for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChatDrag {
+    /// A transcript scrollbar thumb drag.
+    Scrollbar,
+    /// A drag-select in the input.
+    Input,
+}
+
+/// [`Interactive::State`] for [`Chat`]: the input history ring and the
+/// gesture in flight. Everything painted is a [`Chat`] field.
+#[derive(Debug, Default)]
+#[non_exhaustive]
+pub struct ChatState {
+    /// Past submitted messages, oldest first.
+    history: Vec<String>,
+    /// The history entry the input shows, while navigating history.
+    history_pos: Option<usize>,
+    /// The input saved when history navigation began: `(text, line, col)`.
+    saved_input: Option<(String, usize, usize)>,
+    /// The shared text-edit core's per-focus state for the input.
+    edit: LinesEditState,
+    /// The transcript scrollbar's own state.
+    scrollbar: ScrollbarState,
+    drag: Option<ChatDrag>,
+}
+
+impl ChatState {
+    /// Past submitted messages, oldest first.
+    pub fn history(&self) -> &[String] {
+        &self.history
+    }
+
+    /// The history entry the input shows, while navigating history.
+    pub fn history_pos(&self) -> Option<usize> {
+        self.history_pos
+    }
+
+    /// Forget history navigation: the next `↑` starts from the newest
+    /// entry again.
+    pub fn reset_history_navigation(&mut self) {
         self.history_pos = None;
         self.saved_input = None;
-        ChatControllerEvent::Submit { text }
+    }
+}
+
+/// The rects each part of a [`Chat`] occupies, in absolute coordinates.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ChatZones {
+    /// The 1-row status strip.
+    pub status: Rect,
+    /// The transcript rows.
+    pub transcript: Rect,
+    /// The transcript scrollbar, when the transcript is non-empty.
+    pub scrollbar: Option<Rect>,
+    /// The spinner, at the right of the status strip while busy.
+    pub spinner: Option<Rect>,
+    /// The hint row, when [`Chat::hint`] is set.
+    pub hint: Option<Rect>,
+    /// The input box.
+    pub input: Rect,
+    /// The Send/Stop segment, when the row is wide enough for it.
+    pub send: Option<Rect>,
+}
+
+/// [`Primitive::Layout`] for [`Chat`]: every part's rect plus each child
+/// widget laid out there.
+#[derive(Debug, Clone)]
+pub struct ChatLayout {
+    /// The rect the chat was laid out into.
+    pub area: Rect,
+    /// Each part's rect.
+    pub zones: ChatZones,
+    /// The transcript row pitch.
+    line_height: f32,
+    status: (MessageList, MessageListLayout),
+    spinner: Option<(Spinner, SpinnerLayout)>,
+    transcript: (MessageList, MessageListLayout),
+    turn_starts: Vec<usize>,
+    visible_rows: usize,
+    max_offset: usize,
+    scrollbar: Option<(Scrollbar, ScrollbarLayout)>,
+    hint: Option<(MessageList, MessageListLayout)>,
+    input: (TextInput, TextInputPrimitiveLayout),
+    input_rows: Vec<InputRow>,
+    send: Option<(Button, ButtonLayout)>,
+}
+
+impl ChatLayout {
+    /// The first transcript row painted — the last page while the chat
+    /// follows its tail.
+    pub fn transcript_scroll_top(&self) -> usize {
+        self.transcript.0.scroll_top
     }
 
-    // ── History navigation ────────────────────────────────────────────
-
-    fn history_prev(&mut self) -> ChatControllerEvent {
-        if self.history.is_empty() {
-            return ChatControllerEvent::Ignored;
-        }
-        match self.history_pos {
-            None => {
-                // Enter history: save current input, show newest history entry.
-                self.saved_input = Some((
-                    self.input_buf.clone(),
-                    self.input_editor.input.cursor_line,
-                    self.input_editor.input.cursor_col,
-                ));
-                let idx = self.history.len() - 1;
-                self.history_pos = Some(idx);
-                let entry = self.history[idx].clone();
-                self.set_input_text(&entry);
-                ChatControllerEvent::Consumed
-            }
-            Some(pos) if pos > 0 => {
-                let idx = pos - 1;
-                self.history_pos = Some(idx);
-                let entry = self.history[idx].clone();
-                self.set_input_text(&entry);
-                ChatControllerEvent::Consumed
-            }
-            Some(_) => {
-                // Already at the oldest entry — do nothing.
-                ChatControllerEvent::Consumed
-            }
-        }
+    /// The transcript's wrapped row count.
+    pub fn transcript_rows(&self) -> usize {
+        self.transcript.0.rows.len()
     }
 
-    fn history_next(&mut self) -> ChatControllerEvent {
-        match self.history_pos {
-            None => ChatControllerEvent::Ignored,
-            Some(pos) => {
-                if pos + 1 < self.history.len() {
-                    let idx = pos + 1;
-                    self.history_pos = Some(idx);
-                    let entry = self.history[idx].clone();
-                    self.set_input_text(&entry);
-                } else {
-                    // Restore saved input and exit history navigation.
-                    let (text, line, col) = self.saved_input.take().unwrap_or_default();
-                    self.set_input_text_with_cursor(&text, (line, col));
-                    self.history_pos = None;
-                }
-                ChatControllerEvent::Consumed
-            }
-        }
+    /// Transcript rows that fit the viewport.
+    pub fn transcript_visible_rows(&self) -> usize {
+        self.visible_rows
     }
 
-    // ── Mouse click / drag ────────────────────────────────────────────
+    /// The painted transcript rows.
+    pub fn transcript_list(&self) -> &MessageList {
+        &self.transcript.0
+    }
 
-    fn handle_click(
-        &mut self,
-        backend: &dyn Backend,
-        layout: &ChatLayout,
-        x: f32,
-        y: f32,
-    ) -> ChatControllerEvent {
-        // Send/Stop segment click? — see this struct's *Send / Stop
-        // segment* doc section for the idle-vs-busy split.
-        if let Some(send_rect) = layout.send {
-            if send_rect.contains(Point::new(x, y)) {
-                return self.click_send();
-            }
-        }
+    /// The painted input.
+    pub fn text_input(&self) -> &TextInput {
+        &self.input.0
+    }
+}
 
-        // Scrollbar click?
-        if let Some(sb_rect) = layout.scrollbar {
-            if sb_rect.contains(Point::new(x, y)) {
-                return self.click_scrollbar(backend, layout, sb_rect, y);
-            }
-        }
+// ── Sub-targets ────────────────────────────────────────────────────────────────
 
-        // Transcript area click? Hit-test against the same rows the last
-        // render painted — a hit on a turn's rows emits
-        // `TurnClicked` so the app can toggle collapse / resolve a
-        // `path:line` location; a miss (blank tail below the last row)
-        // just absorbs the click.
-        if layout.transcript.contains(Point::new(x, y)) {
-            let col_budget = self.transcript_col_budget(backend.char_width(), layout.transcript);
-            let (rows, turn_starts) = self.build_transcript_rows_indexed(col_budget);
-            let list = MessageList {
-                id: WidgetId::new(format!("{}-transcript", self.id)),
-                rows,
-                scroll_top: self.transcript_scroll_top.get(),
+/// The transcript's focus stop and region.
+const SUB_TRANSCRIPT: SubTarget = SubTarget(1);
+/// The input's focus stop and region.
+const SUB_INPUT: SubTarget = SubTarget(2);
+/// The Send/Stop button's region.
+const SUB_SEND: SubTarget = SubTarget(3);
+/// The transcript scrollbar's region.
+const SUB_SCROLLBAR: SubTarget = SubTarget(4);
+
+// ── Primitive ──────────────────────────────────────────────────────────────────
+
+impl A11yPrimitive for Chat {
+    fn a11y_info(&self) -> A11yInfo {
+        A11yInfo::new()
+            .with_role(A11yRole::Group)
+            .with_label("Chat")
+    }
+}
+
+impl Primitive for Chat {
+    type Layout = ChatLayout;
+    type Event = ChatEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    fn layout(&self, ctx: &LayoutCtx, rect: Rect) -> ChatLayout {
+        let lh = ctx.editor_line_height().max(1.0);
+        let char_w = ctx.char_width;
+        let status_h = lh;
+
+        // The Send/Stop segment takes a fixed-width column at the right
+        // of the input row when there is room for it beside the input.
+        let send_w = send_segment_width(char_w);
+        let show_send = rect.width > send_w * 2.0;
+        let input_row_w = if show_send {
+            rect.width - send_w
+        } else {
+            rect.width
+        };
+
+        // Auto-grow: the wrapped visual row count, clamped, plus the
+        // input's one-unit border above and below.
+        let col_budget = TextInput::content_cols(input_row_w, char_w);
+        let input_rows = wrap_input_rows(&self.input_lines, col_budget);
+        let (min_rows, max_rows) = self.input_rows;
+        let shown_rows = input_rows.len().max(1).clamp(min_rows, max_rows);
+        let input_h = shown_rows as f32 * ctx.line_height.max(1.0) + 2.0;
+        let hint_h = if self.hint.is_some() { lh } else { 0.0 };
+        let middle_h = (rect.height - status_h - input_h - hint_h).max(0.0);
+
+        let status = Rect::new(rect.x, rect.y, rect.width, status_h);
+        let input_y = rect.y + rect.height - input_h;
+        let input = Rect::new(rect.x, input_y, input_row_w, input_h);
+        let send = show_send.then(|| Rect::new(rect.x + input_row_w, input_y, send_w, input_h));
+        let hint = (hint_h > 0.0).then(|| Rect::new(rect.x, input_y - hint_h, rect.width, hint_h));
+        let spinner = (self.busy && rect.width > lh)
+            .then(|| Rect::new(rect.x + rect.width - lh, rect.y, lh, status_h));
+        let track_w = self.scrollbar_track_width(lh);
+        let (transcript, scrollbar) = if !self.transcript.is_empty() && rect.width > track_w {
+            (
+                Rect::new(rect.x, rect.y + status_h, rect.width - track_w, middle_h),
+                Some(Rect::new(
+                    rect.x + rect.width - track_w,
+                    rect.y + status_h,
+                    track_w,
+                    middle_h,
+                )),
+            )
+        } else {
+            (
+                Rect::new(rect.x, rect.y + status_h, rect.width, middle_h),
+                None,
+            )
+        };
+        let zones = ChatZones {
+            status,
+            transcript,
+            scrollbar,
+            spinner,
+            hint,
+            input,
+            send,
+        };
+
+        let status_list = MessageList {
+            id: WidgetId::new(format!("{}-status", self.id)),
+            rows: self.status_rows(),
+            scroll_top: 0,
+        };
+        let status_layout = Primitive::layout(&status_list, ctx, status);
+
+        let (rows, turn_starts) = self.transcript_rows(transcript_col_budget(char_w, transcript));
+        let visible_rows = transcript_visible_rows(lh, transcript);
+        let max_offset = transcript_max_offset(rows.len(), visible_rows);
+        let scroll_top = if self.stuck_to_bottom {
+            max_offset
+        } else {
+            self.transcript_scroll_top
+        };
+        let total_rows = rows.len();
+        let transcript_list = MessageList {
+            id: WidgetId::new(format!("{}-transcript", self.id)),
+            rows,
+            scroll_top,
+        };
+        let transcript_layout = Primitive::layout(&transcript_list, ctx, transcript);
+
+        let scrollbar = scrollbar.map(|track| {
+            let sb = Scrollbar::vertical(
+                format!("{}-sb", self.id),
+                track,
+                scroll_top as f32,
+                total_rows as f32,
+                visible_rows as f32,
+                track_w.max(1.0),
+            );
+            let layout = Primitive::layout(&sb, ctx, track);
+            (sb, layout)
+        });
+
+        let spinner = spinner.map(|r| {
+            let spinner = Spinner {
+                id: WidgetId::new(format!("{}-spinner", self.id)),
+                label: String::new(),
+                frame_idx: self.spinner_frame,
+                accent: None,
             };
-            let measure = MessageListMeasure::new(backend.line_height());
-            return match list.hit_test(layout.transcript, measure, x, y) {
-                MessageListHit::Row(row_idx) => {
-                    // `turn_starts` is non-empty here: a `Row` hit means
-                    // `list.rows` is non-empty, which only happens when
-                    // `self.transcript` produced at least one turn.
-                    let turn_idx = match turn_starts.binary_search(&row_idx) {
-                        Ok(i) => i,
-                        Err(i) => i.saturating_sub(1),
-                    };
-                    let row_in_turn = row_idx - turn_starts[turn_idx];
-                    // Move the keyboard cursor to the clicked turn so mouse
-                    // and keyboard stay in sync: a following `Enter`
-                    // acts on the same turn the click just landed on.
-                    self.set_focused_turn(Some(turn_idx));
-                    ChatControllerEvent::TurnClicked {
+            let layout = Primitive::layout(&spinner, ctx, r);
+            (spinner, layout)
+        });
+
+        let hint = hint.map(|r| {
+            let text: String = self
+                .hint
+                .as_ref()
+                .map(|h| h.spans.iter().map(|s| s.text.as_str()).collect())
+                .unwrap_or_default();
+            let list = MessageList {
+                id: WidgetId::new(format!("{}-hint", self.id)),
+                rows: vec![MessageRow::new(text, Color::rgb(140, 140, 140), 0.0)],
+                scroll_top: 0,
+            };
+            let layout = Primitive::layout(&list, ctx, r);
+            (list, layout)
+        });
+
+        let text_input = self.text_input(&input_rows);
+        let input_layout = Primitive::layout(&text_input, ctx, input);
+
+        let send = send.map(|r| {
+            let button = self.send_button();
+            let layout = Primitive::layout(&button, ctx, r);
+            (button, layout)
+        });
+
+        ChatLayout {
+            area: rect,
+            zones,
+            line_height: lh,
+            status: (status_list, status_layout),
+            spinner,
+            transcript: (transcript_list, transcript_layout),
+            turn_starts,
+            visible_rows,
+            max_offset,
+            scrollbar,
+            hint,
+            input: (text_input, input_layout),
+            input_rows,
+            send,
+        }
+    }
+
+    fn paint(
+        &self,
+        layout: &ChatLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &PaintEnv,
+    ) {
+        let child = env.with_widget_state(None);
+        let (status, status_layout) = &layout.status;
+        status.paint(status_layout, surface, &child);
+        if self.busy {
+            if let Some((spinner, l)) = &layout.spinner {
+                spinner.paint(l, surface, &child);
+            }
+        }
+        let (transcript, transcript_layout) = &layout.transcript;
+        transcript.paint(transcript_layout, surface, &child);
+        if let Some((sb, l)) = &layout.scrollbar {
+            sb.paint(l, surface, &child);
+        }
+        if let Some((hint, l)) = &layout.hint {
+            hint.paint(l, surface, &child);
+        }
+        let (input, input_layout) = &layout.input;
+        input.paint(input_layout, surface, &child);
+        if let Some((button, l)) = &layout.send {
+            let interaction = self.button_interaction(button, env);
+            button.paint(l, surface, &child.with_interaction(&interaction));
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(&self, layout: &ChatLayout, cells: &mut dyn crate::CellSurface, env: &PaintEnv) {
+        let child = env.with_widget_state(None);
+        let (status, status_layout) = &layout.status;
+        status.paint_cells(status_layout, cells, &child);
+        if self.busy {
+            if let Some((spinner, l)) = &layout.spinner {
+                spinner.paint_cells(l, cells, &child);
+            }
+        }
+        let (transcript, transcript_layout) = &layout.transcript;
+        transcript.paint_cells(transcript_layout, cells, &child);
+        if let Some((sb, l)) = &layout.scrollbar {
+            sb.paint_cells(l, cells, &child);
+        }
+        if let Some((hint, l)) = &layout.hint {
+            hint.paint_cells(l, cells, &child);
+        }
+        let (input, input_layout) = &layout.input;
+        input.paint_cells(input_layout, cells, &child);
+        if let Some((button, l)) = &layout.send {
+            let interaction = self.button_interaction(button, env);
+            button.paint_cells(l, cells, &child.with_interaction(&interaction));
+        }
+    }
+}
+
+impl Chat {
+    /// Hover and press on the Send/Stop region, re-addressed to the
+    /// button so it tints itself.
+    fn button_interaction(&self, button: &Button, env: &PaintEnv) -> InteractionState {
+        let readdress = |target: Option<crate::focus::FocusAddress>| match target {
+            Some((id, Some(SUB_SEND))) if id == self.id => Some((button.id, None)),
+            _ => None,
+        };
+        InteractionState::from_targets(
+            readdress(env.interaction.hovered_target()),
+            readdress(env.interaction.pressed_target()),
+        )
+    }
+}
+
+// ── Interactive ────────────────────────────────────────────────────────────────
+
+/// `rect` moved into the chat's local space.
+fn local_rect(layout: &ChatLayout, rect: Rect) -> Rect {
+    Rect::new(
+        rect.x - layout.area.x,
+        rect.y - layout.area.y,
+        rect.width,
+        rect.height,
+    )
+}
+
+impl Chat {
+    /// The event that returns keyboard focus to the input, when it is
+    /// elsewhere.
+    fn focus_input_event(&self) -> Option<ChatEvent> {
+        (self.focused_turn.is_some() || !self.input_has_focus)
+            .then_some(ChatEvent::FocusedTurnChanged { turn: None })
+    }
+
+    /// Report `primary`, emitting the input-focus write-back first when
+    /// focus is elsewhere.
+    fn with_input_focus(&self, primary: ChatEvent, cx: &mut EventCx) -> Handled<ChatEvent> {
+        if let Some(focus) = self.focus_input_event() {
+            cx.emit(focus.into_ui_event(self.id));
+        }
+        Handled::Event(primary)
+    }
+
+    fn submit(&self, state: &mut ChatState) -> Handled<ChatEvent> {
+        let text = self.input_text();
+        if text.is_empty() {
+            return Handled::Ignored;
+        }
+        if !text.trim().is_empty() && state.history.last() != Some(&text) {
+            state.history.push(text.clone());
+        }
+        state.reset_history_navigation();
+        Handled::Event(ChatEvent::Submit { text })
+    }
+
+    fn history_prev(&self, state: &mut ChatState) -> Handled<ChatEvent> {
+        if state.history.is_empty() {
+            return Handled::Ignored;
+        }
+        let idx = match state.history_pos {
+            None => {
+                state.saved_input =
+                    Some((self.input_text(), self.input_cursor.0, self.input_cursor.1));
+                state.history.len() - 1
+            }
+            Some(pos) if pos > 0 => pos - 1,
+            Some(_) => return Handled::Consumed,
+        };
+        state.history_pos = Some(idx);
+        Handled::Event(self.set_input(&state.history[idx], None))
+    }
+
+    fn history_next(&self, state: &mut ChatState) -> Handled<ChatEvent> {
+        let Some(pos) = state.history_pos else {
+            return Handled::Ignored;
+        };
+        if pos + 1 < state.history.len() {
+            state.history_pos = Some(pos + 1);
+            return Handled::Event(self.set_input(&state.history[pos + 1], None));
+        }
+        let (text, line, col) = state.saved_input.take().unwrap_or_default();
+        state.history_pos = None;
+        Handled::Event(self.set_input(&text, Some((line, col))))
+    }
+
+    /// `↑`/`↓`: move the caret one visual row, or walk history from the
+    /// first/last visual row of the buffer.
+    fn vertical(
+        &self,
+        state: &mut ChatState,
+        up: bool,
+        extend: bool,
+        layout: &ChatLayout,
+    ) -> Handled<ChatEvent> {
+        let rows = &layout.input_rows;
+        let (row, col) = input_logical_to_visual(rows, self.input_cursor.0, self.input_cursor.1);
+        if up && row == 0 {
+            return self.history_prev(state);
+        }
+        if !up && row + 1 >= rows.len() {
+            return self.history_next(state);
+        }
+        let target = if up { row - 1 } else { row + 1 };
+        let (line, col) = input_visual_to_logical(rows, target, col);
+        match self.edit_input(&EditOp::SetCursor { line, col, extend }) {
+            Some(event) => Handled::Event(event),
+            None => Handled::Consumed,
+        }
+    }
+
+    fn page(&self, down: bool, layout: &ChatLayout) -> Handled<ChatEvent> {
+        let visible = layout.visible_rows;
+        let jump = (visible.max(1) - 1).max(1) as isize;
+        Handled::Event(self.scroll_transcript_by(
+            if down { jump } else { -jump },
+            layout.transcript_rows(),
+            visible,
+        ))
+    }
+
+    /// Run `event` through the shared text-edit core against the input,
+    /// reseeded from the descriptor's caret and selection.
+    fn edit(
+        &self,
+        state: &mut ChatState,
+        event: &RoutedEvent,
+        layout: &ChatLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ChatEvent> {
+        state.edit.caret = Some(self.input_cursor);
+        state.edit.anchor = self.input_anchor;
+        let (ti_layout, rows) = (&layout.input.1, &layout.input_rows);
+        let caret_at = |p: Point| {
+            let (x, y) = (p.x + layout.area.x, p.y + layout.area.y);
+            ti_layout
+                .caret_at(x, y)
+                .map(|(row, col)| input_visual_to_logical(rows, row, col))
+        };
+        let outcome = {
+            let mut host = ChildHost::new(cx, Some(SUB_INPUT));
+            let outcome = {
+                let mut input_cx = EventCx::new(layout.input.0.id, &mut host);
+                handle_lines_edit_event(
+                    &self.input_lines,
+                    self.input_cursor,
+                    &mut state.edit,
+                    event,
+                    &caret_at,
+                    &mut input_cx,
+                )
+            };
+            match host.captured {
+                Some(true) => state.drag = Some(ChatDrag::Input),
+                Some(false) if state.drag == Some(ChatDrag::Input) => state.drag = None,
+                _ => {}
+            }
+            outcome
+        };
+        let cursor = state.edit.caret.unwrap_or(self.input_cursor);
+        let anchor = state.edit.anchor;
+        match outcome {
+            FlatEditOutcome::Changed(text) => {
+                state.reset_history_navigation();
+                self.with_input_focus(
+                    ChatEvent::InputChanged {
+                        lines: text.split('\n').map(str::to_string).collect(),
+                        cursor,
+                        anchor,
+                    },
+                    cx,
+                )
+            }
+            FlatEditOutcome::Consumed
+                if cursor != self.input_cursor || anchor != self.input_anchor =>
+            {
+                Handled::Event(ChatEvent::InputChanged {
+                    lines: self.input_lines.clone(),
+                    cursor,
+                    anchor,
+                })
+            }
+            FlatEditOutcome::Consumed => Handled::Consumed,
+            FlatEditOutcome::Ignored => Handled::Ignored,
+        }
+    }
+
+    fn handle_key(
+        &self,
+        state: &mut ChatState,
+        event: &RoutedEvent,
+        key: &KeyEvent,
+        layout: &ChatLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ChatEvent> {
+        let m = key.modifiers;
+        let turns = self.transcript.len();
+        let step_focus = |forward: bool| {
+            let turn = if turns == 0 {
+                None
+            } else if forward {
+                match self.focused_turn {
+                    None => Some(0),
+                    Some(i) if i + 1 < turns => Some(i + 1),
+                    Some(_) => None,
+                }
+            } else {
+                match self.focused_turn {
+                    None => Some(turns - 1),
+                    Some(0) => None,
+                    Some(i) => Some(i - 1),
+                }
+            };
+            Handled::Event(ChatEvent::FocusedTurnChanged { turn })
+        };
+        match &key.key {
+            Key::Named(NamedKey::Tab) if !m.ctrl && !m.alt => step_focus(!m.shift),
+            Key::Named(NamedKey::BackTab) if !m.ctrl && !m.alt => step_focus(false),
+            // Enter on a focused turn folds or unfolds it; Ctrl+Enter
+            // still submits.
+            Key::Named(NamedKey::Enter)
+                if !m.ctrl && !self.input_has_focus && self.focused_turn.is_some() =>
+            {
+                let turn_idx = self.focused_turn.unwrap_or(0);
+                Handled::Event(ChatEvent::TurnCollapsed {
+                    turn_idx,
+                    collapsed: !self.is_turn_collapsed(turn_idx),
+                })
+            }
+            Key::Char('s') if m.ctrl => self.submit(state),
+            Key::Named(NamedKey::Enter) if m.ctrl => self.submit(state),
+            Key::Named(NamedKey::Enter) if self.submit_on_enter && (m.shift || m.alt) => {
+                state.reset_history_navigation();
+                match self.edit_input(&EditOp::InsertChar('\n')) {
+                    Some(event) => self.with_input_focus(event, cx),
+                    None => Handled::Consumed,
+                }
+            }
+            Key::Named(NamedKey::Enter) if !self.submit_on_enter && m.alt => self.submit(state),
+            Key::Named(NamedKey::Enter) if self.submit_on_enter => self.submit(state),
+            Key::Named(NamedKey::Escape) => Handled::Event(ChatEvent::Cancelled),
+            Key::Named(NamedKey::Up) => self.vertical(state, true, m.shift, layout),
+            Key::Named(NamedKey::Down) => self.vertical(state, false, m.shift, layout),
+            Key::Named(NamedKey::PageUp) => self.page(false, layout),
+            Key::Named(NamedKey::PageDown) => self.page(true, layout),
+            other => {
+                // Copy and cut with nothing selected stay the app's keys.
+                let clipboard = matches!(
+                    EditIntent::from_key(other, m),
+                    Some(EditIntent::Copy | EditIntent::Cut)
+                );
+                let selected = self
+                    .input_anchor
+                    .is_some_and(|anchor| anchor != self.input_cursor);
+                let handled = if clipboard && !selected {
+                    Handled::Ignored
+                } else {
+                    self.edit(state, event, layout, cx)
+                };
+                match handled {
+                    Handled::Ignored => Handled::Event(ChatEvent::KeyPressed {
+                        key: format!("{other:?}"),
+                        modifiers: m,
+                    }),
+                    handled => handled,
+                }
+            }
+        }
+    }
+
+    /// Hand a pointer event to the Send/Stop button.
+    fn press_send(
+        &self,
+        state: &mut ChatState,
+        event: &RoutedEvent,
+        layout: &ChatLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ChatEvent> {
+        let Some((button, button_layout)) = &layout.send else {
+            return Handled::Ignored;
+        };
+        let rect = local_rect(layout, button_layout.bounds);
+        let routed = widget_host::child_event(event, Point::new(rect.x, rect.y), None);
+        let mut host = ChildHost::new(cx, Some(SUB_SEND));
+        let mut button_cx = EventCx::new(button.id, &mut host);
+        match Interactive::handle(button, &mut (), &routed, button_layout, &mut button_cx) {
+            Handled::Event(ButtonEvent::Activated { .. }) if self.busy => {
+                Handled::Event(ChatEvent::StopRequested)
+            }
+            Handled::Event(ButtonEvent::Activated { .. }) => self.submit(state),
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// Hand a pointer event to the transcript scrollbar.
+    fn scrollbar_event(
+        &self,
+        state: &mut ChatState,
+        event: &RoutedEvent,
+        layout: &ChatLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ChatEvent> {
+        let Some((sb, sb_layout)) = &layout.scrollbar else {
+            return Handled::Ignored;
+        };
+        if layout.max_offset == 0 {
+            return Handled::Ignored;
+        }
+        let rect = local_rect(layout, sb_layout.track);
+        let routed = widget_host::child_event(event, Point::new(rect.x, rect.y), None);
+        let mut host = ChildHost::new(cx, Some(SUB_SCROLLBAR));
+        let handled = {
+            let mut sb_cx = EventCx::new(sb.id, &mut host);
+            Interactive::handle(sb, &mut state.scrollbar, &routed, sb_layout, &mut sb_cx)
+        };
+        match host.captured {
+            Some(true) => state.drag = Some(ChatDrag::Scrollbar),
+            Some(false) => state.drag = None,
+            None => {}
+        }
+        match handled {
+            Handled::Event(ScrollbarEvent::Moved { fraction }) => {
+                let max = layout.max_offset;
+                let scroll_top = ((fraction * max as f32).round().max(0.0) as usize).min(max);
+                if scroll_top == layout.transcript_scroll_top() {
+                    return Handled::Consumed;
+                }
+                Handled::Event(ChatEvent::TranscriptScrolled {
+                    scroll_top,
+                    stuck_to_bottom: transcript_reached_bottom(scroll_top, max),
+                })
+            }
+            Handled::Consumed => Handled::Consumed,
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// A press on the transcript: the turn and in-turn row it landed on.
+    fn press_transcript(
+        &self,
+        abs: Point,
+        layout: &ChatLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ChatEvent> {
+        let (list, _) = &layout.transcript;
+        let measure = MessageListMeasure::new(layout.line_height);
+        match list.hit_test(layout.zones.transcript, measure, abs.x, abs.y) {
+            MessageListHit::Row(row_idx) => {
+                let turn_idx = match layout.turn_starts.binary_search(&row_idx) {
+                    Ok(i) => i,
+                    Err(i) => i.saturating_sub(1),
+                };
+                let row_in_turn = row_idx - layout.turn_starts[turn_idx];
+                if self.focused_turn != Some(turn_idx) || self.input_has_focus {
+                    cx.emit(
+                        ChatEvent::FocusedTurnChanged {
+                            turn: Some(turn_idx),
+                        }
+                        .into_ui_event(self.id),
+                    );
+                }
+                Handled::Event(ChatEvent::TurnClicked {
+                    turn_idx,
+                    row_in_turn,
+                })
+            }
+            MessageListHit::Empty => Handled::Consumed,
+        }
+    }
+
+    fn wheel(
+        &self,
+        event: &RoutedEvent,
+        layout: &ChatLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ChatEvent> {
+        let (list, list_layout) = &layout.transcript;
+        let rect = local_rect(layout, layout.zones.transcript);
+        let routed = widget_host::child_event(event, Point::new(rect.x, rect.y), None);
+        let mut host = ChildHost::new(cx, Some(SUB_TRANSCRIPT));
+        let mut list_cx = EventCx::new(list.id, &mut host);
+        match Interactive::handle(list, &mut (), &routed, list_layout, &mut list_cx) {
+            Handled::Event(MessageListEvent::Scrolled {
+                scroll_top,
+                at_bottom,
+            }) => Handled::Event(ChatEvent::TranscriptScrolled {
+                scroll_top,
+                stuck_to_bottom: at_bottom,
+            }),
+            Handled::Ignored => Handled::Ignored,
+            _ => Handled::Consumed,
+        }
+    }
+}
+
+impl Interactive for Chat {
+    type State = ChatState;
+    type Action = ChatEvent;
+
+    /// The transcript (while it has turns), then the input.
+    fn focus(&self) -> FocusSpec {
+        let mut stops = Vec::new();
+        if !self.transcript.is_empty() {
+            stops.push(FocusStop {
+                sub: SUB_TRANSCRIPT,
+            });
+        }
+        stops.push(FocusStop { sub: SUB_INPUT });
+        FocusSpec::Children(stops)
+    }
+
+    /// The Send/Stop button, the scrollbar, the transcript and the input,
+    /// in the chat's local space.
+    fn sub_regions(&self, layout: &ChatLayout) -> Vec<(Rect, SubTarget)> {
+        let z = &layout.zones;
+        let mut out = Vec::new();
+        if let Some(send) = z.send {
+            out.push((local_rect(layout, send), SUB_SEND));
+        }
+        if let Some(sb) = z.scrollbar {
+            out.push((local_rect(layout, sb), SUB_SCROLLBAR));
+        }
+        out.push((local_rect(layout, z.transcript), SUB_TRANSCRIPT));
+        out.push((local_rect(layout, z.input), SUB_INPUT));
+        out
+    }
+
+    fn handle(
+        &self,
+        state: &mut ChatState,
+        event: &RoutedEvent,
+        layout: &ChatLayout,
+        cx: &mut EventCx,
+    ) -> Handled<ChatEvent> {
+        match event {
+            RoutedEvent::Key(key) => self.handle_key(state, event, key, layout, cx),
+            RoutedEvent::Text(_) => self.edit(state, event, layout, cx),
+            RoutedEvent::Wheel { .. } => self.wheel(event, layout, cx),
+            RoutedEvent::Pointer { kind, local, .. } => {
+                match (state.drag, kind) {
+                    (Some(ChatDrag::Scrollbar), PointerKind::Move | PointerKind::Up(_)) => {
+                        return self.scrollbar_event(state, event, layout, cx);
+                    }
+                    (Some(ChatDrag::Input), PointerKind::Move | PointerKind::Up(_)) => {
+                        return self.edit(state, event, layout, cx);
+                    }
+                    _ => {}
+                }
+                if *kind != PointerKind::Down(MouseButton::Left) {
+                    return Handled::Ignored;
+                }
+                let abs = Point::new(local.x + layout.area.x, local.y + layout.area.y);
+                let z = &layout.zones;
+                if z.send.is_some_and(|r| r.contains(abs)) {
+                    self.press_send(state, event, layout, cx)
+                } else if z.scrollbar.is_some_and(|r| r.contains(abs)) {
+                    self.scrollbar_event(state, event, layout, cx)
+                } else if z.transcript.contains(abs) {
+                    self.press_transcript(abs, layout, cx)
+                } else if z.input.contains(abs) {
+                    if let Some(focus) = self.focus_input_event() {
+                        cx.emit(focus.into_ui_event(self.id));
+                    }
+                    match self.edit(state, event, layout, cx) {
+                        Handled::Ignored => Handled::Consumed,
+                        handled => handled,
+                    }
+                } else {
+                    Handled::Ignored
+                }
+            }
+            _ => Handled::Ignored,
+        }
+    }
+}
+
+// ── Controller ─────────────────────────────────────────────────────────────────
+
+/// A [`Chat`] plus its [`ChatState`], driven by raw [`UiEvent`]s and
+/// painted through a [`Backend`]. The controller applies every
+/// write-back event itself and answers the semantic ones as
+/// [`ChatControllerAction`]s.
+pub struct ChatController {
+    chat: Chat,
+    state: ChatState,
+    /// The input as one string, kept in step with [`Chat::input_lines`]
+    /// so [`Self::input_text`] can lend a `&str`.
+    input_buf: String,
+    /// The transcript row last painted, for [`Self::transcript_scroll_top`]
+    /// while the transcript follows its tail.
+    painted_scroll_top: Cell<usize>,
+}
+
+#[allow(deprecated)]
+impl ChatController {
+    /// A controller over an empty [`Chat`] with id `id`.
+    pub fn new(id: impl Into<String>) -> Self {
+        Self {
+            chat: Chat::new(WidgetId::new(id)),
+            state: ChatState::default(),
+            input_buf: String::new(),
+            painted_scroll_top: Cell::new(0),
+        }
+    }
+
+    /// The descriptor this controller paints and drives.
+    pub fn chat(&self) -> &Chat {
+        &self.chat
+    }
+
+    /// The widget state this controller drives the descriptor with.
+    pub fn state(&self) -> &ChatState {
+        &self.state
+    }
+
+    /// Store a [`ChatEvent`]'s write-back on the descriptor.
+    fn apply(&mut self, event: &ChatEvent) {
+        self.chat.apply(event);
+        if matches!(event, ChatEvent::InputChanged { .. }) {
+            self.input_buf = self.chat.input_text();
+        }
+    }
+
+    // ── Per-frame data setters ────────────────────────────────────────
+
+    /// Replace the transcript for the next render pass.
+    pub fn set_transcript(&mut self, turns: Vec<ChatTurn>) {
+        self.chat.transcript = turns;
+    }
+
+    /// Set the status-strip context label (e.g. `"Refining issue #N"`).
+    pub fn set_status(&mut self, label: StyledText) {
+        self.chat.status = label;
+    }
+
+    /// Enable or disable the busy spinner in the status strip.
+    pub fn set_busy(&mut self, busy: bool) {
+        self.chat.busy = busy;
+    }
+
+    /// Set the model chip label in the status strip (e.g. `"claude-opus-4-5"`).
+    pub fn set_model_label(&mut self, label: &str) {
+        self.chat.model_label = label.to_string();
+    }
+
+    /// Advance the spinner animation frame.
+    pub fn set_spinner_frame(&mut self, frame: usize) {
+        self.chat.spinner_frame = frame;
+    }
+
+    // ── Input accessors ───────────────────────────────────────────────
+
+    /// The current input buffer text, with `\n` separating lines.
+    pub fn input_text(&self) -> &str {
+        &self.input_buf
+    }
+
+    /// Clear the input buffer, caret, selection, scroll and history
+    /// navigation. Apps call this after handling a submit.
+    pub fn clear_input(&mut self) {
+        let cleared = self.chat.set_input("", None);
+        self.apply(&cleared);
+        self.chat.input_scroll_offset = 0;
+        self.state.reset_history_navigation();
+    }
+
+    /// Whether the input area currently has keyboard focus.
+    pub fn input_has_focus(&self) -> bool {
+        self.chat.input_has_focus
+    }
+
+    /// Set keyboard focus on the input area.
+    pub fn set_input_has_focus(&mut self, focus: bool) {
+        self.chat.input_has_focus = focus;
+    }
+
+    /// Configure the input area's auto-grow row-count clamp. `min` is
+    /// floored to `1`; `max` is floored to `min`. Default: `1..=8`.
+    pub fn set_input_height_range(&mut self, min: usize, max: usize) {
+        let min = min.max(1);
+        self.chat.input_rows = (min, max.max(min));
+    }
+
+    /// Override the scrollbar track width; `None` (default) is one line
+    /// height.
+    pub fn set_scrollbar_width(&mut self, width: Option<f32>) {
+        self.chat.scrollbar_width = width;
+    }
+
+    /// Toggle "Enter to send": `true` — `Enter` submits,
+    /// `Shift+Enter`/`Alt+Enter` insert a newline. `false` (default) —
+    /// `Enter` inserts a newline.
+    pub fn set_submit_on_enter(&mut self, submit_on_enter: bool) {
+        self.chat.submit_on_enter = submit_on_enter;
+    }
+
+    /// Whether `Enter` currently submits.
+    pub fn submit_on_enter(&self) -> bool {
+        self.chat.submit_on_enter
+    }
+
+    /// Set (or clear) the persistent hint row painted above the input box.
+    pub fn set_hint(&mut self, hint: Option<StyledText>) {
+        self.chat.hint = hint;
+    }
+
+    // ── Transcript push helpers ───────────────────────────────────────
+
+    /// Append a pre-styled turn. Do not mix with [`Self::set_transcript`].
+    pub fn push_turn(&mut self, role: ChatRole, text: StyledText) {
+        self.chat.push_turn(role, text);
+    }
+
+    /// Append a turn whose body is markdown — see
+    /// [`Chat::push_turn_markdown`].
+    pub fn push_turn_markdown(&mut self, role: ChatRole, markdown: &str, theme: &Theme) {
+        self.chat.push_turn_markdown(role, markdown, theme);
+    }
+
+    /// Current transcript scroll offset (first visible wrapped row) —
+    /// the row last painted while the transcript follows its tail.
+    pub fn transcript_scroll_top(&self) -> usize {
+        if self.chat.stuck_to_bottom {
+            self.painted_scroll_top.get()
+        } else {
+            self.chat.transcript_scroll_top
+        }
+    }
+
+    /// Programmatically override the transcript scroll position. This
+    /// stops following the tail; scrolling back to the last page
+    /// re-engages it.
+    pub fn set_transcript_scroll_top(&mut self, top: usize) {
+        self.chat.transcript_scroll_top = top;
+        self.chat.stuck_to_bottom = false;
+        self.painted_scroll_top.set(top);
+    }
+
+    /// Scroll the transcript by `delta` wrapped rows, clamped; reaching
+    /// the last page re-engages following the tail, scrolling up from it
+    /// disengages it.
+    pub fn scroll_transcript_by(&mut self, delta: isize, total_rows: usize, visible_rows: usize) {
+        let from = self.transcript_scroll_top();
+        let mut probe = self.chat.clone();
+        probe.stuck_to_bottom = false;
+        probe.transcript_scroll_top = from;
+        let event = probe.scroll_transcript_by(delta, total_rows, visible_rows);
+        self.apply(&event);
+        if let ChatEvent::TranscriptScrolled { scroll_top, .. } = event {
+            self.painted_scroll_top.set(scroll_top);
+        }
+    }
+
+    // ── Collapsible turns ─────────────────────────────────────────────
+
+    /// Whether `transcript[turn_idx]` is collapsed.
+    pub fn is_turn_collapsed(&self, turn_idx: usize) -> bool {
+        self.chat.is_turn_collapsed(turn_idx)
+    }
+
+    /// Set `transcript[turn_idx]`'s collapsed state; a no-op out of range.
+    pub fn set_turn_collapsed(&mut self, turn_idx: usize, collapsed: bool) {
+        self.chat.set_turn_collapsed(turn_idx, collapsed);
+    }
+
+    /// Flip `transcript[turn_idx]`'s collapsed state; a no-op out of range.
+    pub fn toggle_turn_collapsed(&mut self, turn_idx: usize) {
+        let collapsed = self.chat.is_turn_collapsed(turn_idx);
+        self.chat.set_turn_collapsed(turn_idx, !collapsed);
+    }
+
+    /// Override `transcript[turn_idx]`'s summary line; `None` falls back
+    /// to its first non-blank line.
+    pub fn set_turn_summary(&mut self, turn_idx: usize, summary: Option<String>) {
+        match summary {
+            Some(s) => {
+                self.chat.turn_summaries.insert(turn_idx, s);
+            }
+            None => {
+                self.chat.turn_summaries.remove(&turn_idx);
+            }
+        }
+    }
+
+    /// The line a collapsed `transcript[turn_idx]` shows — see
+    /// [`Chat::turn_summary_line`].
+    pub fn turn_summary_line(&self, turn_idx: usize) -> String {
+        self.chat.turn_summary_line(turn_idx)
+    }
+
+    /// The transcript's keyboard focus cursor.
+    pub fn focused_turn(&self) -> Option<usize> {
+        self.chat.focused_turn
+    }
+
+    /// Set the transcript's keyboard focus cursor; `None` returns focus to
+    /// the input.
+    pub fn set_focused_turn(&mut self, turn: Option<usize>) {
+        self.chat.focused_turn = turn;
+        if turn.is_some() {
+            self.chat.input_has_focus = false;
+        }
+    }
+
+    // ── Render ────────────────────────────────────────────────────────
+
+    /// Paint the chat into `rect` through `backend`.
+    pub fn render(&self, backend: &mut dyn Backend, rect: Rect) {
+        use crate::backend::DrawsPrimitives;
+        let layout = backend.draw_dyn(rect, &self.chat, &());
+        if let Some(layout) = layout.downcast_ref::<ChatLayout>() {
+            self.painted_scroll_top.set(layout.transcript_scroll_top());
+        }
+    }
+
+    // ── Handle ────────────────────────────────────────────────────────
+
+    /// Drive the chat with a [`UiEvent`], laid out at `rect` the way
+    /// [`Self::render`] paints it.
+    pub fn handle_event(
+        &mut self,
+        event: &UiEvent,
+        backend: &dyn Backend,
+        rect: Rect,
+    ) -> Handled<ChatControllerAction> {
+        use crate::backend::DrawsPrimitives;
+        let layout = backend.layout_primitive(rect, &self.chat);
+        let subs = Interactive::sub_regions(&self.chat, &layout);
+        let Some(routed) = widget_host::routed_event(event, rect, &subs) else {
+            return Handled::Ignored;
+        };
+        let units = crate::backend::primitive_layout_ctx(backend).units();
+        let driven = widget_host::drive(
+            &self.chat,
+            self.chat.id,
+            &mut self.state,
+            &routed,
+            &layout,
+            units,
+        );
+        for emitted in &driven.emitted {
+            if let UiEvent::Chat(id, event) = emitted {
+                if *id == self.chat.id {
+                    self.apply(event);
+                }
+            }
+        }
+        match driven.handled {
+            Handled::Event(event) => {
+                self.apply(&event);
+                match event {
+                    ChatEvent::Submit { text } => {
+                        Handled::Event(ChatControllerAction::Submit { text })
+                    }
+                    ChatEvent::StreamChunk { text } => {
+                        Handled::Event(ChatControllerAction::StreamChunk { text })
+                    }
+                    ChatEvent::Cancelled => Handled::Event(ChatControllerAction::Cancelled),
+                    ChatEvent::StopRequested => Handled::Event(ChatControllerAction::StopRequested),
+                    ChatEvent::KeyPressed { key, modifiers } => {
+                        Handled::Event(ChatControllerAction::KeyPressed { key, modifiers })
+                    }
+                    ChatEvent::TurnClicked {
                         turn_idx,
                         row_in_turn,
-                    }
+                    } => Handled::Event(ChatControllerAction::TurnClicked {
+                        turn_idx,
+                        row_in_turn,
+                    }),
+                    _ => Handled::Consumed,
                 }
-                MessageListHit::Empty => ChatControllerEvent::Consumed,
-            };
-        }
-
-        // Input area click?
-        if layout.input.contains(Point::new(x, y)) {
-            self.focus_input();
-            let col_budget = TextInput::content_cols(layout.input.width, backend.char_width());
-            let rows = wrap_input_rows(&self.input_editor.input.lines, col_budget);
-            let ti = self.text_input_from_rows(&rows);
-            let til = backend.layout_primitive(layout.input, &ti);
-            // `caret_at` resolves the absolute point to a VISUAL row
-            // index (into `rows`) and a column, not a logical line — map
-            // the row back through `rows`.
-            if let Some((visual_line, col)) = til.caret_at(x, y) {
-                let (line, col) = input_visual_to_logical(&rows, visual_line, col);
-                self.apply_input_op(EditOp::SetCursor {
-                    line,
-                    col,
-                    extend: false,
-                });
             }
-            return ChatControllerEvent::Consumed;
-        }
-
-        ChatControllerEvent::Ignored
-    }
-
-    /// Handle a click anywhere in the Send/Stop segment. The
-    /// segment always paints a single button filling the whole zone, so
-    /// no finer-grained hit-test is needed — any click inside it hits the
-    /// button.
-    fn click_send(&mut self) -> ChatControllerEvent {
-        if self.busy {
-            ChatControllerEvent::StopRequested
-        } else {
-            self.try_submit()
+            Handled::Consumed => Handled::Consumed,
+            Handled::Ignored => Handled::Ignored,
         }
     }
 
-    fn click_scrollbar(
+    /// Drive the chat with a [`UiEvent`].
+    #[deprecated(
+        since = "0.9.0",
+        note = "use `handle_event`, which returns `Handled<ChatControllerAction>` instead of `ChatControllerEvent`"
+    )]
+    pub fn handle(
         &mut self,
+        event: &UiEvent,
         backend: &dyn Backend,
-        layout: &ChatLayout,
-        sb_rect: Rect,
-        y: f32,
+        rect: Rect,
     ) -> ChatControllerEvent {
-        let visible = Self::transcript_visible_rows_for(backend.line_height(), layout.transcript);
-        let col_budget = self.transcript_col_budget(backend.char_width(), layout.transcript);
-        let total = self.build_transcript_rows(col_budget).len();
-        let max_offset = transcript_max_offset(total, visible);
-        if max_offset == 0 {
-            return ChatControllerEvent::Ignored;
-        }
-
-        let track_w = self.scrollbar_track_width(backend.line_height());
-        let sb = build_scrollbar(
-            format!("{}-sb", self.id),
-            sb_rect,
-            self.transcript_scroll_top.get(),
-            total,
-            visible,
-            false,
-            track_w.max(1.0),
-        );
-        match sb.press_zone(y) {
-            PressZone::Thumb => {
-                self.transcript_drag = Some(ThumbDrag::begin(
-                    y,
-                    self.transcript_scroll_top.get() as f32,
-                    sb.travel(),
-                    max_offset as f32,
-                ));
-                ChatControllerEvent::Consumed
+        match self.handle_event(event, backend, rect) {
+            Handled::Event(ChatControllerAction::Submit { text }) => {
+                ChatControllerEvent::Submit { text }
             }
-            PressZone::Before => {
-                self.scroll_transcript_by(-(visible as isize), total, visible);
-                ChatControllerEvent::Consumed
+            Handled::Event(ChatControllerAction::StreamChunk { text }) => {
+                ChatControllerEvent::StreamChunk { text }
             }
-            PressZone::After => {
-                self.scroll_transcript_by(visible as isize, total, visible);
-                ChatControllerEvent::Consumed
+            Handled::Event(ChatControllerAction::Cancelled) => ChatControllerEvent::Cancelled,
+            Handled::Event(ChatControllerAction::StopRequested) => {
+                ChatControllerEvent::StopRequested
             }
+            Handled::Event(ChatControllerAction::KeyPressed { key, modifiers }) => {
+                ChatControllerEvent::KeyPressed { key, modifiers }
+            }
+            Handled::Event(ChatControllerAction::TurnClicked {
+                turn_idx,
+                row_in_turn,
+            }) => ChatControllerEvent::TurnClicked {
+                turn_idx,
+                row_in_turn,
+            },
+            Handled::Consumed => ChatControllerEvent::Consumed,
+            Handled::Ignored => ChatControllerEvent::Ignored,
         }
     }
 
-    fn handle_drag(&mut self, y: f32) -> ChatControllerEvent {
-        let Some(drag) = &self.transcript_drag else {
-            return ChatControllerEvent::Ignored;
-        };
-        let Some(new) = drag.offset_at(y) else {
-            return ChatControllerEvent::Ignored;
-        };
-        let new = new.round() as usize;
-        // Copy max_offset before the immutable borrow of `drag` ends so we can
-        // use it when updating `stuck_to_bottom` after mutating `self`.
-        let max_offset = drag.max_offset() as usize;
-        if new == self.transcript_scroll_top.get() {
-            return ChatControllerEvent::Ignored;
-        }
-        self.transcript_scroll_top.set(new);
-        self.stuck_to_bottom = transcript_reached_bottom(new, max_offset);
-        ChatControllerEvent::Consumed
-    }
+    // ── Input editing ─────────────────────────────────────────────────
 
-    // ── Input text buffer manipulation ──────────────────────────────────
-
-    /// Route `op` through [`TextEditor::apply`] and resync `input_buf`
-    /// (see that field's doc) so [`input_text`](Self::input_text) keeps
-    /// seeing the result. Returns whether anything changed, mirroring
-    /// `TextEditor::apply`.
-    fn apply_input_op(&mut self, op: EditOp) -> bool {
-        let changed = self.input_editor.apply(op);
-        self.input_buf = self.input_editor.input.lines.join("\n");
-        changed
-    }
-
-    /// Replace the whole buffer, cursor parked at the end of the last
-    /// line with no active selection — used by history navigation and
-    /// [`clear_input`](Self::clear_input).
-    fn set_input_text(&mut self, text: &str) {
-        let lines = Self::split_input_lines(text);
-        let line = lines.len() - 1;
-        let col = lines[line].chars().count();
-        self.set_input_lines(lines, line, col);
-    }
-
-    /// Replace the whole buffer with the cursor at a specific
-    /// `(line, col)` (char columns), clamped to the new content —
-    /// restores the exact position `↑` history navigation saved before
-    /// `↓` walks back off the newest entry.
-    fn set_input_text_with_cursor(&mut self, text: &str, (line, col): (usize, usize)) {
-        let lines = Self::split_input_lines(text);
-        let line = line.min(lines.len() - 1);
-        let col = col.min(lines[line].chars().count());
-        self.set_input_lines(lines, line, col);
-    }
-
-    fn split_input_lines(text: &str) -> Vec<String> {
-        if text.is_empty() {
-            vec![String::new()]
-        } else {
-            text.split('\n').map(str::to_string).collect()
-        }
-    }
-
-    fn set_input_lines(&mut self, lines: Vec<String>, cursor_line: usize, cursor_col: usize) {
-        self.input_editor.input.lines = lines;
-        self.input_editor.input.cursor_line = cursor_line;
-        self.input_editor.input.cursor_col = cursor_col;
-        self.input_editor.set_selection_anchor(None);
-        self.input_buf = self.input_editor.input.lines.join("\n");
-    }
-
-    /// Insert a single character at the cursor.  Also used by `CharTyped`.
+    /// Insert a single character at the cursor.
     pub fn input_insert_char(&mut self, ch: char) {
-        self.apply_input_op(EditOp::InsertChar(ch));
+        if let Some(event) = self.chat.edit_input(&EditOp::InsertChar(ch)) {
+            self.apply(&event);
+        }
     }
 
     /// Insert a string at the cursor (e.g. for clipboard paste).
     pub fn input_insert_str(&mut self, s: &str) {
-        self.apply_input_op(EditOp::InsertText(s.to_string()));
-    }
-
-    /// `Ctrl+Backspace`: delete the active selection, or the word before
-    /// the cursor; at column 0 of a line (no word to delete) falls back
-    /// to a plain backspace, merging with the previous line.
-    fn input_delete_word_backward(&mut self) {
-        if self.input_editor.selection_range().is_some() {
-            self.apply_input_op(EditOp::DeleteSelection);
-            return;
-        }
-        let line_idx = self.input_editor.input.cursor_line;
-        let col = self.input_editor.input.cursor_col;
-        let start = word_start_left(&self.input_editor.input.lines[line_idx], col);
-        if start == col {
-            self.apply_input_op(EditOp::DeleteBackward);
-            return;
-        }
-        self.input_editor
-            .set_selection_anchor(Some((line_idx, start)));
-        self.apply_input_op(EditOp::DeleteSelection);
-    }
-
-    /// `Ctrl+Delete`: delete the active selection, or the word after the
-    /// cursor; at the end of a line (no word to delete) falls back to a
-    /// plain forward-delete, merging with the next line.
-    fn input_delete_word_forward(&mut self) {
-        if self.input_editor.selection_range().is_some() {
-            self.apply_input_op(EditOp::DeleteSelection);
-            return;
-        }
-        let line_idx = self.input_editor.input.cursor_line;
-        let col = self.input_editor.input.cursor_col;
-        let end = word_end_right(&self.input_editor.input.lines[line_idx], col);
-        if end == col {
-            self.apply_input_op(EditOp::DeleteForward);
-            return;
-        }
-        self.input_editor
-            .set_selection_anchor(Some((line_idx, end)));
-        self.apply_input_op(EditOp::DeleteSelection);
-    }
-
-    /// `Ctrl+Left`/`Ctrl+Right`: move the cursor to the next word
-    /// boundary (`extend` selects, matching `Shift+Ctrl+Left`/`Right`).
-    /// When there is no further word boundary on the current line, falls
-    /// back to [`EditOp::MoveLeft`]/[`EditOp::MoveRight`], which crosses
-    /// to the adjacent line exactly like the plain arrow key does.
-    fn input_move_word(&mut self, forward: bool, extend: bool) {
-        let line_idx = self.input_editor.input.cursor_line;
-        let col = self.input_editor.input.cursor_col;
-        let target = if forward {
-            word_end_right(&self.input_editor.input.lines[line_idx], col)
-        } else {
-            word_start_left(&self.input_editor.input.lines[line_idx], col)
-        };
-        if target == col {
-            let op = if forward {
-                EditOp::MoveRight { extend }
-            } else {
-                EditOp::MoveLeft { extend }
-            };
-            self.apply_input_op(op);
-        } else {
-            self.apply_input_op(EditOp::SetCursor {
-                line: line_idx,
-                col: target,
-                extend,
-            });
+        if let Some(event) = self.chat.edit_input(&EditOp::InsertText(s.to_string())) {
+            self.apply(&event);
         }
     }
 }
@@ -1975,48 +1868,17 @@ impl ChatController {
 // ── Module-level helpers ───────────────────────────────────────────────────────
 
 /// Last valid transcript scroll offset for `total_rows` wrapped rows in a
-/// `visible_rows`-tall viewport — the "last page" position follow-tail
-/// pins [`ChatController::render`] to, and the threshold
-/// [`ChatController::scroll_transcript_by`]'s `handle_drag`/
-/// `click_scrollbar` siblings each need to decide whether
-/// [`stuck_to_bottom`](ChatController) should (re-)engage. One shared
-/// definition so the render-time pin, the scroll-by clamp, the
-/// scrollbar-drag clamp, and the scrollbar-track click-jump clamp can't
-/// drift on what "the bottom" means — the same role
-/// [`crate::primitives::text_display::TextDisplay::layout`]'s own
-/// `auto_scroll` resolution plays for that primitive's declarative
-/// scroll state.
+/// `visible_rows`-tall viewport: the "last page" position following the
+/// tail paints, and the threshold every scroll path re-engages following
+/// at.
 fn transcript_max_offset(total_rows: usize, visible_rows: usize) -> usize {
     total_rows.saturating_sub(visible_rows)
 }
 
 /// Whether a transcript scrolled to `scroll_top` (out of `max_offset`,
-/// from [`transcript_max_offset`]) has reached or passed the last page —
-/// the follow-tail re-engage/disengage predicate shared by
-/// [`ChatController::scroll_transcript_by`] and `handle_drag`.
+/// from [`transcript_max_offset`]) has reached or passed the last page.
 fn transcript_reached_bottom(scroll_top: usize, max_offset: usize) -> bool {
     scroll_top >= max_offset
-}
-
-fn build_scrollbar(
-    id: String,
-    rect: Rect,
-    scroll_top: usize,
-    total_rows: usize,
-    visible_rows: usize,
-    is_dragging: bool,
-    min_thumb: f32,
-) -> Scrollbar {
-    let mut sb = Scrollbar::vertical(
-        id,
-        rect,
-        scroll_top as f32,
-        total_rows as f32,
-        visible_rows as f32,
-        min_thumb,
-    );
-    sb.dragging = is_dragging;
-    sb
 }
 
 /// Word-aware soft-wrap of `text` to `col_budget` characters per row.
@@ -2032,7 +1894,7 @@ fn wrap_text(text: &str, col_budget: usize) -> Vec<String> {
 /// into per-logical-line span lists.
 ///
 /// This is the inverse of the encoding used by
-/// [`ChatController::push_turn_markdown`], which concatenates per-line
+/// [`Chat::push_turn_markdown`], which concatenates per-line
 /// span vecs with [`StyledSpan::plain`]`("\n")` separators.  The
 /// resulting `Vec<Vec<StyledSpan>>` has one entry per logical line
 /// (including an empty entry for blank lines).
@@ -2050,39 +1912,6 @@ fn split_spans_by_newline(spans: &[StyledSpan]) -> Vec<Vec<StyledSpan>> {
     lines
 }
 
-/// Char-column of the word boundary left of `col` in `line` — `Ctrl+Left`/
-/// `Ctrl+Backspace`: skip any whitespace immediately left of `col`, then
-/// skip the contiguous run of non-whitespace before that. Returns `col`
-/// unchanged when `col == 0` (no boundary within this line), so callers
-/// fall back to crossing the line boundary instead.
-fn word_start_left(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
-    let mut i = col.min(chars.len());
-    while i > 0 && chars[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    while i > 0 && !chars[i - 1].is_whitespace() {
-        i -= 1;
-    }
-    i
-}
-
-/// Char-column of the word boundary right of `col` in `line` — the
-/// mirror of [`word_start_left`] for `Ctrl+Right`/`Ctrl+Delete`. Returns
-/// `col` unchanged when already at the line's end.
-fn word_end_right(line: &str, col: usize) -> usize {
-    let chars: Vec<char> = line.chars().collect();
-    let len = chars.len();
-    let mut i = col.min(len);
-    while i < len && chars[i].is_whitespace() {
-        i += 1;
-    }
-    while i < len && !chars[i].is_whitespace() {
-        i += 1;
-    }
-    i
-}
-
 // ── Input soft-wrap ─────────────────────────────────────────────────────
 
 /// One soft-wrapped visual row of the chat input buffer.
@@ -2094,10 +1923,11 @@ fn word_end_right(line: &str, col: usize) -> usize {
 /// every row for a given `logical_line`, in order, reconstructs that
 /// line's text char-for-char. That's what lets
 /// [`input_logical_to_visual`] / [`input_visual_to_logical`] round-trip
-/// cursor positions losslessly between logical (`input_editor`'s
+/// cursor positions losslessly between logical ([`Chat::input_cursor`]'s
 /// `(line, char column)`) and visual (row, char column) space.
+#[derive(Debug, Clone)]
 struct InputRow {
-    /// Index into the logical lines of [`ChatController::input_editor`].
+    /// Index into [`Chat::input_lines`].
     logical_line: usize,
     /// Char-column offset into `logical_line` where this row starts.
     col_offset: usize,
@@ -2184,7 +2014,7 @@ fn wrap_line_exact(line: &str, col_budget: usize) -> Vec<(usize, String)> {
     rows
 }
 
-/// Map a logical `(line, char_col)` cursor position — `input_editor`'s
+/// Map a logical `(line, char_col)` cursor position — [`Chat::input_cursor`]'s
 /// own coordinate space — to `(visual_row_idx, visual_col)` within `rows`
 /// — the inverse of [`input_visual_to_logical`].
 fn input_logical_to_visual(rows: &[InputRow], line: usize, col: usize) -> (usize, usize) {
@@ -2212,7 +2042,7 @@ fn input_logical_to_visual(rows: &[InputRow], line: usize, col: usize) -> (usize
 }
 
 /// Map a `(visual_row_idx, visual_col)` position within `rows` back to a
-/// logical `(line, char_col)` position in `input_editor`'s coordinate
+/// logical `(line, char_col)` position in [`Chat::input_cursor`]'s coordinate
 /// space — the inverse of [`input_logical_to_visual`]. Both indices are
 /// clamped, so this never panics on an out-of-range row or column;
 /// `rows` empty returns `(0, 0)`.
@@ -2223,6 +2053,62 @@ fn input_visual_to_logical(rows: &[InputRow], row_idx: usize, col: usize) -> (us
     let r = &rows[row_idx.min(last)];
     let len = r.text.chars().count();
     (r.logical_line, r.col_offset + col.min(len))
+}
+
+#[cfg(test)]
+#[allow(deprecated)]
+impl ChatController {
+    fn compute_layout(&self, backend: &dyn Backend, rect: Rect) -> ChatZones {
+        use crate::backend::DrawsPrimitives;
+        backend.layout_primitive(rect, &self.chat).zones
+    }
+
+    fn build_transcript_rows(&self, col_budget: usize) -> Vec<MessageRow> {
+        self.chat.transcript_rows(col_budget).0
+    }
+
+    fn apply_input_op(&mut self, op: EditOp) {
+        if let Some(event) = self.chat.edit_input(&op) {
+            self.apply(&event);
+        }
+    }
+
+    fn walk_history(&mut self, up: bool) -> ChatControllerEvent {
+        let handled = if up {
+            self.chat.history_prev(&mut self.state)
+        } else {
+            self.chat.history_next(&mut self.state)
+        };
+        match handled {
+            Handled::Event(event) => {
+                self.apply(&event);
+                ChatControllerEvent::Consumed
+            }
+            Handled::Consumed => ChatControllerEvent::Consumed,
+            Handled::Ignored => ChatControllerEvent::Ignored,
+        }
+    }
+
+    fn history_prev(&mut self) -> ChatControllerEvent {
+        self.walk_history(true)
+    }
+
+    fn history_next(&mut self) -> ChatControllerEvent {
+        self.walk_history(false)
+    }
+
+    fn selection_range(&self) -> Option<(Caret, Caret)> {
+        crate::behaviour::text_edit::selection_range(self.chat.input_cursor, self.chat.input_anchor)
+    }
+
+    fn selected_text(&self) -> Option<String> {
+        let (start, end) = self.selection_range()?;
+        Some(crate::behaviour::text_edit::text_in_range(
+            &self.chat.input_lines,
+            start,
+            end,
+        ))
+    }
 }
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
@@ -2286,8 +2172,8 @@ mod tests {
         cc.input_insert_str("hello\nworld");
         cc.clear_input();
         assert_eq!(cc.input_text(), "");
-        assert_eq!(cc.input_editor.input.cursor_line, 0);
-        assert_eq!(cc.input_editor.input.cursor_col, 0);
+        assert_eq!(cc.chat.input_cursor.0, 0);
+        assert_eq!(cc.chat.input_cursor.1, 0);
     }
 
     // ── Keyboard: submit ──────────────────────────────────────────────
@@ -2404,11 +2290,11 @@ mod tests {
             repeat: false,
         };
         cc.handle(&event, &RecordingBackend::new(), rect);
-        assert_eq!(cc.history.len(), 1);
-        assert_eq!(cc.history[0], "hello");
+        assert_eq!(cc.state.history.len(), 1);
+        assert_eq!(cc.state.history[0], "hello");
     }
 
-    // ── Keyboard: Ctrl+A / Ctrl+E line motion ─────────────────────────
+    // ── Keyboard: chorded editing keys ────────────────────────────────
 
     fn ctrl_key(ch: char) -> UiEvent {
         UiEvent::KeyPressed {
@@ -2422,43 +2308,76 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_a_moves_cursor_to_line_start() {
-        let mut cc = ChatController::new("c");
-        cc.input_insert_str("hello");
-        // Cursor sits at end of "hello" after insertion.
-        assert_eq!(cc.input_editor.input.cursor_col, 5);
-        let ev = cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
-        assert_eq!(ev, ChatControllerEvent::Consumed);
-        assert_eq!(cc.input_editor.input.cursor_col, 0);
-    }
-
-    #[test]
-    fn ctrl_e_moves_cursor_to_line_end() {
-        let mut cc = ChatController::new("c");
-        cc.input_insert_str("hello");
-        // Move to the start first so Ctrl+E has somewhere to travel.
-        cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
-        assert_eq!(cc.input_editor.input.cursor_col, 0);
-        let ev = cc.handle(&ctrl_key('e'), &RecordingBackend::new(), make_rect());
-        assert_eq!(ev, ChatControllerEvent::Consumed);
-        assert_eq!(cc.input_editor.input.cursor_col, 5);
-    }
-
-    #[test]
-    fn ctrl_a_e_respect_current_line_in_multiline() {
+    fn ctrl_a_selects_the_whole_input() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("hello\nworld");
-        // Cursor is on the second line, at its end.
-        assert_eq!(cc.input_editor.input.cursor_line, 1);
-        assert_eq!(cc.input_editor.input.cursor_col, 5);
-        // Ctrl+A moves to the start of the *current* line, not the buffer.
+        let ev = cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
+        assert_eq!(ev, ChatControllerEvent::Consumed);
+        assert_eq!(cc.selected_text().as_deref(), Some("hello\nworld"));
+    }
+
+    #[test]
+    fn ctrl_e_passes_through_as_key_pressed() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
+        let ev = cc.handle(&ctrl_key('e'), &RecordingBackend::new(), make_rect());
+        match ev {
+            ChatControllerEvent::KeyPressed { key, modifiers } => {
+                assert_eq!(key, "Char('e')");
+                assert!(modifiers.ctrl);
+            }
+            other => panic!("expected KeyPressed fallthrough, got {other:?}"),
+        }
+        assert_eq!(cc.chat.input_cursor, (0, 5));
+    }
+
+    #[test]
+    fn ctrl_backspace_stops_at_punctuation_like_every_text_widget() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("path.to_file");
+        let event = UiEvent::KeyPressed {
+            key: Key::Named(NamedKey::Backspace),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        };
+        cc.handle(&event, &RecordingBackend::new(), make_rect());
+        assert_eq!(cc.input_text(), "path.");
+    }
+
+    #[test]
+    fn ctrl_c_with_a_selection_copies_it() {
+        let mut cc = ChatController::new("c");
+        cc.input_insert_str("hello");
         cc.handle(&ctrl_key('a'), &RecordingBackend::new(), make_rect());
-        assert_eq!(cc.input_editor.input.cursor_line, 1);
-        assert_eq!(cc.input_editor.input.cursor_col, 0);
-        // Ctrl+E moves to the end of the current line (end of buffer here).
-        cc.handle(&ctrl_key('e'), &RecordingBackend::new(), make_rect());
-        assert_eq!(cc.input_editor.input.cursor_line, 1);
-        assert_eq!(cc.input_editor.input.cursor_col, 5);
+        let probe = cc.chat.clone();
+        let layout = {
+            use crate::backend::DrawsPrimitives;
+            RecordingBackend::new().layout_primitive(make_rect(), &probe)
+        };
+        let event = RoutedEvent::Key(KeyEvent {
+            key: Key::Char('c'),
+            modifiers: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            repeat: false,
+        });
+        let driven = widget_host::drive(
+            &probe,
+            probe.id,
+            &mut cc.state,
+            &event,
+            &layout,
+            crate::primitive::Units::Cells,
+        );
+        assert_eq!(driven.handled, Handled::Consumed);
+        assert_eq!(
+            driven.emitted,
+            vec![UiEvent::TextCopied("hello".to_string())]
+        );
     }
 
     // macOS delivers a Cmd-modified letter as a plain `Key::Char` with
@@ -2658,30 +2577,30 @@ mod tests {
     #[test]
     fn up_enters_history_with_newest_entry() {
         let mut cc = ChatController::new("c");
-        cc.history.push("first".into());
-        cc.history.push("second".into());
+        cc.state.history.push("first".into());
+        cc.state.history.push("second".into());
         let ev = cc.history_prev();
         assert_eq!(ev, ChatControllerEvent::Consumed);
         assert_eq!(cc.input_text(), "second");
-        assert_eq!(cc.history_pos, Some(1));
+        assert_eq!(cc.state.history_pos, Some(1));
     }
 
     #[test]
     fn up_twice_goes_to_older_entry() {
         let mut cc = ChatController::new("c");
-        cc.history.push("first".into());
-        cc.history.push("second".into());
+        cc.state.history.push("first".into());
+        cc.state.history.push("second".into());
         cc.history_prev(); // → "second"
         let ev = cc.history_prev();
         assert_eq!(ev, ChatControllerEvent::Consumed);
         assert_eq!(cc.input_text(), "first");
-        assert_eq!(cc.history_pos, Some(0));
+        assert_eq!(cc.state.history_pos, Some(0));
     }
 
     #[test]
     fn up_at_oldest_entry_stays() {
         let mut cc = ChatController::new("c");
-        cc.history.push("only".into());
+        cc.state.history.push("only".into());
         cc.history_prev(); // at idx 0
         let ev = cc.history_prev(); // already at oldest
         assert_eq!(ev, ChatControllerEvent::Consumed);
@@ -2692,15 +2611,15 @@ mod tests {
     fn down_after_history_nav_restores_saved_input() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("draft");
-        cc.history.push("first".into());
-        cc.history.push("second".into());
+        cc.state.history.push("first".into());
+        cc.state.history.push("second".into());
         cc.history_prev(); // → "second"
         cc.history_prev(); // → "first"
         cc.history_next(); // → "second"
         let ev = cc.history_next(); // → restore "draft"
         assert_eq!(ev, ChatControllerEvent::Consumed);
         assert_eq!(cc.input_text(), "draft");
-        assert_eq!(cc.history_pos, None);
+        assert_eq!(cc.state.history_pos, None);
     }
 
     #[test]
@@ -2715,7 +2634,7 @@ mod tests {
     #[test]
     fn up_key_on_line_0_enters_history() {
         let mut cc = ChatController::new("c");
-        cc.history.push("prev".into());
+        cc.state.history.push("prev".into());
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Up),
@@ -2732,7 +2651,7 @@ mod tests {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("line0\nline1");
         // Cursor is on line 1 after insert.
-        assert_eq!(cc.input_editor.input.cursor_line, 1);
+        assert_eq!(cc.chat.input_cursor.0, 1);
         let rect = make_rect();
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Up),
@@ -2741,9 +2660,9 @@ mod tests {
         };
         let ev = cc.handle(&event, &RecordingBackend::new(), rect);
         assert_eq!(ev, ChatControllerEvent::Consumed);
-        assert_eq!(cc.input_editor.input.cursor_line, 0);
+        assert_eq!(cc.chat.input_cursor.0, 0);
         // History should NOT have been entered.
-        assert_eq!(cc.history_pos, None);
+        assert_eq!(cc.state.history_pos, None);
     }
 
     // ── Transcript scroll ─────────────────────────────────────────────
@@ -2806,7 +2725,7 @@ mod tests {
         );
         assert_eq!(
             cc.transcript_scroll_top(),
-            40 - 2 * TRANSCRIPT_ROWS_PER_NOTCH as usize,
+            40 - 2 * 3,
             "two notches move two notches' worth of rows"
         );
     }
@@ -2843,7 +2762,7 @@ mod tests {
     fn new_controller_is_stuck_to_bottom() {
         let cc = ChatController::new("c");
         assert!(
-            cc.stuck_to_bottom,
+            cc.chat.stuck_to_bottom,
             "new controller must start stuck_to_bottom=true"
         );
     }
@@ -2886,7 +2805,7 @@ mod tests {
                                             // Scroll to a mid position.
         cc.scroll_transcript_by(3, 20, 5); // scroll_top=3, stuck=false
         assert!(
-            !cc.stuck_to_bottom,
+            !cc.chat.stuck_to_bottom,
             "scroll_transcript_by up must disengage follow-tail"
         );
         assert_eq!(cc.transcript_scroll_top(), 3);
@@ -2911,11 +2830,11 @@ mod tests {
         // Disengage by scrolling up.
         cc.scroll_transcript_by(-5, 20, 5); // clamped to 0, max=15, stuck=false
         cc.scroll_transcript_by(3, 20, 5); // scroll_top=3, stuck=false
-        assert!(!cc.stuck_to_bottom);
+        assert!(!cc.chat.stuck_to_bottom);
         // Scroll to the bottom (max = 20−5 = 15).
         cc.scroll_transcript_by(100, 20, 5); // clamped to 15, stuck=(15≥15)=true
         assert!(
-            cc.stuck_to_bottom,
+            cc.chat.stuck_to_bottom,
             "scrolling back to the last page must re-engage follow-tail"
         );
     }
@@ -2926,9 +2845,9 @@ mod tests {
     fn push_turn_appends_turn_to_transcript() {
         let mut cc = ChatController::new("c");
         cc.push_turn(ChatRole::User, StyledText::plain("hello"));
-        assert_eq!(cc.transcript.len(), 1);
-        assert_eq!(cc.transcript[0].role, ChatRole::User);
-        let text: String = cc.transcript[0]
+        assert_eq!(cc.chat.transcript.len(), 1);
+        assert_eq!(cc.chat.transcript[0].role, ChatRole::User);
+        let text: String = cc.chat.transcript[0]
             .text
             .spans
             .iter()
@@ -2942,9 +2861,9 @@ mod tests {
         let mut cc = ChatController::new("c");
         cc.push_turn(ChatRole::User, StyledText::plain("first"));
         cc.push_turn(ChatRole::Assistant, StyledText::plain("second"));
-        assert_eq!(cc.transcript.len(), 2);
-        assert_eq!(cc.transcript[0].role, ChatRole::User);
-        assert_eq!(cc.transcript[1].role, ChatRole::Assistant);
+        assert_eq!(cc.chat.transcript.len(), 2);
+        assert_eq!(cc.chat.transcript[0].role, ChatRole::User);
+        assert_eq!(cc.chat.transcript[1].role, ChatRole::Assistant);
     }
 
     #[test]
@@ -2952,10 +2871,10 @@ mod tests {
         let mut cc = ChatController::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::Assistant, "line one\nline two", &theme);
-        assert_eq!(cc.transcript.len(), 1);
-        assert_eq!(cc.transcript[0].role, ChatRole::Assistant);
+        assert_eq!(cc.chat.transcript.len(), 1);
+        assert_eq!(cc.chat.transcript[0].role, ChatRole::Assistant);
         // Span texts joined must contain both lines with a '\n' separator.
-        let text: String = cc.transcript[0]
+        let text: String = cc.chat.transcript[0]
             .text
             .spans
             .iter()
@@ -2983,7 +2902,7 @@ mod tests {
         let mut cc = ChatController::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::Assistant, "- item one\n- item two", &theme);
-        let text: String = cc.transcript[0]
+        let text: String = cc.chat.transcript[0]
             .text
             .spans
             .iter()
@@ -3005,7 +2924,7 @@ mod tests {
         let theme = crate::Theme::default();
         // Empty markdown must not panic and must append exactly one turn.
         cc.push_turn_markdown(ChatRole::System, "", &theme);
-        assert_eq!(cc.transcript.len(), 1);
+        assert_eq!(cc.chat.transcript.len(), 1);
     }
 
     // ── Transcript row building ───────────────────────────────────────
@@ -3042,7 +2961,7 @@ mod tests {
         let mut cc = ChatController::new("c");
         let theme = crate::Theme::default();
         cc.push_turn_markdown(ChatRole::Assistant, "# Heading\nbody", &theme);
-        let turn = &cc.transcript[0];
+        let turn = &cc.chat.transcript[0];
         // Markdown adapter produces 2 lines → 2 scales.
         assert_eq!(
             turn.line_scales.len(),
@@ -3071,7 +2990,7 @@ mod tests {
         let mut cc = ChatController::new("c");
         cc.push_turn(ChatRole::User, StyledText::plain("plain text"));
         assert!(
-            cc.transcript[0].line_scales.is_empty(),
+            cc.chat.transcript[0].line_scales.is_empty(),
             "push_turn must leave line_scales empty"
         );
     }
@@ -3382,7 +3301,7 @@ mod tests {
         let mut cc = ChatController::new("c");
         cc.set_input_height_range(1, 8);
         cc.input_insert_str("hello world this wraps");
-        cc.history.push("prev".into());
+        cc.state.history.push("prev".into());
         // Narrow rect forces wrapping: content width well under the text length.
         let rect = Rect::new(0.0, 0.0, 12.0, 24.0);
         let event = UiEvent::KeyPressed {
@@ -3394,7 +3313,7 @@ mod tests {
         assert_eq!(ev, ChatControllerEvent::Consumed);
         // History must NOT have been entered — the cursor started on a
         // later visual row of the wrapped paragraph, not the first one.
-        assert_eq!(cc.history_pos, None);
+        assert_eq!(cc.state.history_pos, None);
         assert_eq!(cc.input_text(), "hello world this wraps");
     }
 
@@ -3402,8 +3321,8 @@ mod tests {
     fn up_on_first_visual_row_of_wrapped_paragraph_enters_history() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("hello world this wraps");
-        cc.input_editor.input.cursor_col = 3; // still within the first wrapped row
-        cc.history.push("prev".into());
+        cc.chat.input_cursor.1 = 3; // still within the first wrapped row
+        cc.state.history.push("prev".into());
         let rect = Rect::new(0.0, 0.0, 12.0, 24.0);
         let event = UiEvent::KeyPressed {
             key: Key::Named(NamedKey::Up),
@@ -3421,8 +3340,8 @@ mod tests {
         // A wrapped paragraph sitting in `saved_input`, restored once Down
         // walks off the newest history entry.
         cc.input_insert_str("hello world this wraps");
-        cc.history.push("first".into());
-        cc.history.push("second".into());
+        cc.state.history.push("first".into());
+        cc.state.history.push("second".into());
         let rect = Rect::new(0.0, 0.0, 12.0, 24.0);
         // Drive `history_prev` directly (bypassing the Up key) to reach a
         // deterministic "navigating the newest entry" state.
@@ -3439,7 +3358,7 @@ mod tests {
         // "second" fits on one visual row even at width 12, so Down from
         // its only (first==last) row walks off the newest history entry
         // and restores the saved wrapped paragraph.
-        assert_eq!(cc.history_pos, None);
+        assert_eq!(cc.state.history_pos, None);
         assert_eq!(cc.input_text(), "hello world this wraps");
     }
 
@@ -3451,14 +3370,14 @@ mod tests {
         cc.input_insert_str("hi");
         cc.apply_input_op(EditOp::DeleteBackward);
         assert_eq!(cc.input_text(), "h");
-        assert_eq!(cc.input_editor.input.cursor_col, 1);
+        assert_eq!(cc.chat.input_cursor.1, 1);
     }
 
     #[test]
     fn backspace_at_start_is_noop() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("x");
-        cc.input_editor.input.cursor_col = 0;
+        cc.chat.input_cursor.1 = 0;
         cc.apply_input_op(EditOp::DeleteBackward);
         assert_eq!(cc.input_text(), "x");
     }
@@ -3467,7 +3386,7 @@ mod tests {
     fn delete_removes_char_at_cursor() {
         let mut cc = ChatController::new("c");
         cc.input_insert_str("ab");
-        cc.input_editor.input.cursor_col = 0;
+        cc.chat.input_cursor.1 = 0;
         cc.apply_input_op(EditOp::DeleteForward);
         assert_eq!(cc.input_text(), "b");
     }
@@ -3504,7 +3423,7 @@ mod tests {
             &RecordingBackend::new(),
             make_rect(),
         );
-        assert_eq!(cc.input_editor.selected_text().as_deref(), Some("lo"));
+        assert_eq!(cc.selected_text().as_deref(), Some("lo"));
     }
 
     #[test]
@@ -3542,10 +3461,10 @@ mod tests {
             &RecordingBackend::new(),
             make_rect(),
         );
-        assert_eq!(cc.input_editor.selection_range(), None);
+        assert_eq!(cc.selection_range(), None);
         // One Shift+Left selects col 4..5; the plain Left lands on the
         // selection's near edge (4), not one further step back (3).
-        assert_eq!(cc.input_editor.input.cursor_col, 4);
+        assert_eq!(cc.chat.input_cursor.1, 4);
     }
 
     // ── Word ops: Ctrl+Backspace / Ctrl+Left/Right ────────────────────
@@ -3631,7 +3550,7 @@ mod tests {
             &RecordingBackend::new(),
             make_rect(),
         );
-        assert_eq!(cc.input_editor.input.cursor_col, 6);
+        assert_eq!(cc.chat.input_cursor.1, 6);
     }
 
     #[test]
@@ -3650,7 +3569,7 @@ mod tests {
             &RecordingBackend::new(),
             make_rect(),
         );
-        assert_eq!(cc.input_editor.selected_text().as_deref(), Some("world"));
+        assert_eq!(cc.selected_text().as_deref(), Some("world"));
     }
 
     // ── Layout zones ─────────────────────────────────────────────────
@@ -3711,8 +3630,8 @@ mod tests {
     fn set_input_height_range_floors_max_to_min() {
         let mut cc = ChatController::new("c");
         cc.set_input_height_range(5, 2); // max < min — max floored up to min.
-        assert_eq!(cc.input_min_rows, 5);
-        assert_eq!(cc.input_max_rows, 5);
+        assert_eq!(cc.chat.input_rows.0, 5);
+        assert_eq!(cc.chat.input_rows.1, 5);
     }
 
     #[test]
@@ -4405,6 +4324,7 @@ mod tests {
     #[cfg(feature = "gtk")]
     #[test]
     fn gtk_render_inks_surface_and_layout_nonempty() {
+        use crate::backend::DrawsPrimitives;
         use crate::gtk::GtkBackend;
         use pangocairo::cairo::{Context, Format, ImageSurface};
 

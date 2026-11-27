@@ -7,7 +7,6 @@
 //! define structure + handle semantic events, without reimplementing
 //! open/close/navigate/hover logic.
 //!
-//! - [`FocusGroup`] — Tab/Shift+Tab cycling through N regions by index.
 //! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
 //! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
@@ -30,8 +29,9 @@
 //!   mode (free-text confirm) and list/search mode (item selection).
 //! - [`ChatController`] — chat overlay with scrollable transcript + multi-line
 //!   input + status strip.
-//! - [`TabGroupController`] — TabBar + Split + DropZone + FocusGroup wired into
-//!   editor-group-style tabbed split panes.
+//! - [`TabGroup`] / [`TabGroupController`] — editor-group-style tabbed
+//!   split panes: a `TabBar` per pane, `SplitTree` dividers and a
+//!   `DropOverlay` for tab drags.
 //! - [`HelpRegistry`] / [`HelpOverlayController`] — per-view help registry +
 //!   `?`-triggered cheatsheet overlay, plus helpers to feed registered
 //!   actions into the command palette.
@@ -69,10 +69,8 @@ pub mod app_shell;
 pub mod bottom_panel;
 pub mod chat_controller;
 pub mod context_menu_controller;
-mod divider_drag;
 pub mod dual_mode_palette;
 pub mod file_picker;
-pub mod focus_group;
 pub mod folder_picker;
 pub mod form_controller;
 pub mod form_dialog;
@@ -87,6 +85,12 @@ mod path_picker;
 mod shell_layout;
 mod sidebar_edit;
 pub mod sidebar_panel_body;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 mod sidebar_scroll;
 pub mod sidebar_system;
 pub mod status_bar_interaction;
@@ -95,6 +99,14 @@ pub mod tab_group;
 pub mod toast_stack;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
+// Drives `TreeTable`'s `Interactive` impl, which exists only where a
+// backend does.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub mod tree_table_controller;
 pub(crate) mod widget_host;
 pub mod workspace;
@@ -108,7 +120,10 @@ pub use bottom_panel::{
     BottomPanelItem, BottomPanelLayout, BottomPanelPrimitiveLayout, BottomPanelState,
     BottomPanelTab,
 };
-pub use chat_controller::{ChatController, ChatControllerAction, ChatRole, ChatTurn};
+pub use chat_controller::{
+    Chat, ChatController, ChatControllerAction, ChatEvent, ChatLayout, ChatRole, ChatState,
+    ChatTurn, ChatZones,
+};
 // `ChatControllerEvent` is `#[deprecated]` (use `ChatController::handle_event`'s
 // `Handled<ChatControllerAction>` instead). Allow it here since `pub use` of a
 // deprecated item is itself a use site.
@@ -130,7 +145,6 @@ pub use file_picker::{FilePicker, FilePickerController, FilePickerMode, FilePick
 // deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use file_picker::FilePickerEvent;
-pub use focus_group::FocusGroup;
 pub use folder_picker::{
     FolderPicker, FolderPickerController, FolderPickerState, PALETTE_CHROME_ROWS,
 };
@@ -178,9 +192,18 @@ pub use message_dialog::MessageDialogEvent;
 pub use notification::notify_or_toast;
 pub use path_picker::{PathPickerAction, PathPickerState};
 pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use sidebar_system::SidebarLayout;
 pub use sidebar_system::{
-    NavigationMode, SectionKind, SidebarEvent, SidebarSectionDef, SidebarSystem,
+    NavigationMode, SectionKind, Sidebar, SidebarAction, SidebarBody, SidebarSection,
+    SidebarSectionDef,
 };
+pub use sidebar_system::{SidebarEvent, SidebarState, SidebarSystem};
 // `StatusBarAction` is `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
 // `Handled<WidgetId>` instead). Allow it here since `pub use` of a deprecated
 // item is itself a use site.
@@ -189,7 +212,9 @@ pub use status_bar_interaction::StatusBarAction;
 pub use status_bar_interaction::StatusBarInteraction;
 pub use tab_drag::{resolve_tab_drop, TabDragSource, TabDropInstruction};
 pub use tab_group::{
-    GroupLayout, Pane, PaneDragRect, PaneTab, TabGroupController, TabGroupEvent, TabGroupLayout,
+    GroupLayout, Pane, PaneDragRect, PaneTab, TabGroup, TabGroupController, TabGroupEvent,
+    TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
+    TabGroupSubPart, TabGroupTab,
 };
 pub use toast_stack::{ToastStackAction, ToastStackController};
 // `ToastStackEvent` is `#[deprecated]` (use `ToastStackController::handle_event`'s
@@ -201,6 +226,12 @@ pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHover
 pub use tree_controller::{
     classify_tree_nav_key, Edge, TreeController, TreeControllerEvent, TreeNavKey,
 };
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 pub use tree_table_controller::{
     NodeId, TreeTableController, TreeTableControllerEvent, TreeTableNodeData,
 };

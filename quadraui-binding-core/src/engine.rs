@@ -5859,6 +5859,49 @@ mod tests {
         );
     }
 
+    /// A letter key is the app's shortcut while a tree-table controller
+    /// has focus: the controller claims only its navigation keys, so the
+    /// key falls through to the app's own key dispatch.
+    #[test]
+    fn tree_table_controller_leaves_letter_keys_to_the_app() {
+        let logic = TreeTableControllerLogic {
+            descriptor: lazy_root_descriptor(),
+            engine: InteractionEngine::new(),
+            sink: RefCell::new(RecordingSink::default()),
+        };
+        let mut driver = TuiDriver::new(logic, 20, 10);
+        driver.render();
+        driver.click(10.0, 1.5);
+        driver.render();
+        assert_eq!(
+            driver.backend().focus_tree().focused_id(),
+            Some(&WidgetId::new("tt"))
+        );
+        driver.app().sink.borrow_mut().dispatched.clear();
+        driver.app().sink.borrow_mut().tree_table_dispatched.clear();
+
+        // "d" would type-ahead to the "dir" row.
+        driver.type_char('d');
+        driver.render();
+        let sink = driver.app().sink.borrow();
+        assert!(
+            sink.dispatched.iter().any(|(ev, _)| matches!(
+                ev,
+                UiEvent::KeyPressed {
+                    key: Key::Char('d'),
+                    ..
+                }
+            )),
+            "the letter should reach the app's key dispatch: {:?}",
+            sink.dispatched
+        );
+        assert!(
+            sink.tree_table_dispatched.is_empty(),
+            "the controller should not claim the letter: {:?}",
+            sink.tree_table_dispatched
+        );
+    }
+
     /// `UiEvent::DoubleClick` — the event `DoubleClickDetector` folds a
     /// real second close-together `MouseDown` into, with default folding
     /// left on (`driver.double_click` delivers the folded shape directly,

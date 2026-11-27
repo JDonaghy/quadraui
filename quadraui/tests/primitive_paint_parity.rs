@@ -183,7 +183,7 @@ fn sample_tree_table() -> TreeTable {
     let tree = (0..table.rows.len())
         .map(|i| TreeTableNode::new(vec![i as u16], 0))
         .collect();
-    TreeTable { table, tree }
+    TreeTable::new(table, tree)
 }
 
 /// A theme whose `tab_bar_bg` (the colour `DataTable`'s hover tint

@@ -20,18 +20,21 @@ use crate::types::{Decoration, Icon, TreeStyle};
 
 /// The chevron glyph a row at `indent` paints and the column just past it
 /// (unclipped). Shared by [`paint_tree_cell`] and the hit-test in
-/// [`tui_tree_layout_with_scroll_px`] so the two never drift.
-///
-/// `pub(crate)`, not private: `tui::data_table`'s `TreeTable` chevron
-/// measurer reuses it too, so a `TreeTable` row's chevron hit bounds are
-/// computed from the exact same formula `TreeView` already paints with.
-pub(crate) fn chevron_glyph_end(style: &TreeStyle, indent: u16, expanded: bool) -> (&str, usize) {
+/// [`tui_tree_layout_with_scroll_px`] so the two never drift. The indent
+/// comes from the shared tree cell geometry a `TreeTable` row lays out
+/// its chevron with too.
+fn chevron_glyph_end(style: &TreeStyle, indent: u16, expanded: bool) -> (&str, usize) {
     let glyph = if expanded {
         &style.chevron_expanded
     } else {
         &style.chevron_collapsed
     };
-    let end = indent as usize * style.indent as usize + glyph.chars().count();
+    let start = crate::primitives::tree::tree_cell::indent_offset(
+        style,
+        indent,
+        crate::primitives::tree::tree_cell::TreeCellUnits::Cells,
+    ) as usize;
+    let end = start + glyph.chars().count();
     (glyph, end)
 }
 
@@ -53,7 +56,11 @@ pub(crate) fn paint_tree_cell(
     (fg, bg): (RatatuiColor, RatatuiColor),
 ) -> (Option<(usize, usize)>, usize) {
     let row_w = row.width as usize;
-    let mut col = indent as usize * style.indent as usize;
+    let mut col = crate::primitives::tree::tree_cell::indent_offset(
+        style,
+        indent,
+        crate::primitives::tree::tree_cell::TreeCellUnits::Cells,
+    ) as usize;
     let mut chevron_cols = None;
     match is_expanded {
         Some(expanded) if style.show_chevrons => {

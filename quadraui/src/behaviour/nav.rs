@@ -6,7 +6,7 @@
 use crate::event::{Key, NamedKey};
 use crate::interactive::KeyEvent;
 use crate::primitives::scrollbar::{
-    scroll_by_clamped, scroll_by_clamped_f32, scroll_rows_floor, wheel_delta, ThumbDrag,
+    scroll_by_clamped, scroll_by_clamped_f32, scroll_rows_floor, wheel_delta, PressZone, ThumbDrag,
 };
 use crate::TreePath;
 
@@ -465,6 +465,142 @@ impl TreeNavCore {
         self.scroll_px = None;
         Some(new)
     }
+
+    /// A left press on a vertical scrollbar's track, already classified
+    /// into `zone` by [`crate::Scrollbar::press_zone`]: the thumb starts a
+    /// drag at `y` over the track's draggable length `travel`, either
+    /// side of it pages by one viewport. [`ScrollbarPress::Ignored`] when
+    /// every row already fits, so there is nothing to scroll.
+    pub fn press_scrollbar(
+        &mut self,
+        zone: PressZone,
+        y: f32,
+        travel: f32,
+        total_rows: usize,
+        viewport_rows: usize,
+    ) -> ScrollbarPress {
+        let max_offset = total_rows.saturating_sub(viewport_rows);
+        if max_offset == 0 {
+            return ScrollbarPress::Ignored;
+        }
+        match zone {
+            PressZone::Thumb => {
+                self.begin_scrollbar_drag(y, travel, max_offset as f32);
+                ScrollbarPress::DragStarted
+            }
+            PressZone::Before => {
+                self.page_scroll(-(viewport_rows as isize), total_rows, viewport_rows);
+                ScrollbarPress::Paged
+            }
+            PressZone::After => {
+                self.page_scroll(viewport_rows as isize, total_rows, viewport_rows);
+                ScrollbarPress::Paged
+            }
+        }
+    }
+
+    // ── Key dispatch ─────────────────────────────────────────────────
+
+    /// Whether [`Self::handle_key`] resolves `event` to a navigation
+    /// intent rather than [`TreeKey::Unhandled`]: the keys a tree claims
+    /// for itself, leaving every other key to its host.
+    pub fn claims_key(event: &KeyEvent, vim_keys: bool) -> bool {
+        TreeKeyIntent::of(event, vim_keys).is_some()
+    }
+
+    /// One keystroke against a tree-shaped row list: the arrow, page and
+    /// edge keys (plus `j`/`k` when `vim_keys` is on and no Ctrl/Alt/Cmd
+    /// is held) move the selection, a page being one viewport less one
+    /// row; Left/Right resolve through [`Self::horizontal_nav`]; Enter
+    /// names the row to activate and Space the branch to toggle. Every
+    /// other key is [`TreeKey::Unhandled`], left to the caller (typeahead,
+    /// shortcuts).
+    pub fn handle_key<R: NavRow>(
+        &mut self,
+        rows: &[R],
+        event: &KeyEvent,
+        viewport_rows: usize,
+        vim_keys: bool,
+    ) -> TreeKey {
+        let vr = viewport_rows.max(1);
+        let page = (vr - 1).max(1) as isize;
+        match TreeKeyIntent::of(event, vim_keys) {
+            Some(TreeKeyIntent::Move(nav_key)) => TreeKey::Moved(match nav_key {
+                NavKey::Up => self.move_selection_by(rows, -1, vr),
+                NavKey::Down => self.move_selection_by(rows, 1, vr),
+                NavKey::PageUp(_) => self.move_selection_by(rows, -page, vr),
+                NavKey::PageDown(_) => self.move_selection_by(rows, page, vr),
+                NavKey::Home => self.move_selection_to_edge(rows, Edge::Start, vr),
+                NavKey::End => self.move_selection_to_edge(rows, Edge::End, vr),
+            }),
+            Some(TreeKeyIntent::Horizontal(dir)) => {
+                TreeKey::Horizontal(self.horizontal_nav(rows, dir))
+            }
+            Some(TreeKeyIntent::Activate) => TreeKey::Activate(self.activate()),
+            Some(TreeKeyIntent::ToggleExpand) => TreeKey::ToggleExpand(self.toggle_expand(rows)),
+            None => TreeKey::Unhandled,
+        }
+    }
+}
+
+/// The navigation intent a keystroke carries for a tree, before it is
+/// resolved against the rows.
+enum TreeKeyIntent {
+    Move(NavKey),
+    Horizontal(HorizontalDir),
+    Activate,
+    ToggleExpand,
+}
+
+impl TreeKeyIntent {
+    fn of(event: &KeyEvent, vim_keys: bool) -> Option<Self> {
+        let no_accel = !(event.modifiers.ctrl || event.modifiers.alt || event.modifiers.cmd);
+        let vim = no_accel && vim_keys;
+        let nav_key = NavKey::from_key(event).or(match event.key {
+            Key::Char('j') if vim => Some(NavKey::Down),
+            Key::Char('k') if vim => Some(NavKey::Up),
+            _ => None,
+        });
+        if let Some(nav_key) = nav_key {
+            return Some(Self::Move(nav_key));
+        }
+        match event.key {
+            Key::Named(NamedKey::Left) => Some(Self::Horizontal(HorizontalDir::Left)),
+            Key::Named(NamedKey::Right) => Some(Self::Horizontal(HorizontalDir::Right)),
+            Key::Named(NamedKey::Enter) => Some(Self::Activate),
+            Key::Char(' ') => Some(Self::ToggleExpand),
+            _ => None,
+        }
+    }
+}
+
+/// What [`TreeNavCore::press_scrollbar`] did with a press.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollbarPress {
+    /// The press landed on the thumb: a drag is in progress until
+    /// [`TreeNavCore::end_scrollbar_drag`].
+    DragStarted,
+    /// The press landed beside the thumb and paged the scroll offset
+    /// (which may already have been at its limit).
+    Paged,
+    /// Every row fits; the scrollbar has nothing to scroll.
+    Ignored,
+}
+
+/// What [`TreeNavCore::handle_key`] resolved a keystroke to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TreeKey {
+    /// A vertical move; the core has already applied it.
+    Moved(NavOutcome),
+    /// Left/Right, classified against the selected row.
+    Horizontal(HorizontalNav),
+    /// Enter: the selected row to activate, if any.
+    Activate(Option<TreePath>),
+    /// Space: the selected branch to expand or collapse, if the
+    /// selection is a branch.
+    ToggleExpand(Option<TreePath>),
+    /// Not a navigation key.
+    Unhandled,
 }
 
 #[cfg(test)]
@@ -871,5 +1007,96 @@ mod tests {
         let rows = vec![branch(&[0], true)];
         core.set_selected_path(Some(vec![0]));
         assert_eq!(core.toggle_expand(&rows), Some(vec![0]));
+    }
+
+    // ── press_scrollbar / handle_key ───────────────────────────────────
+
+    fn rows(n: u16) -> Vec<Row> {
+        (0..n).map(|i| leaf(&[i])).collect()
+    }
+
+    #[test]
+    fn press_scrollbar_thumb_starts_a_drag_and_the_track_pages() {
+        let mut core = TreeNavCore::new();
+        assert_eq!(
+            core.press_scrollbar(PressZone::Thumb, 3.0, 10.0, 50, 10),
+            ScrollbarPress::DragStarted
+        );
+        assert!(core.is_dragging());
+        core.end_scrollbar_drag();
+        assert_eq!(
+            core.press_scrollbar(PressZone::After, 9.0, 10.0, 50, 10),
+            ScrollbarPress::Paged
+        );
+        assert_eq!(core.scroll_offset(), 10);
+        assert_eq!(
+            core.press_scrollbar(PressZone::Before, 0.0, 10.0, 50, 10),
+            ScrollbarPress::Paged
+        );
+        assert_eq!(core.scroll_offset(), 0);
+    }
+
+    #[test]
+    fn press_scrollbar_is_ignored_when_every_row_fits() {
+        let mut core = TreeNavCore::new();
+        assert_eq!(
+            core.press_scrollbar(PressZone::Thumb, 3.0, 10.0, 5, 10),
+            ScrollbarPress::Ignored
+        );
+        assert!(!core.is_dragging());
+    }
+
+    fn key_with(key: Key, ctrl: bool) -> KeyEvent {
+        let mut ev = key_event(key);
+        ev.modifiers.ctrl = ctrl;
+        ev
+    }
+
+    #[test]
+    fn handle_key_pages_by_one_viewport_less_one_row() {
+        let mut core = TreeNavCore::new();
+        let rows = rows(30);
+        core.set_selected_path(Some(vec![0]));
+        let out = core.handle_key(&rows, &key_event(Key::Named(NamedKey::PageDown)), 10, false);
+        assert_eq!(out, TreeKey::Moved(NavOutcome::Selected(vec![9])));
+    }
+
+    #[test]
+    fn handle_key_vim_keys_respect_the_flag_and_modifiers() {
+        let rows = rows(5);
+        let mut core = TreeNavCore::new();
+        core.set_selected_path(Some(vec![0]));
+        assert_eq!(
+            core.handle_key(&rows, &key_event(Key::Char('j')), 5, false),
+            TreeKey::Unhandled
+        );
+        assert_eq!(
+            core.handle_key(&rows, &key_with(Key::Char('j'), true), 5, true),
+            TreeKey::Unhandled,
+            "Ctrl+J is a shortcut, not a vim move"
+        );
+        assert_eq!(
+            core.handle_key(&rows, &key_event(Key::Char('j')), 5, true),
+            TreeKey::Moved(NavOutcome::Selected(vec![1]))
+        );
+    }
+
+    #[test]
+    fn handle_key_resolves_horizontal_enter_and_space() {
+        let rows = vec![branch(&[0], false), leaf(&[1])];
+        let mut core = TreeNavCore::new();
+        core.set_selected_path(Some(vec![0]));
+        assert_eq!(
+            core.handle_key(&rows, &key_event(Key::Named(NamedKey::Right)), 5, false),
+            TreeKey::Horizontal(HorizontalNav::Expand(vec![0]))
+        );
+        assert_eq!(
+            core.handle_key(&rows, &key_event(Key::Named(NamedKey::Enter)), 5, false),
+            TreeKey::Activate(Some(vec![0]))
+        );
+        assert_eq!(
+            core.handle_key(&rows, &key_event(Key::Char(' ')), 5, false),
+            TreeKey::ToggleExpand(Some(vec![0]))
+        );
     }
 }

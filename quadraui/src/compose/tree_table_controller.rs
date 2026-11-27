@@ -11,16 +11,13 @@
 //! [`TreeTable`] on demand via [`Self::flatten`] (also what [`Self::render`]
 //! paints).
 //!
-//! Navigation, selection, scroll-to-follow and activation are not
-//! reimplemented here — every one of them goes through
-//! [`crate::behaviour::nav::TreeNavCore`], the same row-agnostic core
-//! [`crate::compose::TreeController`] uses for `TreeView`. This controller's
-//! own job is translating between [`NodeId`] (stable across a sort, which
-//! reorders a flattened row's [`crate::TreePath`]) and the positional
-//! [`crate::TreePath`] [`TreeNavCore`] tracks selection by: every navigation
-//! call re-resolves the selected id's current path from the latest
-//! flatten, hands that to [`TreeNavCore`], and translates its answer back
-//! to an id.
+//! Behaviour is not reimplemented here: [`Self::handle`] flattens the
+//! model into a [`TreeTable`] descriptor and drives that widget's own
+//! `Interactive` impl, then applies the [`crate::TreeTableEvent`] it
+//! reports to the model. This controller's own job is the model and the
+//! translation between [`NodeId`] (stable across a sort, which reorders a
+//! flattened row's [`crate::TreePath`]) and the positional path or row
+//! index the widget reports.
 //!
 //! # Lazy loading
 //!
@@ -29,12 +26,13 @@
 //! or Space) emits [`TreeTableControllerEvent::ChildrenRequested`] exactly
 //! once — further toggles of the same node before [`Self::set_children`]
 //! answers it are no-ops on that front — and [`Self::flatten`] shows a
-//! single dim `…` placeholder row (via [`crate::Decoration::Muted`]) as
-//! that node's lone visible child in the meantime.
+//! single dim `…` placeholder row (via [`crate::Decoration::Muted`] and
+//! [`crate::TreeTableNode::placeholder`]) as that node's lone visible
+//! child in the meantime.
 //!
 //! # Sibling-scoped sort
 //!
-//! [`Self::header_clicked`] (an app's own [`TreeTableHit::Header`]
+//! [`Self::header_clicked`] (an app's own header-click
 //! resolution) sorts every loaded level's children by that column's cell
 //! text — recursively, so a grandchild's siblings sort the same as a
 //! root's — rather than flattening the whole tree into one column-sorted
@@ -49,15 +47,14 @@ use std::cmp::Ordering;
 use std::collections::HashSet;
 
 use crate::behaviour::nav::{Edge, HorizontalDir, HorizontalNav, NavOutcome, NavRow, TreeNavCore};
-use crate::compose::tree_controller::{classify_tree_nav_key, TreeNavKey};
+use crate::compose::widget_host;
+use crate::interactive::{Interactive, PointerKind, RoutedEvent};
 use crate::primitives::data_table::{Column, DataRow, DataTable, SortDirection};
-use crate::primitives::row_stack::vscrollbar_thumb;
-use crate::primitives::scrollbar::PressZone;
-use crate::primitives::tree_table::{TreeTable, TreeTableHit, TreeTableLayout, TreeTableNode};
-use crate::types::{Decoration, Icon, StyledText, TreePath};
-use crate::{
-    Backend, ButtonMask, Key, Modifiers, MouseButton, Point, Rect, Scrollbar, UiEvent, WidgetId,
+use crate::primitives::tree_table::{
+    TreeTable, TreeTableEvent, TreeTableNode, TreeTablePrimitiveLayout, TreeTableState,
 };
+use crate::types::{Decoration, Icon, StyledText, TreePath};
+use crate::{Backend, Handled, Rect, UiEvent, WidgetId};
 
 /// A node's stable identity in [`TreeTableController`]'s hierarchical
 /// model — an app-chosen key (file path, database id, …) that never
@@ -221,6 +218,8 @@ struct FlatRow {
     /// not-yet-loaded children — never a real node, so never selectable
     /// or activatable.
     loading: bool,
+    /// A lazy branch whose children have not arrived.
+    children_pending: bool,
 }
 
 impl NavRow for FlatRow {
@@ -246,14 +245,9 @@ pub struct TreeTableController {
     selected_id: Option<NodeId>,
     sort: Option<(usize, bool)>,
     folders_first: bool,
-    /// Selection, scroll position and scrollbar-drag state — the
-    /// row-agnostic core shared with [`crate::compose::TreeController`];
-    /// see [`crate::behaviour::nav`]. [`Self::handle`] drives its
-    /// `begin_scrollbar_drag`/`drag_to`/`end_scrollbar_drag` trio from a
-    /// scrollbar track built in [`Self::scrollbar`], the same way
-    /// [`crate::compose::TreeController`] drives it from
-    /// [`crate::Backend::tree_vscrollbar`].
-    nav: TreeNavCore,
+    /// The widget's own gesture state; its navigation core carries the
+    /// scroll position the descriptor is flattened with.
+    state: TreeTableState,
     has_focus: bool,
     show_scrollbar: bool,
     bordered: bool,
@@ -269,7 +263,7 @@ impl TreeTableController {
             selected_id: None,
             sort: None,
             folders_first: false,
-            nav: TreeNavCore::new(),
+            state: TreeTableState::default(),
             has_focus: true,
             show_scrollbar: true,
             bordered: false,
@@ -340,11 +334,11 @@ impl TreeTableController {
     }
 
     pub fn scroll_offset(&self) -> usize {
-        self.nav.scroll_offset()
+        self.state.nav.scroll_offset()
     }
 
     pub fn set_scroll_offset(&mut self, offset: usize) {
-        self.nav.set_scroll_offset(offset);
+        self.state.nav.set_scroll_offset(offset);
     }
 
     pub fn node(&self, id: &NodeId) -> Option<&TreeTableNodeData> {
@@ -390,15 +384,22 @@ impl TreeTableController {
             if let Some(icon) = &row.icon {
                 node = node.with_icon(icon.clone());
             }
+            if row.children_pending {
+                node = node.with_children_pending();
+            }
+            if row.loading {
+                node = node.as_placeholder();
+            }
             tree.push(node);
         }
         TreeTable {
+            vim_keys: true,
             table: DataTable {
                 id: self.id,
                 columns,
                 rows: table_rows,
                 selected_idx,
-                scroll_offset: self.nav.scroll_offset(),
+                scroll_offset: self.state.nav.scroll_offset(),
                 sort: self.sort.map(|(col, ascending)| {
                     (
                         col,
@@ -431,6 +432,9 @@ impl TreeTableController {
 
     // ── Handle ────────────────────────────────────────────────────────
 
+    /// Drive the widget with a backend-neutral [`UiEvent`] against the
+    /// layout [`Self::render`] paints at `rect`, and apply what it reports
+    /// to the model.
     pub fn handle(
         &mut self,
         event: &UiEvent,
@@ -438,48 +442,137 @@ impl TreeTableController {
         rect: Rect,
         columns: Vec<Column>,
     ) -> TreeTableControllerEvent {
+        if let UiEvent::MouseDown { position, .. } | UiEvent::DoubleClick { position, .. } = event {
+            if !rect.contains(*position) {
+                return TreeTableControllerEvent::Ignored;
+            }
+        }
+        let table = self.flatten(columns);
+        #[allow(deprecated)]
+        let laid_out = backend.tree_table_layout(rect, &table);
+        let layout = TreeTablePrimitiveLayout {
+            area: rect,
+            line_height: laid_out.table.row_height,
+            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
+            scroll_offset: table.table.scroll_offset,
+            total_rows: table.table.rows.len(),
+            layout: laid_out,
+        };
+        let routed = match event {
+            // The widget scrolls by whole rows; the backend converts its
+            // native wheel delta.
+            UiEvent::Scroll {
+                delta, position, ..
+            } => RoutedEvent::Wheel {
+                dx: 0.0,
+                dy: backend.wheel_delta_rows(delta.y, layout.layout.table.row_height),
+                local: crate::Point::new(position.x - rect.x, position.y - rect.y),
+                mods: crate::Modifiers::default(),
+            },
+            _ => {
+                let subs = Interactive::sub_regions(&table, &layout);
+                match widget_host::routed_event(event, rect, &subs) {
+                    Some(routed) => routed,
+                    None => return TreeTableControllerEvent::Ignored,
+                }
+            }
+        };
+        // The controller claims the tree's navigation keys only; the
+        // wrapped table's type-to-jump and select-all keys stay the app's
+        // shortcuts.
+        if let RoutedEvent::Key(key) = &routed {
+            if !TreeNavCore::claims_key(key, table.vim_keys) {
+                return TreeTableControllerEvent::Ignored;
+            }
+        }
+        let units = crate::backend::primitive_layout_ctx(backend).units();
+        let driven = widget_host::drive(
+            &table,
+            table.table.id,
+            &mut self.state,
+            &routed,
+            &layout,
+            units,
+        );
+        let pressed = matches!(
+            routed,
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(_),
+                ..
+            }
+        );
+        let rows = self.flatten_rows();
+        let mut outcome = match driven.handled {
+            Handled::Event(ev) => self.apply(ev, &rows, pressed),
+            Handled::Consumed => TreeTableControllerEvent::Consumed,
+            Handled::Ignored => TreeTableControllerEvent::Ignored,
+        };
+        for emitted in driven.emitted {
+            if let UiEvent::TreeTable(_, ev) = emitted {
+                let applied = self.apply(ev, &rows, pressed);
+                if matches!(
+                    outcome,
+                    TreeTableControllerEvent::Consumed | TreeTableControllerEvent::Ignored
+                ) {
+                    outcome = applied;
+                }
+            }
+        }
+        outcome
+    }
+
+    /// Apply one event the widget reported to the model, as the event
+    /// this controller reports for it. `pressed` marks an event a pointer
+    /// press produced: a chevron press also selects its row.
+    fn apply(
+        &mut self,
+        event: TreeTableEvent,
+        rows: &[FlatRow],
+        pressed: bool,
+    ) -> TreeTableControllerEvent {
+        let id_at = |idx: usize| rows.get(idx).filter(|r| !r.loading).map(|r| r.id.clone());
         match event {
-            UiEvent::MouseDown {
-                button: MouseButton::Left,
-                position,
-                ..
-            } => self.click(backend, rect, *position, columns),
-
-            UiEvent::DoubleClick { position, .. } => {
-                self.double_click(backend, rect, *position, columns)
+            TreeTableEvent::RowSelected { idx, .. } => match id_at(idx) {
+                Some(id) => {
+                    self.selected_id = Some(id.clone());
+                    TreeTableControllerEvent::RowSelected { id }
+                }
+                None => TreeTableControllerEvent::Consumed,
+            },
+            TreeTableEvent::RowActivated { idx, .. }
+            | TreeTableEvent::RowDoubleClicked { idx, .. } => match id_at(idx) {
+                Some(id) => {
+                    self.selected_id = Some(id.clone());
+                    TreeTableControllerEvent::RowActivated { id }
+                }
+                None => TreeTableControllerEvent::Consumed,
+            },
+            TreeTableEvent::ToggleExpanded { path, expand } => {
+                let Some(id) = Self::id_for_path(rows, &path) else {
+                    return TreeTableControllerEvent::Ignored;
+                };
+                if pressed {
+                    self.selected_id = Some(id.clone());
+                }
+                self.set_expanded(id, expand)
             }
-
-            UiEvent::MouseMoved {
-                position,
-                buttons: ButtonMask { left: true, .. },
-            } => self.drag_to(position.y),
-
-            UiEvent::MouseUp {
-                button: MouseButton::Left,
-                ..
-            } => {
-                self.nav.end_scrollbar_drag();
+            TreeTableEvent::SortChanged { col, ascending } => {
+                self.sort_by(col, ascending);
+                TreeTableControllerEvent::SortChanged { col, ascending }
+            }
+            TreeTableEvent::ScrollChanged { scroll_offset } => {
+                if self.state.nav.scroll_offset() != scroll_offset {
+                    self.state.nav.set_scroll_offset(scroll_offset);
+                }
                 TreeTableControllerEvent::Consumed
             }
-
-            UiEvent::Scroll { delta, .. } => {
-                let layout = self.layout(backend, rect, columns);
-                let row_height = layout.table.row_height;
-                let rows = self.flatten_rows();
-                self.nav.scroll_by_wheel(
-                    backend.wheel_delta_rows(delta.y, row_height),
-                    row_height,
-                    rows.len(),
-                    layout.table.visible_rows,
-                );
-                TreeTableControllerEvent::Consumed
-            }
-
-            UiEvent::KeyPressed { key, modifiers, .. } => {
-                self.handle_key(key, modifiers, backend, rect, columns)
-            }
-
-            _ => TreeTableControllerEvent::Ignored,
+            // `set_expanded` already answers a lazy expand with its own
+            // once-per-node request.
+            TreeTableEvent::ChildrenRequested { .. }
+            | TreeTableEvent::SelectionSet { .. }
+            | TreeTableEvent::ColumnResized { .. }
+            | TreeTableEvent::Scroll { .. } => TreeTableControllerEvent::Consumed,
+            TreeTableEvent::ContextMenuRequested { .. } => TreeTableControllerEvent::Ignored,
         }
     }
 
@@ -492,7 +585,11 @@ impl TreeTableController {
     ) -> TreeTableControllerEvent {
         let rows = self.navigable_rows();
         self.sync_nav_selection(&rows);
-        match self.nav.move_selection_by(&rows, delta, viewport_rows) {
+        match self
+            .state
+            .nav
+            .move_selection_by(&rows, delta, viewport_rows)
+        {
             NavOutcome::Empty => TreeTableControllerEvent::Ignored,
             NavOutcome::Unchanged => TreeTableControllerEvent::Consumed,
             NavOutcome::Selected(path) => self.select_path(&rows, &path),
@@ -506,7 +603,11 @@ impl TreeTableController {
     ) -> TreeTableControllerEvent {
         let rows = self.navigable_rows();
         self.sync_nav_selection(&rows);
-        match self.nav.move_selection_to_edge(&rows, edge, viewport_rows) {
+        match self
+            .state
+            .nav
+            .move_selection_to_edge(&rows, edge, viewport_rows)
+        {
             NavOutcome::Empty => TreeTableControllerEvent::Ignored,
             NavOutcome::Unchanged => TreeTableControllerEvent::Consumed,
             NavOutcome::Selected(path) => self.select_path(&rows, &path),
@@ -526,7 +627,7 @@ impl TreeTableController {
     pub fn toggle_expand_selected(&mut self) -> TreeTableControllerEvent {
         let rows = self.navigable_rows();
         self.sync_nav_selection(&rows);
-        let Some(path) = self.nav.toggle_expand(&rows) else {
+        let Some(path) = self.state.nav.toggle_expand(&rows) else {
             return TreeTableControllerEvent::Ignored;
         };
         let Some(id) = Self::id_for_path(&rows, &path) else {
@@ -544,7 +645,7 @@ impl TreeTableController {
     pub fn handle_horizontal(&mut self, dir: HorizontalDir) -> TreeTableControllerEvent {
         let rows = self.navigable_rows();
         self.sync_nav_selection(&rows);
-        match self.nav.horizontal_nav(&rows, dir) {
+        match self.state.nav.horizontal_nav(&rows, dir) {
             HorizontalNav::Collapse(path) => match Self::id_for_path(&rows, &path) {
                 Some(id) => self.set_expanded(id, false),
                 None => TreeTableControllerEvent::Ignored,
@@ -561,17 +662,17 @@ impl TreeTableController {
     }
 
     pub fn scroll_to_visible(&mut self, row: usize, viewport_rows: usize) {
-        self.nav.scroll_to_visible(row, viewport_rows);
+        self.state.nav.scroll_to_visible(row, viewport_rows);
     }
 
     pub fn page_scroll(&mut self, delta: isize, viewport_rows: usize) {
         let total = self.flatten_rows().len();
-        self.nav.page_scroll(delta, total, viewport_rows);
+        self.state.nav.page_scroll(delta, total, viewport_rows);
     }
 
     // ── Sort ──────────────────────────────────────────────────────────
 
-    /// An app's own [`TreeTableHit::Header`] resolution: toggles
+    /// An app's own header-click resolution: toggles
     /// ascending/descending on a repeat click of the same column (else
     /// starts ascending on a new one), then sorts every loaded level's
     /// children by that column's cell text — case-sensitive
@@ -587,9 +688,14 @@ impl TreeTableController {
             Some((c, ascending)) if c == col => !ascending,
             _ => true,
         };
+        self.sort_by(col, ascending);
+        TreeTableControllerEvent::SortChanged { col, ascending }
+    }
+
+    /// Sort every loaded level's children by `col`'s cell text.
+    fn sort_by(&mut self, col: usize, ascending: bool) {
         self.sort = Some((col, ascending));
         Self::sort_level(&mut self.roots, col, ascending, self.folders_first);
-        TreeTableControllerEvent::SortChanged { col, ascending }
     }
 
     fn sort_level(
@@ -661,7 +767,7 @@ impl TreeTableController {
             .selected_id
             .as_ref()
             .and_then(|id| Self::path_for_id(rows, id));
-        self.nav.set_selected_path(path);
+        self.state.nav.set_selected_path(path);
     }
 
     fn select_path(&mut self, rows: &[FlatRow], path: &TreePath) -> TreeTableControllerEvent {
@@ -707,6 +813,7 @@ impl TreeTableController {
                 icon: node.icon.clone(),
                 cells: node.cells.clone(),
                 loading: false,
+                children_pending: node.has_children && node.children.is_none(),
             });
             if node.has_children && expanded.contains(&node.id) {
                 match &node.children {
@@ -724,242 +831,11 @@ impl TreeTableController {
                             icon: None,
                             cells: vec![StyledText::plain("…")],
                             loading: true,
+                            children_pending: false,
                         });
                     }
                 }
             }
-        }
-    }
-
-    fn click(
-        &mut self,
-        backend: &mut dyn Backend,
-        rect: Rect,
-        position: Point,
-        columns: Vec<Column>,
-    ) -> TreeTableControllerEvent {
-        if !rect.contains(position) {
-            return TreeTableControllerEvent::Ignored;
-        }
-        if let Some(sb) = self.scrollbar(backend, rect, columns.clone()) {
-            if sb.track.contains(position) {
-                return self.click_scrollbar(backend, rect, &sb, position.y, columns);
-            }
-        }
-        let table = self.flatten(columns);
-        #[allow(deprecated)]
-        let layout = backend.tree_table_layout(rect, &table);
-        let scroll_offset = table.table.scroll_offset;
-        let total_rows = table.table.rows.len();
-        match layout.hit_test(
-            position.x - rect.x,
-            position.y - rect.y,
-            scroll_offset,
-            total_rows,
-        ) {
-            TreeTableHit::Header { col } => self.header_clicked(col),
-            TreeTableHit::HeaderDivider { .. } => TreeTableControllerEvent::Ignored,
-            TreeTableHit::Chevron { idx } => {
-                let rows = self.flatten_rows();
-                let Some(row) = rows.get(idx) else {
-                    return TreeTableControllerEvent::Ignored;
-                };
-                if row.loading {
-                    return TreeTableControllerEvent::Consumed;
-                }
-                let id = row.id.clone();
-                let expand = row.is_expanded == Some(false);
-                self.selected_id = Some(id.clone());
-                self.set_expanded(id, expand)
-            }
-            TreeTableHit::Row { idx } => {
-                let rows = self.flatten_rows();
-                match rows.get(idx) {
-                    Some(row) if !row.loading => {
-                        self.selected_id = Some(row.id.clone());
-                        TreeTableControllerEvent::RowSelected { id: row.id.clone() }
-                    }
-                    _ => TreeTableControllerEvent::Consumed,
-                }
-            }
-            TreeTableHit::Footer | TreeTableHit::Scrollbar | TreeTableHit::Empty => {
-                TreeTableControllerEvent::Consumed
-            }
-        }
-    }
-
-    fn double_click(
-        &mut self,
-        backend: &mut dyn Backend,
-        rect: Rect,
-        position: Point,
-        columns: Vec<Column>,
-    ) -> TreeTableControllerEvent {
-        if !rect.contains(position) {
-            return TreeTableControllerEvent::Ignored;
-        }
-        let table = self.flatten(columns);
-        #[allow(deprecated)]
-        let layout = backend.tree_table_layout(rect, &table);
-        let scroll_offset = table.table.scroll_offset;
-        let total_rows = table.table.rows.len();
-        match layout.hit_test(
-            position.x - rect.x,
-            position.y - rect.y,
-            scroll_offset,
-            total_rows,
-        ) {
-            TreeTableHit::Row { idx } | TreeTableHit::Chevron { idx } => {
-                let rows = self.flatten_rows();
-                match rows.get(idx) {
-                    Some(row) if !row.loading => {
-                        self.selected_id = Some(row.id.clone());
-                        TreeTableControllerEvent::RowActivated { id: row.id.clone() }
-                    }
-                    _ => TreeTableControllerEvent::Consumed,
-                }
-            }
-            _ => TreeTableControllerEvent::Consumed,
-        }
-    }
-
-    fn handle_key(
-        &mut self,
-        key: &Key,
-        _modifiers: &Modifiers,
-        backend: &mut dyn Backend,
-        rect: Rect,
-        columns: Vec<Column>,
-    ) -> TreeTableControllerEvent {
-        if let Some(nav) = classify_tree_nav_key(key, true) {
-            let vr = self.viewport_rows(backend, rect, columns);
-            return match nav {
-                TreeNavKey::Up => self.move_selection_by(-1, vr),
-                TreeNavKey::Down => self.move_selection_by(1, vr),
-                TreeNavKey::Home => self.move_selection_to_edge(Edge::Start, vr),
-                TreeNavKey::End => self.move_selection_to_edge(Edge::End, vr),
-                TreeNavKey::PageUp => {
-                    self.move_selection_by(-((vr.max(1) - 1).max(1) as isize), vr)
-                }
-                TreeNavKey::PageDown => self.move_selection_by((vr.max(1) - 1).max(1) as isize, vr),
-                TreeNavKey::Enter => self.activate_selection(),
-                TreeNavKey::ToggleExpand => self.toggle_expand_selected(),
-            };
-        }
-        use crate::NamedKey;
-        match key {
-            Key::Named(NamedKey::Left) => self.handle_horizontal(HorizontalDir::Left),
-            Key::Named(NamedKey::Right) => self.handle_horizontal(HorizontalDir::Right),
-            _ => TreeTableControllerEvent::Ignored,
-        }
-    }
-
-    fn viewport_rows(&self, backend: &dyn Backend, rect: Rect, columns: Vec<Column>) -> usize {
-        self.layout(backend, rect, columns).table.visible_rows
-    }
-
-    /// The resolved [`TreeTableLayout`] for the current model at `rect` —
-    /// the single call site [`Self::viewport_rows`], the `Scroll` arm of
-    /// [`Self::handle`] and [`Self::scrollbar`] all share, so the row
-    /// pitch each of them reasons about is the real painted
-    /// `DataTableLayout::row_height`, never [`Backend::line_height`] (see
-    /// [`crate::compose::TreeController`]'s identical `tree_scroll_row_height`
-    /// rule). `scroll_offset` is zeroed first since none of the three
-    /// callers need it reflected in `visible_rows`/`row_height`, matching
-    /// this method's own pre-existing behaviour.
-    fn layout(&self, backend: &dyn Backend, rect: Rect, columns: Vec<Column>) -> TreeTableLayout {
-        let mut table = self.flatten(columns);
-        table.table.scroll_offset = 0;
-        #[allow(deprecated)]
-        backend.tree_table_layout(rect, &table)
-    }
-
-    /// The vertical scrollbar's track/thumb geometry, or `None` when it
-    /// is hidden ([`Self::set_show_scrollbar`]`(false)`) or every row
-    /// already fits in the viewport — the same "no scrollbar painted, so
-    /// none to hit-test or drag" condition [`crate::tui::draw_data_table`]'s
-    /// own vertical-scrollbar arm checks before painting one. Built from
-    /// [`crate::DataTableLayout`]'s own resolved fields (never a new
-    /// `Backend` method): the track sits in the rightmost
-    /// `scrollbar_width` of the viewport, spanning exactly the body band
-    /// (`visible_rows * row_height`, excluding the header and footer),
-    /// matching where [`crate::tui::draw_tree_table`] actually paints it.
-    fn scrollbar(
-        &self,
-        backend: &dyn Backend,
-        rect: Rect,
-        columns: Vec<Column>,
-    ) -> Option<Scrollbar> {
-        if !self.show_scrollbar {
-            return None;
-        }
-        let layout = self.layout(backend, rect, columns);
-        let dt = &layout.table;
-        let total_rows = self.flatten_rows().len();
-        if dt.scrollbar_width <= 0.0 || total_rows <= dt.visible_rows {
-            return None;
-        }
-        let track = Rect::new(
-            rect.x + dt.viewport_width - dt.inset_x - dt.scrollbar_width,
-            rect.y + dt.inset_y + dt.header_height,
-            dt.scrollbar_width,
-            dt.visible_rows as f32 * dt.row_height,
-        );
-        Some(vscrollbar_thumb(
-            self.id,
-            track,
-            self.nav.scroll_offset(),
-            None,
-            total_rows,
-            dt.row_height,
-            dt.visible_rows as f32,
-        ))
-    }
-
-    /// A press on `sb`'s track, outside the already-handled
-    /// [`Self::click`] early return — mirrors
-    /// [`crate::compose::TreeController::click_scrollbar`]: a thumb press
-    /// starts a drag via [`crate::behaviour::nav::TreeNavCore::begin_scrollbar_drag`],
-    /// a track press before/after the thumb pages by a viewport.
-    fn click_scrollbar(
-        &mut self,
-        backend: &mut dyn Backend,
-        rect: Rect,
-        sb: &Scrollbar,
-        y: f32,
-        columns: Vec<Column>,
-    ) -> TreeTableControllerEvent {
-        let viewport_rows = self.viewport_rows(backend, rect, columns);
-        let total_rows = self.flatten_rows().len();
-        let max_offset = total_rows.saturating_sub(viewport_rows);
-        if max_offset == 0 {
-            return TreeTableControllerEvent::Ignored;
-        }
-        match sb.press_zone(y) {
-            PressZone::Thumb => {
-                self.nav
-                    .begin_scrollbar_drag(y, sb.travel(), max_offset as f32);
-                TreeTableControllerEvent::Consumed
-            }
-            PressZone::Before => {
-                self.page_scroll(-(viewport_rows as isize), viewport_rows);
-                TreeTableControllerEvent::Consumed
-            }
-            PressZone::After => {
-                self.page_scroll(viewport_rows as isize, viewport_rows);
-                TreeTableControllerEvent::Consumed
-            }
-        }
-    }
-
-    /// [`UiEvent::MouseMoved`] while the left button is held — advances an
-    /// in-progress scrollbar drag started by [`Self::click_scrollbar`].
-    /// A no-op (returns [`TreeTableControllerEvent::Ignored`]) when no
-    /// drag is active, matching [`crate::compose::TreeController::drag_to`].
-    fn drag_to(&mut self, y: f32) -> TreeTableControllerEvent {
-        match self.nav.drag_to(y) {
-            Some(_) => TreeTableControllerEvent::Consumed,
-            None => TreeTableControllerEvent::Ignored,
         }
     }
 
@@ -968,10 +844,8 @@ impl TreeTableController {
     /// ([`Self::move_selection_by`], [`Self::move_selection_to_edge`],
     /// [`Self::toggle_expand_selected`], [`Self::handle_horizontal`]) feeds
     /// [`crate::behaviour::nav::TreeNavCore`], so Down/Right/Home/End
-    /// skip over a pending lazy branch's placeholder row exactly like a
-    /// mouse click on it already does ([`Self::click`]/[`Self::double_click`]
-    /// both guard `!row.loading`), instead of selecting or activating a
-    /// row with no real [`NodeId`] behind it.
+    /// skip over a pending lazy branch's placeholder row, instead of
+    /// selecting or activating a row with no real [`NodeId`] behind it.
     fn navigable_rows(&self) -> Vec<FlatRow> {
         self.flatten_rows()
             .into_iter()
@@ -1423,7 +1297,7 @@ mod tests {
     mod handle_tests {
         use super::*;
         use crate::tui::TuiBackend;
-        use crate::{ButtonMask, MouseButton, Point};
+        use crate::{ButtonMask, Modifiers, MouseButton, Point};
 
         fn many_leaves(n: usize) -> Vec<TreeTableNodeData> {
             (0..n)
@@ -1532,6 +1406,82 @@ mod tests {
             // `TreeController::handle`'s identical `tree_scroll_row_height`
             // rule.
             assert_eq!(c.scroll_offset(), 3);
+        }
+
+        fn key_with(key: crate::Key, modifiers: Modifiers) -> UiEvent {
+            UiEvent::KeyPressed {
+                key,
+                modifiers,
+                repeat: false,
+            }
+        }
+
+        fn press_key(c: &mut TreeTableController, key: crate::Key) -> TreeTableControllerEvent {
+            let mut backend = TuiBackend::new();
+            let rect = Rect::new(0.0, 0.0, 30.0, 12.0);
+            c.handle(
+                &key_with(key, Modifiers::default()),
+                &mut backend,
+                rect,
+                columns(),
+            )
+        }
+
+        fn down(c: &mut TreeTableController) -> TreeTableControllerEvent {
+            press_key(c, crate::Key::Named(crate::NamedKey::Down))
+        }
+
+        #[test]
+        fn letters_and_select_all_stay_the_apps_keys() {
+            let mut c = controller(vec![leaf("alpha", "alpha"), leaf("beta", "beta")]);
+            assert_eq!(
+                press_key(&mut c, crate::Key::Char('q')),
+                TreeTableControllerEvent::Ignored
+            );
+            // A letter that would type-ahead to a row is not claimed either.
+            assert_eq!(
+                press_key(&mut c, crate::Key::Char('b')),
+                TreeTableControllerEvent::Ignored
+            );
+            assert_eq!(c.selected_id(), None);
+            let mut backend = TuiBackend::new();
+            let ctrl_a = key_with(
+                crate::Key::Char('a'),
+                Modifiers {
+                    ctrl: true,
+                    ..Default::default()
+                },
+            );
+            assert_eq!(
+                c.handle(
+                    &ctrl_a,
+                    &mut backend,
+                    Rect::new(0.0, 0.0, 30.0, 12.0),
+                    columns()
+                ),
+                TreeTableControllerEvent::Ignored
+            );
+            assert_eq!(
+                down(&mut c),
+                TreeTableControllerEvent::RowSelected {
+                    id: "alpha".to_string()
+                }
+            );
+        }
+
+        #[test]
+        fn down_after_clearing_the_selection_starts_at_the_first_row() {
+            let mut c = controller(vec![leaf("a", "a"), leaf("b", "b"), leaf("c", "c")]);
+            down(&mut c);
+            down(&mut c);
+            assert_eq!(c.selected_id(), Some(&"b".to_string()));
+            c.set_selected_id(None);
+            assert_eq!(
+                down(&mut c),
+                TreeTableControllerEvent::RowSelected {
+                    id: "a".to_string()
+                }
+            );
         }
     }
 }

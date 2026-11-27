@@ -8,40 +8,67 @@
 //! describes the tree shape (path, indent, expand state, icon) of
 //! `table.rows[i]`, whose cell 0 carries that row's label text.
 //!
-//! # Backend contract
+//! # Controlled widget
 //!
-//! Render exactly as [`DataTable`] does, except column 0 of every row is
-//! prefixed with indent + expand/collapse chevron + icon before its label
-//! — see [`crate::tui::draw_tree_table`] for the TUI rasteriser. Clicking
-//! the chevron (or Left/Right on the keyboard) is the one interaction
-//! `DataTable` doesn't already have; apps compute it from
-//! [`TreeTableLayout::hit_test`]'s [`TreeTableHit::Chevron`] and
-//! [`crate::behaviour::nav::TreeNavCore::horizontal_nav`] — the same
-//! navigation core [`crate::compose::TreeController`] already uses for
-//! `TreeView`, reused here via [`TreeTableNode`]'s [`NavRow`] impl rather
-//! than re-derived.
+//! Everything visible is descriptor content the app owns: the flattened
+//! rows (including lazily loaded children and the placeholder row that
+//! stands in for them while they load), each branch's expand state, the
+//! selection, the scroll offset and the sort. The widget's
+//! [`crate::interactive::Interactive`] impl reports every change as a
+//! [`TreeTableEvent`]; the app applies it and hands back the next
+//! descriptor. [`TreeTableState`] holds only gesture data.
+//!
+//! A branch whose children the app has not supplied yet is marked
+//! [`TreeTableNode::children_pending`]; expanding it reports
+//! [`TreeTableEvent::ChildrenRequested`] once, until the app answers by
+//! clearing the flag. A header click reports
+//! [`TreeTableEvent::SortChanged`]; the app re-orders the rows (keeping
+//! each level's children together) and sets `table.sort`.
+//!
+//! Layout and paint compose [`DataTable`]'s own: the header, body rows,
+//! scrollbars and footer are `DataTable`'s, and column 0 of each row is
+//! the shared tree cell (`crate::primitives::tree::tree_cell`). Pointer
+//! gestures that are not tree-specific are forwarded to `DataTable`'s own
+//! `Interactive` impl.
 
 use crate::behaviour::nav::NavRow;
 use crate::event::Rect;
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-use crate::primitives::data_table::DataTablePaintState;
 use crate::primitives::data_table::{
     Column, ColumnMeasure, DataTable, DataTableHit, DataTableLayout,
 };
 use crate::types::{Icon, Modifiers, TreePath};
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+mod contract;
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+mod layout;
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use contract::{TreeTablePrimitiveLayout, TreeTableState, TreeTableSubPart};
+
 /// Per-row tree metadata for one [`TreeTable`] row, parallel to
 /// [`DataTable::rows`] on [`TreeTable::table`].
 ///
 /// `#[non_exhaustive]` with [`TreeTableNode::new`] as the constructor, so
-/// a future field (per [`crate::primitives::tree::TreeRow`]'s `badge`, for
-/// example) can land without breaking a downstream struct literal — see
-/// `CLAUDE.md`'s *Downstream consumers* section.
+/// a future field can land without breaking a downstream struct literal.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct TreeTableNode {
@@ -55,6 +82,16 @@ pub struct TreeTableNode {
     pub is_expanded: Option<bool>,
     /// Optional leading icon, painted between the chevron and the label.
     pub icon: Option<Icon>,
+    /// A branch whose children the app has not supplied yet: expanding
+    /// it reports [`TreeTableEvent::ChildrenRequested`] as well as the
+    /// expand itself.
+    #[serde(default)]
+    pub children_pending: bool,
+    /// A row standing in for a pending branch's children while they load
+    /// (typically a dim `…`): painted like any row, but never selected,
+    /// activated or expanded.
+    #[serde(default)]
+    pub placeholder: bool,
 }
 
 impl TreeTableNode {
@@ -68,6 +105,8 @@ impl TreeTableNode {
             indent,
             is_expanded: None,
             icon: None,
+            children_pending: false,
+            placeholder: false,
         }
     }
 
@@ -82,6 +121,21 @@ impl TreeTableNode {
     #[must_use]
     pub fn with_icon(mut self, icon: impl Into<Icon>) -> Self {
         self.icon = Some(icon.into());
+        self
+    }
+
+    /// Mark this branch's children as not supplied yet — see
+    /// [`Self::children_pending`].
+    #[must_use]
+    pub fn with_children_pending(mut self) -> Self {
+        self.children_pending = true;
+        self
+    }
+
+    /// Mark this row a loading placeholder — see [`Self::placeholder`].
+    #[must_use]
+    pub fn as_placeholder(mut self) -> Self {
+        self.placeholder = true;
         self
     }
 }
@@ -101,8 +155,9 @@ impl NavRow for TreeTableNode {
 /// Declarative description of a `TreeTable` widget: a [`DataTable`] plus
 /// per-row tree metadata. Every [`DataTable`] field keeps its existing
 /// meaning unchanged — selection, scroll, sort, focus, h-scroll, column
-/// overrides, footer and `bordered` all behave exactly as they do on a
-/// plain `DataTable`. `tree` only ever adds the column-0 tree cell on top.
+/// overrides, footer, `bordered` and `striped` all behave exactly as they
+/// do on a plain `DataTable`. `tree` only ever adds the column-0 tree cell
+/// on top.
 ///
 /// # Examples
 ///
@@ -146,14 +201,14 @@ impl NavRow for TreeTableNode {
 ///     TreeTableNode::new(vec![0], 0).with_expanded(true),
 ///     TreeTableNode::new(vec![0, 0], 1),
 /// ];
-/// let tree_table = TreeTable { table, tree };
+/// let tree_table = TreeTable::new(table, tree);
 ///
 /// let layout = tree_table.layout(80.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(20.0), |n| {
 ///     n.is_expanded.map(|_| (0.0, 1.0))
 /// }, 0.0);
 /// assert_eq!(
 ///     layout.hit_test(0.0, 1.0, 0, tree_table.table.rows.len()),
-///     TreeTableHit::Chevron { idx: 0 }
+///     TreeTableHit::Chevron(0)
 /// );
 /// ```
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,9 +219,23 @@ pub struct TreeTable {
     /// out as a plain `DataTable` row, with no chevron); the two are
     /// expected to be the same length in practice.
     pub tree: Vec<TreeTableNode>,
+    /// `j`/`k` move the selection like Down/Up (while no Ctrl/Alt/Cmd is
+    /// held), instead of starting a type-to-jump search.
+    #[serde(default)]
+    pub vim_keys: bool,
 }
 
 impl TreeTable {
+    /// `table` with per-row tree shape `tree`, vim keys off.
+    #[must_use]
+    pub fn new(table: DataTable, tree: Vec<TreeTableNode>) -> Self {
+        Self {
+            table,
+            tree,
+            vim_keys: false,
+        }
+    }
+
     /// `self.table` with only its first `kept` columns (and the parallel
     /// `column_overrides` entries) — the subset [`Self::layout`] resolves
     /// against while probing how many rightmost columns the narrow-rect
@@ -189,10 +258,12 @@ impl TreeTable {
     /// row-stacking or scrolling code of its own, and no column-resolving
     /// math beyond deciding how many trailing columns reach
     /// [`DataTable::layout`]. `measure_chevron(node)` returns `(start,
-    /// width)` — both relative to
-    /// column 0's left edge, in the same content-space unit
-    /// [`crate::ResolvedColumn::x`] uses — for a row whose chevron paints,
-    /// or `None` for a leaf or a row whose chevron is hidden.
+    /// width)` — both relative to column 0's left edge, in the same
+    /// content-space unit [`crate::ResolvedColumn::x`] uses — for a row
+    /// whose chevron paints, or `None` for a leaf or a row whose chevron
+    /// is hidden. A chevron is clipped to column 0's resolved width, the
+    /// same clip the tree cell paints with, so a click past the visible
+    /// part of a clipped chevron is a row click.
     ///
     /// `min_tree_col_width` is the narrow-rect floor: the smallest
     /// content-space width column 0 (the tree cell) may resolve to. When
@@ -261,6 +332,10 @@ impl TreeTable {
                 let Some((start, width)) = measure_chevron(node) else {
                     continue;
                 };
+                if start >= col0.width {
+                    continue;
+                }
+                let width = width.min(col0.width - start);
                 let y = table.inset_y + table.header_height + i as f32 * table.row_height;
                 chevrons.push((abs, Rect::new(col0.x + start, y, width, table.row_height)));
             }
@@ -269,24 +344,16 @@ impl TreeTable {
     }
 }
 
-/// Hit-test result for a `TreeTable` — everything [`DataTableHit`] already
-/// resolves, plus [`Self::Chevron`] for the expand/collapse glyph.
+/// Hit-test result for a `TreeTable`: the expand/collapse chevron, or
+/// whatever [`DataTableHit`] resolves everywhere else.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeTableHit {
-    /// Click on a column header.
-    Header { col: usize },
-    /// Click on a column header divider — start a resize drag.
-    HeaderDivider { col: usize },
-    /// Click on the row's expand/collapse chevron.
-    Chevron { idx: usize },
-    /// Click on a body row (outside the chevron).
-    Row { idx: usize },
-    /// Click on the pinned footer/summary row.
-    Footer,
-    /// Click on the vertical scrollbar's track.
-    Scrollbar,
-    /// Click on empty space below the last row.
-    Empty,
+    /// Row `idx`'s expand/collapse chevron.
+    Chevron(usize),
+    /// Anything the wrapped [`DataTable`] resolves: a header, a header
+    /// divider, a body row outside its chevron, the footer, the
+    /// scrollbar, or empty space.
+    Table(DataTableHit),
 }
 
 /// Fully-resolved `TreeTable` layout: [`DataTable`]'s own layout, plus
@@ -305,26 +372,18 @@ pub struct TreeTableLayout {
     /// with a painted chevron, in [`DataTableLayout::columns`]' content
     /// space (the same space [`crate::ResolvedColumn::x`] uses) — pre-
     /// `h_scroll`, pre-[`DataTableLayout::inset_x`]. [`Self::hit_test`]
-    /// is what reconciles the two: it shifts the raw pointer position
-    /// into this same content space via [`DataTableLayout::content_x`]
-    /// before comparing against these bounds, rather than shifting the
-    /// bounds themselves. A future backend storing its own chevron
-    /// bounds should follow the same convention — store pre-`h_scroll`
-    /// content space, shift the click instead. Sparse: only branch rows
-    /// with a chevron get an entry. [`Self::hit_test`] is the only
-    /// intended reader; a caller that wants to paint from this instead
-    /// should go through [`crate::tui::draw_tree_table`] (or a GTK/
-    /// macOS/Win equivalent, once one exists) rather than re-deriving
-    /// pixel bounds from these.
+    /// shifts the raw pointer position into this same content space via
+    /// [`DataTableLayout::content_x`] before comparing against these
+    /// bounds, rather than shifting the bounds themselves. Sparse: only
+    /// branch rows with a chevron get an entry.
     pub chevrons: Vec<(usize, Rect)>,
 }
 
 impl TreeTableLayout {
-    /// Resolve a click to a chevron / header / divider / row / footer.
-    /// Chevron bounds are checked before falling through to
-    /// [`DataTable`]'s own [`DataTableLayout::hit_test`], same coordinate
-    /// contract: `x`/`y` are viewport-relative, as a caller's raw pointer
-    /// position.
+    /// Resolve a click to a chevron, or to whatever
+    /// [`DataTableLayout::hit_test`] resolves it to. Chevron bounds are
+    /// checked first; `x`/`y` are viewport-relative, as a caller's raw
+    /// pointer position.
     pub fn hit_test(
         &self,
         x: f32,
@@ -339,28 +398,17 @@ impl TreeTableLayout {
                 && y >= bounds.y
                 && y < bounds.y + bounds.height
             {
-                return TreeTableHit::Chevron { idx: *idx };
+                return TreeTableHit::Chevron(*idx);
             }
         }
-        match self.table.hit_test(x, y, scroll_offset, total_rows) {
-            DataTableHit::Header { col } => TreeTableHit::Header { col },
-            DataTableHit::HeaderDivider { col } => TreeTableHit::HeaderDivider { col },
-            DataTableHit::Row { idx } => TreeTableHit::Row { idx },
-            DataTableHit::Footer => TreeTableHit::Footer,
-            DataTableHit::Scrollbar => TreeTableHit::Scrollbar,
-            DataTableHit::Empty => TreeTableHit::Empty,
-        }
+        TreeTableHit::Table(self.table.hit_test(x, y, scroll_offset, total_rows))
     }
 
-    /// The event a [`TreeTableHit::Chevron { idx }`](TreeTableHit::Chevron)
-    /// resolution should emit: `tree[idx]`'s current
-    /// [`TreeTableNode::is_expanded`], flipped. `None` when `idx` has no
-    /// entry in `tree` or that entry is a leaf (`is_expanded: None`) —
-    /// the same "degrade without panicking" rule [`TreeTable::layout`]
-    /// already applies to a short `tree`. The app applies the returned
-    /// event the same way it would apply one built by
-    /// [`TreeTableEvent::from_horizontal_nav`], so a chevron click and
-    /// Left/Right on the keyboard both funnel through one handler.
+    /// The event a [`TreeTableHit::Chevron`] resolution should emit:
+    /// `tree[idx]`'s current [`TreeTableNode::is_expanded`], flipped.
+    /// `None` when `idx` has no entry in `tree` or that entry is a leaf
+    /// (`is_expanded: None`) — the same "degrade without panicking" rule
+    /// [`TreeTable::layout`] already applies to a short `tree`.
     #[must_use]
     pub fn chevron_toggle(idx: usize, tree: &[TreeTableNode]) -> Option<TreeTableEvent> {
         let node = tree.get(idx)?;
@@ -372,17 +420,15 @@ impl TreeTableLayout {
     }
 }
 
-/// Events a `TreeTable` emits back to the app — everything
-/// [`crate::DataTableEvent`] already documents, plus [`Self::ToggleExpanded`]
-/// for the chevron/Left/Right interaction `DataTable` doesn't have.
-/// `RowSelected`/`RowActivated`/`RowDoubleClicked`/`SelectionSet` carry the
-/// row's [`TreePath`] alongside the flat index every `DataTableEvent`
-/// counterpart already carries.
+/// Events a `TreeTable` emits back to the app. Row events carry the
+/// row's [`TreePath`] alongside its flat index.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TreeTableEvent {
-    /// User clicked a column header — app should toggle sort.
-    HeaderClicked { col: usize },
-    /// User pressed Enter while the table had focus and a row was selected.
+    /// A header click asked for a sort by `col`: ascending, unless the
+    /// table is already sorted ascending by `col`. The app re-orders each
+    /// level's children and sets `table.sort`.
+    SortChanged { col: usize, ascending: bool },
+    /// Enter (or the assistive "activate" action) on the selected row.
     RowActivated { idx: usize, path: TreePath },
     /// User selected a row — arrow-key navigation or a plain single click.
     RowSelected { idx: usize, path: TreePath },
@@ -390,6 +436,10 @@ pub enum TreeTableEvent {
     RowDoubleClicked { idx: usize, path: TreePath },
     /// User scrolled the table.
     Scroll { delta: i32, modifiers: Modifiers },
+    /// The widget scrolled — a wheel, a scrollbar gesture, or a move that
+    /// brought the selection into view. The app stores `scroll_offset`
+    /// as `table.scroll_offset`.
+    ScrollChanged { scroll_offset: usize },
     /// User dragged a column divider to resize.
     ColumnResized { col: usize, width: f32 },
     /// The full multi-selection changed. `indices`/`paths` are the
@@ -398,13 +448,23 @@ pub enum TreeTableEvent {
         indices: Vec<usize>,
         paths: Vec<TreePath>,
     },
-    /// The chevron was clicked, or Left/Right on the keyboard resolved to
-    /// an expand/collapse (as opposed to a parent/first-child selection
-    /// move) via [`crate::behaviour::nav::TreeNavCore::horizontal_nav`].
-    /// `expand: true` means the app should set this row's
-    /// [`TreeTableNode::is_expanded`] to `Some(true)` (and may need to
-    /// push newly-visible child rows next frame); `false` means collapse.
+    /// The chevron was clicked, or Left/Right/Space resolved to an
+    /// expand/collapse. `expand: true` means the app should set this
+    /// row's [`TreeTableNode::is_expanded`] to `Some(true)` and show its
+    /// children (or a placeholder while they load); `false` means
+    /// collapse.
     ToggleExpanded { path: TreePath, expand: bool },
+    /// Expanding a [`TreeTableNode::children_pending`] branch: the app
+    /// should load its children and supply them, clearing the flag.
+    /// Reported once per branch until the flag clears.
+    ChildrenRequested { idx: usize, path: TreePath },
+    /// The user asked for row `idx`'s context menu (right-click);
+    /// `position` is where, in the coordinates the table was laid out in.
+    ContextMenuRequested {
+        idx: usize,
+        path: TreePath,
+        position: crate::event::Point,
+    },
 }
 
 impl TreeTableEvent {
@@ -413,8 +473,7 @@ impl TreeTableEvent {
     /// [`TreeTableLayout::chevron_toggle`]'s mouse path — to
     /// [`Self::ToggleExpanded`]. `None` for
     /// `SelectParent`/`SelectFirstChild`/`None`, which are selection
-    /// moves rather than an expand/collapse and stay the app's own
-    /// [`Self::RowSelected`] handling.
+    /// moves rather than an expand/collapse.
     #[must_use]
     pub fn from_horizontal_nav(nav: crate::behaviour::nav::HorizontalNav) -> Option<Self> {
         use crate::behaviour::nav::HorizontalNav;
@@ -436,10 +495,9 @@ impl TreeTableEvent {
 // `data_table::native_surface_paint::paint_with_layout`'s shared
 // header/body/scrollbar/footer skeleton — with column 0 of every row
 // replaced by the shared tree cell
-// (`tree::native_surface_paint::tree_cell::paint_tree_cell`) followed by
+// (`tree::tree_cell::paint_tree_cell`) followed by
 // its label through the same `paint_cell` every other column uses. No
-// parallel row, column or scrollbar logic of its own, mirroring
-// `tui::data_table`'s identical "no `tree_table.rs`" story for TUI.
+// parallel row, column or scrollbar logic of its own.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -455,27 +513,14 @@ pub(crate) mod native_surface_paint {
     };
     use crate::primitives::data_table::{ColumnAlign, DataTablePaintState};
     use crate::primitives::layout_metrics::TextMeasure;
-    use crate::primitives::tree::native_surface_paint::tree_cell::paint_tree_cell;
+    use crate::primitives::tree::tree_cell::{paint_tree_cell, tree_indent_px};
     use crate::primitives::tree::tree_chevron_glyph;
     use crate::theme::Theme;
     use crate::types::{Decoration, TreeStyle};
 
-    /// Pixel width of one tree indent level — the same
-    /// `(line_height * 0.9).round()` formula
-    /// [`crate::primitives::tree::native_surface_paint::paint_with_scroll_px`]
-    /// uses for `TreeView`'s own indent.
-    fn indent_px(line_height: f32) -> f32 {
-        (line_height * 0.9).round()
-    }
-
     /// Resolve the layout [`paint`] paints `table` at, without touching a
-    /// buffer. Thin forwarding wrapper over
-    /// [`crate::primitives::layout_metrics::pixel_tree_table_layout`] (the
-    /// pixel counterpart of [`crate::tui::data_table::tree_table_layout`],
-    /// and the shared home for this measuring glue — see that fn's own
-    /// doc) kept at this path so every GUI backend's existing
-    /// `native_surface_paint::pixel_tree_table_layout` call site needs no
-    /// change.
+    /// buffer — the pixel resolver every GUI backend's
+    /// `Backend::tree_table_layout` forwards to.
     pub(crate) fn pixel_tree_table_layout(
         table: &TreeTable,
         w: f32,
@@ -483,26 +528,14 @@ pub(crate) mod native_surface_paint {
         line_height: f32,
         measure: &dyn TextMeasure,
     ) -> TreeTableLayout {
-        crate::primitives::layout_metrics::pixel_tree_table_layout(
-            table,
-            w,
-            h,
-            line_height,
-            measure,
-        )
+        super::layout::pixel_layout(table, w, h, line_height, measure)
     }
 
     /// Paint a [`TreeTable`] into `rect` on `surface` and return the
     /// resolved [`TreeTableLayout`] — the entry point every GUI backend's
-    /// `draw_tree_table` goes through. Identical to
-    /// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]
-    /// except column 0 of every row with a `table.tree` entry is painted
-    /// as indent + chevron + icon via [`paint_tree_cell`], followed by its
-    /// label through the same [`paint_cell`] every other column uses —
-    /// rows past `table.tree`'s length paint as a plain [`crate::DataTable`]
-    /// row. No sort-glyph override (unlike `DataTable`'s own
-    /// `paint_with_state`), mirroring [`crate::tui::draw_tree_table`] not
-    /// taking one either.
+    /// `draw_tree_table` goes through. Resolves the layout through
+    /// `surface`'s own text measurer, then paints it with
+    /// [`paint_laid_out`].
     pub(crate) fn paint(
         table: &TreeTable,
         surface: &mut dyn PaintSurface,
@@ -512,13 +545,43 @@ pub(crate) mod native_surface_paint {
         state: &DataTablePaintState,
         nerd_fonts_enabled: bool,
     ) -> TreeTableLayout {
-        let style = TreeStyle::default();
-        let ipx = indent_px(line_height);
-        let leaf_gap = line_height * 0.8;
         let tt_layout = {
             let measure = SurfaceTextMeasure(&*surface);
             pixel_tree_table_layout(table, rect.width, rect.height, line_height, &measure)
         };
+        paint_laid_out(
+            table,
+            surface,
+            theme,
+            rect,
+            line_height,
+            state,
+            nerd_fonts_enabled,
+            tt_layout,
+        )
+    }
+
+    /// Paint `table` at an already-resolved `tt_layout`: exactly what
+    /// [`crate::primitives::data_table::native_surface_paint::paint_laid_out`]
+    /// paints, except column 0 of every row with a `table.tree` entry is
+    /// indent + chevron + icon via [`paint_tree_cell`], followed by its
+    /// label through the same [`paint_cell`] every other column uses.
+    /// Rows past `table.tree`'s length paint as a plain [`crate::DataTable`]
+    /// row.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_laid_out(
+        table: &TreeTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        state: &DataTablePaintState,
+        nerd_fonts_enabled: bool,
+        tt_layout: TreeTableLayout,
+    ) -> TreeTableLayout {
+        let style = TreeStyle::default();
+        let ipx = tree_indent_px(line_height);
+        let leaf_gap = line_height * 0.8;
         let dt_layout = paint_with_layout(
             &table.table,
             surface,
@@ -528,7 +591,7 @@ pub(crate) mod native_surface_paint {
             state,
             None,
             nerd_fonts_enabled,
-            tt_layout.table.clone(),
+            tt_layout.table,
             |surface, ctx, row_y, idx, hovered, striped| match table.tree.get(idx) {
                 Some(node) => paint_tree_table_row(
                     surface,
@@ -536,7 +599,7 @@ pub(crate) mod native_surface_paint {
                     row_y,
                     idx,
                     node,
-                    hovered,
+                    (hovered, striped),
                     &style,
                     ipx,
                     leaf_gap,
@@ -551,10 +614,8 @@ pub(crate) mod native_surface_paint {
         }
     }
 
-    /// Paint one `TreeTable` body row: [`paint_row`]'s selection/hover tint
-    /// (zebra striping isn't offered — mirrors
-    /// [`crate::tui::data_table::draw_tree_table_row`] never taking a
-    /// `striped` argument) and every column but 0 exactly as [`paint_cell`]
+    /// Paint one `TreeTable` body row: [`paint_row`]'s selection, hover and
+    /// stripe tint and every column but 0 exactly as [`paint_cell`]
     /// already paints it, with column 0 painted as indent + chevron + icon
     /// via [`paint_tree_cell`], followed by its label through the same
     /// [`paint_cell`] every other column uses — offset past the tree-cell
@@ -566,7 +627,7 @@ pub(crate) mod native_surface_paint {
         row_y: f32,
         abs_idx: usize,
         node: &TreeTableNode,
-        hovered_idx: Option<usize>,
+        (hovered_idx, striped): (Option<usize>, bool),
         style: &TreeStyle,
         indent_px: f32,
         leaf_gap: f32,
@@ -622,7 +683,7 @@ pub(crate) mod native_surface_paint {
             row_y,
             abs_idx,
             hovered_idx,
-            false,
+            striped,
             Some(&mut hook),
         );
     }
@@ -653,6 +714,7 @@ pub(crate) mod native_surface_paint {
         #[derive(Default)]
         struct RecordingSurface {
             text_runs: Vec<(Rect, String, Color)>,
+            fills: Vec<(Rect, Color)>,
         }
 
         impl PaintSurface for RecordingSurface {
@@ -670,7 +732,9 @@ pub(crate) mod native_surface_paint {
             fn surface_measure_text(&self, text: &str) -> (f32, f32) {
                 (text.chars().count() as f32 * 8.0, 16.0)
             }
-            fn surface_fill_rect(&mut self, _rect: Rect, _color: Color) {}
+            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
+                self.fills.push((rect, color));
+            }
             fn surface_fill_rounded_rect(&mut self, _rect: Rect, _radius: f32, _color: Color) {}
             fn surface_fill_rect_alpha(&mut self, _rect: Rect, _color: Color, _alpha: f32) {}
             fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
@@ -729,14 +793,11 @@ pub(crate) mod native_surface_paint {
         }
 
         /// A branch row paints its chevron glyph, then the label offset
-        /// past it — the same ordering [`crate::tui::draw_tree_table`]
+        /// past it — the same ordering the cell painter
         /// paints, just through [`PaintSurface`] instead of a `Buffer`.
         #[test]
         fn branch_row_paints_chevron_then_label_offset_past_it() {
-            let tt = TreeTable {
-                table: table(&["src"]),
-                tree: vec![node(&[0], 0, Some(true))],
-            };
+            let tt = TreeTable::new(table(&["src"]), vec![node(&[0], 0, Some(true))]);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             let state = DataTablePaintState::default();
@@ -781,10 +842,7 @@ pub(crate) mod native_surface_paint {
         /// still paints its label.
         #[test]
         fn leaf_row_paints_no_chevron_but_still_paints_label() {
-            let tt = TreeTable {
-                table: table(&["main.rs"]),
-                tree: vec![node(&[0], 0, None)],
-            };
+            let tt = TreeTable::new(table(&["main.rs"]), vec![node(&[0], 0, None)]);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             let state = DataTablePaintState::default();
@@ -812,18 +870,12 @@ pub(crate) mod native_surface_paint {
 
         /// Deeper indent pushes the chevron (and therefore the label)
         /// further right — the same monotonic-with-depth contract
-        /// [`crate::primitives::tree::native_surface_paint::tree_cell`]'s
+        /// [`crate::primitives::tree::tree_cell`]'s
         /// own tests assert for `TreeView`.
         #[test]
         fn deeper_indent_shifts_the_chevron_right() {
-            let shallow = TreeTable {
-                table: table(&["a"]),
-                tree: vec![node(&[0], 0, Some(true))],
-            };
-            let deep = TreeTable {
-                table: table(&["a"]),
-                tree: vec![node(&[0], 2, Some(true))],
-            };
+            let shallow = TreeTable::new(table(&["a"]), vec![node(&[0], 0, Some(true))]);
+            let deep = TreeTable::new(table(&["a"]), vec![node(&[0], 2, Some(true))]);
             let chevron_x = |tt: &TreeTable| -> f32 {
                 let mut surface = RecordingSurface::default();
                 let theme = Theme::default();
@@ -857,10 +909,7 @@ pub(crate) mod native_surface_paint {
         fn row_missing_a_tree_entry_still_paints_its_label() {
             let mut t = table(&["a", "b"]);
             t.rows[1].cells = vec![StyledText::plain("orphan")];
-            let tt = TreeTable {
-                table: t,
-                tree: vec![node(&[0], 0, Some(true))], // shorter than `table.rows`
-            };
+            let tt = TreeTable::new(t, vec![node(&[0], 0, Some(true))]);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             let state = DataTablePaintState::default();
@@ -876,15 +925,45 @@ pub(crate) mod native_surface_paint {
             assert!(surface.text_runs.iter().any(|(_, t, _)| t == "orphan"));
         }
 
+        /// The descriptor's `striped` tints every other tree row, the same
+        /// as on a plain `DataTable`.
+        #[test]
+        fn striped_tints_alternate_tree_rows() {
+            let theme = Theme::default();
+            let stripe = theme.row_alt_bg(theme.background);
+            let stripes = |striped: bool| {
+                let mut t = table(&["a", "b", "c"]);
+                t.striped = striped;
+                let tt = TreeTable::new(
+                    t,
+                    vec![
+                        node(&[0], 0, Some(true)),
+                        node(&[0, 0], 1, None),
+                        node(&[1], 0, None),
+                    ],
+                );
+                let mut surface = RecordingSurface::default();
+                paint(
+                    &tt,
+                    &mut surface,
+                    &theme,
+                    Rect::new(0.0, 0.0, 200.0, 100.0),
+                    16.0,
+                    &DataTablePaintState::default(),
+                    false,
+                );
+                surface.fills.iter().filter(|(_, c)| *c == stripe).count()
+            };
+            assert_eq!(stripes(false), 0);
+            assert_eq!(stripes(true), 1, "row 1 of three is the one odd row");
+        }
+
         /// An icon paints between the chevron and the label.
         #[test]
         fn icon_paints_between_chevron_and_label() {
             let mut tree_node = node(&[0], 0, Some(true));
             tree_node.icon = Some(Icon::new("f", "f"));
-            let tt = TreeTable {
-                table: table(&["main.rs"]),
-                tree: vec![tree_node],
-            };
+            let tt = TreeTable::new(table(&["main.rs"]), vec![tree_node]);
             let mut surface = RecordingSurface::default();
             let theme = Theme::default();
             let state = DataTablePaintState::default();
@@ -952,10 +1031,7 @@ pub(crate) mod native_surface_paint {
                 StyledText::plain("—"),
                 StyledText::plain("—"),
             ];
-            let tt = TreeTable {
-                table: t,
-                tree: vec![node(&[0], 0, None)],
-            };
+            let tt = TreeTable::new(t, vec![node(&[0], 0, None)]);
             let surface = RecordingSurface::default();
             let layout =
                 pixel_tree_table_layout(&tt, 2000.0, 10.0, 16.0, &SurfaceTextMeasure(&surface));
@@ -976,253 +1052,12 @@ pub(crate) mod native_surface_paint {
     }
 }
 
-// ── Accessibility ────────────────────────────────────────────────────
-
-/// A `TreeTable` reports exactly what its wrapped [`DataTable`] does —
-/// pure delegation, no tree-specific role/state of its own. The private
-/// per-row helpers in `crate::a11y::tree` that would give each row a
-/// `TreeItem` role plus level/expanded state (the way
-/// [`crate::primitives::tree::TreeView`]'s own `A11yPrimitive` impl
-/// does) aren't reachable from this module; richer per-row semantics
-/// are a follow-up there, not a layout or paint concern this type's
-/// [`Primitive`] impl below needs to wait on.
-impl crate::a11y::A11yPrimitive for TreeTable {
-    fn a11y_info(&self) -> crate::a11y::A11yInfo {
-        self.table.a11y_info()
-    }
-
-    fn a11y_children(&self) -> Vec<crate::a11y::A11yChild> {
-        self.table.a11y_children()
-    }
-
-    fn a11y_focus_key(&self) -> Option<String> {
-        self.table.a11y_focus_key()
-    }
-}
-
-// ── `crate::primitive::Primitive` impl ──────────────────────────────
-//
-// Composes `DataTable`'s own layout/paint (via `TreeTable::layout`,
-// which already delegates to `DataTable::layout` for every column but
-// the chevron) and the shared tree cell
-// (`crate::primitives::tree::native_surface_paint::tree_cell`) — no
-// parallel row, column or scrollbar logic of its own, mirroring this
-// module's existing "no `tree_table.rs`" story for TUI (see
-// `crate::tui::data_table::draw_tree_table`'s doc).
-
-/// [`crate::primitive::Primitive::Layout`] for [`TreeTable`] — the
-/// resolved [`TreeTableLayout`] paired with the absolute area it was
-/// laid out into plus the row count/scroll offset
-/// [`TreeTableLayout::hit_test`]'s fixed signature needs but doesn't
-/// itself carry.
-///
-/// `#[non_exhaustive]`: backend-returned, never constructed by a
-/// consumer via struct literal, same convention as [`TreeTableLayout`]
-/// itself.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-#[derive(Debug, Clone, PartialEq)]
-#[non_exhaustive]
-pub struct TreeTablePrimitiveLayout {
-    /// Absolute area [`TreeTable::layout`] was (indirectly) called
-    /// with — [`Self::hit_test`] subtracts this rect's origin before
-    /// delegating to [`TreeTableLayout::hit_test`].
-    pub area: Rect,
-    /// Row height resolved from the [`crate::primitive::LayoutCtx`]
-    /// [`Primitive::layout`](crate::primitive::Primitive::layout) was
-    /// called with.
-    pub line_height: f32,
-    /// Nerd-Font toggle resolved the same way.
-    pub nerd_fonts_enabled: bool,
-    /// The table-local layout itself.
-    pub layout: TreeTableLayout,
-    /// [`DataTable::scroll_offset`] (via [`TreeTable::table`]) at the
-    /// time [`Primitive::layout`] was called — [`Self::hit_test`] needs
-    /// this to resolve a `y` into an absolute row index.
-    pub scroll_offset: usize,
-    /// `self.table.rows.len()` at the same time, for the same reason.
-    pub total_rows: usize,
-}
-
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-impl TreeTablePrimitiveLayout {
-    /// Hit-test at an absolute `(x, y)` — subtracts [`Self::area`]'s
-    /// origin before delegating to [`TreeTableLayout::hit_test`].
-    pub fn hit_test(&self, x: f32, y: f32) -> TreeTableHit {
-        self.layout.hit_test(
-            x - self.area.x,
-            y - self.area.y,
-            self.scroll_offset,
-            self.total_rows,
-        )
-    }
-}
-
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-impl crate::primitive::Primitive for TreeTable {
-    type Layout = TreeTablePrimitiveLayout;
-    type Event = TreeTableEvent;
-
-    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
-        // Same TUI-vs-pixel-backend discriminator `ListView`'s own
-        // `Primitive::layout` uses — see that impl's doc for why
-        // `ctx.units()` (TUI's whole-cell `line_height` convention vs. a
-        // real pixel font metric) is reliable even when both features
-        // are compiled into the same binary.
-        #[cfg(feature = "tui")]
-        if ctx.units() == crate::primitive::Units::Cells {
-            let area = crate::tui::backend::q_rect_to_ratatui(rect);
-            let layout = crate::tui::tree_table_layout(area, self);
-            return TreeTablePrimitiveLayout {
-                area: rect,
-                line_height: ctx.line_height,
-                nerd_fonts_enabled: ctx.nerd_fonts_enabled,
-                scroll_offset: self.table.scroll_offset,
-                total_rows: self.table.rows.len(),
-                layout,
-            };
-        }
-        // No live text measurer reaches `Primitive::layout` (its
-        // signature carries only `LayoutCtx`'s flat `char_width`), so
-        // column titles and the chevron glyph are both estimated from
-        // it — the same no-live-font fallback
-        // [`crate::primitives::layout_metrics::pixel_tree_table_layout`]
-        // already applies for any pixel backend with no live glyph
-        // measurer reachable. `Self::layout` (this method) contributes
-        // no layout math of its own beyond resolving that one measurer.
-        let measure = crate::primitives::layout_metrics::CharWidthMeasure(ctx.char_width);
-        let layout = crate::primitives::layout_metrics::pixel_tree_table_layout(
-            self,
-            rect.width,
-            rect.height,
-            ctx.line_height,
-            &measure,
-        );
-        TreeTablePrimitiveLayout {
-            area: rect,
-            line_height: ctx.line_height,
-            nerd_fonts_enabled: ctx.nerd_fonts_enabled,
-            scroll_offset: self.table.scroll_offset,
-            total_rows: self.table.rows.len(),
-            layout,
-        }
-    }
-
-    fn paint(
-        &self,
-        layout: &Self::Layout,
-        surface: &mut dyn crate::paint_surface::PaintSurface,
-        env: &crate::PaintEnv,
-    ) {
-        let theme = env.theme();
-        #[cfg(any(
-            feature = "gtk",
-            feature = "win",
-            all(feature = "macos", target_os = "macos")
-        ))]
-        {
-            // No per-call interaction-state channel reaches this far —
-            // `Primitive::paint`'s fixed signature carries none (see
-            // that trait's own doc) — so `native_surface_paint::paint`
-            // (which already takes a whole `&DataTablePaintState` rather
-            // than individual hover/press literals) is handed the "no
-            // such state" default every `PaintState` method already
-            // falls back to.
-            let state = DataTablePaintState::default();
-            native_surface_paint::paint(
-                self,
-                surface,
-                theme,
-                layout.area,
-                layout.line_height,
-                &state,
-                layout.nerd_fonts_enabled,
-            );
-        }
-        // A `tui`-only build has no `PaintSurface` to paint into at all —
-        // `self` reaching the screen on TUI goes through `Self::paint_cells`
-        // instead, which `DrawsPrimitives::draw_primitive`'s default body
-        // calls in place of this method whenever `Backend::cell_surface`
-        // answers `Some`.
-        #[cfg(not(any(
-            feature = "gtk",
-            feature = "win",
-            all(feature = "macos", target_os = "macos")
-        )))]
-        {
-            let _ = (layout, surface, theme);
-        }
-    }
-
-    /// Delegates straight to [`crate::tui::draw_tree_table`] — the exact
-    /// function [`crate::tui::backend::TuiBackend::draw_tree_table`]
-    /// itself calls — so painting `TreeTable` through
-    /// [`crate::primitive::Primitive`] on TUI is byte-for-byte identical
-    /// to painting it through `Backend::draw_tree_table` by construction.
-    #[cfg(feature = "tui")]
-    fn paint_cells(
-        &self,
-        layout: &Self::Layout,
-        cells: &mut dyn crate::CellSurface,
-        env: &crate::PaintEnv,
-    ) {
-        let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
-        use crate::primitive::PaintState;
-        use crate::primitives::data_table::DataTablePaintState;
-
-        let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-        // `crate::tui::draw_tree_table` takes a bare `hovered_idx`, with
-        // no `*_with_state` counterpart that takes a whole
-        // `DataTablePaintState` (unlike `crate::tui::draw_list_with_state`) —
-        // reading it through `PaintState::hovered_idx` off the "no such
-        // state" default names the gap the same way `Self::paint`'s
-        // pixel-surface path above does, instead of a bare `None` literal.
-        let paint_state = DataTablePaintState::default();
-        crate::tui::draw_tree_table(
-            buf,
-            area,
-            self,
-            theme,
-            paint_state.hovered_idx(),
-            layout.nerd_fonts_enabled,
-        );
-    }
-}
-
-// No real `Interactive` impl yet — see the widget-contract epic's pilot
-// and port issues. Gated the same as the `Primitive` impl above: this
-// macro expands to an `Interactive` impl, which requires `Primitive`.
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-crate::non_interactive!(TreeTable);
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::primitives::data_table::{ColumnAlign, ColumnWidth, DataRow};
     use crate::types::{StyledText, WidgetId};
+    use crate::DataTableHit;
 
     fn node(path: &[u16], indent: u16, expanded: Option<bool>) -> TreeTableNode {
         let mut n = TreeTableNode::new(path.to_vec(), indent);
@@ -1266,27 +1101,6 @@ mod tests {
         }
     }
 
-    /// `TreeTable`'s `A11yPrimitive` impl is pure delegation to the
-    /// wrapped `DataTable` — every method must answer exactly what
-    /// calling it on `self.table` directly would.
-    #[test]
-    fn a11y_primitive_delegates_to_the_wrapped_data_table() {
-        use crate::a11y::A11yPrimitive;
-
-        let mut dt = table(3);
-        dt.selected_idx = Some(1);
-        let tree: Vec<TreeTableNode> = (0..3).map(|i| node(&[i as u16], 0, None)).collect();
-        let tt = TreeTable {
-            table: dt.clone(),
-            tree,
-        };
-
-        assert_eq!(tt.a11y_info(), dt.a11y_info());
-        assert_eq!(tt.a11y_children(), dt.a11y_children());
-        assert_eq!(tt.a11y_focus_key(), dt.a11y_focus_key());
-        assert_eq!(tt.a11y_focus_key(), Some("row.1".to_string()));
-    }
-
     /// A `TreeTable` with every row at indent 0 and all leaves lays out
     /// identically to the equivalent `DataTable`, modulo column 0's
     /// content offset — here, with a `measure_chevron` that always
@@ -1297,10 +1111,7 @@ mod tests {
     fn all_leaves_layout_matches_the_equivalent_data_table() {
         let dt = table(5);
         let tree: Vec<TreeTableNode> = (0..5).map(|i| node(&[i as u16], 0, None)).collect();
-        let tt = TreeTable {
-            table: dt.clone(),
-            tree,
-        };
+        let tt = TreeTable::new(dt.clone(), tree);
         let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
         let plain = dt.layout(40.0, 10.0, 1.0, 1.0, 1.0, measure);
         let composed = tt.layout(40.0, 10.0, 1.0, 1.0, 1.0, measure, |_| None, 0.0);
@@ -1316,7 +1127,7 @@ mod tests {
             node(&[0, 0], 1, None),
             node(&[1], 0, Some(false)),
         ];
-        let tt = TreeTable { table: dt, tree };
+        let tt = TreeTable::new(dt, tree);
         let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
         // Row 0 is a branch: chevron occupies content-space x in [0, 1).
         let layout = tt.layout(
@@ -1329,24 +1140,21 @@ mod tests {
             |n| n.is_expanded.map(|_| (0.0, 1.0)),
             0.0,
         );
-        assert_eq!(
-            layout.hit_test(0.0, 1.0, 0, 3),
-            TreeTableHit::Chevron { idx: 0 }
-        );
+        assert_eq!(layout.hit_test(0.0, 1.0, 0, 3), TreeTableHit::Chevron(0));
         // Just past the chevron, same row, resolves to a plain Row hit.
         assert_eq!(
             layout.hit_test(2.0, 1.0, 0, 3),
-            TreeTableHit::Row { idx: 0 }
+            TreeTableHit::Table(DataTableHit::Row { idx: 0 })
         );
         // Row 1 is a leaf (no chevron measured) — always a Row hit.
         assert_eq!(
             layout.hit_test(0.0, 2.0, 0, 3),
-            TreeTableHit::Row { idx: 1 }
+            TreeTableHit::Table(DataTableHit::Row { idx: 1 })
         );
         // Header row still resolves normally.
         assert_eq!(
             layout.hit_test(0.0, 0.0, 0, 3),
-            TreeTableHit::Header { col: 0 }
+            TreeTableHit::Table(DataTableHit::Header { col: 0 })
         );
     }
 
@@ -1360,7 +1168,7 @@ mod tests {
             node(&[2], 0, Some(true)),
             node(&[3], 0, Some(true)),
         ];
-        let tt = TreeTable { table: dt, tree };
+        let tt = TreeTable::new(dt, tree);
         let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
         let layout = tt.layout(
             40.0,
@@ -1379,10 +1187,8 @@ mod tests {
     #[test]
     fn missing_tree_entries_degrade_to_no_chevron_without_panicking() {
         let dt = table(3);
-        let tt = TreeTable {
-            table: dt,
-            tree: vec![node(&[0], 0, Some(true))], // shorter than `table.rows`
-        };
+        // `tree` is shorter than `table.rows`.
+        let tt = TreeTable::new(dt, vec![node(&[0], 0, Some(true))]);
         let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
         let layout = tt.layout(
             40.0,
@@ -1395,6 +1201,37 @@ mod tests {
             0.0,
         );
         assert_eq!(layout.chevrons.len(), 1);
+    }
+
+    #[test]
+    fn a_chevron_is_clipped_to_column_0_and_dropped_past_it() {
+        let dt = table(3);
+        let tree = vec![
+            node(&[0], 0, Some(true)),
+            node(&[0, 0], 1, Some(true)),
+            node(&[0, 0, 0], 9, Some(true)),
+        ];
+        let mut tt = TreeTable::new(dt, tree);
+        tt.table.columns.truncate(1);
+        tt.table.rows.iter_mut().for_each(|r| r.cells.truncate(1));
+        let measure = |col: &Column| ColumnMeasure::new(col.title.chars().count() as f32);
+        // Column 0 resolves 4 wide; each indent level is 2 and the
+        // chevron 3, so row 0's chevron fits whole, row 1's is clipped to
+        // the 2 units left and row 2's starts past the column.
+        let layout = tt.layout(
+            4.0,
+            10.0,
+            1.0,
+            1.0,
+            0.0,
+            measure,
+            |n| n.is_expanded.map(|_| (n.indent as f32 * 2.0, 3.0)),
+            0.0,
+        );
+        let chevrons: Vec<(usize, f32)> =
+            layout.chevrons.iter().map(|(i, r)| (*i, r.width)).collect();
+        assert_eq!(chevrons, vec![(0, 3.0), (1, 2.0)]);
+        assert_eq!(layout.hit_test(3.0, 2.0, 0, 3), TreeTableHit::Chevron(1));
     }
 
     /// Reproduces the narrow-rect scenario the acceptance criteria name:
@@ -1454,7 +1291,7 @@ mod tests {
             glyphs: None,
         };
         let tree: Vec<TreeTableNode> = (0..3).map(|i| node(&[i as u16], 0, None)).collect();
-        TreeTable { table: dt, tree }
+        TreeTable::new(dt, tree)
     }
 
     #[test]
@@ -1503,7 +1340,9 @@ mod primitive_parity_tests {
     use crate::backend::ImagePaintResult;
     use crate::event::{Point, Viewport};
     use crate::primitive::{LayoutCtx, Primitive};
-    use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow};
+    use crate::primitives::data_table::{
+        Column, ColumnAlign, ColumnWidth, DataRow, DataTablePaintState,
+    };
     use crate::style::Style;
     use crate::theme::Theme;
     use crate::types::{Color, StyledText, WidgetId};
@@ -1605,7 +1444,7 @@ mod primitive_parity_tests {
             node(&[0, 0], 1, None),
             node(&[1], 0, None),
         ];
-        TreeTable { table, tree }
+        TreeTable::new(table, tree)
     }
 
     /// The acceptance criterion: `TreeTable`'s [`Primitive::layout`] +
@@ -1653,7 +1492,7 @@ mod primitive_parity_tests {
         // metrics — catches a `Primitive::layout` that estimated a glyph
         // width (e.g. the chevron) differently than the measurer `paint`
         // actually used, even though both still painted identical verbs.
-        let resolver_layout = crate::primitives::layout_metrics::pixel_tree_table_layout(
+        let resolver_layout = native_surface_paint::pixel_tree_table_layout(
             &tt,
             rect.width,
             rect.height,

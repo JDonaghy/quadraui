@@ -400,6 +400,7 @@ pub const CASES: &[Case] = &[
                     TreeTableNode::new(vec![0], 0).with_expanded(true),
                     TreeTableNode::new(vec![0, 0], 1),
                 ],
+                vim_keys: false,
             };
             #[allow(deprecated)]
             let _ = b.draw_tree_table(area, &table, None);

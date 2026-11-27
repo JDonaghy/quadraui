@@ -346,8 +346,7 @@ app matches on semantic events (`MenuEvent::Activated`,
 widget's own input handling lives in its `Interactive` impl, not here:
 <!-- TODO(0.12 final pass): after W7 (#2957, #2975, #2958) and W8 (#2976-#2979),
 re-derive this table from src/compose/mod.rs. AppShell becomes ShellView
-(DC2); FocusGroup and the divider_drag module go in W6; TreeHoverTracker goes
-in W7 DC1 (ToolbarHoverTracker stays); FormController goes in W8.
+(DC2); TreeHoverTracker goes in W7 DC1 (ToolbarHoverTracker stays); FormController goes in W8.
 readme_truth's readme_compose_table_names_every_compose_controller checks
 the table against the module list. -->
 
@@ -370,7 +369,6 @@ the table against the module list. -->
 | `FilePickerController` / `FolderPickerController` | In-app file and folder pickers for backends without a native dialog. |
 | `MessageDialogController` | Message and confirmation boxes. |
 | `ToastStackController` | Keyboard focus for actionable notifications. |
-| `FocusGroup` | Tab / Shift+Tab cycling between a controller's own regions, by index. |
 | `HelpOverlayController` | A context-sensitive key-binding help overlay. |
 | `StatusBarInteraction` / `ToolbarHoverTracker` | Hover and press state for status-bar segments and toolbar buttons. |
 | `HoverTooltipTracker` | When a hover tooltip shows: hover delay, dismiss and auto-dismiss. |

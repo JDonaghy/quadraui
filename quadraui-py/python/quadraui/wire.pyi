@@ -290,10 +290,13 @@ class TreeTableNodeDescriptor(TypedDict):
     indent: int
     is_expanded: Optional[bool]
     icon: Optional[Icon]
+    children_pending: NotRequired[bool]
+    placeholder: NotRequired[bool]
 
 class TreeTableDescriptor(TypedDict):
     table: DataTableDescriptor
     tree: List[TreeTableNodeDescriptor]
+    vim_keys: NotRequired[bool]
 
 class TreeTableControllerNodeDescriptor(TypedDict):
     id: str
@@ -2091,15 +2094,27 @@ class _TreeTableToggleExpandedPayload(TypedDict):
     path: TreePath
     expand: bool
 
+class _TreeTableSortChangedPayload(TypedDict):
+    col: int
+    ascending: bool
+
+class _TreeTableContextMenuPayload(TypedDict):
+    idx: int
+    path: TreePath
+    position: Point
+
 class TreeTableEvent(TypedDict):
-    HeaderClicked: NotRequired[_ColPayload]
+    SortChanged: NotRequired[_TreeTableSortChangedPayload]
     RowActivated: NotRequired[_TreeTableIdxPathPayload]
     RowSelected: NotRequired[_TreeTableIdxPathPayload]
     RowDoubleClicked: NotRequired[_TreeTableIdxPathPayload]
     Scroll: NotRequired[_DataTableScrollPayload]
+    ScrollChanged: NotRequired[_DataTableScrollChangedPayload]
     ColumnResized: NotRequired[_ColumnResizedPayload]
     SelectionSet: NotRequired[_TreeTableSelectionSetPayload]
     ToggleExpanded: NotRequired[_TreeTableToggleExpandedPayload]
+    ChildrenRequested: NotRequired[_TreeTableIdxPathPayload]
+    ContextMenuRequested: NotRequired[_TreeTableContextMenuPayload]
 
 class _CellGridCursorMovedPayload(TypedDict):
     row: int
@@ -2700,6 +2715,10 @@ class _UiEventDict(TypedDict):
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]
     TreeTable: NotRequired[Tuple[WidgetId, TreeTableEvent]]
     CellGrid: NotRequired[Tuple[WidgetId, CellGridEvent]]
+    MultiSectionView: NotRequired[Tuple[WidgetId, Any]]
+    Chat: NotRequired[Tuple[WidgetId, Any]]
+    Sidebar: NotRequired[Tuple[WidgetId, Any]]
+    TabGroup: NotRequired[Tuple[WidgetId, Any]]
     ScrollView: NotRequired[Tuple[WidgetId, ScrollViewEvent]]
     HelpOverlay: NotRequired[Tuple[WidgetId, Any]]
     PathPicker: NotRequired[Tuple[WidgetId, Any]]

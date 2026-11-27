@@ -1,60 +1,40 @@
-//! GTK rasteriser for [`crate::MultiSectionView`].
-//!
-//! Paints the full chrome (per-section headers, optional aux rows,
-//! per-section scrollbars, optional dividers) onto a [`Context`] and
-//! dispatches each section's body to the appropriate quadraui body
-//! rasteriser (`draw_tree`, `draw_list`, etc.) using the body bounds
-//! returned by the primitive's [`crate::MultiSectionView::layout`].
-//!
-//! Vertical-only in v1; horizontal sections fall through to a no-op.
-//!
-//! # Why one source of truth
-//!
-//! This rasteriser asks the primitive for one [`crate::MultiSectionViewLayout`]
-//! and consumes it verbatim for paint; the host's click handler asks the same
-//! primitive (with the same metrics) for the same layout and consumes its
-//! `hit_test`. Discrepancy is impossible by construction.
+//! GTK entry points for [`crate::MultiSectionView`]: paint it onto a
+//! Cairo [`Context`] through the widget's own pixel painter, and resolve
+//! the chrome layout that paint uses for hit-testing.
 
 use gtk4::cairo::Context;
 use gtk4::pango;
 
-use super::{cairo_rgb, draw_list, draw_message_list, draw_tree};
+use super::surface::{CairoSurface, PangoMeasure};
 use crate::event::Rect as QRect;
+use crate::primitive::{LayoutCtx, Primitive};
+use crate::primitives::layout_metrics::TextMeasure;
 use crate::primitives::multi_section_view::{
-    Axis, EmptyBody, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux,
-    SectionBody, SectionHeader,
+    msv_layout, msv_metrics, MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout,
 };
 use crate::style::Style;
 use crate::theme::Theme;
-use crate::types::StyledText;
 
-/// Compute the GTK metrics for a `MultiSectionView` from a
-/// `line_height`. Backends call this AND the primitive's `layout()`
-/// with the same metrics so paint and click resolve to the same bounds.
-///
-/// Thin wrapper over [`crate::primitives::layout_metrics::msv_metrics`]
-/// — identical math across every pixel backend.
+/// The pixel metrics a view lays out with at `line_height` — see
+/// [`msv_metrics`].
 pub fn metrics_for(line_height: f64, allow_resize: bool) -> MsvLayoutMetrics {
-    crate::primitives::layout_metrics::msv_metrics(line_height, allow_resize)
+    msv_metrics(line_height, allow_resize)
 }
 
-/// Compute the layout for a `MultiSectionView` using the GTK metrics
-/// that the rasteriser would use itself. Hosts call this to drive
-/// hit-testing without re-computing or re-measuring — paint AND click
-/// share this single layout per frame. Mirrors TUI's [`crate::tui::tui_msv_layout`]
-/// in spirit: one source-of-truth layout produced by one set of
-/// metrics, consumed by both paint and hit-test.
-///
-/// Thin wrapper over [`crate::primitives::layout_metrics::msv_layout`]
+/// The chrome layout [`draw_multi_section_view`] paints `view` with in
+/// `bounds` at `line_height`, for hit-testing what it painted.
 pub fn gtk_msv_layout(
     view: &MultiSectionView,
     bounds: QRect,
     line_height: f64,
 ) -> MultiSectionViewLayout {
-    crate::primitives::layout_metrics::msv_layout(view, bounds, line_height)
+    msv_layout(view, bounds, line_height)
 }
 
-/// Draw a [`MultiSectionView`] into `(x, y, w, h)` on `cr`.
+/// Paint `view` into `(x, y, w, h)` on `cr`, measuring text with
+/// `layout`'s current font; each section body paints through its own
+/// widget. `caret_visible` is the blink phase of a focused aux input's
+/// caret.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_multi_section_view(
     cr: &Context,
@@ -70,428 +50,30 @@ pub fn draw_multi_section_view(
     nerd_fonts_enabled: bool,
     caret_visible: bool,
 ) {
-    if w <= 0.0 || h <= 0.0 || view.axis == Axis::Horizontal {
-        return;
-    }
-
-    let bg = cairo_rgb(theme.background);
-    cr.set_source_rgb(bg.0, bg.1, bg.2);
-    cr.rectangle(x, y, w, h);
-    cr.fill().ok();
     layout.set_attributes(None);
-
-    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let view_layout = gtk_msv_layout(view, bounds, line_height);
-
-    // Clip everything painted below to the panel area. Sections with
-    // negative-y bounds (scrolled past the viewport top) extend beyond
-    // the visible window — Cairo's clip silently drops the off-screen
-    // portion so the next section's body doesn't get overpainted by a
-    // tree from a previous section. Mirrors the TUI rasteriser's
-    // `clip_to_viewport`.
-    cr.save().ok();
-    cr.rectangle(x, y, w, h);
-    cr.clip();
-
-    for s_layout in &view_layout.sections {
-        let section = &view.sections[s_layout.section_idx];
-
-        paint_header(
-            cr,
-            layout,
-            s_layout.header_bounds,
-            &section.header,
-            section.collapsed,
-            theme,
-        );
-
-        if !s_layout.collapsed {
-            if let (Some(aux), Some(aux_b)) = (&section.aux, s_layout.aux_bounds) {
-                paint_aux(cr, layout, aux_b, aux, theme, caret_visible);
-            }
-
-            paint_body(
-                cr,
-                layout,
-                s_layout.body_bounds,
-                &section.body,
-                theme,
-                style,
-                line_height,
-                nerd_fonts_enabled,
-            );
-
-            if let Some(sb_b) = s_layout.scrollbar_bounds {
-                paint_scrollbar(cr, sb_b, s_layout.thumb_bounds, theme);
-            }
-        }
-    }
-
-    if view.allow_resize {
-        for d in &view_layout.dividers {
-            paint_divider(cr, d.bounds, theme);
-        }
-    }
-
-    // Restore the unclipped region so the panel-level scrollbar paints
-    // on top without being itself clipped.
-    cr.restore().ok();
-
-    // Panel-level scrollbar (WholePanel mode when content overflows).
-    // Thumb geometry comes straight from `view_layout.panel_scrollbar_thumb`
-    // (computed once via `fit_thumb` in `MultiSectionView::layout`).
-    if let Some(panel_sb) = view_layout.panel_scrollbar {
-        paint_panel_scrollbar(cr, panel_sb, view_layout.panel_scrollbar_thumb, theme);
-    }
-}
-
-// ── Section paint helpers ──────────────────────────────────────────────────
-//
-// Header/aux/text/empty/scrollbar/divider
-// chrome painting moved to the shared
-// [`crate::primitives::multi_section_view::native_surface_paint`] — these
-// wrappers just build a [`super::surface::CairoSurface`] adapter and
-// forward. `paint_body` (below) stays here: `Tree`/`List`/`MessageList`
-// bodies still dispatch to this backend's own `draw_tree`/`draw_list`/
-// `draw_message_list`, which take a raw `(&Context, &pango::Layout)` pair,
-// not `&mut dyn PaintSurface`.
-
-/// GTK's header row painted at an integer-rounded `y`/`height`
-/// pre-port (`by`/`bh` were `.round()`ed; `bx`/`bw` were not) — a
-/// GTK-specific crispness tweak the shared
-/// [`crate::primitives::multi_section_view::native_surface_paint::paint_header`]
-/// doesn't itself apply (Win/macOS never rounded either). Rounding the
-/// `Rect` here, before handing it to the shared function, reproduces
-/// that exact pre-port behaviour instead of silently dropping it.
-fn paint_header(
-    cr: &Context,
-    layout: &pango::Layout,
-    bounds: QRect,
-    header: &SectionHeader,
-    collapsed: bool,
-    theme: &Theme,
-) {
-    let rounded = QRect::new(
-        bounds.x,
-        bounds.y.round(),
-        bounds.width,
-        bounds.height.round(),
-    );
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: Some(layout),
-        translucent_fill: true,
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_header(
-        &mut surface,
-        rounded,
-        header,
-        collapsed,
-        theme,
-    );
-}
-
-fn paint_aux(
-    cr: &Context,
-    layout: &pango::Layout,
-    bounds: QRect,
-    aux: &SectionAux,
-    theme: &Theme,
-    caret_visible: bool,
-) {
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: Some(layout),
-        translucent_fill: true,
-    };
-    // `caret_visible` comes from `GtkBackend::caret_blink` — see
-    // `crate::caret_blink`'s module doc and
-    // `super::run::setup_caret_blink`'s blink-timer wiring.
-    crate::primitives::multi_section_view::native_surface_paint::paint_aux(
-        &mut surface,
-        bounds,
-        aux,
-        theme,
-        caret_visible,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_body(
-    cr: &Context,
-    layout: &pango::Layout,
-    bounds: QRect,
-    body: &SectionBody,
-    theme: &Theme,
-    style: &Style,
-    line_height: f64,
-    nerd_fonts_enabled: bool,
-) {
-    let x = bounds.x as f64;
-    let y = bounds.y as f64;
-    let w = bounds.width as f64;
-    let h = bounds.height as f64;
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    // Clip to body bounds so inner primitives (tree, list) can't
-    // paint past the section boundary into the next header.
-    cr.save().ok();
-    cr.rectangle(x, y, w, h);
-    cr.clip();
-    match body {
-        SectionBody::Tree(t) => {
-            draw_tree(
-                cr,
-                layout,
-                x,
-                y,
-                w,
-                h,
-                t,
-                theme,
-                style,
-                line_height,
-                nerd_fonts_enabled,
-            );
-        }
-        SectionBody::List(l) => {
-            draw_list(
-                cr,
-                layout,
-                x,
-                y,
-                w,
-                h,
-                l,
-                theme,
-                style,
-                line_height,
-                nerd_fonts_enabled,
-            );
-        }
-        SectionBody::Form(f) => {
-            draw_form_body(cr, layout, x, y, w, h, f, theme, line_height);
-        }
-        SectionBody::Chart(c) => {
-            // Painting moved to the shared
-            // `crate::primitives::chart::paint`; this raw
-            // `(&Context, &pango::Layout)` call site (no live
-            // `GtkBackend` on hand) uses the same shared
-            // `super::surface::CairoSurface` adapter the embedded form
-            // body uses.
-            layout.set_text("M");
-            let char_width = layout.pixel_size().0 as f64;
-            let chart_layout =
-                super::gtk_chart_layout(c, x, y, w, h, line_height, char_width.max(1.0));
-            let mut surface = super::surface::CairoSurface {
-                cr,
-                layout: Some(layout),
-                translucent_fill: false,
-            };
-            crate::primitives::chart::paint(c, &chart_layout, &mut surface, theme, None, None);
-        }
-        SectionBody::MessageList(m) => {
-            draw_message_list(cr, layout, m, x, y, w, y + h, line_height);
-        }
-        SectionBody::Terminal(_) => {
-            // No standalone Terminal rasteriser uses this signature today;
-            // host paints Terminal cells themselves.
-        }
-        SectionBody::Text(lines) => {
-            paint_text_lines(cr, layout, x, y, w, h, lines, theme, line_height);
-        }
-        SectionBody::Empty(empty) => {
-            paint_empty_body(cr, layout, x, y, w, h, empty, theme, line_height);
-        }
-        SectionBody::Custom(_) => {
-            // Host paints in the body bounds.
-        }
-    }
-    cr.restore().ok();
-}
-
-/// Paint an embedded [`crate::Form`] section body. Field-kind painting
-/// goes through the shared [`crate::primitives::form::paint`] via
-/// [`super::surface::CairoSurface`] (this call site has only a raw
-/// `cr`/`layout`, not a live [`super::backend::GtkBackend`]) —
-/// `FieldKind::Toolbar` is painted separately below, because the shared
-/// form painter leaves it to the caller.
-#[allow(clippy::too_many_arguments)]
-fn draw_form_body(
-    cr: &Context,
-    layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    form: &crate::Form,
-    theme: &Theme,
-    line_height: f64,
-) {
-    let row_h = crate::primitives::layout_metrics::form_row_height(line_height);
-    let measure = super::surface::PangoMeasure {
+    layout.set_text("M");
+    let char_width = layout.pixel_size().0.max(1) as f64;
+    let measure = PangoMeasure {
         pango_layout: Some(layout),
-        char_width: 8.0,
+        char_width,
     };
-    let flayout = form.layout(w as f32, h as f32, |i| {
-        crate::primitives::layout_metrics::form_field_measure(&form.fields[i], row_h, &measure)
-    });
-    let origin = crate::Point::new(x as f32, y as f32);
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: Some(layout),
-        translucent_fill: false,
-    };
-    crate::primitives::form::paint(form, &flayout, &mut surface, theme, origin);
-
-    for vf in &flayout.visible_fields {
-        let Some(field) = form.fields.get(vf.field_idx) else {
-            continue;
-        };
-        let crate::FieldKind::Toolbar(toolbar) = &field.kind else {
-            continue;
-        };
-        let label_text: String = field.label.spans.iter().map(|s| s.text.as_str()).collect();
-        let no_label = label_text.is_empty();
-        layout.set_text(&label_text);
-        let (label_w, _) = layout.pixel_size();
-        let row_x = x + vf.bounds.x as f64;
-        let row_y = y + vf.bounds.y as f64;
-        let row_w = vf.bounds.width as f64;
-        let toolbar_row_h = vf.bounds.height as f64;
-        // Starts at the form's shared control column (`FormLayout::toolbar_field_rect`).
-        let (toolbar_x, toolbar_w) =
-            flayout.toolbar_field_rect(row_x, row_w, label_w as f64, no_label);
-        if toolbar_w > 0.0 {
-            layout.set_width(-1);
-            layout.set_ellipsize(pango::EllipsizeMode::None);
-            let mut toolbar_surface = super::surface::CairoSurface {
-                cr,
-                layout: Some(layout),
-                translucent_fill: true,
-            };
-            crate::primitives::toolbar::native_surface_paint::paint_embedded(
-                toolbar,
-                QRect::new(
-                    toolbar_x as f32,
-                    row_y as f32,
-                    toolbar_w as f32,
-                    toolbar_row_h as f32,
-                ),
-                &mut toolbar_surface,
-                theme,
-            );
-            layout.set_attributes(None);
-        }
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_text_lines(
-    cr: &Context,
-    layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    lines: &[StyledText],
-    theme: &Theme,
-    line_height: f64,
-) {
-    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let mut surface = super::surface::CairoSurface {
+    let measurer = |text: &str, _role: crate::FontRole| measure.width_of(text);
+    let ctx = LayoutCtx::new(line_height as f32, char_width as f32, nerd_fonts_enabled)
+        .with_measurer(&measurer)
+        .with_style(style);
+    let rect = QRect::new(x as f32, y as f32, w as f32, h as f32);
+    let view_layout = Primitive::layout(view, &ctx, rect);
+    let mut surface = CairoSurface {
         cr,
         layout: Some(layout),
         translucent_fill: true,
     };
-    crate::primitives::multi_section_view::native_surface_paint::paint_text_lines(
+    crate::primitives::multi_section_view::native_surface_paint::paint(
+        view,
+        &view_layout,
         &mut surface,
-        bounds,
-        lines,
-        theme,
-        line_height as f32,
-    );
-}
-
-#[allow(clippy::too_many_arguments)]
-fn paint_empty_body(
-    cr: &Context,
-    layout: &pango::Layout,
-    x: f64,
-    y: f64,
-    w: f64,
-    h: f64,
-    empty: &EmptyBody,
-    theme: &Theme,
-    line_height: f64,
-) {
-    let bounds = QRect::new(x as f32, y as f32, w as f32, h as f32);
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: Some(layout),
-        translucent_fill: true,
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_empty_body(
-        &mut surface,
-        bounds,
-        empty,
-        theme,
-        line_height as f32,
-    );
-}
-
-fn paint_scrollbar(cr: &Context, gutter: QRect, thumb_bounds: Option<QRect>, theme: &Theme) {
-    // Thumb at the layout-computed position when the body's scroll
-    // state was introspectable (`Tree`, `List`). Falls back to a
-    // 20%-tall top-anchored thumb for overflowing bodies without
-    // row-based scroll. Per *Primitive Authoring Rule #6*: thumb position
-    // is state-derived and lives on the layout, not the rasteriser.
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: None,
-        translucent_fill: true,
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_scrollbar(
-        &mut surface,
-        gutter,
-        thumb_bounds,
-        theme,
-    );
-}
-
-/// Panel-level scrollbar. Paints the track, then the thumb at
-/// `thumb_bounds` — geometry computed once by
-/// [`crate::primitives::multi_section_view::MultiSectionView::layout`]
-/// (`fit_thumb`) and published as
-/// [`crate::primitives::multi_section_view::MultiSectionViewLayout::panel_scrollbar_thumb`].
-///
-/// Consumes pre-computed bounds instead of re-deriving them,
-/// mirroring [`paint_scrollbar`]'s (per-section) pattern.
-fn paint_panel_scrollbar(cr: &Context, bounds: QRect, thumb_bounds: Option<QRect>, theme: &Theme) {
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: None,
-        translucent_fill: true,
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_panel_scrollbar(
-        &mut surface,
-        bounds,
-        thumb_bounds,
-        theme,
-    );
-}
-
-fn paint_divider(cr: &Context, bounds: QRect, theme: &Theme) {
-    let mut surface = super::surface::CairoSurface {
-        cr,
-        layout: None,
-        translucent_fill: true,
-    };
-    crate::primitives::multi_section_view::native_surface_paint::paint_divider(
-        &mut surface,
-        bounds,
-        theme,
+        &crate::PaintEnv::new(theme, style),
+        caret_visible,
     );
 }
 
@@ -518,9 +100,13 @@ fn paint_divider(cr: &Context, bounds: QRect, theme: &Theme) {
 mod tests {
     use super::*;
     use crate::primitives::multi_section_view::{
+        Axis, EmptyBody, SectionAux, SectionBody, SectionHeader,
+    };
+    use crate::primitives::multi_section_view::{
         InlineInput, MultiSectionViewHit, ScrollMode, ScrollbarHit, Section, SectionSize,
     };
     use crate::primitives::tree::{TreeRow, TreeView};
+    use crate::types::StyledText;
     use crate::types::{Color, Decoration, SelectionMode, WidgetId};
     use pangocairo::cairo::{Format, ImageSurface};
 
@@ -531,7 +117,7 @@ mod tests {
 
     /// Standard line-height the GTK rasteriser is parameterised by.
     /// Header rows render at `line_height * 1.4`; body rows at the
-    /// same (per `crate::primitives::layout_metrics::msv_body_measure`).
+    /// same (per `crate::primitives::multi_section_view::msv_body_measure`).
     const LINE_HEIGHT: f64 = 14.0;
 
     /// Build a [`Theme`] where the canonical background is pure white
@@ -1143,7 +729,7 @@ mod tests {
 
         // Verify msv_body_measure content_size matches the tree's total row heights.
         let expected_content = header_h as f32 + 2.0 * item_h as f32;
-        let actual_content = crate::primitives::layout_metrics::msv_body_measure(
+        let actual_content = crate::primitives::multi_section_view::msv_body_measure(
             &view.sections[0].body,
             &view.sections[0].aux,
             LINE_HEIGHT,

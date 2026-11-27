@@ -696,6 +696,8 @@ fixed, documented token list where a typo can only ever be a typo.
 - [`_TreeTableIdxPathPayload`](#wire-_treetableidxpathpayload)
 - [`_TreeTableSelectionSetPayload`](#wire-_treetableselectionsetpayload)
 - [`_TreeTableToggleExpandedPayload`](#wire-_treetabletoggleexpandedpayload)
+- [`_TreeTableSortChangedPayload`](#wire-_treetablesortchangedpayload)
+- [`_TreeTableContextMenuPayload`](#wire-_treetablecontextmenupayload)
 - [`TreeTableEvent`](#wire-treetableevent)
 - [`_CellGridCursorMovedPayload`](#wire-_cellgridcursormovedpayload)
 - [`_CellGridCellsRequestedPayload`](#wire-_cellgridcellsrequestedpayload)
@@ -1303,6 +1305,8 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `indent` | `number` | yes |  |
 | `is_expanded` | `boolean \| null` | yes |  |
 | `icon` | `Icon \| null` | yes |  |
+| `children_pending` | `boolean` | no |  |
+| `placeholder` | `boolean` | no |  |
 
 <a id="wire-treetabledescriptor"></a>
 #### `TreeTableDescriptor`
@@ -1311,6 +1315,7 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | --- | --- | --- | --- |
 | `table` | `DataTableDescriptor` | yes |  |
 | `tree` | `TreeTableNodeDescriptor[]` | yes |  |
+| `vim_keys` | `boolean` | no |  |
 
 <a id="wire-treetablecontrollernodedescriptor"></a>
 #### `TreeTableControllerNodeDescriptor`
@@ -4159,6 +4164,23 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `path` | `TreePath` | yes |  |
 | `expand` | `boolean` | yes |  |
 
+<a id="wire-_treetablesortchangedpayload"></a>
+#### `_TreeTableSortChangedPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `col` | `number` | yes |  |
+| `ascending` | `boolean` | yes |  |
+
+<a id="wire-_treetablecontextmenupayload"></a>
+#### `_TreeTableContextMenuPayload`
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `idx` | `number` | yes |  |
+| `path` | `TreePath` | yes |  |
+| `position` | `Point` | yes |  |
+
 <a id="wire-treetableevent"></a>
 #### `TreeTableEvent`
 
@@ -4166,14 +4188,17 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 
 | Tag | Payload type | Description |
 | --- | --- | --- |
-| `HeaderClicked` | `_ColPayload` |  |
+| `SortChanged` | `_TreeTableSortChangedPayload` |  |
 | `RowActivated` | `_TreeTableIdxPathPayload` |  |
 | `RowSelected` | `_TreeTableIdxPathPayload` |  |
 | `RowDoubleClicked` | `_TreeTableIdxPathPayload` |  |
 | `Scroll` | `_DataTableScrollPayload` |  |
+| `ScrollChanged` | `_DataTableScrollChangedPayload` |  |
 | `ColumnResized` | `_ColumnResizedPayload` |  |
 | `SelectionSet` | `_TreeTableSelectionSetPayload` |  |
 | `ToggleExpanded` | `_TreeTableToggleExpandedPayload` |  |
+| `ChildrenRequested` | `_TreeTableIdxPathPayload` |  |
+| `ContextMenuRequested` | `_TreeTableContextMenuPayload` |  |
 
 <a id="wire-_cellgridcursormovedpayload"></a>
 #### `_CellGridCursorMovedPayload`
@@ -5325,6 +5350,10 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |
 | `TreeTable` | `[WidgetId, TreeTableEvent]` |  |
 | `CellGrid` | `[WidgetId, CellGridEvent]` |  |
+| `MultiSectionView` | `[WidgetId, unknown]` |  |
+| `Chat` | `[WidgetId, unknown]` |  |
+| `Sidebar` | `[WidgetId, unknown]` |  |
+| `TabGroup` | `[WidgetId, unknown]` |  |
 | `ScrollView` | `[WidgetId, ScrollViewEvent]` |  |
 | `HelpOverlay` | `[WidgetId, unknown]` |  |
 | `PathPicker` | `[WidgetId, unknown]` |  |
