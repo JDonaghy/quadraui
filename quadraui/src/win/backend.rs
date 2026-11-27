@@ -53,8 +53,7 @@ use super::services::WinPlatformServices;
 // `WinBackend::new()` starts in (on *any* platform) and the state
 // `end_frame` drops back to after a device-lost `EndDraw` failure, so a
 // live Windows host hit the same panic a Linux `cargo test --features
-// win` run does. `nominal_text_width`/`NominalTextMeasure` give every
-// such site a plausible, finite substitute (`char_width` per character,
+// win` run does. `nominal_text_width` gives every such site a plausible, finite substitute (`char_width` per character,
 // no real glyph metrics) instead — real widths resume automatically once
 // a surface exists.
 fn nominal_text_width(text: &str, char_width: f32) -> f32 {
@@ -111,19 +110,6 @@ fn focus_ring_band_overlaps(rect: Rect, stroke_width: f32, overlay: Rect) -> boo
     [top, bottom, left, right]
         .into_iter()
         .any(|band| rects_overlap(band, overlay))
-}
-
-/// [`crate::primitives::layout_metrics::TextMeasure`] impl backed by
-/// [`nominal_text_width`] for `*_layout` fallbacks that need a
-/// `&dyn TextMeasure` rather than a bare width.
-struct NominalTextMeasure {
-    char_width: f32,
-}
-
-impl crate::primitives::layout_metrics::TextMeasure for NominalTextMeasure {
-    fn width_of(&self, text: &str) -> f32 {
-        nominal_text_width(text, self.char_width)
-    }
 }
 
 /// [`super::spinner::SpinnerMeasureSource`] impl backed by
@@ -360,9 +346,9 @@ pub(crate) const FRAME_TIMER_ID: usize = 3;
 /// `self.surface`/`self.dwrite` are always populated together by
 /// [`Self::attach_surface`]/`attach_headless`, so a standalone
 /// `WinBackend` no window has attached to yet has neither. Every
-/// rasteriser then paints nothing and every layout query falls back to a
-/// [`NominalTextMeasure`] layout instead of panicking; the next real
-/// attach resumes painting.
+/// rasteriser then paints nothing and every layout query falls back to
+/// [`nominal_text_width`] instead of panicking; the next real attach
+/// resumes painting.
 pub struct WinBackend {
     viewport: Viewport,
     /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
