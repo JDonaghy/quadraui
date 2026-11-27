@@ -4728,6 +4728,7 @@ mod tests {
     /// Press a tab, drag it past the threshold into the other pane and
     /// release: the drop is reported as an intent, the overlay shows while
     /// the drag hovers, and `apply` moves the tab.
+    #[cfg(feature = "tui")]
     #[test]
     fn a_tab_drag_reports_a_drop_that_apply_carries_out() {
         let mut group = bare_group();
@@ -4801,6 +4802,7 @@ mod tests {
         assert_eq!(group.pane(1).map(|p| p.active_tab_id()), Some("b"));
     }
 
+    #[cfg(feature = "tui")]
     #[test]
     fn a_press_released_in_place_is_not_a_drop() {
         let group = bare_group();

@@ -1538,6 +1538,7 @@ mod contract {
         /// On a cell grid the chevron is the two cells before a branch's
         /// title, so a click on the title selects the row rather than
         /// expanding it.
+        #[cfg(feature = "tui")]
         #[test]
         fn clicking_a_branch_title_on_cells_selects_rather_than_toggles() {
             let mut ss = SidebarSystem::new(sample_defs());
@@ -1837,6 +1838,7 @@ mod contract {
 
         /// A press on a number input's increment stepper in a form section
         /// steps it, through the form's own handling of the press.
+        #[cfg(feature = "tui")]
         #[test]
         fn a_number_input_stepper_in_a_form_section_steps_the_value() {
             let number_sidebar = || {
