@@ -690,6 +690,8 @@ fn declared_width_in_chars<D: ColumnUnitProbe>(d: &D, width: ColumnWidth) -> f32
         column_overrides: vec![],
         footer: None,
         bordered: false,
+        striped: false,
+        glyphs: None,
     };
     d.probe_column_width(&table) / d.probe_char_width()
 }
@@ -742,24 +744,20 @@ fn fixed_px_describes_the_same_column_width_on_tui_and_gtk() {
 }
 
 #[test]
-fn deprecated_fixed_width_is_the_ambiguity_fixed_cells_and_fixed_px_replace() {
-    // The negative control for the two tests above: the same declared `10.0`
-    // is ten characters on a terminal and roughly one on a pixel surface.
-    // `ColumnWidth::Fixed` is deprecated precisely because of this gap, so
-    // naming it here is deliberate.
-    #[allow(deprecated)]
-    let ratio = tui_over_gtk_char_ratio(ColumnWidth::Fixed(10.0));
+fn native_width_is_exactly_n_cells_on_tui_and_n_px_on_gtk() {
+    let tui = TuiDriver::<DataTableApp>::new_default();
+    let gtk = GtkDriver::<DataTableApp>::new_default();
+    let tui_units =
+        declared_width_in_chars(&tui, ColumnWidth::Native(12.0)) * tui.probe_char_width();
+    let gtk_units =
+        declared_width_in_chars(&gtk, ColumnWidth::Native(12.0)) * gtk.probe_char_width();
     assert!(
-        ratio > 3.0,
-        "Fixed(10.0) is expected to read as far more characters on TUI than on \
-         GTK — that unit ambiguity is what FixedCells/FixedPx exist to fix — \
-         but the TUI/GTK character ratio is only {ratio}"
+        (tui_units - 12.0).abs() < 0.01,
+        "TUI: Native(12.0) must resolve to exactly 12 cells, got {tui_units}"
     );
-    let cells_ratio = tui_over_gtk_char_ratio(ColumnWidth::FixedCells(10.0));
     assert!(
-        cells_ratio < ratio,
-        "FixedCells(10.0) must agree across backends better than Fixed(10.0): \
-         cells ratio {cells_ratio}, Fixed ratio {ratio}"
+        (gtk_units - 12.0).abs() < 0.01,
+        "GTK: Native(12.0) must resolve to exactly 12 px, got {gtk_units}"
     );
 }
 

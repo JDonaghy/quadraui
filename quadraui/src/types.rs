@@ -668,6 +668,55 @@ pub fn apply_selection_gesture(
     next
 }
 
+/// The multi-selection a row widget grows with Ctrl/Cmd and Shift
+/// gestures: the selected index set and the anchor a Shift range extends
+/// from. A widget keeps one in its `Interactive::State`; its own cursor
+/// row (and whatever the app echoes back as the single selected row)
+/// stays the widget's business.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SelectionCore {
+    /// The index a [`SelectionGesture::Range`] grows from — the last
+    /// `Replace` or `Toggle` target. `None` until the first gesture.
+    pub anchor: Option<usize>,
+    /// The selected set, sorted and de-duplicated. Empty until the first
+    /// gesture.
+    pub selected: Vec<usize>,
+}
+
+impl SelectionCore {
+    /// Apply `gesture` targeting row `index` and return the new selection
+    /// set. `current` is the widget's cursor row before the gesture: it
+    /// seeds the set and the anchor when no gesture has grown them yet, so
+    /// the first Ctrl/Cmd or Shift click keeps the row already selected.
+    pub fn on_gesture(
+        &mut self,
+        current: Option<usize>,
+        index: usize,
+        gesture: SelectionGesture,
+    ) -> Vec<usize> {
+        let seed: Vec<usize> = if self.selected.is_empty() {
+            current.into_iter().collect()
+        } else {
+            self.selected.clone()
+        };
+        match gesture {
+            SelectionGesture::Replace => {
+                self.anchor = Some(index);
+                self.selected = vec![index];
+            }
+            SelectionGesture::Toggle => {
+                self.selected = apply_selection_gesture(&seed, index, index, gesture);
+                self.anchor = Some(index);
+            }
+            SelectionGesture::Range => {
+                let anchor = *self.anchor.get_or_insert(current.unwrap_or(index));
+                self.selected = apply_selection_gesture(&seed, anchor, index, gesture);
+            }
+        }
+        self.selected.clone()
+    }
+}
+
 /// Optional visual decoration applied to a row beyond its text colour.
 ///
 /// Backends map each variant to an appropriate visual treatment. For row
@@ -1092,6 +1141,35 @@ mod tests {
             SelectionGesture::from_modifiers(cmd_only),
             SelectionGesture::Toggle
         );
+    }
+
+    #[test]
+    fn selection_core_first_toggle_keeps_the_cursor_row_and_range_extends_from_it() {
+        let mut core = SelectionCore::default();
+        assert_eq!(
+            core.on_gesture(Some(2), 4, SelectionGesture::Toggle),
+            vec![2, 4]
+        );
+        assert_eq!(core.anchor, Some(4));
+        assert_eq!(
+            core.on_gesture(Some(4), 6, SelectionGesture::Range),
+            vec![4, 5, 6]
+        );
+        assert_eq!(
+            core.on_gesture(Some(6), 1, SelectionGesture::Replace),
+            vec![1]
+        );
+        assert_eq!(core.anchor, Some(1));
+    }
+
+    #[test]
+    fn selection_core_first_range_anchors_at_the_cursor_row() {
+        let mut core = SelectionCore::default();
+        assert_eq!(
+            core.on_gesture(Some(3), 1, SelectionGesture::Range),
+            vec![1, 2, 3]
+        );
+        assert_eq!(core.anchor, Some(3));
     }
 
     #[test]

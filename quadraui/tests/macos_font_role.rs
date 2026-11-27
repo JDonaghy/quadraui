@@ -332,6 +332,8 @@ fn draw_data_table_paints_in_chrome_font() {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let _ = b.draw_data_table(area, &table, None);
     });

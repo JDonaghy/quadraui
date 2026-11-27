@@ -9627,6 +9627,8 @@ mod tests {
             column_overrides: vec![],
             footer: None,
             bordered,
+            striped: false,
+            glyphs: None,
         };
         let logic = DataTableLogic {
             data_table,
@@ -10489,6 +10491,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let logic = DataTableCursorLogic {
             table,

@@ -25,7 +25,7 @@ use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
 use super::text::measure_text;
-use crate::primitives::list::{ListItemMeasure, ListPaintState, ListView, ListViewLayout};
+use crate::primitives::list::{ListPaintState, ListView, ListViewLayout};
 use crate::style::Style;
 use crate::theme::Theme;
 
@@ -67,17 +67,8 @@ pub fn mac_list_layout(
     crate::primitives::layout_metrics::list_layout(list, w, h, line_height, char_width, 0.0)
 }
 
-/// Like [`mac_list_layout`], but threads an explicit pixel-precise
-/// scroll position (`scroll_px`) through to
-/// [`ListView::layout_with_scroll_px`] instead of only
-/// [`ListView::scroll_offset`]'s whole-row value — mirrors
-/// [`crate::primitives::layout_metrics::list_layout`]'s h-scrollbar
-/// reservation (border inset is always `0.0` here, matching
-/// `mac_list_layout`; macOS doesn't support [`ListView::bordered`] yet —
-/// see this module's "Scope omissions"), just calling the scroll_px-aware
-/// layout method the plain [`crate::primitives::layout_metrics::list_layout`]
-/// can't reach. `scroll_px: None` produces byte-identical output to
-/// `mac_list_layout`.
+/// [`mac_list_layout`] with a pixel-precise scroll position
+/// (`scroll_px`), resolved through [`ListView::resolve_layout`].
 pub fn mac_list_layout_with_scroll_px(
     list: &ListView,
     w: f64,
@@ -86,21 +77,14 @@ pub fn mac_list_layout_with_scroll_px(
     char_width: f64,
     scroll_px: Option<f32>,
 ) -> ListViewLayout {
-    let visible_px = w.max(0.0);
-    let needs_hscrollbar = list
-        .max_content_width
-        .is_some_and(|n| n as f64 * char_width > visible_px);
-    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
-    let title_h = if list.title.is_some() {
-        line_height as f32
-    } else {
-        0.0
-    };
-    let layout_w = w as f32;
-    let layout_h = (h - hscrollbar_h).max(0.0) as f32;
-    list.layout_with_scroll_px(layout_w, layout_h, title_h, scroll_px, |_| {
-        ListItemMeasure::new(line_height as f32)
-    })
+    list.resolve_layout(
+        crate::primitive::Units::Pixels,
+        (w as f32, h as f32),
+        line_height as f32,
+        char_width as f32,
+        0.0,
+        scroll_px,
+    )
 }
 
 /// Draw a [`ListView`] into `(x, y, w, h)` on `ctx`. Returns the same

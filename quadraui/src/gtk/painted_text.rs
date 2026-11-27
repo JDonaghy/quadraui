@@ -129,6 +129,8 @@ mod tests {
                     column_overrides: vec![],
                     footer: None,
                     bordered: false,
+                    striped: false,
+                    glyphs: None,
                 };
                 // The logical-record ordering under test is what the
                 // DataTable rasteriser records, until DataTable paints

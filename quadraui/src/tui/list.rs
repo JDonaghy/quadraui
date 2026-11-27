@@ -12,7 +12,7 @@ use ratatui::layout::Rect;
 use ratatui::style::Color as RatatuiColor;
 
 use super::{draw_styled_text, ratatui_color, set_cell, set_cell_wide};
-use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
+use crate::primitives::list::{ListView, ListViewLayout};
 use crate::text_util::{char_cell_width, display_width};
 use crate::theme::Theme;
 use crate::types::{Decoration, StyledText};
@@ -40,52 +40,14 @@ pub fn tui_list_layout_with_scroll_px(
     list: &ListView,
     scroll_px: Option<f32>,
 ) -> ListViewLayout {
-    // Floor to a whole cell *before* resolving: TUI's row height is
-    // always 1.0, so a non-whole `scroll_px` would otherwise leave a
-    // non-zero `scroll_sub_px` remainder that nothing here clips away
-    // (unlike a GUI surface's `surface_push_clip`), painting a
-    // negative-offset row that collides with its neighbour. Flooring
-    // first guarantees `scroll_sub_px == 0.0` and TUI never paints a
-    // partial row.
-    let scroll_px = scroll_px.map(f32::floor);
-    let area_f = crate::event::Rect::new(
-        area.x as f32,
-        area.y as f32,
-        area.width as f32,
-        area.height as f32,
-    );
-    let hscrollbar = list.hscrollbar(area_f, 1.0);
-    let needs_hscrollbar = hscrollbar.is_some();
-
-    let v_area_f = if needs_hscrollbar {
-        crate::event::Rect::new(
-            area_f.x,
-            area_f.y,
-            area_f.width,
-            (area_f.height - 1.0).max(0.0),
-        )
-    } else {
-        area_f
-    };
-    let vscrollbar = list.vscrollbar(v_area_f, 1.0);
-    let needs_vscrollbar = vscrollbar.is_some();
-
-    let viewport_h = if needs_hscrollbar {
-        (area.height as f32 - 1.0).max(0.0)
-    } else {
-        area.height as f32
-    };
-
-    let viewport_w = if needs_vscrollbar {
-        (area.width as f32 - 1.0).max(0.0)
-    } else {
-        area.width as f32
-    };
-
-    let title_h = if list.title.is_some() { 1.0 } else { 0.0 };
-    list.layout_with_scroll_px(viewport_w, viewport_h, title_h, scroll_px, |_| {
-        ListItemMeasure::new(1.0)
-    })
+    list.resolve_layout(
+        crate::primitive::Units::Cells,
+        (area.width as f32, area.height as f32),
+        1.0,
+        1.0,
+        0.0,
+        scroll_px,
+    )
 }
 
 /// Draw a [`ListView`] into `area` on `buf`. Honours

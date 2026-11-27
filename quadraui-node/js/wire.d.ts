@@ -270,8 +270,8 @@ export interface _ColumnWidthContent {
   max: number;
 }
 
-/** Column sizing strategy, e.g. `{"Flex": 2.0}` -- the deprecated `"Fixed"` variant is omitted here; use `FixedCells`/`FixedPx` instead. */
-export type ColumnWidth = { FixedCells: number; } | { FixedPx: number; } | { Flex: number; } | { Content: _ColumnWidthContent; };
+/** Column sizing strategy, e.g. `{"Flex": 2.0}`. `Native` is N in the backend's own unit (cells on TUI, pixels elsewhere); `FixedCells`/`FixedPx` keep one meaning on every backend. */
+export type ColumnWidth = { Native: number; } | { FixedCells: number; } | { FixedPx: number; } | { Flex: number; } | { Content: _ColumnWidthContent; };
 
 export interface ColumnDescriptor {
   title: string;
@@ -298,6 +298,7 @@ export interface DataTableDescriptor {
   column_overrides?: (number | null)[];
   footer?: DataRowDescriptor | null;
   bordered?: boolean;
+  striped?: boolean;
   scroll_px?: number;
   items_window?: ItemsWindow | null; // binding-core extension key, lifted out by `items_window_from_value` -- not a `DataTable` field. `rows` holds only the loaded window's rows; the app re-sends a different slice once a `RowsRequested` request names one.
 }
@@ -2196,7 +2197,16 @@ export interface _DataTableSelectionSetPayload {
   indices: number[];
 }
 
-export type DataTableEvent = { HeaderClicked: _ColPayload; } | { RowActivated: _IdxPayload; } | { RowSelected: _IdxPayload; } | { RowDoubleClicked: _IdxPayload; } | { Scroll: _DataTableScrollPayload; } | { ColumnResized: _ColumnResizedPayload; } | { SelectionSet: _DataTableSelectionSetPayload; };
+export interface _DataTableScrollChangedPayload {
+  scroll_offset: number;
+}
+
+export interface _DataTableContextMenuPayload {
+  idx: number;
+  position: Point;
+}
+
+export type DataTableEvent = { HeaderClicked: _ColPayload; } | { RowActivated: _IdxPayload; } | { RowSelected: _IdxPayload; } | { RowDoubleClicked: _IdxPayload; } | { Scroll: _DataTableScrollPayload; } | { ColumnResized: _ColumnResizedPayload; } | { SelectionSet: _DataTableSelectionSetPayload; } | { ScrollChanged: _DataTableScrollChangedPayload; } | { ColumnFocused: _ColPayload; } | { ContextMenuRequested: _DataTableContextMenuPayload; };
 
 export interface _TreeTableIdxPathPayload {
   idx: number;

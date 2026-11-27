@@ -36,7 +36,7 @@ def _tree_table_dict():
     return {
         "table": {
             "id": "files",
-            "columns": [{"title": "Name", "width": {"Fixed": 20.0}}],
+            "columns": [{"title": "Name", "width": {"Native": 20.0}}],
             "rows": [_row("src"), _row("main.rs")],
             "has_focus": True,
         },

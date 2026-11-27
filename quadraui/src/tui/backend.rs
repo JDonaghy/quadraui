@@ -1363,8 +1363,7 @@ impl TuiBackend {
                     repeat,
                 } => {
                     if let Some(id) = self.focused_activity_bar {
-                        let key_str =
-                            crate::primitives::activity_bar::key_to_activity_bar_string(&key);
+                        let key_str = crate::primitives::list::key_to_event_string(&key);
                         out.push(UiEvent::ActivityBar(
                             id,
                             crate::ActivityBarEvent::KeyPressed {
@@ -3756,6 +3755,8 @@ mod tests {
                 h_scroll: 0.0,
                 inset_x: 0.0,
                 inset_y: 0.0,
+                v_scrollbar_track: None,
+                scroll_sub_px: 0.0,
             }
         }
         fn data_table_layout(
@@ -3777,6 +3778,8 @@ mod tests {
                 h_scroll: 0.0,
                 inset_x: 0.0,
                 inset_y: 0.0,
+                v_scrollbar_track: None,
+                scroll_sub_px: 0.0,
             }
         }
         fn draw_tree_table(
@@ -4252,6 +4255,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: true,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -4646,6 +4651,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -5355,34 +5362,22 @@ mod tests {
         );
     }
 
-    /// `key_to_activity_bar_string` maps printable chars and common
+    /// `key_to_event_string` maps printable chars and common
     /// named keys to their expected string forms.
     #[test]
-    fn key_to_activity_bar_string_maps_correctly() {
-        use crate::primitives::activity_bar::key_to_activity_bar_string;
+    fn key_to_event_string_maps_correctly() {
+        use crate::primitives::list::key_to_event_string;
 
-        assert_eq!(key_to_activity_bar_string(&Key::Char('j')), "j");
-        assert_eq!(key_to_activity_bar_string(&Key::Char('K')), "K");
-        assert_eq!(
-            key_to_activity_bar_string(&Key::Named(NamedKey::Escape)),
-            "Escape"
-        );
-        assert_eq!(
-            key_to_activity_bar_string(&Key::Named(NamedKey::Enter)),
-            "Enter"
-        );
-        assert_eq!(key_to_activity_bar_string(&Key::Named(NamedKey::Up)), "Up");
-        assert_eq!(
-            key_to_activity_bar_string(&Key::Named(NamedKey::Down)),
-            "Down"
-        );
+        assert_eq!(key_to_event_string(&Key::Char('j')), "j");
+        assert_eq!(key_to_event_string(&Key::Char('K')), "K");
+        assert_eq!(key_to_event_string(&Key::Named(NamedKey::Escape)), "Escape");
+        assert_eq!(key_to_event_string(&Key::Named(NamedKey::Enter)), "Enter");
+        assert_eq!(key_to_event_string(&Key::Named(NamedKey::Up)), "Up");
+        assert_eq!(key_to_event_string(&Key::Named(NamedKey::Down)), "Down");
         // F13+ round-trips to "F13" rather than collapsing to a generic
         // placeholder — the shared `NamedKey::name` table has no F-key
         // upper bound.
-        assert_eq!(
-            key_to_activity_bar_string(&Key::Named(NamedKey::F(13))),
-            "F13"
-        );
+        assert_eq!(key_to_event_string(&Key::Named(NamedKey::F(13))), "F13");
     }
 
     // ── coalesce_mouse_moved tests ────────────────────────────────────────────
@@ -5811,6 +5806,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let table_glyphs =
             crate::primitives::data_table::DataTableGlyphs::new().with_sort_ascending_glyph("^");

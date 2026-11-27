@@ -49,6 +49,8 @@ fn make_table() -> DataTable {
         column_overrides: Vec::new(),
         footer: None,
         bordered: true,
+        striped: false,
+        glyphs: None,
     }
 }
 

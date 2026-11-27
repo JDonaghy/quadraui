@@ -16,13 +16,13 @@ from quadraui import QuiApp
 
 _NO_MODS = {"shift": False, "ctrl": False, "alt": False, "cmd": False}
 
-# Two `Fixed(8.0)` columns keep every coordinate below exact: column 0 spans
+# Two `Native(8.0)` columns keep every coordinate below exact: column 0 spans
 # viewport x in [0, 8), its divider sits at x == 8, and column 1 spans
 # [8, 16). The header occupies row 0 (TUI header height is one cell); body
 # rows start at row 1.
 _COLUMNS = [
-    {"title": "Name", "width": {"Fixed": 8.0}},
-    {"title": "Age", "width": {"Fixed": 8.0}},
+    {"title": "Name", "width": {"Native": 8.0}},
+    {"title": "Age", "width": {"Native": 8.0}},
 ]
 
 
@@ -183,3 +183,30 @@ def test_fixed_px_column_degrades_to_a_nominal_cell_count_on_tui():
     )
     app.run(1)
     assert {"DataTable": ("table", {"HeaderClicked": {"col": 1}})} in received
+
+
+def _striped_table_bgs(striped):
+    app = QuiApp(24, 8)
+    app.set_render(
+        lambda: {
+            "data_table": {
+                "id": "table",
+                "columns": _COLUMNS,
+                "rows": [_row("Alice", "30"), _row("Bob", "40"), _row("Cleo", "50")],
+                "striped": striped,
+            }
+        }
+    )
+    app.screen()
+    return [app.cell_colors(2, y)[1] for y in (1, 2, 3)]
+
+
+def test_striped_descriptor_tints_every_other_row():
+    first, second, third = _striped_table_bgs(True)
+    assert first == third
+    assert second != first
+
+
+def test_unstriped_rows_share_one_background():
+    first, second, third = _striped_table_bgs(False)
+    assert first == second == third

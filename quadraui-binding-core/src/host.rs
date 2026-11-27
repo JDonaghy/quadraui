@@ -5096,6 +5096,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
