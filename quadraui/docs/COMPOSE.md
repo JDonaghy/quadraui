@@ -754,39 +754,50 @@ let layout = panel.render(backend, panel_rect, &explorer_tree);
 
 ---
 
-## `SidebarSystem` — `src/compose/sidebar_system.rs`
+## `Sidebar` — `src/compose/sidebar.rs`
 
 **Owns:** a multi-section sidebar (VS Code's Explorer/Outline/Timeline
 stack) — per-section scroll and selection, active-section cycling,
 collapse, scrollbar drag, keyboard navigation, and two-layer click dispatch
-(section header, then body with coordinates translated). Each section is
-tree-bodied (`SidebarSectionDef::new`) or form-bodied
-(`SidebarSectionDef::form`).
+(section header, then body). Each section is tree-bodied
+(`SidebarSectionDef::new`) or form-bodied (`SidebarSectionDef::form`).
 
-**Controller only.** `SidebarSystem::new(defs)`; `set_rows(section, rows)`
-/ `set_form(section, form)`; `render(backend, rect)`;
-`handle(&event, backend, rect)` → `SidebarEvent`.
+**Widget.** `Sidebar` implements the contract (`State` = `SidebarState`,
+`Action` = `SidebarAction`) in controlled mode: collapse, visibility,
+badges, the active section, each tree's rows, selection and scroll, and
+the panel scroll are its fields, and every change comes back as a
+`SidebarAction` the host applies (`Sidebar::apply`). List it in
+`AppLogic::frame_tree`, or drive it with raw events through
+`Sidebar::handle_event(&mut state, &event, backend, rect)`, which answers
+every action the event produced. `Sidebar::from_defs(id, &defs)` builds
+it; `set_rows` keeps a row's rename session across rebuilt rows;
+`start_editing`, `reveal` and `toggle_expand_selected` cover the
+programmatic gestures.
 
-**Events (`SidebarEvent`):** `HeaderActivated { section }`,
+**Actions (`SidebarAction`):** `HeaderActivated { section }`,
+`ActiveSectionChanged { section }`, `CollapseChanged { .. }`,
 `RowSelected { section, path }`, `RowActivated { section, path }`,
 `RowToggleExpand { section, path }`, `ContextMenuRequested { .. }`,
-`ScrollChanged { section }`, `EditConfirmed { .. }`,
-`EditCancelled { section, path }`, `EditChanged { .. }`,
-`FormEvent { section, event }`, `StateChanged`, `Consumed`, `Ignored`.
+`ScrollChanged { section, offset }`, `PanelScrolled { offset }`,
+`EditChanged { .. }`, `EditConfirmed { .. }`,
+`EditCancelled { section, path }`, `Form { section, event }`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-let mut sidebar = SidebarSystem::new(vec![SidebarSectionDef::new("files", "Files")]);
+let mut sidebar = Sidebar::from_defs("files", &[SidebarSectionDef::new("files", "Files")]);
+let mut state = SidebarState::default();
 sidebar.set_rows(0, file_tree_rows);
-sidebar.render(backend, sidebar_rect);
-if let SidebarEvent::RowActivated { path, .. } = sidebar.handle(&event, backend, sidebar_rect) {
-    open_file(path);
+backend.draw_dyn(sidebar_rect, &sidebar, &());
+if let Handled::Event(actions) = sidebar.handle_event(&mut state, &event, backend, sidebar_rect) {
+    for action in actions {
+        if let SidebarAction::RowActivated { path, .. } = &action {
+            open_file(path);
+        }
+        sidebar.apply(&action);
+    }
 }
 ```
-
-<!-- TODO(0.12 final pass): after D7 (#2953, SidebarSystem half) ports this onto
-the contract, add its widget, State and Action, and recheck the event list. -->
 
 **Example:** `examples/msv_multi_tree.rs` / `examples/gtk_multi_tree.rs`
 (`examples/common/multi_tree.rs`); search and toggle sections in

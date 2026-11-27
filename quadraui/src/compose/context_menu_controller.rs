@@ -146,14 +146,9 @@ struct OpenMenu {
 /// [`crate::primitives::context_menu::item_heights`], which
 /// [`crate::primitive::Primitive::layout`] resolves its rows at too.
 ///
-/// [`crate::compose::MenuSystem`]'s own dropdown layout
-/// (`dropdown_layout`/`dropdown_stack`) reaches it through this name, so
-/// the two menu styles — free-floating context menu here, bar-anchored
-/// dropdown there — stay pixel-identical without either controller
-/// depending on the other's state. Menu *width* isn't included: this
-/// controller uses a fixed `20.0 * lh`, while `MenuSystem` measures its
-/// dropdown's actual item text via `dropdown_width`, so the two don't
-/// share that part.
+/// Every level's width is its own content's
+/// ([`crate::primitives::context_menu::level_width`]), the rule an
+/// application menu's dropdowns size with too.
 pub(crate) fn menu_item_heights(lh: f32) -> (f32, f32) {
     crate::primitives::context_menu::item_heights(lh)
 }
@@ -164,6 +159,14 @@ pub(crate) fn menu_item_heights(lh: f32) -> (f32, f32) {
 /// time agree on every row's position.
 pub(crate) fn menu_line_height(backend: &dyn Backend) -> f32 {
     crate::backend::primitive_layout_ctx(backend).line_height
+}
+
+/// The width a level of `items` takes on `backend`: its widest row
+/// measured in the chrome font.
+fn menu_width(backend: &dyn Backend, items: &[ContextMenuItem]) -> f32 {
+    let measurer = |text: &str, role: crate::FontRole| backend.measure_text(text, role).0;
+    let ctx = crate::backend::primitive_layout_ctx(backend).with_measurer(&measurer);
+    crate::primitives::context_menu::level_width(&ctx, items, ctx.line_height)
 }
 
 /// The rect a host hands [`ContextMenu::layout`]/[`ContextMenu::layout_at`]
@@ -420,7 +423,7 @@ impl ContextMenuController {
     ) -> ContextMenuLayout {
         let lh = menu_line_height(backend);
         let (item_h, sep_h) = menu_item_heights(lh);
-        let menu_width = 20.0 * lh;
+        let menu_width = menu_width(backend, &menu.items);
         let vp = menu_viewport(backend, menu);
         menu.layout(anchor.x, anchor.y, vp, menu_width, |i| {
             if menu.items[i].is_separator() {
@@ -434,9 +437,8 @@ impl ContextMenuController {
     /// Build the full stack of `(ContextMenu, ContextMenuLayout)` for the
     /// root popup plus every currently open submenu level, deepest last.
     /// Each submenu is positioned beside its parent item via
-    /// [`ContextMenuLayout::submenu_anchor`] — the shared layout rule
-    /// [`crate::compose::MenuSystem`]'s own `dropdown_stack` uses for
-    /// menu-bar submenus.
+    /// [`ContextMenuLayout::submenu_anchor`] — the shared layout rule an
+    /// application menu's submenus use.
     fn menu_stack(
         &self,
         open: &OpenMenu,
@@ -448,7 +450,6 @@ impl ContextMenuController {
 
         let lh = menu_line_height(backend);
         let (item_h, sep_h) = menu_item_heights(lh);
-        let menu_width = 20.0 * lh;
         let vp = menu_viewport(backend, &open.menu);
 
         for (depth, &path_idx) in open.submenu_path.iter().enumerate() {
@@ -460,6 +461,7 @@ impl ContextMenuController {
             let Some(sub_items) = sub_items_opt else {
                 break;
             };
+            let menu_width = menu_width(backend, &sub_items);
             let anchor = stack[depth].1.submenu_anchor(path_idx, menu_width, vp);
             let selected = open.submenu_selected.get(depth).copied().unwrap_or(0);
             let sub_menu = ContextMenu {
@@ -526,7 +528,7 @@ impl ContextMenuController {
         };
         let first_sel = sub_items
             .iter()
-            .position(|i| !i.is_separator() && !i.disabled)
+            .position(ContextMenuItem::is_selectable)
             .unwrap_or(0);
         let Some(open) = &mut self.open else { return };
         open.submenu_path.push(item_idx);
@@ -611,6 +613,27 @@ mod tests {
                 .map(|e| e.id.clone()),
             Some(WidgetId::new("ctx"))
         );
+    }
+
+    /// A right-click menu is as wide as its widest row, the rule an
+    /// application menu's dropdowns size with, not a fixed width.
+    #[test]
+    fn an_open_menu_is_as_wide_as_its_content() {
+        let mut backend = TuiBackend::new();
+        let mut ctl = ContextMenuController::new();
+        let menu = menu();
+        ctl.open(menu.clone(), Point::new(0.0, 0.0), &mut backend);
+        let bounds = backend
+            .modal_stack_handle()
+            .borrow()
+            .top()
+            .map(|e| e.bounds)
+            .expect("the open menu is on the modal stack");
+        let ctx = crate::backend::primitive_layout_ctx(&backend);
+        let expected =
+            crate::primitives::context_menu::level_width(&ctx, &menu.items, ctx.line_height);
+        assert_eq!(bounds.width, expected);
+        assert!(bounds.width < 20.0, "{bounds:?}");
     }
 
     #[test]

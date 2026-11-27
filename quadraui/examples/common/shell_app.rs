@@ -3,7 +3,7 @@
 //!
 //! Demonstrates a VS Code-style app shell with:
 //! - 3 sidebar panels (Explorer, Search, Source Control) each backed
-//!   by a [`SidebarSystem`] with real tree rows
+//!   by a [`Sidebar`] with real tree rows
 //! - 1 bottom activity bar item (Settings)
 //! - Toggle/switch/resize behaviour driven by [`ShellView`]
 //! - Status bar showing last action
@@ -20,17 +20,17 @@
 use quadraui::compose::app_shell::{PanelDefinition, ShellEvent, ShellView, ShellViewState};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    ActivityBarEvent, AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode,
-    Reaction, Rect, SectionSize, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
-    StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
+    ActivityBarEvent, AppLogic, Backend, Color, Decoration, Handled, Key, NamedKey, NavigationMode,
+    Reaction, Rect, SectionSize, Sidebar, SidebarAction, SidebarSectionDef, SidebarState,
+    StatusBar, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 pub struct ShellApp {
     shell: ShellView,
     shell_state: ShellViewState,
-    explorer: SidebarSystem,
-    search: SidebarSystem,
-    git: SidebarSystem,
+    explorer: Panel,
+    search: Panel,
+    git: Panel,
     last_message: String,
 }
 
@@ -85,7 +85,7 @@ impl ShellApp {
         }
     }
 
-    fn active_sidebar_mut(&mut self) -> Option<&mut SidebarSystem> {
+    fn active_sidebar_mut(&mut self) -> Option<&mut Panel> {
         let id = self.shell.active_panel_id()?;
         match id.as_str() {
             "panel:explorer" => Some(&mut self.explorer),
@@ -95,7 +95,7 @@ impl ShellApp {
         }
     }
 
-    fn active_sidebar(&self) -> Option<&SidebarSystem> {
+    fn active_sidebar(&self) -> Option<&Panel> {
         let id = self.shell.active_panel_id()?;
         match id.as_str() {
             "panel:explorer" => Some(&self.explorer),
@@ -158,8 +158,8 @@ impl AppLogic for ShellApp {
 
         if let Some(sidebar_bounds) = layout.sidebar_content_bounds {
             if self.shell.sidebar_visible() {
-                if let Some(sidebar) = self.active_sidebar() {
-                    sidebar.render(backend, sidebar_bounds);
+                if let Some(panel) = self.active_sidebar() {
+                    let _ = backend.draw_dyn(sidebar_bounds, &panel.sidebar, &());
                 }
             }
         }
@@ -167,9 +167,9 @@ impl AppLogic for ShellApp {
         // Main content: show a label in the content area.
         let selected_info = self
             .active_sidebar()
-            .and_then(|s| {
-                let section = s.active_section()?;
-                let path = s.selected_path(section)?;
+            .and_then(|p| {
+                let section = p.sidebar.active_section?;
+                let path = p.sidebar.tree(section)?.selected_path.as_ref()?;
                 Some(format!("section {section}, row {:?}", path))
             })
             .unwrap_or_else(|| "nothing selected".into());
@@ -317,22 +317,34 @@ impl AppLogic for ShellApp {
         if self.shell.sidebar_visible() {
             let layout = self.shell.shell_layout(shell_area, lh);
             if let Some(sidebar_bounds) = layout.sidebar_content_bounds {
-                if let Some(sidebar) = self.active_sidebar_mut() {
-                    match sidebar.handle(&event, backend, sidebar_bounds) {
-                        SidebarEvent::RowSelected { section, path } => {
-                            self.last_message =
-                                format!("Selected: section {section}, row {path:?}");
-                            return Reaction::Redraw;
+                if let Some(panel) = self.active_sidebar_mut() {
+                    let handled = panel.sidebar.handle_event(
+                        &mut panel.state,
+                        &event,
+                        backend,
+                        sidebar_bounds,
+                    );
+                    let mut message = None;
+                    if let Handled::Event(actions) = &handled {
+                        for action in actions {
+                            panel.sidebar.apply(action);
+                            match action {
+                                SidebarAction::RowSelected { section, path } => {
+                                    message =
+                                        Some(format!("Selected: section {section}, row {path:?}"));
+                                }
+                                SidebarAction::HeaderActivated { section } => {
+                                    message = Some(format!("Header: section {section}"));
+                                }
+                                _ => {}
+                            }
                         }
-                        SidebarEvent::HeaderActivated { section } => {
-                            self.last_message = format!("Header: section {section}");
-                            return Reaction::Redraw;
-                        }
-                        SidebarEvent::StateChanged | SidebarEvent::Consumed => {
-                            return Reaction::Redraw;
-                        }
-                        SidebarEvent::ScrollChanged { .. } => return Reaction::Redraw,
-                        _ => {}
+                    }
+                    if let Some(message) = message {
+                        self.last_message = message;
+                    }
+                    if !matches!(handled, Handled::Ignored) {
+                        return Reaction::Redraw;
                     }
                 }
             }
@@ -355,11 +367,30 @@ impl AppLogic for ShellApp {
 
 // ── Sidebar builders ─────────────────────────────────────────────────
 
-fn build_explorer_sidebar() -> SidebarSystem {
-    let mut sidebar = SidebarSystem::new(vec![
-        SidebarSectionDef::new("open-editors", "OPEN EDITORS"),
-        SidebarSectionDef::new("project", "PROJECT"),
-    ]);
+/// A sidebar panel and its gesture state.
+struct Panel {
+    sidebar: Sidebar,
+    state: SidebarState,
+}
+
+impl Panel {
+    fn new(id: &str, defs: &[SidebarSectionDef]) -> Self {
+        Self {
+            sidebar: Sidebar::from_defs(WidgetId::new(id), defs),
+            state: SidebarState::default(),
+        }
+    }
+}
+
+fn build_explorer_sidebar() -> Panel {
+    let mut panel = Panel::new(
+        "explorer-sidebar",
+        &[
+            SidebarSectionDef::new("open-editors", "OPEN EDITORS"),
+            SidebarSectionDef::new("project", "PROJECT"),
+        ],
+    );
+    let sidebar = &mut panel.sidebar;
     sidebar.set_rows(
         0,
         vec![
@@ -386,28 +417,32 @@ fn build_explorer_sidebar() -> SidebarSystem {
             file_row(&[4], 0, "README.md"),
         ],
     );
-    sidebar.set_navigation_mode(NavigationMode::Selection);
-    sidebar.set_active_section(Some(1));
-    sidebar
+    sidebar.navigation_mode = NavigationMode::Selection;
+    sidebar.active_section = Some(1);
+    panel
 }
 
-fn build_search_sidebar() -> SidebarSystem {
-    let mut sidebar = SidebarSystem::new(vec![
-        SidebarSectionDef {
-            id: "results".into(),
-            title: "RESULTS".into(),
-            show_chevron: false,
-            size: SectionSize::EqualShare,
-            kind: quadraui::SectionKind::Tree,
-        },
-        SidebarSectionDef {
-            id: "recent".into(),
-            title: "RECENT SEARCHES".into(),
-            show_chevron: false,
-            size: SectionSize::EqualShare,
-            kind: quadraui::SectionKind::Tree,
-        },
-    ]);
+fn build_search_sidebar() -> Panel {
+    let mut panel = Panel::new(
+        "search-sidebar",
+        &[
+            SidebarSectionDef {
+                id: "results".into(),
+                title: "RESULTS".into(),
+                show_chevron: false,
+                size: SectionSize::EqualShare,
+                kind: quadraui::SectionKind::Tree,
+            },
+            SidebarSectionDef {
+                id: "recent".into(),
+                title: "RECENT SEARCHES".into(),
+                show_chevron: false,
+                size: SectionSize::EqualShare,
+                kind: quadraui::SectionKind::Tree,
+            },
+        ],
+    );
+    let sidebar = &mut panel.sidebar;
     sidebar.set_rows(
         0,
         vec![
@@ -421,19 +456,23 @@ fn build_search_sidebar() -> SidebarSystem {
         vec![
             file_row(&[0], 0, "\"ShellView\""),
             file_row(&[1], 0, "\"draw_activity_bar\""),
-            file_row(&[2], 0, "\"SidebarSystem\""),
+            file_row(&[2], 0, "\"Sidebar\""),
         ],
     );
-    sidebar.set_navigation_mode(NavigationMode::Selection);
-    sidebar.set_active_section(Some(0));
-    sidebar
+    sidebar.navigation_mode = NavigationMode::Selection;
+    sidebar.active_section = Some(0);
+    panel
 }
 
-fn build_git_sidebar() -> SidebarSystem {
-    let mut sidebar = SidebarSystem::new(vec![
-        SidebarSectionDef::new("staged", "STAGED CHANGES"),
-        SidebarSectionDef::new("changes", "CHANGES"),
-    ]);
+fn build_git_sidebar() -> Panel {
+    let mut panel = Panel::new(
+        "git-sidebar",
+        &[
+            SidebarSectionDef::new("staged", "STAGED CHANGES"),
+            SidebarSectionDef::new("changes", "CHANGES"),
+        ],
+    );
+    let sidebar = &mut panel.sidebar;
     sidebar.set_rows(
         0,
         vec![
@@ -451,9 +490,9 @@ fn build_git_sidebar() -> SidebarSystem {
             file_row(&[4], 0, "A examples/shell_app.rs"),
         ],
     );
-    sidebar.set_navigation_mode(NavigationMode::Selection);
-    sidebar.set_active_section(Some(1));
-    sidebar
+    sidebar.navigation_mode = NavigationMode::Selection;
+    sidebar.active_section = Some(1);
+    panel
 }
 
 fn file_row(path: &[u16], indent: u16, text: &str) -> TreeRow {

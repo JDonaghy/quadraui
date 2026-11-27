@@ -49,71 +49,14 @@ use crate::interactive::{
 use crate::popup::{DismissReason, Popup, PopupKey, PopupSide};
 use crate::primitive::{LayoutCtx, Primitive, Size, Units};
 use crate::primitives::context_menu::{
-    item_heights, ContextMenu, ContextMenuEvent, ContextMenuItem, ContextMenuLayout,
+    item_heights, level_width, ContextMenu, ContextMenuEvent, ContextMenuItem, ContextMenuLayout,
     ContextMenuPlacement, ContextMenuPrimitiveLayout, ContextMenuState, CELL_BORDER_INSET,
 };
 use crate::primitives::menu_bar::{
     MenuBar, MenuBarEvent, MenuBarHit, MenuBarItem, MenuBarPrimitiveLayout,
 };
 use crate::types::WidgetId;
-use crate::{DrawsPrimitives, FontRole, Key, MouseButton, NamedKey};
-
-/// A dropdown or submenu's width from its items' real label/detail text.
-/// A flat width guess cannot fit both TUI's fixed grid and a
-/// proportional chrome font on GTK/macOS/Win. Mirrors
-/// [`ContextMenu::measure_generic_width`]'s per-item accounting (a
-/// leading `✓ ` slot when [`ContextMenuItem::checked`] is `Some(_)`, or
-/// the same slot for [`ContextMenuItem::icon`] when `checked` is unset,
-/// plus a trailing gap plus either a `▶` submenu arrow or
-/// [`ContextMenuItem::detail`]'s text) but measures the real chrome-font
-/// advance instead of counting characters.
-/// [`ContextMenuItem::key_equivalent`]-rendered shortcuts aren't counted,
-/// the same omission `measure_generic_width` documents for itself.
-fn dropdown_width(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -> f32 {
-    let cells = matches!(ctx.units(), Units::Cells);
-    let measure = |text: &str| -> f32 {
-        if cells {
-            crate::text_util::display_width(text) as f32
-        } else {
-            ctx.text_width(text, FontRole::Chrome)
-        }
-    };
-    let space_w = measure(" ");
-    // A pixel surface paints the codicon check/chevron glyphs (the
-    // `codicon::CHECK` / `codicon::CHEVRON_RIGHT` code points, which are
-    // square-advance at the font em and wider than either plain-text
-    // glyph); a cell grid paints the plain `✓`/`▶`. Every pixel backend
-    // registers the codicon face itself.
-    let (check_glyph, arrow_glyph): (&str, &str) = if cells {
-        ("✓", "▶")
-    } else {
-        ("\u{eab2}", "\u{eab6}")
-    };
-    let checked_w = measure(check_glyph) + space_w;
-    let arrow_w = space_w + measure(arrow_glyph);
-    let max_content_w = items
-        .iter()
-        .filter(|item| !item.is_separator())
-        .map(|item| {
-            let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
-            let mut w = measure(&label);
-            if item.checked.is_some() || item.icon.is_some() {
-                w += checked_w;
-            }
-            if item.submenu.is_some() {
-                w += arrow_w;
-            } else if let Some(det) = &item.detail {
-                let text: String = det.spans.iter().map(|s| s.text.as_str()).collect();
-                w += space_w + measure(&text);
-            }
-            w
-        })
-        .fold(0.0_f32, f32::max);
-    // Interior margin: a budget expressed in line-heights rather than
-    // assuming a meaningful relationship between `lh` and the chrome
-    // font's space advance.
-    (max_content_w + lh * 3.0).max(lh * 8.0)
-}
+use crate::{DrawsPrimitives, Key, MouseButton, NamedKey};
 
 /// One top-level menu and its dropdown items.
 ///
@@ -248,7 +191,7 @@ struct LevelWidths {
 impl LevelWidths {
     fn of(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -> Self {
         Self {
-            width: dropdown_width(ctx, items, lh),
+            width: level_width(ctx, items, lh),
             children: items
                 .iter()
                 .map(|item| item.submenu.as_ref().map(|sub| Self::of(ctx, sub, lh)))
@@ -441,7 +384,7 @@ impl AppMenu {
         };
         let first_sel = sub_items
             .iter()
-            .position(|i| !i.is_separator() && !i.disabled)
+            .position(ContextMenuItem::is_selectable)
             .unwrap_or(0);
         self.view.submenu_path.push(item_idx);
         self.view.submenu_selected.push(first_sel);
@@ -530,7 +473,7 @@ impl AppMenu {
         };
         let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
         let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
-            i == current || (!items[i].is_separator() && !items[i].disabled)
+            i == current || items[i].is_selectable()
         })
         .unwrap_or(current);
         self.select_at(depth, new_sel);
@@ -734,7 +677,7 @@ impl AppMenu {
         match (kind, item) {
             // Hover moves the highlight and opens a submenu parent's child
             // at once; hovering a leaf closes anything opened deeper.
-            (PointerKind::Move, Some((idx, item))) if !item.is_separator() && !item.disabled => {
+            (PointerKind::Move, Some((idx, item))) if item.is_selectable() => {
                 next.select_at(depth, idx);
                 if item.submenu.is_some() {
                     if self.view.submenu_path.get(depth) != Some(&idx) {
@@ -751,7 +694,7 @@ impl AppMenu {
                 }
             }
             (PointerKind::Down(MouseButton::Left), Some((idx, item))) => {
-                if item.disabled || item.is_separator() {
+                if !item.is_selectable() {
                     Handled::Consumed
                 } else if item.submenu.is_some() {
                     next.truncate_to(depth);
@@ -1617,15 +1560,15 @@ mod tests {
         ContextMenuItem::default()
     }
 
-    /// `dropdown_width` must track the real content of each item it's
+    /// `level_width` must track the real content of each item it's
     /// given: a menu with a much longer label must come back wider.
     #[test]
-    fn dropdown_width_tracks_the_longest_label() {
+    fn level_width_tracks_the_longest_label() {
         let short = [action("a", "Undo")];
         let long = [action("a", "Undo Last 20 Changes")];
 
-        let short_w = dropdown_width(&cells_ctx(), &short, 1.0);
-        let long_w = dropdown_width(&cells_ctx(), &long, 1.0);
+        let short_w = level_width(&cells_ctx(), &short, 1.0);
+        let long_w = level_width(&cells_ctx(), &long, 1.0);
         assert!(
             long_w > short_w,
             "a longer label must widen the dropdown: short={short_w}, long={long_w}"
@@ -1636,16 +1579,16 @@ mod tests {
     /// `▶` arrow must each widen the result beyond the bare label width —
     /// otherwise the glyph would overlap the label or get clipped.
     #[test]
-    fn dropdown_width_reserves_space_for_checked_prefix_and_submenu_arrow() {
+    fn level_width_reserves_space_for_checked_prefix_and_submenu_arrow() {
         let plain = [action("a", "Word Wrap")];
         let mut checked = plain.clone();
         checked[0].checked = Some(true);
         let mut with_submenu = plain.clone();
         with_submenu[0].submenu = Some(vec![action("b", "On")]);
 
-        let plain_w = dropdown_width(&cells_ctx(), &plain, 1.0);
-        let checked_w = dropdown_width(&cells_ctx(), &checked, 1.0);
-        let submenu_w = dropdown_width(&cells_ctx(), &with_submenu, 1.0);
+        let plain_w = level_width(&cells_ctx(), &plain, 1.0);
+        let checked_w = level_width(&cells_ctx(), &checked, 1.0);
+        let submenu_w = level_width(&cells_ctx(), &with_submenu, 1.0);
 
         assert!(checked_w > plain_w, "checked={checked_w}, plain={plain_w}");
         assert!(submenu_w > plain_w, "submenu={submenu_w}, plain={plain_w}");
@@ -1658,16 +1601,16 @@ mod tests {
     /// item's `✓ ` uses, so a dropdown that doesn't reserve for `icon`
     /// would let that shifted label clip at the right edge.
     #[test]
-    fn dropdown_width_reserves_space_for_icon_same_as_checked() {
+    fn level_width_reserves_space_for_icon_same_as_checked() {
         let plain = [action("a", "Reveal in Explorer")];
         let mut with_icon = plain.clone();
         with_icon[0].icon = Some(crate::types::Icon::new("G", "F"));
         let mut checked = plain.clone();
         checked[0].checked = Some(true);
 
-        let plain_w = dropdown_width(&cells_ctx(), &plain, 1.0);
-        let icon_w = dropdown_width(&cells_ctx(), &with_icon, 1.0);
-        let checked_w = dropdown_width(&cells_ctx(), &checked, 1.0);
+        let plain_w = level_width(&cells_ctx(), &plain, 1.0);
+        let icon_w = level_width(&cells_ctx(), &with_icon, 1.0);
+        let checked_w = level_width(&cells_ctx(), &checked, 1.0);
 
         assert!(icon_w > plain_w, "icon={icon_w}, plain={plain_w}");
         assert_eq!(
@@ -1680,9 +1623,9 @@ mod tests {
     /// label — a menu that is otherwise all separators plus one real item
     /// must size off that one item, not panic or report `0.0`.
     #[test]
-    fn dropdown_width_ignores_separators() {
+    fn level_width_ignores_separators() {
         let items = [separator(), action("a", "Save All"), separator()];
-        let w = dropdown_width(&cells_ctx(), &items, 1.0);
+        let w = level_width(&cells_ctx(), &items, 1.0);
         assert!(w > 0.0);
     }
 

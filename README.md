@@ -358,7 +358,7 @@ the table against the module list. -->
 | `TabGroup` | Tabbed split panes with divider and tab drags. |
 | `MenuSystem` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
 | `ContextMenuController` | One call for a context menu, native or painted per platform. |
-| `SidebarSystem` | Multi-section sidebar: per-section scroll and selection, Tab cycling, scrollbar drag. |
+| `Sidebar` | Multi-section sidebar widget: per-section scroll and selection, Tab cycling, scrollbar drag. |
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |
 | `TreeTableController` | A `TreeTable` driven from a hierarchical node model: expand/collapse, sibling-scoped column sort, and lazy child loading. |
 | `FormController` | A form's focus, editing and validation. |

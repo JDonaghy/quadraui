@@ -1,11 +1,11 @@
 //! Backend-agnostic Debug-sidebar consumer pattern using
-//! [`SidebarSystem`] — the compose helper that handles MSV + TreeView
+//! [`Sidebar`] — the composite widget that handles MSV + TreeView
 //! interaction (scroll, selection, keyboard nav, scrollbar drag).
 //!
-//! The app defines 4 sections, sets row data, and matches on
-//! [`SidebarEvent`] for semantic actions. All interaction logic
-//! (Tab cycling, arrow scrolling, click dispatch, scrollbar drag)
-//! is handled internally by `SidebarSystem`.
+//! The app defines 4 sections, sets row data, drives the widget with
+//! [`Sidebar::handle_event`] and applies each [`SidebarAction`] it
+//! answers. All interaction logic (Tab cycling, arrow scrolling, click
+//! dispatch, scrollbar drag) is the widget's own.
 //!
 //! Controls:
 //! - mouse click on header        activate that section
@@ -19,35 +19,40 @@
 use quadraui::DrawsPrimitives;
 use quadraui::{
     AppLogic, Backend, Color, Decoration, Handled, Key, NamedKey, NavigationMode, Reaction, Rect,
-    ScrollMode, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarInteraction,
-    StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
+    ScrollMode, Sidebar, SidebarAction, SidebarSectionDef, SidebarState, StatusBar,
+    StatusBarInteraction, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;
 
 pub struct DebugSidebar {
-    sidebar: SidebarSystem,
+    sidebar: Sidebar,
+    sidebar_state: SidebarState,
     status_interaction: StatusBarInteraction,
     last_action: String,
 }
 
 impl DebugSidebar {
     pub fn new() -> Self {
-        let mut sidebar = SidebarSystem::new(vec![
-            SidebarSectionDef::new("variables", "VARIABLES"),
-            SidebarSectionDef::new("watch", "WATCH"),
-            SidebarSectionDef::new("call-stack", "CALL STACK"),
-            SidebarSectionDef::new("breakpoints", "BREAKPOINTS"),
-        ]);
+        let mut sidebar = Sidebar::from_defs(
+            WidgetId::new("debug-sidebar"),
+            &[
+                SidebarSectionDef::new("variables", "VARIABLES"),
+                SidebarSectionDef::new("watch", "WATCH"),
+                SidebarSectionDef::new("call-stack", "CALL STACK"),
+                SidebarSectionDef::new("breakpoints", "BREAKPOINTS"),
+            ],
+        );
         sidebar.set_rows(0, fake_rows("v", 12));
         sidebar.set_rows(1, fake_rows("w", 8));
         sidebar.set_rows(2, fake_rows("frame", 5));
         sidebar.set_rows(3, fake_rows("bp", 0));
-        sidebar.set_navigation_mode(NavigationMode::Selection);
-        sidebar.set_scroll_mode(ScrollMode::WholePanel);
-        sidebar.set_active_section(Some(0));
+        sidebar.navigation_mode = NavigationMode::Selection;
+        sidebar.scroll_mode = ScrollMode::WholePanel;
+        sidebar.active_section = Some(0);
         Self {
             sidebar,
+            sidebar_state: SidebarState::default(),
             status_interaction: StatusBarInteraction::new(),
             last_action: "—".into(),
         }
@@ -76,7 +81,7 @@ impl DebugSidebar {
     }
 
     fn build_status_bar(&self) -> StatusBar {
-        let active = match self.sidebar.active_section() {
+        let active = match self.sidebar.active_section {
             Some(i) => format!("section {i}"),
             None => "<none>".into(),
         };
@@ -131,7 +136,7 @@ impl AppLogic for DebugSidebar {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let sidebar = Self::sidebar_rect(backend);
         let status = Self::status_rect(backend);
-        self.sidebar.render(backend, sidebar);
+        let _ = backend.draw_dyn(sidebar, &self.sidebar, &());
         // `StatusBarInteraction` owns the press/release state machine;
         // it resolves clicks against the same layout the widget contract
         // paints with.
@@ -153,54 +158,29 @@ impl AppLogic for DebugSidebar {
         }
 
         let rect = Self::sidebar_rect(backend);
-        match self.sidebar.handle(&event, backend, rect) {
-            SidebarEvent::HeaderActivated { section } => {
-                self.last_action = format!("header→{section}");
+        match self
+            .sidebar
+            .handle_event(&mut self.sidebar_state, &event, backend, rect)
+        {
+            Handled::Event(actions) => {
+                for action in actions {
+                    self.on_action(&action);
+                    self.sidebar.apply(&action);
+                }
                 Reaction::Redraw
             }
-            SidebarEvent::RowSelected { section, path } => {
-                self.last_action = format!("sel→{section} {path:?}");
-                Reaction::Redraw
-            }
-            SidebarEvent::RowActivated { section, path } => {
-                self.last_action = format!("dblclick→{section} {path:?}");
-                Reaction::Redraw
-            }
-            SidebarEvent::RowToggleExpand { section, path } => {
-                self.last_action = format!("toggle→{section} {path:?}");
-                Reaction::Redraw
-            }
-            SidebarEvent::ContextMenuRequested {
-                section,
-                path,
-                position,
-            } => {
-                self.last_action = format!(
-                    "ctx→{section} {path:?} @({:.0},{:.0})",
-                    position.x, position.y
-                );
-                Reaction::Redraw
-            }
-            SidebarEvent::EditConfirmed { section, path, .. } => {
-                self.last_action = format!("edit-ok→{section} {path:?}");
-                Reaction::Redraw
-            }
-            SidebarEvent::EditCancelled { section, path } => {
-                self.last_action = format!("edit-cancel→{section} {path:?}");
-                Reaction::Redraw
-            }
-            SidebarEvent::FormEvent { .. }
-            | SidebarEvent::ScrollChanged { .. }
-            | SidebarEvent::EditChanged { .. }
-            | SidebarEvent::StateChanged
-            | SidebarEvent::Consumed => Reaction::Redraw,
-            SidebarEvent::Ignored => match event {
+            Handled::Consumed => Reaction::Redraw,
+            Handled::Ignored => match event {
                 UiEvent::KeyPressed {
                     key: Key::Char('r'),
                     ..
                 } => {
-                    if let Some(section) = self.sidebar.active_section() {
-                        if let Some(path) = self.sidebar.selected_path(section).cloned() {
+                    if let Some(section) = self.sidebar.active_section {
+                        let selected = self
+                            .sidebar
+                            .tree(section)
+                            .and_then(|t| t.selected_path.clone());
+                        if let Some(path) = selected {
                             let label = format!("item{}", path.last().unwrap_or(&0));
                             let len = label.len();
                             self.sidebar
@@ -221,6 +201,37 @@ impl AppLogic for DebugSidebar {
                 _ => Reaction::Continue,
             },
         }
+    }
+}
+
+impl DebugSidebar {
+    /// Record what `action` means in the status bar.
+    fn on_action(&mut self, action: &SidebarAction) {
+        self.last_action = match action {
+            SidebarAction::HeaderActivated { section } => format!("header→{section}"),
+            SidebarAction::RowSelected { section, path } => format!("sel→{section} {path:?}"),
+            SidebarAction::RowActivated { section, path } => {
+                format!("dblclick→{section} {path:?}")
+            }
+            SidebarAction::RowToggleExpand { section, path } => {
+                format!("toggle→{section} {path:?}")
+            }
+            SidebarAction::ContextMenuRequested {
+                section,
+                path,
+                position,
+            } => format!(
+                "ctx→{section} {path:?} @({:.0},{:.0})",
+                position.x, position.y
+            ),
+            SidebarAction::EditConfirmed { section, path, .. } => {
+                format!("edit-ok→{section} {path:?}")
+            }
+            SidebarAction::EditCancelled { section, path } => {
+                format!("edit-cancel→{section} {path:?}")
+            }
+            _ => return,
+        };
     }
 }
 

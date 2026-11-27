@@ -1,16 +1,16 @@
 //! `Tree` demo — adapted from `quadraui/examples/common/multi_tree.rs`.
 //!
 //! Two variants: a 4-section debugger sidebar (Variables / Watch / Call
-//! Stack / Breakpoints) driven by [`SidebarSystem`] with `Tab` cycling
+//! Stack / Breakpoints) driven by a [`Sidebar`] with `Tab` cycling
 //! and click-to-activate, and a single expandable file tree that owns
 //! its own `is_expanded` flips in response to
-//! [`SidebarEvent::RowToggleExpand`].
+//! [`SidebarAction::RowToggleExpand`].
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, BackendCaps, Color, Decoration, Key, NavigationMode, Reaction, Rect, ScrollMode,
-    SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, Style, StyledText,
-    TreeRow, UiEvent, WidgetId,
+    Backend, BackendCaps, Color, Decoration, Handled, Key, NavigationMode, Reaction, Rect,
+    ScrollMode, Sidebar, SidebarAction, SidebarSectionDef, SidebarState, StatusBar,
+    StatusBarSegment, Style, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -149,46 +149,70 @@ impl FileTree {
 
 pub struct TreeDemo {
     // Variant 0: multi-section debug sidebar.
-    debug: SidebarSystem,
+    debug: Sidebar,
+    debug_state: SidebarState,
     debug_last: String,
     // Variant 1: single expandable file tree.
     file_tree: FileTree,
-    file_sidebar: SidebarSystem,
+    file_sidebar: Sidebar,
+    file_state: SidebarState,
     file_last: String,
 }
 
 impl TreeDemo {
     pub fn new() -> Self {
-        let mut debug = SidebarSystem::new(vec![
-            SidebarSectionDef::new("variables", "VARIABLES"),
-            SidebarSectionDef::new("watch", "WATCH"),
-            SidebarSectionDef::new("call-stack", "CALL STACK"),
-            SidebarSectionDef::new("breakpoints", "BREAKPOINTS"),
-        ]);
+        let mut debug = Sidebar::from_defs(
+            WidgetId::new("gallery:tree:debug"),
+            &[
+                SidebarSectionDef::new("variables", "VARIABLES"),
+                SidebarSectionDef::new("watch", "WATCH"),
+                SidebarSectionDef::new("call-stack", "CALL STACK"),
+                SidebarSectionDef::new("breakpoints", "BREAKPOINTS"),
+            ],
+        );
         debug.set_rows(0, fake_rows("v", 8));
         debug.set_rows(1, fake_rows("w", 4));
         debug.set_rows(2, fake_rows("frame", 3));
         debug.set_rows(3, fake_rows("bp", 0));
-        debug.set_navigation_mode(NavigationMode::Selection);
-        debug.set_scroll_mode(ScrollMode::WholePanel);
-        debug.set_active_section(Some(0));
+        debug.navigation_mode = NavigationMode::Selection;
+        debug.scroll_mode = ScrollMode::WholePanel;
+        debug.active_section = Some(0);
 
         let file_tree = FileTree {
             src_expanded: true,
             tests_expanded: false,
         };
-        let mut file_sidebar =
-            SidebarSystem::new(vec![SidebarSectionDef::new("files", "EXPLORER")]);
+        let mut file_sidebar = Sidebar::from_defs(
+            WidgetId::new("gallery:tree:files"),
+            &[SidebarSectionDef::new("files", "EXPLORER")],
+        );
         file_sidebar.set_rows(0, file_tree.rows());
-        file_sidebar.set_navigation_mode(NavigationMode::Selection);
-        file_sidebar.set_active_section(Some(0));
+        file_sidebar.navigation_mode = NavigationMode::Selection;
+        file_sidebar.active_section = Some(0);
 
         Self {
             debug,
+            debug_state: SidebarState::default(),
             debug_last: "—".into(),
             file_tree,
             file_sidebar,
+            file_state: SidebarState::default(),
             file_last: "—".into(),
+        }
+    }
+
+    /// Expand or collapse the file tree for a toggle, and note a
+    /// selection.
+    fn on_file_action(&mut self, action: &SidebarAction) {
+        match action {
+            SidebarAction::RowToggleExpand { path, .. } => {
+                self.file_last = self.file_tree.toggle(path);
+                self.file_sidebar.set_rows(0, self.file_tree.rows());
+            }
+            SidebarAction::RowSelected { path, .. } => {
+                self.file_last = format!("sel {path:?}");
+            }
+            _ => {}
         }
     }
 
@@ -247,9 +271,9 @@ impl Demo for TreeDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let content = Self::content_rect(area, backend);
         if variant == 0 {
-            self.debug.render(backend, content);
+            let _ = backend.draw_dyn(content, &self.debug, &());
         } else {
-            self.file_sidebar.render(backend, content);
+            let _ = backend.draw_dyn(content, &self.file_sidebar, &());
         }
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(variant), &());
@@ -264,52 +288,55 @@ impl Demo for TreeDemo {
     ) -> Reaction {
         let content = Self::content_rect(area, backend);
         if variant == 0 {
-            match self.debug.handle(event, backend, content) {
-                SidebarEvent::HeaderActivated { section } => {
-                    self.debug_last = format!("header→{section}");
+            let handled = self
+                .debug
+                .handle_event(&mut self.debug_state, event, backend, content);
+            match handled {
+                Handled::Event(actions) => {
+                    for action in actions {
+                        match &action {
+                            SidebarAction::HeaderActivated { section } => {
+                                self.debug_last = format!("header→{section}");
+                            }
+                            SidebarAction::RowSelected { section, path } => {
+                                self.debug_last = format!("sel→{section} {path:?}");
+                            }
+                            _ => {}
+                        }
+                        self.debug.apply(&action);
+                    }
                     Reaction::Redraw
                 }
-                SidebarEvent::RowSelected { section, path } => {
-                    self.debug_last = format!("sel→{section} {path:?}");
-                    Reaction::Redraw
-                }
-                SidebarEvent::StateChanged
-                | SidebarEvent::Consumed
-                | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
-                SidebarEvent::Ignored => Reaction::Continue,
-                _ => Reaction::Redraw,
+                Handled::Consumed => Reaction::Redraw,
+                Handled::Ignored => Reaction::Continue,
             }
         } else {
-            match self.file_sidebar.handle(event, backend, content) {
-                SidebarEvent::RowToggleExpand { path, .. } => {
-                    self.file_last = self.file_tree.toggle(&path);
-                    self.file_sidebar.set_rows(0, self.file_tree.rows());
+            let handled =
+                self.file_sidebar
+                    .handle_event(&mut self.file_state, event, backend, content);
+            match handled {
+                Handled::Event(actions) => {
+                    for action in actions {
+                        self.file_sidebar.apply(&action);
+                        self.on_file_action(&action);
+                    }
                     Reaction::Redraw
                 }
-                SidebarEvent::RowSelected { path, .. } => {
-                    self.file_last = format!("sel {path:?}");
-                    Reaction::Redraw
-                }
-                SidebarEvent::StateChanged
-                | SidebarEvent::Consumed
-                | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
-                SidebarEvent::Ignored => match event {
+                Handled::Consumed => Reaction::Redraw,
+                Handled::Ignored => match event {
                     UiEvent::KeyPressed {
                         key: Key::Char(' '),
                         ..
-                    } => {
-                        let ev = self.file_sidebar.toggle_expand_selected();
-                        if let SidebarEvent::RowToggleExpand { path, .. } = ev {
-                            self.file_last = self.file_tree.toggle(&path);
-                            self.file_sidebar.set_rows(0, self.file_tree.rows());
+                    } => match self.file_sidebar.toggle_expand_selected() {
+                        Some(action) => {
+                            self.file_sidebar.apply(&action);
+                            self.on_file_action(&action);
                             Reaction::Redraw
-                        } else {
-                            Reaction::Continue
                         }
-                    }
+                        None => Reaction::Continue,
+                    },
                     _ => Reaction::Continue,
                 },
-                _ => Reaction::Redraw,
             }
         }
     }
@@ -321,7 +348,7 @@ impl Demo for TreeDemo {
     fn data(&self, variant: usize) -> serde_json::Value {
         if variant == 0 {
             serde_json::json!({
-                "active_section": self.debug.active_section(),
+                "active_section": self.debug.active_section,
                 "last": self.debug_last,
             })
         } else {
@@ -366,7 +393,7 @@ mod tests {
     #[test]
     fn new_starts_with_the_first_debug_section_active() {
         let demo = TreeDemo::new();
-        assert_eq!(demo.debug.active_section(), Some(0));
+        assert_eq!(demo.debug.active_section, Some(0));
     }
 }
 
@@ -381,7 +408,7 @@ mod tui_tests {
         let area = Rect::new(0.0, 0.0, 40.0, 20.0);
         // Select the first row (src/) so `toggle_expand_selected` has a
         // target.
-        demo.file_sidebar.set_selected_path(0, Some(vec![0]));
+        demo.file_sidebar.tree_mut(0).unwrap().selected_path = Some(vec![0]);
         let event = UiEvent::KeyPressed {
             key: Key::Char(' '),
             modifiers: Default::default(),

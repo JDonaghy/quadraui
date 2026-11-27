@@ -291,6 +291,12 @@ impl ContextMenuItem {
     pub fn is_separator(&self) -> bool {
         self.id.is_none()
     }
+
+    /// Whether keyboard navigation and the pointer can land on this item:
+    /// it is neither a separator nor disabled.
+    pub fn is_selectable(&self) -> bool {
+        !self.is_separator() && !self.disabled
+    }
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -520,7 +526,7 @@ impl ContextMenu {
             }
             let item_bounds = Rect::new(x, cursor_y, menu_width, draw_h);
             let is_sep = item.is_separator();
-            let clickable = !is_sep && !item.disabled;
+            let clickable = item.is_selectable();
             visible_items.push(VisibleContextMenuItem {
                 item_idx: i,
                 bounds: item_bounds,
@@ -550,7 +556,7 @@ impl ContextMenu {
     pub fn first_selectable(&self) -> usize {
         self.items
             .iter()
-            .position(|item| !item.is_separator() && !item.disabled)
+            .position(ContextMenuItem::is_selectable)
             .unwrap_or(0)
     }
 
@@ -567,7 +573,7 @@ impl ContextMenu {
         for _ in 0..self.items.len() {
             idx = (idx + delta).rem_euclid(n);
             let item = &self.items[idx as usize];
-            if !item.is_separator() && !item.disabled {
+            if item.is_selectable() {
                 return idx as usize;
             }
         }
@@ -687,11 +693,6 @@ pub fn item_heights(line_height: f32) -> (f32, f32) {
 /// The platform a shortcut hint renders for when the popup paints
 /// through [`Primitive::paint`], which carries no backend identity of its
 /// own: the host OS this build runs on.
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
 pub(crate) fn host_platform() -> Platform {
     if cfg!(target_os = "macos") {
         Platform::Macos
@@ -860,7 +861,7 @@ impl ContextMenu {
     fn is_selectable(&self, i: usize) -> bool {
         self.items
             .get(i)
-            .is_some_and(|item| !item.is_separator() && !item.disabled)
+            .is_some_and(ContextMenuItem::is_selectable)
     }
 
     /// Item `i`'s leading label text — the string typeahead matches a
@@ -1030,7 +1031,7 @@ impl Primitive for ContextMenu {
         crate::paint_surface::shadow_extent(style.shadow_elevation) + style.border_width
     }
 
-    /// The widest row's own content ([`Self::measure_generic_width`]) and
+    /// The widest row's own content ([`level_width`]) and
     /// one [`item_heights`] row per item — plus, on a cell grid, the
     /// border ring both axes spend a cell on at each edge.
     fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
@@ -1042,7 +1043,7 @@ impl Primitive for ContextMenu {
             .map(|item| if item.is_separator() { sep_h } else { item_h })
             .sum();
         crate::NaturalSize::new(
-            Some(self.measure_generic_width(ctx.char_width, 0.0) + inset * 2.0),
+            Some(level_width(ctx, &self.items, row_pitch(ctx)) + inset * 2.0),
             Some(height + inset * 2.0),
         )
     }
@@ -1229,6 +1230,67 @@ fn border_inset_for(ctx: &LayoutCtx) -> f32 {
 /// The line height [`item_heights`] derives row pitch from, floored at
 /// one unit so a ctx carrying no line height still lays out one row per
 /// item instead of collapsing every row to zero.
+/// A menu level's width from its items' real label/detail text — the
+/// width every dropdown, submenu and right-click menu level takes.
+/// A flat width guess cannot fit both TUI's fixed grid and a
+/// proportional chrome font on GTK/macOS/Win. Mirrors
+/// [`ContextMenu::measure_generic_width`]'s per-item accounting (a
+/// leading `✓ ` slot when [`ContextMenuItem::checked`] is `Some(_)`, or
+/// the same slot for [`ContextMenuItem::icon`] when `checked` is unset,
+/// plus a trailing gap plus either a `▶` submenu arrow or the row's
+/// [`shortcut_text`], a rendered [`ContextMenuItem::key_equivalent`]
+/// included) but measures the real chrome-font advance instead of
+/// counting characters.
+pub(crate) fn level_width(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -> f32 {
+    let cells = matches!(ctx.units(), Units::Cells);
+    let measure = |text: &str| -> f32 {
+        if cells {
+            crate::text_util::display_width(text) as f32
+        } else {
+            ctx.text_width(text, crate::FontRole::Chrome)
+        }
+    };
+    let space_w = measure(" ");
+    // A pixel surface paints the codicon check/chevron glyphs (the
+    // `codicon::CHECK` / `codicon::CHEVRON_RIGHT` code points, which are
+    // square-advance at the font em and wider than either plain-text
+    // glyph); a cell grid paints the plain `✓`/`▶`. Every pixel backend
+    // registers the codicon face itself.
+    let (check_glyph, arrow_glyph): (&str, &str) = if cells {
+        ("✓", "▶")
+    } else {
+        ("\u{eab2}", "\u{eab6}")
+    };
+    let checked_w = measure(check_glyph) + space_w;
+    let arrow_w = space_w + measure(arrow_glyph);
+    let platform = if cells {
+        Platform::Tui
+    } else {
+        host_platform()
+    };
+    let max_content_w = items
+        .iter()
+        .filter(|item| !item.is_separator())
+        .map(|item| {
+            let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
+            let mut w = measure(&label);
+            if item.checked.is_some() || item.icon.is_some() {
+                w += checked_w;
+            }
+            if item.submenu.is_some() {
+                w += arrow_w;
+            } else if let Some(text) = shortcut_text(item, platform) {
+                w += space_w + measure(&text);
+            }
+            w
+        })
+        .fold(0.0_f32, f32::max);
+    // Interior margin: a budget expressed in line-heights rather than
+    // assuming a meaningful relationship between `lh` and the chrome
+    // font's space advance.
+    (max_content_w + lh * 3.0).max(lh * 8.0)
+}
+
 fn row_pitch(ctx: &LayoutCtx) -> f32 {
     if ctx.line_height > 0.0 {
         ctx.line_height
@@ -3062,6 +3124,33 @@ mod tests {
         }
     }
 
+    /// A row's rendered key equivalent takes room in its level's width,
+    /// so the right-aligned shortcut never overlaps the label.
+    #[test]
+    fn a_key_equivalent_widens_its_level() {
+        let ctx = LayoutCtx::new(1.0, 1.0, false);
+        let plain = vec![action("select-all")];
+        let mut with_key = plain.clone();
+        with_key[0].key_equivalent = Some(Accelerator {
+            id: crate::accelerator::AcceleratorId::new("editor.save"),
+            binding: crate::accelerator::KeyBinding::Save,
+            scope: crate::accelerator::AcceleratorScope::Global,
+            label: None,
+        });
+        let shortcut = shortcut_text(&with_key[0], Platform::Tui).expect("rendered");
+        assert_eq!(
+            level_width(&ctx, &with_key, 1.0) - level_width(&ctx, &plain, 1.0),
+            1.0 + crate::text_util::display_width(&shortcut) as f32
+        );
+    }
+
+    #[test]
+    fn only_an_enabled_action_is_selectable() {
+        assert!(action("a").is_selectable());
+        assert!(!separator().is_selectable());
+        assert!(!disabled("d").is_selectable());
+    }
+
     fn menu(items: Vec<ContextMenuItem>) -> ContextMenu {
         ContextMenu {
             id: WidgetId::new("test-menu"),
@@ -4572,7 +4661,7 @@ mod widget_contract_tests {
         let natural = Primitive::measure(&menu, &cell_ctx(), Size::new(80.0, 24.0));
         assert_eq!(
             natural.width,
-            Some(menu.measure_generic_width(1.0, 0.0) + CELL_BORDER_INSET * 2.0)
+            Some(level_width(&cell_ctx(), &menu.items, 1.0) + CELL_BORDER_INSET * 2.0)
         );
         // Five one-cell rows plus a border cell top and bottom.
         assert_eq!(natural.height, Some(7.0));

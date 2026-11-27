@@ -1,4 +1,4 @@
-//! SidebarSystem-based search panel — manual smoke test for Form
+//! `Sidebar`-based search panel — manual smoke test for Form
 //! sections with ToggleGroup/ButtonRow items and
 //! Header-decorated tree rows.
 //!
@@ -20,9 +20,9 @@
 use quadraui::primitives::form::{FieldKind, FormField, ToggleGroupItem, ValidationState};
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, Form, FormEvent, Key, Modifiers, NamedKey,
-    NavigationMode, Reaction, Rect, SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar,
-    StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Decoration, Form, FormEvent, Handled, Key, Modifiers, NamedKey,
+    NavigationMode, Reaction, Rect, Sidebar, SidebarAction, SidebarSectionDef, SidebarState,
+    StatusBar, StatusBarSegment, StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.5;
@@ -189,7 +189,8 @@ impl TextFieldState {
 // ─── App ─────────────────────────��────────────────────────��────────────────
 
 pub struct SidebarSearchApp {
-    sidebar: SidebarSystem,
+    sidebar: Sidebar,
+    sidebar_state: SidebarState,
     case_sensitive: bool,
     regex: bool,
     whole_word: bool,
@@ -203,16 +204,20 @@ pub struct SidebarSearchApp {
 
 impl SidebarSearchApp {
     pub fn new() -> Self {
-        let mut sidebar = SidebarSystem::new(vec![
-            SidebarSectionDef::form("search", "SEARCH"),
-            SidebarSectionDef::new("results", "RESULTS"),
-        ]);
-        sidebar.set_navigation_mode(NavigationMode::Selection);
-        sidebar.set_active_section(Some(0));
+        let mut sidebar = Sidebar::from_defs(
+            WidgetId::new("search-sidebar"),
+            &[
+                SidebarSectionDef::form("search", "SEARCH"),
+                SidebarSectionDef::new("results", "RESULTS"),
+            ],
+        );
+        sidebar.navigation_mode = NavigationMode::Selection;
+        sidebar.active_section = Some(0);
 
         let expanded = vec![true; 3];
         let mut app = Self {
             sidebar,
+            sidebar_state: SidebarState::default(),
             case_sensitive: false,
             regex: false,
             whole_word: false,
@@ -338,7 +343,7 @@ impl SidebarSearchApp {
                 .as_ref()
                 .map(|f| WidgetId::new(f.clone())),
             scroll_offset: 0,
-            has_focus: self.sidebar.active_section() == Some(0),
+            has_focus: self.sidebar.active_section == Some(0),
             label_position: Default::default(),
             label_align: Default::default(),
             label_width: None,
@@ -346,7 +351,9 @@ impl SidebarSearchApp {
             min_control_width: None,
             spacing: Default::default(),
         };
-        self.sidebar.set_form(0, form);
+        if let Some(f) = self.sidebar.form_mut(0) {
+            *f = form;
+        }
     }
 
     fn update_results(&mut self) {
@@ -493,7 +500,7 @@ impl SidebarSearchApp {
     }
 
     fn handle_named_key(&mut self, named: NamedKey, modifiers: Modifiers) -> Reaction {
-        if self.sidebar.active_section() == Some(0) {
+        if self.sidebar.active_section == Some(0) {
             let field = match self.focused_field.as_deref() {
                 Some("query") => Some(&mut self.query),
                 Some("password") => Some(&mut self.password),
@@ -562,20 +569,11 @@ impl Default for SidebarSearchApp {
     }
 }
 
-impl AppLogic for SidebarSearchApp {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let sidebar_rect = Self::sidebar_rect(backend);
-        let status_rect = Self::status_rect(backend);
-        self.sidebar.render(backend, sidebar_rect);
-        let _ = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
-    }
-
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        let rect = Self::sidebar_rect(backend);
-        match self.sidebar.handle(&event, backend, rect) {
-            SidebarEvent::FormEvent { event, .. } => {
+impl SidebarSearchApp {
+    /// React to one action the sidebar answered, after it is applied.
+    fn on_action(&mut self, action: SidebarAction) {
+        match action {
+            SidebarAction::Form { event, .. } => {
                 match &event {
                     FormEvent::ToggleChanged { id, value } => {
                         let name = id.as_str();
@@ -606,9 +604,8 @@ impl AppLogic for SidebarSearchApp {
                     }
                 }
                 self.update_form();
-                Reaction::Redraw
             }
-            SidebarEvent::RowSelected { section, path } => {
+            SidebarAction::RowSelected { section, path } => {
                 if section == 1 && path.len() == 1 {
                     let fi = path[0] as usize;
                     if fi < self.expanded.len() {
@@ -627,27 +624,51 @@ impl AppLogic for SidebarSearchApp {
                 } else {
                     self.last_event = format!("row→{section} {path:?}");
                 }
-                Reaction::Redraw
             }
-            SidebarEvent::HeaderActivated { section } => {
+            SidebarAction::HeaderActivated { section } => {
                 self.last_event = format!("header→{section}");
+            }
+            _ => {}
+        }
+    }
+}
+
+impl AppLogic for SidebarSearchApp {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        let sidebar_rect = Self::sidebar_rect(backend);
+        let status_rect = Self::status_rect(backend);
+        let _ = backend.draw_dyn(sidebar_rect, &self.sidebar, &());
+        let _ = backend.draw_dyn(status_rect, &self.build_status_bar(), &());
+    }
+
+    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+        let rect = Self::sidebar_rect(backend);
+        match self
+            .sidebar
+            .handle_event(&mut self.sidebar_state, &event, backend, rect)
+        {
+            Handled::Event(actions) => {
+                for action in actions {
+                    self.sidebar.apply(&action);
+                    self.on_action(action);
+                }
                 Reaction::Redraw
             }
-            SidebarEvent::StateChanged
-            | SidebarEvent::Consumed
-            | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
-            SidebarEvent::Ignored => match event {
+            Handled::Consumed => Reaction::Redraw,
+            Handled::Ignored => match event {
                 UiEvent::KeyPressed {
                     key: Key::Char(ch),
                     modifiers,
                     ..
                 } => {
-                    if self.sidebar.active_section() == Some(0) && modifiers.ctrl {
+                    if self.sidebar.active_section == Some(0) && modifiers.ctrl {
                         if let Some(reaction) = self.handle_ctrl_key(ch, backend) {
                             return reaction;
                         }
                     }
-                    if self.sidebar.active_section() == Some(0) && !modifiers.ctrl {
+                    if self.sidebar.active_section == Some(0) && !modifiers.ctrl {
                         match self.focused_field.as_deref() {
                             Some("query") => {
                                 self.query.insert_char(ch);
@@ -669,7 +690,7 @@ impl AppLogic for SidebarSearchApp {
                     }
                 }
                 UiEvent::CharTyped(ch) => {
-                    if self.sidebar.active_section() == Some(0) {
+                    if self.sidebar.active_section == Some(0) {
                         match self.focused_field.as_deref() {
                             Some("query") => {
                                 self.query.insert_char(ch);
@@ -696,7 +717,7 @@ impl AppLogic for SidebarSearchApp {
                     ..
                 } => self.handle_named_key(named, modifiers),
                 UiEvent::ClipboardPaste(text) => {
-                    if self.sidebar.active_section() == Some(0) {
+                    if self.sidebar.active_section == Some(0) {
                         match self.focused_field.as_deref() {
                             Some("query") => {
                                 self.query.insert_str(&text);
@@ -717,7 +738,6 @@ impl AppLogic for SidebarSearchApp {
                 UiEvent::WindowResized { .. } => Reaction::Redraw,
                 _ => Reaction::Continue,
             },
-            _ => Reaction::Redraw,
         }
     }
 }
