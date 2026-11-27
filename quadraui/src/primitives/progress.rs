@@ -917,3 +917,349 @@ mod cell_paint_tests {
         assert_eq!(layout.hit_test(25.0, 0.5), ProgressBarHit::Empty);
     }
 }
+
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::event::{Rect as QRect, Viewport};
+    use crate::macos::headless::BitmapSurface;
+    use crate::macos::text::make_font;
+    use crate::macos::MacBackend;
+    use crate::primitives::progress::ProgressBarHit;
+    use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
+    use crate::theme::Theme;
+    use crate::types::WidgetId;
+    use crate::Backend;
+    use core_text::font::CTFont;
+
+    const W: u32 = 240;
+    const H: u32 = 20;
+
+    fn font() -> CTFont {
+        make_font("Menlo", 14.0).expect("Menlo installed")
+    }
+
+    /// Paint via the real `Backend::draw_progress` path — which now
+    /// routes through the shared `native_surface_paint::paint` — avoids
+    /// tripping the `-D warnings`-denied `deprecated` lint (CLAUDE.md
+    /// rule 3) by not calling the deprecated free-function shim above.
+    fn paint_via_backend(bar: &ProgressBar) -> (BitmapSurface, ProgressBarLayout) {
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = std::cell::RefCell::new(None);
+        backend.enter_frame_scope(surface.context_ptr(), |b| {
+            let l = b.draw_primitive(QRect::new(0.0, 0.0, W as f32, H as f32), bar);
+            *layout.borrow_mut() = Some(l);
+        });
+        backend.end_frame();
+        (surface, layout.into_inner().unwrap())
+    }
+
+    #[test]
+    fn determinate_fill_proportional_to_value() {
+        let bar = ProgressBar {
+            id: WidgetId::new("pb"),
+            label: String::new(),
+            value: Some(0.5),
+            frame_idx: 0,
+            cancellable: false,
+            accent: None,
+        };
+        let (surface, layout) = paint_via_backend(&bar);
+        let fb = layout.fill_bounds.expect("fill bounds present");
+        assert!(
+            (fb.width - (W as f32) * 0.5).abs() < 1.0,
+            "fill width should be ~half: got {}",
+            fb.width,
+        );
+        // Sample inside the fill: should be theme.accent_bg.
+        let theme = Theme::default();
+        let (r, g, b, _) = surface.pixel(10, H / 2);
+        assert_eq!(
+            (r, g, b),
+            (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b),
+        );
+    }
+
+    #[test]
+    fn track_background_is_surface_bg() {
+        // value=0 -> fill_bounds covers 0 width; full track shows
+        // surface_bg.
+        let bar = ProgressBar {
+            id: WidgetId::new("pb"),
+            label: String::new(),
+            value: Some(0.0),
+            frame_idx: 0,
+            cancellable: false,
+            accent: None,
+        };
+        let (surface, _layout) = paint_via_backend(&bar);
+        let theme = Theme::default();
+        let (r, g, b, _) = surface.pixel(W - 4, H / 2);
+        assert_eq!(
+            (r, g, b),
+            (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
+        );
+    }
+
+    /// Body for testing cancel-bounds layout: `mac_progress_layout`
+    /// bakes `x`/`y` straight into the returned `cancel_bounds` in
+    /// absolute frame coordinates. This test verifies that a click at
+    /// the resulting position resolves through `hit_test`.
+    fn cancellable_bar_reserves_cancel_bounds_at(origin_x: f64, origin_y: f64) {
+        let bar = ProgressBar {
+            id: WidgetId::new("pb"),
+            label: String::new(),
+            value: Some(0.5),
+            frame_idx: 0,
+            cancellable: true,
+            accent: None,
+        };
+        let layout = crate::primitives::layout_metrics::pixel_progress_layout(
+            &bar,
+            origin_x as f32,
+            origin_y as f32,
+            W as f32,
+            H as f32,
+        );
+        let cb = layout.cancel_bounds.expect("cancel bounds present");
+        assert!(
+            (cb.width - crate::primitives::layout_metrics::pixel::PROGRESS_CANCEL_WIDTH).abs()
+                < 0.01
+        );
+        // Hit-test at the cancel center returns Cancel.
+        let cx = cb.x + cb.width * 0.5;
+        let cy = cb.y + cb.height * 0.5;
+        assert!(matches!(layout.hit_test(cx, cy), ProgressBarHit::Cancel(_),));
+    }
+
+    #[test]
+    fn cancellable_bar_reserves_cancel_bounds() {
+        cancellable_bar_reserves_cancel_bounds_at(0.0, 0.0);
+    }
+
+    /// Non-zero-origin regression guard.
+    #[test]
+    fn cancellable_bar_reserves_cancel_bounds_at_nonzero_origin() {
+        cancellable_bar_reserves_cancel_bounds_at(7.0, 13.0);
+    }
+
+    #[test]
+    fn indeterminate_no_fill_bounds_still_paints_pulse() {
+        // Indeterminate: value=None, frame_idx selects pulse position.
+        // We can't easily assert on the pulse's exact location, but
+        // the bar's leading region should show fill colour (pulse
+        // starts at pos=0 when frame_idx=0).
+        let bar = ProgressBar {
+            id: WidgetId::new("pb"),
+            label: String::new(),
+            value: None,
+            frame_idx: 0,
+            cancellable: false,
+            accent: None,
+        };
+        let (surface, layout) = paint_via_backend(&bar);
+        assert!(layout.fill_bounds.is_none());
+        let theme = Theme::default();
+        // x=4 should be inside the 40px pulse at pos=0.
+        let (r, g, b, _) = surface.pixel(4, H / 2);
+        assert_eq!(
+            (r, g, b),
+            (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b),
+        );
+    }
+}
+
+#[cfg(all(test, feature = "win"))]
+mod win_tests {
+    use crate::event::Rect;
+    use crate::primitives::progress::ProgressBarHit;
+    use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
+    use crate::theme::Theme;
+    use crate::types::WidgetId;
+    use crate::win::testing::HeadlessSurface;
+    use crate::win::text::DWrite;
+
+    const W: u32 = 200;
+    const H: u32 = 20;
+
+    fn bar(value: Option<f32>, cancellable: bool) -> ProgressBar {
+        ProgressBar {
+            id: WidgetId::new("p"),
+            label: String::new(),
+            value,
+            frame_idx: 0,
+            cancellable,
+            accent: None,
+        }
+    }
+
+    /// Paint `bar` via the shared
+    /// [`crate::primitives::progress::native_surface_paint::paint`]
+    /// through a [`crate::win::surface::D2dSurface`] over `surface`'s
+    /// headless target — the same adapter the now-removed
+    /// `draw_progress` shim used, exercised here directly.
+    fn paint(
+        surface: &HeadlessSurface,
+        dwrite: &DWrite,
+        rect: Rect,
+        bar: &ProgressBar,
+        theme: &Theme,
+    ) -> ProgressBarLayout {
+        surface
+            .paint(|target| {
+                let mut raw = crate::win::surface::D2dSurface {
+                    target,
+                    dwrite: Some(dwrite),
+                };
+                crate::primitives::progress::native_surface_paint::paint(
+                    bar,
+                    &mut raw,
+                    theme,
+                    rect,
+                    &crate::style::Style::default(),
+                );
+            })
+            .map(|_| {
+                crate::primitives::layout_metrics::pixel_progress_layout(
+                    bar,
+                    rect.x,
+                    rect.y,
+                    rect.width,
+                    rect.height,
+                )
+            })
+            .expect("paint progress")
+    }
+
+    /// Determinate mode: the fill's painted colour lands at its own
+    /// bounds, and a click past the filled fraction (but inside the
+    /// track) still resolves to `Body`.
+    #[test]
+    fn determinate_fill_paints_and_hit_tests() {
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let bar = bar(Some(0.5), false);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        let theme = Theme::default();
+        let layout = paint(&surface, &dwrite, rect, &bar, &theme);
+
+        let fb = layout.fill_bounds.expect("determinate fill present");
+        assert!((fb.width - W as f32 * 0.5).abs() < 0.01);
+
+        let fill_px = surface.pixel_at(2, H / 2);
+        assert_eq!(
+            (fill_px.r, fill_px.g, fill_px.b),
+            (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b)
+        );
+
+        // Past the fill, still on the track: paints the track colour,
+        // not the fill, and hit-tests to `Body` (no cancel affordance).
+        let track_px = surface.pixel_at(W - 2, H / 2);
+        assert_ne!(
+            (track_px.r, track_px.g, track_px.b),
+            (theme.accent_bg.r, theme.accent_bg.g, theme.accent_bg.b)
+        );
+        let hit = layout.hit_test(W as f32 - 2.0, H as f32 / 2.0);
+        assert_eq!(hit, ProgressBarHit::Body(WidgetId::new("p")));
+    }
+
+    /// The painted fill must respect the supplied theme, not a hardcoded default.
+    #[test]
+    fn paints_the_caller_supplied_theme_not_a_hardcoded_default() {
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let bar = bar(Some(0.5), false);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        let custom_accent = crate::types::Color::rgb(12, 200, 250);
+        assert_ne!(
+            custom_accent,
+            Theme::default().accent_bg,
+            "fixture must actually differ from the default theme to be a real regression guard",
+        );
+        let theme = Theme {
+            accent_bg: custom_accent,
+            ..Theme::default()
+        };
+
+        paint(&surface, &dwrite, rect, &bar, &theme);
+
+        let fill_px = surface.pixel_at(2, H / 2);
+        assert_eq!(
+            (fill_px.r, fill_px.g, fill_px.b),
+            (custom_accent.r, custom_accent.g, custom_accent.b),
+            "draw_progress must paint the caller's theme, not Theme::default()",
+        );
+    }
+
+    /// Indeterminate mode animates via `frame_idx`: two different frame
+    /// indices paint the pulse at different positions.
+    #[test]
+    fn indeterminate_mode_animates_via_frame_idx() {
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let theme = Theme::default();
+
+        let mut bar0 = bar(None, false);
+        bar0.frame_idx = 0;
+        let surface0 = HeadlessSurface::new(W, H).expect("create surface");
+        paint(&surface0, &dwrite, rect, &bar0, &theme);
+
+        let mut bar1 = bar(None, false);
+        bar1.frame_idx = 5;
+        let surface1 = HeadlessSurface::new(W, H).expect("create surface");
+        paint(&surface1, &dwrite, rect, &bar1, &theme);
+
+        // The pulse starts at x=0 on frame 0 (lit) and has moved past
+        let px0 = surface0.pixel_at(1, H / 2);
+        let px1 = surface1.pixel_at(1, H / 2);
+        assert_ne!(
+            (px0.r, px0.g, px0.b),
+            (px1.r, px1.g, px1.b),
+            "advancing frame_idx should move the indeterminate pulse"
+        );
+    }
+
+    /// Cancellable bars reserve a trailing cancel affordance that
+    /// hit-tests to `Cancel`, distinct from the bar body.
+    #[test]
+    fn cancellable_bar_hit_tests_cancel_affordance() {
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let bar = bar(Some(1.0), true);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+        let theme = Theme::default();
+
+        let layout = paint(&surface, &dwrite, rect, &bar, &theme);
+
+        let cb = layout.cancel_bounds.expect("cancel bounds present");
+        let hit = layout.hit_test(cb.x + cb.width / 2.0, cb.y + cb.height / 2.0);
+        assert_eq!(hit, ProgressBarHit::Cancel(WidgetId::new("p")));
+    }
+
+    /// `win_progress_layout` must produce byte-identical layout to the painted result.
+    #[test]
+    fn no_paint_layout_matches_paint_layout() {
+        let bar = bar(Some(0.3), true);
+        let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
+
+        let surface = HeadlessSurface::new(W, H).expect("create surface");
+        let (dwrite, _, _) = DWrite::new("Segoe UI", 10.0, None).expect("create DWrite");
+        let theme = Theme::default();
+        let painted = paint(&surface, &dwrite, rect, &bar, &theme);
+        let no_paint = crate::primitives::layout_metrics::pixel_progress_layout(
+            &bar,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+        );
+
+        assert_eq!(painted, no_paint);
+    }
+}

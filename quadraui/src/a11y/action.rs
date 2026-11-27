@@ -545,9 +545,9 @@ mod tests {
     use crate::Rect;
 
     fn list_surface(id: &str, items: &[&str], selected: usize) -> Surface {
-        Surface::List {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 20.0, 10.0),
-            list: ListView {
+            widget: Box::new(ListView {
                 id: WidgetId::new(id),
                 title: Some(StyledText::plain("Files")),
                 items: items
@@ -567,7 +567,7 @@ mod tests {
                 max_content_width: None,
                 show_v_scrollbar: false,
                 striped: false,
-            },
+            }),
         }
     }
 
@@ -950,16 +950,16 @@ mod tests {
         // only — there is nothing to increment, and `route_action` drops
         // the request, so it must not be advertised.
         let progress = A11yScenario::new()
-            .with_surface(Surface::Progress {
+            .with_surface(Surface::Widget {
                 rect: Rect::new(0.0, 0.0, 20.0, 1.0),
-                bar: ProgressBar {
+                widget: Box::new(ProgressBar {
                     id: WidgetId::new("download"),
                     label: "Downloading".to_string(),
                     value: Some(0.5),
                     frame_idx: 0,
                     cancellable: false,
                     accent: None,
-                },
+                }),
             })
             .snapshot();
         let progress_node = progress.find("Downloading").expect("bar").id;

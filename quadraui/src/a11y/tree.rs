@@ -2449,9 +2449,9 @@ mod tests {
     }
 
     fn list_surface() -> Surface {
-        Surface::List {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            list: list("files", Some("Files"), &["a.rs", "b.rs", "c.rs"], 1),
+            widget: Box::new(list("files", Some("Files"), &["a.rs", "b.rs", "c.rs"], 1)),
         }
     }
 
@@ -2545,9 +2545,16 @@ mod tests {
     /// mapping emits a presentational child for the thumb.
     fn scrollbar_surface() -> Surface {
         let rect = Rect::new(29.0, 0.0, 1.0, 10.0);
-        Surface::Scrollbar {
+        Surface::Widget {
             rect,
-            sb: Scrollbar::vertical(WidgetId::new("files.vscroll"), rect, 0.0, 30.0, 10.0, 1.0),
+            widget: Box::new(Scrollbar::vertical(
+                WidgetId::new("files.vscroll"),
+                rect,
+                0.0,
+                30.0,
+                10.0,
+                1.0,
+            )),
         }
     }
 
@@ -2771,9 +2778,9 @@ mod tests {
                 rect: Rect::new(0.0, 0.0, 30.0, 2.0),
                 widget: Box::new(toolbar("tools")),
             },
-            Surface::List {
+            Surface::Widget {
                 rect: Rect::new(0.0, 2.0, 30.0, 10.0),
-                list: list("files", Some("Files"), &["a.rs", "b.rs", "c.rs"], 1),
+                widget: Box::new(list("files", Some("Files"), &["a.rs", "b.rs", "c.rs"], 1)),
             },
         ]);
         let fm = FocusTree::new();
@@ -2908,9 +2915,9 @@ mod tests {
         let fm = FocusTree::new();
         builder.update(&frame_with(vec![list_surface()]), &fm);
 
-        let moved = frame_with(vec![Surface::List {
+        let moved = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            list: list("files", Some("Files"), &["a.rs", "b.rs", "c.rs"], 2),
+            widget: Box::new(list("files", Some("Files"), &["a.rs", "b.rs", "c.rs"], 2)),
         }]);
         let update = builder.update(&moved, &fm);
         let labels: Vec<_> = update.nodes.iter().filter_map(|n| n.label()).collect();
@@ -2927,9 +2934,9 @@ mod tests {
         let fm = FocusTree::new();
         builder.update(&frame_with(vec![list_surface()]), &fm);
 
-        let shorter = frame_with(vec![Surface::List {
+        let shorter = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            list: list("files", Some("Files"), &["a.rs", "b.rs"], 1),
+            widget: Box::new(list("files", Some("Files"), &["a.rs", "b.rs"], 1)),
         }]);
         let update = builder.update(&shorter, &fm);
         let list_id = A11yNodeId::for_widget(&WidgetId::new("files"));

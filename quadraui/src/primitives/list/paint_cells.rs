@@ -58,7 +58,12 @@ pub(crate) fn paint(
     overflow: CellOverflow,
 ) {
     let cell = |v: f32| v.max(0.0).round() as u16;
-    let (ax, ay, aw, ah) = (cell(area.x), cell(area.y), cell(area.width), cell(area.height));
+    let (ax, ay, aw, ah) = (
+        cell(area.x),
+        cell(area.y),
+        cell(area.width),
+        cell(area.height),
+    );
     // Floored to a whole cell up front so the scrollbar thumb and the row
     // layout agree on the same quantised position.
     let scroll_px = scroll_px.map(f32::floor);
@@ -1336,8 +1341,8 @@ mod multi_select_driver_tests {
     use crate::runner::{AppLogic, Reaction};
     use crate::tui::testing::TuiDriver;
     use crate::{
-        apply_selection_gesture, Backend, Decoration, DrawsPrimitives, Key, ListViewEvent, Modifiers, NamedKey,
-        Rect, SelectionGesture, StyledText, UiEvent, WidgetId,
+        apply_selection_gesture, Backend, Decoration, DrawsPrimitives, Key, ListViewEvent,
+        Modifiers, NamedKey, Rect, SelectionGesture, StyledText, UiEvent, WidgetId,
     };
 
     const VIEWPORT_W: u16 = 40;

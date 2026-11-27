@@ -1451,7 +1451,7 @@ impl FfiRtApp {
             let list = self.store.get(handle)?;
             let local_x = position.x - rect.x;
             let local_y = position.y - rect.y;
-            let layout = backend.list_layout(rect, list);
+            let layout = quadraui::DrawsPrimitives::layout_primitive(backend, rect, list).layout;
             layout.hit_test(local_x, local_y)
         };
         match hit {
@@ -1522,7 +1522,7 @@ impl AppLogic for FfiRtApp {
             return;
         };
         if let Some(list) = self.store.get(*handle) {
-            backend.draw_list(rect, list);
+            let _ = quadraui::DrawsPrimitives::draw_dyn(backend, rect, list, &());
         }
     }
 

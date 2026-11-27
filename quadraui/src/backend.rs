@@ -49,14 +49,10 @@ use crate::primitives::context_menu::ContextMenu;
 use crate::primitives::dialog::DialogSeverity;
 use crate::primitives::editor::CursorShape as EditorCursorShape;
 use crate::primitives::image::ImageSource;
-use crate::primitives::list::{ListPaintState, ListViewLayout};
-use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
-use crate::primitives::scrollbar::Scrollbar;
-use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
-use crate::{Accelerator, AcceleratorId, GlobalShortcutId, ListView, TabBar};
+use crate::{Accelerator, AcceleratorId, GlobalShortcutId, TabBar};
 use serde::{Deserialize, Serialize};
 
 /// Which edge or corner of a window a resize gesture originates from.

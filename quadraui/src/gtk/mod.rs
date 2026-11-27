@@ -112,35 +112,13 @@ pub(crate) fn test_render_guard() -> TestRenderGuard {
 
 mod app_font;
 pub mod backend;
-mod combo_box;
-mod completions;
-mod date_picker;
-mod dialog;
 pub mod events;
-mod list;
-// `MenuOverlay` is the module's only `pub` item and has zero reachers —
-// see the `pub use` block below for the full unused-flat-re-export
-// inventory this mirrors. `pub mod` (not `mod`): narrowing to `pub(crate)`
-// is the separate, breaking visibility step `CLAUDE.md`'s "Downstream
-// consumers" rule 8 calls out — `#[doc(hidden)]` gets the same "unstable,
-// not covered by semver" result without it.
-#[doc(hidden)]
-pub mod menu_overlay;
-mod number_input;
 mod painted_text;
-mod progress;
-mod rich_text_popup;
 mod run;
-mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-mod spinner;
 pub(crate) mod surface;
 pub mod testing;
-mod text_display;
-mod text_input;
-mod toast;
-mod tooltip;
 mod tray;
 
 // `TabBarHits` is `#[deprecated]` — this re-export stays (a
@@ -159,34 +137,10 @@ pub use crate::primitives::tab_bar::TabBarHits;
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 pub use backend::GtkBackend;
 #[doc(hidden)]
-pub use completions::draw_completions;
-#[doc(hidden)]
-pub use dialog::draw_dialog;
-#[doc(hidden)]
 pub use events::{wire_da_events, wire_da_events_with_scroll_direction};
-#[doc(hidden)]
-pub use list::{draw_list, draw_list_with_state, gtk_list_layout};
-#[doc(hidden)]
-pub use menu_overlay::MenuOverlay;
-#[doc(hidden)]
-pub use progress::gtk_progress_layout;
-#[doc(hidden)]
-pub use rich_text_popup::{
-    draw_rich_text_popup, RICH_TEXT_POPUP_SB_INSET, RICH_TEXT_POPUP_SB_WIDTH,
-};
 #[doc(hidden)]
 pub use run::run_with;
 pub use run::{app_id_is_valid, display_available, run, GtkRunner, RunConfig, StepOutcome};
-#[doc(hidden)]
-pub use spinner::{draw_spinner, gtk_spinner_layout};
-#[doc(hidden)]
-pub use text_display::{draw_text_display, gtk_text_display_layout};
-#[doc(hidden)]
-pub use text_input::{draw_text_input, gtk_text_input_layout};
-#[doc(hidden)]
-pub use toast::gtk_toast_stack_layout;
-#[doc(hidden)]
-pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 
 /// Convert a `quadraui::Color` (0-255 RGBA) into Cairo's normalised
 /// `(r, g, b)` tuple. Alpha is dropped — Cairo supports

@@ -51,7 +51,7 @@ use crate::backend::{ColorDepth, Screenshot, ScreenshotRun};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
-    Accelerator, AcceleratorId, Backend, DragState, ListView, ModalStack, PlatformServices, Point,
+    Accelerator, AcceleratorId, Backend, DragState, ModalStack, PlatformServices, Point,
     Rect as QRect, TerminalCellSize, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
@@ -2906,9 +2906,8 @@ impl crate::backend::WindowControl for TuiBackend {
 //
 // Phase B.4 Stage 3b: prove the `Backend` trait is genuinely consumable
 // by app code that's *generic* over the backend, not just by `TuiBackend`
-// specifically. A minimal `MockBackend` records each `draw_*` call into
-// a `Vec<DrawCall>`; a generic `<B: Backend>` helper invokes the trait
-// methods; assertions verify the calls landed.
+// specifically: a generic `<B: Backend>` helper paints through the trait,
+// and a minimal `MockBackend` with no paint or cell surface implements it.
 //
 // This is the architectural proof point Stage 3 was designed around:
 // once the trait works against TuiBackend AND a foreign mock, future
@@ -2917,24 +2916,11 @@ impl crate::backend::WindowControl for TuiBackend {
 
 #[cfg(test)]
 mod tests {
-    // Tests exercise the deprecated row-family `Backend::draw_*`/`*_layout`
-    // methods directly, alongside their `DrawsPrimitives::draw_primitive`
-    // replacements — this deprecation targets callers, not
-    // this file's own coverage of the methods it deprecates.
-    #![allow(deprecated)]
     use super::*;
     use crate::backend::{DrawsPrimitives, MessageDialogOptions};
     use crate::{ListItem, ListView, Palette, PaletteItem, StyledSpan, StyledText, WidgetId};
 
-    /// Records every draw call so tests can assert what the trait
-    /// boundary actually delivers.
-    #[derive(Debug, Clone, PartialEq)]
-    enum DrawCall {
-        List { rect: QRect, item_count: usize },
-    }
-
     struct MockBackend {
-        calls: Vec<DrawCall>,
         modal_stack: Rc<RefCell<ModalStack>>,
         drag_state: Rc<RefCell<DragState>>,
         services: crate::testing::NullPlatformServices,
@@ -2947,7 +2933,6 @@ mod tests {
     impl MockBackend {
         fn new() -> Self {
             Self {
-                calls: Vec::new(),
                 modal_stack: Rc::new(RefCell::new(ModalStack::new())),
                 drag_state: Rc::new(RefCell::new(DragState::new())),
                 services: crate::testing::NullPlatformServices::new(),
@@ -2979,7 +2964,7 @@ mod tests {
             Vec::new()
         }
         fn waker(&self) -> std::sync::Arc<dyn Fn(crate::UserPayload) + Send + Sync> {
-            // `MockBackend` only records `draw_*` calls for assertions — no
+            // `MockBackend` has no
             // event loop for a wake to reach. No-op, matching `poll_events`/
             // `wait_events` above. Real cross-thread wake delivery is
             // covered against `TuiBackend` itself, not this recorder.
@@ -3036,7 +3021,6 @@ mod tests {
                 ui_size_pt: 0.0,
             }
         }
-
     }
 
     /// Generic helper — the minimal "app render code" that consumes
@@ -3200,22 +3184,13 @@ mod tests {
         crate::TreeTable::new(table, tree)
     }
 
+    /// The palette and the list paint through their widget contracts,
+    /// which need a paint or cell surface; a mock that offers neither
+    /// still runs the generic render code to completion.
     #[test]
-    fn paint_overlays_records_through_mock_backend() {
+    fn paint_overlays_runs_through_a_surfaceless_mock_backend() {
         let mut mock = MockBackend::new();
-        let palette = sample_palette();
-        let list = sample_list();
-
-        paint_overlays(&mut mock, &palette, &list);
-
-        // The palette paints through its widget contract, which needs a
-        // paint or cell surface; the mock offers neither, so only the
-        // list reaches a recorded trait method.
-        assert_eq!(mock.calls.len(), 1);
-        assert!(matches!(
-            mock.calls[0],
-            DrawCall::List { item_count: 1, .. }
-        ));
+        paint_overlays(&mut mock, &sample_palette(), &sample_list());
     }
 
     #[test]
@@ -5993,9 +5968,9 @@ mod tests {
 
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
             let mut layout = crate::ScreenLayout::new();
-            layout.push(crate::Surface::List {
+            layout.push(crate::Surface::Widget {
                 rect: QRect::new(0.0, 0.0, 20.0, 5.0),
-                list: ListView {
+                widget: Box::new(ListView {
                     id: WidgetId::new("rows"),
                     title: None,
                     items: self
@@ -6016,7 +5991,7 @@ mod tests {
                     max_content_width: None,
                     show_v_scrollbar: false,
                     striped: false,
-                },
+                }),
             });
             layout.draw(backend);
         }

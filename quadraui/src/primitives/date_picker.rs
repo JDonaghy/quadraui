@@ -2571,3 +2571,468 @@ mod cell_test_paint {
         );
     }
 }
+
+#[cfg(all(test, feature = "gtk"))]
+mod gtk_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::gtk::testing::GtkDriver;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::{
+        Backend, CalendarDate, DatePicker, DatePickerEvent, Key, NamedKey, Rect, UiEvent, WidgetId,
+    };
+
+    /// The rect the driver's calendar is laid out into — the month
+    /// header, six week rows and the time field all size themselves
+    /// inside it (see `DatePickerPrimitiveLayout`).
+    const CALENDAR_AREA: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 28.0,
+        height: 10.0,
+    };
+
+    /// Minimal `AppLogic` wrapping a single focused `DatePicker`, painted
+    /// through the real `Backend::draw_date_picker` — used only by this
+    /// driver test, mirroring `tests/date_picker_driver.rs`'s TUI-side
+    /// `navigate`/`apply` wiring but routed through `GtkDriver`.
+    struct DatePickerApp {
+        picker: DatePicker,
+    }
+
+    impl DatePickerApp {
+        fn new() -> Self {
+            let mut picker =
+                DatePicker::new(WidgetId::new("test:date"), CalendarDate::new(2024, 3, 15));
+            picker.has_focus = true;
+            Self { picker }
+        }
+
+        fn apply(&mut self, event: Option<DatePickerEvent>) -> Reaction {
+            match event {
+                Some(DatePickerEvent::FocusMoved(date)) => {
+                    self.picker.focused = date;
+                    if !self.picker.is_in_visible_month(date) {
+                        self.picker.visible_month = date.first_of_month();
+                    }
+                    Reaction::Redraw
+                }
+                Some(DatePickerEvent::DateSelected(date)) => {
+                    self.picker.selected = Some(date);
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    impl AppLogic for DatePickerApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_dyn(CALENDAR_AREA, &self.picker, &());
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            match event {
+                UiEvent::KeyPressed { key, .. } => {
+                    let key_name = match key {
+                        Key::Named(NamedKey::Left) => "Left",
+                        Key::Named(NamedKey::Right) => "Right",
+                        Key::Named(NamedKey::Up) => "Up",
+                        Key::Named(NamedKey::Down) => "Down",
+                        Key::Named(NamedKey::PageUp) => "PageUp",
+                        Key::Named(NamedKey::PageDown) => "PageDown",
+                        Key::Named(NamedKey::Enter) => "Enter",
+                        _ => return Reaction::Continue,
+                    };
+                    let event = self.picker.navigate(key_name);
+                    self.apply(event)
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    #[test]
+    fn left_arrow_moves_focus_back_one_day() {
+        let mut driver = GtkDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::Left);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 14));
+    }
+
+    #[test]
+    fn right_arrow_moves_focus_forward_one_day() {
+        let mut driver = GtkDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::Right);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 16));
+    }
+
+    #[test]
+    fn up_and_down_arrows_move_focus_by_a_week() {
+        let mut driver = GtkDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::Down);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 22));
+        driver.press_named(NamedKey::Up);
+        driver.press_named(NamedKey::Up);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 8));
+    }
+
+    #[test]
+    fn page_up_and_page_down_navigate_months_and_update_the_visible_month() {
+        let mut driver = GtkDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::PageDown);
+        let app = driver.app();
+        assert_eq!(app.picker.focused, CalendarDate::new(2024, 4, 15));
+        assert_eq!(app.picker.visible_month, CalendarDate::new(2024, 4, 1));
+
+        driver.press_named(NamedKey::PageUp);
+        let app = driver.app();
+        assert_eq!(app.picker.focused, CalendarDate::new(2024, 3, 15));
+        assert_eq!(app.picker.visible_month, CalendarDate::new(2024, 3, 1));
+    }
+
+    #[test]
+    fn enter_selects_the_focused_day() {
+        let mut driver = GtkDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::Right);
+        driver.press_named(NamedKey::Enter);
+        assert_eq!(
+            driver.app().picker.selected,
+            Some(CalendarDate::new(2024, 3, 16))
+        );
+    }
+}
+
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::macos::testing::MacDriver;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::theme::Theme;
+    use crate::{
+        Backend, CalendarDate, DatePicker, DatePickerEvent, Key, NamedKey, Rect, UiEvent, WidgetId,
+    };
+
+    /// The surface is sized to exactly the painted rect, which is big
+    /// enough that the ~30pt day cells `DatePickerPrimitiveLayout`
+    /// derives from it are large relative to Menlo 14pt (the font
+    /// [`MacDriver::new`] installs): a day digit — drawn from the cell's
+    /// top-left corner by `MacBackend`'s `surface_draw_text_run` — then
+    /// leaves the lower-right of the cell as clear fill for
+    /// [`selecting_a_day_fills_its_cell_with_the_selected_background`] to
+    /// sample.
+    const SURFACE_W: u32 = 210;
+    const SURFACE_H: u32 = 200;
+
+    /// The rect `DatePickerApp::render` lays the calendar into: the month
+    /// header, six week rows and (for a picker with a time) the time
+    /// field all size themselves inside it, so tests read a cell's exact
+    /// `bounds` back out of the resolved layout rather than re-deriving
+    /// the grid.
+    const CALENDAR_AREA: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: SURFACE_W as f32,
+        height: SURFACE_H as f32,
+    };
+
+    /// Minimal `AppLogic` wrapping a single focused `DatePicker`, painted
+    /// through the real `DrawsPrimitives::draw_dyn` path — used only by
+    /// this driver test, mirroring `win::date_picker`'s `DatePickerApp`
+    /// but routed through `MacDriver`.
+    struct DatePickerApp {
+        picker: DatePicker,
+    }
+
+    impl DatePickerApp {
+        fn new() -> Self {
+            let mut picker =
+                DatePicker::new(WidgetId::new("test:date"), CalendarDate::new(2024, 3, 15));
+            picker.has_focus = true;
+            Self { picker }
+        }
+
+        fn apply(&mut self, event: Option<DatePickerEvent>) -> Reaction {
+            match event {
+                Some(DatePickerEvent::FocusMoved(date)) => {
+                    self.picker.focused = date;
+                    if !self.picker.is_in_visible_month(date) {
+                        self.picker.visible_month = date.first_of_month();
+                    }
+                    Reaction::Redraw
+                }
+                Some(DatePickerEvent::DateSelected(date)) => {
+                    self.picker.selected = Some(date);
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    impl AppLogic for DatePickerApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_dyn(CALENDAR_AREA, &self.picker, &());
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            match event {
+                UiEvent::KeyPressed { key, .. } => {
+                    let key_name = match key {
+                        Key::Named(NamedKey::Left) => "Left",
+                        Key::Named(NamedKey::Right) => "Right",
+                        Key::Named(NamedKey::Up) => "Up",
+                        Key::Named(NamedKey::Down) => "Down",
+                        Key::Named(NamedKey::PageUp) => "PageUp",
+                        Key::Named(NamedKey::PageDown) => "PageDown",
+                        Key::Named(NamedKey::Enter) => "Enter",
+                        _ => return Reaction::Continue,
+                    };
+                    let event = self.picker.navigate(key_name);
+                    self.apply(event)
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    #[test]
+    fn left_arrow_moves_focus_back_one_day() {
+        let mut driver = MacDriver::new(DatePickerApp::new(), SURFACE_W, SURFACE_H);
+        driver.press_named(NamedKey::Left);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 14));
+    }
+
+    #[test]
+    fn right_arrow_moves_focus_forward_one_day() {
+        let mut driver = MacDriver::new(DatePickerApp::new(), SURFACE_W, SURFACE_H);
+        driver.press_named(NamedKey::Right);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 16));
+    }
+
+    #[test]
+    fn up_and_down_arrows_move_focus_by_a_week() {
+        let mut driver = MacDriver::new(DatePickerApp::new(), SURFACE_W, SURFACE_H);
+        driver.press_named(NamedKey::Down);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 22));
+        driver.press_named(NamedKey::Up);
+        driver.press_named(NamedKey::Up);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 8));
+    }
+
+    #[test]
+    fn page_up_and_page_down_navigate_months_and_update_the_visible_month() {
+        let mut driver = MacDriver::new(DatePickerApp::new(), SURFACE_W, SURFACE_H);
+        driver.press_named(NamedKey::PageDown);
+        let app = driver.app();
+        assert_eq!(app.picker.focused, CalendarDate::new(2024, 4, 15));
+        assert_eq!(app.picker.visible_month, CalendarDate::new(2024, 4, 1));
+
+        driver.press_named(NamedKey::PageUp);
+        let app = driver.app();
+        assert_eq!(app.picker.focused, CalendarDate::new(2024, 3, 15));
+        assert_eq!(app.picker.visible_month, CalendarDate::new(2024, 3, 1));
+    }
+
+    #[test]
+    fn enter_selects_the_focused_day() {
+        let mut driver = MacDriver::new(DatePickerApp::new(), SURFACE_W, SURFACE_H);
+        driver.press_named(NamedKey::Right);
+        driver.press_named(NamedKey::Enter);
+        assert_eq!(
+            driver.app().picker.selected,
+            Some(CalendarDate::new(2024, 3, 16))
+        );
+    }
+
+    /// Real paint assertions against the painted calendar — the
+    /// month/year header label, the prev/next glyphs and a day-of-month
+    /// digit must all land in `MacBackend`'s painted-text recording.
+    #[test]
+    fn header_label_and_day_glyphs_are_painted() {
+        let driver = MacDriver::new(DatePickerApp::new(), SURFACE_W, SURFACE_H);
+        assert!(
+            driver.screen_contains("2024-03"),
+            "month/year header label should paint"
+        );
+        assert!(driver.screen_contains("<"), "prev-month glyph should paint");
+        assert!(driver.screen_contains(">"), "next-month glyph should paint");
+        assert!(
+            driver.screen_contains("15"),
+            "day-15 digit should paint — it is both today and the initial focus"
+        );
+    }
+
+    /// Selecting a day fills its cell with `theme.selected_bg` — sampled
+    /// from the cell's own `DayCell::bounds` in the resolved layout (not
+    /// the day digit's text-run box), inset far enough from the top-left
+    /// to clear the glyph and from the edges to clear the focus ring,
+    /// matching `primitives::progress`'s pixel-sampling precedent
+    /// (`paint_via_backend` + `surface.pixel`).
+    #[test]
+    fn selecting_a_day_fills_its_cell_with_the_selected_background() {
+        let mut driver = MacDriver::new(DatePickerApp::new(), SURFACE_W, SURFACE_H);
+        driver.press_named(NamedKey::Right);
+        driver.press_named(NamedKey::Enter);
+        let selected = CalendarDate::new(2024, 3, 16);
+        assert_eq!(driver.app().picker.selected, Some(selected));
+
+        let layout = driver
+            .backend()
+            .layout_primitive(CALENDAR_AREA, &driver.app().picker)
+            .layout;
+        let cell = layout
+            .day_cells
+            .iter()
+            .find(|c| c.is_selected)
+            .expect("the selected day has a cell in the resolved layout");
+        assert_eq!(cell.date, selected);
+
+        let sample_x = (cell.bounds.x + cell.bounds.width - 5.0) as u32;
+        let sample_y = (cell.bounds.y + cell.bounds.height - 5.0) as u32;
+        let theme = Theme::default();
+        let (r, g, b, _) = driver.pixel(sample_x, sample_y);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+            "selected day's cell should fill with the theme's selection background"
+        );
+    }
+}
+
+#[cfg(all(test, feature = "win", target_os = "windows"))]
+mod win_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::runner::{AppLogic, Reaction};
+    use crate::win::testing::WinDriver;
+    use crate::{
+        Backend, CalendarDate, DatePicker, DatePickerEvent, Key, NamedKey, Rect, UiEvent, WidgetId,
+    };
+
+    /// The rect the driver's calendar is laid out into — the month
+    /// header, six week rows and the time field all size themselves
+    /// inside it (see `DatePickerPrimitiveLayout`).
+    const CALENDAR_AREA: Rect = Rect {
+        x: 0.0,
+        y: 0.0,
+        width: 28.0,
+        height: 10.0,
+    };
+
+    /// Minimal `AppLogic` wrapping a single focused `DatePicker`, painted
+    /// through the real `DrawsPrimitives::draw_dyn` — used only by this
+    /// driver test, mirroring `gtk::date_picker`'s `DatePickerApp` but
+    /// routed through `WinDriver`.
+    struct DatePickerApp {
+        picker: DatePicker,
+    }
+
+    impl DatePickerApp {
+        fn new() -> Self {
+            let mut picker =
+                DatePicker::new(WidgetId::new("test:date"), CalendarDate::new(2024, 3, 15));
+            picker.has_focus = true;
+            Self { picker }
+        }
+
+        fn apply(&mut self, event: Option<DatePickerEvent>) -> Reaction {
+            match event {
+                Some(DatePickerEvent::FocusMoved(date)) => {
+                    self.picker.focused = date;
+                    if !self.picker.is_in_visible_month(date) {
+                        self.picker.visible_month = date.first_of_month();
+                    }
+                    Reaction::Redraw
+                }
+                Some(DatePickerEvent::DateSelected(date)) => {
+                    self.picker.selected = Some(date);
+                    Reaction::Redraw
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    impl AppLogic for DatePickerApp {
+        type AreaId = ();
+
+        fn render(&self, backend: &mut dyn Backend, _area: ()) {
+            backend.draw_dyn(CALENDAR_AREA, &self.picker, &());
+        }
+
+        fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+            match event {
+                UiEvent::KeyPressed { key, .. } => {
+                    let key_name = match key {
+                        Key::Named(NamedKey::Left) => "Left",
+                        Key::Named(NamedKey::Right) => "Right",
+                        Key::Named(NamedKey::Up) => "Up",
+                        Key::Named(NamedKey::Down) => "Down",
+                        Key::Named(NamedKey::PageUp) => "PageUp",
+                        Key::Named(NamedKey::PageDown) => "PageDown",
+                        Key::Named(NamedKey::Enter) => "Enter",
+                        _ => return Reaction::Continue,
+                    };
+                    let event = self.picker.navigate(key_name);
+                    self.apply(event)
+                }
+                _ => Reaction::Continue,
+            }
+        }
+    }
+
+    #[test]
+    fn left_arrow_moves_focus_back_one_day() {
+        let mut driver = WinDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::Left);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 14));
+    }
+
+    #[test]
+    fn right_arrow_moves_focus_forward_one_day() {
+        let mut driver = WinDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::Right);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 16));
+    }
+
+    #[test]
+    fn up_and_down_arrows_move_focus_by_a_week() {
+        let mut driver = WinDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::Down);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 22));
+        driver.press_named(NamedKey::Up);
+        driver.press_named(NamedKey::Up);
+        assert_eq!(driver.app().picker.focused, CalendarDate::new(2024, 3, 8));
+    }
+
+    #[test]
+    fn page_up_and_page_down_navigate_months_and_update_the_visible_month() {
+        let mut driver = WinDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::PageDown);
+        let app = driver.app();
+        assert_eq!(app.picker.focused, CalendarDate::new(2024, 4, 15));
+        assert_eq!(app.picker.visible_month, CalendarDate::new(2024, 4, 1));
+
+        driver.press_named(NamedKey::PageUp);
+        let app = driver.app();
+        assert_eq!(app.picker.focused, CalendarDate::new(2024, 3, 15));
+        assert_eq!(app.picker.visible_month, CalendarDate::new(2024, 3, 1));
+    }
+
+    #[test]
+    fn enter_selects_the_focused_day() {
+        let mut driver = WinDriver::new(DatePickerApp::new(), 80, 40);
+        driver.press_named(NamedKey::Right);
+        driver.press_named(NamedKey::Enter);
+        assert_eq!(
+            driver.app().picker.selected,
+            Some(CalendarDate::new(2024, 3, 16))
+        );
+    }
+}

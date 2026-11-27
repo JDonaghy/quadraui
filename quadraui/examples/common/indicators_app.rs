@@ -102,11 +102,11 @@ impl AppLogic for IndicatorsApp {
 
         // Spinner on row 1.
         let spinner_rect = Rect::new(1.0, 1.0, viewport.width - 2.0, lh);
-        let _ = backend.draw_spinner(spinner_rect, &self.spinner());
+        let _ = backend.draw_dyn(spinner_rect, &self.spinner(), &());
 
         // Progress bar on row 3.
         let progress_rect = Rect::new(1.0, lh * 3.0, viewport.width - 2.0, lh);
-        let _ = backend.draw_progress(progress_rect, &self.progress_bar());
+        let _ = backend.draw_dyn(progress_rect, &self.progress_bar(), &());
 
         // Status bar at bottom.
         let status_rect = Rect::new(0.0, viewport.height - lh, viewport.width, lh);
@@ -169,7 +169,7 @@ impl AppLogic for IndicatorsApp {
                 let lh = backend.line_height();
                 let progress_rect = Rect::new(1.0, lh * 3.0, viewport.width - 2.0, lh);
                 let bar = self.progress_bar();
-                let layout = backend.progress_layout(progress_rect, &bar);
+                let layout = backend.layout_primitive(progress_rect, &bar);
                 match layout.hit_test(position.x, position.y) {
                     ProgressBarHit::Cancel(_) => {
                         self.last_message = "Cancelled!".into();

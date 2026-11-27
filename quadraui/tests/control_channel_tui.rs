@@ -48,9 +48,9 @@ impl quadraui::AppLogic for ListApp {
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut layout = ScreenLayout::new();
-        layout.push(Surface::List {
+        layout.push(Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            list: ListView {
+            widget: Box::new(ListView {
                 id: WidgetId::new("rows"),
                 title: None,
                 items: self
@@ -71,7 +71,7 @@ impl quadraui::AppLogic for ListApp {
                 max_content_width: None,
                 show_v_scrollbar: false,
                 striped: false,
-            },
+            }),
         });
         layout.draw(backend);
     }

@@ -2768,7 +2768,6 @@ impl Backend for WinBackend {
             let _ = (family, size_pt);
         }
     }
-
 }
 
 /// Win-GUI's `WindowControl` surface. Every method guards on
@@ -4263,7 +4262,9 @@ mod tests {
         };
         let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
 
-        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let default_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(
             default_sb.track.width,
@@ -4271,7 +4272,9 @@ mod tests {
         );
 
         backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
-        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let overridden_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(overridden_sb.track.width, 24.0);
     }
@@ -4376,99 +4379,6 @@ mod tests {
             WindowControl::set_decorated(&mut b, false),
             Err(BackendError::Unsupported)
         ));
-    }
-
-    /// Pins the Windows column of the shared `hscrollbar_track` fix
-    /// as the reference behaviour macOS's copy had silently dropped —
-    /// `list_hscrollbar` insets the track by one char width on each side
-    /// (and moves it up one row) for a `bordered` list, so the thumb sits
-    /// inside the border rather than overpainting it. Pure geometry, no
-    /// `target_os = "windows"` gate needed.
-    #[test]
-    fn win_backend_list_hscrollbar_insets_track_for_bordered_list() {
-        let mut b = WinBackend::new();
-        b.set_current_char_width(8.0);
-        b.set_current_line_height(16.0);
-        // The hscrollbar's row pitch now follows `draw_list`'s own
-        // (`resolved_row_height`, which defaults to `Style::row_height`
-        // on a pixel backend) — not the raw `current_line_height` set
-        // above, which this test keeps only for the char-width-based
-        // inset math on `track.x`/`track.width`.
-        let row_h = b.current_style().row_height;
-        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
-        let list = |bordered: bool| -> ListView {
-            ListView {
-                id: WidgetId::new("l"),
-                title: None,
-                items: vec![crate::ListItem {
-                    text: crate::types::StyledText::plain(&"x".repeat(40)),
-                    detail: None,
-                    icon: None,
-                    decoration: crate::types::Decoration::default(),
-                }],
-                selected_idx: 0,
-                scroll_offset: 0,
-                has_focus: true,
-                bordered,
-                h_scroll: 0,
-                max_content_width: Some(40),
-                show_v_scrollbar: false,
-                striped: false,
-            }
-        };
-
-        let flat_sb = b
-            .list_hscrollbar(rect, &list(false))
-            .expect("overflowing content should yield a scrollbar");
-        assert_eq!(flat_sb.track.x, 0.0);
-        assert_eq!(flat_sb.track.width, 200.0);
-
-        let bordered_sb = b
-            .list_hscrollbar(rect, &list(true))
-            .expect("overflowing content should yield a scrollbar");
-        assert_eq!(bordered_sb.track.x, 8.0);
-        assert_eq!(bordered_sb.track.width, 184.0);
-        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * row_h);
-        assert!(bordered_sb.track.x >= rect.x + 8.0);
-        assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
-    }
-
-    /// `Backend::set_style` overriding `row_height` changes the row
-    /// pitch `list_layout` resolves — the acceptance bar for this chrome
-    /// metric, mirrored from `MacBackend`'s equivalent test.
-    #[test]
-    fn win_backend_list_layout_row_pitch_follows_a_set_style_override() {
-        let mut b = WinBackend::new();
-        b.set_current_line_height(10.0);
-        let list = ListView {
-            id: WidgetId::new("l"),
-            title: None,
-            items: vec![crate::ListItem {
-                text: crate::types::StyledText::plain("row"),
-                detail: None,
-                icon: None,
-                decoration: crate::types::Decoration::default(),
-            }],
-            selected_idx: 0,
-            scroll_offset: 0,
-            has_focus: true,
-            bordered: false,
-            h_scroll: 0,
-            max_content_width: None,
-            show_v_scrollbar: false,
-            striped: false,
-        };
-        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
-
-        let default_layout = Backend::list_layout(&b, rect, &list);
-        assert_eq!(
-            default_layout.visible_items[0].bounds.height,
-            b.current_style().row_height
-        );
-
-        b.set_style(crate::Style::default().with_row_height(30.0));
-        let overridden_layout = Backend::list_layout(&b, rect, &list);
-        assert_eq!(overridden_layout.visible_items[0].bounds.height, 30.0);
     }
 
     /// The stash-then-reuse pattern this issue exists to
@@ -7024,7 +6934,7 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_list(Rect::new(0.0, 0.0, 200.0, 120.0), &list);
+                let _ = backend.draw_dyn(Rect::new(0.0, 0.0, 200.0, 120.0), &list, &());
             },
         );
         assert!(
@@ -7288,7 +7198,7 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                let _ = backend.draw_spinner(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner);
+                let _ = backend.draw_dyn(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner, &());
             },
         );
         assert!(
@@ -7343,7 +7253,7 @@ mod tests {
             backend.set_theme(theme);
 
             backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-            let _ = backend.draw_spinner(rect, &spinner);
+            let _ = backend.draw_dyn(rect, &spinner, &());
             backend.end_frame();
 
             let bg = surface.pixel_at(0, 0);
@@ -8048,7 +7958,7 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
                 backend
-                    .spinner_layout(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner)
+                    .layout_primitive(Rect::new(0.0, 0.0, 200.0, 40.0), &spinner)
                     .bounds
                     .width
             },

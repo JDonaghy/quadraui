@@ -428,8 +428,8 @@ fn draw_palette_paints_in_chrome_font() {
 }
 
 #[test]
-fn draw_progress_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_progress", |b, area| {
+fn progress_paints_in_chrome_font() {
+    assert_paints_in_chrome_font("draw_dyn(ProgressBar)", |b, area| {
         let bar = ProgressBar {
             id: id("progress"),
             label: LABEL.to_string(),
@@ -438,19 +438,19 @@ fn draw_progress_paints_in_chrome_font() {
             cancellable: false,
             accent: None,
         };
-        let _ = b.draw_progress(area, &bar);
+        let _ = quadraui::DrawsPrimitives::draw_dyn(b, area, &bar, &());
     });
 }
 
 #[test]
-fn draw_spinner_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_spinner", |b, area| {
+fn spinner_paints_in_chrome_font() {
+    assert_paints_in_chrome_font("draw_dyn(Spinner)", |b, area| {
         let spinner = Spinner {
             id: id("spinner"),
             label: LABEL.to_string(),
             frame_idx: 0,
             accent: None,
         };
-        let _ = b.draw_spinner(area, &spinner);
+        let _ = quadraui::DrawsPrimitives::draw_dyn(b, area, &spinner, &());
     });
 }

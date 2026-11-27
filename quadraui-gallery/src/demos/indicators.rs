@@ -132,10 +132,10 @@ impl Demo for IndicatorsDemo {
 
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let progress_rect = Self::progress_rect(area, backend);
-        let _ = backend.draw_progress(progress_rect, &self.progress_bar(variant));
+        let _ = backend.draw_dyn(progress_rect, &self.progress_bar(variant), &());
 
         let spinner_rect = Self::spinner_rect(area, backend);
-        let _ = backend.draw_spinner(spinner_rect, &self.spinner());
+        let _ = backend.draw_dyn(spinner_rect, &self.spinner(), &());
 
         let status_rect = Self::status_rect(area, backend);
         let _ = backend.draw_dyn(status_rect, &self.status(), &());
@@ -181,7 +181,7 @@ impl Demo for IndicatorsDemo {
             UiEvent::MouseDown { position, .. } => {
                 let progress_rect = Self::progress_rect(area, backend);
                 let bar = self.progress_bar(variant);
-                let layout = backend.progress_layout(progress_rect, &bar);
+                let layout = backend.layout_primitive(progress_rect, &bar);
                 match layout.hit_test(position.x, position.y) {
                     ProgressBarHit::Cancel(_) => {
                         self.last_message = "Cancelled!".into();

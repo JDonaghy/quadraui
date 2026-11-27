@@ -4545,44 +4545,6 @@ mod tests {
         }
     }
 
-    /// `MacBackend::list_hscrollbar` must inset the track for bordered
-    /// lists, matching the shared `primitives::list::hscrollbar_track`
-    /// helper and the GTK/Windows implementations. The vertical sibling
-    /// bug was fixed in #712, but the horizontal geometry was missed.
-    #[test]
-    fn list_hscrollbar_insets_track_for_bordered_list() {
-        let mut b = MacBackend::new();
-        b.current_char_width = 8.0;
-        b.current_line_height = 16.0;
-        // The hscrollbar's row pitch now follows `draw_list`'s own
-        // (`resolved_row_height` over the chrome metric, which defaults
-        // to `Style::row_height` on a pixel backend) — not the raw
-        // editor `current_line_height` set above, which this test keeps
-        // only for `track.x`/`track.width`'s char-width-based inset math.
-        let row_h = b.current_style.row_height;
-        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
-
-        let flat = bordered_overflow_list(40, 0, false);
-        let flat_sb = b
-            .list_hscrollbar(rect, &flat)
-            .expect("overflowing content should yield a scrollbar");
-        assert_eq!(flat_sb.track.x, 0.0);
-        assert_eq!(flat_sb.track.width, 200.0);
-
-        let bordered = bordered_overflow_list(40, 0, true);
-        let bordered_sb = b
-            .list_hscrollbar(rect, &bordered)
-            .expect("overflowing content should yield a scrollbar");
-        // Inset by one char width (8px) on each side, and the thumb
-        // (contained within the track) must therefore sit strictly inside
-        // the border rather than overpainting it.
-        assert_eq!(bordered_sb.track.x, 8.0);
-        assert_eq!(bordered_sb.track.width, 184.0);
-        assert_eq!(bordered_sb.track.y, 100.0 - 2.0 * row_h);
-        assert!(bordered_sb.track.x >= rect.x + 8.0);
-        assert!(bordered_sb.track.x + bordered_sb.track.width <= rect.x + rect.width - 8.0);
-    }
-
     // ── Style::row_height governs list/tree/table row pitch ────────────
 
     /// On a pixel backend, `resolved_row_height` defaults to
@@ -4598,27 +4560,6 @@ mod tests {
         assert_eq!(b.resolved_row_height(40.0), 40.0);
         // A cell grid (TUI's architectural `1.0`) is a documented no-op.
         assert_eq!(b.resolved_row_height(1.0), 1.0);
-    }
-
-    /// `Backend::set_style` overriding `row_height` changes the row pitch
-    /// `list_layout` resolves — the acceptance bar for this chrome metric.
-    #[test]
-    fn list_layout_row_pitch_follows_a_set_style_override() {
-        use crate::Backend;
-        let mut b = MacBackend::new();
-        b.chrome_line_height = 10.0;
-        let list = bordered_overflow_list(5, 0, false);
-        let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
-
-        let default_layout = b.list_layout(rect, &list);
-        assert_eq!(
-            default_layout.visible_items[0].bounds.height,
-            b.current_style.row_height
-        );
-
-        b.set_style(crate::Style::default().with_row_height(30.0));
-        let overridden_layout = b.list_layout(rect, &list);
-        assert_eq!(overridden_layout.visible_items[0].bounds.height, 30.0);
     }
 
     // ── Minimap/Image paint real pixels on macOS ─────────────────────────
@@ -7537,7 +7478,9 @@ mod tests {
         };
         let rect = Rect::new(0.0, 0.0, 200.0, 100.0);
 
-        let default_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let default_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(
             default_sb.track.width,
@@ -7545,7 +7488,9 @@ mod tests {
         );
 
         backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
-        let overridden_sb = Backend::list_vscrollbar(&backend, rect, &list)
+        let overridden_sb = backend
+            .layout_primitive(rect, &list)
+            .vscrollbar
             .expect("30 rows must overflow a 100px viewport");
         assert_eq!(overridden_sb.track.width, 24.0);
     }

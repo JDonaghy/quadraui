@@ -45,50 +45,24 @@ pub mod backend;
 pub(crate) mod caret_blink;
 // Shared CoreGraphics FFI bindings + fill/stroke/rect helpers.
 mod cg;
-#[doc(hidden)]
-pub mod command_line;
-#[doc(hidden)]
-pub mod completions;
-#[doc(hidden)]
-pub mod date_picker;
-#[doc(hidden)]
-pub mod dialog;
 pub mod events;
 #[doc(hidden)]
 pub mod headless;
-#[doc(hidden)]
-pub mod list;
 pub(crate) mod menu_bar_install;
-#[doc(hidden)]
-pub mod progress;
-#[doc(hidden)]
-pub mod rich_text_popup;
 mod run;
-#[doc(hidden)]
-pub mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-#[doc(hidden)]
-pub mod spinner;
 // Shared `PaintSurface` adapter over a bare `CGContextRef`.
 mod surface;
 #[doc(hidden)]
 pub mod testing;
 pub mod text;
-#[doc(hidden)]
-pub mod text_display;
-#[doc(hidden)]
-pub mod text_input;
 // Text-selection highlight painting — the CoreGraphics twin of
 // `gtk::backend`'s Cairo `fill()` / `win::backend`'s Direct2D
 // `FillRectangle` call. `pub(crate)`, not `pub`: only `MacBackend::
 // apply_selection_highlight` calls into it, mirroring `menu_bar_install`'s
 // visibility above.
 pub(crate) mod text_selection;
-#[doc(hidden)]
-pub mod toast;
-#[doc(hidden)]
-pub mod tooltip;
 // Tray / status-bar icon control — `NSStatusBar`/`NSStatusItem`
 // glue for `Backend::tray`. `pub(crate)`, not `pub`: only
 // `impl TrayService for MacBackend` (`backend.rs`) calls into it,
@@ -106,30 +80,10 @@ pub(crate) mod tray;
 // (see `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
 pub use backend::MacBackend;
 #[doc(hidden)]
-pub use command_line::draw_command_line;
-#[doc(hidden)]
-pub use completions::draw_completions;
-#[doc(hidden)]
-pub use dialog::draw_dialog;
-#[doc(hidden)]
-pub use list::{draw_list, mac_list_layout};
-#[doc(hidden)]
-pub use progress::mac_progress_layout;
-#[doc(hidden)]
-pub use rich_text_popup::draw_rich_text_popup;
-#[doc(hidden)]
 pub use run::run_with;
 pub use run::{run, MacRunner, RunConfig, StepOutcome};
 #[doc(hidden)]
 pub use services::MacPlatformServices;
-#[doc(hidden)]
-pub use spinner::mac_spinner_layout;
-#[doc(hidden)]
-pub use text_display::mac_text_display_layout;
-#[doc(hidden)]
-pub use toast::mac_toast_stack_layout;
-#[doc(hidden)]
-pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
 
 /// Serialises every `#[test]` fn in this module tree that drives the
 /// **one real systemwide `NSPasteboard`**.

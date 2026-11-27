@@ -533,16 +533,16 @@ window \"quadraui\" [focused]
 #[test]
 fn purely_visual_parts_are_presentational_not_omitted() {
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::Progress {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 1.0),
-            bar: ProgressBar {
+            widget: Box::new(ProgressBar {
                 id: WidgetId::new("progress"),
                 label: "Indexing".to_string(),
                 value: Some(0.5),
                 frame_idx: 0,
                 cancellable: true,
                 accent: None,
-            },
+            }),
         })
         .with_surface(Surface::Widget {
             rect: rect(1.0, 10.0),
@@ -554,16 +554,16 @@ fn purely_visual_parts_are_presentational_not_omitted() {
                 second_min: 4.0,
             }),
         })
-        .with_surface(Surface::Scrollbar {
+        .with_surface(Surface::Widget {
             rect: Rect::new(79.0, 1.0, 1.0, 10.0),
-            sb: Scrollbar::vertical(
+            widget: Box::new(Scrollbar::vertical(
                 WidgetId::new("scroll"),
                 Rect::new(79.0, 1.0, 1.0, 10.0),
                 0.0,
                 20.0,
                 10.0,
                 1.0,
-            ),
+            )),
         })
         .snapshot();
 
@@ -611,14 +611,14 @@ fn overlays_and_containers_report_their_own_structure() {
         font_role: Default::default(),
     };
     let snapshot = A11yScenario::new()
-        .with_surface(Surface::Spinner {
+        .with_surface(Surface::Widget {
             rect: rect(0.0, 1.0),
-            spinner: Spinner {
+            widget: Box::new(Spinner {
                 id: WidgetId::new("spinner"),
                 label: "Connecting".to_string(),
                 frame_idx: 3,
                 accent: None,
-            },
+            }),
         })
         .with_surface(Surface::Widget {
             rect: rect(9.0, 10.0),

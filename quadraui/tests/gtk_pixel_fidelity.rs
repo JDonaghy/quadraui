@@ -104,7 +104,7 @@ fn bordered_list() -> ListView {
 }
 
 #[test]
-fn bordered_list_view_paints_its_frame_like_legacy_draw_list() {
+fn bordered_list_view_paints_its_frame_and_insets_its_rows() {
     let list = bordered_list();
     let laid_out: Rc<RefCell<Option<ListViewPrimitiveLayout>>> = Rc::default();
     let record = laid_out.clone();
@@ -115,14 +115,6 @@ fn bordered_list_view_paints_its_frame_like_legacy_draw_list() {
             .downcast_ref::<ListViewPrimitiveLayout>()
             .cloned();
     });
-    let list = bordered_list();
-    #[allow(deprecated)]
-    let mut legacy = drive(Style::default(), move |b| b.draw_list(LIST_RECT, &list));
-
-    assert!(
-        contract.screen() == legacy.screen(),
-        "draw_dyn(bordered ListView) must paint exactly what draw_list paints"
-    );
 
     // The frame is a border_fg stroke along the list's edge.
     let border = contract.backend().theme().border_fg;
@@ -165,15 +157,13 @@ fn scrollbar() -> Scrollbar {
 }
 
 #[test]
-fn contract_scrollbar_follows_the_backend_idle_fade_like_legacy_draw_scrollbar() {
+fn contract_scrollbar_follows_the_backend_idle_fade() {
     let t0 = Instant::now();
     let idle = t0 + std::time::Duration::from_secs(10);
     let mut blank = drive(Style::default(), |_| {});
     let mut contract = drive(Style::default(), |b| {
         let _ = b.draw_dyn(TRACK, &scrollbar(), &());
     });
-    #[allow(deprecated)]
-    let mut legacy = drive(Style::default(), |b| b.draw_scrollbar(TRACK, &scrollbar()));
 
     // Never scrolled: fully faded, nothing painted at all.
     let never = screen_with_fade(&mut contract, None, t0);
@@ -181,15 +171,13 @@ fn contract_scrollbar_follows_the_backend_idle_fade_like_legacy_draw_scrollbar()
         never == screen_with_fade(&mut blank, None, t0),
         "a never-scrolled contract Scrollbar paints at opacity 0"
     );
-    assert!(never == screen_with_fade(&mut legacy, None, t0));
 
-    // Just scrolled: full opacity, the same bar legacy paints.
+    // Just scrolled: full opacity.
     let fresh = screen_with_fade(&mut contract, Some(t0), t0);
     assert!(
         fresh != screen_with_fade(&mut blank, Some(t0), t0),
         "a just-scrolled contract Scrollbar is visible"
     );
-    assert!(fresh == screen_with_fade(&mut legacy, Some(t0), t0));
 
     // Long idle: faded out again.
     assert!(

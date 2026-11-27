@@ -421,19 +421,17 @@ fn draw_completions_paints_in_chrome_font() {
 }
 
 /// `Spinner`'s label (e.g. "Indexing…") is chrome — a status indicator,
-/// not editor content. Its GTK call site (`GtkBackend::draw_spinner`)
-/// paints through its own `(cr, pango_layout)` pair rather than
-/// `PaintSurface`.
+/// not editor content.
 #[test]
-fn draw_spinner_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_spinner", |b, area| {
+fn spinner_paints_in_chrome_font() {
+    assert_paints_in_chrome_font("draw_dyn(Spinner)", |b, area| {
         let spinner = Spinner {
             id: id("spinner"),
             label: LABEL.to_string(),
             frame_idx: 0,
             accent: None,
         };
-        let _ = b.draw_spinner(area, &spinner);
+        let _ = quadraui::DrawsPrimitives::draw_dyn(b, area, &spinner, &());
     });
 }
 

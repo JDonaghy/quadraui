@@ -1469,7 +1469,10 @@ mod tests {
         // Point in the overlay → highest-z wins.
         assert_eq!(map.hit_test(25.0, 25.0), FrameZone::TabBar { idx: 1 });
         // Point outside the overlay but inside the tree.
-        assert_eq!(map.hit_test(75.0, 75.0), FrameZone::Widget { idx: 0, id: None });
+        assert_eq!(
+            map.hit_test(75.0, 75.0),
+            FrameZone::Widget { idx: 0, id: None }
+        );
         // Point outside everything.
         assert_eq!(map.hit_test(150.0, 150.0), FrameZone::Empty);
     }
@@ -1484,7 +1487,10 @@ mod tests {
     #[test]
     fn multiple_overlapping_zones_last_wins() {
         let mut map = FrameHitMap::new();
-        map.push(Rect::new(0.0, 0.0, 80.0, 24.0), FrameZone::Widget { idx: 0, id: None });
+        map.push(
+            Rect::new(0.0, 0.0, 80.0, 24.0),
+            FrameZone::Widget { idx: 0, id: None },
+        );
         map.push(Rect::new(0.0, 0.0, 80.0, 1.0), FrameZone::TabBar { idx: 1 });
         map.push(
             Rect::new(0.0, 23.0, 80.0, 1.0),
@@ -1492,7 +1498,10 @@ mod tests {
         );
 
         assert_eq!(map.hit_test(40.0, 0.5), FrameZone::TabBar { idx: 1 });
-        assert_eq!(map.hit_test(40.0, 12.0), FrameZone::Widget { idx: 0, id: None });
+        assert_eq!(
+            map.hit_test(40.0, 12.0),
+            FrameZone::Widget { idx: 0, id: None }
+        );
         assert_eq!(map.hit_test(40.0, 23.5), FrameZone::TabBar { idx: 2 });
     }
 

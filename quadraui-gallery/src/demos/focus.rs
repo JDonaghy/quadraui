@@ -186,23 +186,19 @@ impl Demo for FocusDemo {
         let left = self.list(LEFT_ID, &["alpha", "bravo", "charlie"], left_focused);
         let right = self.list(RIGHT_ID, &["one", "two", "three"], right_focused);
 
-        // `draw_list_with_state`, not plain `draw_list`: its third
-        // parameter is the focus-visible ring (`left_focused`/
+        // The paint state carries the focus-visible ring (`left_focused`/
         // `right_focused` already compose
-        // `ring.is_focused(id) && ring.is_focus_visible()` above) — see
-        // `Backend::draw_list_with_state`'s doc for why that's a
+        // `ring.is_focused(id) && ring.is_focus_visible()` above), a
         // separate signal from `ListView::has_focus` itself.
-        backend.draw_list_with_state(
+        let _ = backend.draw_dyn(
             Rect::new(area.x, area.y, half_w, body_h),
             &left,
-            &quadraui::ListPaintState::default(),
-            left_focused,
+            &focus_ring(left_focused),
         );
-        backend.draw_list_with_state(
+        let _ = backend.draw_dyn(
             Rect::new(area.x + half_w, area.y, area.width - half_w, body_h),
             &right,
-            &quadraui::ListPaintState::default(),
-            right_focused,
+            &focus_ring(right_focused),
         );
         let _ = backend.draw_dyn(
             Rect::new(area.x, area.y + body_h, area.width, status_h),
@@ -309,5 +305,13 @@ mod tests {
             .focus
             .borrow()
             .is_focused(&WidgetId::new(STATUS_ID), None));
+    }
+}
+
+/// A list paint state that strokes the focus-visible ring when `visible`.
+fn focus_ring(visible: bool) -> quadraui::primitive::PaintStateSnapshot {
+    quadraui::primitive::PaintStateSnapshot {
+        focus_ring_visible: visible,
+        ..Default::default()
     }
 }

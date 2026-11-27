@@ -106,35 +106,10 @@ fn backend_trait_method_count_may_only_shrink() {
 }
 
 /// `(Primitive-implementing type name, legacy Backend method name)` pairs
-/// that predate this ratchet and are allowed to keep their bespoke
-/// `draw_*`/`*_layout` path alongside their `Primitive` impl.
-///
-/// `ListView` is quadraui's pilot `Primitive` implementor (quadraui#2647):
-/// it kept its pre-existing `draw_list` / `draw_list_with_state` /
-/// `list_layout` trio on `Backend` because every existing caller already
-/// goes through those, and ripping them out is a separate, larger
-/// migration — not something this ratchet forces. A *new* `Primitive`
-/// implementor gets no such exemption: it should reach every backend
-/// through `draw_primitive` alone.
-///
-const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
-    ("ListView", "draw_list"),
-    ("ListView", "draw_list_with_state"),
-    ("ListView", "list_layout"),
-    // Group-A ports: each now paints
-    // through `Primitive`/`Interactive`, and keeps its bespoke pair
-    // until the group's cleanup deletes the methods, the per-backend
-    // wrapper files and the `Surface` variants together. `draw_scrollbar`
-    // additionally stays because it is the shared chrome paint the
-    // not-yet-ported rasterisers (`tui::editor`, `tui::list`, …) reach
-    // for, none of which has a `PaintTarget` to route through
-    // `draw_primitive` with yet.
-    ("ProgressBar", "draw_progress"),
-    ("ProgressBar", "progress_layout"),
-    ("Spinner", "draw_spinner"),
-    ("Spinner", "spinner_layout"),
-    ("Scrollbar", "draw_scrollbar"),
-];
+/// allowed to keep a bespoke `draw_*`/`*_layout` path alongside their
+/// `Primitive` impl. Empty: every `Primitive` implementor reaches every
+/// backend through `draw_primitive`/`draw_dyn` alone.
+const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to
 /// its identifier, or `None` for anything more exotic (a reference, a
@@ -174,8 +149,8 @@ fn primitive_impl_type_names(file: &syn::File) -> Vec<String> {
 
 /// Lowercase ASCII `snake_case` of a `PascalCase`/`camelCase` identifier —
 /// `ListView` -> `list_view`. `Backend`'s bespoke methods are not always
-/// named after this *full* form (`draw_list`/`list_layout` for `ListView`,
-/// `draw_tree`/`tree_layout` for `TreeView`); [`candidate_stems`] below
+/// named after this *full* form (`draw_foo`/`foo_layout` for a `FooView`);
+/// [`candidate_stems`] below
 /// derives the shorter leading-word forms those methods actually use.
 fn to_snake_case(ident: &str) -> String {
     let mut out = String::new();
@@ -207,7 +182,7 @@ fn candidate_stems(snake: &str) -> Vec<String> {
 
 /// Whether `method` is a `Backend` method shaped like a bespoke
 /// `draw_<stem>`, `<stem>_layout`, or `draw_<stem>_with_*` state variant
-/// (e.g. `draw_list_with_state`) for any leading-word stem of `type_name`.
+/// (e.g. `draw_foo_with_state`) for any leading-word stem of `type_name`.
 fn bespoke_method_for_type(method: &str, type_name: &str) -> bool {
     let snake = to_snake_case(type_name);
     candidate_stems(&snake).iter().any(|stem| {
@@ -419,9 +394,8 @@ mod tests {
     #[test]
     fn bespoke_method_for_type_matches_a_leading_word_stem() {
         // `FooView`'s bespoke `draw_foo`/`foo_layout` should be caught even
-        // though the type's full snake_case form is `foo_view` — this
-        // mirrors ListView's real `draw_list`/`list_layout` pair, which is
-        // named after the `list` stem, not the full `list_view` name.
+        // though the type's full snake_case form is `foo_view`: the
+        // method is named after the `foo` stem, not the full name.
         assert!(bespoke_method_for_type("draw_foo", "FooView"));
         assert!(bespoke_method_for_type("foo_layout", "FooView"));
         assert!(bespoke_method_for_type("draw_foo_with_state", "FooView"));
@@ -462,15 +436,14 @@ mod tests {
     }
 
     #[test]
-    fn find_bespoke_violations_would_catch_the_real_list_view_pair_if_ungrandfathered() {
-        // Mirrors ListView's actual `Backend` methods: without the
-        // grandfather entries, this is exactly the shape the ratchet must
-        // flag for any *new* `Primitive` implementor.
-        let types = vec!["ListView".to_string()];
+    fn find_bespoke_violations_catches_an_ungrandfathered_draw_layout_trio() {
+        // The shape the ratchet must flag for any `Primitive` implementor
+        // that also keeps a bespoke paint/layout trio on `Backend`.
+        let types = vec!["FooView".to_string()];
         let methods = vec![
-            "draw_list".to_string(),
-            "list_layout".to_string(),
-            "draw_list_with_state".to_string(),
+            "draw_foo".to_string(),
+            "foo_layout".to_string(),
+            "draw_foo_with_state".to_string(),
         ];
         let known = std::collections::HashSet::new();
 

@@ -919,7 +919,6 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
 //   monospace), and Windows used only the editor font. `paint` takes a
 //   single `surface` already constructed against the chrome font by its
 //   caller, so the whole dialog now renders in chrome everywhere.
-//   `DialogInput::Toolbar` is the exception: `paint` does not render it.
 // - **Per-button border stroke.** Windows alone stroked `theme.border_fg`
 //   around every button; GTK/macOS filled the default button's
 //   selected-bg but never stroked a border. `paint` strokes every button.
@@ -936,12 +935,10 @@ pub fn native_dialog_options(d: &Dialog) -> Option<MessageDialogOptions> {
 //   approximate char width; Windows divided by plain `line_height`,
 //   causing the separator row to undershoot actual content width.
 //
-// `DialogInput::Toolbar` is not painted by `paint` — the wrapper paints
-// it after `paint` returns, through
-// `primitives::toolbar::native_surface_paint::paint_embedded` (GTK/macOS)
-// or inline Direct2D code (Windows). This skips nothing a caller
-// observes: every backend's `dialog_layout.input_bounds` position is
-// unaffected.
+// `DialogInput::Toolbar` paints through the shared
+// `primitives::toolbar::native_surface_paint::paint_embedded`, laid out
+// in `dialog_layout.input_bounds` with the chrome font the rest of the
+// box uses.
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -1064,15 +1061,14 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a [`Dialog`] at its resolved `dialog_layout` onto `surface`
     /// — background, border, title, body, optional table, optional
-    /// [`DialogInput::TextInput`] slot, and buttons (selected-bg fill +
-    /// border stroke + tint-aware label). Returns the per-button hit
-    /// rectangles in `dialog_layout.visible_buttons` order, matching
-    /// [`crate::Backend::draw_dialog`]'s contract.
+    /// [`DialogInput::TextInput`] or [`DialogInput::Toolbar`] slot, and
+    /// buttons (selected-bg fill + border stroke + tint-aware label).
+    /// Returns the per-button hit rectangles in
+    /// `dialog_layout.visible_buttons` order.
     ///
     /// `surface` must already be constructed against the **chrome**
     /// font — see this module's doc for why the whole dialog paints in
-    /// one font now. `DialogInput::Toolbar` is deliberately not painted
-    /// here; see the module doc. `style` supplies the
+    /// one font. `style` supplies the
     /// corner radius/border width/shadow elevation the box paints with
     /// — callers pass `&self.style()`.
     pub(crate) fn paint(
@@ -1153,8 +1149,13 @@ pub(crate) mod native_surface_paint {
             );
             surface.surface_draw_text_run(text_rect, &display, theme.surface_fg);
         }
-        // DialogInput::Toolbar is intentionally not painted here — see
-        // this module's doc.
+        if let (Some(input_b), Some(DialogInput::Toolbar(toolbar))) =
+            (dialog_layout.input_bounds, dialog.input.as_ref())
+        {
+            crate::primitives::toolbar::native_surface_paint::paint_embedded(
+                toolbar, input_b, surface, theme,
+            );
+        }
 
         let mut rects = Vec::with_capacity(dialog_layout.visible_buttons.len());
         for vis in &dialog_layout.visible_buttons {
@@ -1331,6 +1332,64 @@ pub(crate) mod native_surface_paint {
                 3,
                 "expected 2 column separators + 1 header rule; lines were {:?}",
                 surface.lines,
+            );
+        }
+
+        /// A `DialogInput::Toolbar` body slot paints its buttons inside
+        /// the input bounds, through the same `Primitive::paint` that
+        /// `draw_dyn` reaches.
+        #[test]
+        fn toolbar_body_slot_paints_through_the_contract() {
+            use crate::primitive::{LayoutCtx, Primitive};
+            use crate::primitives::toolbar::{Toolbar, ToolbarButton};
+
+            let dialog = Dialog {
+                id: WidgetId::new("dialog:pick"),
+                title: StyledText::plain("Pick"),
+                body: vec![],
+                buttons: vec![],
+                severity: None,
+                vertical_buttons: false,
+                table: None,
+                input: Some(DialogInput::Toolbar(Toolbar {
+                    id: WidgetId::new("dialog:pick:tb"),
+                    buttons: vec![ToolbarButton::Action {
+                        spec: None,
+                        id: WidgetId::new("dialog:pick:refresh"),
+                        label: "Refresh".into(),
+                        icon: None,
+                        key_hint: None,
+                        enabled: true,
+                        is_active: false,
+                        tooltip: String::new(),
+                    }],
+                    bg: None,
+                    focused_index: None,
+                    ..Default::default()
+                })),
+            };
+            let ctx = LayoutCtx::new(14.0, 7.0, false);
+            let layout = Primitive::layout(&dialog, &ctx, Rect::new(0.0, 0.0, 300.0, 200.0));
+            let input_b = layout.layout.input_bounds.expect("toolbar slot laid out");
+            let theme = Theme::default();
+            let style = Style::default();
+            let mut surface = RecordingSurface::default();
+            Primitive::paint(
+                &dialog,
+                &layout,
+                &mut surface,
+                &crate::PaintEnv::new(&theme, &style),
+            );
+
+            let label = surface
+                .text_runs
+                .iter()
+                .find(|(_, text, _)| text.contains("Refresh"))
+                .expect("the toolbar button label paints");
+            assert!(
+                label.0.y >= input_b.y && label.0.y < input_b.y + input_b.height,
+                "the toolbar label paints inside the input slot {input_b:?}, got {:?}",
+                label.0
             );
         }
 
@@ -2193,9 +2252,7 @@ impl crate::primitive::Primitive for Dialog {
     }
 
     /// The shared pixel painter, with the surface's own line height as
-    /// the row pitch — the same metric every pixel backend's
-    /// `draw_dialog` passes it. A [`DialogInput::Toolbar`] body slot is
-    /// not painted here; see `native_surface_paint`'s own module doc.
+    /// the row pitch.
     fn paint(
         &self,
         layout: &DialogPrimitiveLayout,
@@ -4407,5 +4464,183 @@ mod cell_test_paint {
     pub fn draw_dialog(buf: &mut Buffer, dialog: &Dialog, layout: &DialogLayout, theme: &Theme) {
         let mut sink = None;
         cell_paint::paint(dialog, layout, &mut surface(buf, &mut sink), theme, false);
+    }
+}
+
+#[cfg(all(test, feature = "macos", target_os = "macos"))]
+mod macos_tests {
+    use crate::backend::DrawsPrimitives;
+    use crate::event::Rect as QRect;
+    use crate::event::Viewport;
+    use crate::macos::headless::BitmapSurface;
+    use crate::macos::text::make_font;
+    use crate::macos::MacBackend;
+    use crate::primitives::dialog::DialogButton;
+    use crate::primitives::dialog::{Dialog, DialogLayout};
+    use crate::theme::Theme;
+    use crate::types::{Color, StyledText, WidgetId};
+    use crate::Backend;
+    use core_text::font::CTFont;
+
+    const W: u32 = 320;
+    const H: u32 = 200;
+
+    fn font() -> CTFont {
+        make_font("Menlo", 14.0).expect("Menlo installed")
+    }
+
+    fn sample_dialog() -> Dialog {
+        Dialog {
+            id: WidgetId::new("dlg"),
+            title: StyledText::plain("Confirm"),
+            body: vec![StyledText::plain("Delete this file?")],
+            buttons: vec![
+                DialogButton {
+                    spec: None,
+                    id: WidgetId::new("cancel"),
+                    label: "Cancel".into(),
+                    is_default: false,
+                    is_cancel: true,
+                    tint: None,
+                },
+                DialogButton {
+                    spec: None,
+                    id: WidgetId::new("ok"),
+                    label: "Delete".into(),
+                    is_default: true,
+                    is_cancel: false,
+                    tint: None,
+                },
+            ],
+            severity: None,
+            vertical_buttons: false,
+            table: None,
+            input: None,
+        }
+    }
+
+    /// Paint `dialog` centred in the full viewport through the
+    /// widget-contract path and hand back both the pixels and the layout
+    /// the backend resolved, so every probe below reads the geometry that
+    /// was actually painted.
+    fn paint_via_backend(dialog: &Dialog) -> (BitmapSurface, DialogLayout) {
+        let viewport = QRect::new(0.0, 0.0, W as f32, H as f32);
+        let surface = BitmapSurface::new(W, H);
+        surface.fill(0.0, 0.0, 0.0, 0.0);
+        let mut backend = MacBackend::new();
+        backend.set_current_font(font());
+        backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
+        let layout = backend.enter_frame_scope(surface.context_ptr(), |b| {
+            b.draw_primitive(viewport, dialog).layout
+        });
+        backend.end_frame();
+        (surface, layout)
+    }
+
+    #[test]
+    fn dialog_paints_surface_bg() {
+        let dialog = sample_dialog();
+        let (surface, layout) = paint_via_backend(&dialog);
+        let theme = Theme::default();
+        let b = layout.bounds;
+        // Probe near the right edge, away from the body text.
+        let (r, g, bp, _) =
+            surface.pixel((b.x + b.width - 8.0) as u32, (b.y + b.height - 4.0) as u32);
+        assert_eq!(
+            (r, g, bp),
+            (theme.surface_bg.r, theme.surface_bg.g, theme.surface_bg.b),
+        );
+    }
+
+    #[test]
+    fn default_button_paints_selected_bg() {
+        let dialog = sample_dialog();
+        let (surface, layout) = paint_via_backend(&dialog);
+        let theme = Theme::default();
+        // "Delete" is the default button — second in visible_buttons.
+        let btn = layout
+            .visible_buttons
+            .iter()
+            .find(|v| v.button_idx == 1)
+            .expect("default button visible");
+        // Probe near top edge of the button (away from label glyphs).
+        let px = (btn.bounds.x + btn.bounds.width / 2.0) as u32;
+        let py = (btn.bounds.y + 1.0) as u32;
+        let (r, g, b, _) = surface.pixel(px, py);
+        assert_eq!(
+            (r, g, b),
+            (
+                theme.selected_bg.r,
+                theme.selected_bg.g,
+                theme.selected_bg.b
+            ),
+        );
+    }
+
+    #[test]
+    fn button_rects_resolved_for_each_visible_button() {
+        let dialog = sample_dialog();
+        let (_surface, layout) = paint_via_backend(&dialog);
+        assert_eq!(layout.visible_buttons.len(), 2);
+    }
+
+    /// Every button now gets a stroked border, not just the
+    /// default button's selected-bg fill — pre-migration macOS drew no
+    /// button border at all (this test would have failed against the
+    /// old per-backend rasteriser: the edge pixel equalled the plain
+    /// surface bg).
+    #[test]
+    fn every_button_paints_a_border_stroke() {
+        let dialog = sample_dialog();
+        let (surface, layout) = paint_via_backend(&dialog);
+        // Cancel (button_idx 0) is NOT the default button, so its
+        // interior is plain surface_bg — its top edge should still
+        // differ (border ink) from a point 3px further in.
+        let btn = layout
+            .visible_buttons
+            .iter()
+            .find(|v| v.button_idx == 0)
+            .expect("cancel button visible");
+        let edge = surface.pixel(
+            (btn.bounds.x + btn.bounds.width / 2.0) as u32,
+            btn.bounds.y as u32,
+        );
+        let inner = surface.pixel(
+            (btn.bounds.x + btn.bounds.width / 2.0) as u32,
+            (btn.bounds.y + 3.0) as u32,
+        );
+        assert_ne!(
+            edge, inner,
+            "button top edge should show border ink, distinct from the button's own \
+             interior (edge={edge:?}, inner={inner:?})"
+        );
+    }
+
+    /// `DialogButton::tint` is now honoured on every backend —
+    /// pre-migration macOS always painted every label in
+    /// `theme.surface_fg`, silently dropping a caller's tint (the field's
+    /// own doc says it's for destructive-action colouring, e.g. "Delete").
+    #[test]
+    fn tinted_button_label_paints_in_the_tint_colour() {
+        let mut dialog = sample_dialog();
+        let tint = Color::rgb(220, 40, 40);
+        dialog.buttons[1].tint = Some(tint); // "Delete" — the default button
+        let (surface, layout) = paint_via_backend(&dialog);
+        let btn = layout
+            .visible_buttons
+            .iter()
+            .find(|v| v.button_idx == 1)
+            .expect("default button visible");
+        // Scan the button row for the tint colour — the label is
+        // centred, so a fixed-x probe risks landing between glyphs.
+        let y = (btn.bounds.y + btn.bounds.height / 2.0) as u32;
+        let found = (btn.bounds.x as u32..(btn.bounds.x + btn.bounds.width) as u32)
+            .map(|x| surface.pixel(x, y))
+            .any(|(r, g, b, _)| (r, g, b) == (tint.r, tint.g, tint.b));
+        assert!(
+            found,
+            "tinted button label should paint at least one pixel in the tint colour \
+             somewhere in its row"
+        );
     }
 }

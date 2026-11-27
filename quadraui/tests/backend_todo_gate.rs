@@ -106,11 +106,6 @@ const BACKENDS: &[(&str, Option<&str>)] = &[
 const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     (
         "src/win/backend.rs",
-        "fn draw_list",
-        "\"Direct2D list rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_text_display",
         "\"Direct2D text display rasteriser (no surface attached yet)\"",
     ),
@@ -146,11 +141,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_scrollbar",
-        "\"Direct2D scrollbar rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_toast_overlay",
         "\"Direct2D toast stack rasteriser (no surface attached yet)\"",
     ),
@@ -158,21 +148,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
         "src/win/backend.rs",
         "fn toast_stack_layout",
         "\"DirectWrite toast stack layout (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_progress",
-        "\"Direct2D progress bar rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_spinner",
-        "\"Direct2D spinner rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn spinner_layout",
-        "\"DirectWrite spinner layout (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",
@@ -755,7 +730,7 @@ mod self_test {
 
     #[test]
     fn cfg_on_enclosing_block_gates_everything_inside_it() {
-        // The `list_layout`/… shape: the WHOLE `{ }` arm
+        // The layout-query shape: the WHOLE `{ }` arm
         // carries the cfg, so a todo!() with no attrs of its own, nested
         // inside it, is still excluded from a native build.
         let src = r#"
