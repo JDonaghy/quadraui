@@ -1328,7 +1328,7 @@ impl Form {
             // `layout_metrics::form_field_measure` does (every pixel
             // backend). A caller that measures in a different unit
             // system instead (`compose::form_controller`'s and
-            // `compose::sidebar_system`'s own backend-free TUI-cell
+            // `compose::sidebar`'s own backend-free TUI-cell
             // fallback `form_field_measure`s, both hand-rolled, neither
             // setting this field) leaves it at `FormFieldMeasure::
             // with_items`'s `0.0` default, so this never fires for

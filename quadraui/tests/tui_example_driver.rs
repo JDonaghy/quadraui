@@ -3528,8 +3528,8 @@ fn shell_app_activity_bar_active_hovered_and_keyboard_selected_rows_paint_distin
 /// raw `KeyPressed` event isn't intercepted by the Tab-focuses-activity-bar
 /// special case (which matches only `NamedKey::Tab`) or by
 /// `ShellView::handle_event` (no `BackTab` arm at all), so it falls through to
-/// `SidebarSystem::handle`'s own `NamedKey::BackTab` arm, which calls
-/// `cycle_active(-1)`. `SidebarSystem::build_view` prefixes the active
+/// `Sidebar`'s own `NamedKey::BackTab` handling, which makes the previous
+/// visible section active. `Sidebar::view` prefixes the active
 /// section's title with `"▶ "` — the focus indicator this test follows
 /// as it moves from one sidebar region to another.
 #[test]
@@ -7893,18 +7893,18 @@ fn multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section() {
     );
 }
 
-// ─── SidebarRevealDemo: SidebarSystem::reveal ──────────────────────────────
+// ─── SidebarRevealDemo: Sidebar::reveal ────────────────────────────────────
 //
 // `DebugSidebar` above uses `ScrollMode::WholePanel`, where the rendered
 // viewport is driven by a single panel-level scroll offset, not each
 // section's own scroll offset — under that mode, even
 // *interactive* arrow-key nav never moves the screen, so it can't prove
 // anything about `reveal`. `SidebarRevealDemo` (`examples/common/
-// sidebar_reveal_demo.rs`) stays on `SidebarSystem`'s default
+// sidebar_reveal_demo.rs`) stays on `Sidebar`'s default
 // `PerSection` scroll mode instead, so `reveal`'s call to
 // `TreeNavCore::scroll_to_visible` has a real, on-screen effect these
 // tests can read back off the rendered grid — not by inspecting
-// `scroll_offset` (see the `compose::sidebar_system::tests` module note
+// `scroll_offset` (see the `compose::sidebar::tests` module note
 // by the same name for the unit-level state-transition coverage).
 
 /// `reveal` scrolls a programmatically-selected, currently off-screen row

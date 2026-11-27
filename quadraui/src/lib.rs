@@ -964,6 +964,7 @@ pub use compose::markdown::{
     all(feature = "macos", target_os = "macos")
 ))]
 pub use compose::SidebarLayout;
+pub use compose::SidebarState;
 pub use compose::{
     filter_help_actions, help_actions_to_palette_items, notify_or_toast, BackendWidget, BottomBand,
     BottomPanel, BottomPanelConfig, BottomPanelEvent, BottomPanelItem, BottomPanelPrimitiveLayout,
@@ -988,7 +989,6 @@ pub use compose::{
     FilePicker, FilePickerState, FolderPicker, FolderPickerState, FormDialog, FormDialogState,
     HelpOverlay, HelpOverlayState, MessageDialog, MessageDialogState, PathPickerState,
 };
-pub use compose::{SidebarEvent, SidebarState, SidebarSystem};
 #[cfg(any(
     feature = "gtk",
     feature = "tui",

@@ -1868,7 +1868,7 @@ name = "gtk_tab_chrome"
 path = "examples/gtk_tab_chrome.rs"
 required-features = ["gtk"]
 
-# #595 — `SidebarSystem::reveal`. Both entries are mandatory, not
+# #595 — `Sidebar::reveal`. Both entries are mandatory, not
 # cosmetic: without an explicit `[[example]]`, cargo's autodiscovery
 # picks the file up with NO `required-features`, so
 # `gtk_sidebar_reveal.rs` gets compiled by `cargo test --features tui`

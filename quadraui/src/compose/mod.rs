@@ -8,7 +8,7 @@
 //! open/close/navigate/hover logic.
 //!
 //! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
-//! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
+//! - [`Sidebar`] — a stack of collapsible tree and form sections.
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
 //! - [`TreeTableController`] — hierarchical model (lazy children,
 //!   sibling-scoped sort) flattened into a `TreeTable`, over
@@ -79,16 +79,8 @@ pub mod message_dialog;
 pub mod notification;
 mod path_picker;
 mod shell_layout;
-mod sidebar_edit;
+pub mod sidebar;
 pub mod sidebar_panel_body;
-#[cfg(any(
-    feature = "gtk",
-    feature = "tui",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-mod sidebar_scroll;
-pub mod sidebar_system;
 pub mod status_bar_interaction;
 mod tab_drag;
 pub mod tab_group;
@@ -179,19 +171,18 @@ pub use message_dialog::{MessageDialog, MessageDialogController, MessageDialogSt
 pub use message_dialog::MessageDialogEvent;
 pub use notification::notify_or_toast;
 pub use path_picker::{PathPickerAction, PathPickerState};
-pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-pub use sidebar_system::SidebarLayout;
-pub use sidebar_system::{
+pub use sidebar::SidebarLayout;
+pub use sidebar::{
     NavigationMode, SectionKind, Sidebar, SidebarAction, SidebarBody, SidebarSection,
-    SidebarSectionDef,
+    SidebarSectionDef, SidebarState,
 };
-pub use sidebar_system::{SidebarEvent, SidebarState, SidebarSystem};
+pub use sidebar_panel_body::{SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome};
 // `StatusBarAction` is `#[deprecated]` (use `StatusBarInteraction::handle_event`'s
 // `Handled<WidgetId>` instead). Allow it here since `pub use` of a deprecated
 // item is itself a use site.

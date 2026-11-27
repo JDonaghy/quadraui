@@ -288,7 +288,7 @@ pub fn ns_key_to_uievent(
         // with the shift modifier set; AppKit doesn't have a separate
         // back-tab keycode the way GTK's `ISO_Left_Tab` and crossterm's
         // `BackTab` do. Translate to `NamedKey::BackTab` here so
-        // backend-neutral consumers (`SidebarSystem`, `FocusTree`,
+        // backend-neutral consumers (`Sidebar`, `FocusTree`,
         // etc.) match the same variant on every backend.
         let named = if matches!(named, NamedKey::Tab) && modifiers.shift {
             NamedKey::BackTab
@@ -866,7 +866,7 @@ mod tests {
     fn shift_tab_translates_to_backtab() {
         // AppKit reports Shift+Tab as Tab keycode (0x30) + shift flag,
         // not a separate back-tab keycode. The translator promotes it
-        // to NamedKey::BackTab so SidebarSystem / FocusTree see the
+        // to NamedKey::BackTab so Sidebar / FocusTree see the
         // same variant as the GTK + TUI translators emit.
         let ev = ns_key_to_uievent(Some("\u{0019}"), 0x30, NS_FLAG_SHIFT, false);
         match ev {

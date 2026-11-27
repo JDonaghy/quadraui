@@ -1,4 +1,4 @@
-//! Minimal `SidebarSystem` demo for `SidebarSystem::reveal` — a
+//! Minimal `Sidebar` demo for `Sidebar::reveal` — a
 //! *programmatic* selection (no click, no arrow key) that must select
 //! the target row, expand its section if collapsed, and scroll it into
 //! view.
@@ -6,7 +6,7 @@
 //! One Tree section with more rows than fit on screen at once, so `g`
 //! (reveal the section's last row) has to actually move the viewport to
 //! prove anything happened. This demo relies on `PerSection` scroll mode
-//! — `SidebarSystem`'s default. `ScrollMode::WholePanel` (see
+//! — `Sidebar`'s default. `ScrollMode::WholePanel` (see
 //! `multi_tree.rs`'s `DebugSidebar`) drives the viewport from a single
 //! panel-level scroll offset instead of each section's own
 //! scroll offset, so `reveal`'s scroll-into-view — correct as it is —
@@ -25,31 +25,36 @@
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    AppLogic, Backend, Color, Decoration, Key, NamedKey, NavigationMode, Reaction, Rect,
-    SidebarEvent, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, StyledText,
-    TreeRow, UiEvent, WidgetId,
+    AppLogic, Backend, Color, Decoration, Handled, Key, NamedKey, NavigationMode, Reaction, Rect,
+    Sidebar, SidebarAction, SidebarSectionDef, SidebarState, StatusBar, StatusBarSegment,
+    StyledText, TreeRow, UiEvent, WidgetId,
 };
 
 const STATUS_BAR_LINES: f32 = 1.0;
 /// Row count for the single "ITEMS" section — kept alongside the
 /// `fake_rows` call in [`SidebarRevealDemo::new`] so the `g` handler
 /// knows the last row's path without needing a public "row count"
-/// getter on `SidebarSystem`.
+/// lookup on the sidebar.
 const ROW_COUNT: usize = 30;
 
 pub struct SidebarRevealDemo {
-    sidebar: SidebarSystem,
+    sidebar: Sidebar,
+    sidebar_state: SidebarState,
     last_action: String,
 }
 
 impl SidebarRevealDemo {
     pub fn new() -> Self {
-        let mut sidebar = SidebarSystem::new(vec![SidebarSectionDef::new("items", "ITEMS")]);
+        let mut sidebar = Sidebar::from_defs(
+            WidgetId::new("reveal-sidebar"),
+            &[SidebarSectionDef::new("items", "ITEMS")],
+        );
         sidebar.set_rows(0, fake_rows(ROW_COUNT));
-        sidebar.set_navigation_mode(NavigationMode::Selection);
-        sidebar.set_active_section(Some(0));
+        sidebar.navigation_mode = NavigationMode::Selection;
+        sidebar.active_section = Some(0);
         Self {
             sidebar,
+            sidebar_state: SidebarState::default(),
             last_action: "—".into(),
         }
     }
@@ -111,29 +116,33 @@ impl AppLogic for SidebarRevealDemo {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let sidebar = Self::sidebar_rect(backend);
         let status = Self::status_rect(backend);
-        self.sidebar.render(backend, sidebar);
+        let _ = backend.draw_dyn(sidebar, &self.sidebar, &());
         let _ = backend.draw_dyn(status, &self.build_status_bar(), &());
     }
 
     fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        // `reveal` is backend-free and needs this cached first — see
-        // `SidebarSystem::set_backend_info`.
-        self.sidebar.set_backend_info(backend.line_height());
-
         let rect = Self::sidebar_rect(backend);
-        match self.sidebar.handle(&event, backend, rect) {
-            SidebarEvent::RowSelected { section, path } => {
-                self.last_action = format!("sel→{section} {path:?}");
+        match self
+            .sidebar
+            .handle_event(&mut self.sidebar_state, &event, backend, rect)
+        {
+            Handled::Event(actions) => {
+                for action in actions {
+                    match &action {
+                        SidebarAction::RowSelected { section, path } => {
+                            self.last_action = format!("sel→{section} {path:?}");
+                        }
+                        SidebarAction::HeaderActivated { section } => {
+                            self.last_action = format!("header→{section}");
+                        }
+                        _ => {}
+                    }
+                    self.sidebar.apply(&action);
+                }
                 Reaction::Redraw
             }
-            SidebarEvent::HeaderActivated { section } => {
-                self.last_action = format!("header→{section}");
-                Reaction::Redraw
-            }
-            SidebarEvent::StateChanged
-            | SidebarEvent::Consumed
-            | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
-            SidebarEvent::Ignored => match event {
+            Handled::Consumed => Reaction::Redraw,
+            Handled::Ignored => match event {
                 // Toggle collapse of the section — lets `g` (below)
                 // exercise "reveal on a collapsed section expands it
                 // first, then scrolls".
@@ -141,8 +150,8 @@ impl AppLogic for SidebarRevealDemo {
                     key: Key::Char('z'),
                     ..
                 } => {
-                    let collapsed = !self.sidebar.is_collapsed(0);
-                    self.sidebar.set_collapsed(0, collapsed);
+                    let collapsed = !self.sidebar.sections[0].collapsed;
+                    self.sidebar.sections[0].collapsed = collapsed;
                     self.last_action =
                         format!("{}→0", if collapsed { "collapsed" } else { "expanded" });
                     Reaction::Redraw
@@ -157,7 +166,7 @@ impl AppLogic for SidebarRevealDemo {
                 } => {
                     let target = vec![(ROW_COUNT - 1) as u16];
                     let rect = Self::sidebar_rect(backend);
-                    self.sidebar.reveal(0, &target, rect);
+                    self.sidebar.reveal(0, &target, backend, rect);
                     self.last_action = format!("reveal→0 {target:?}");
                     Reaction::Redraw
                 }
@@ -172,7 +181,6 @@ impl AppLogic for SidebarRevealDemo {
                 UiEvent::WindowResized { .. } => Reaction::Redraw,
                 _ => Reaction::Continue,
             },
-            _ => Reaction::Redraw,
         }
     }
 }

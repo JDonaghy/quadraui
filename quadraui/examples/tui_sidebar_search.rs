@@ -1,4 +1,4 @@
-//! SidebarSystem search panel — Form (ToggleGroup) + Tree (Header rows).
+//! Sidebar search panel — Form (ToggleGroup) + Tree (Header rows).
 //!
 //! Click individual toggle items, click file headers to collapse,
 //! click match rows to select. Status bar shows received events.

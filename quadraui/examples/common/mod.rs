@@ -23,7 +23,7 @@
 //!   scrollable transcript, multi-line input, history, and spinner,
 //!   used by `tui_chat` / `gtk_chat`.
 //! - [`SidebarRevealDemo`] (in [`sidebar_reveal_demo`]) — single Tree
-//!   section exercising `SidebarSystem::reveal`, used by
+//!   section exercising `Sidebar::reveal`, used by
 //!   `tui_sidebar_reveal` / `gtk_sidebar_reveal`.
 //! - [`SidebarPanelBodyDemo`] (in [`sidebar_panel_body_demo`]) —
 //!   `quadraui::compose::sidebar_panel_body::SidebarPanelBody`

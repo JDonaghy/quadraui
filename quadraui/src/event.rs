@@ -1191,7 +1191,7 @@ pub enum UiEvent {
     Chat(WidgetId, crate::compose::chat_controller::ChatEvent),
     /// A [`crate::Sidebar`] section, row or form field was used, or one of
     /// its controlled fields changed — see [`crate::SidebarAction`].
-    Sidebar(WidgetId, crate::compose::sidebar_system::SidebarAction),
+    Sidebar(WidgetId, crate::compose::sidebar::SidebarAction),
     /// A [`crate::TabGroup`] tab, divider or pane was used — see
     /// [`crate::TabGroupEvent`].
     TabGroup(WidgetId, crate::compose::tab_group::TabGroupEvent),

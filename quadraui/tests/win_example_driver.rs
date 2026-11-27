@@ -679,7 +679,7 @@ fn toast_clicking_the_toast_body_logs_the_click() {
     );
 }
 
-// ─── SidebarSearchApp: SidebarSystem search panel ─────────────────────────
+// ─── SidebarSearchApp: Sidebar search panel ───────────────────────────────
 //
 // No TUI/GTK/macOS driver test exists yet for this shape (grepped —
 // `SidebarSearchApp` doesn't appear in any other `tests/*_example_driver.rs`),
@@ -866,7 +866,7 @@ fn search_panel_clicking_a_file_header_collapses_its_matches() {
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section`,
 // plus a click-routed header-activation test straight from
-// `DebugSidebar::handle`'s `SidebarEvent::HeaderActivated` arm.
+// `DebugSidebar::handle`'s `SidebarAction::HeaderActivated` arm.
 
 const MULTI_TREE_W: u32 = 800;
 const MULTI_TREE_H: u32 = 500;

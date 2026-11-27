@@ -726,7 +726,7 @@ pub struct RecordingBackend {
     /// helper that probes `has_font_family("codicon")` to choose a codicon
     /// glyph over a plain-text fallback — the pattern
     /// `compose::menu_system`'s `dropdown_width` and
-    /// `compose::sidebar_system`'s `render` both use.
+    /// `compose::sidebar`'s paint both use.
     pub font_families: std::collections::HashSet<&'static str>,
 }
 

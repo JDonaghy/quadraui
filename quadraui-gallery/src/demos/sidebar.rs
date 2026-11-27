@@ -4,18 +4,19 @@
 //! `sidebar_panel_body_demo.rs`.
 //!
 //! Four variants cover the sidebar-family primitives: a plain
-//! [`SidebarSystem`] tree with programmatic `reveal`, a [`SidebarPanel`]
-//! with a toolbar header above a task list, a [`SidebarSystem`] tree
+//! [`Sidebar`] tree with programmatic `reveal`, a [`SidebarPanel`]
+//! with a toolbar header above a task list, a [`Sidebar`] tree
 //! with `Decoration::Header` group rows, and a
 //! [`compose::sidebar_panel_body::SidebarPanelBody`] composing background +
 //! chrome + a raw `TreeView` body + scrollbar.
 
 use quadraui::compose::sidebar_panel_body::{SidebarPanelBody, SidebarPanelChrome};
 use quadraui::{
-    Backend, BackendCaps, BackendWidget, Canvas, Decoration, DrawOp, DrawsPrimitives,
-    NavigationMode, Reaction, Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit,
-    SidebarPanelLayout, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, Style,
-    StyledText, Toolbar, ToolbarButton, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    Backend, BackendCaps, BackendWidget, Canvas, Decoration, DrawOp, DrawsPrimitives, Handled,
+    NavigationMode, Reaction, Rect, Scrollbar, Sidebar, SidebarAction, SidebarPanel,
+    SidebarPanelHit, SidebarPanelLayout, SidebarSectionDef, SidebarState, StatusBar,
+    StatusBarSegment, Style, StyledText, Toolbar, ToolbarButton, TreeRow, TreeStyle, TreeView,
+    UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -114,7 +115,8 @@ impl ChromeMode {
 
 pub struct SidebarDemo {
     // Variant 0: tree + reveal.
-    reveal_sidebar: SidebarSystem,
+    reveal_sidebar: Sidebar,
+    reveal_state: SidebarState,
     reveal_last: String,
     // Variant 1: SidebarPanel + toolbar + tasks.
     tasks: Vec<String>,
@@ -124,7 +126,8 @@ pub struct SidebarDemo {
     pressed: Option<WidgetId>,
     next_task_id: usize,
     // Variant 2: header groups.
-    groups_sidebar: SidebarSystem,
+    groups_sidebar: Sidebar,
+    groups_state: SidebarState,
     groups_last: String,
     // Variant 3: SidebarPanelBody + chrome cycle.
     body_rows: Vec<TreeRow>,
@@ -135,19 +138,25 @@ pub struct SidebarDemo {
 
 impl SidebarDemo {
     pub fn new() -> Self {
-        let mut reveal_sidebar = SidebarSystem::new(vec![SidebarSectionDef::new("items", "ITEMS")]);
+        let mut reveal_sidebar = Sidebar::from_defs(
+            WidgetId::new("gallery:sidebar:reveal"),
+            &[SidebarSectionDef::new("items", "ITEMS")],
+        );
         reveal_sidebar.set_rows(0, flat_rows(REVEAL_ROW_COUNT));
-        reveal_sidebar.set_navigation_mode(NavigationMode::Selection);
-        reveal_sidebar.set_active_section(Some(0));
+        reveal_sidebar.navigation_mode = NavigationMode::Selection;
+        reveal_sidebar.active_section = Some(0);
 
-        let mut groups_sidebar =
-            SidebarSystem::new(vec![SidebarSectionDef::new("results", "RESULTS")]);
+        let mut groups_sidebar = Sidebar::from_defs(
+            WidgetId::new("gallery:sidebar:groups"),
+            &[SidebarSectionDef::new("results", "RESULTS")],
+        );
         groups_sidebar.set_rows(0, grouped_rows());
-        groups_sidebar.set_navigation_mode(NavigationMode::Selection);
-        groups_sidebar.set_active_section(Some(0));
+        groups_sidebar.navigation_mode = NavigationMode::Selection;
+        groups_sidebar.active_section = Some(0);
 
         Self {
             reveal_sidebar,
+            reveal_state: SidebarState::default(),
             reveal_last: "—".into(),
             tasks: vec![
                 "Review PR #257".into(),
@@ -160,6 +169,7 @@ impl SidebarDemo {
             pressed: None,
             next_task_id: 4,
             groups_sidebar,
+            groups_state: SidebarState::default(),
             groups_last: "—".into(),
             body_rows: flat_rows(BODY_ROW_COUNT),
             body_scroll: 0,
@@ -281,7 +291,7 @@ impl Demo for SidebarDemo {
             0 => {
                 let sidebar_rect =
                     Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-                self.reveal_sidebar.render(backend, sidebar_rect);
+                let _ = backend.draw_dyn(sidebar_rect, &self.reveal_sidebar, &());
                 let hint = Rect::new(area.x, area.y + sidebar_rect.height, area.width, lh);
                 let bar = StatusBar {
                     id: WidgetId::new("gallery:sidebar:reveal-hint"),
@@ -389,7 +399,7 @@ impl Demo for SidebarDemo {
             2 => {
                 let sidebar_rect =
                     Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-                self.groups_sidebar.render(backend, sidebar_rect);
+                let _ = backend.draw_dyn(sidebar_rect, &self.groups_sidebar, &());
                 let hint = Rect::new(area.x, area.y + sidebar_rect.height, area.width, lh);
                 let bar = StatusBar {
                     id: WidgetId::new("gallery:sidebar:groups-hint"),
@@ -470,23 +480,28 @@ impl Demo for SidebarDemo {
         let lh = chrome_strip_height(backend, |s| s.status_bar_height);
         match variant {
             0 => {
-                self.reveal_sidebar.set_backend_info(backend.line_height());
                 let rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-                match self.reveal_sidebar.handle(event, backend, rect) {
-                    SidebarEvent::RowSelected { section, path } => {
-                        self.reveal_last = format!("sel→{section} {path:?}");
+                let handled =
+                    self.reveal_sidebar
+                        .handle_event(&mut self.reveal_state, event, backend, rect);
+                match handled {
+                    Handled::Event(actions) => {
+                        for action in actions {
+                            if let SidebarAction::RowSelected { section, path } = &action {
+                                self.reveal_last = format!("sel→{section} {path:?}");
+                            }
+                            self.reveal_sidebar.apply(&action);
+                        }
                         Reaction::Redraw
                     }
-                    SidebarEvent::StateChanged
-                    | SidebarEvent::Consumed
-                    | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
-                    SidebarEvent::Ignored => match event {
+                    Handled::Consumed => Reaction::Redraw,
+                    Handled::Ignored => match event {
                         UiEvent::KeyPressed {
                             key: quadraui::Key::Char('z'),
                             ..
                         } => {
-                            let collapsed = !self.reveal_sidebar.is_collapsed(0);
-                            self.reveal_sidebar.set_collapsed(0, collapsed);
+                            let collapsed = !self.reveal_sidebar.sections[0].collapsed;
+                            self.reveal_sidebar.sections[0].collapsed = collapsed;
                             self.reveal_last =
                                 format!("{}→0", if collapsed { "collapsed" } else { "expanded" });
                             Reaction::Redraw
@@ -496,13 +511,12 @@ impl Demo for SidebarDemo {
                             ..
                         } => {
                             let target = vec![(REVEAL_ROW_COUNT - 1) as u16];
-                            self.reveal_sidebar.reveal(0, &target, rect);
+                            self.reveal_sidebar.reveal(0, &target, backend, rect);
                             self.reveal_last = format!("reveal→0 {target:?}");
                             Reaction::Redraw
                         }
                         _ => Reaction::Continue,
                     },
-                    _ => Reaction::Redraw,
                 }
             }
             1 => match event {
@@ -548,20 +562,27 @@ impl Demo for SidebarDemo {
             },
             2 => {
                 let rect = Rect::new(area.x, area.y, area.width, (area.height - lh).max(0.0));
-                match self.groups_sidebar.handle(event, backend, rect) {
-                    SidebarEvent::RowSelected { section, path } => {
-                        self.groups_last = format!("sel→{section} {path:?}");
+                let handled =
+                    self.groups_sidebar
+                        .handle_event(&mut self.groups_state, event, backend, rect);
+                match handled {
+                    Handled::Event(actions) => {
+                        for action in actions {
+                            match &action {
+                                SidebarAction::RowSelected { section, path } => {
+                                    self.groups_last = format!("sel→{section} {path:?}");
+                                }
+                                SidebarAction::HeaderActivated { section } => {
+                                    self.groups_last = format!("header→{section}");
+                                }
+                                _ => {}
+                            }
+                            self.groups_sidebar.apply(&action);
+                        }
                         Reaction::Redraw
                     }
-                    SidebarEvent::HeaderActivated { section } => {
-                        self.groups_last = format!("header→{section}");
-                        Reaction::Redraw
-                    }
-                    SidebarEvent::StateChanged
-                    | SidebarEvent::Consumed
-                    | SidebarEvent::ScrollChanged { .. } => Reaction::Redraw,
-                    SidebarEvent::Ignored => Reaction::Continue,
-                    _ => Reaction::Redraw,
+                    Handled::Consumed => Reaction::Redraw,
+                    Handled::Ignored => Reaction::Continue,
                 }
             }
             _ => match event {

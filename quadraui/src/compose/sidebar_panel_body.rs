@@ -11,7 +11,7 @@
 //! and call [`SidebarPanelBody::render`]. It owns no interaction state
 //! of its own: scrolling, search-query editing, and body-widget
 //! selection stay with whatever controller already manages the body
-//! (a `TreeView`, `FormController`, [`crate::SidebarSystem`], a raw
+//! (a `TreeView`, `FormController`, [`crate::Sidebar`], a raw
 //! `TreeView`, …).
 //!
 //! The panel is a widget-contract [`crate::primitive::Primitive`]
