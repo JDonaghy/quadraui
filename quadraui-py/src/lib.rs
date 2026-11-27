@@ -1012,7 +1012,9 @@ impl AppLogic for PyAppLogic {
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let mut hits = Vec::new();
         let Some(callback) = self.render_callback.as_ref() else {
-            draw_bands(backend, self.host.render_refs(), &mut hits);
+            self.engine.paint_with_widget_state(|| {
+                draw_bands(backend, self.host.render_refs(), &mut hits)
+            });
             // No render callback: nothing painted through `paint_layout`
             // this frame, so there is no layout-tree leaf tooltip to
             // resolve -- clears out anything a previously registered
@@ -1059,7 +1061,10 @@ impl AppLogic for PyAppLogic {
                 // paints this frame.
                 let resolved =
                     resolve_render_refs(self.engine.widget_state(), backend, frame.as_refs());
-                draw_bands(backend, resolved.as_refs(), &mut hits);
+                // Every generic leaf paints from the state its own input
+                // handling walked (a text input's caret, say).
+                self.engine
+                    .paint_with_widget_state(|| draw_bands(backend, resolved.as_refs(), &mut hits));
                 self.host.set_leaf_tooltips(HashMap::new());
             }
             Some(RenderOutput::Tree(mut node)) => {
@@ -1082,7 +1087,9 @@ impl AppLogic for PyAppLogic {
                 // `paint_layout_windowed`'s own doc), while one that does
                 // gets its real scrollbar extent and a band-painted
                 // payload instead of its `items_window` going unread.
-                paint_layout_windowed(backend, area, &node, &mut hits, &windows);
+                self.engine.paint_with_widget_state(|| {
+                    paint_layout_windowed(backend, area, &node, &mut hits, &windows)
+                });
                 // Refreshed every render so a hovered layout-tree button's
                 // tooltip resolves against this frame's tree, keyed by
                 // each leaf's own tree-address id -- see

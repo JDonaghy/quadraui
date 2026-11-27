@@ -528,8 +528,7 @@ pub enum HitDetail {
     /// `TreeScrollbarTrackBefore`.
     TreeScrollbarTrackAfter,
     /// Landed on an additive primitive's interactive region (currently
-    /// [`crate::extra_paint::Checkbox`] and [`quadraui::TextInput`]). Carries no
-    /// sub-region detail yet —
+    /// [`quadraui::Form`]). Carries no sub-region detail yet —
     /// just enough for the binding's own event handler to set `widget` and
     /// attach this as `hit`, so it sees the click reached the primitive.
     /// Per-kind sub-region detail (e.g. which combo-box row) is a later,

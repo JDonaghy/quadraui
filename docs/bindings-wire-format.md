@@ -3208,15 +3208,16 @@ One `run_shell` activity-bar panel entry.
 <a id="wire-passwordinput"></a>
 #### `PasswordInput`
 
-`PasswordInput`'s wire shape: the plaintext value and a caret byte offset, which `Deserialize` turns into the one-line `TextInput`.
+A standalone masked single-line input. The value is held in plaintext; only painting masks it.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `cursor` | `number \| null` | no |  |
-| `has_focus` | `boolean` | no |  |
+| `cursor` | `number \| null` | no | The caret as a byte offset into `value`; `None` puts it at the end. |
+| `has_focus` | `boolean` | no | Whether to paint the focused wash and caret. |
 | `id` | `WidgetId` | yes |  |
-| `mask_char` | `string` | no |  |
-| `value` | `string` | no |  |
+| `mask_char` | `string` | no | The glyph painted for each character of the value. |
+| `placeholder` | `string` | no | Shown dimmed while the value is empty. |
+| `value` | `string` | no | The plaintext value. |
 
 <a id="wire-pathpickeraction"></a>
 #### `PathPickerAction`
@@ -4162,16 +4163,16 @@ Scrollbar state for a `Terminal`. Paint builds a `crate::Scrollbar::vertical` fr
 <a id="wire-textarea"></a>
 #### `TextArea`
 
-`TextArea`'s wire shape: the whole value as one string with `'/n'` line breaks and a caret byte offset.
+A standalone multi-line input over a flat `value` (lines separated by `'/n'`).
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `cursor` | `number \| null` | no |  |
-| `has_focus` | `boolean` | no |  |
+| `cursor` | `number \| null` | no | The caret as a byte offset into `value`; `None` puts it at the end. |
+| `has_focus` | `boolean` | no | Whether to paint the focused wash. |
 | `id` | `WidgetId` | yes |  |
-| `placeholder` | `string \| null` | no |  |
-| `value` | `string` | no |  |
-| `visible_rows` | `number` | no |  |
+| `placeholder` | `string` | no | Shown dimmed while the value is empty. |
+| `value` | `string` | no | The text, lines separated by `'/n'`. |
+| `visible_rows` | `number` | no | Rows tall — the viewport height, independent of how many lines the value holds. |
 
 <a id="wire-textdisplay"></a>
 #### `TextDisplay`
@@ -5706,7 +5707,7 @@ Landed on a declared region of a script-defined widget — `region` is that regi
 <a id="wire-_hitdetailextrabody"></a>
 #### `_HitDetailExtraBody`
 
-Landed on an additive primitive's interactive region (currently `crate::extra_paint::Checkbox` and `quadraui::TextInput`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant.
+Landed on an additive primitive's interactive region (currently `quadraui::Form`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |

@@ -1391,12 +1391,13 @@ class PanelDefinitionDescriptor(TypedDict):
     tooltip: NotRequired[Optional[str]]
 
 class PasswordInput(TypedDict):
-    """`PasswordInput`'s wire shape: the plaintext value and a caret byte offset, which `Deserialize` turns into the one-line `TextInput`."""
-    cursor: NotRequired[Optional[int]]
-    has_focus: NotRequired[bool]
+    """A standalone masked single-line input. The value is held in plaintext; only painting masks it."""
+    cursor: NotRequired[Optional[int]]  # The caret as a byte offset into `value`; `None` puts it at the end.
+    has_focus: NotRequired[bool]  # Whether to paint the focused wash and caret.
     id: WidgetId
-    mask_char: NotRequired[str]
-    value: NotRequired[str]
+    mask_char: NotRequired[str]  # The glyph painted for each character of the value.
+    placeholder: NotRequired[str]  # Shown dimmed while the value is empty.
+    value: NotRequired[str]  # The plaintext value.
 
 # What a path picker reports: a confirmed path or a dismissal, plus the browsing changes the host applies onto the picker's `PathPickerState` (the pickers' `apply` does it).
 PathPickerAction = Union[Literal['Cancelled'], _PathPickerActionDict]
@@ -1989,13 +1990,13 @@ class TerminalScrollbar(TypedDict):
     width: NotRequired[Optional[int]]  # Scrollbar width in surface-native units (pixels on a pixel backend, cells on TUI).
 
 class TextArea(TypedDict):
-    """`TextArea`'s wire shape: the whole value as one string with `'/n'` line breaks and a caret byte offset."""
-    cursor: NotRequired[Optional[int]]
-    has_focus: NotRequired[bool]
+    """A standalone multi-line input over a flat `value` (lines separated by `'/n'`)."""
+    cursor: NotRequired[Optional[int]]  # The caret as a byte offset into `value`; `None` puts it at the end.
+    has_focus: NotRequired[bool]  # Whether to paint the focused wash.
     id: WidgetId
-    placeholder: NotRequired[Optional[str]]
-    value: NotRequired[str]
-    visible_rows: NotRequired[int]
+    placeholder: NotRequired[str]  # Shown dimmed while the value is empty.
+    value: NotRequired[str]  # The text, lines separated by `'/n'`.
+    visible_rows: NotRequired[int]  # Rows tall — the viewport height, independent of how many lines the value holds.
 
 class TextDisplay(TypedDict):
     """Declarative description of a `TextDisplay`."""
@@ -2838,7 +2839,7 @@ class _HitDetailDataTableRow(TypedDict):
     row: int
 
 class _HitDetailExtraBody(TypedDict):
-    """Landed on an additive primitive's interactive region (currently `crate::extra_paint::Checkbox` and `quadraui::TextInput`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant."""
+    """Landed on an additive primitive's interactive region (currently `quadraui::Form`). Carries no sub-region detail yet — just enough for the binding's own event handler to set `widget` and attach this as `hit`, so it sees the click reached the primitive. Per-kind sub-region detail (e.g. which combo-box row) is a later, separate extension of this variant."""
     kind: Literal['extra_body']
 
 class _HitDetailListItem(TypedDict):

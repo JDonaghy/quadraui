@@ -2350,7 +2350,7 @@ pub fn widget_state_snapshot(
 /// The anchored-overlay paint pass every binding's `AppLogic::render` runs
 /// once, after painting its own fixed/additive slots (via [`crate::render::draw_bands`]
 /// or [`crate::render::paint_layout`]) and collecting `hits`: syncs the
-/// menu bar/forms/tree tables/text-input carets against `hits`,
+/// menu bar/forms/tree tables against `hits`,
 /// then makes the one [`InteractionEngine::render_overlays`] call that
 /// paints every open overlay in z-order (dialog on top of everything but
 /// tooltip/toast, then float/rich-text-popup/completions below it, toast
@@ -2368,7 +2368,6 @@ pub fn render_overlays(
     engine.sync_menu_bar(backend, &hits);
     engine.sync_forms(backend, &hits);
     engine.sync_tree_tables(backend, &hits);
-    engine.sync_text_input_carets(backend, &hits);
     engine.render_overlays(backend);
     engine.set_hits(hits);
 }
@@ -4149,9 +4148,8 @@ mod tests {
 
     /// An [`AppLogic`] whose `render` paints a focused, bordered
     /// [`TextInput`] across the whole viewport directly (not through a
-    /// [`BindingHost`] slot — `TextInput` is a `"text_input"` additive
-    /// extra, and this test only needs its border painted, not its full
-    /// extra-slot wiring) before calling [`render_overlays`], so a toast
+    /// [`BindingHost`] slot — this test only needs its border painted,
+    /// not its full leaf wiring) before calling [`render_overlays`], so a toast
     /// opened on top of it has to paint over real bordered chrome, not
     /// just empty space.
     struct BorderedEditorLogic {
