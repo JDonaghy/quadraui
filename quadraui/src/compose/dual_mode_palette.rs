@@ -460,6 +460,8 @@ mod tests {
         ) -> Handled<DualModePaletteAction> {
             if let Handled::Event(action) = &handled {
                 self.palette.apply(action, VISIBLE_ROWS);
+            }
+            if !matches!(handled, Handled::Ignored) {
                 self.palette.sync_caret(&self.state);
             }
             match handled {
@@ -801,6 +803,18 @@ mod tests {
                 value: "xyz".into()
             })
         );
+    }
+
+    #[test]
+    fn the_painted_caret_follows_a_caret_only_key() {
+        let mut ctrl = Host::new(None, vec![]);
+        for ch in ['a', 'b', 'c'] {
+            let _ = ctrl.key(&key_ev(Key::Char(ch)));
+        }
+        assert_eq!(ctrl.palette.query_cursor, 3);
+        let ev = ctrl.key(&key_ev(Key::Named(NamedKey::Left)));
+        assert_eq!(ev, Handled::Consumed);
+        assert_eq!(ctrl.palette.query_cursor, 2);
     }
 
     #[test]

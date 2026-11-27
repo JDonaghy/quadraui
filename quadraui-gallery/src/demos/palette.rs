@@ -179,6 +179,10 @@ impl Demo for PaletteDemo {
         };
         if let Handled::Event(action) = &ev {
             self.picker.apply(action, visible_rows);
+        }
+        // A caret-only key (Left, Home, ...) answers `Consumed` yet moves
+        // the live caret, so the painted caret follows every handled key.
+        if !matches!(ev, Handled::Ignored) {
             self.picker.sync_caret(&self.picker_state);
         }
 

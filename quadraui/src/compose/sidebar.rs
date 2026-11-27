@@ -183,6 +183,10 @@ pub struct Sidebar {
     /// The panel scroll offset in [`ScrollMode::WholePanel`], in
     /// main-axis units.
     pub panel_scroll: f32,
+    /// The rename session of each section that has one, kept apart from
+    /// the rows so it outlives a [`Sidebar::set_rows`] whose rows do not
+    /// (yet) hold the renamed path.
+    renames: Vec<(usize, TreePath, TreeRowEditState)>,
 }
 
 /// What a [`Sidebar`] reports.
@@ -262,6 +266,7 @@ impl Sidebar {
             navigation_mode: NavigationMode::default(),
             scroll_mode: ScrollMode::PerSection,
             panel_scroll: 0.0,
+            renames: Vec::new(),
         }
     }
 
@@ -318,9 +323,20 @@ impl Sidebar {
                     edit.cursor = *cursor;
                     edit.selection_anchor = *selection_anchor;
                 }
+                if let Some((_, _, edit)) = self
+                    .renames
+                    .iter_mut()
+                    .find(|(s, p, _)| s == section && p == path)
+                {
+                    edit.text = text.clone();
+                    edit.cursor = *cursor;
+                    edit.selection_anchor = *selection_anchor;
+                }
             }
             SidebarAction::EditConfirmed { section, path, .. }
             | SidebarAction::EditCancelled { section, path } => {
+                self.renames
+                    .retain(|(s, p, _)| !(s == section && p == path));
                 let row = self
                     .tree_mut(*section)
                     .and_then(|t| t.rows.iter_mut().find(|r| &r.path == path));
@@ -432,14 +448,25 @@ impl Sidebar {
         sidebar
     }
 
-    /// Replace tree section `section`'s rows. A row being renamed keeps
-    /// its rename session when the new rows still hold its path, so an
-    /// app that rebuilds its rows every frame does not end the rename.
+    /// Replace tree section `section`'s rows. The section's rename
+    /// session lands on the row holding its path whenever the new rows
+    /// hold it, so an app that rebuilds its rows every frame does not end
+    /// the rename, and one that starts a rename before pushing the row
+    /// (a new file's placeholder) sees it once the row arrives.
     pub fn set_rows(&mut self, section: usize, mut rows: Vec<TreeRow>) {
+        let rename = self
+            .renames
+            .iter()
+            .find(|(s, _, _)| *s == section)
+            .map(|(_, path, edit)| (path.clone(), edit.clone()));
         let Some(tree) = self.tree_mut(section) else {
             return;
         };
-        if let Some(editing) = tree.rows.iter().find(|r| r.edit.is_some()) {
+        if let Some((path, edit)) = rename {
+            if let Some(row) = rows.iter_mut().find(|r| r.path == path) {
+                row.edit = Some(edit);
+            }
+        } else if let Some(editing) = tree.rows.iter().find(|r| r.edit.is_some()) {
             if let Some(row) = rows
                 .iter_mut()
                 .find(|r| r.path == editing.path && r.edit.is_none())
@@ -489,11 +516,14 @@ impl Sidebar {
         for row in &mut tree.rows {
             row.edit = (row.path == path).then(|| edit.clone());
         }
-        tree.selected_path = Some(path);
+        tree.selected_path = Some(path.clone());
+        self.renames.retain(|(s, _, _)| *s != section);
+        self.renames.push((section, path, edit));
     }
 
     /// End any rename in section `section` without reporting it.
     pub fn cancel_editing(&mut self, section: usize) {
+        self.renames.retain(|(s, _, _)| *s != section);
         if let Some(tree) = self.tree_mut(section) {
             for row in &mut tree.rows {
                 row.edit = None;
@@ -503,10 +533,11 @@ impl Sidebar {
 
     /// Whether a tree row in any section is being renamed.
     pub fn is_editing(&self) -> bool {
-        self.sections.iter().any(|s| {
-            s.tree()
-                .is_some_and(|t| t.rows.iter().any(|r| r.edit.is_some()))
-        })
+        !self.renames.is_empty()
+            || self.sections.iter().any(|s| {
+                s.tree()
+                    .is_some_and(|t| t.rows.iter().any(|r| r.edit.is_some()))
+            })
     }
 
     /// The action toggling the active section's selected row, when that
@@ -2043,6 +2074,32 @@ mod contract {
                 })
             );
             assert!(!h.sidebar.is_editing());
+        }
+
+        #[test]
+        fn a_rename_started_before_its_row_exists_lands_when_the_row_arrives() {
+            let mut sidebar = Sidebar::from_defs(WidgetId::new("s"), &sample_defs());
+            sidebar.set_rows(0, fake_rows("v", 1));
+            sidebar.start_editing(0, vec![1], String::new(), 0, None, Some("name".into()));
+            assert!(sidebar.is_editing());
+            sidebar.set_rows(0, fake_rows("v", 2));
+            let row = &sidebar.tree(0).unwrap().rows[1];
+            assert_eq!(row.path, vec![1]);
+            assert_eq!(
+                row.edit,
+                Some(TreeRowEditState {
+                    text: String::new(),
+                    cursor: 0,
+                    selection_anchor: None,
+                    placeholder: Some("name".into()),
+                })
+            );
+            sidebar.set_rows(0, fake_rows("v", 1));
+            sidebar.set_rows(0, fake_rows("v", 2));
+            assert!(
+                sidebar.tree(0).unwrap().rows[1].edit.is_some(),
+                "a frame that briefly leaves the row out keeps the rename"
+            );
         }
 
         #[test]

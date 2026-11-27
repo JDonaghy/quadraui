@@ -223,6 +223,9 @@ impl ShellApp for HelpLayerDemo {
             };
             if let Handled::Event(action) = &handled {
                 palette.apply(action, visible_rows);
+            }
+            // A caret-only key answers `Consumed` yet moves the live caret.
+            if !matches!(handled, Handled::Ignored) {
                 palette.sync_caret(&state);
             }
             match handled {
