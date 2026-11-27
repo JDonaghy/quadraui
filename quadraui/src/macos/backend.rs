@@ -60,7 +60,6 @@ use crate::event::{Point, Rect, UiEvent, UserPayload, Viewport};
 use crate::generic_font::GenericFamily;
 use crate::modal_stack::ModalStack;
 use crate::paint_surface::PaintSurface;
-use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::menu_bar::MenuBar;
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
 use crate::primitives::scrollbar::Scrollbar;
@@ -2430,21 +2429,6 @@ impl Backend for MacBackend {
         )
     }
 
-    fn draw_find_replace(&mut self, _rect: Rect, panel: &FindReplacePanel) {
-        debug_assert!(
-            !self.current_cg().is_null(),
-            "MacBackend::draw_find_replace called outside enter_frame_scope",
-        );
-        // No `set_current_font` precondition here —
-        // `crate::primitives::find_replace::paint` reaches text
-        // rendering through `PaintSurface`, whose
-        // `surface_measure_text`/`surface_draw_text_run*` read
-        // `chrome_font` unconditionally (see those methods' docs), so
-        // there is nothing for this call to precondition on.
-        let theme = self.current_theme;
-        let style = Backend::style(self);
-        crate::primitives::find_replace::paint(panel, self, &theme, &style);
-    }
     fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
         let theme = self.current_theme;
         let opacity = self.scrollbar_fade_opacity();
@@ -5995,25 +5979,19 @@ mod tests {
         }
     }
 
-    // ── find_replace (#809, `PaintSurface` Phase 2b) ──────────────────
+    // ── find_replace ───────────────────────────────────────────────────
     //
-    // `macos::find_replace` used to carry its own `#[cfg(test)]` module
-    // with `panel_paints_surface_bg`, `panel_with_multibyte_query_does_not_panic`
-    // and `hit_regions_present_for_basic_panel`, exercising
-    // `macos::find_replace::draw_find_replace` against a real
-    // `BitmapSurface`/Core Text stack. That module (and the whole file)
-    // is deleted — the paint logic it tested now lives in
-    // `crate::primitives::find_replace::paint`, already covered on every
-    // host by that module's own `RecordingSurface` tests. These two
-    // tests are the twin that stays macOS-only for a reason: they prove
-    // the *plumbing* — `MacBackend::draw_find_replace` really does reach
-    // `paint` and `paint` really does land real Core Text pixels through
-    // `MacBackend`'s `PaintSurface` impl — not the paint logic itself.
+    // The shared painter is covered on every host by
+    // `primitives::find_replace`'s own `RecordingSurface` tests; these
+    // two prove the plumbing — `draw_dyn` on a `FindReplacePanel` reaches
+    // that painter and lands real Core Text pixels through `MacBackend`'s
+    // `PaintSurface` impl.
 
-    fn find_replace_sample_panel(w: f32, h: f32) -> FindReplacePanel {
+    fn find_replace_sample_panel(w: f32, h: f32) -> crate::FindReplacePanel {
         let (hit_regions, _input_width) =
             crate::primitives::find_replace::compute_hit_regions(50, false, "1 of 3", 2, 2);
-        FindReplacePanel {
+        crate::FindReplacePanel {
+            id: crate::WidgetId::new("find_replace"),
             query: "needle".into(),
             replacement: String::new(),
             show_replace: false,
@@ -6034,25 +6012,17 @@ mod tests {
         }
     }
 
-    /// End-to-end pixel probe: `Backend::draw_find_replace` on a real
-    /// `MacBackend`, over a headless `BitmapSurface`, must actually paint
-    /// the popup background — proving `MacBackend`'s `PaintSurface`
+    /// End-to-end pixel probe: `draw_dyn` of a `FindReplacePanel` on a
+    /// real `MacBackend`, over a headless `BitmapSurface`, must actually
+    /// paint the popup background — proving `MacBackend`'s `PaintSurface`
     /// impl really reaches Core Graphics, not just that the shared
     /// painter emits the right verb (the primitive-level
     /// `RecordingSurface` test already covers that half, portably).
     ///
     /// Both fonts are pinned to the same face and size, so the popup
-    /// rect this test re-derives is a fixed, host-independent
-    /// geometry. `primitives::find_replace::paint` sizes the panel on
-    /// the `PaintSurface` grid, which this backend reports in the
-    /// chrome font (see [`MacBackend::surface_line_height`]'s doc);
-    /// leaving chrome on the CoreText system-UI default would make the
-    /// probe coordinates below depend on whatever that face happens to
-    /// measure on the host. Which font the panel paints in is
-    /// `tests/macos_font_role.rs`'s subject, not this test's — here the
-    /// only claim is that the fill lands real Core Graphics pixels.
+    /// rect this test re-derives is a fixed, host-independent geometry.
     #[test]
-    fn mac_backend_draw_find_replace_paints_popup_background() {
+    fn mac_backend_draw_dyn_find_replace_paints_popup_background() {
         use super::super::headless::BitmapSurface;
 
         const W: u32 = 600;
@@ -6066,27 +6036,20 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         let panel = find_replace_sample_panel(W as f32, H as f32);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_find_replace(
-                crate::event::Rect::new(0.0, 0.0, W as f32, H as f32),
-                &panel,
-            );
+            let rect =
+                panel.anchored_rect(&*b, crate::event::Rect::new(0.0, 0.0, W as f32, H as f32));
+            let _ = crate::DrawsPrimitives::draw_dyn(b, rect, &panel, &());
         });
         backend.end_frame();
 
         let theme = crate::theme::Theme::default();
-        // The popup's geometry comes from the metrics the paint itself
-        // reads — `MacBackend`'s `PaintSurface` grid, which is the chrome
-        // advance and line height — not `Backend::char_width`/
-        // `line_height`, which report the editor font's metrics. Resolved
-        // via the same `FindReplaceMetrics` seam `native_surface_paint::paint`
-        // itself calls, so the probe below stays in lock-step with real
-        // paint geometry.
-        let cw = PaintSurface::surface_char_width(&backend).max(1.0);
-        let lh = PaintSurface::surface_line_height(&backend).max(1.0);
-        let style = crate::style::Style::default();
-        let metrics =
-            crate::primitives::find_replace::FindReplaceMetrics::resolve(&panel, &style, cw, lh);
-        let popup = metrics.popup_rect;
+        // The box `anchored_rect` placed the panel in.
+        let cw = backend.char_width();
+        let lh = backend.chrome_line_height();
+        let popup = panel.anchored_rect(
+            &backend,
+            crate::event::Rect::new(0.0, 0.0, W as f32, H as f32),
+        );
 
         // A few px inside the popup's bottom-right corner: past the
         // border stroke and below the single (`row == 0`) content row,
@@ -6118,7 +6081,7 @@ mod tests {
     /// abstract; this proves real Core Text measurement/drawing of the
     /// same multibyte text through `MacBackend` doesn't panic either.
     #[test]
-    fn mac_backend_draw_find_replace_with_multibyte_query_does_not_panic() {
+    fn mac_backend_draw_dyn_find_replace_with_multibyte_query_does_not_panic() {
         use super::super::headless::BitmapSurface;
 
         const W: u32 = 600;
@@ -6133,10 +6096,9 @@ mod tests {
         panel.cursor = 3;
         panel.sel_anchor = Some(6);
         backend.enter_frame_scope(surface.context_ptr(), |b| {
-            b.draw_find_replace(
-                crate::event::Rect::new(0.0, 0.0, W as f32, H as f32),
-                &panel,
-            );
+            let rect =
+                panel.anchored_rect(&*b, crate::event::Rect::new(0.0, 0.0, W as f32, H as f32));
+            let _ = crate::DrawsPrimitives::draw_dyn(b, rect, &panel, &());
         });
         backend.end_frame();
     }
@@ -6147,7 +6109,7 @@ mod tests {
     // `primitives::text_input::paint` via this backend's own
     // `PaintSurface` impl — these drive that real Core
     // Text/CoreGraphics path end to end, the same "acceptance bar" shape
-    // `mac_backend_draw_find_replace_paints_popup_background` and
+    // `mac_backend_draw_dyn_find_replace_paints_popup_background` and
     // `mac_backend_draw_form_paints_the_four_field_kinds_macos_used_to_drop`
     // use above.
     #[test]

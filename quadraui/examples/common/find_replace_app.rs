@@ -1,98 +1,74 @@
 //! `FindReplaceApp` — minimal visual smoke test for the `FindReplacePanel`
-//! primitive's [`FindReplacePanel::hit_test`].
+//! widget.
 //!
 //! Renders the find/replace overlay anchored at the top-right of a
-//! full-screen "editor" area. Clicking a toggle/nav/close button reports
-//! which [`quadraui::FindReplaceClickTarget`] was hit in the status bar.
+//! full-screen "editor" area, routed through the app's `FrameTree`. Every
+//! `FindReplaceEvent` the panel reports is written back onto it and
+//! named in the status bar.
 //!
 //! ## Key bindings
 //!
-//! | Key       | Action                          |
-//! |-----------|----------------------------------|
-//! | `r`       | Toggle the replace row           |
-//! | `q` / Esc | Quit                              |
+//! | Key       | Action                                          |
+//! |-----------|-------------------------------------------------|
+//! | `r`       | Toggle the replace row (panel not focused)      |
+//! | `q` / Esc | Quit (Esc closes the panel while it is focused) |
 
-use quadraui::DrawsPrimitives;
+use std::cell::Cell;
+
 use quadraui::{
-    compute_find_replace_hit_regions, AppLogic, Backend, Color, FindReplaceClickTarget,
-    FindReplaceHit, FindReplacePanel, MouseButton, NamedKey, Reaction, Rect, StatusBar,
-    StatusBarSegment, UiEvent, WidgetId, FR_PANEL_WIDTH,
+    AppLogic, Backend, Color, FindReplaceEvent, FindReplacePanel, FindReplaceToggle, FrameTree,
+    NamedKey, Reaction, Rect, ScreenLayout, StatusBar, StatusBarSegment, Surface, UiEvent,
+    WidgetId, FR_PANEL_WIDTH,
 };
 
 pub struct FindReplaceApp {
-    panel: FindReplacePanel,
-    last_click: Option<String>,
+    pub panel: FindReplacePanel,
+    last_event: Option<String>,
+    /// The box `render` last painted the panel in — the rect the frame
+    /// tree routes it at.
+    panel_rect: Cell<Rect>,
 }
 
 impl FindReplaceApp {
     pub fn new() -> Self {
-        let mut app = Self {
-            panel: FindReplacePanel {
-                query: "needle".into(),
-                replacement: String::new(),
-                show_replace: false,
-                focus: 0,
-                cursor: 6,
-                sel_anchor: None,
-                match_info: "1 of 3".into(),
-                case_sensitive: false,
-                whole_word: false,
-                use_regex: false,
-                preserve_case: false,
-                in_selection: false,
-                group_bounds: Rect::new(0.0, 0.0, 0.0, 0.0),
-                panel_width: FR_PANEL_WIDTH,
-                replace_one_glyph: "R1".into(),
-                replace_all_glyph: "R*".into(),
-                hit_regions: Vec::new(),
-            },
-            last_click: None,
+        let mut panel = FindReplacePanel {
+            id: WidgetId::new("find-replace"),
+            query: "needle".into(),
+            replacement: String::new(),
+            show_replace: false,
+            focus: 0,
+            cursor: 6,
+            sel_anchor: None,
+            match_info: "1 of 3".into(),
+            case_sensitive: false,
+            whole_word: false,
+            use_regex: false,
+            preserve_case: false,
+            in_selection: false,
+            group_bounds: Rect::new(0.0, 0.0, 0.0, 0.0),
+            panel_width: FR_PANEL_WIDTH,
+            replace_one_glyph: "R1".into(),
+            replace_all_glyph: "R*".into(),
+            hit_regions: Vec::new(),
         };
-        app.rebuild_hit_regions();
-        app
+        panel.rebuild_hit_regions();
+        Self {
+            panel,
+            last_event: None,
+            panel_rect: Cell::new(Rect::new(0.0, 0.0, 0.0, 0.0)),
+        }
     }
 
-    /// Recompute `hit_regions` — must be called whenever `show_replace`
-    /// or `match_info` changes, since [`compute_find_replace_hit_regions`]
-    /// depends on both (matches [`FindReplacePanel::hit_regions`]'s own
-    /// doc: "computed once ... at panel construction", re-run on every
-    /// state change that would move a region).
-    fn rebuild_hit_regions(&mut self) {
-        let (regions, _input_w) = compute_find_replace_hit_regions(
-            self.panel.panel_width,
-            self.panel.show_replace,
-            &self.panel.match_info,
-            self.panel.replace_one_glyph.chars().count() as u16,
-            self.panel.replace_all_glyph.chars().count() as u16,
-        );
-        self.panel.hit_regions = regions;
-    }
-
-    /// Same `rect` `render` paints the panel into (the "editor" area),
-    /// used to keep `panel.group_bounds` and click routing in agreement.
+    /// The "editor" area the panel anchors in: everything above the
+    /// status bar.
     fn editor_rect(backend: &dyn Backend) -> Rect {
         let vp = backend.viewport();
         let lh = backend.line_height();
         Rect::new(0.0, 0.0, vp.width, (vp.height - lh).max(0.0))
     }
 
-    /// The panel's content corner (inside its 1-cell border), in the
-    /// same absolute coordinates `tui::draw_find_replace` paints at.
-    /// Mirrors that function's `x`/`y` derivation exactly — see its own
-    /// doc — so click routing can't drift from where the panel is
-    /// actually painted.
-    fn content_origin(&self, rect: Rect) -> (f32, f32) {
-        let editor_left = rect.x;
-        let panel_w = (self.panel.panel_width as f32).min((rect.width - 2.0).max(0.0));
-        let gb = &self.panel.group_bounds;
-        let gb_right = editor_left + gb.x + gb.width;
-        let x = (gb_right - (panel_w + 1.0)).max(editor_left);
-        let y = gb.y.max(1.0);
-        (x + 1.0, y + 1.0)
-    }
-
     fn status_bar(&self) -> StatusBar {
-        let msg = match &self.last_click {
+        let msg = match &self.last_event {
             Some(m) => format!(" {m} "),
             None => " click a button — r toggles replace row, q quits ".into(),
         };
@@ -116,71 +92,77 @@ impl Default for FindReplaceApp {
     }
 }
 
+/// The status-bar wording for one panel event.
+fn describe(event: &FindReplaceEvent) -> String {
+    match event {
+        FindReplaceEvent::FieldEdited {
+            field,
+            text,
+            cursor,
+            ..
+        } => format!("{field:?} = {text:?} @ {cursor}"),
+        FindReplaceEvent::Toggled { toggle, on } => {
+            format!("{toggle:?} {}", if *on { "on" } else { "off" })
+        }
+        other => format!("{other:?}"),
+    }
+}
+
 impl AppLogic for FindReplaceApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
         let vp = backend.viewport();
         let rect = Self::editor_rect(backend);
-        // `group_bounds` fills the editor rect — content-relative, per
-        // the primitive's doc (`editor_left` carries the absolute shift).
+        // `group_bounds` is the editor rect the panel anchors at the
+        // top-right of.
         let mut panel = self.panel.clone();
-        panel.group_bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
-        backend.draw_find_replace(rect, &panel);
+        panel.group_bounds = rect;
+        let panel_rect = panel.anchored_rect(backend, rect);
+        self.panel_rect.set(panel_rect);
 
         let status_rect = Rect::new(0.0, rect.height, vp.width, vp.height - rect.height);
-        let _ = backend.draw_dyn(status_rect, &self.status_bar(), &());
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect: panel_rect,
+            widget: Box::new(panel),
+        });
+        frame.push(Surface::Widget {
+            rect: status_rect,
+            widget: Box::new(self.status_bar()),
+        });
+        frame.draw(backend);
     }
 
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
+    fn frame_tree(&self, _area: ()) -> FrameTree {
+        let mut tree = FrameTree::new();
+        tree.push(
+            self.panel.id,
+            self.panel_rect.get(),
+            Box::new(self.panel.clone()),
+        );
+        tree
+    }
+
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
         match event {
-            UiEvent::MouseDown {
-                button: MouseButton::Left,
-                position,
-                ..
-            } => {
-                let rect = Self::editor_rect(backend);
-                self.panel.group_bounds = Rect::new(0.0, 0.0, rect.width, rect.height);
-                let origin = self.content_origin(rect);
-                let hit = self
-                    .panel
-                    .hit_test(position.x, position.y, origin, 1.0, 1.0);
-                self.last_click = Some(match hit {
-                    FindReplaceHit::Target(target) => {
-                        match target {
-                            FindReplaceClickTarget::ToggleCase => {
-                                self.panel.case_sensitive = !self.panel.case_sensitive
-                            }
-                            FindReplaceClickTarget::ToggleWholeWord => {
-                                self.panel.whole_word = !self.panel.whole_word
-                            }
-                            FindReplaceClickTarget::ToggleRegex => {
-                                self.panel.use_regex = !self.panel.use_regex
-                            }
-                            FindReplaceClickTarget::TogglePreserveCase => {
-                                self.panel.preserve_case = !self.panel.preserve_case
-                            }
-                            FindReplaceClickTarget::ToggleInSelection => {
-                                self.panel.in_selection = !self.panel.in_selection
-                            }
-                            FindReplaceClickTarget::Chevron => {
-                                self.panel.show_replace = !self.panel.show_replace;
-                                self.rebuild_hit_regions();
-                            }
-                            _ => {}
-                        }
-                        format!("clicked {target:?}")
-                    }
-                    FindReplaceHit::Empty => "clicked empty area".into(),
-                });
+            UiEvent::FindReplace(id, event) if id == self.panel.id => {
+                if event == FindReplaceEvent::Close {
+                    return Reaction::Exit;
+                }
+                self.panel.apply_event(&event);
+                self.last_event = Some(describe(&event));
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {
                 key: quadraui::Key::Char('r'),
                 ..
             } => {
-                self.panel.show_replace = !self.panel.show_replace;
-                self.rebuild_hit_regions();
+                let on = !self.panel.show_replace;
+                self.panel.apply_event(&FindReplaceEvent::Toggled {
+                    toggle: FindReplaceToggle::ShowReplace,
+                    on,
+                });
                 Reaction::Redraw
             }
             UiEvent::KeyPressed {

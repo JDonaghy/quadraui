@@ -2493,25 +2493,6 @@ impl Backend for GtkBackend {
 
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
 
-    fn draw_find_replace(
-        &mut self,
-        rect: QRect,
-        panel: &crate::primitives::find_replace::FindReplacePanel,
-    ) {
-        let theme = self.current_theme;
-        debug_assert!(
-            self.current_frame_refs().is_some(),
-            "GtkBackend::draw_find_replace called outside enter_frame_scope",
-        );
-        // The panel positions itself via its own anchor logic (see
-        // `primitives::find_replace::paint`); `rect` is currently
-        // unused (forward-compat for a host-resolved layout per
-        // BACKEND_TRAIT_PROPOSAL §6.2).
-        let _ = rect;
-        let style = Backend::style(self);
-        crate::primitives::find_replace::paint(panel, self, &theme, &style);
-    }
-
     fn draw_scrollbar(
         &mut self,
         _rect: QRect,
@@ -8412,23 +8393,15 @@ mod tests {
         );
     }
 
-    // ── find_replace (#809, `PaintSurface` Phase 2b) ──────────────────
+    // ── find_replace ───────────────────────────────────────────────────
     //
-    // `gtk::find_replace` used to carry its own `#[cfg(test)]` module
-    // with a `draw_find_replace_with_multibyte_query_does_not_panic`
-    // test, exercising `gtk::find_replace::draw_find_replace` directly
-    // against a bare Cairo `ImageSurface` — it never asserted rendered
-    // pixels. That module (and the whole file) is deleted — the paint
-    // logic it exercised now lives in
-    // `crate::primitives::find_replace::paint`, covered on every host by
-    // that module's own `RecordingSurface` tests. The test below goes a
-    // step further than the deleted one did: it asserts real rendered
-    // output (the popup background pixel), proving the *plumbing* —
-    // `GtkBackend::draw_find_replace` really does reach `paint` and
-    // `paint` really does land real Cairo pixels through `GtkBackend`'s
-    // `PaintSurface` impl — not just that it doesn't panic.
+    // The shared painter is covered on every host by
+    // `primitives::find_replace`'s own `RecordingSurface` tests; these
+    // assert the plumbing — `draw_dyn` on a `FindReplacePanel` reaches
+    // that painter and lands real Cairo pixels through `GtkBackend`'s
+    // `PaintSurface` impl.
     #[test]
-    fn gtk_backend_draw_find_replace_paints_popup_background() {
+    fn gtk_backend_draw_dyn_find_replace_paints_popup_background() {
         use crate::primitives::find_replace::{compute_hit_regions, FindReplacePanel};
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
@@ -8437,6 +8410,7 @@ mod tests {
 
         let (hit_regions, _input_width) = compute_hit_regions(50, false, "1 of 3", 2, 2);
         let panel = FindReplacePanel {
+            id: crate::WidgetId::new("find_replace"),
             query: "needle".into(),
             replacement: String::new(),
             show_replace: false,
@@ -8465,14 +8439,14 @@ mod tests {
             let cr = Context::new(&surface).expect("Context::new");
             let pango_layout = pangocairo::functions::create_layout(&cr);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
-                b.draw_find_replace(QRect::new(0.0, 0.0, W as f32, H as f32), &panel);
+                let rect = panel.anchored_rect(&*b, QRect::new(0.0, 0.0, W as f32, H as f32));
+                let _ = crate::DrawsPrimitives::draw_dyn(b, rect, &panel, &());
             });
         }
 
         let cw = backend.char_width().max(1.0);
         let lh = backend.line_height().max(1.0);
-        // Same geometry `GtkBackend::draw_find_replace` -> `native_surface_paint::paint`
-        // resolves at paint time, via the shared `FindReplaceMetrics` seam.
+        // The box `anchored_rect` placed the panel in.
         let style = crate::style::Style::default();
         let metrics =
             crate::primitives::find_replace::FindReplaceMetrics::resolve(&panel, &style, cw, lh);
@@ -8502,7 +8476,7 @@ mod tests {
     /// abstract; this proves real Pango measurement/drawing of the same
     /// multibyte text through `GtkBackend` doesn't panic either.
     #[test]
-    fn gtk_backend_draw_find_replace_with_multibyte_query_does_not_panic() {
+    fn gtk_backend_draw_dyn_find_replace_with_multibyte_query_does_not_panic() {
         use crate::primitives::find_replace::{compute_hit_regions, FindReplacePanel};
         use pangocairo::cairo::{Context, Format, ImageSurface};
 
@@ -8511,6 +8485,7 @@ mod tests {
 
         let (hit_regions, _input_width) = compute_hit_regions(50, false, "1 of 3", 2, 2);
         let panel = FindReplacePanel {
+            id: crate::WidgetId::new("find_replace"),
             query: "café🎉中文".into(),
             replacement: String::new(),
             show_replace: false,
@@ -8535,14 +8510,15 @@ mod tests {
         let cr = Context::new(&surface).expect("Context::new");
         let pango_layout = pangocairo::functions::create_layout(&cr);
         backend.enter_frame_scope(&cr, &pango_layout, |b| {
-            b.draw_find_replace(QRect::new(0.0, 0.0, W as f32, H as f32), &panel);
+            let rect = panel.anchored_rect(&*b, QRect::new(0.0, 0.0, W as f32, H as f32));
+            let _ = crate::DrawsPrimitives::draw_dyn(b, rect, &panel, &());
         });
     }
 
     // ── Chart real-pixel driver tests ───────────────────────────────────
     //
     // Drive a chart through `draw_primitive` end to end on a real Cairo
-    // surface, the same shape `gtk_backend_draw_find_replace_*` above uses.
+    // surface, the same shape `gtk_backend_draw_dyn_find_replace_*` above uses.
 
     use crate::primitives::chart::{Chart as ChartModel, ChartKind, Series, SERIES_COLORS};
 

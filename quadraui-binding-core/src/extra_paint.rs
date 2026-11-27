@@ -1071,21 +1071,15 @@ impl ExtraPaint for Scrollbar {
 }
 
 impl ExtraPaint for FindReplacePanel {
+    /// Paints the panel in the box [`FindReplacePanel::anchored_rect`]
+    /// places at the top-right of its `group_bounds`, within `area`.
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_find_replace(area, self);
+        let rect = self.anchored_rect(&*backend, area);
+        backend.draw_dyn(rect, self, &());
     }
 
-    /// `FindReplacePanel` carries no `id` field of its own — it is a
-    /// singleton overlay anchored to the active editor group (module doc:
-    /// "the inline find/replace panel that anchors at top-right of the
-    /// active editor group"), so only one instance is ever live at a time,
-    /// the same way the `"find_replace"` slot in a binding's own
-    /// `EXTRA_PRIMITIVES` decode table admits only one active value. A
-    /// fixed sentinel id is therefore enough to address it in
-    /// [`crate::hit::PaintedHit::Extra`] without adding a field to the
-    /// descriptor itself.
     fn id(&self) -> WidgetId {
-        WidgetId::new("find_replace")
+        self.id
     }
 
     /// Whole-area bounds check, same limitation [`Editor::hit_test`]

@@ -1597,10 +1597,11 @@ fn message_list_demo_q_exits() {
     assert!(driver.exited(), "'q' should exit the message list demo");
 }
 
-// ─── FindReplaceApp: click routes through FindReplacePanel::hit_test ─
+// ─── FindReplaceApp: clicks route through the panel's frame-tree widget ─
 
-/// Clicking a toggle button resolves through `FindReplacePanel::hit_test`
-/// and is reported in the status bar.
+/// Clicking a toggle button resolves through the panel's own
+/// `Interactive::handle` and the flipped switch is reported in the status
+/// bar.
 #[test]
 fn find_replace_click_on_toggle_case_reports_it() {
     let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
@@ -1617,8 +1618,8 @@ fn find_replace_click_on_toggle_case_reports_it() {
 
     let after = driver.screen();
     assert!(
-        after.contains("clicked ToggleCase"),
-        "clicking the 'Aa' glyph should report ToggleCase in the status bar:\n{after}"
+        after.contains("CaseSensitive on"),
+        "clicking the 'Aa' glyph should report CaseSensitive on in the status bar:\n{after}"
     );
 }
 
@@ -1641,7 +1642,7 @@ fn find_replace_click_chevron_reveals_replace_row() {
 
     let after = driver.screen();
     assert!(
-        after.contains("clicked Chevron"),
+        after.contains("ShowReplace on"),
         "clicking the chevron should report it in the status bar:\n{after}"
     );
     assert!(
@@ -1650,13 +1651,10 @@ fn find_replace_click_chevron_reveals_replace_row() {
     );
 }
 
-/// `FindReplacePanel::hit_test` compares clicks against px rects; TUI
-/// always calls it with `char_width = line_height = 1.0`, so px space and
-/// cell space are numerically identical here. The find row's "ab"
-/// (whole-word) and ".*" (regex) toggles are otherwise uncovered by any
-/// regression test — only "Aa" is pinned above — so both are exercised end
-/// to end here: located via `driver.find`, clicked, and confirmed via the
-/// status bar.
+/// The panel's layout projects its cell regions at one cell per unit on
+/// TUI. The find row's "ab" (whole-word) and ".*" (regex) toggles are
+/// exercised end to end here: located via `driver.find`, clicked, and
+/// confirmed via the status bar.
 #[test]
 fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
     let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
@@ -1669,8 +1667,8 @@ fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
     });
     driver.click(x, y);
     assert!(
-        driver.screen_contains("clicked ToggleWholeWord"),
-        "clicking the 'ab' glyph should report ToggleWholeWord in the status bar:\n{}",
+        driver.screen_contains("WholeWord on"),
+        "clicking the 'ab' glyph should report WholeWord on in the status bar:\n{}",
         driver.screen()
     );
 
@@ -1679,8 +1677,8 @@ fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
         .unwrap_or_else(|| panic!("the '.*' regex glyph must be visible:\n{}", driver.screen()));
     driver.click(x, y);
     assert!(
-        driver.screen_contains("clicked ToggleRegex"),
-        "clicking the '.*' glyph should report ToggleRegex in the status bar:\n{}",
+        driver.screen_contains("Regex on"),
+        "clicking the '.*' glyph should report Regex on in the status bar:\n{}",
         driver.screen()
     );
 }
@@ -1688,9 +1686,8 @@ fn find_replace_click_on_toggle_whole_word_and_regex_report_them() {
 /// The replace row's toggle ("AB", preserve-case) lives at `row = 1` in
 /// `hit_regions` — unlike the find-row toggles above, which all sit at
 /// `row = 0`. Revealing it via `r` (rather than clicking the chevron,
-/// already covered above) and clicking it end to end exercises
-/// `hit_test`'s px projection of a non-zero `region.row` — the other
-/// half of the px rewrite the find-row cases above can't reach.
+/// already covered above) and clicking it end to end exercises the
+/// layout's projection of a non-zero `region.row`.
 #[test]
 fn find_replace_click_on_replace_row_toggle_preserve_case_reports_it() {
     let mut driver = TuiDriver::new(FindReplaceApp::new(), 100, 20);
@@ -1710,8 +1707,8 @@ fn find_replace_click_on_replace_row_toggle_preserve_case_reports_it() {
     driver.click(x, y);
 
     assert!(
-        driver.screen_contains("clicked TogglePreserveCase"),
-        "clicking the 'AB' glyph on the replace row should report TogglePreserveCase \
+        driver.screen_contains("PreserveCase on"),
+        "clicking the 'AB' glyph on the replace row should report PreserveCase on \
          in the status bar:\n{}",
         driver.screen()
     );

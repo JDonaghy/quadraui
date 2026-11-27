@@ -141,11 +141,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     ),
     (
         "src/win/backend.rs",
-        "fn draw_find_replace",
-        "\"Direct2D find/replace rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_completions",
         "\"Direct2D completions rasteriser (no surface attached yet)\"",
     ),

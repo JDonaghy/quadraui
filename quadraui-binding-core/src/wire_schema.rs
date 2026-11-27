@@ -2380,6 +2380,7 @@ pub fn schema() -> Vec<DefJson> {
     let find_replace_panel_descriptor = b.define(obj(
         "FindReplacePanelDescriptor",
         vec![
+            field_opt("id", re("WidgetId")),
             field("query", str_()),
             field_opt("replacement", str_()),
             field_opt("show_replace", bool_()),
@@ -6072,6 +6073,7 @@ mod coverage {
     assert_fields!(
         assert_find_replace_panel_fields,
         FindReplacePanel {
+            id,
             query,
             replacement,
             show_replace,

@@ -48,7 +48,6 @@ use crate::primitive::{
 use crate::primitives::context_menu::ContextMenu;
 use crate::primitives::dialog::DialogSeverity;
 use crate::primitives::editor::CursorShape as EditorCursorShape;
-use crate::primitives::find_replace::FindReplacePanel;
 use crate::primitives::image::ImageSource;
 use crate::primitives::list::{ListPaintState, ListViewLayout};
 use crate::primitives::progress::{ProgressBar, ProgressBarLayout};
@@ -2532,13 +2531,6 @@ pub trait Backend: sealed::Sealed {
     /// write path at all — there is no real terminal under
     /// `TestBackend`).
     fn set_caret_shape(&mut self, _shape: EditorCursorShape) {}
-
-    /// Draw a [`FindReplacePanel`] (find/replace overlay sitting
-    /// above the editor). The backend pulls the editor-relative
-    /// origin from `rect.x` (TUI's `editor_left` parameter is
-    /// derived from `rect`); hosts that want a non-default offset
-    /// compose the panel into a sub-rect.
-    fn draw_find_replace(&mut self, rect: Rect, panel: &FindReplacePanel);
 
     /// Draw a [`Scrollbar`] (standalone primitive, vs the
     /// per-section scrollbars MSV paints internally). The backend

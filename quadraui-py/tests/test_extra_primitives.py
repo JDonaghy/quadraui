@@ -2327,12 +2327,12 @@ def test_inline_tree_leaf_markdown_renders_formatting_and_link_click_emits_event
 
 
 def test_inline_tree_leaf_find_replace_renders_query_text():
-    # `FindReplacePanel` carries no `id` field of its own (see
-    # `ExtraPaint::id`'s fixed-sentinel doc); `test_missing_primitives.py`
+    # A `FindReplacePanel` with no `id` takes its default `"find_replace"`
+    # id; `test_missing_primitives.py`
     # already covers it through the flat-slot path, so this proves the
     # same painter also works from an inline layout leaf. `hit_regions`
     # drives both click routing AND which content the TUI rasteriser
-    # paints (`tui::draw_find_replace` walks it to place the find/replace
+    # paints (the cell painter walks it to place the find/replace
     # input text) -- a real host builds it via
     # `compute_find_replace_hit_regions`; this test supplies just the one
     # entry it needs directly. An inline leaf gets the full 40-column

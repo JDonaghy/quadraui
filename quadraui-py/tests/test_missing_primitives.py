@@ -180,7 +180,7 @@ def _find_replace_descriptor():
     # additive primitive: a narrow `width` here keeps the panel's
     # resolved `x` inside the 40-column screen `QuiApp(40, 20)` below
     # paints into. `hit_regions` drives both click routing AND which
-    # content the TUI rasteriser paints (`tui::draw_find_replace` walks
+    # content the TUI rasteriser paints (the cell painter walks
     # it to place the find/replace input text, toggles, and nav
     # buttons) -- a real host builds it via `compute_find_replace_hit_regions`;
     # this test supplies just the one entry it needs directly.

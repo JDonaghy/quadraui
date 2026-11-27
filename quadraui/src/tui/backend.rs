@@ -2986,28 +2986,6 @@ impl Backend for TuiBackend {
         });
     }
 
-    fn draw_find_replace(
-        &mut self,
-        rect: QRect,
-        panel: &crate::primitives::find_replace::FindReplacePanel,
-    ) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        // TUI free function takes `editor_left: u16` for editor-relative
-        // positioning. The trait abstraction passes the panel's full
-        // rect; downstream consumers that want a non-zero editor offset
-        // should compose into a sub-rect.
-        let editor_left = area.x;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_find_replace called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_find_replace(frame.buffer_mut(), area, panel, &theme, editor_left);
-    }
-
     fn draw_scrollbar(
         &mut self,
         _rect: QRect,
@@ -3272,13 +3250,6 @@ mod tests {
         }
 
         // ── #13: stubs for the trait methods added with this issue ──
-
-        fn draw_find_replace(
-            &mut self,
-            _r: QRect,
-            _p: &crate::primitives::find_replace::FindReplacePanel,
-        ) {
-        }
 
         fn draw_scrollbar(&mut self, _r: QRect, _s: &crate::primitives::scrollbar::Scrollbar) {}
 
