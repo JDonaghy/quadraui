@@ -343,10 +343,12 @@ pub(crate) mod row_content_paint {
     /// Paint `text`'s spans left to right from `cursor_x` within the row
     /// band `row_y`..`row_y + row_h`, each in its own colour (else
     /// `default_fg`) and weight, vertically centred, over its own `bg`
-    /// when set. A span that overflows `right_limit` is ellipsis-truncated
-    /// via the shared [`crate::paint_surface::fit_text_prefix`] rather
-    /// than hard-clipped mid-glyph, and nothing after it paints. Returns
-    /// the cursor past the last painted glyph.
+    /// when set. When the whole label is wider than `right_limit -
+    /// cursor_x`, the span that crosses the limit is ellipsis-truncated
+    /// via the shared [`crate::paint_surface::fit_text_prefix`] rather than
+    /// hard-clipped mid-glyph, and nothing after it paints; an empty span
+    /// is no reason to stop. Returns the cursor past the last painted
+    /// glyph.
     pub(crate) fn paint_row_spans(
         surface: &mut dyn PaintSurface,
         text: &StyledText,
@@ -355,14 +357,21 @@ pub(crate) mod row_content_paint {
         (row_y, row_h): (f32, f32),
         default_fg: Color,
     ) -> f32 {
+        let avail = (right_limit - cursor_x).max(0.0);
+        let total_w: f32 = text
+            .spans
+            .iter()
+            .map(|span| surface.surface_measure_text_styled(&span.text, span.bold).0)
+            .sum();
+        let needs_ellipsis = total_w > avail;
+        let mut remaining = avail;
         for span in &text.spans {
-            let remaining = right_limit - cursor_x;
             if remaining <= 0.0 {
                 break;
             }
             let span_fg = span.fg.unwrap_or(default_fg);
             let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
-            let (paint_text, paint_w, truncated) = if sw <= remaining {
+            let (paint_text, paint_w, truncated) = if !needs_ellipsis || sw <= remaining {
                 (span.text.clone(), sw, false)
             } else {
                 let (t, w) = crate::paint_surface::fit_text_prefix(
@@ -370,7 +379,9 @@ pub(crate) mod row_content_paint {
                 );
                 (t, w, true)
             };
-            if paint_w <= 0.0 {
+            if truncated && paint_w <= 0.0 {
+                // No room even for an ellipsis-only prefix, so every later
+                // span is fully overflowed too.
                 break;
             }
             if let Some(sbg) = span.bg {
@@ -386,6 +397,7 @@ pub(crate) mod row_content_paint {
                 1.0,
             );
             cursor_x += paint_w;
+            remaining -= paint_w;
             if truncated {
                 break;
             }

@@ -1134,7 +1134,7 @@ pub(crate) mod native_surface_paint {
                 nerd_fonts_enabled,
                 def_fg,
             );
-            let mut cursor_x = cell.label_rect.x;
+            let cursor_x = cell.label_rect.x;
 
             if let Some(ref edit) = row.edit {
                 paint_edit_input(
@@ -1172,62 +1172,21 @@ pub(crate) mod native_surface_paint {
             // fits — rather than hard-clipped mid-glyph, so GTK/macOS/Win
             // all show the same VS Code-style truncation TUI already did.
             let avail = (text_right_limit - cursor_x).max(0.0);
-            let total_w: f32 = row
-                .text
-                .spans
-                .iter()
-                .map(|span| surface.surface_measure_text_styled(&span.text, span.bold).0)
-                .sum();
-            let needs_ellipsis = total_w > avail;
 
             surface.surface_push_clip(Rect::new(cursor_x, row_y, avail, row_h));
-            let mut remaining = avail;
-            for span in &row.text.spans {
-                if remaining <= 0.0 {
-                    break;
-                }
-                let span_fg = if let Some(c) = span.fg {
-                    c
-                } else if matches!(row.decoration, Decoration::Muted) {
-                    theme.muted_fg
-                } else {
-                    def_fg
-                };
-                let (sw, sh) = surface.surface_measure_text_styled(&span.text, span.bold);
-                let (paint_text, paint_w, truncated) = if !needs_ellipsis || sw <= remaining {
-                    (span.text.clone(), sw, false)
-                } else {
-                    let (t, w) = crate::paint_surface::fit_text_prefix(
-                        surface, &span.text, span.bold, remaining,
-                    );
-                    (t, w, true)
-                };
-                if truncated && paint_w <= 0.0 {
-                    // Truncation left no room even for an ellipsis-only
-                    // prefix, so every later span is fully overflowed too.
-                    break;
-                }
-                if let Some(sbg) = span.bg {
-                    surface.surface_fill_rect(Rect::new(cursor_x, row_y, paint_w, row_h), sbg);
-                }
-                let sy = row_y + (row_h - sh) / 2.0;
-                surface.surface_draw_text_run_styled(
-                    Rect::new(cursor_x, sy, paint_w, sh),
-                    &paint_text,
-                    span_fg,
-                    span.bold,
-                    false,
-                    false,
-                    1.0,
-                );
-                cursor_x += paint_w;
-                remaining -= paint_w;
-                if paint_text != span.text {
-                    // This span was truncated with an ellipsis — any
-                    // later spans are fully overflowed, so stop here.
-                    break;
-                }
-            }
+            let label_fg = if matches!(row.decoration, Decoration::Muted) {
+                theme.muted_fg
+            } else {
+                def_fg
+            };
+            crate::primitives::row_stack::row_content_paint::paint_row_spans(
+                surface,
+                &row.text,
+                cursor_x,
+                text_right_limit,
+                (row_y, row_h),
+                label_fg,
+            );
             surface.surface_pop_clip();
 
             if let Some((btext, bw, bfg, bbg)) = badge_info {

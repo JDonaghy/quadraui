@@ -671,7 +671,8 @@ mod cell_paint_tests {
         let buf_area = Rect::new(0, 0, 10, 1);
         let mut buf = Buffer::empty(buf_area);
         let spinner = mk_spinner("Test", 0);
-        let _layout = paint_spinner_cells(&mut buf, Rect::new(0, 0, 0, 0), &spinner, &Theme::default());
+        let _layout =
+            paint_spinner_cells(&mut buf, Rect::new(0, 0, 0, 0), &spinner, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
