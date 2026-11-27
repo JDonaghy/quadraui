@@ -1030,7 +1030,7 @@ impl Primitive for ContextMenu {
         crate::paint_surface::shadow_extent(style.shadow_elevation) + style.border_width
     }
 
-    /// The widest row's own content ([`Self::measure_generic_width`]) and
+    /// The widest row's own content ([`level_width`]) and
     /// one [`item_heights`] row per item — plus, on a cell grid, the
     /// border ring both axes spend a cell on at each edge.
     fn measure(&self, ctx: &LayoutCtx, _avail: Size) -> crate::NaturalSize {
@@ -1042,7 +1042,7 @@ impl Primitive for ContextMenu {
             .map(|item| if item.is_separator() { sep_h } else { item_h })
             .sum();
         crate::NaturalSize::new(
-            Some(self.measure_generic_width(ctx.char_width, 0.0) + inset * 2.0),
+            Some(level_width(ctx, &self.items, row_pitch(ctx)) + inset * 2.0),
             Some(height + inset * 2.0),
         )
     }
@@ -1229,6 +1229,64 @@ fn border_inset_for(ctx: &LayoutCtx) -> f32 {
 /// The line height [`item_heights`] derives row pitch from, floored at
 /// one unit so a ctx carrying no line height still lays out one row per
 /// item instead of collapsing every row to zero.
+/// A menu level's width from its items' real label/detail text — the
+/// width every dropdown, submenu and right-click menu level takes.
+/// A flat width guess cannot fit both TUI's fixed grid and a
+/// proportional chrome font on GTK/macOS/Win. Mirrors
+/// [`ContextMenu::measure_generic_width`]'s per-item accounting (a
+/// leading `✓ ` slot when [`ContextMenuItem::checked`] is `Some(_)`, or
+/// the same slot for [`ContextMenuItem::icon`] when `checked` is unset,
+/// plus a trailing gap plus either a `▶` submenu arrow or
+/// [`ContextMenuItem::detail`]'s text) but measures the real chrome-font
+/// advance instead of counting characters.
+/// [`ContextMenuItem::key_equivalent`]-rendered shortcuts aren't counted,
+/// the same omission `measure_generic_width` documents for itself.
+pub(crate) fn level_width(ctx: &LayoutCtx, items: &[ContextMenuItem], lh: f32) -> f32 {
+    let cells = matches!(ctx.units(), Units::Cells);
+    let measure = |text: &str| -> f32 {
+        if cells {
+            crate::text_util::display_width(text) as f32
+        } else {
+            ctx.text_width(text, crate::FontRole::Chrome)
+        }
+    };
+    let space_w = measure(" ");
+    // A pixel surface paints the codicon check/chevron glyphs (the
+    // `codicon::CHECK` / `codicon::CHEVRON_RIGHT` code points, which are
+    // square-advance at the font em and wider than either plain-text
+    // glyph); a cell grid paints the plain `✓`/`▶`. Every pixel backend
+    // registers the codicon face itself.
+    let (check_glyph, arrow_glyph): (&str, &str) = if cells {
+        ("✓", "▶")
+    } else {
+        ("\u{eab2}", "\u{eab6}")
+    };
+    let checked_w = measure(check_glyph) + space_w;
+    let arrow_w = space_w + measure(arrow_glyph);
+    let max_content_w = items
+        .iter()
+        .filter(|item| !item.is_separator())
+        .map(|item| {
+            let label: String = item.label.spans.iter().map(|s| s.text.as_str()).collect();
+            let mut w = measure(&label);
+            if item.checked.is_some() || item.icon.is_some() {
+                w += checked_w;
+            }
+            if item.submenu.is_some() {
+                w += arrow_w;
+            } else if let Some(det) = &item.detail {
+                let text: String = det.spans.iter().map(|s| s.text.as_str()).collect();
+                w += space_w + measure(&text);
+            }
+            w
+        })
+        .fold(0.0_f32, f32::max);
+    // Interior margin: a budget expressed in line-heights rather than
+    // assuming a meaningful relationship between `lh` and the chrome
+    // font's space advance.
+    (max_content_w + lh * 3.0).max(lh * 8.0)
+}
+
 fn row_pitch(ctx: &LayoutCtx) -> f32 {
     if ctx.line_height > 0.0 {
         ctx.line_height
@@ -4572,7 +4630,7 @@ mod widget_contract_tests {
         let natural = Primitive::measure(&menu, &cell_ctx(), Size::new(80.0, 24.0));
         assert_eq!(
             natural.width,
-            Some(menu.measure_generic_width(1.0, 0.0) + CELL_BORDER_INSET * 2.0)
+            Some(level_width(&cell_ctx(), &menu.items, 1.0) + CELL_BORDER_INSET * 2.0)
         );
         // Five one-cell rows plus a border cell top and bottom.
         assert_eq!(natural.height, Some(7.0));
