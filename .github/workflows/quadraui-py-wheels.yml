@@ -162,6 +162,42 @@ jobs:
           # is a no-op on macOS/Windows; there is no GTK dependency here to
           # make manylinux's older glibc/toolchain a problem.
           manylinux: auto
+      # The package is dual-licensed MIT OR Apache-2.0, so every wheel must
+      # carry both license texts. maturin picks up `quadraui-py/LICENSE-*`
+      # automatically; this fails the leg if that ever stops happening, or if
+      # a file ships with something other than the real license text.
+      - name: Check the built wheel ships both license texts
+        shell: bash
+        run: |
+          python - <<'PY'
+          import glob
+          import sys
+          import zipfile
+
+          wheels = glob.glob("quadraui-py/dist/*.whl")
+          if not wheels:
+              sys.exit("::error::no wheel found in quadraui-py/dist")
+          expected = {"LICENSE-MIT": "MIT License", "LICENSE-APACHE": "Apache License"}
+          failed = False
+          for wheel in wheels:
+              with zipfile.ZipFile(wheel) as zf:
+                  for name, header in expected.items():
+                      hits = [
+                          n for n in zf.namelist()
+                          if ".dist-info/" in n and n.rsplit("/", 1)[-1] == name
+                      ]
+                      if not hits:
+                          print(f"::error::{wheel} has no {name} in its .dist-info")
+                          failed = True
+                          continue
+                      text = zf.read(hits[0]).decode("utf-8", "replace").lstrip()
+                      if not text.startswith(header):
+                          print(f"::error::{wheel}:{hits[0]} does not start with {header!r}")
+                          failed = True
+                      else:
+                          print(f"{wheel}: {hits[0]} ok")
+          sys.exit(1 if failed else 0)
+          PY
       - name: Import the built wheel
         shell: bash
         run: |

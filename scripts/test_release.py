@@ -888,6 +888,20 @@ class RepoTreeTests(unittest.TestCase):
             f"major.minor ({crate_version}); `release.py prepare` keeps them in step",
         )
 
+    def test_binding_license_copies_match_the_root_originals(self):
+        # npm and maturin package these bindings on Windows too, where a
+        # checkout without symlink support turns a symlink into a text file
+        # holding its target path, so the bindings ship plain copies.
+        for binding in ("quadraui-py", "quadraui-node"):
+            for name in ("LICENSE-MIT", "LICENSE-APACHE"):
+                copy = self.REPO_ROOT / binding / name
+                self.assertFalse(copy.is_symlink(), f"{binding}/{name}")
+                self.assertEqual(
+                    copy.read_bytes(),
+                    (self.REPO_ROOT / name).read_bytes(),
+                    f"{binding}/{name} has drifted from the root {name}",
+                )
+
     def test_every_dependency_snippet_path_exists(self):
         for rel_path in release.DEPENDENCY_SNIPPET_PATHS:
             self.assertTrue((self.REPO_ROOT / rel_path).is_file(), rel_path)
