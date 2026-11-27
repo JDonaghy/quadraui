@@ -1590,10 +1590,6 @@ pub(crate) fn paint_bare_field_cells(
     focused: bool,
     theme: &crate::Theme,
 ) {
-    // CSR: ratatui_buffer escape hatch
-    let buf = cells
-        .ratatui_buffer()
-        .expect(crate::primitive::CELL_BUFFER_REQUIRED);
     let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
     let track = layout.track.map(|t| {
         (
@@ -1601,7 +1597,7 @@ pub(crate) fn paint_bare_field_cells(
             t.width.max(0.0).round() as usize,
         )
     });
-    cell_paint::paint_bare_field(buf, area, kind, disabled, focused, track, theme);
+    cell_paint::paint_bare_field(cells, area, kind, disabled, focused, track, theme);
 }
 
 #[cfg(any(

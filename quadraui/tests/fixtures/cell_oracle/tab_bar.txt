@@ -1,0 +1,122 @@
+== plain
+area 0 0 70 1
+| src: main.rs× lib.rs● 中␀ 中␀文␀.txt× notes│                        … ⇅|
+0 0..1 fg=Rgb(220, 100, 30) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 1..2 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 2..7 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 7..14 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=UNDERLINED ul=Rgb(0, 140, 255)
+0 14..15 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 15..16 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 16..22 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 22..23 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 23..24 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 24..26 fg=Rgb(30, 200, 90) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 26..27 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 27..35 fg=Rgb(110, 110, 125) bg=Rgb(20, 22, 30) mod=ITALIC ul=Reset
+0 35..36 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 36..37 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 37..42 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 42..43 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 43..66 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 66..69 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 69..70 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+== hovered
+area 0 0 70 1
+| src: main.rs× lib.rs● 中␀ 中␀文␀.txt× notes│                        … ⇅|
+0 0..1 fg=Rgb(220, 100, 30) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 1..2 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 2..7 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 7..14 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=UNDERLINED ul=Rgb(0, 140, 255)
+0 14..15 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 15..16 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 16..22 fg=Rgb(140, 140, 150) bg=Rgb(36, 38, 45) mod=NONE ul=Reset
+0 22..23 fg=Rgb(220, 220, 220) bg=Rgb(36, 38, 45) mod=NONE ul=Reset
+0 23..24 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 24..26 fg=Rgb(30, 200, 90) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 26..27 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 27..35 fg=Rgb(110, 110, 125) bg=Rgb(20, 22, 30) mod=ITALIC ul=Reset
+0 35..36 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 36..37 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 37..42 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 42..43 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 43..66 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 66..69 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 69..70 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+== pressed_offset
+area 0 0 72 2
+|                                                                        |
+|   src: main.rs× lib.rs● 中␀ 中␀文␀.txt× notes│                        … ⇅|
+0 0..72 fg=Reset bg=Reset mod=NONE ul=Reset
+1 0..2 fg=Reset bg=Reset mod=NONE ul=Reset
+1 2..3 fg=Rgb(220, 100, 30) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+1 3..4 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 4..9 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+1 9..16 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=UNDERLINED ul=Rgb(0, 140, 255)
+1 16..17 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+1 17..18 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 18..24 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 24..25 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 25..26 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 26..28 fg=Rgb(30, 200, 90) bg=Rgb(52, 54, 60) mod=NONE ul=Reset
+1 28..29 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 29..37 fg=Rgb(110, 110, 125) bg=Rgb(52, 54, 60) mod=ITALIC ul=Reset
+1 37..38 fg=Rgb(60, 62, 72) bg=Rgb(52, 54, 60) mod=NONE ul=Reset
+1 38..39 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 39..44 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 44..45 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 45..68 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 68..71 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 71..72 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+== narrow
+area 0 0 22 1
+| src: main.rs×    … ⇅|
+0 0..1 fg=Rgb(220, 100, 30) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 1..2 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 2..7 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 7..14 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=UNDERLINED ul=Rgb(0, 140, 255)
+0 14..15 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 15..18 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 18..21 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 21..22 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+== framed
+area 0 0 70 1
+|[ src: main.rsx]lib.rs● 中␀ 中␀文␀.txtx notes│                       … ⇅|
+0 0..1 fg=Rgb(220, 220, 220) bg=Rgb(54, 58, 69) mod=NONE ul=Reset
+0 1..2 fg=Rgb(220, 100, 30) bg=Rgb(54, 58, 69) mod=NONE ul=Reset
+0 2..3 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 3..8 fg=Rgb(220, 220, 220) bg=Rgb(54, 58, 69) mod=NONE ul=Reset
+0 8..15 fg=Rgb(220, 220, 220) bg=Rgb(54, 58, 69) mod=UNDERLINED ul=Rgb(0, 140, 255)
+0 15..17 fg=Rgb(220, 220, 220) bg=Rgb(54, 58, 69) mod=NONE ul=Reset
+0 17..23 fg=Rgb(20, 22, 30) bg=Rgb(140, 140, 150) mod=NONE ul=Reset
+0 23..24 fg=Rgb(20, 22, 30) bg=Rgb(220, 220, 220) mod=NONE ul=Reset
+0 24..25 fg=Rgb(140, 140, 150) bg=Rgb(140, 140, 150) mod=NONE ul=Reset
+0 25..27 fg=Rgb(30, 200, 90) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 27..28 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 28..36 fg=Rgb(110, 110, 125) bg=Rgb(20, 22, 30) mod=ITALIC ul=Reset
+0 36..37 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 37..38 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 38..43 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 43..44 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 44..66 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 66..69 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 69..70 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+== ruled
+area 0 0 70 1
+| src: main.rs× lib.rs● 中␀ 中␀文␀.txt× notes                         … ⇅|
+0 0..1 fg=Rgb(220, 100, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 1..2 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 2..14 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 14..15 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 15..16 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 16..22 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 22..23 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 23..24 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 24..26 fg=Rgb(30, 200, 90) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 26..27 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 27..35 fg=Rgb(180, 180, 200) bg=Rgb(40, 44, 56) mod=ITALIC | UNDERLINED ul=Rgb(0, 140, 255)
+0 35..36 fg=Rgb(220, 220, 220) bg=Rgb(40, 44, 56) mod=NONE ul=Reset
+0 36..37 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 37..42 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 42..66 fg=Rgb(20, 22, 30) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 66..69 fg=Rgb(140, 140, 150) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 69..70 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset

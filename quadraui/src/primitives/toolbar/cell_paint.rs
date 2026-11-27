@@ -34,16 +34,13 @@
 //! contract, [`crate::interactive::Interactive::handle`]'s own
 //! `ToolbarState` cursor); this rasteriser is purely declarative.
 //!
-//! Takes `&mut ratatui::buffer::Buffer` rather than a quadraui-local
-//! cell-surface abstraction, for the reason
-//! [`crate::primitive::Primitive::paint_cells`] documents at length: a
-//! terminal rasteriser picks individual glyphs (`[`, `]`, `│`, `▾`, `»`)
-//! and reckons in [`char_cell_width`] columns, neither of which a
-//! pixel-shaped [`crate::paint_surface::PaintSurface`] verb can express.
+//! Paints through [`crate::CellSurface`] rather than a
+//! [`crate::paint_surface::PaintSurface`]: a terminal rasteriser picks
+//! individual glyphs (`[`, `]`, `│`, `▾`, `»`) and reckons in
+//! [`char_cell_width`] columns, neither of which a pixel-shaped verb can
+//! express.
 
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
 
 use super::cell_layout::{
     rail_layout_options, tui_text_row, tui_toolbar_effective_layout,
@@ -54,10 +51,10 @@ use super::{
     ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow, ToolbarOverflowPriorities,
     ToolbarPaintOptions, ToolbarRailStyle, VisibleToolbarItem,
 };
+use crate::cell_surface::{solid_style, CellModifier, CellSurface};
 use crate::text_util::{char_cell_width, display_width};
 use crate::theme::Theme;
-use crate::tui::{ratatui_color as qc, set_cell, set_cell_wide};
-use crate::types::WidgetId;
+use crate::types::{Color, WidgetId};
 
 /// Minimum cell width for a [`ToolbarButton::Field`] to paint its full
 /// `[icon value ×]` box. Narrower than this (only reachable via a
@@ -104,7 +101,7 @@ fn action_content_cells(icon: Option<&str>, label: &str, key_hint: Option<&str>)
     cells
 }
 
-/// Draw a [`Toolbar`] into `area` on `buf`. Returns the layout for host
+/// Draw a [`Toolbar`] into `area` on `surface`. Returns the layout for host
 /// click dispatch.
 ///
 /// Equivalent to [`draw_toolbar_with_options`] with
@@ -114,7 +111,7 @@ fn action_content_cells(icon: Option<&str>, label: &str, key_hint: Option<&str>)
 /// untouched. See [`ToolbarPaintOptions`] and `CLAUDE.md`'s *Downstream
 /// consumers* rule 2.
 pub fn draw_toolbar(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     bar: &Toolbar,
     theme: &Theme,
@@ -122,7 +119,7 @@ pub fn draw_toolbar(
     pressed_id: Option<&WidgetId>,
 ) -> ToolbarLayout {
     draw_toolbar_with_options(
-        buf,
+        surface,
         area,
         bar,
         theme,
@@ -136,7 +133,7 @@ pub fn draw_toolbar(
 /// resolves which row button/label text paints on when
 /// `area.height > 1` — see [`tui_text_row`].
 pub fn draw_toolbar_with_options(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     bar: &Toolbar,
     theme: &Theme,
@@ -157,13 +154,13 @@ pub fn draw_toolbar_with_options(
 
     let (effective, layout) = tui_toolbar_effective_layout(bar, area);
 
-    let bar_bg = qc(bar.bg.unwrap_or(theme.header_bg));
-    let fg = qc(theme.foreground);
-    let muted = qc(theme.muted_fg);
-    let hover_bg = qc(theme.hover_bg);
-    let hover_fg = qc(theme.hover_fg);
-    let active_bg = qc(theme.selected_bg);
-    let focus_bg = qc(theme.accent_bg);
+    let bar_bg = bar.bg.unwrap_or(theme.header_bg);
+    let fg = theme.foreground;
+    let muted = theme.muted_fg;
+    let hover_bg = theme.hover_bg;
+    let hover_fg = theme.hover_fg;
+    let active_bg = theme.selected_bg;
+    let focus_bg = theme.accent_bg;
 
     // Resolve the text row per `options.valign`. On a
     // 1-row slot every variant resolves to `area.y`.
@@ -174,7 +171,7 @@ pub fn draw_toolbar_with_options(
     // rows of stale buffer.
     for dy in 0..area.height {
         for dx in 0..area.width {
-            set_cell(buf, area.x + dx, area.y + dy, ' ', fg, bar_bg);
+            surface.put_char(area.x + dx, area.y + dy, ' ', solid_style(fg, bar_bg));
         }
     }
 
@@ -182,7 +179,7 @@ pub fn draw_toolbar_with_options(
         let btn = &effective.buttons[vis.item_idx];
         let is_focused = effective.focused_index == Some(vis.item_idx);
         draw_toolbar_item(
-            buf,
+            surface,
             area.y..area.y + area.height,
             text_row,
             vis,
@@ -213,7 +210,7 @@ pub fn draw_toolbar_with_options(
 /// different focus sources.
 #[allow(clippy::too_many_arguments)]
 fn draw_toolbar_item(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     rows: std::ops::Range<u16>,
     text_row: u16,
     vis: &VisibleToolbarItem,
@@ -222,13 +219,13 @@ fn draw_toolbar_item(
     theme: &Theme,
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
-    bar_bg: ratatui::style::Color,
-    fg: ratatui::style::Color,
-    muted: ratatui::style::Color,
-    hover_bg: ratatui::style::Color,
-    hover_fg: ratatui::style::Color,
-    active_bg: ratatui::style::Color,
-    focus_bg: ratatui::style::Color,
+    bar_bg: Color,
+    fg: Color,
+    muted: Color,
+    hover_bg: Color,
+    hover_fg: Color,
+    active_bg: Color,
+    focus_bg: Color,
 ) {
     let item_x = vis.bounds.x.round() as u16;
     let item_w = vis.bounds.width.round() as u16;
@@ -275,7 +272,7 @@ fn draw_toolbar_item(
             } else if is_focused {
                 (fg, focus_bg)
             } else if let Some(intent) = intent_fg {
-                (qc(intent), bar_bg)
+                (intent, bar_bg)
             } else {
                 (fg, bar_bg)
             };
@@ -298,7 +295,7 @@ fn draw_toolbar_item(
             // multi-row toolbars (Gap 1).
             for y in rows.clone() {
                 for dx in 0..item_w {
-                    set_cell(buf, item_x + dx, y, ' ', cell_fg, cell_bg);
+                    surface.put_char(item_x + dx, y, ' ', solid_style(cell_fg, cell_bg));
                 }
             }
 
@@ -310,7 +307,7 @@ fn draw_toolbar_item(
                 if col + cw > item_w {
                     break;
                 }
-                set_cell(buf, item_x + col, text_row, ch, cell_fg, cell_bg);
+                surface.put_char(item_x + col, text_row, ch, solid_style(cell_fg, cell_bg));
                 col += cw;
             }
         }
@@ -320,22 +317,22 @@ fn draw_toolbar_item(
             // multi-row toolbars.
             for y in rows.clone() {
                 if item_w >= 1 {
-                    set_cell(buf, item_x, y, ' ', muted, bar_bg);
+                    surface.put_char(item_x, y, ' ', solid_style(muted, bar_bg));
                 }
                 if item_w >= 2 {
-                    set_cell(buf, item_x + 1, y, '│', muted, bar_bg);
+                    surface.put_char(item_x + 1, y, '│', solid_style(muted, bar_bg));
                 }
             }
         }
         ToolbarButton::Label { text, fg: label_fg } => {
-            let color = label_fg.map(qc).unwrap_or(muted);
+            let color = label_fg.unwrap_or(muted);
             let mut col: u16 = 0;
             for ch in text.chars() {
                 let cw = char_cell_width(ch);
                 if col + cw > item_w {
                     break;
                 }
-                set_cell(buf, item_x + col, text_row, ch, color, bar_bg);
+                surface.put_char(item_x + col, text_row, ch, solid_style(color, bar_bg));
                 col += cw;
             }
         }
@@ -345,7 +342,7 @@ fn draw_toolbar_item(
         ToolbarButton::Spacer => {}
         ToolbarButton::Group { items, .. } => {
             draw_group_horizontal(
-                buf, rows, vis, items, hovered_id, pressed_id, text_row, bar_bg, fg, muted,
+                surface, rows, vis, items, hovered_id, pressed_id, text_row, bar_bg, fg, muted,
                 hover_bg, hover_fg, active_bg,
             );
         }
@@ -358,18 +355,18 @@ fn draw_toolbar_item(
                     .unwrap_or('\u{1F50D}');
                 for y in rows.clone() {
                     for dx in 0..item_w {
-                        set_cell(buf, item_x + dx, y, ' ', muted, bar_bg);
+                        surface.put_char(item_x + dx, y, ' ', solid_style(muted, bar_bg));
                     }
                 }
                 let gx = item_x + item_w.saturating_sub(1) / 2;
-                set_cell(buf, gx, text_row, glyph, muted, bar_bg);
+                surface.put_char(gx, text_row, glyph, solid_style(muted, bar_bg));
             } else {
                 let field_rect = Rect::new(item_x, text_row, item_w, 1);
                 // Nerd Fonts default off on TUI — same documented
                 // default `tui::toolbar`'s own `Action` icons already
                 // assume (they arrive pre-resolved by the host, which
                 // picks the fallback half on this backend).
-                draw_embedded_text_field(buf, field_rect, field, theme);
+                draw_embedded_text_field(surface, field_rect, field, theme);
             }
         }
         ToolbarButton::MenuButton {
@@ -398,7 +395,7 @@ fn draw_toolbar_item(
 
             for y in rows.clone() {
                 for dx in 0..item_w {
-                    set_cell(buf, item_x + dx, y, ' ', cell_fg, cell_bg);
+                    surface.put_char(item_x + dx, y, ' ', solid_style(cell_fg, cell_bg));
                 }
             }
             let mut col: u16 = 0;
@@ -407,7 +404,7 @@ fn draw_toolbar_item(
                 if col + cw > item_w {
                     break;
                 }
-                set_cell(buf, item_x + col, text_row, ch, cell_fg, cell_bg);
+                surface.put_char(item_x + col, text_row, ch, solid_style(cell_fg, cell_bg));
                 col += cw;
             }
         }
@@ -428,19 +425,19 @@ fn draw_toolbar_item(
 /// never a keyboard focus target today).
 #[allow(clippy::too_many_arguments)]
 fn draw_group_horizontal(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     rows: std::ops::Range<u16>,
     vis: &VisibleToolbarItem,
     items: &[ToolbarButton],
     hovered_id: Option<&WidgetId>,
     pressed_id: Option<&WidgetId>,
     text_row: u16,
-    bar_bg: ratatui::style::Color,
-    fg: ratatui::style::Color,
-    muted: ratatui::style::Color,
-    hover_bg: ratatui::style::Color,
-    hover_fg: ratatui::style::Color,
-    active_bg: ratatui::style::Color,
+    bar_bg: Color,
+    fg: Color,
+    muted: Color,
+    hover_bg: Color,
+    hover_fg: Color,
+    active_bg: Color,
 ) {
     let item_x = vis.bounds.x.round() as u16;
     let item_w = vis.bounds.width.round() as u16;
@@ -450,9 +447,9 @@ fn draw_group_horizontal(
 
     // The group's own leading/trailing bracket cells.
     for y in rows.clone() {
-        set_cell(buf, item_x, y, '[', muted, bar_bg);
+        surface.put_char(item_x, y, '[', solid_style(muted, bar_bg));
         if item_w >= 2 {
-            set_cell(buf, item_x + item_w - 1, y, ']', muted, bar_bg);
+            surface.put_char(item_x + item_w - 1, y, ']', solid_style(muted, bar_bg));
         }
     }
 
@@ -467,7 +464,7 @@ fn draw_group_horizontal(
         // the first).
         if child.item_idx > 0 && cx > item_x {
             for y in rows.clone() {
-                set_cell(buf, cx - 1, y, '│', muted, bar_bg);
+                surface.put_char(cx - 1, y, '│', solid_style(muted, bar_bg));
             }
         }
 
@@ -505,7 +502,7 @@ fn draw_group_horizontal(
 
         for y in rows.clone() {
             for dx in 0..cw {
-                set_cell(buf, cx + dx, y, ' ', cell_fg, cell_bg);
+                surface.put_char(cx + dx, y, ' ', solid_style(cell_fg, cell_bg));
             }
         }
 
@@ -534,7 +531,7 @@ fn draw_group_horizontal(
             if col + cw2 > cw {
                 break;
             }
-            set_cell(buf, cx + col, text_row, ch, cell_fg, cell_bg);
+            surface.put_char(cx + col, text_row, ch, solid_style(cell_fg, cell_bg));
             col += cw2;
         }
     }
@@ -557,7 +554,7 @@ fn draw_group_horizontal(
 /// run — so a host that switches a toolbar's orientation keeps its
 /// existing hover/pressed/focused/active/disabled visuals.
 pub fn draw_toolbar_oriented(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     bar: &Toolbar,
     theme: &Theme,
@@ -566,7 +563,7 @@ pub fn draw_toolbar_oriented(
     layout_options: ToolbarLayoutOptions,
 ) -> ToolbarLayout {
     if layout_options.orientation == ToolbarOrientation::Horizontal {
-        return draw_toolbar(buf, area, bar, theme, hovered_id, pressed_id);
+        return draw_toolbar(surface, area, bar, theme, hovered_id, pressed_id);
     }
 
     if area.width == 0 || area.height == 0 {
@@ -580,17 +577,17 @@ pub fn draw_toolbar_oriented(
 
     let layout = tui_toolbar_layout_with_options(bar, area, layout_options);
 
-    let bar_bg = qc(bar.bg.unwrap_or(theme.header_bg));
-    let fg = qc(theme.foreground);
-    let muted = qc(theme.muted_fg);
-    let hover_bg = qc(theme.hover_bg);
-    let hover_fg = qc(theme.hover_fg);
-    let active_bg = qc(theme.selected_bg);
-    let focus_bg = qc(theme.accent_bg);
+    let bar_bg = bar.bg.unwrap_or(theme.header_bg);
+    let fg = theme.foreground;
+    let muted = theme.muted_fg;
+    let hover_bg = theme.hover_bg;
+    let hover_fg = theme.hover_fg;
+    let active_bg = theme.selected_bg;
+    let focus_bg = theme.accent_bg;
 
     for dy in 0..area.height {
         for dx in 0..area.width {
-            set_cell(buf, area.x + dx, area.y + dy, ' ', fg, bar_bg);
+            surface.put_char(area.x + dx, area.y + dy, ' ', solid_style(fg, bar_bg));
         }
     }
 
@@ -630,7 +627,7 @@ pub fn draw_toolbar_oriented(
                 } else if is_focused {
                     (fg, focus_bg)
                 } else if let Some(intent) = intent_fg {
-                    (qc(intent), bar_bg)
+                    (intent, bar_bg)
                 } else {
                     (fg, bar_bg)
                 };
@@ -647,7 +644,7 @@ pub fn draw_toolbar_oriented(
                 cells.push(']');
 
                 for dx in 0..area.width {
-                    set_cell(buf, area.x + dx, row, ' ', cell_fg, cell_bg);
+                    surface.put_char(area.x + dx, row, ' ', solid_style(cell_fg, cell_bg));
                 }
                 let mut col: u16 = 0;
                 for ch in cells {
@@ -655,24 +652,24 @@ pub fn draw_toolbar_oriented(
                     if col + cw > area.width {
                         break;
                     }
-                    set_cell(buf, area.x + col, row, ch, cell_fg, cell_bg);
+                    surface.put_char(area.x + col, row, ch, solid_style(cell_fg, cell_bg));
                     col += cw;
                 }
             }
             ToolbarButton::Separator => {
                 for dx in 0..area.width {
-                    set_cell(buf, area.x + dx, row, '─', muted, bar_bg);
+                    surface.put_char(area.x + dx, row, '─', solid_style(muted, bar_bg));
                 }
             }
             ToolbarButton::Label { text, fg: label_fg } => {
-                let color = label_fg.map(qc).unwrap_or(muted);
+                let color = label_fg.unwrap_or(muted);
                 let mut col: u16 = 0;
                 for ch in text.chars() {
                     let cw = char_cell_width(ch);
                     if col + cw > area.width {
                         break;
                     }
-                    set_cell(buf, area.x + col, row, ch, color, bar_bg);
+                    surface.put_char(area.x + col, row, ch, solid_style(color, bar_bg));
                     col += cw;
                 }
             }
@@ -681,7 +678,7 @@ pub fn draw_toolbar_oriented(
             ToolbarButton::Spacer => {}
             ToolbarButton::Group { items, .. } => {
                 draw_group_horizontal(
-                    buf,
+                    surface,
                     row..row + row_h,
                     vis,
                     items,
@@ -702,7 +699,7 @@ pub fn draw_toolbar_oriented(
             // does, just inside this one `area.width`-wide row.
             ToolbarButton::Field { field, .. } => {
                 let field_rect = Rect::new(area.x, row, area.width, 1);
-                draw_embedded_text_field(buf, field_rect, field, theme);
+                draw_embedded_text_field(surface, field_rect, field, theme);
             }
             ToolbarButton::MenuButton { icon, label, .. } => {
                 let mut cells: Vec<char> = Vec::new();
@@ -714,7 +711,7 @@ pub fn draw_toolbar_oriented(
                 cells.push(' ');
                 cells.push(']');
                 for dx in 0..area.width {
-                    set_cell(buf, area.x + dx, row, ' ', fg, bar_bg);
+                    surface.put_char(area.x + dx, row, ' ', solid_style(fg, bar_bg));
                 }
                 let mut col: u16 = 0;
                 for ch in cells {
@@ -722,7 +719,7 @@ pub fn draw_toolbar_oriented(
                     if col + cw > area.width {
                         break;
                     }
-                    set_cell(buf, area.x + col, row, ch, fg, bar_bg);
+                    surface.put_char(area.x + col, row, ch, solid_style(fg, bar_bg));
                     col += cw;
                 }
             }
@@ -754,7 +751,7 @@ pub fn draw_toolbar_oriented(
 /// for the other two variants.
 #[allow(clippy::too_many_arguments)]
 pub fn draw_toolbar_with_overflow(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     bar: &Toolbar,
     theme: &Theme,
@@ -776,23 +773,23 @@ pub fn draw_toolbar_with_overflow(
     // own doc) — delegate rather than re-deriving the same geometry, so
     // the group-degrade tiers can't drift out of step with what paints.
     if options.overflow == ToolbarOverflow::Clip {
-        return draw_toolbar_oriented(buf, area, bar, theme, hovered_id, pressed_id, options);
+        return draw_toolbar_oriented(surface, area, bar, theme, hovered_id, pressed_id, options);
     }
 
     let layout = tui_toolbar_layout_with_overflow(bar, area, options, priorities);
 
-    let bar_bg = qc(bar.bg.unwrap_or(theme.header_bg));
-    let fg = qc(theme.foreground);
-    let muted = qc(theme.muted_fg);
-    let hover_bg = qc(theme.hover_bg);
-    let hover_fg = qc(theme.hover_fg);
-    let active_bg = qc(theme.selected_bg);
-    let focus_bg = qc(theme.accent_bg);
+    let bar_bg = bar.bg.unwrap_or(theme.header_bg);
+    let fg = theme.foreground;
+    let muted = theme.muted_fg;
+    let hover_bg = theme.hover_bg;
+    let hover_fg = theme.hover_fg;
+    let active_bg = theme.selected_bg;
+    let focus_bg = theme.accent_bg;
 
     let area_bottom = area.y + area.height;
     for dy in area.y..area_bottom {
         for dx in area.x..area.x + area.width {
-            set_cell(buf, dx, dy, ' ', fg, bar_bg);
+            surface.put_char(dx, dy, ' ', solid_style(fg, bar_bg));
         }
     }
 
@@ -825,8 +822,8 @@ pub fn draw_toolbar_with_overflow(
         let is_focused = overflow_btn.is_none() && bar.focused_index == Some(vis.item_idx);
 
         draw_toolbar_item(
-            buf, rows, text_row, vis, btn, is_focused, theme, hovered_id, pressed_id, bar_bg, fg,
-            muted, hover_bg, hover_fg, active_bg, focus_bg,
+            surface, rows, text_row, vis, btn, is_focused, theme, hovered_id, pressed_id, bar_bg,
+            fg, muted, hover_bg, hover_fg, active_bg, focus_bg,
         );
     }
 
@@ -837,7 +834,7 @@ pub fn draw_toolbar_with_overflow(
 /// [`crate::primitives::activity_bar::ActivityBar::to_toolbar_parts`]
 /// produces — honouring its [`ToolbarRailStyle`] sidecar: the active-row
 /// background fill, the leading-edge `'▎'` accent glyph, the explicit (or
-/// `Modifier::REVERSED` fallback) keyboard-selection fill, and the
+/// [`CellModifier::Reverse`] fallback) keyboard-selection fill, and the
 /// trailing-edge separator column. None of those four are something
 /// [`draw_toolbar_with_options`] knows about — a plain `Toolbar` has no
 /// concept of a row fill, an accent line, a selection fill distinct from
@@ -868,7 +865,7 @@ pub fn draw_toolbar_with_overflow(
 /// leading column and the bar's trailing edge, when no separator is
 /// requested).
 pub fn draw_toolbar_with_rail_style(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     bar: &Toolbar,
     rail_style: &ToolbarRailStyle,
@@ -886,22 +883,22 @@ pub fn draw_toolbar_with_rail_style(
 
     let layout = tui_toolbar_layout_with_options(bar, area, rail_layout_options());
 
-    let bg = qc(bar.bg.unwrap_or(theme.header_bg));
-    let sep_color = rail_style.trailing_separator.map(qc);
-    let accent = rail_style.active_accent.map(qc);
-    let active_bg = rail_style.active_bg.map(qc);
-    let active_fg = qc(theme.foreground);
-    let inactive_fg = qc(theme.inactive_fg);
-    let hover_bg = qc(theme.tab_bar_bg.lighten(0.10));
+    let bg = bar.bg.unwrap_or(theme.header_bg);
+    let sep_color = rail_style.trailing_separator;
+    let accent = rail_style.active_accent;
+    let active_bg = rail_style.active_bg;
+    let active_fg = theme.foreground;
+    let inactive_fg = theme.inactive_fg;
+    let hover_bg = theme.tab_bar_bg.lighten(0.10);
     // Explicit keyboard-selection background, when the sidecar sets one.
-    // `None` falls back to `Modifier::REVERSED` after the icon paint —
+    // `None` falls back to [`CellModifier::Reverse`] after the icon paint —
     // terminal-agnostic inversion that works in every colour scheme.
-    let sel_explicit_bg = rail_style.selection_bg.map(qc);
+    let sel_explicit_bg = rail_style.selection_bg;
 
     // Fill background across the whole area.
     for row in area.y..area.y + area.height {
         for col in area.x..area.x + area.width {
-            set_cell(buf, col, row, ' ', bg, bg);
+            surface.put_char(col, row, ' ', solid_style(bg, bg));
         }
     }
 
@@ -909,7 +906,7 @@ pub fn draw_toolbar_with_rail_style(
     let sep_col = sep_color.map(|_| area.x + area.width - 1);
     if let (Some(col), Some(color)) = (sep_col, sep_color) {
         for row in area.y..area.y + area.height {
-            set_cell(buf, col, row, '│', color, bg);
+            surface.put_char(col, row, '│', solid_style(color, bg));
         }
     }
     let content_start = area.x + 1; // after the leading accent column
@@ -939,7 +936,7 @@ pub fn draw_toolbar_with_rail_style(
         // Effective row background priority: explicit keyboard-selection >
         // hover > the active-row fill. When keyboard-selected with no
         // explicit `selection_bg`, the row keeps the default/hover
-        // background and `Modifier::REVERSED` is applied after the icon
+        // background and [`CellModifier::Reverse`] is applied after the icon
         // paint instead (so every cell inverts, giving a clear cursor in
         // any terminal colour scheme).
         let row_bg = if is_keyboard_selected {
@@ -965,7 +962,7 @@ pub fn draw_toolbar_with_rail_style(
             || (is_active && active_bg.is_some())
         {
             for col in area.x..content_end {
-                set_cell(buf, col, y, ' ', fg, row_bg);
+                surface.put_char(col, y, ' ', solid_style(fg, row_bg));
             }
         }
 
@@ -974,7 +971,7 @@ pub fn draw_toolbar_with_rail_style(
         // accent-line pixels.
         if is_active {
             if let Some(ac) = accent {
-                set_cell(buf, area.x, y, '▎', ac, row_bg);
+                surface.put_char(area.x, y, '▎', solid_style(ac, row_bg));
             }
         }
 
@@ -987,19 +984,18 @@ pub fn draw_toolbar_with_rail_style(
         if content_w >= icon_w {
             let icon_x = content_start + (content_w - icon_w) / 2;
             if icon_w >= 2 {
-                set_cell_wide(buf, icon_x, y, icon_ch, fg, row_bg);
+                surface.put_wide(icon_x, y, icon_ch, solid_style(fg, row_bg));
             } else {
-                set_cell(buf, icon_x, y, icon_ch, fg, row_bg);
+                surface.put_char(icon_x, y, icon_ch, solid_style(fg, row_bg));
             }
         }
 
-        // Keyboard-selection highlight — `Modifier::REVERSED` fallback
+        // Keyboard-selection highlight — [`CellModifier::Reverse`] fallback
         // when the sidecar sets no explicit `selection_bg`. Applied last
         // so it overrides any earlier colour.
         if is_keyboard_selected && sel_explicit_bg.is_none() {
             for col in area.x..content_end {
-                let cell = &mut buf[(col, y)];
-                cell.modifier |= Modifier::REVERSED;
+                surface.add_modifier(col, y, CellModifier::Reverse);
             }
         }
     }
@@ -1013,7 +1009,9 @@ mod tests {
     use crate::primitives::toolbar::{
         ToolbarButton, ToolbarHit, ToolbarVAlign, TOOLBAR_OVERFLOW_ITEM_IDX,
     };
+    use crate::tui::ratatui_color as qc;
     use crate::types::WidgetId;
+    use ratatui::buffer::Buffer;
 
     fn cell_char(buf: &Buffer, x: u16, y: u16) -> char {
         buf[(x, y)].symbol().chars().next().unwrap_or(' ')
@@ -1056,7 +1054,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         // First two cells should be `[` then ` `.
         assert_eq!(cell_char(&buf, 0, 0), '[');
         assert_eq!(cell_char(&buf, 1, 0), ' ');
@@ -1078,7 +1083,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         // Click inside the first button.
         let b = layout.visible_items[0].bounds;
         assert_eq!(
@@ -1167,7 +1179,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &theme, None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &theme,
+            None,
+            None,
+        );
 
         let group = &layout.visible_items[0];
         assert_eq!(group.group_children.len(), 3);
@@ -1246,7 +1265,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let layout2 = draw_toolbar(&mut buf2, area, &bar_active, &theme, None, None);
+        let layout2 = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf2),
+            area,
+            &bar_active,
+            &theme,
+            None,
+            None,
+        );
         let columns2 = &layout2.visible_items[0].group_children[2];
         let icons2 = &layout2.visible_items[0].group_children[0];
         assert_eq!(
@@ -1272,7 +1298,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         let b = layout.visible_items[0].bounds;
         assert_eq!(layout.hit_test(b.x + 1.0, b.y), ToolbarHit::Empty);
     }
@@ -1288,7 +1321,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         // First cell is space, second is the pipe char.
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert_eq!(cell_char(&buf, 1, 0), '│');
@@ -1308,7 +1348,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let _layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         assert_eq!(cell_char(&buf, 0, 0), '2');
         assert_eq!(cell_char(&buf, 1, 0), '/');
         assert_eq!(cell_char(&buf, 2, 0), '5');
@@ -1326,7 +1373,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         assert_eq!(cell_char(&buf, 0, 0), ' ');
         assert!(layout.visible_items.is_empty());
         assert_eq!(layout.hit_test(0.0, 0.0), ToolbarHit::Empty);
@@ -1348,7 +1402,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         assert!(layout.visible_items.is_empty());
         // Pre-fix, the forced `bar_height.max(1)` row band at y == 0
         // would hit-test the button here even though nothing painted.
@@ -1370,7 +1431,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _ = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
 
         // Row 0 (top): button text painted in centre — but the bg
         // outside the button text still fills.
@@ -1407,8 +1475,15 @@ mod tests {
         let options = ToolbarPaintOptions {
             valign: ToolbarVAlign::Center,
         };
-        let _ =
-            draw_toolbar_with_options(&mut buf, area, &bar, &Theme::default(), None, None, options);
+        let _ = draw_toolbar_with_options(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            options,
+        );
         // Row 1 col 0 should be `[`.
         assert_eq!(cell_char(&buf, 0, 1), '[');
         // Rows 0 and 2 should not have the bracket.
@@ -1429,7 +1504,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _ = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         assert_eq!(cell_char(&buf, 0, 0), '[');
         assert_ne!(cell_char(&buf, 0, 1), '[');
         assert_ne!(cell_char(&buf, 0, 2), '[');
@@ -1450,8 +1532,15 @@ mod tests {
         let options = ToolbarPaintOptions {
             valign: ToolbarVAlign::Bottom,
         };
-        let _ =
-            draw_toolbar_with_options(&mut buf, area, &bar, &Theme::default(), None, None, options);
+        let _ = draw_toolbar_with_options(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            options,
+        );
         assert_eq!(cell_char(&buf, 0, 2), '[');
         assert_ne!(cell_char(&buf, 0, 0), '[');
         assert_ne!(cell_char(&buf, 0, 1), '[');
@@ -1477,7 +1566,7 @@ mod tests {
                 ..Default::default()
             };
             let _ = draw_toolbar_with_options(
-                &mut buf,
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
                 area,
                 &bar,
                 &Theme::default(),
@@ -1518,7 +1607,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         let r = layout.visible_items[0].bounds;
         // Click in each row of the button bounds — every row should
         // resolve to the button.
@@ -1542,7 +1638,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let _ = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let _ = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         // The │ glyph should appear on every row at column 1.
         for y in 0..area.height {
             assert_eq!(cell_char(&buf, 1, y), '│', "row {y} missing pipe");
@@ -1574,7 +1677,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         assert_eq!(layout.visible_items[0].bounds.width, 5.0);
         // Painted: `[ X ]`
         assert_eq!(cell_char(&buf, 0, 0), '[');
@@ -1607,7 +1717,14 @@ mod tests {
             focused_index: None,
             ..Default::default()
         };
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         // "[ " (2) + icon (2 cells) + " " (1) + "Go" (2) + " ]" (2) = 9
         assert_eq!(layout.visible_items[0].bounds.width, 9.0);
     }
@@ -1647,7 +1764,14 @@ mod tests {
             ..Default::default()
         };
 
-        draw_toolbar(&mut buf, area, &bar, &theme, None, None);
+        draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &theme,
+            None,
+            None,
+        );
 
         assert_eq!(cell_fg(&buf, 2, 0), qc(theme.error_fg));
     }
@@ -1668,7 +1792,14 @@ mod tests {
             ..Default::default()
         };
 
-        draw_toolbar(&mut buf, area, &bar, &theme, None, None);
+        draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &theme,
+            None,
+            None,
+        );
 
         assert_eq!(cell_fg(&buf, 2, 0), qc(theme.foreground));
     }
@@ -1690,11 +1821,18 @@ mod tests {
         };
 
         let mut plain_buf = Buffer::empty(area);
-        let plain_layout = draw_toolbar(&mut plain_buf, area, &bar, &Theme::default(), None, None);
+        let plain_layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut plain_buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
 
         let mut oriented_buf = Buffer::empty(area);
         let oriented_layout = draw_toolbar_oriented(
-            &mut oriented_buf,
+            &mut crate::tui::BufferCellSurface::new(&mut oriented_buf),
             area,
             &bar,
             &Theme::default(),
@@ -1723,8 +1861,15 @@ mod tests {
         };
         let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
 
-        let layout =
-            draw_toolbar_oriented(&mut buf, area, &bar, &Theme::default(), None, None, options);
+        let layout = draw_toolbar_oriented(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            options,
+        );
 
         assert_eq!(layout.visible_items.len(), 2);
         assert_eq!(layout.visible_items[0].bounds.y, 0.0);
@@ -1763,8 +1908,15 @@ mod tests {
         };
         let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
 
-        let layout =
-            draw_toolbar_oriented(&mut buf, area, &bar, &Theme::default(), None, None, options);
+        let layout = draw_toolbar_oriented(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            options,
+        );
 
         assert_eq!(layout.visible_items[0].bounds.y, 0.0);
         assert_eq!(
@@ -1799,7 +1951,14 @@ mod tests {
         // inside one shared group.
         let area = Rect::new(0, 0, 30, 1);
         let mut buf = Buffer::empty(area);
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         assert_eq!(layout.visible_items.len(), 1);
         assert_eq!(layout.visible_items[0].kind, ToolbarItemKind::Group);
         let row = row_text(&buf, 0, 0, area.width);
@@ -1810,7 +1969,14 @@ mod tests {
         // drop, icons stay, still one shared group.
         let area = Rect::new(0, 0, 20, 1);
         let mut buf = Buffer::empty(area);
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         assert_eq!(layout.visible_items.len(), 1);
         assert_eq!(layout.visible_items[0].kind, ToolbarItemKind::Group);
         let row = row_text(&buf, 0, 0, area.width);
@@ -1822,7 +1988,14 @@ mod tests {
         // independently bracketed top-level item.
         let area = Rect::new(0, 0, 12, 1);
         let mut buf = Buffer::empty(area);
-        let layout = draw_toolbar(&mut buf, area, &bar, &Theme::default(), None, None);
+        let layout = draw_toolbar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+        );
         assert_eq!(
             layout.visible_items.len(),
             2,
@@ -1858,8 +2031,15 @@ mod tests {
         };
         let options = ToolbarLayoutOptions::new().with_orientation(ToolbarOrientation::Vertical);
 
-        let layout =
-            draw_toolbar_oriented(&mut buf, area, &bar, &Theme::default(), None, None, options);
+        let layout = draw_toolbar_oriented(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &bar,
+            &Theme::default(),
+            None,
+            None,
+            options,
+        );
 
         assert!(layout.visible_items.is_empty());
         assert_eq!(layout.hit_test(0.0, 0.0), ToolbarHit::Empty);
@@ -1897,7 +2077,7 @@ mod tests {
         let area = Rect::new(0, 0, 10, rows_needed);
         let mut buf = Buffer::empty(area);
         let layout = draw_toolbar_with_overflow(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             area,
             &bar,
             &Theme::default(),
@@ -1953,7 +2133,7 @@ mod tests {
 
         let mut buf = Buffer::empty(area);
         draw_toolbar_with_overflow(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             area,
             &bar,
             &Theme::default(),
@@ -1990,7 +2170,7 @@ mod tests {
         let area = Rect::new(0, 0, 14, 1);
         let mut buf = Buffer::empty(area);
         let layout = draw_toolbar_with_overflow(
-            &mut buf,
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
             area,
             &bar,
             &Theme::default(),
@@ -2016,17 +2196,247 @@ mod tests {
         );
         assert_eq!(layout.overflowed_items().len(), 2);
     }
+
+    /// Every toolbar painter, over one fixture of each item shape and
+    /// each paint state, cell-for-cell against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::primitives::toolbar::{
+            ToolbarItemWidth, ToolbarLayoutOptions, ToolbarOrientation, ToolbarOverflow,
+            ToolbarOverflowPriorities, ToolbarPaintOptions, ToolbarRailStyle, ToolbarVAlign,
+        };
+        use crate::tui::cell_surface::oracle;
+
+        let theme = Theme::default();
+        let mut danger = crate::primitives::button::ButtonSpec::new("Del");
+        danger.variant = crate::primitives::button::ButtonVariant::Danger;
+        let mut active = mk_action_with_icon("act", "Run", "\u{25b6}");
+        if let ToolbarButton::Action {
+            is_active,
+            key_hint,
+            ..
+        } = &mut active
+        {
+            *is_active = true;
+            *key_hint = Some("F5".into());
+        }
+        let buttons = vec![
+            mk_action("a", "Open", true),
+            ToolbarButton::Separator,
+            mk_action("b", "Off", false),
+            active,
+            ToolbarButton::Action {
+                spec: Some(danger),
+                id: WidgetId::new("del"),
+                label: "Del".into(),
+                icon: None,
+                key_hint: None,
+                enabled: true,
+                is_active: false,
+                tooltip: String::new(),
+            },
+            ToolbarButton::Label {
+                text: "lbl".into(),
+                fg: Some(crate::Color::rgb(10, 200, 30)),
+            },
+            mk_group(
+                "g",
+                true,
+                vec![
+                    mk_action("g1", "x", true),
+                    {
+                        let mut c = mk_action("g2", "y", true);
+                        if let ToolbarButton::Action { is_active, .. } = &mut c {
+                            *is_active = true;
+                        }
+                        c
+                    },
+                    mk_action_with_icon("g3", "", "\u{4e2d}"),
+                ],
+            ),
+            ToolbarButton::Spacer,
+            ToolbarButton::Field {
+                id: WidgetId::new("f"),
+                field: crate::TextField::new(WidgetId::new("f")).with_value("query"),
+                width: ToolbarItemWidth::Fixed(10.0),
+            },
+            ToolbarButton::MenuButton {
+                id: WidgetId::new("m"),
+                label: "More".into(),
+                icon: Some("\u{2630}".into()),
+                menu: vec![],
+            },
+        ];
+        let bar = Toolbar {
+            id: WidgetId::new("tb"),
+            buttons: buttons.clone(),
+            bg: None,
+            focused_index: Some(0),
+            ..Default::default()
+        };
+        let bg_bar = Toolbar {
+            bg: Some(crate::Color::rgb(40, 40, 90)),
+            focused_index: None,
+            ..bar.clone()
+        };
+        let hovered = WidgetId::new("a");
+        let pressed = WidgetId::new("g1");
+        let none = ToolbarOverflowPriorities::default();
+
+        let plain = oracle::paint(90, 1, |s| {
+            draw_toolbar(s, Rect::new(0, 0, 90, 1), &bar, &theme, None, None);
+        });
+        let states = oracle::paint(90, 1, |s| {
+            draw_toolbar(
+                s,
+                Rect::new(0, 0, 90, 1),
+                &bg_bar,
+                &theme,
+                Some(&hovered),
+                Some(&pressed),
+            );
+        });
+        let offset = oracle::paint(96, 4, |s| {
+            draw_toolbar(
+                s,
+                Rect::new(3, 2, 90, 1),
+                &bar,
+                &theme,
+                None,
+                Some(&hovered),
+            );
+        });
+        let narrow = oracle::paint(24, 1, |s| {
+            draw_toolbar(s, Rect::new(0, 0, 24, 1), &bar, &theme, None, None);
+        });
+        let centred = oracle::paint(90, 3, |s| {
+            draw_toolbar_with_options(
+                s,
+                Rect::new(0, 0, 90, 3),
+                &bar,
+                &theme,
+                None,
+                None,
+                ToolbarPaintOptions {
+                    valign: ToolbarVAlign::Center,
+                },
+            );
+        });
+        let vertical = oracle::paint(16, 14, |s| {
+            draw_toolbar_oriented(
+                s,
+                Rect::new(1, 1, 14, 12),
+                &bar,
+                &theme,
+                Some(&hovered),
+                None,
+                ToolbarLayoutOptions {
+                    orientation: ToolbarOrientation::Vertical,
+                    ..Default::default()
+                },
+            );
+        });
+        let wrap = oracle::paint(30, 6, |s| {
+            draw_toolbar_with_overflow(
+                s,
+                Rect::new(0, 0, 30, 6),
+                &bar,
+                &theme,
+                None,
+                Some(&pressed),
+                ToolbarLayoutOptions {
+                    overflow: ToolbarOverflow::Wrap,
+                    ..Default::default()
+                },
+                &none,
+            );
+        });
+        let menu = oracle::paint(30, 1, |s| {
+            draw_toolbar_with_overflow(
+                s,
+                Rect::new(0, 0, 30, 1),
+                &bar,
+                &theme,
+                Some(&hovered),
+                None,
+                ToolbarLayoutOptions {
+                    overflow: ToolbarOverflow::Menu,
+                    ..Default::default()
+                },
+                &none,
+            );
+        });
+        let rail_bar = Toolbar {
+            id: WidgetId::new("rail"),
+            buttons: vec![
+                mk_action_with_icon("r1", "", "\u{f07c}"),
+                {
+                    let mut c = mk_action_with_icon("r2", "", "S");
+                    if let ToolbarButton::Action { is_active, .. } = &mut c {
+                        *is_active = true;
+                    }
+                    c
+                },
+                mk_action_with_icon("r3", "", "\u{4e2d}"),
+                ToolbarButton::Spacer,
+                mk_action_with_icon("r4", "", "G"),
+            ],
+            focused_index: Some(2),
+            orientation: ToolbarOrientation::Vertical,
+            ..Default::default()
+        };
+        let rail_full = ToolbarRailStyle::default()
+            .with_active_bg(crate::Color::rgb(60, 60, 60))
+            .with_active_accent(crate::Color::rgb(0, 120, 255))
+            .with_selection_bg(crate::Color::rgb(90, 20, 20))
+            .with_trailing_separator(crate::Color::rgb(70, 70, 70));
+        let hovered_rail = WidgetId::new("r1");
+        let rail_styled = oracle::paint(5, 9, |s| {
+            draw_toolbar_with_rail_style(
+                s,
+                Rect::new(1, 0, 3, 9),
+                &rail_bar,
+                &rail_full,
+                &theme,
+                Some(&hovered_rail),
+            );
+        });
+        let rail_plain = oracle::paint(3, 9, |s| {
+            draw_toolbar_with_rail_style(
+                s,
+                Rect::new(0, 0, 3, 9),
+                &rail_bar,
+                &ToolbarRailStyle::default(),
+                &theme,
+                None,
+            );
+        });
+
+        oracle::assert_golden(
+            "toolbar",
+            &[
+                ("plain", &plain),
+                ("states", &states),
+                ("offset", &offset),
+                ("narrow", &narrow),
+                ("centred", &centred),
+                ("vertical", &vertical),
+                ("wrap", &wrap),
+                ("menu", &menu),
+                ("rail_styled", &rail_styled),
+                ("rail_plain", &rail_plain),
+            ],
+        );
+    }
 }
 
 /// Paint a [`ToolbarButton::Field`]'s embedded [`crate::TextField`] into
-/// `rect` through the widget's own cell painter, adapting the ratatui
-/// [`ratatui::buffer::Buffer`] into the [`crate::CellSurface`] that
-/// painter takes.
+/// `rect` through the widget's own cell painter.
 ///
 /// Nerd-Font glyph resolution is off: a toolbar field's own icon column
 /// is painted by this module, not by the field.
 fn draw_embedded_text_field(
-    buf: &mut ratatui::buffer::Buffer,
+    surface: &mut dyn CellSurface,
     rect: Rect,
     field: &crate::TextField,
     theme: &Theme,
@@ -2038,12 +2448,5 @@ fn draw_embedded_text_field(
         rect.height as f32,
     );
     let layout = crate::primitives::text_field::cell_layout(field, area);
-    // The painter never moves the cursor, so the sink is never read.
-    let mut cursor_sink = None;
-    let mut surface = crate::tui::cell_surface::TuiCellSurface::over(
-        buf,
-        crate::backend::ColorDepth::TrueColor,
-        &mut cursor_sink,
-    );
-    crate::primitives::text_field::cell_paint::paint(field, &layout, &mut surface, theme, false);
+    crate::primitives::text_field::cell_paint::paint(field, &layout, surface, theme, false);
 }

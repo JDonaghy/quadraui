@@ -40,7 +40,7 @@ use ratatui::layout::Rect as RRect;
 use super::qc;
 use super::{char_cell_width, ratatui_color, set_cell_styled, set_cell_wide_styled};
 use crate::backend::ColorDepth;
-use crate::cell_surface::{BorderSet, CellStyle, CellSurface, CursorShape};
+use crate::cell_surface::{BorderSet, CellModifier, CellStyle, CellSurface, CursorShape};
 #[cfg(feature = "tui-images")]
 use crate::primitives::image::Image;
 use crate::types::Color;
@@ -441,9 +441,25 @@ impl CellSurface for BufferCellSurface<'_> {
         self.color_depth
     }
 
-    #[cfg(feature = "tui")]
-    fn ratatui_buffer(&mut self) -> Option<&mut Buffer> {
-        Some(self.buf())
+    fn set_bg(&mut self, x: u16, y: u16, color: Color) {
+        if let Some(cell) = self.buf().cell_mut((x, y)) {
+            cell.set_bg(ratatui_color(color));
+        }
+    }
+
+    fn add_modifier(&mut self, x: u16, y: u16, modifier: CellModifier) {
+        let Some(cell) = self.buf().cell_mut((x, y)) else {
+            return;
+        };
+        match modifier {
+            CellModifier::Reverse => cell.modifier |= Modifier::REVERSED,
+            CellModifier::Underline { color } => {
+                cell.modifier |= Modifier::UNDERLINED;
+                if let Some(color) = color {
+                    cell.underline_color = ratatui_color(color);
+                }
+            }
+        }
     }
 }
 
@@ -870,6 +886,111 @@ impl TuiClipFrame {
     }
 }
 
+/// Golden-file oracle for cell painters: a painted [`Buffer`] serialised
+/// cell for cell (glyph, colours, modifiers, underline colour) and
+/// compared against a snapshot under `tests/fixtures/cell_oracle/`. A
+/// painter rewritten onto different [`CellSurface`] verbs keeps its
+/// golden byte-identical, so any cell it paints differently fails here.
+///
+/// Run with `QUADRAUI_BLESS_CELLS=1` to (re)write the snapshots.
+#[cfg(test)]
+pub(crate) mod oracle {
+    use std::fmt::Write as _;
+
+    use ratatui::buffer::Buffer;
+
+    /// `buf` as text: the glyph grid, then one line per run of cells in
+    /// a row that share a style.
+    pub(crate) fn snapshot(buf: &Buffer) -> String {
+        let area = buf.area;
+        let mut out = String::new();
+        let _ = writeln!(
+            out,
+            "area {} {} {} {}",
+            area.x, area.y, area.width, area.height
+        );
+        for y in area.y..area.y + area.height {
+            out.push('|');
+            for x in area.x..area.x + area.width {
+                let sym = buf[(x, y)].symbol();
+                out.push_str(if sym.is_empty() { "\u{2400}" } else { sym });
+            }
+            out.push_str("|\n");
+        }
+        for y in area.y..area.y + area.height {
+            let mut x = area.x;
+            while x < area.x + area.width {
+                let c = &buf[(x, y)];
+                let key = (c.fg, c.bg, c.modifier, c.underline_color);
+                let start = x;
+                while x < area.x + area.width {
+                    let d = &buf[(x, y)];
+                    if (d.fg, d.bg, d.modifier, d.underline_color) != key {
+                        break;
+                    }
+                    x += 1;
+                }
+                let _ = writeln!(
+                    out,
+                    "{y} {start}..{x} fg={:?} bg={:?} mod={:?} ul={:?}",
+                    key.0, key.1, key.2, key.3
+                );
+            }
+        }
+        out
+    }
+
+    /// Assert `cases` — `(label, painted buffer)` pairs — match the
+    /// golden `tests/fixtures/cell_oracle/<name>.txt`.
+    pub(crate) fn assert_golden(name: &str, cases: &[(&str, &Buffer)]) {
+        let mut actual = String::new();
+        for (label, buf) in cases {
+            let _ = writeln!(actual, "== {label}");
+            actual.push_str(&snapshot(buf));
+        }
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/cell_oracle")
+            .join(format!("{name}.txt"));
+        if std::env::var_os("QUADRAUI_BLESS_CELLS").is_some() {
+            std::fs::create_dir_all(path.parent().expect("fixture dir")).expect("mkdir");
+            std::fs::write(&path, &actual).expect("write golden");
+            return;
+        }
+        let expected = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("read golden {}: {e}", path.display()));
+        if expected != actual {
+            let first = expected
+                .lines()
+                .zip(actual.lines())
+                .enumerate()
+                .find(|(_, (e, a))| e != a);
+            match first {
+                Some((i, (e, a))) => panic!(
+                    "{name}: cell paint differs from the golden at line {}\n  golden: {e}\n  actual: {a}",
+                    i + 1
+                ),
+                None => panic!(
+                    "{name}: golden has {} lines, paint has {}",
+                    expected.lines().count(),
+                    actual.lines().count()
+                ),
+            }
+        }
+    }
+
+    /// `paint` run against a fresh `width × height` buffer at the origin,
+    /// through a [`super::BufferCellSurface`].
+    pub(crate) fn paint(
+        width: u16,
+        height: u16,
+        paint: impl FnOnce(&mut dyn crate::CellSurface),
+    ) -> Buffer {
+        let mut buf = Buffer::empty(ratatui::layout::Rect::new(0, 0, width, height));
+        paint(&mut super::BufferCellSurface::new(&mut buf));
+        buf
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1038,9 +1159,59 @@ mod tests {
         surface.put_str_clipped(1, 1, "日a", 5, CellStyle::default());
         surface.set_cursor(3, 2, CursorShape::Block);
         assert_eq!(surface.cursor(), Some((3, 2, CursorShape::Block)));
-        assert!(surface.ratatui_buffer().is_some());
         drop(surface);
         assert_eq!(wrapped, direct);
+    }
+
+    #[test]
+    fn set_bg_recolours_the_background_and_keeps_a_wide_glyph_whole() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 4, 1));
+        let fg = Color::rgb(1, 2, 3);
+        let mut surface = BufferCellSurface::new(&mut buf);
+        surface.put_wide(
+            0,
+            0,
+            '日',
+            CellStyle {
+                fg: Some(fg),
+                ..CellStyle::default()
+            },
+        );
+        surface.set_bg(0, 0, Color::rgb(9, 9, 9));
+        surface.set_bg(1, 0, Color::rgb(9, 9, 9));
+        surface.set_bg(7, 0, Color::rgb(9, 9, 9));
+        drop(surface);
+        assert_eq!(buf[(0, 0)].symbol(), "日");
+        assert_eq!(buf[(1, 0)].symbol(), "");
+        for x in 0..2 {
+            assert_eq!(buf[(x, 0)].bg, RatatuiColor::Rgb(9, 9, 9));
+            assert_eq!(buf[(x, 0)].fg, RatatuiColor::Rgb(1, 2, 3));
+        }
+    }
+
+    #[test]
+    fn add_modifier_adds_to_the_cell_in_place() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 3, 1));
+        buf[(0, 0)].set_char('a').modifier = Modifier::BOLD;
+        buf[(0, 0)].underline_color = RatatuiColor::Rgb(5, 5, 5);
+        let mut surface = BufferCellSurface::new(&mut buf);
+        surface.add_modifier(0, 0, CellModifier::Underline { color: None });
+        surface.add_modifier(
+            1,
+            0,
+            CellModifier::Underline {
+                color: Some(Color::rgb(7, 7, 7)),
+            },
+        );
+        surface.add_modifier(2, 0, CellModifier::Reverse);
+        surface.add_modifier(9, 0, CellModifier::Reverse);
+        drop(surface);
+        assert_eq!(buf[(0, 0)].symbol(), "a");
+        assert_eq!(buf[(0, 0)].modifier, Modifier::BOLD | Modifier::UNDERLINED);
+        assert_eq!(buf[(0, 0)].underline_color, RatatuiColor::Rgb(5, 5, 5));
+        assert_eq!(buf[(1, 0)].modifier, Modifier::UNDERLINED);
+        assert_eq!(buf[(1, 0)].underline_color, RatatuiColor::Rgb(7, 7, 7));
+        assert_eq!(buf[(2, 0)].modifier, Modifier::REVERSED);
     }
 }
 

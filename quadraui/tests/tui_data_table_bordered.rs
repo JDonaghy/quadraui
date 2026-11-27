@@ -94,7 +94,11 @@ fn bordered_insets_header_and_first_row_away_from_the_top_left_corner() {
 fn focus_ring_over_bordered_table_never_overwrites_content() {
     let area = Rect::new(0, 0, 40, 6);
     let (mut buf, _) = paint(&make_table(), area);
-    draw_focus_ring(&mut buf, area, &Theme::default());
+    draw_focus_ring(
+        &mut quadraui::tui::BufferCellSurface::new(&mut buf),
+        quadraui::Rect::new(0.0, 0.0, 40.0, 6.0),
+        &Theme::default(),
+    );
     assert_eq!(buf[(0, 0)].symbol(), "╭");
     assert_eq!(buf[(1, 1)].symbol(), "N", "ring overwrote the header");
     assert_eq!(buf[(1, 2)].symbol(), "p", "ring overwrote row content");

@@ -1133,10 +1133,6 @@ impl crate::primitive::Primitive for ActivityBar {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = ratatui::layout::Rect::new(
             layout.area.x.max(0.0).round() as u16,
             layout.area.y.max(0.0).round() as u16,
@@ -1144,7 +1140,7 @@ impl crate::primitive::Primitive for ActivityBar {
             layout.area.height.max(0.0).round() as u16,
         );
         let hovered = env.hovered_sub(&self.id).map(|sub| sub.0 as usize);
-        let _ = cell_paint::paint(buf, area, self, theme, hovered, layout.nerd_fonts);
+        let _ = cell_paint::paint(cells, area, self, theme, hovered, layout.nerd_fonts);
     }
 }
 
@@ -1161,10 +1157,10 @@ pub(crate) mod cell_paint {
     };
     use crate::primitives::toolbar::cell_paint::draw_toolbar_with_rail_style;
     use crate::theme::Theme;
-    use ratatui::buffer::Buffer;
+    use crate::CellSurface;
     use ratatui::layout::Rect;
 
-    /// Paint `bar` into `area` on `buf` with its own
+    /// Paint `bar` into `area` on `surface` with its own
     /// [`ActivityBar::style`] and the `hovered` row tinted, returning
     /// the bar-relative row hits (bottom-pinned items first, then
     /// top-pinned, the order `hovered` indexes).
@@ -1173,7 +1169,7 @@ pub(crate) mod cell_paint {
     /// [`crate::Icon`] paints: `glyph` when `true`, `fallback` when
     /// `false`.
     pub(crate) fn paint(
-        buf: &mut Buffer,
+        surface: &mut dyn CellSurface,
         area: Rect,
         bar: &ActivityBar,
         theme: &Theme,
@@ -1199,7 +1195,7 @@ pub(crate) mod cell_paint {
         let hovered_id = hovered.and_then(|i| row_hits.get(i)).map(|h| h.id);
 
         let _ = draw_toolbar_with_rail_style(
-            buf,
+            surface,
             area,
             &toolbar,
             &rail_style,
@@ -2401,7 +2397,14 @@ mod cell_paint_tests {
         };
         let direct = |hovered: Option<usize>| {
             let mut buf = Buffer::empty(canvas);
-            draw_activity_bar(&mut buf, Rect::new(0, 0, 3, 10), &b, &theme, hovered, false);
+            draw_activity_bar(
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                Rect::new(0, 0, 3, 10),
+                &b,
+                &theme,
+                hovered,
+                false,
+            );
             buf
         };
         let on_row =
@@ -2411,6 +2414,47 @@ mod cell_paint_tests {
         assert_eq!(via_contract(&InteractionState::new()), direct(None));
         assert_eq!(via_contract(&on_row(1)), direct(Some(1)));
         assert_eq!(via_contract(&on_row(2)), direct(Some(2)));
+    }
+
+    /// The rail painter, over active, keyboard-selected, accented and
+    /// hovered rows with and without Nerd Font glyphs, cell-for-cell
+    /// against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+
+        let theme = Theme::default();
+        let mut b = bar();
+        b.top_items[0].is_active = true;
+        b.top_items[1].is_keyboard_selected = true;
+        b.top_items[2].icon = Icon::new("\u{e702}", "G");
+        b.is_keyboard_focused = true;
+        let mut accented = b.clone();
+        accented.active_accent = Some(Color::rgb(0, 122, 204));
+        accented.selection_bg = Some(Color::rgb(80, 30, 30));
+        accented.style = ActivityBarStyle::new().with_active_bg(Color::rgb(50, 50, 50));
+
+        let plain = oracle::paint(5, 10, |s| {
+            draw_activity_bar(s, Rect::new(1, 0, 3, 10), &b, &theme, None, false);
+        });
+        let hovered = oracle::paint(3, 10, |s| {
+            draw_activity_bar(s, Rect::new(0, 0, 3, 10), &b, &theme, Some(1), true);
+        });
+        let styled = oracle::paint(4, 12, |s| {
+            draw_activity_bar(s, Rect::new(0, 1, 4, 10), &accented, &theme, Some(0), true);
+        });
+        let short = oracle::paint(3, 3, |s| {
+            draw_activity_bar(s, Rect::new(0, 0, 3, 3), &accented, &theme, None, false);
+        });
+        oracle::assert_golden(
+            "activity_bar",
+            &[
+                ("plain", &plain),
+                ("hovered", &hovered),
+                ("styled", &styled),
+                ("short", &short),
+            ],
+        );
     }
 
     /// Hit regions are **bar-relative**, not absolute, so the top row
@@ -2426,7 +2470,14 @@ mod cell_paint_tests {
 
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 3, 10);
-        let hits = draw_activity_bar(&mut buf, area, &b, &theme, None, false);
+        let hits = draw_activity_bar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &b,
+            &theme,
+            None,
+            false,
+        );
 
         let span = |id: &str| {
             let h = hits
@@ -2463,7 +2514,14 @@ mod cell_paint_tests {
 
         let spans = |y: u16| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 30));
-            let hits = draw_activity_bar(&mut buf, Rect::new(0, y, 3, 10), &b, &theme, None, false);
+            let hits = draw_activity_bar(
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                Rect::new(0, y, 3, 10),
+                &b,
+                &theme,
+                None,
+                false,
+            );
             hits.iter()
                 .map(|h| (h.y_start, h.y_end))
                 .collect::<Vec<_>>()
@@ -2488,7 +2546,14 @@ mod cell_paint_tests {
         let theme = Theme::default();
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 3, 4, 10);
-        draw_activity_bar(&mut buf, area, &b, &theme, None, false);
+        draw_activity_bar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &b,
+            &theme,
+            None,
+            false,
+        );
 
         let row_text = |y: u16| {
             (area.x..area.x + area.width)
@@ -2519,7 +2584,14 @@ mod cell_paint_tests {
         let row_text = |nerd_fonts_enabled: bool| {
             let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
             let area = Rect::new(0, 0, 4, 10);
-            draw_activity_bar(&mut buf, area, &b, &theme, None, nerd_fonts_enabled);
+            draw_activity_bar(
+                &mut crate::tui::BufferCellSurface::new(&mut buf),
+                area,
+                &b,
+                &theme,
+                None,
+                nerd_fonts_enabled,
+            );
             (area.x..area.x + area.width)
                 .map(|x| buf[(x, area.y)].symbol().to_string())
                 .collect::<String>()
@@ -2550,7 +2622,14 @@ mod cell_paint_tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 0, 3, 10);
         b.style = style;
-        draw_activity_bar(&mut buf, area, &b, &theme, None, false);
+        draw_activity_bar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &b,
+            &theme,
+            None,
+            false,
+        );
 
         let fill = ratatui_color(fill_color);
         assert_ne!(
@@ -2585,7 +2664,14 @@ mod cell_paint_tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 40, 20));
         let area = Rect::new(0, 0, 3, 10);
         b.style = ActivityBarStyle::default();
-        draw_activity_bar(&mut buf, area, &b, &theme, None, false);
+        draw_activity_bar(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &b,
+            &theme,
+            None,
+            false,
+        );
 
         assert_eq!(
             buf[(area.x, area.y)].symbol(),

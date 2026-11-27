@@ -1,0 +1,81 @@
+== tiles
+area 0 0 42 11
+|                                          |
+|                            中␀          |
+|    item-0   a-much-long…   item-2        |
+|                                       |
+|  中␀文␀名␀字␀长␀    item-4      item-5        |
+|                                         |
+|    item-6                                |
+|                                          |
+|                                          |
+|                                          |
+|                                          |
+0 0..42 fg=Reset bg=Reset mod=NONE ul=Reset
+1 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+1 1..13 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 13..25 fg=Rgb(220, 220, 220) bg=Rgb(50, 60, 90) mod=NONE ul=Reset
+1 25..37 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 37..42 fg=Reset bg=Reset mod=NONE ul=Reset
+2 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+2 1..13 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 13..25 fg=Rgb(220, 220, 220) bg=Rgb(50, 60, 90) mod=NONE ul=Reset
+2 25..37 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 37..42 fg=Reset bg=Reset mod=NONE ul=Reset
+3 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+3 1..37 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 37..42 fg=Reset bg=Reset mod=NONE ul=Reset
+4 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+4 1..37 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 37..42 fg=Reset bg=Reset mod=NONE ul=Reset
+5 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+5 1..13 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 13..42 fg=Reset bg=Reset mod=NONE ul=Reset
+6 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+6 1..13 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+6 13..42 fg=Reset bg=Reset mod=NONE ul=Reset
+7 0..42 fg=Reset bg=Reset mod=NONE ul=Reset
+8 0..42 fg=Reset bg=Reset mod=NONE ul=Reset
+9 0..42 fg=Reset bg=Reset mod=NONE ul=Reset
+10 0..42 fg=Reset bg=Reset mod=NONE ul=Reset
+== fallback
+area 0 0 40 9
+|     F           F           文␀         |
+|   item-0   a-much-long…   item-2       |
+|     F           F           F          |
+| 中␀文␀名␀字␀长␀    item-4      item-5       |
+|     F                                  |
+|   item-6                               |
+|                                        |
+|                                        |
+|                                        |
+0 0..12 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 12..24 fg=Rgb(220, 220, 220) bg=Rgb(50, 60, 90) mod=NONE ul=Reset
+0 24..36 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 36..40 fg=Reset bg=Reset mod=NONE ul=Reset
+1 0..12 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 12..24 fg=Rgb(220, 220, 220) bg=Rgb(50, 60, 90) mod=NONE ul=Reset
+1 24..36 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 36..40 fg=Reset bg=Reset mod=NONE ul=Reset
+2 0..36 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 36..40 fg=Reset bg=Reset mod=NONE ul=Reset
+3 0..36 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 36..40 fg=Reset bg=Reset mod=NONE ul=Reset
+4 0..12 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 12..40 fg=Reset bg=Reset mod=NONE ul=Reset
+5 0..12 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 12..40 fg=Reset bg=Reset mod=NONE ul=Reset
+6 0..40 fg=Reset bg=Reset mod=NONE ul=Reset
+7 0..40 fg=Reset bg=Reset mod=NONE ul=Reset
+8 0..40 fg=Reset bg=Reset mod=NONE ul=Reset
+== one_row
+area 0 0 30 1
+| item-0     a-much-lo…      |
+0 0..12 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 12..24 fg=Rgb(220, 220, 220) bg=Rgb(50, 60, 90) mod=NONE ul=Reset
+0 24..30 fg=Reset bg=Reset mod=NONE ul=Reset
+== unfocused
+area 0 0 30 1
+|F item-0    F a-much-lo…      |
+0 0..24 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 24..30 fg=Reset bg=Reset mod=NONE ul=Reset

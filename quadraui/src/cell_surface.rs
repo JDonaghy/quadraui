@@ -6,27 +6,21 @@
 //! stays out of that trait entirely: a terminal paints a cell grid, not a
 //! pixel canvas, so there is no sub-cell `Rect`, no fractional stroke
 //! width, and glyph selection (box-drawing corners, double-width CJK) has
-//! no pixel-shaped equivalent. [`crate::tui::backend::TuiBackend`] still
-//! needs *some* shared drawing seam though — today it has only an
-//! informal one: `set_cell`/`set_cell_wide`/`set_cell_styled`/
-//! `draw_styled_text` in `crate::tui` plus `truncate_to_width`/
-//! `truncate_to_width_ellipsis` in `crate::tui::text`, called directly by
-//! each of the ~52 `tui/<widget>.rs` rasterisers against a raw
-//! `&mut ratatui::buffer::Buffer`.
+//! no pixel-shaped equivalent. A cell painter still needs a shared drawing
+//! seam, and `CellSurface` is it, the same way `PaintSurface` is the
+//! pixel backends' one: a widget's cell painter takes
+//! `&mut dyn CellSurface` rather than a concrete ratatui type, and lives
+//! in the widget's own module.
 //!
-//! `CellSurface` formalises that informal API into a trait, the same way
-//! `PaintSurface` formalised each pixel backend's private fill/stroke/text
-//! helpers. A widget's cell painter can then take `&mut dyn CellSurface`
-//! instead of a concrete ratatui type, living in the widget's own module
-//! rather than reaching into `crate::tui` for free functions.
+//! # Scope
 //!
-//! # Scope — additive only
-//!
-//! This module adds the trait and `crate::tui::TuiCellSurface`'s
-//! implementation of it. Nothing in this crate paints through it yet;
-//! every `tui/<widget>.rs` rasteriser keeps calling `crate::tui::set_cell`
-//! and friends directly. Moving them onto `CellSurface` is later, per-widget
-//! work.
+//! Every cell painter writes through this trait's verbs alone: glyphs
+//! ([`CellSurface::put_char`] and friends), fills and borders, and the
+//! in-place decorations ([`CellSurface::tint_bg`],
+//! [`CellSurface::set_bg`], [`CellSurface::add_modifier`]) that recolour
+//! or mark a cell another painter already wrote.
+//! `crate::tui::BufferCellSurface` is the one implementor, over a ratatui
+//! buffer.
 //!
 //! # Why this stays unconditional
 //!
@@ -35,8 +29,7 @@
 //! already compiled unconditionally, so the trait itself needs no `tui`
 //! feature gate — mirroring [`crate::PaintSurface`], which is also
 //! compiled unconditionally despite having no in-crate implementor on a
-//! `tui`-only build. Only [`CellSurface::ratatui_buffer`] — the one method
-//! that names a `ratatui` type directly — is gated on `feature = "tui"`.
+//! `tui`-only build.
 
 use crate::backend::ColorDepth;
 use crate::{Color, Image, Rect};
@@ -79,10 +72,8 @@ pub struct CellStyle {
 pub enum BorderSet {
     /// `┌─┐│└─┘` — sharp corners.
     Square,
-    /// `╭─╮│╰─╯` — the rounded corners every existing TUI dialog/board/
-    /// tree-rename border already paints via its own direct `set_cell`
-    /// calls (`crate::tui::dialog`, `crate::tui::board`,
-    /// `crate::tui::focus_ring`).
+    /// `╭─╮│╰─╯` — the rounded corners the TUI dialog, board, tree and
+    /// focus-ring borders paint.
     Rounded,
     /// `╔═╗║╚═╝` — double-line.
     Double,
@@ -110,7 +101,7 @@ pub trait CellSurface {
 
     /// Write a single-width `char` at `(x, y)` in `style`. Out-of-bounds
     /// coordinates are silently ignored — matches
-    /// `crate::tui::set_cell`'s own bounds check, so a caller painting
+    /// `crate::tui::set_cell_styled`'s own bounds check, so a caller painting
     /// right up to a surface's edge never has to clamp first.
     fn put_char(&mut self, x: u16, y: u16, ch: char, style: CellStyle);
 
@@ -118,7 +109,7 @@ pub trait CellSurface {
     /// `(x, y)`, and blank `(x + 1, y)` — the continuation cell every
     /// double-width glyph occupies on a terminal grid — so the renderer's
     /// diff doesn't paint a stray character on top of the wide glyph's
-    /// second column. Mirrors `crate::tui::set_cell_wide`.
+    /// second column. Mirrors `crate::tui::set_cell_wide_styled`.
     fn put_wide(&mut self, x: u16, y: u16, ch: char, style: CellStyle);
 
     /// Write one grapheme cluster — a base character plus any combining
@@ -216,21 +207,56 @@ pub trait CellSurface {
     /// itself.
     fn color_depth(&self) -> ColorDepth;
 
-    /// In-crate migration hatch: while a `tui/<widget>.rs` rasteriser
-    /// still takes `&mut ratatui::buffer::Buffer` directly (every one of
-    /// them does today — see the module doc's "Scope" section), a caller
-    /// that only holds `&mut dyn CellSurface` can recover the real buffer
-    /// through this method and hand it to the old-style rasteriser
-    /// unchanged. Deleted once every rasteriser has migrated onto
-    /// [`CellSurface`] itself; never use it in new code.
+    /// Replace the background of the cell at `(x, y)` with `color`,
+    /// leaving its glyph, foreground and modifiers as they are — the
+    /// opaque counterpart of [`Self::tint_bg`], for an overlay that
+    /// recolours cells another painter already filled. Out-of-bounds
+    /// coordinates are ignored.
     ///
-    /// Default: `None` — correct for a surface with no backing
-    /// `ratatui::buffer::Buffer` at all.
-    #[doc(hidden)]
-    #[cfg(feature = "tui")]
-    fn ratatui_buffer(&mut self) -> Option<&mut ratatui::buffer::Buffer> {
-        None
+    /// Default: read the cell back through [`Self::get`] and rewrite it
+    /// with [`Self::put_char`], which keeps only the cell's first char.
+    fn set_bg(&mut self, x: u16, y: u16, color: Color) {
+        let Some((ch, mut style)) = self.get(x, y) else {
+            return;
+        };
+        style.bg = Some(color);
+        self.put_char(x, y, ch, style);
     }
+
+    /// Add `modifier` to the cell at `(x, y)`, leaving its glyph, colours
+    /// and other modifiers as they are — decoration over content another
+    /// painter already wrote, such as a boundary underline across a row
+    /// or a reverse-video selection. Writing the cell afresh instead
+    /// would split a double-width glyph's continuation cell from its
+    /// glyph. Out-of-bounds coordinates are ignored.
+    ///
+    /// Default: read the cell back through [`Self::get`] and rewrite it
+    /// with [`Self::put_char`], which keeps only the cell's first char; an
+    /// [`CellModifier::Underline`] with no colour underlines in the
+    /// cell's foreground.
+    fn add_modifier(&mut self, x: u16, y: u16, modifier: CellModifier) {
+        let Some((ch, mut style)) = self.get(x, y) else {
+            return;
+        };
+        match modifier {
+            CellModifier::Reverse => style.reverse = true,
+            CellModifier::Underline { color } => {
+                style.underline = color.or(style.underline).or(style.fg);
+            }
+        }
+        self.put_char(x, y, ch, style);
+    }
+}
+
+/// A modifier [`CellSurface::add_modifier`] adds to an already-painted
+/// cell.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum CellModifier {
+    /// Reverse video: the cell's foreground and background swap.
+    Reverse,
+    /// An underline. `Some(color)` recolours it; `None` keeps whatever
+    /// underline colour the cell already carries.
+    Underline { color: Option<Color> },
 }
 
 /// A [`CellStyle`] that names both colours and no modifiers — the style
@@ -320,10 +346,9 @@ mod tests {
     use super::*;
 
     /// Implements every required method as a no-op/empty-answer, so the
-    /// two defaults (`emit_graphics`, `ratatui_buffer`) run their real
-    /// trait body rather than an override — proving what a surface with
-    /// no out-of-band graphics channel and no backing `ratatui::Buffer`
-    /// reports by default.
+    /// `emit_graphics` default runs its real trait body rather than an
+    /// override — proving what a surface with no out-of-band graphics
+    /// channel reports by default.
     #[derive(Default)]
     struct DummySurface;
 
@@ -368,12 +393,5 @@ mod tests {
     fn emit_graphics_default_reports_unsupported() {
         let mut surface = DummySurface;
         assert!(!surface.emit_graphics(Rect::new(0.0, 0.0, 4.0, 4.0), &test_image()));
-    }
-
-    #[cfg(feature = "tui")]
-    #[test]
-    fn ratatui_buffer_default_is_none() {
-        let mut surface = DummySurface;
-        assert!(surface.ratatui_buffer().is_none());
     }
 }

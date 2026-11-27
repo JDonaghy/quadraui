@@ -1076,8 +1076,7 @@ impl TuiBackend {
         rect: QRect,
     ) {
         let theme = self.current_theme;
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::draw_focus_ring(buf, area, &theme);
+        crate::tui::draw_focus_ring(&mut crate::tui::BufferCellSurface::new(buf), rect, &theme);
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
@@ -2600,7 +2599,6 @@ impl Backend for TuiBackend {
 
     fn draw_focus_ring(&mut self, rect: QRect) {
         let theme = self.current_theme;
-        let area = q_rect_to_ratatui(rect);
         let Some(frame) = self.current_frame_mut() else {
             debug_assert!(
                 false,
@@ -2608,7 +2606,11 @@ impl Backend for TuiBackend {
             );
             return;
         };
-        crate::tui::draw_focus_ring(frame.buffer_mut(), area, &theme);
+        crate::tui::draw_focus_ring(
+            &mut crate::tui::BufferCellSurface::new(frame.buffer_mut()),
+            rect,
+            &theme,
+        );
         // A chrome-only paint (no text of its own) is only "observable" via a
         // registered zone.
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
@@ -2732,9 +2734,8 @@ impl Backend for TuiBackend {
     /// Reached through `&mut dyn Backend` from
     /// [`crate::backend::DrawsPrimitives::draw_primitive`]'s default
     /// body, this is TUI's half of the `Primitive` paint seam:
-    /// [`crate::primitive::Primitive::paint_cells`] runs against
-    /// whatever `CellSurface::ratatui_buffer` recovers from this, the
-    /// same way [`Self::paint_surface`] (always `None` here —
+    /// [`crate::primitive::Primitive::paint_cells`] paints through the
+    /// surface this returns, the same way [`Self::paint_surface`] (always `None` here —
     /// `PaintSurface`'s module doc, "Why TUI stays out") feeds
     /// [`crate::primitive::Primitive::paint`] on a pixel backend.
     fn cell_surface(&mut self) -> Option<&mut dyn crate::CellSurface> {

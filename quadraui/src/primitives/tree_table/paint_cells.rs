@@ -2,10 +2,10 @@
 //! (header, body, scrollbars, footer) with column 0 of every row painted
 //! as the TUI tree cell followed by its label.
 
-use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use super::{TreeTable, TreeTableLayout, TreeTableNode};
+use crate::cell_surface::CellSurface;
 use crate::primitives::data_table::paint_cells::{
     draw_cell, draw_data_table_body, draw_row, resolve_row_colors, RowPaintCtx,
 };
@@ -25,7 +25,7 @@ pub(crate) fn cell_tree_table_layout(area: Rect, table: &TreeTable) -> TreeTable
 /// the layout it painted at so callers hit-test at the same coordinates.
 #[cfg(test)]
 pub(crate) fn paint_tree_table_cells(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     table: &TreeTable,
     theme: &Theme,
@@ -34,7 +34,7 @@ pub(crate) fn paint_tree_table_cells(
 ) -> TreeTableLayout {
     let state = DataTablePaintState::default().with_hovered_idx(hovered_idx);
     paint_laid_out(
-        buf,
+        surface,
         area,
         table,
         theme,
@@ -50,7 +50,7 @@ pub(crate) fn paint_tree_table_cells(
 /// ahead of its label. Rows past `table.tree`'s length paint as plain
 /// `DataTable` rows.
 pub(super) fn paint_laid_out(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     area: Rect,
     table: &TreeTable,
     theme: &Theme,
@@ -60,7 +60,7 @@ pub(super) fn paint_laid_out(
 ) -> TreeTableLayout {
     let style = TreeStyle::default();
     let dt_layout = draw_data_table_body(
-        buf,
+        surface,
         area,
         &table.table,
         theme,
@@ -68,9 +68,9 @@ pub(super) fn paint_laid_out(
         None,
         nerd_fonts_enabled,
         layout.table,
-        |buf, y, ctx, idx, hovered, striped| match table.tree.get(idx) {
+        |surface, y, ctx, idx, hovered, striped| match table.tree.get(idx) {
             Some(node) => draw_tree_table_row(
-                buf,
+                surface,
                 y,
                 ctx,
                 idx,
@@ -79,7 +79,7 @@ pub(super) fn paint_laid_out(
                 &style,
                 nerd_fonts_enabled,
             ),
-            None => draw_row(buf, y, ctx, idx, hovered, striped, None),
+            None => draw_row(surface, y, ctx, idx, hovered, striped, None),
         },
     );
     TreeTableLayout {
@@ -94,7 +94,7 @@ pub(super) fn paint_laid_out(
 /// every other column uses.
 #[allow(clippy::too_many_arguments)]
 fn draw_tree_table_row(
-    buf: &mut Buffer,
+    surface: &mut dyn CellSurface,
     y: u16,
     ctx: &RowPaintCtx<'_>,
     abs_idx: usize,
@@ -104,12 +104,12 @@ fn draw_tree_table_row(
     nerd_fonts_enabled: bool,
 ) {
     let (row_fg, row_bg) = resolve_row_colors(ctx, abs_idx, hovered_idx, striped);
-    let mut hook = |buf: &mut Buffer, col_idx: usize, cell_rect: Rect| -> bool {
+    let mut hook = |surface: &mut dyn CellSurface, col_idx: usize, cell_rect: Rect| -> bool {
         if col_idx != 0 {
             return false;
         }
         let (_, text_start) = crate::tui::paint_tree_cell(
-            buf,
+            surface,
             cell_rect,
             style,
             node.indent,
@@ -120,7 +120,7 @@ fn draw_tree_table_row(
         );
         let text_start = (text_start as u16).min(cell_rect.width);
         draw_cell(
-            buf,
+            surface,
             ctx,
             &ctx.table.rows[abs_idx],
             0,
@@ -133,7 +133,15 @@ fn draw_tree_table_row(
         );
         true
     };
-    draw_row(buf, y, ctx, abs_idx, hovered_idx, striped, Some(&mut hook));
+    draw_row(
+        surface,
+        y,
+        ctx,
+        abs_idx,
+        hovered_idx,
+        striped,
+        Some(&mut hook),
+    );
 }
 
 #[cfg(test)]
@@ -143,6 +151,7 @@ mod tests {
     use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow, DataTable};
     use crate::primitives::tree_table::TreeTableHit;
     use crate::types::{Decoration, StyledText, WidgetId};
+    use ratatui::buffer::Buffer;
 
     fn make_tree_table() -> TreeTable {
         TreeTable::new(
@@ -221,7 +230,14 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+            false,
+        );
         let row0 = line(&buf, 1, 20);
         assert!(
             row0.contains('▾'),
@@ -238,7 +254,14 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+            false,
+        );
         let row1 = line(&buf, 2, 20);
         assert!(!row1.contains('▾') && !row1.contains('▸'));
         assert!(row1.contains("main.rs"));
@@ -256,7 +279,14 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+            false,
+        );
         // The indent only pushes column 0's label, never column 1's.
         let layout = cell_tree_table_layout(area, &table);
         let col1_x = layout.table.columns[1].x.round() as usize;
@@ -303,7 +333,14 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+            false,
+        );
         let row2 = line(&buf, 3, 20);
         assert!(
             row2.contains('▸'),
@@ -321,7 +358,14 @@ mod tests {
         // rest.
         let area = Rect::new(0, 0, 8, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
+        let layout = paint_tree_table_cells(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+            false,
+        );
         assert_eq!(layout.table.columns.len(), 1);
         assert!(layout.table.columns[0].width >= 4.0);
     }
@@ -331,7 +375,14 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 2, 10);
         let mut buf = Buffer::empty(area);
-        let layout = paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
+        let layout = paint_tree_table_cells(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+            false,
+        );
         assert_eq!(layout.table.columns.len(), 1);
         assert_eq!(layout.table.columns[0].width, 4.0);
     }
@@ -344,15 +395,84 @@ mod tests {
         table.table.striped = true;
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(
+            &mut crate::tui::BufferCellSurface::new(&mut buf),
+            area,
+            &table,
+            &Theme::default(),
+            None,
+            false,
+        );
         let theme = Theme::default();
         let mut plain = make_tree_table();
         plain.table.striped = false;
         let mut plain_buf = Buffer::empty(area);
-        paint_tree_table_cells(&mut plain_buf, area, &plain, &theme, None, false);
+        paint_tree_table_cells(
+            &mut crate::tui::BufferCellSurface::new(&mut plain_buf),
+            area,
+            &plain,
+            &theme,
+            None,
+            false,
+        );
         // Row 1 (odd) differs from the unstriped paint; row 0 (even)
         // does not. Column 20 is in column 0, past every label.
         assert_ne!(buf[(20, 2)].bg, plain_buf[(20, 2)].bg, "odd row tinted");
         assert_eq!(buf[(20, 1)].bg, plain_buf[(20, 1)].bg, "even row untouched");
+    }
+    /// The tree-table painter — tree cells with icons and chevrons in
+    /// column 0, plain rows past the tree, hover/press/stripes and the
+    /// selection — cell for cell against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+        use crate::types::Icon;
+
+        let theme = Theme::default();
+        let mut table = make_tree_table();
+        table.tree[1].icon = Some(Icon::new("\u{e7a8}", "r"));
+        table.tree[0].icon = Some(Icon::new("\u{4e2d}", "d"));
+        table.table.selected_idx = Some(1);
+        table.table.rows.push(DataRow {
+            cells: vec![StyledText::plain("orphan"), StyledText::plain("1b")],
+            decoration: Decoration::Muted,
+        });
+        let state = DataTablePaintState::default()
+            .with_hovered_idx(Some(2))
+            .with_pressed_idx(Some(0))
+            .with_striped(true);
+        let paint = |area: Rect, st: &DataTablePaintState, nerd: bool, w, h| {
+            oracle::paint(w, h, |s| {
+                paint_laid_out(
+                    s,
+                    area,
+                    &table,
+                    &theme,
+                    st,
+                    nerd,
+                    cell_tree_table_layout(area, &table),
+                );
+            })
+        };
+        oracle::assert_golden(
+            "tree_table",
+            &[
+                (
+                    "plain",
+                    &paint(
+                        Rect::new(0, 0, 26, 7),
+                        &DataTablePaintState::default(),
+                        false,
+                        26,
+                        7,
+                    ),
+                ),
+                (
+                    "states_nerd",
+                    &paint(Rect::new(1, 1, 26, 7), &state, true, 28, 9),
+                ),
+                ("narrow", &paint(Rect::new(0, 0, 9, 7), &state, false, 9, 7)),
+            ],
+        );
     }
 }

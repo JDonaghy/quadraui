@@ -1,0 +1,97 @@
+== plain
+area 0 0 26 7
+|Name               │  Size|
+|▾ d src            │      |
+|    r main.rs      │   2kb|
+|▸ docs             │      |
+|orphan             │    1b|
+|                          |
+|                          |
+0 0..4 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=BOLD ul=Reset
+0 4..19 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 19..20 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 20..22 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 22..26 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=BOLD ul=Reset
+1 0..19 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 19..20 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 20..26 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 0..19 fg=Rgb(220, 220, 220) bg=Rgb(60, 80, 120) mod=NONE ul=Reset
+2 19..20 fg=Rgb(60, 62, 72) bg=Rgb(60, 80, 120) mod=NONE ul=Reset
+2 20..26 fg=Rgb(220, 220, 220) bg=Rgb(60, 80, 120) mod=NONE ul=Reset
+3 0..19 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 19..20 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 20..26 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 0..6 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 6..19 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 19..20 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 20..24 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 24..26 fg=Rgb(120, 122, 135) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+5 0..26 fg=Reset bg=Reset mod=NONE ul=Reset
+6 0..26 fg=Reset bg=Reset mod=NONE ul=Reset
+== states_nerd
+area 0 0 28 9
+|                            |
+| Name               │  Size |
+| ▾ 中 src            │       |
+|      main.rs      │   2kb |
+| ▸ docs             │       |
+| orphan             │    1b |
+|                            |
+|                            |
+|                            |
+0 0..28 fg=Reset bg=Reset mod=NONE ul=Reset
+1 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+1 1..5 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=BOLD ul=Reset
+1 5..20 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 20..21 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 21..23 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 23..27 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=BOLD ul=Reset
+1 27..28 fg=Reset bg=Reset mod=NONE ul=Reset
+2 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+2 1..20 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 20..21 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 21..27 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 27..28 fg=Reset bg=Reset mod=NONE ul=Reset
+3 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+3 1..20 fg=Rgb(220, 220, 220) bg=Rgb(60, 80, 120) mod=NONE ul=Reset
+3 20..21 fg=Rgb(60, 62, 72) bg=Rgb(60, 80, 120) mod=NONE ul=Reset
+3 21..27 fg=Rgb(220, 220, 220) bg=Rgb(60, 80, 120) mod=NONE ul=Reset
+3 27..28 fg=Reset bg=Reset mod=NONE ul=Reset
+4 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+4 1..20 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 20..21 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 21..27 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 27..28 fg=Reset bg=Reset mod=NONE ul=Reset
+5 0..1 fg=Reset bg=Reset mod=NONE ul=Reset
+5 1..7 fg=Rgb(120, 122, 135) bg=Rgb(28, 30, 38) mod=NONE ul=Reset
+5 7..20 fg=Rgb(220, 220, 220) bg=Rgb(28, 30, 38) mod=NONE ul=Reset
+5 20..21 fg=Rgb(60, 62, 72) bg=Rgb(28, 30, 38) mod=NONE ul=Reset
+5 21..25 fg=Rgb(220, 220, 220) bg=Rgb(28, 30, 38) mod=NONE ul=Reset
+5 25..27 fg=Rgb(120, 122, 135) bg=Rgb(28, 30, 38) mod=NONE ul=Reset
+5 27..28 fg=Reset bg=Reset mod=NONE ul=Reset
+6 0..28 fg=Reset bg=Reset mod=NONE ul=Reset
+7 0..28 fg=Reset bg=Reset mod=NONE ul=Reset
+8 0..28 fg=Reset bg=Reset mod=NONE ul=Reset
+== narrow
+area 0 0 9 7
+|Name    │|
+|▾ d src │|
+|    r m…│|
+|▸ docs  │|
+|orphan  │|
+|         |
+|         |
+0 0..4 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=BOLD ul=Reset
+0 4..8 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+0 8..9 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 0..8 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+1 8..9 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+2 0..8 fg=Rgb(220, 220, 220) bg=Rgb(60, 80, 120) mod=NONE ul=Reset
+2 8..9 fg=Rgb(60, 62, 72) bg=Rgb(60, 80, 120) mod=NONE ul=Reset
+3 0..8 fg=Rgb(220, 220, 220) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+3 8..9 fg=Rgb(60, 62, 72) bg=Rgb(20, 22, 30) mod=NONE ul=Reset
+4 0..6 fg=Rgb(120, 122, 135) bg=Rgb(28, 30, 38) mod=NONE ul=Reset
+4 6..8 fg=Rgb(220, 220, 220) bg=Rgb(28, 30, 38) mod=NONE ul=Reset
+4 8..9 fg=Rgb(60, 62, 72) bg=Rgb(28, 30, 38) mod=NONE ul=Reset
+5 0..9 fg=Reset bg=Reset mod=NONE ul=Reset
+6 0..9 fg=Reset bg=Reset mod=NONE ul=Reset

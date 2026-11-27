@@ -760,21 +760,17 @@ impl crate::primitive::Primitive for IconGrid {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        // CSR: ratatui_buffer escape hatch
-        let buf = cells
-            .ratatui_buffer()
-            .expect(crate::primitive::CELL_BUFFER_REQUIRED);
+        use crate::cell_surface::solid_style;
         use crate::text_util::{char_cell_width, display_width, fit_chars_to_cells};
-        use crate::tui::{ratatui_color, set_cell, set_cell_wide};
 
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
         if area.width == 0 || area.height == 0 {
             return;
         }
 
-        let fg = ratatui_color(theme.surface_fg);
-        let bg = ratatui_color(theme.background);
-        let sel_bg = ratatui_color(theme.selected_bg);
+        let fg = theme.surface_fg;
+        let bg = theme.background;
+        let sel_bg = theme.selected_bg;
         let one_row = layout.layout.tile_height <= 1.0;
 
         for tile in &layout.layout.visible_tiles {
@@ -799,7 +795,7 @@ impl crate::primitive::Primitive for IconGrid {
                 // Fall back to a single-row `<glyph> <name>` tile — the
                 // module doc's "TUI story".
                 for col in 0..tw {
-                    set_cell(buf, tx + col, ty, ' ', fg, row_bg);
+                    cells.put_char(tx + col, ty, ' ', solid_style(fg, row_bg));
                 }
                 let mut col: u16 = 0;
                 for ch in glyph.chars() {
@@ -808,9 +804,9 @@ impl crate::primitive::Primitive for IconGrid {
                         break;
                     }
                     if w == 2 {
-                        set_cell_wide(buf, tx + col, ty, ch, fg, row_bg);
+                        cells.put_wide(tx + col, ty, ch, solid_style(fg, row_bg));
                     } else {
-                        set_cell(buf, tx + col, ty, ch, fg, row_bg);
+                        cells.put_char(tx + col, ty, ch, solid_style(fg, row_bg));
                     }
                     col += w;
                 }
@@ -826,14 +822,14 @@ impl crate::primitive::Primitive for IconGrid {
                     }
                     let w = char_cell_width(ch);
                     if w == 2 {
-                        set_cell_wide(buf, tx + vcol, ty, ch, fg, row_bg);
+                        cells.put_wide(tx + vcol, ty, ch, solid_style(fg, row_bg));
                     } else {
-                        set_cell(buf, tx + vcol, ty, ch, fg, row_bg);
+                        cells.put_char(tx + vcol, ty, ch, solid_style(fg, row_bg));
                     }
                     vcol += w;
                 }
                 if ellipsis && vcol < tw {
-                    set_cell(buf, tx + vcol, ty, '…', fg, row_bg);
+                    cells.put_char(tx + vcol, ty, '…', solid_style(fg, row_bg));
                 }
                 continue;
             }
@@ -841,7 +837,7 @@ impl crate::primitive::Primitive for IconGrid {
             let th = tile.bounds.height.round() as u16;
             for row in 0..th {
                 for col in 0..tw {
-                    set_cell(buf, tx + col, ty + row, ' ', fg, row_bg);
+                    cells.put_char(tx + col, ty + row, ' ', solid_style(fg, row_bg));
                 }
             }
 
@@ -853,9 +849,9 @@ impl crate::primitive::Primitive for IconGrid {
                 for ch in glyph.chars() {
                     let w = char_cell_width(ch);
                     if w == 2 {
-                        set_cell_wide(buf, col, ty, ch, fg, row_bg);
+                        cells.put_wide(col, ty, ch, solid_style(fg, row_bg));
                     } else {
-                        set_cell(buf, col, ty, ch, fg, row_bg);
+                        cells.put_char(col, ty, ch, solid_style(fg, row_bg));
                     }
                     col += w;
                 }
@@ -874,14 +870,14 @@ impl crate::primitive::Primitive for IconGrid {
                     }
                     let w = char_cell_width(ch);
                     if w == 2 {
-                        set_cell_wide(buf, col, ty + 1, ch, fg, row_bg);
+                        cells.put_wide(col, ty + 1, ch, solid_style(fg, row_bg));
                     } else {
-                        set_cell(buf, col, ty + 1, ch, fg, row_bg);
+                        cells.put_char(col, ty + 1, ch, solid_style(fg, row_bg));
                     }
                     col += w;
                 }
                 if ellipsis {
-                    set_cell(buf, col, ty + 1, '…', fg, row_bg);
+                    cells.put_char(col, ty + 1, '…', solid_style(fg, row_bg));
                 }
             }
         }
@@ -1314,5 +1310,43 @@ mod tests {
             let sel_bg = crate::tui::ratatui_color(theme.selected_bg);
             assert_eq!(buf.cell((0, 0)).unwrap().bg, sel_bg);
         }
+    }
+
+    /// The tile painter, two-row tiles and the one-row fallback, with
+    /// and without Nerd Font glyphs, cell-for-cell against the golden.
+    #[cfg(feature = "tui")]
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::primitive::{LayoutCtx, Primitive};
+        use crate::tui::cell_surface::oracle;
+
+        let theme = crate::Theme::default();
+        let style = crate::Style::default();
+        let mut g = grid(7);
+        g.items[1].label = StyledText::plain("a-much-longer-name.txt");
+        g.items[2].icon = Icon::new("\u{4e2d}", "\u{6587}");
+        g.items[3].label = StyledText::plain("\u{4e2d}\u{6587}\u{540d}\u{5b57}\u{957f}");
+        g.selected_idx = 1;
+        let paint = |g: &IconGrid, rect: Rect, nerd: bool, w: u16, h: u16| {
+            let layout = Primitive::layout(g, &LayoutCtx::new(1.0, 1.0, nerd), rect);
+            oracle::paint(w, h, |s| {
+                Primitive::paint_cells(g, &layout, s, &crate::PaintEnv::new(&theme, &style));
+            })
+        };
+        let tiles = paint(&g, Rect::new(1.0, 1.0, 40.0, 9.0), true, 42, 11);
+        let fallback = paint(&g, Rect::new(0.0, 0.0, 40.0, 9.0), false, 40, 9);
+        let one_row = paint(&g, Rect::new(0.0, 0.0, 30.0, 1.0), true, 30, 1);
+        let mut unfocused = g.clone();
+        unfocused.has_focus = false;
+        let unfocused = paint(&unfocused, Rect::new(0.0, 0.0, 30.0, 1.0), false, 30, 1);
+        oracle::assert_golden(
+            "icon_grid",
+            &[
+                ("tiles", &tiles),
+                ("fallback", &fallback),
+                ("one_row", &one_row),
+                ("unfocused", &unfocused),
+            ],
+        );
     }
 }

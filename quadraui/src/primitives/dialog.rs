@@ -1745,14 +1745,12 @@ const MODAL_SHADOW_ELEVATION: u8 = 3;
 /// overlaid into the top rule, multi-line body text, an optional table,
 /// an optional input slot, and a row (or column) of buttons.
 ///
-/// One sub-region reaches for [`CellSurface::ratatui_buffer`] rather than
-/// a cell verb, because the widget it paints is a whole primitive of its
-/// own with its own cell rasteriser: a [`DialogInput::Toolbar`] body slot
-/// paints through the toolbar rasteriser. A [`DialogButton`] carrying an
-/// explicit [`crate::ButtonSpec`] paints through
-/// [`crate::primitives::button::cell_paint::paint`] (bracket chrome,
-/// icon, intent colour) directly against this module's own `surface`,
-/// needing no raw buffer. Everything else here is
+/// Two sub-regions paint through another primitive's own cell
+/// rasteriser against this module's `surface`: a
+/// [`DialogInput::Toolbar`] body slot through the toolbar rasteriser, and
+/// a [`DialogButton`] carrying an explicit [`crate::ButtonSpec`] through
+/// [`crate::primitives::button::cell_paint::paint`] (bracket chrome, icon,
+/// intent colour). Everything else here is
 /// `fill`/`put_char`/`put_str_clipped`.
 #[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
@@ -1993,18 +1991,14 @@ pub(crate) mod cell_paint {
                 }
                 DialogInput::Toolbar(toolbar) => {
                     // The toolbar is its own primitive with its own cell
-                    // rasteriser — see this module's doc for why this
-                    // reaches for the raw buffer. `body_toolbar_layout`
-                    // already resolved the positions; the rasteriser
-                    // repaints from `input_bounds`, with no hover/pressed
-                    // state on the dialog paint path.
-                    // CSR: ratatui_buffer escape hatch
-                    if let Some(buf) = surface.ratatui_buffer() {
-                        let area = ratatui::layout::Rect::new(ix, iy, iw, 1);
-                        crate::primitives::toolbar::cell_paint::draw_toolbar(
-                            buf, area, toolbar, theme, None, None,
-                        );
-                    }
+                    // rasteriser. `body_toolbar_layout` already resolved
+                    // the positions; the rasteriser repaints from
+                    // `input_bounds`, with no hover/pressed state on the
+                    // dialog paint path.
+                    let area = ratatui::layout::Rect::new(ix, iy, iw, 1);
+                    crate::primitives::toolbar::cell_paint::draw_toolbar(
+                        surface, area, toolbar, theme, None, None,
+                    );
                 }
                 // `FormDialog` (`compose::form_dialog`) paints
                 // the embedded form separately, through

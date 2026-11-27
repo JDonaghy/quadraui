@@ -19,7 +19,7 @@
 //! that row's already-painted glyphs instead of overwriting them.
 
 use super::{CellGrid, CellGridLayout, ResolvedSpan};
-use crate::cell_surface::{CellStyle, CellSurface};
+use crate::cell_surface::{CellModifier, CellStyle, CellSurface};
 use crate::event::Rect;
 use crate::primitives::data_table::ColumnAlign;
 use crate::theme::Theme;
@@ -364,22 +364,13 @@ pub(crate) fn paint(
         }
     }
     // Row axis: there is no spare row to reserve, so the boundary is an
-    // underline over the row's already-painted glyphs rather than a
-    // glyph that would replace them. No `CellSurface` verb adds a
-    // modifier to a painted cell in place (re-writing a double-width
-    // glyph's continuation cell would split it), so this reaches the
-    // backing buffer.
+    // underline added in place over the row's already-painted glyphs
+    // rather than a glyph that would replace them.
     if layout.frozen_rows > 0 && layout.frozen_rows < layout.rows.len() {
         if let Some((ry, rh)) = span_bounds(ah, ay, &layout.rows[layout.frozen_rows - 1]) {
             let div_y = ry + rh.saturating_sub(1);
-            // CSR: ratatui_buffer escape hatch
-            if let Some(buf) = cells.ratatui_buffer() {
-                let b = buf.area;
-                if div_y >= b.y && div_y < b.y + b.height {
-                    for x in ax.max(b.x)..ax.saturating_add(aw).min(b.x + b.width) {
-                        buf[(x, div_y)].modifier |= ratatui::style::Modifier::UNDERLINED;
-                    }
-                }
+            for x in ax..ax.saturating_add(aw) {
+                cells.add_modifier(x, div_y, CellModifier::Underline { color: None });
             }
         }
     }
@@ -1119,5 +1110,36 @@ mod tests {
         assert_eq!(buf[(cx, cy)].symbol(), "f");
         assert_eq!(buf[(cx, cy)].fg, ratatui_color(theme.muted_fg));
         assert_eq!(buf[(cx, cy)].bg, ratatui_color(theme.selection_bg));
+    }
+
+    /// The grid painter with frozen panes (the row boundary underlined in
+    /// place, including over a wide glyph), a scrolled body, the cursor
+    /// and a selection, cell for cell against the golden.
+    #[test]
+    fn cell_paint_matches_the_golden() {
+        use crate::tui::cell_surface::oracle;
+
+        let theme = Theme::default();
+        let mut g = grid();
+        g.cells[0][2] = cell_at("\u{4e2d}\u{6587}x");
+        g.row_scroll = 1;
+        g.col_scroll = 1;
+        g.cursor = (3, 3);
+        g.selection_anchor = Some((2, 2));
+        let mut plain = grid();
+        plain.column_separators = true;
+        plain.striped = true;
+        let paint = |g: &CellGrid, area: Rect, w, h| {
+            let layout = tui_cell_grid_layout(area, g);
+            oracle::paint(w, h, |s| paint(g, quad(area), &layout, s, &theme))
+        };
+        oracle::assert_golden(
+            "cell_grid",
+            &[
+                ("frozen_scrolled", &paint(&g, Rect::new(0, 0, 40, 8), 40, 8)),
+                ("offset", &paint(&g, Rect::new(2, 1, 30, 6), 33, 8)),
+                ("separators", &paint(&plain, Rect::new(0, 0, 40, 8), 40, 8)),
+            ],
+        );
     }
 }
