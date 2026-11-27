@@ -21,3 +21,9 @@ edit-url-template = "https://github.com/JDonaghy/quadraui/edit/develop/site/src/
 # generated 404 page renders absolute links, which need this set to
 # resolve correctly instead of pointing at the Pages user root.
 site-url = "/quadraui/"
+
+# The gallery nests every widget under its group; keep those folded so the
+# sidebar stays scannable.
+[output.html.fold]
+enable = true
+level = 1

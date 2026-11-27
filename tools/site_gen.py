@@ -296,7 +296,12 @@ def first_variant_cell(
     backend: str,
 ) -> str:
     variant = entry["variants"][0] if entry["variants"] else "default"
-    return cell_markdown(merged.get((entry["demo"], entry["group"], variant, backend)), backend)
+    row = merged.get((entry["demo"], entry["group"], variant, backend))
+    cell = cell_markdown(row, backend)
+    if row is not None and row.get("path"):
+        # A thumbnail in a five-column table is small; link it to the full image.
+        cell = f"[{cell}](images/{Path(row['path']).name})"
+    return cell
 
 
 def group_slug(group: str) -> str:

@@ -278,7 +278,10 @@ class GenerateTest(unittest.TestCase):
         page = (self.out_dir / "gallery" / "group-overlays.md").read_text()
         self.assertIn("| Widget | TUI | GTK | macOS | Windows |", page)
         self.assertIn("[Toast](toast.md)", page)
-        self.assertIn("images/tui__overlays__toast__default.svg", page)
+        self.assertIn(
+            "[![TUI](images/tui__overlays__toast__default.svg)](images/tui__overlays__toast__default.svg)",
+            page,
+        )
 
     def test_gallery_index_links_every_group_page(self):
         index = (self.out_dir / "gallery" / "index.md").read_text()
