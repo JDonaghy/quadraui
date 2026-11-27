@@ -1199,4 +1199,62 @@ mod tests {
             })
         );
     }
+
+    /// Event parity for the input routes: a `Collapse` on the selected
+    /// expanded branch, routed as an assistive-technology action through
+    /// the live widget (`a11y::route_widget_action`), straight into
+    /// `Interactive::handle`, and as the Left key, resolves to the same
+    /// `ToggleExpanded`; an `Expand` on that already-expanded branch
+    /// resolves to no event on the action routes.
+    #[test]
+    fn expand_and_collapse_agree_across_the_a11y_route_direct_handle_and_keys() {
+        let mut tt = tree_table(4);
+        tt.table.selected_idx = Some(0);
+        let id = tt.table.id;
+        let area = Rect::new(0.0, 0.0, 30.0, 10.0);
+        let collapse = vec![UiEvent::TreeTable(
+            id,
+            TreeTableEvent::ToggleExpanded {
+                path: vec![0],
+                expand: false,
+            },
+        )];
+
+        let into_events = |handled: Handled<TreeTableEvent>, host: MockHost| {
+            let mut events = host.emitted;
+            if let Handled::Event(ev) = handled {
+                events.push(crate::interactive::WidgetAction::into_ui_event(ev, id));
+            }
+            events
+        };
+        let direct = |event: RoutedEvent| {
+            let mut state = TreeTableState::default();
+            let (handled, host) = run(&tt, &mut state, event, area.height);
+            into_events(handled, host)
+        };
+        let live = |action| {
+            let mut frame = crate::frame_tree::FrameTree::new();
+            frame.push(id, area, Box::new(tt.clone()));
+            let mut states = crate::widget_state::WidgetStateStore::new();
+            crate::a11y::route_widget_action(
+                &frame,
+                &mut states,
+                &LayoutCtx::new(1.0, 1.0, false),
+                id,
+                action,
+            )
+        };
+
+        assert_eq!(
+            direct(RoutedEvent::Action(crate::a11y::A11yAction::Collapse)),
+            collapse
+        );
+        assert_eq!(live(crate::a11y::A11yAction::Collapse), collapse);
+        assert_eq!(direct(key(Key::Named(NamedKey::Left))), collapse);
+        assert_eq!(
+            direct(RoutedEvent::Action(crate::a11y::A11yAction::Expand)),
+            Vec::new()
+        );
+        assert_eq!(live(crate::a11y::A11yAction::Expand), Vec::new());
+    }
 }
