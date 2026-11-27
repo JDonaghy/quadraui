@@ -1,8 +1,8 @@
-//! Backend-agnostic app code for the `FolderPickerController` demo
+//! Backend-agnostic app code for the `FolderPicker` demo
 //! ([`tui_folder_picker`] / [`gtk_folder_picker`]).
 //!
 //! [`FolderPickerApp`] demonstrates a self-contained `AppLogic` that:
-//! - Opens the `FolderPickerController` on startup (rooted at `env::current_dir()`).
+//! - Opens the `FolderPicker` on startup (rooted at `env::current_dir()`).
 //! - Shows the picker as a centred palette modal.
 //! - Confirms a selection (`Enter` on a non-`..` entry) and displays the
 //!   chosen path in a status bar.
@@ -25,12 +25,12 @@ use quadraui::DrawsPrimitives;
 use std::path::PathBuf;
 
 use quadraui::{
-    AppLogic, Backend, Color, FolderPickerController, Handled, Key, NamedKey, PathPickerAction,
-    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, FolderPicker, Handled, Key, NamedKey, PathPickerAction, Reaction,
+    Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
 
 pub struct FolderPickerApp {
-    picker: Option<FolderPickerController>,
+    picker: Option<FolderPicker>,
     confirmed_path: Option<PathBuf>,
     status: String,
     /// Directory the picker is (re)opened at — captured once so `o`
@@ -58,7 +58,7 @@ impl FolderPickerApp {
     /// happens to sit under.
     pub fn with_root(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let picker = FolderPickerController::rooted_at(root.clone(), vec![]);
+        let picker = FolderPicker::rooted_at(root.clone(), vec![]);
         Self {
             picker: Some(picker),
             confirmed_path: None,
@@ -141,7 +141,7 @@ impl AppLogic for FolderPickerApp {
         // Folder picker modal (when open).
         if let Some(ref picker) = self.picker {
             let popup_rect = Self::popup_rect(backend);
-            picker.render(popup_rect, backend);
+            let _ = backend.draw_dyn(popup_rect, picker, &());
         }
     }
 
@@ -173,7 +173,11 @@ impl AppLogic for FolderPickerApp {
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                Handled::Event(_) | Handled::Consumed => return Reaction::Redraw,
+                Handled::Event(change) => {
+                    picker.apply(&change, visible_rows);
+                    return Reaction::Redraw;
+                }
+                Handled::Consumed => return Reaction::Redraw,
                 Handled::Ignored => {}
             }
         } else {
@@ -186,8 +190,7 @@ impl AppLogic for FolderPickerApp {
                     Key::Char('o') => {
                         // Reopen at the root this app was constructed with
                         // (the process's working directory for `new()`).
-                        self.picker =
-                            Some(FolderPickerController::rooted_at(self.root.clone(), vec![]));
+                        self.picker = Some(FolderPicker::rooted_at(self.root.clone(), vec![]));
                         self.status =
                             "Open Folder picker — navigate and press Enter to confirm".into();
                         return Reaction::Redraw;

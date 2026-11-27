@@ -3193,7 +3193,7 @@ pub trait PlatformServices {
 
     /// Show a native file-open dialog (blocking). Returns `None` if the
     /// user cancelled. TUI backends have no native dialog to show;
-    /// instead they drive an in-canvas `FilePickerController` through a
+    /// instead they drive an in-canvas `FilePicker` through a
     /// nested draw-and-read loop and return the path it resolves, the
     /// same `Some(path)`/`None` contract as a native chooser.
     fn show_file_open_dialog(&self, opts: FileDialogOptions) -> Option<PathBuf>;
@@ -3213,7 +3213,7 @@ pub trait PlatformServices {
     /// leave them at their `Default` rather than populating them.
     ///
     /// TUI backends have no native dialog to show; instead they drive an
-    /// in-canvas `FolderPickerController` through a nested draw-and-read
+    /// in-canvas `FolderPicker` through a nested draw-and-read
     /// loop and return the path it resolves, the same shared shape as
     /// [`Self::show_file_open_dialog`]. [`BackendCaps::folder_dialogs`]
     /// still reports `false` on TUI — it tracks whether the backend shows

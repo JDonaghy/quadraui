@@ -1224,8 +1224,8 @@ fn caret_shape_demo_escape_exits() {
 // ─── FileDialogDemo: TUI open/save/folder all return a real path ───────────
 //
 // `show_file_open_dialog` / `show_file_save_dialog` / `show_folder_open_dialog`
-// each drive a real `compose::FilePickerController` /
-// `compose::FolderPickerController` through a nested draw-and-read loop and
+// each drive a real `compose::FilePicker` /
+// `compose::FolderPicker` through a nested draw-and-read loop and
 // resolve to whichever path the (scripted, via
 // `TuiDriver::queue_dialog_events`) input actually picked. These tests
 // pin that positive contract. The GTK path (a real, modal,
@@ -7561,7 +7561,7 @@ fn text_input_backspacing_to_empty_restores_placeholder() {
 }
 
 /// folder_picker: `FolderPickerApp` flattens the whole
-/// directory tree up front (see `FolderPickerController::new`'s
+/// directory tree up front (see `FolderPicker::rooted_at`'s
 /// `collect_dir_entries` walk) rather than descending one level at a
 /// time, so "navigate down a directory" here means selecting a real
 /// subdirectory entry (not `.` or `..`) and confirming it — the picker
@@ -7643,9 +7643,9 @@ fn folder_picker_confirmed_status_survives_a_path_longer_than_the_screen() {
     );
 }
 
-// ─── FilePickerApp: compose::FilePickerController demo ─────────────────────
+// ─── FilePickerApp: compose::FilePicker demo ─────────────────────
 //
-// Drives `FilePickerController` directly — no `PlatformServices` involved
+// Drives `FilePicker` directly — no `PlatformServices` involved
 // — the same "app owns the controller, no backend branching" shape
 // `FolderPickerApp` above already has. See `tui_file_picker.rs`.
 
@@ -7705,7 +7705,7 @@ fn file_picker_app_save_mode_confirms_seeded_filename() {
 
 /// Open mode: `j`/`k` move the selection the same way `Down`/`Up` do,
 /// driven through the real example path (not just the controller's own
-/// unit tests) so the vim shortcuts unified with `FolderPickerController`
+/// unit tests) so the vim shortcuts unified with `FolderPicker`
 /// are pinned end to end.
 #[test]
 fn file_picker_app_open_mode_vim_keys_navigate_and_confirm() {

@@ -1,8 +1,8 @@
-//! Backend-agnostic app code for the `FilePickerController` demo
+//! Backend-agnostic app code for the `FilePicker` demo
 //! ([`tui_file_picker`] / [`gtk_file_picker`]).
 //!
 //! [`FilePickerApp`] demonstrates a self-contained `AppLogic` that:
-//! - Opens the `FilePickerController` in [`FilePickerMode::Open`] on
+//! - Opens the `FilePicker` in [`FilePickerMode::Open`] on
 //!   startup (rooted at `env::current_dir()`).
 //! - Shows the picker as a centred palette modal.
 //! - Confirms a selection (`Enter` on a file) and displays the chosen
@@ -27,13 +27,12 @@ use quadraui::DrawsPrimitives;
 use std::path::PathBuf;
 
 use quadraui::{
-    AppLogic, Backend, Color, FilePickerController, FilePickerMode, Handled, Key, NamedKey,
-    PathPickerAction, Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId,
-    PALETTE_CHROME_ROWS,
+    AppLogic, Backend, Color, FilePicker, FilePickerMode, Handled, Key, NamedKey, PathPickerAction,
+    Reaction, Rect, StatusBar, StatusBarSegment, UiEvent, WidgetId, PALETTE_CHROME_ROWS,
 };
 
 pub struct FilePickerApp {
-    picker: Option<FilePickerController>,
+    picker: Option<FilePicker>,
     confirmed_path: Option<PathBuf>,
     status: String,
     root: PathBuf,
@@ -50,7 +49,7 @@ impl FilePickerApp {
     /// the checkout happens to sit under.
     pub fn with_root(root: impl Into<PathBuf>) -> Self {
         let root = root.into();
-        let picker = FilePickerController::new(FilePickerMode::Open, root.clone(), vec![]);
+        let picker = FilePicker::new(FilePickerMode::Open, root.clone(), vec![]);
         Self {
             picker: Some(picker),
             confirmed_path: None,
@@ -116,7 +115,7 @@ impl AppLogic for FilePickerApp {
 
         if let Some(ref picker) = self.picker {
             let popup_rect = Self::popup_rect(backend);
-            picker.render(popup_rect, backend);
+            let _ = backend.draw_dyn(popup_rect, picker, &());
         }
     }
 
@@ -150,7 +149,11 @@ impl AppLogic for FilePickerApp {
                     self.picker = None;
                     return Reaction::Redraw;
                 }
-                Handled::Event(_) | Handled::Consumed => return Reaction::Redraw,
+                Handled::Event(change) => {
+                    picker.apply(&change, visible_rows);
+                    return Reaction::Redraw;
+                }
+                Handled::Consumed => return Reaction::Redraw,
                 Handled::Ignored => {}
             }
         } else if let UiEvent::KeyPressed { ref key, .. } = event {
@@ -159,7 +162,7 @@ impl AppLogic for FilePickerApp {
                     return Reaction::Exit;
                 }
                 Key::Char('o') => {
-                    self.picker = Some(FilePickerController::new(
+                    self.picker = Some(FilePicker::new(
                         FilePickerMode::Open,
                         self.root.clone(),
                         vec![],
@@ -169,7 +172,7 @@ impl AppLogic for FilePickerApp {
                 }
                 Key::Char('s') => {
                     self.picker = Some(
-                        FilePickerController::new(FilePickerMode::Save, self.root.clone(), vec![])
+                        FilePicker::new(FilePickerMode::Save, self.root.clone(), vec![])
                             .with_initial_filename("untitled.txt"),
                     );
                     self.status = "Save File picker — type a name and press Enter".into();
