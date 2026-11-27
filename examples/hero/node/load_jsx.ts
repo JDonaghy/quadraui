@@ -48,4 +48,4 @@ function loadHero(asMain = false): any {
   return load(path.join(__dirname, "counter.tsx"), asMain);
 }
 
-module.exports = { loadHero, SUBPATHS };
+module.exports = { load, loadHero, SUBPATHS };

@@ -1,0 +1,27 @@
+[package]
+name = "quadraui-parity"
+version = "0.0.0"
+edition.workspace = true
+description = "The cross-language parity app (a todo list) in Rust -- the same app as examples/parity/python and examples/parity/node"
+license.workspace = true
+repository.workspace = true
+publish = false
+autobins = false
+
+[[bin]]
+name = "todo"
+path = "src/main.rs"
+required-features = ["tui"]
+
+[[bin]]
+name = "parity-trace"
+path = "src/bin/trace.rs"
+required-features = ["tui"]
+
+[features]
+# No default backend, matching quadraui's own feature policy.
+tui = ["quadraui/tui"]
+
+[dependencies]
+quadraui = { path = "../../../quadraui" }
+serde_json = "1.0"

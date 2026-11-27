@@ -18,6 +18,7 @@
     "js/jsx-runtime.ts",
     "js/jsx-dev-runtime.ts",
     "examples/file_manager_app_jsx.tsx",
-    "../examples/hero/node/counter.tsx"
+    "../examples/hero/node/counter.tsx",
+    "../examples/parity/node/todo.tsx"
   ]
 }
