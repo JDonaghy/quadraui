@@ -1,0 +1,60 @@
+# One app, three languages
+
+`quadraui-py` (PyPI: `quadraui`) and `@quadraui/node` are thin layers over
+the Rust core. Layout, painting, hit-testing, focus and widget state all
+run in Rust, so a widget looks and behaves the same from every language.
+The [hero counter](introduction.md#the-same-counter-three-ways) is written
+once per language with the same widget ids, and CI clicks the same script
+through all three.
+
+## Side by side
+
+| | Rust | Python | Node / TSX |
+|---|---|---|---|
+| Import | `use quadraui::prelude::*` | `from quadraui.app import App, ...` | `require("@quadraui/node/app")` |
+| State | struct fields | object attributes | class fields |
+| View | `ScreenLayout` of widgets at rects | `def view(self)` returning `Column(...)` | `view()` returning `<column>...</column>` |
+| Update | `fn handle(&mut self, UiEvent) -> Reaction` | `on_click=self.inc` | `onClick={() => this.count++}` |
+| Global keys | `UiEvent::KeyPressed` in `handle` | `on_event=` + `key_name(event)` | `onEvent:` + `keyName(event)` |
+| Run, terminal | `quadraui::tui::run(app)` | `App(...).run_tui()` | `new App(...).runTui()` |
+| Run, window | `quadraui::{gtk,macos,win}::run(app)` | `.run_native(title=...)` | `.runNative(title)` |
+| Quit | return `Reaction::Exit` | raise `SystemExit` | stop the live handle |
+| Test headless | `TuiDriver` | `quadraui.testing.harness` | `@quadraui/node/testing` |
+| Reusable parts | your own `Primitive` | `Component`, `Widget` | `Component`, `defineWidget` |
+| Hot reload | rebuild | `App.enable_hot_reload` | `App.enableHotReload` |
+
+Names follow each language: `on_select` in Python is `onSelect` in Node,
+and both answer the Rust `UiEvent` for that widget. [Events](concepts/events.md)
+has the table.
+
+## Where they differ today
+
+- **Update style.** Python and Node put callbacks on nodes. Rust matches
+  events by widget id in one `handle`, as Elm does, which keeps closures
+  and borrows out of the Rust API.
+- **Layout.** Python and Node have `Column`/`Row`; Rust places widgets in
+  rectangles (or uses `ShellApp` or the `layout` feature).
+- **Quitting.** There is no default quit key in Python or Node, and Node
+  must stop a live session outside the event handler; the counter shows
+  the pattern. An `App.quit()` safe to call from a handler is proposed.
+- **Native windows.** The Linux Python wheel and the npm addons are
+  terminal-only; see [Getting started](getting-started.md#which-backends-you-get).
+
+## Reference
+
+The wire types (every layout node, widget descriptor and event, with
+their fields) are generated from one Rust schema,
+[`wire_schema.rs`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui-binding-core/src/wire_schema.rs),
+by `scripts/gen_wire_types.py`, and CI fails if they drift:
+
+- Python: [`quadraui/wire.pyi`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui-py/python/quadraui/wire.pyi)
+  (`TypedDict`s for your type checker).
+- TypeScript: [`wire.d.ts`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui-node/js/wire.d.ts).
+- The app-layer nodes and their callbacks:
+  [`quadraui/app/nodes.py`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui-py/python/quadraui/app/nodes.py),
+  [`js/app/nodes.ts`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui-node/js/app/nodes.ts).
+
+**Versions.** The bindings' minor version always equals the Rust crate's:
+`quadraui` 0.12.x on PyPI and `@quadraui/node` 0.12.x pair with crate
+0.12.x. The policy is
+[`BINDING_VERSION_POLICY.md`](https://github.com/JDonaghy/quadraui/blob/develop/quadraui/docs/decisions/BINDING_VERSION_POLICY.md).

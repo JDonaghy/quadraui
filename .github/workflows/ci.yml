@@ -605,6 +605,12 @@ jobs:
         run: python3 scripts/test_gen_wire_types.py
       - name: introduction.md / README.md hello-world sync check
         run: python3 tools/test_introduction_matches_readme.py
+      # Every Rust/Python/TS sample in the README and the site is a copy of
+      # a file CI builds or runs, or is marked with why it is not.
+      - name: README / site code samples match their source files
+        run: python3 tools/test_doc_samples.py
+      - name: site link checker unit tests
+        run: python3 tools/test_check_site_links.py
 
   backend-loc-ratchet:
     # Keeps the four per-backend directories under `quadraui/src/` (`tui`,
