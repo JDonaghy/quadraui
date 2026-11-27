@@ -2941,21 +2941,14 @@ pub fn schema() -> Vec<DefJson> {
     }
     for kind in EXTRA_PRIMITIVE_KINDS {
         let ty = match kind {
-            "progress" => progress_bar_descriptor.clone(),
-            "spinner" => spinner_descriptor.clone(),
             "form" => form_descriptor.clone(),
             "text_input" => text_input_descriptor.clone(),
             "text_field" => text_field_descriptor.clone(),
             "number_input" => number_input_descriptor.clone(),
             "combo_box" => combo_box_descriptor.clone(),
             "date_picker" => date_picker_descriptor.clone(),
-            "message_list" => message_list_descriptor.clone(),
-            "multi_section_view" => multi_section_view_descriptor.clone(),
             "toolbar" => toolbar_descriptor.clone(),
             "menu_bar" => menu_bar_descriptor.clone(),
-            "command_line" => command_line_descriptor.clone(),
-            "scrollbar" => scrollbar_descriptor.clone(),
-            "find_replace" => find_replace_panel_descriptor.clone(),
             "password" => password_descriptor.clone(),
             "textarea" => textarea_descriptor.clone(),
             "tree_table" => tree_table_descriptor.clone(),
@@ -2999,6 +2992,13 @@ pub fn schema() -> Vec<DefJson> {
             "slider" => slider_descriptor.clone(),
             "select" => select_descriptor.clone(),
             "markdown" => markdown_descriptor.clone(),
+            "progress" => progress_bar_descriptor.clone(),
+            "spinner" => spinner_descriptor.clone(),
+            "scrollbar" => scrollbar_descriptor.clone(),
+            "command_line" => command_line_descriptor.clone(),
+            "message_list" => message_list_descriptor.clone(),
+            "multi_section_view" => multi_section_view_descriptor.clone(),
+            "find_replace" => find_replace_panel_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));

@@ -3383,11 +3383,11 @@ def test_switch_enter_toggles_once_the_engines_focus_tree_names_it_focused():
     assert received[0]["SwitchToggled"] == {"widget": "sw:1", "value": True}
 
 
-def test_clicking_a_display_only_extra_attaches_no_hit():
-    # `progress` paints but never overrides `ExtraPaint::hit_test` or
-    # `tab_stop`, so a click lands nowhere and focuses nothing: no
-    # `FocusChanged`, no `widget`, no `hit` -- the "no behavior change for
-    # display-only extras" half of the interaction seam.
+def test_clicking_a_display_only_widget_attaches_its_body_hit_and_focuses_nothing():
+    # `progress` is a generic-leaf widget with no focus stop, so a click
+    # focuses nothing (no `FocusChanged`) and its `Interactive::handle`
+    # consumes nothing: the raw `MouseDown` reaches Python addressed to the
+    # widget, with the whole-body hit attached.
     app = QuiApp(40, 20)
     app.set_render(
         lambda: {
@@ -3398,8 +3398,8 @@ def test_clicking_a_display_only_extra_attaches_no_hit():
 
     event = _click(app, 1.0, 1.0)
 
-    assert event["MouseDown"]["widget"] is None
-    assert "hit" not in event
+    assert event["MouseDown"]["widget"] == "progress:download"
+    assert event["hit"] == {"kind": "widget_body"}
 
 
 def _locate(app, needle):

@@ -12,10 +12,9 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Column, ComboBox, CommandLine, DatePicker, FindReplacePanel, FontRole, Form, Icon,
-    MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, Point,
-    ProgressBar, Rect, Scrollbar, Spinner, StyledText, TextField, TextInput, TextRegion, Toolbar,
-    ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
+    Backend, Column, ComboBox, DatePicker, Form, Icon, MenuBar, NaturalSize, NumberInput,
+    NumberInputHit, Point, Rect, StyledText, TextField, TextInput, Toolbar, ToolbarButton,
+    TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -166,57 +165,6 @@ pub fn extra_as_toolbar(extra: &Rc<dyn ExtraPaint>) -> Option<&Toolbar> {
         return Some(toolbar);
     }
     extra_as::<ToolbarWithOverflow>(extra).map(|w| &w.toolbar)
-}
-
-impl ExtraPaint for ProgressBar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_progress(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// One text row tall; no natural width — a progress bar's own point
-    /// is to fill whatever horizontal space its container gives it, the
-    /// same "no cheap width" treatment `crate::render::natural_size`'s
-    /// `List`/`Tree`/`DataTable` arms already give their own main axis.
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        NaturalSize::new(None, Some(backend.line_height()))
-    }
-}
-
-impl ExtraPaint for Spinner {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_spinner(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// The animated glyph's own box (one cell on TUI, a nominal
-    /// icon-sized square on a pixel backend, told apart by whether the
-    /// backend's `char_width` is one cell) plus, when `label` is non-empty, a
-    /// one-`char_width` gap and the label's own measured width in
-    /// `FontRole::Chrome` (the role every chrome label on this trait
-    /// measures in — see `crate::render::natural_size`'s `TabBar` arm).
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let line_height = backend.line_height();
-        let char_width = backend.char_width();
-        let glyph_width = if char_width <= 1.0 {
-            char_width
-        } else {
-            line_height
-        };
-        let width = if self.label.is_empty() {
-            glyph_width
-        } else {
-            let (label_w, _) = backend.measure_text(&self.label, FontRole::Chrome);
-            glyph_width + char_width.max(1.0) + label_w
-        };
-        NaturalSize::new(Some(width), Some(line_height))
-    }
 }
 
 impl ExtraPaint for Form {
@@ -632,52 +580,6 @@ impl ExtraPaint for TextArea {
     }
 }
 
-impl ExtraPaint for MessageList {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let line_height = backend.layout_primitive(area, self).line_height;
-        let _ = backend.draw_dyn(area, self, &());
-        // A selectable text region every frame lets drag-select and Ctrl-C
-        // copy work against the transcript. TUI ignores `lines` (it reads
-        // the live cell buffer); pixel backends extract from it, so `lines`
-        // are the rows the widget painted into `area` this frame:
-        // `rows[scroll_top..]`, as many whole rows as fit at the widget's
-        // own row pitch, so row `i` of `bounds` lines up with `lines[i]`.
-        // Each row is already one display row (the caller wraps), so there
-        // is no wrap or timestamp offset to account for.
-        let visible_rows = if line_height > 0.0 {
-            (area.height / line_height).floor() as usize
-        } else {
-            0
-        };
-        let lines = self
-            .rows
-            .iter()
-            .skip(self.scroll_top)
-            .take(visible_rows)
-            .map(|row| row.text.clone())
-            .collect();
-        backend.register_text_region(TextRegion {
-            id: self.id,
-            bounds: area,
-            lines,
-        });
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
-impl ExtraPaint for MultiSectionView {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_dyn(area, self, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
 impl ExtraPaint for TreeTable {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_dyn(area, self, &());
@@ -1050,52 +952,6 @@ impl ExtraPaint for MenuBar {
     }
 }
 
-impl ExtraPaint for CommandLine {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_dyn(area, self, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
-impl ExtraPaint for Scrollbar {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_scrollbar(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
-impl ExtraPaint for FindReplacePanel {
-    /// Paints the panel in the box [`FindReplacePanel::anchored_rect`]
-    /// places at the top-right of its `group_bounds`, within `area`.
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let rect = self.anchored_rect(&*backend, area);
-        backend.draw_dyn(rect, self, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check, same limitation [`Editor::hit_test`]
-    /// documents: resolving a click to one of [`quadraui::FindReplacePanel::hit_regions`]'s
-    /// char-cell targets needs `content_origin`/`char_width`/`line_height`
-    /// that this trait has no parameter for — [`quadraui::FindReplacePanel::hit_test`]
-    /// is still available to a host that has those metrics in hand.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-}
-
 /// Counts its `literal` arguments at compile time — the array-length
 /// companion `extra_primitives!` needs so [`EXTRA_PRIMITIVE_KINDS`]'s
 /// size tracks the table below with no hand-maintained length to drift.
@@ -1176,23 +1032,16 @@ macro_rules! extra_primitives {
 }
 
 extra_primitives! {
-    "progress" => ProgressBar,
-    "spinner" => Spinner,
     "form" => Form,
     "text_input" => TextInput,
     "text_field" => TextField,
     "number_input" => NumberInput,
     "combo_box" => ComboBox,
     "date_picker" => DatePicker,
-    "message_list" => MessageList,
-    "multi_section_view" => MultiSectionView,
     "tree_table" => TreeTable,
     "tree_table_controller" => TreeTableControllerDescriptor,
     "toolbar" => ToolbarWithOverflow,
     "menu_bar" => MenuBar,
-    "command_line" => CommandLine,
-    "scrollbar" => Scrollbar,
-    "find_replace" => FindReplacePanel,
     "password" => PasswordInput,
     "textarea" => TextArea,
 }
@@ -1280,7 +1129,14 @@ extra_primitives! {
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 24] = [
+pub const WIDGET_KINDS: [&str; 31] = [
+    "progress",
+    "spinner",
+    "scrollbar",
+    "command_line",
+    "message_list",
+    "multi_section_view",
+    "find_replace",
     "icon_grid",
     "cell_grid",
     "switch",
@@ -2569,40 +2425,6 @@ mod tests {
     /// A `message_list` extra paints through the widget contract, on a
     /// pixel backend
     /// whose editor line height differs from its chrome row height.
-    #[test]
-    fn message_list_extra_paints_through_the_widget_contract() {
-        let mut backend = quadraui::testing::RecordingBackend {
-            viewport: quadraui::Viewport {
-                width: 400.0,
-                height: 400.0,
-                scale: 1.0,
-            },
-            line_height: 16.0,
-            char_width: 8.0,
-            chrome_line_height: Some(22.0),
-            ..Default::default()
-        };
-        let list = MessageList {
-            id: WidgetId::new("ml"),
-            rows: (0..8)
-                .map(|i| {
-                    quadraui::MessageRow::new(
-                        format!("row {i}"),
-                        quadraui::Color::rgb(9, 9, 9),
-                        0.0,
-                    )
-                })
-                .collect(),
-            scroll_top: 0,
-        };
-        ExtraPaint::paint(&list, &mut backend, Rect::new(0.0, 0.0, 200.0, 64.0));
-        assert!(
-            backend.calls.is_empty(),
-            "painted through a bespoke Backend method: {:?}",
-            backend.calls
-        );
-    }
-
     #[test]
     fn tree_table_extra_renders_label_and_chevron_and_passes_through_a_click() {
         let id = WidgetId::new("tt:files");

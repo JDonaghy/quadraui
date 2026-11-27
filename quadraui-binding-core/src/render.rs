@@ -4287,29 +4287,9 @@ mod tests {
     #[test]
     fn align_sizes_every_extra_leaf_kind_to_its_own_natural_height() {
         use crate::extra_paint::{PasswordInput, TextArea};
-        use quadraui::{ComboBox, ProgressBar, Spinner, TextField, TextInput};
+        use quadraui::{ComboBox, TextField, TextInput};
 
         let kinds: Vec<(&str, Rc<dyn ExtraPaint>)> = vec![
-            (
-                "progress",
-                Rc::new(ProgressBar {
-                    id: WidgetId::new("progress"),
-                    label: String::new(),
-                    value: Some(0.5),
-                    frame_idx: 0,
-                    cancellable: false,
-                    accent: None,
-                }),
-            ),
-            (
-                "spinner",
-                Rc::new(Spinner {
-                    id: WidgetId::new("spinner"),
-                    label: String::new(),
-                    frame_idx: 0,
-                    accent: None,
-                }),
-            ),
             (
                 "combo_box",
                 Rc::new(ComboBox::new(
@@ -4341,7 +4321,7 @@ mod tests {
             ),
         ];
         assert!(
-            kinds.len() >= 7,
+            kinds.len() >= 5,
             "this test's own point is coverage across every self-sizing extra leaf kind"
         );
 

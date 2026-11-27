@@ -933,7 +933,10 @@ pub use popup::{
 // own module doc. `widget_kinds!` itself is exported at the crate root by
 // `#[macro_export]`, not re-exported here, the same convention as
 // `non_interactive!` above.
-pub use widget_kinds::{decode_widget, decode_widget_from, KindError};
+pub use widget_kinds::{
+    decode_widget, decode_widget_from, register_widget_kind, unregister_widget_kind,
+    widget_kind_names, DecodeFn, KindError,
+};
 // `InteractionState` — a single hover/pressed store keyed by `WidgetId`,
 // meant to replace the bespoke per-primitive trackers and positional arguments
 // (`hovered_id`, `pressed_id`, `hovered_toolbar_id`) the old `Backend` methods

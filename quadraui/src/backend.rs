@@ -2655,6 +2655,11 @@ pub trait DrawsPrimitives: Backend {
                 self.register_zone(*id, zone);
             }
         }
+        if painted_units.is_some() {
+            if let Some(region) = primitive.text_region(&layout) {
+                self.register_text_region(region);
+            }
+        }
         layout
     }
 
@@ -2821,6 +2826,11 @@ pub trait DrawsPrimitives: Backend {
             mark_modal_painted(self, id);
             if let Some(zone) = painted_units.and_then(|u| w.paint_zone(layout.as_ref(), u)) {
                 self.register_zone(*id, zone);
+            }
+            if painted_units.is_some() {
+                if let Some(region) = w.text_region(layout.as_ref()) {
+                    self.register_text_region(region);
+                }
             }
             // Named sub-parts become frame-inventory zones of their own,
             // `"<id>:<name>"`, so a composite that paints its children

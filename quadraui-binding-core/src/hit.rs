@@ -1436,14 +1436,10 @@ mod tests {
     /// clicks there.
     #[test]
     fn clip_hits_to_viewport_drops_a_chrome_hit_with_no_overlap() {
-        let extra: Rc<dyn ExtraPaint> = Rc::new(quadraui::ProgressBar {
-            id: WidgetId::new("bar"),
-            label: String::new(),
-            value: None,
-            frame_idx: 0,
-            cancellable: false,
-            accent: None,
-        });
+        let extra: Rc<dyn ExtraPaint> = Rc::new(quadraui::ComboBox::new(
+            WidgetId::new("bar"),
+            vec!["a".to_string()],
+        ));
         let viewport = Rect::new(0.0, 0.0, 20.0, 10.0);
         let mut hits = vec![PaintedHit::Extra {
             id: WidgetId::new("bar"),

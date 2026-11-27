@@ -3723,25 +3723,25 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `data_table` | `DataTableDescriptor` | no |  |
 | `tab_bar` | `TabBarDescriptor` | no |  |
 | `scripted_widget` | `ScriptedWidgetDescriptor` | no |  |
-| `progress` | `ProgressBarDescriptor` | no |  |
-| `spinner` | `SpinnerDescriptor` | no |  |
 | `form` | `FormDescriptor` | no |  |
 | `text_input` | `TextInputDescriptor` | no |  |
 | `text_field` | `TextFieldDescriptor` | no |  |
 | `number_input` | `NumberInputDescriptor` | no |  |
 | `combo_box` | `ComboBoxDescriptor` | no |  |
 | `date_picker` | `DatePickerDescriptor` | no |  |
-| `message_list` | `MessageListDescriptor` | no |  |
-| `multi_section_view` | `MultiSectionViewDescriptor` | no |  |
 | `tree_table` | `TreeTableDescriptor` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor` | no |  |
 | `toolbar` | `ToolbarDescriptor` | no |  |
 | `menu_bar` | `MenuBarDescriptor` | no |  |
-| `command_line` | `CommandLineDescriptor` | no |  |
-| `scrollbar` | `ScrollbarDescriptor` | no |  |
-| `find_replace` | `FindReplacePanelDescriptor` | no |  |
 | `password` | `PasswordDescriptor` | no |  |
 | `textarea` | `TextAreaDescriptor` | no |  |
+| `progress` | `ProgressBarDescriptor` | no |  |
+| `spinner` | `SpinnerDescriptor` | no |  |
+| `scrollbar` | `ScrollbarDescriptor` | no |  |
+| `command_line` | `CommandLineDescriptor` | no |  |
+| `message_list` | `MessageListDescriptor` | no |  |
+| `multi_section_view` | `MultiSectionViewDescriptor` | no |  |
+| `find_replace` | `FindReplacePanelDescriptor` | no |  |
 | `icon_grid` | `IconGridDescriptor` | no |  |
 | `cell_grid` | `CellGridDescriptor` | no |  |
 | `switch` | `SwitchDescriptor` | no |  |
@@ -3792,25 +3792,25 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `tree` | `TreeViewDescriptor \| null` | no |  |
 | `data_table` | `DataTableDescriptor \| null` | no |  |
 | `tab_bar` | `TabBarDescriptor \| null` | no |  |
-| `progress` | `ProgressBarDescriptor \| null` | no |  |
-| `spinner` | `SpinnerDescriptor \| null` | no |  |
 | `form` | `FormDescriptor \| null` | no |  |
 | `text_input` | `TextInputDescriptor \| null` | no |  |
 | `text_field` | `TextFieldDescriptor \| null` | no |  |
 | `number_input` | `NumberInputDescriptor \| null` | no |  |
 | `combo_box` | `ComboBoxDescriptor \| null` | no |  |
 | `date_picker` | `DatePickerDescriptor \| null` | no |  |
-| `message_list` | `MessageListDescriptor \| null` | no |  |
-| `multi_section_view` | `MultiSectionViewDescriptor \| null` | no |  |
 | `tree_table` | `TreeTableDescriptor \| null` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor \| null` | no |  |
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
 | `menu_bar` | `MenuBarDescriptor \| null` | no |  |
-| `command_line` | `CommandLineDescriptor \| null` | no |  |
-| `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
-| `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
 | `password` | `PasswordDescriptor \| null` | no |  |
 | `textarea` | `TextAreaDescriptor \| null` | no |  |
+| `progress` | `ProgressBarDescriptor \| null` | no |  |
+| `spinner` | `SpinnerDescriptor \| null` | no |  |
+| `scrollbar` | `ScrollbarDescriptor \| null` | no |  |
+| `command_line` | `CommandLineDescriptor \| null` | no |  |
+| `message_list` | `MessageListDescriptor \| null` | no |  |
+| `multi_section_view` | `MultiSectionViewDescriptor \| null` | no |  |
+| `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
 | `icon_grid` | `IconGridDescriptor \| null` | no |  |
 | `cell_grid` | `CellGridDescriptor \| null` | no |  |
 | `switch` | `SwitchDescriptor \| null` | no |  |

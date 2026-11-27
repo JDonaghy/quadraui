@@ -99,6 +99,21 @@ fragment step for this package (that mechanism, and
   widget's own key handling directly. See `examples/rating.ts` for a
   runnable 5-star rating control.
 
+### Changed
+
+- `progress`, `spinner`, `scrollbar`, `command_line`, `message_list`,
+  `multi_section_view` and `find_replace` leaves decode through the
+  generic widget leaf (`quadraui::decode_widget`), like `button` or
+  `switch`. A click on one now carries `widget: <id>` and
+  `hit: { kind: "widget_body" }` (previously `progress`/`spinner`/
+  `scrollbar`/`message_list`/`multi_section_view`/`command_line` attached
+  no hit and `find_replace` attached `{ kind: "extra_body" }`). A click on
+  `find_replace` is resolved by the panel itself: after the
+  `FocusChanged`, the handler receives `{ FindReplace: [id, event] }`
+  (e.g. `FieldEdited` placing the caret in the clicked field) instead of
+  the raw `MouseDown`. `message_list` drag-select and Ctrl-C copy are
+  unchanged.
+
 ### Removed
 
 - `QuiApp.insertButton`/`insertTextDisplay`/`insertList`/`insertTree`/
