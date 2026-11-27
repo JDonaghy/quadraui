@@ -341,16 +341,14 @@ pub(crate) fn stroke_square_frame(surface: &mut dyn CellSurface, rect: Rect, sty
     }
 }
 
-/// Braille dot packing for the cell painters — see this module's doc.
+/// Shared `U+2800`-block braille dot packing, used by every cell painter
+/// that needs sub-cell resolution: [`crate::Chart`]'s line charts,
+/// [`crate::Canvas`]'s shape degrade and [`crate::Minimap`]'s density view.
+///
+/// There must be exactly one copy of this bit-order logic: getting it wrong
+/// transposes the whole image in a way that still looks plausible.
 #[cfg(feature = "tui")]
 pub(crate) mod braille {
-    //! Shared `U+2800`-block braille dot packing, used by every cell painter
-    //! that needs sub-cell resolution: [`crate::Chart`]'s line charts,
-    //! [`crate::Canvas`]'s shape degrade and [`crate::Minimap`]'s density
-    //! view.
-    //!
-    //! There must be exactly one copy of this bit-order logic: getting it
-    //! wrong transposes the whole image in a way that still looks plausible.
 
     /// Braille dot offsets: `(row_in_cell, col_in_cell) -> bit index`.
     /// Standard Unicode braille ordering — a terminal cell is 2 dots wide
