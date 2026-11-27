@@ -672,6 +672,12 @@ impl CanvasLayout {
     }
 }
 
+mod contract;
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
+pub use contract::CanvasState;
+
 // ── PaintSurface paint ──────────────────────────────────────────────────
 //
 // Every pixel backend (GTK/macOS/Win) paints a `Canvas` identically: walk
@@ -730,7 +736,8 @@ pub mod native_surface_paint {
         points.iter().map(|p| translate_point(*p, dx, dy)).collect()
     }
 
-    fn stroke_polyline(
+    /// Stroke `points` as consecutive line segments.
+    pub(crate) fn stroke_polyline(
         surface: &mut dyn PaintSurface,
         points: &[Point],
         color: crate::types::Color,

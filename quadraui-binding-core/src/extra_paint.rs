@@ -12,13 +12,12 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    render_markdown_to_styled, Backend, BoardModel, Canvas, Chart, Column, ComboBox, CommandLine,
+    render_markdown_to_styled, Backend, BoardModel, Canvas, Column, ComboBox, CommandLine,
     DatePicker, Decoration, DiffView, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon,
     LabelPosition, MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput,
-    NumberInputHit, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
-    ScrollView, Scrollbar, Spinner, StyledText, TextDisplay, TextDisplayLine, TextField, TextInput,
-    TextRegion, Theme, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData,
-    WidgetId,
+    NumberInputHit, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, Scrollbar, Spinner,
+    StyledText, TextDisplay, TextDisplayLine, TextField, TextInput, TextRegion, Theme, Toolbar,
+    ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -1109,19 +1108,6 @@ impl ExtraPaint for Markdown {
     }
 }
 
-impl ExtraPaint for Chart {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        // Display-only: no hover/crosshair state is tracked by this
-        // binding, so both are `None` and the returned `ChartLayout` (for
-        // click/nearest-point routing) is discarded.
-        backend.draw_chart(area, self, None, None);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
 impl ExtraPaint for MessageList {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_message_list(area, self);
@@ -1624,56 +1610,6 @@ impl ExtraPaint for Canvas {
     }
 }
 
-impl ExtraPaint for ScrollView {
-    /// `ScrollView` carries no backend painter of its own (module doc: "no
-    /// backend painter lives here" — a host clips/paints its own content
-    /// inside the viewport this descriptor describes). The one thing this
-    /// leaf still paints is the scrollbar indicator itself, via
-    /// [`quadraui::ScrollView::scrollbar`], in a fixed `line_height`-wide
-    /// strip along the scrolling axis's trailing edge — the same
-    /// cell-width convention `Tree`'s/`List`'s own TUI vertical-scrollbar
-    /// track uses. [`quadraui::ScrollView::scrollbar`] returns `None` when
-    /// there's nothing to scroll, so a `ScrollView` whose content fits its
-    /// viewport paints nothing at all.
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let line_height = backend.line_height();
-        let track = match self.axis {
-            ScrollAxis::Vertical => Rect::new(
-                area.x + area.width - line_height,
-                area.y,
-                line_height,
-                area.height,
-            ),
-            ScrollAxis::Horizontal => Rect::new(
-                area.x,
-                area.y + area.height - line_height,
-                area.width,
-                line_height,
-            ),
-        };
-        if let Some(scrollbar) = self.scrollbar(track, line_height) {
-            backend.draw_scrollbar(track, &scrollbar);
-        }
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    /// Whole-area bounds check: a wheel `Scroll` or click landing anywhere
-    /// inside the viewport counts as targeting this `ScrollView`, so the
-    /// enriched event's `widget` resolves to it — a host applies
-    /// `ScrollView::handle_wheel`/`handle_key` itself against the position/
-    /// key it already receives on that enriched event.
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-}
-
 impl ExtraPaint for FindReplacePanel {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_find_replace(area, self);
@@ -1794,7 +1730,6 @@ extra_primitives! {
     "number_input" => NumberInput,
     "combo_box" => ComboBox,
     "date_picker" => DatePicker,
-    "chart" => Chart,
     "message_list" => MessageList,
     "board" => BoardModel,
     "pipeline_view" => PipelineView,
@@ -1807,7 +1742,6 @@ extra_primitives! {
     "command_line" => CommandLine,
     "scrollbar" => Scrollbar,
     "canvas" => Canvas,
-    "scroll_view" => ScrollView,
     "find_replace" => FindReplacePanel,
     "checkbox" => Checkbox,
     "slider" => Slider,
@@ -1829,13 +1763,15 @@ extra_primitives! {
 ///
 /// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`,
 /// `"command_center"`, `"terminal"`, `"status_bar"`, `"activity_bar"`,
-/// `"palette"`, `"context_menu"`, `"editor"`, `"minimap"` and `"image"` are
-/// this table's members: unlike every [`EXTRA_PRIMITIVE_KINDS`] entry, none
-/// of [`quadraui::IconGrid`], [`quadraui::CellGrid`], [`quadraui::Switch`],
-/// [`quadraui::RadioGroup`], [`quadraui::Button`], [`quadraui::CommandCenter`],
-/// [`quadraui::Terminal`], [`quadraui::StatusBar`], [`quadraui::ActivityBar`],
-/// [`quadraui::Palette`], [`quadraui::ContextMenu`], [`quadraui::Editor`],
-/// [`quadraui::Minimap`] or [`quadraui::Image`] has a bespoke
+/// `"palette"`, `"context_menu"`, `"editor"`, `"minimap"`, `"image"`,
+/// `"chart"` and `"scroll_view"` are this table's members: unlike every
+/// [`EXTRA_PRIMITIVE_KINDS`] entry, none of [`quadraui::IconGrid`],
+/// [`quadraui::CellGrid`], [`quadraui::Switch`], [`quadraui::RadioGroup`],
+/// [`quadraui::Button`], [`quadraui::CommandCenter`], [`quadraui::Terminal`],
+/// [`quadraui::StatusBar`], [`quadraui::ActivityBar`], [`quadraui::Palette`],
+/// [`quadraui::ContextMenu`], [`quadraui::Editor`], [`quadraui::Minimap`],
+/// [`quadraui::Image`], [`quadraui::Chart`] or [`quadraui::ScrollView`] has a
+/// bespoke
 /// [`ExtraPaint`] impl to write
 /// here — painting, whole-area hit testing and [`DynWidget::handle`]
 /// routing are already fully generic (see
@@ -1873,12 +1809,16 @@ extra_primitives! {
 /// [`crate::interactive::Interactive`] impls hold only gesture state (a
 /// drag anchor, a seek drag), and [`quadraui::Image`] is non-interactive
 /// with its natural size from its own `Primitive::measure`, so `"editor"`,
-/// `"minimap"` and `"image"` need nothing more. A further kind joins this table only when it
+/// `"minimap"` and `"image"` need nothing more. [`quadraui::Chart`]'s hover
+/// and crosshair are descriptor fields the app owns and its `State` is
+/// empty, and [`quadraui::ScrollView`]'s offset is a descriptor field with
+/// only the scrollbar drag in its `State`, so `"chart"` and
+/// `"scroll_view"` need nothing more either. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 14] = [
+pub const WIDGET_KINDS: [&str; 16] = [
     "icon_grid",
     "cell_grid",
     "switch",
@@ -1893,6 +1833,8 @@ pub const WIDGET_KINDS: [&str; 14] = [
     "editor",
     "minimap",
     "image",
+    "chart",
+    "scroll_view",
 ];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased

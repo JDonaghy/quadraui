@@ -578,6 +578,8 @@ pub const CASES: &[Case] = &[
                 y_ticks: None,
                 x_ticks: None,
                 show_grid: false,
+                hovered_point: None,
+                crosshair_x: None,
             };
             let _ = b.draw_chart(area, &chart, None, None);
         },

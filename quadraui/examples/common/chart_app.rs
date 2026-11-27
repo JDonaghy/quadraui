@@ -56,6 +56,8 @@ impl ChartApp {
             y_ticks: None,
             x_ticks: None,
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -93,6 +95,8 @@ impl ChartApp {
             y_ticks: Some(5),
             x_ticks: None,
             show_grid: true,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -135,6 +139,8 @@ impl ChartApp {
             y_ticks: None,
             x_ticks: None,
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
