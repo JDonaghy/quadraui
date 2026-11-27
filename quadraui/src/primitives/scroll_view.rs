@@ -588,7 +588,7 @@ impl crate::interactive::Interactive for ScrollView {
                 }
                 let forwarded = RoutedEvent::Pointer {
                     kind: *kind,
-                    sub: sub.clone(),
+                    sub: *sub,
                     local: crate::event::Point::new(abs.x - sb.track.x, abs.y - sb.track.y),
                     mods: *mods,
                 };
