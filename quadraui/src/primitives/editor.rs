@@ -1231,7 +1231,7 @@ mod tests {
 
         match l.hit_test(7.0, 2.0) {
             EditorHit::BufferPos { col, .. } => {
-                assert_eq!(l.col_at_x(&ed, 2, 7.0), col);
+                assert_eq!(l.col_at_x(&ed, 2, 7.0, None), col);
             }
             other => panic!("expected BufferPos, got {other:?}"),
         }
@@ -1249,9 +1249,9 @@ mod tests {
 
         // Click at text_bounds origin (col_offset == 0, scroll_left == 0):
         // resolved column should be exactly the segment offset.
-        assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x), 20);
+        assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x, None), 20);
         // 3 cells further right adds 3.
-        assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x + 3.0), 23);
+        assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x + 3.0, None), 23);
     }
 
     #[test]
@@ -1261,7 +1261,7 @@ mod tests {
         ed.lines = Vec::new();
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
         let l = ed.layout(vp, 1.0, 1.0);
-        assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x), 7);
+        assert_eq!(l.col_at_x(&ed, 0, l.text_bounds.x, None), 7);
     }
 
     // ── EditorLayout::x_at_col ──────────────────────────────────────
@@ -1275,9 +1275,9 @@ mod tests {
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
         let l = ed.layout(vp, 1.0, 1.0);
 
-        let col = l.col_at_x(&ed, 2, 7.0);
-        let x = l.x_at_col(&ed, 2, col);
-        assert_eq!(l.col_at_x(&ed, 2, x), col);
+        let col = l.col_at_x(&ed, 2, 7.0, None);
+        let x = l.x_at_col(&ed, 2, col, None);
+        assert_eq!(l.col_at_x(&ed, 2, x, None), col);
     }
 
     #[test]
@@ -1290,8 +1290,8 @@ mod tests {
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
         let l = ed.layout(vp, 1.0, 1.0);
 
-        assert_eq!(l.x_at_col(&ed, 0, 20), l.text_bounds.x);
-        assert_eq!(l.x_at_col(&ed, 0, 23), l.text_bounds.x + 3.0);
+        assert_eq!(l.x_at_col(&ed, 0, 20, None), l.text_bounds.x);
+        assert_eq!(l.x_at_col(&ed, 0, 23, None), l.text_bounds.x + 3.0);
     }
 
     #[test]
@@ -1301,7 +1301,7 @@ mod tests {
         ed.lines = Vec::new();
         let vp = Rect::new(0.0, 0.0, 80.0, 24.0);
         let l = ed.layout(vp, 1.0, 1.0);
-        assert_eq!(l.x_at_col(&ed, 0, 7), l.text_bounds.x);
+        assert_eq!(l.x_at_col(&ed, 0, 7, None), l.text_bounds.x);
     }
 
     #[test]
@@ -1316,11 +1316,150 @@ mod tests {
 
         let base = l.scroll_left + 2; // segment_col_offset
         for col in base..base + 20 {
-            let x = l.x_at_col(&ed, 0, col);
+            let x = l.x_at_col(&ed, 0, col, None);
             assert_eq!(
-                l.col_at_x(&ed, 0, x),
+                l.col_at_x(&ed, 0, x, None),
                 col,
                 "round-trip failed for col {col}"
+            );
+        }
+    }
+
+    // ── Measured columns ────────────────────────────────────────────
+
+    /// A surface whose text advance is `i` 3, `W` 12, anything else 7,
+    /// each scaled by its run and one wider when bold.
+    struct ProportionalSurface;
+
+    impl crate::PaintSurface for ProportionalSurface {
+        fn surface_begin_frame(&mut self, _v: crate::Viewport) {}
+        fn surface_end_frame(&mut self) {}
+        fn surface_viewport(&self) -> crate::Viewport {
+            crate::Viewport::new(0.0, 0.0, 1.0)
+        }
+        fn surface_line_height(&self) -> f32 {
+            16.0
+        }
+        fn surface_char_width(&self) -> f32 {
+            7.0
+        }
+        fn surface_measure_text(&self, _t: &str) -> (f32, f32) {
+            (0.0, 0.0)
+        }
+        fn surface_fill_rect(&mut self, _r: Rect, _c: Color) {}
+        fn surface_fill_rounded_rect(&mut self, _r: Rect, _radius: f32, _c: Color) {}
+        fn surface_stroke_rect(&mut self, _r: Rect, _c: Color, _w: f32) {}
+        fn surface_draw_text_run(&mut self, _r: Rect, _t: &str, _c: Color) {}
+        fn surface_draw_line(&mut self, _f: crate::Point, _t: crate::Point, _c: Color, _w: f32) {}
+        fn surface_push_clip(&mut self, _r: Rect) {}
+        fn surface_pop_clip(&mut self) {}
+        fn surface_draw_image(
+            &mut self,
+            _r: Rect,
+            _i: &crate::Image,
+        ) -> crate::backend::ImagePaintResult {
+            crate::backend::ImagePaintResult::Unsupported
+        }
+        fn surface_text_x_at_index(
+            &mut self,
+            text: &str,
+            runs: &[crate::TextRunStyle],
+            _role: crate::FontRole,
+            byte_idx: usize,
+        ) -> f32 {
+            crate::paint_surface::styled_prefix_x(text, runs, byte_idx, &mut |seg, run| {
+                let (scale, bold) = run.map_or((1.0, false), |r| (r.scale, r.bold));
+                seg.chars()
+                    .map(|c| match c {
+                        'i' => 3.0,
+                        'W' => 12.0,
+                        _ => 7.0,
+                    } * scale
+                        + f32::from(u8::from(bold)))
+                    .sum()
+            })
+        }
+    }
+
+    fn measured_editor(text: &str, spans: Vec<EditorStyledSpan>) -> (Editor, EditorLayout) {
+        let mut ed = make_editor(2, 1, 40);
+        ed.scroll_left = 1;
+        let mut line = line_with_segment_offset(0);
+        line.raw_text = text.into();
+        line.spans = spans;
+        ed.lines = vec![line];
+        let l = ed.layout(Rect::new(10.0, 0.0, 400.0, 40.0), 7.0, 16.0);
+        (ed, l)
+    }
+
+    #[test]
+    fn col_at_x_resolves_the_glyph_the_surface_measured() {
+        let span = |start_byte, end_byte, bold, font_scale| EditorStyledSpan {
+            start_byte,
+            end_byte,
+            style: Style {
+                fg: Color::rgb(1, 2, 3),
+                bg: None,
+                bold,
+                italic: false,
+                font_scale,
+            },
+        };
+        // `iW` bold, `ab` at 2x: lefts 0, 4, 17, 31, 45, 48.
+        let (ed, l) = measured_editor(
+            "iWabix",
+            vec![span(0, 2, true, 1.0), span(2, 4, false, 2.0)],
+        );
+        let lefts = [0.0, 4.0, 17.0, 31.0, 45.0, 48.0, 55.0];
+        let origin = l.text_bounds.x - 7.0;
+        for (col, pair) in lefts.windows(2).enumerate() {
+            let x = l.x_at_col(&ed, 0, col, Some(&mut ProportionalSurface));
+            assert_eq!(x, origin + pair[0], "x of col {col}");
+            for into in [0.1, 0.9] {
+                let at = origin + pair[0] + (pair[1] - pair[0]) * into;
+                assert_eq!(
+                    l.col_at_x(&ed, 0, at, Some(&mut ProportionalSurface)),
+                    col,
+                    "click {into} into col {col}"
+                );
+            }
+        }
+        // Past the end, columns continue one cell each.
+        let end = origin + 55.0;
+        assert_eq!(
+            l.col_at_x(&ed, 0, end + 15.0, Some(&mut ProportionalSurface)),
+            8
+        );
+        assert_eq!(
+            l.x_at_col(&ed, 0, 8, Some(&mut ProportionalSurface)),
+            end + 14.0
+        );
+        // Left of the text, column 0.
+        assert_eq!(
+            l.col_at_x(&ed, 0, origin - 5.0, Some(&mut ProportionalSurface)),
+            0
+        );
+    }
+
+    #[test]
+    fn col_at_x_without_a_surface_counts_display_cells() {
+        // `a` 1 cell, the emoji 2, `e` + combining acute 1, a tab to the
+        // next 4-cell stop, `b`.
+        let text = "a\u{2705}e\u{301}\tb";
+        let (mut ed, _) = measured_editor(text, Vec::new());
+        ed.scroll_left = 0;
+        ed.tabstop = 4;
+        let l = ed.layout(Rect::new(0.0, 0.0, 40.0, 4.0), 1.0, 1.0);
+        let under_cell = [0, 1, 1, 2, 4, 4, 4, 4, 5, 6];
+        for (cell, &want) in under_cell.iter().enumerate() {
+            let x = l.text_bounds.x + cell as f32 + 0.5;
+            assert_eq!(l.col_at_x(&ed, 0, x, None), want, "cell {cell}");
+        }
+        for (col, cell) in [(0, 0.0), (1, 1.0), (2, 3.0), (4, 4.0), (5, 8.0), (6, 9.0)] {
+            assert_eq!(
+                l.x_at_col(&ed, 0, col, None),
+                l.text_bounds.x + cell,
+                "col {col}"
             );
         }
     }

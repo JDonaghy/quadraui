@@ -1384,9 +1384,10 @@ struct WidgetHostIntents {
 }
 
 /// [`EventHost`] impl backing one [`crate::primitive::DynWidget::handle`] call — see
-/// [`WidgetHostIntents`] for why this holds no backend reference at all,
-/// only a snapshot of what [`EventHost::is_focused`]/[`EventHost::units`]
-/// need to answer and an outbox for everything else.
+/// [`WidgetHostIntents`] for why this holds no backend reference, only a
+/// snapshot of what [`EventHost::is_focused`]/[`EventHost::units`] need to
+/// answer, the backend's paint surface for [`EventHost::text_surface`],
+/// and an outbox for everything else.
 ///
 /// `currently_focused` is a [`crate::focus::FocusAddress`] — sourced from
 /// [`crate::Backend::focus_tree`], which carries a composite widget's
@@ -1397,6 +1398,7 @@ struct WidgetEventHost<'a> {
     currently_focused: Option<crate::focus::FocusAddress>,
     units: Units,
     intents: &'a mut WidgetHostIntents,
+    text_surface: Option<&'a mut dyn crate::PaintSurface>,
 }
 
 impl EventHost for WidgetEventHost<'_> {
@@ -1430,6 +1432,11 @@ impl EventHost for WidgetEventHost<'_> {
 
     fn units(&self) -> Units {
         self.units
+    }
+
+    fn text_surface(&mut self) -> Option<&mut dyn crate::PaintSurface> {
+        let surface: &mut dyn crate::PaintSurface = self.text_surface.as_deref_mut()?;
+        Some(surface)
     }
 }
 
@@ -1501,12 +1508,14 @@ where
     let units = ctx.units();
 
     let mut intents = WidgetHostIntents::default();
+    let text_surface = backend.paint_surface();
     let outcome = crate::widget_state::with_widget_states(|states| {
         let state = states.state_for(id, node.widget.as_ref());
         let mut host = WidgetEventHost {
             currently_focused,
             units,
             intents: &mut intents,
+            text_surface,
         };
         let mut cx = EventCx::new(id, &mut host);
         node.widget.handle(state, routed, &*layout, &mut cx)

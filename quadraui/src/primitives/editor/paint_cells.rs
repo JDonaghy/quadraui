@@ -29,7 +29,7 @@ use super::{
 };
 use crate::cell_surface::{self, CellStyle, CellSurface};
 use crate::primitives::scrollbar::{cell_paint as scrollbar_cells, Scrollbar, ScrollbarLayout};
-use crate::text_util::{char_col_to_visual, snap_to_char_boundary};
+use crate::text_util::{char_cell_width, char_col_to_visual, snap_to_char_boundary};
 use crate::theme::Theme;
 use crate::types::Color;
 
@@ -594,7 +594,7 @@ fn render_text_line(
             }
         } else {
             glyphs.push((vis_col, ch, i));
-            vis_col += 1;
+            vis_col += char_cell_width(ch) as usize;
         }
     }
     let total_vis_cols = vis_col;
@@ -604,7 +604,8 @@ fn render_text_line(
             continue;
         }
         let col = (vcol - scroll_left) as u16;
-        if col >= max_width {
+        let width = char_cell_width(ch);
+        if col + width.max(1) > max_width {
             break;
         }
         let style = CellStyle {
@@ -612,7 +613,11 @@ fn render_text_line(
             italic: char_italic[ci],
             ..solid(char_fgs[ci], char_bgs[ci].unwrap_or(window_bg))
         };
-        cells.put_char(x_start + col, y, ch, style);
+        match width {
+            0 => {}
+            2 => cells.put_wide(x_start + col, y, ch, style),
+            _ => cells.put_char(x_start + col, y, ch, style),
+        }
     }
 
     // Inline annotation / virtual text (e.g. git blame).

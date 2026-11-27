@@ -1,8 +1,14 @@
 //! Backend-free editor geometry: [`EditorLayout`], its hit-testing,
 //! and the [`Editor::layout`] family that resolves it.
 
-use super::Editor;
+use super::{Editor, EditorLine};
 use crate::event::Rect;
+use crate::paint_surface::{PaintSurface, TextRunStyle};
+use crate::text_util::{
+    char_cell_width, char_col_to_visual, char_to_byte_idx, snap_to_char_boundary,
+};
+use crate::types::Color;
+use crate::FontRole;
 use serde::{Deserialize, Serialize};
 
 // ─── EditorPaintOptions ─────────────────────────────────────────────────────
@@ -45,14 +51,11 @@ pub enum EditorHit {
     /// Click landed on a text position. `line` is the buffer line index
     /// (always accurate — row height is uniform on every backend).
     ///
-    /// `col` is a **uniform-monospace approximation** of the character
-    /// column (`(x - text_bounds.x) / cell_width`, plus `scroll_left`;
-    /// no tab expansion). It matches the painted glyph exactly on TUI's
-    /// fixed-cell grid, but can drift from the actual glyph on
-    /// proportional-font or per-span-attributed backends (bold /
-    /// italic / `font_scale` spans paint at a different advance than
-    /// `cell_width`). The editor's own pointer events resolve the column
-    /// the same monospace way (see [`EditorLayout::col_at_x`]).
+    /// From [`EditorLayout::hit_test`], `col` is the cell column under
+    /// the point (`(x - text_bounds.x) / cell_width`, plus `scroll_left`),
+    /// which knows nothing of the row's text. The editor's own pointer
+    /// events carry the text column instead, resolved against the painted
+    /// glyphs by [`EditorLayout::col_at_x`].
     BufferPos { line: usize, col: usize },
     /// Click landed in the gutter region.
     Gutter { line_idx: usize, gutter_col: usize },
@@ -97,8 +100,8 @@ impl EditorLayout {
     ///
     /// Zone classification (gutter / scrollbar / text-area) and the
     /// resolved `line` are always accurate. The `col` on the returned
-    /// [`EditorHit::BufferPos`] is a uniform-monospace approximation —
-    /// see that variant's doc and [`Self::col_at_x`].
+    /// [`EditorHit::BufferPos`] is the cell column under the point; the
+    /// text column under it is [`Self::col_at_x`].
     pub fn hit_test(&self, x: f32, y: f32) -> EditorHit {
         if x < self.bounds.x
             || x >= self.bounds.x + self.bounds.width
@@ -147,57 +150,182 @@ impl EditorLayout {
         EditorHit::Empty
     }
 
-    /// Resolve `x` to a character column within `editor.lines[view_row]`
-    /// using uniform monospace division (`self.cell_width`).
+    /// Resolve absolute `x` to a character column within
+    /// `editor.lines[view_row]`: the column of the glyph whose advance box
+    /// contains `x`, with columns past the end of the text continuing at
+    /// [`Self::cell_width`] each.
     ///
-    /// Correct for TUI's fixed-cell grid and any backend whose configured
-    /// font renders every glyph at the same advance width; an approximation
-    /// for text painted with per-span attributes (bold / italic /
-    /// `font_scale`) at a different advance.
+    /// `text` measures the row the way the pixel painter shapes it: its
+    /// editor-font text verbs ([`PaintSurface::surface_text_x_at_index`])
+    /// with the row's span weight, slant and scale applied, so proportional
+    /// fonts and wide glyphs (emoji, CJK) resolve to the glyph actually
+    /// painted under `x`. A host passes [`crate::Backend::paint_surface`];
+    /// the measurement runs only for this call, shaping nothing per frame.
+    /// `None` (a cell grid, or no surface in reach) measures in display
+    /// cells of `cell_width`: a wide glyph spans two cells and a tab runs
+    /// to the next [`Editor::tabstop`] stop, as the cell painter lays them
+    /// out.
     ///
-    /// The returned column already folds in `self.scroll_left` and the
-    /// row's `segment_col_offset` (0 for non-wrapped lines and the
-    /// first visual segment of a wrapped line), so it's directly usable
-    /// as the buffer-line-relative column. Falls back to
-    /// `self.scroll_left` alone (no segment offset) when `view_row` is
-    /// out of range for `editor.lines`.
-    pub fn col_at_x(&self, editor: &Editor, view_row: usize, x: f32) -> usize {
-        let segment_col_offset = editor
-            .lines
-            .get(view_row)
-            .map(|line| line.segment_col_offset)
-            .unwrap_or(0);
-        let col_offset = if self.cell_width > 0.0 {
-            ((x - self.text_bounds.x) / self.cell_width)
-                .floor()
-                .max(0.0) as usize
+    /// The returned column folds in the row's `segment_col_offset` (0 for
+    /// non-wrapped lines and the first visual segment of a wrapped line),
+    /// so it is directly usable as the buffer-line-relative column. A
+    /// `view_row` past `editor.lines` measures as an empty row.
+    pub fn col_at_x(
+        &self,
+        editor: &Editor,
+        view_row: usize,
+        x: f32,
+        text: Option<&mut dyn PaintSurface>,
+    ) -> usize {
+        let row = RowText::new(editor, view_row);
+        let x = x - self.text_origin_x();
+        let col = self.measure_row(&row, text, |x_at| {
+            col_containing_x(row.text, x, self.cell_width, x_at)
+        });
+        col + row.segment_col_offset
+    }
+
+    /// Resolve a character column within `editor.lines[view_row]` to the
+    /// absolute `x` of its glyph's left edge — the inverse of
+    /// [`Self::col_at_x`], measured the same way, so the caret the pixel
+    /// painter places at `col` sits at this `x` and `col_at_x` of it
+    /// returns `col`. Columns past the end of the text continue at
+    /// [`Self::cell_width`] each.
+    pub fn x_at_col(
+        &self,
+        editor: &Editor,
+        view_row: usize,
+        col: usize,
+        text: Option<&mut dyn PaintSurface>,
+    ) -> f32 {
+        let row = RowText::new(editor, view_row);
+        let local = col.saturating_sub(row.segment_col_offset);
+        let in_text = local.min(row.text.chars().count());
+        let byte = char_to_byte_idx(row.text, in_text);
+        let x = self.measure_row(&row, text, |x_at| x_at(byte));
+        self.text_origin_x() + x + (local - in_text) as f32 * self.cell_width
+    }
+
+    /// Where column 0 of a row's text sits: the text area's left edge,
+    /// moved left by the horizontal scroll.
+    fn text_origin_x(&self) -> f32 {
+        self.text_bounds.x - self.scroll_left as f32 * self.cell_width
+    }
+
+    /// Run `f` with `row`'s advance at a byte index: shaped through
+    /// `surface`'s editor font with the row's runs, or in display cells
+    /// without one.
+    fn measure_row<R>(
+        &self,
+        row: &RowText,
+        surface: Option<&mut dyn PaintSurface>,
+        f: impl FnOnce(&mut dyn FnMut(usize) -> f32) -> R,
+    ) -> R {
+        let Some(surface) = surface else {
+            let (text, tabstop, cw) = (row.text, row.tabstop, self.cell_width);
+            return f(&mut |byte| {
+                let col = text[..snap_to_char_boundary(text, byte)].chars().count();
+                char_col_to_visual(text, col, tabstop) as f32 * cw
+            });
+        };
+        let mut f = Some(f);
+        let mut out = None;
+        crate::backend::paint_in_role(surface, FontRole::Editor, &mut |s| {
+            if let Some(f) = f.take() {
+                out = Some(f(&mut |byte| {
+                    s.surface_text_x_at_index(row.text, &row.runs, FontRole::Editor, byte)
+                }));
+            }
+        });
+        out.expect("paint_in_role runs its callback exactly once")
+    }
+}
+
+/// One editor row's text as the painters lay it out: its characters
+/// without a line terminator, the runs its spans style, and its tab stop.
+struct RowText<'a> {
+    text: &'a str,
+    runs: Vec<TextRunStyle>,
+    tabstop: usize,
+    segment_col_offset: usize,
+}
+
+impl<'a> RowText<'a> {
+    /// `editor.lines[view_row]`, or an empty row when there is none.
+    fn new(editor: &'a Editor, view_row: usize) -> Self {
+        let line = editor.lines.get(view_row);
+        Self {
+            text: line.map_or("", |l| l.raw_text.trim_end_matches(['\n', '\r'])),
+            runs: line.map_or_else(Vec::new, |l| line_runs(l, Color::rgb(0, 0, 0))),
+            tabstop: editor.tabstop,
+            segment_col_offset: line.map_or(0, |l| l.segment_col_offset),
+        }
+    }
+}
+
+/// `rl.raw_text` partitioned into runs: each byte takes the last span
+/// covering it (colour, weight, slant and font scale), gaps take
+/// `default_fg` unscaled.
+pub(super) fn line_runs(rl: &EditorLine, default_fg: Color) -> Vec<TextRunStyle> {
+    let text = rl.raw_text.as_str();
+    let mut byte_style: Vec<(Color, bool, bool, f32)> =
+        vec![(default_fg, false, false, 1.0); text.len()];
+    for span in &rl.spans {
+        let start = snap_to_char_boundary(text, span.start_byte);
+        let end = snap_to_char_boundary(text, span.end_byte);
+        let st = &span.style;
+        for b in byte_style.iter_mut().take(end).skip(start) {
+            *b = (st.fg, st.bold, st.italic, st.font_scale);
+        }
+    }
+    let mut runs: Vec<TextRunStyle> = Vec::new();
+    let mut start = 0usize;
+    for i in 1..=text.len() {
+        if i == text.len() || (text.is_char_boundary(i) && byte_style[i] != byte_style[start]) {
+            let (fg, bold, italic, scale) = byte_style[start];
+            runs.push(
+                TextRunStyle::new(start..i, fg)
+                    .with_bold(bold)
+                    .with_italic(italic)
+                    .with_scale(scale),
+            );
+            start = i;
+        }
+    }
+    runs
+}
+
+/// The char column of `text` whose glyph spans `x` (measured from the
+/// start of the text by `x_at`, a byte index's advance), or, past the
+/// last glyph, the text's length plus whole `cell_width` steps beyond its
+/// end. A zero-width char (a combining mark) never starts a column of its
+/// own, so a click on a base character never lands between it and its
+/// marks. Advances grow left to right, so the glyph is found by binary
+/// search: a click shapes the row a logarithmic number of times.
+fn col_containing_x(
+    text: &str,
+    x: f32,
+    cell_width: f32,
+    x_at: &mut dyn FnMut(usize) -> f32,
+) -> usize {
+    let end_x = x_at(text.len());
+    if x >= end_x {
+        let past = if cell_width > 0.0 {
+            ((x - end_x) / cell_width).floor() as usize
         } else {
             0
         };
-        self.scroll_left + col_offset + segment_col_offset
+        return text.chars().count() + past;
     }
-
-    /// Resolve a character column within `editor.lines[view_row]` back to
-    /// an absolute `x` — the exact inverse of [`Self::col_at_x`], so
-    /// `col_at_x(x_at_col(editor, view_row, c)) == c` holds for any `c`
-    /// reachable from a valid on-screen `x`.
-    ///
-    /// Like `col_at_x`, this is a uniform-monospace calculation
-    /// (`self.cell_width`) with no tab expansion — correct for TUI's
-    /// fixed-cell grid, and the default [`crate::Backend`] behaviour for
-    /// any host that hasn't overridden the exact-glyph resolution. A host
-    /// anchoring UI at a caret column (a popup, say) on a backend with
-    /// per-span attributes or proportional fonts should resolve the exact
-    /// pixel position through that backend's own text-shaping engine
-    /// instead of this approximation.
-    pub fn x_at_col(&self, editor: &Editor, view_row: usize, col: usize) -> f32 {
-        let segment_col_offset = editor
-            .lines
-            .get(view_row)
-            .map(|line| line.segment_col_offset)
-            .unwrap_or(0);
-        let col_offset = col.saturating_sub(self.scroll_left + segment_col_offset);
-        self.text_bounds.x + col_offset as f32 * self.cell_width
+    let starts: Vec<usize> = text
+        .char_indices()
+        .filter(|&(i, ch)| i == 0 || char_cell_width(ch) != 0)
+        .map(|(i, _)| i)
+        .collect();
+    let at_or_left = starts.partition_point(|&b| x_at(b) <= x);
+    match at_or_left.checked_sub(1) {
+        Some(i) => text[..starts[i]].chars().count(),
+        None => 0,
     }
 }
 
