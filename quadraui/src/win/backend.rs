@@ -4244,8 +4244,9 @@ mod tests {
     #![allow(deprecated)]
     use super::*;
 
-    /// Build a flat tree of `n_rows` leaf rows for `TreeView::vscrollbar`
-    /// integration tests.
+    /// Build a flat tree of `n_rows` leaf rows for the tree paint tests,
+    /// which run only on Windows.
+    #[cfg(target_os = "windows")]
     fn flat_tree(n_rows: usize) -> crate::TreeView {
         crate::TreeView {
             id: WidgetId::new("test:tree:vscrollbar"),
