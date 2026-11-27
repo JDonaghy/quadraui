@@ -2110,7 +2110,7 @@ mod tests {
         for id in ["img", "mm", "ml", "sn", "pb", "leaf", "sp", "tb"] {
             assert!(!stop_ids.contains(&id), "{id} should not be a tab stop");
         }
-        assert_eq!(stop_ids.len(), 6);
+        assert_eq!(stop_ids.len(), 5);
     }
 
     /// A cancellable `Progress` bar *does* get a tab stop — the cancel

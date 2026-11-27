@@ -2454,14 +2454,16 @@ mod tests {
         }
     }
 
-    /// A surface whose widget carries no `WidgetId` of its own: a split
-    /// tree's dividers are structural chrome.
+    /// A surface whose widget carries no `WidgetId` of its own: a drop
+    /// overlay is pure drag feedback.
     fn id_less_surface() -> Surface {
         Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            widget: Box::new(crate::primitives::split_tree::SplitTree::leaf(
-                WidgetId::new("pane"),
-            )),
+            widget: Box::new(crate::primitives::drop_zone::DropOverlay {
+                highlight: Some(Rect::new(1.0, 1.0, 2.0, 2.0)),
+                insertion_bar: None,
+                ghost_position: None,
+            }),
         }
     }
 
