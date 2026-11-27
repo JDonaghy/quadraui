@@ -341,7 +341,7 @@ recount the modules against readme_truth. -->
 
 **Compose controllers** in `quadraui::compose` coordinate several widgets
 or a whole app-level flow (a shell, a menu system, a form dialog), so an
-app matches on semantic events (`MenuEvent::Activated`,
+app matches on semantic events (`AppMenuEvent::Activated`,
 `SidebarEvent::RowSelected`) instead of raw mouse coordinates. A single
 widget's own input handling lives in its `Interactive` impl, not here:
 <!-- TODO(0.12 final pass): after W7 (#2957, #2975, #2958) and W8 (#2976-#2979),
@@ -356,7 +356,7 @@ the table against the module list. -->
 | `BottomPanel` | A tabbed, dockable panel along the bottom of a `ShellView`. |
 | `Workspace` | Many open documents, one visible: open, switch, close, preview tabs. |
 | `TabGroup` | Tabbed split panes with divider and tab drags. |
-| `MenuSystem` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
+| `AppMenu` | Menu bar + dropdowns: Alt-key activation, arrows, hover-to-switch, modal stack. |
 | `ContextMenuController` | One call for a context menu, native or painted per platform. |
 | `Sidebar` | Multi-section sidebar widget: per-section scroll and selection, Tab cycling, scrollbar drag. |
 | `SidebarPanelBody` | The standard layers of a sidebar panel body, composed. |

@@ -11,7 +11,7 @@
 //!     // ...
 //! }
 //!
-//! // In handle(), before other routing — mirrors `MenuSystem::handle`'s
+//! // In handle(), before other routing — mirrors `AppMenu::handle_ui_event`'s
 //! // contract:
 //! fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
 //!     if let ContextMenuOutcome::Event(ev) = self.ctx_menu.handle(&event, backend) {
@@ -54,7 +54,7 @@
 //! the `MouseDown` that opened it and the click/keypress that closes it.
 //! A bare `&mut dyn Backend` default method has no field to put that in
 //! without every backend struct growing one. This controller is that
-//! state holder — the same shape [`crate::compose::MenuSystem`] already
+//! state holder — the same shape [`crate::compose::AppMenu`] already
 //! uses for menu-bar dropdowns, applied to a single anchored popup with
 //! no bar.
 //!
@@ -63,13 +63,13 @@
 //! An item's [`crate::ContextMenuItem::submenu`] opens a pull-right
 //! child popup beside its parent row, positioned through the same
 //! [`crate::primitives::context_menu::ContextMenuLayout::submenu_anchor`]
-//! shared layout rule [`crate::compose::MenuSystem`]'s menu-bar submenus
+//! shared layout rule [`crate::compose::AppMenu`]'s menu-bar submenus
 //! use — flips to the parent's left edge near the viewport's right
 //! edge. Right/Enter on a selected submenu-parent opens its child;
 //! Left/Escape closes the deepest open level (Escape with nothing
 //! nested closes the whole menu, same as before); hovering a
 //! submenu-parent row opens its child immediately (no timer — same
-//! "open on hover" shape [`crate::compose::MenuSystem`] already uses for
+//! "open on hover" shape [`crate::compose::AppMenu`] already uses for
 //! menu-bar submenus), hovering a leaf closes any deeper level still
 //! open. Activation always reports the activated leaf's own
 //! [`crate::WidgetId`] via [`ContextMenuOutcome::Event`] regardless of
@@ -134,7 +134,7 @@ struct OpenMenu {
     anchor: Point,
     /// Depth-first path of open submenus: `submenu_path[d]` = the
     /// `item_idx` in the menu at depth `d` whose child submenu is open.
-    /// Empty ⟹ no submenus open. Mirrors [`crate::compose::MenuSystem`]'s
+    /// Empty ⟹ no submenus open. Mirrors [`crate::compose::AppMenu`]'s
     /// own field of the same name.
     submenu_path: Vec<usize>,
     /// Selected item index at each submenu depth; `submenu_selected[d]`
@@ -266,7 +266,7 @@ impl ContextMenuController {
     /// Process one event against the currently open painted menu.
     /// Returns [`ContextMenuOutcome::Ignored`] immediately if nothing is
     /// open — safe to call unconditionally before an app's own routing,
-    /// same contract as [`crate::compose::MenuSystem::handle`].
+    /// same contract as [`crate::compose::AppMenu::handle_ui_event`].
     pub fn handle(&mut self, event: &UiEvent, backend: &mut dyn Backend) -> ContextMenuOutcome {
         let Some(open) = self.open.clone() else {
             return ContextMenuOutcome::Ignored;

@@ -7,7 +7,7 @@
 //! define structure + handle semantic events, without reimplementing
 //! open/close/navigate/hover logic.
 //!
-//! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
+//! - [`AppMenu`] — MenuBar + ContextMenu dropdown cascade.
 //! - [`Sidebar`] — a stack of collapsible tree and form sections.
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
 //! - [`TreeTableController`] — hierarchical model (lazy children,
@@ -60,6 +60,7 @@
 //! composes [`crate::ScrollView`] the same way these compose their own
 //! primitive instead of duplicating offset/thumb math.
 
+pub mod app_menu;
 pub mod app_shell;
 pub mod bottom_panel;
 pub mod chat;
@@ -73,7 +74,6 @@ mod handled;
 pub mod help_layer;
 pub mod hover_tooltip_tracker;
 pub mod markdown;
-pub mod menu_system;
 pub mod message_dialog;
 pub mod notification;
 mod palette_host;
@@ -116,6 +116,7 @@ pub use form_controller::{FormController, FormControllerAction};
 // `FormControllerEvent` is `#[deprecated]` (use `FormController::handle_event`/
 // `handle_cached_event`'s `Handled<FormControllerAction>` instead). Allow it
 // here since `pub use` of a deprecated item is itself a use site.
+pub use app_menu::{AppMenu, AppMenuEvent, AppMenuLayout, AppMenuState, AppMenuView, MenuDef};
 #[allow(deprecated)]
 pub use form_controller::FormControllerEvent;
 pub use form_dialog::{FormDialog, FormDialogAction, FormDialogLayout, FormDialogState};
@@ -126,9 +127,6 @@ pub use help_layer::{
 };
 pub use hover_tooltip_tracker::HoverTooltipTracker;
 pub use markdown::{render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown};
-pub use menu_system::{
-    AppMenu, AppMenuEvent, AppMenuLayout, AppMenuState, AppMenuView, MenuDef, MenuEvent, MenuSystem,
-};
 pub use message_dialog::{MessageDialog, MessageDialogState};
 pub use notification::notify_or_toast;
 pub use path_picker::{

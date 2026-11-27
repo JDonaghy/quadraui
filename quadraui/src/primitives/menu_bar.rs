@@ -84,7 +84,7 @@ pub struct MenuBarItem {
     /// Declarative dropdown items. When `Some`, native menu installers
     /// build the dropdown directly from this list. The in-window
     /// painters ignore the field; apps that draw their own dropdown via
-    /// the `MenuSystem` compose helper wire that path independently.
+    /// the `AppMenu` host API wire that path independently.
     #[serde(default)]
     pub submenu: Option<Vec<crate::primitives::context_menu::ContextMenuItem>>,
 }
@@ -475,7 +475,7 @@ impl MenuBar {
     /// contract's own.
     ///
     /// Every caller that shows a standalone menu bar goes through this
-    /// (frame replay, the binding layer, [`crate::compose::MenuSystem`]),
+    /// (frame replay, the binding layer, [`crate::compose::AppMenu`]),
     /// so the native-or-painted decision lives in one place.
     pub fn present(&self, backend: &mut dyn Backend, rect: Rect) -> MenuBarLayout {
         if backend.effective_menu_style() == ResolvedMenuStyle::Native {

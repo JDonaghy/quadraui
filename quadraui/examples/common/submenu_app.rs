@@ -18,16 +18,17 @@
 //! - q / Esc (no menu open) → quit
 
 use quadraui::{
-    resolve_bar_height, AppLogic, Backend, Color, ContextMenu, ContextMenuController,
-    ContextMenuItem, ContextMenuOutcome, ContextMenuPlacement, DrawsPrimitives, Key, MenuDef,
-    MenuEvent, MenuSystem, MouseButton, NamedKey, Point, Reaction, Rect, StatusBar,
-    StatusBarSegment, StyledText, UiEvent, WidgetId,
+    resolve_bar_height, AppLogic, AppMenu, AppMenuEvent, AppMenuState, Backend, Color, ContextMenu,
+    ContextMenuController, ContextMenuItem, ContextMenuOutcome, ContextMenuPlacement,
+    DrawsPrimitives, Handled, Key, MenuDef, MouseButton, NamedKey, Point, Reaction, Rect,
+    StatusBar, StatusBarSegment, StyledText, UiEvent, WidgetId,
 };
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
 pub struct SubmenuApp {
-    menu_system: MenuSystem,
+    menu: AppMenu,
+    menu_state: AppMenuState,
     ctx_menu: ContextMenuController,
     last_action: Option<String>,
 }
@@ -41,49 +42,53 @@ impl Default for SubmenuApp {
 impl SubmenuApp {
     pub fn new() -> Self {
         Self {
-            menu_system: MenuSystem::new(vec![
-                MenuDef {
-                    id: WidgetId::new("file"),
-                    label: "&File".into(),
-                    disabled: false,
-                    items: vec![
-                        mi_action("new", "New File"),
-                        mi_action("open", "Open File"),
-                        mi_action("save", "Save"),
-                        mi_sep(),
-                        mi_action("quit", "Quit"),
-                    ],
-                },
-                MenuDef {
-                    id: WidgetId::new("view"),
-                    label: "&View".into(),
-                    disabled: false,
-                    items: vec![
-                        mi_action("sidebar", "Toggle Sidebar"),
-                        mi_action("terminal", "Toggle Terminal"),
-                        mi_sep(),
-                        // Submenu depth 1: Export → PNG / SVG
-                        ContextMenuItem {
-                            id: Some(WidgetId::new("export")),
-                            label: StyledText::plain("Export"),
-                            submenu: Some(vec![
-                                // Submenu depth 2 on PNG: export-png → {lossless, compressed}
-                                ContextMenuItem {
-                                    id: Some(WidgetId::new("export-png")),
-                                    label: StyledText::plain("PNG"),
-                                    submenu: Some(vec![
-                                        mi_action("export-png-lossless", "Lossless"),
-                                        mi_action("export-png-compressed", "Compressed"),
-                                    ]),
-                                    ..Default::default()
-                                },
-                                mi_action("export-svg", "SVG"),
-                            ]),
-                            ..Default::default()
-                        },
-                    ],
-                },
-            ]),
+            menu: AppMenu::new(
+                WidgetId::new("menu-bar"),
+                vec![
+                    MenuDef {
+                        id: WidgetId::new("file"),
+                        label: "&File".into(),
+                        disabled: false,
+                        items: vec![
+                            mi_action("new", "New File"),
+                            mi_action("open", "Open File"),
+                            mi_action("save", "Save"),
+                            mi_sep(),
+                            mi_action("quit", "Quit"),
+                        ],
+                    },
+                    MenuDef {
+                        id: WidgetId::new("view"),
+                        label: "&View".into(),
+                        disabled: false,
+                        items: vec![
+                            mi_action("sidebar", "Toggle Sidebar"),
+                            mi_action("terminal", "Toggle Terminal"),
+                            mi_sep(),
+                            // Submenu depth 1: Export → PNG / SVG
+                            ContextMenuItem {
+                                id: Some(WidgetId::new("export")),
+                                label: StyledText::plain("Export"),
+                                submenu: Some(vec![
+                                    // Submenu depth 2 on PNG: export-png → {lossless, compressed}
+                                    ContextMenuItem {
+                                        id: Some(WidgetId::new("export-png")),
+                                        label: StyledText::plain("PNG"),
+                                        submenu: Some(vec![
+                                            mi_action("export-png-lossless", "Lossless"),
+                                            mi_action("export-png-compressed", "Compressed"),
+                                        ]),
+                                        ..Default::default()
+                                    },
+                                    mi_action("export-svg", "SVG"),
+                                ]),
+                                ..Default::default()
+                            },
+                        ],
+                    },
+                ],
+            ),
+            menu_state: AppMenuState::default(),
             ctx_menu: ContextMenuController::new(),
             last_action: None,
         }
@@ -96,7 +101,7 @@ impl SubmenuApp {
         };
         let right = if self.ctx_menu.is_open() {
             " ctx menu open ".into()
-        } else if self.menu_system.is_open() {
+        } else if self.menu.is_open() {
             " menu bar open ".into()
         } else {
             " idle ".into()
@@ -142,8 +147,8 @@ impl SubmenuApp {
 
     fn open_ctx_menu(&mut self, backend: &mut dyn Backend, anchor: Point) {
         // Close any open menu-bar dropdown first.
-        if self.menu_system.is_open() {
-            self.menu_system.close(backend);
+        if self.menu.is_open() {
+            self.menu.dismiss(backend);
         }
         let menu = ContextMenu {
             id: WidgetId::new("ctx-menu"),
@@ -180,7 +185,7 @@ impl AppLogic for SubmenuApp {
             viewport.width,
             resolve_bar_height(backend.chrome_line_height()),
         );
-        self.menu_system.render(backend, bar_rect);
+        self.menu.render(backend, bar_rect);
 
         // In-window context menu (if open).
         self.ctx_menu.render(backend);
@@ -222,17 +227,19 @@ impl AppLogic for SubmenuApp {
             viewport.width,
             resolve_bar_height(backend.chrome_line_height()),
         );
-        match self.menu_system.handle(&event, backend, bar_rect) {
-            MenuEvent::Activated(id) => {
+        match self
+            .menu
+            .handle_ui_event(&mut self.menu_state, &event, backend, bar_rect)
+        {
+            Handled::Event(AppMenuEvent::Activated(id)) => {
                 if id.as_str() == "quit" {
                     return Reaction::Exit;
                 }
                 self.last_action = Some(id.as_str().to_owned());
                 return Reaction::Redraw;
             }
-            MenuEvent::StateChanged | MenuEvent::Consumed => return Reaction::Redraw,
-            MenuEvent::Ignored => {}
-            _ => {}
+            Handled::Ignored => {}
+            _ => return Reaction::Redraw,
         }
 
         // Fallback event handling.

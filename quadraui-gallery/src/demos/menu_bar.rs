@@ -1,16 +1,18 @@
 //! `MenuBar` demo — adapted from `quadraui/examples/common/menu_bar_app.rs`
 //! and the menu-bar half of `submenu_app.rs`.
 //!
-//! [`MenuSystem`] is the high-level compose helper that owns dropdown
-//! open/close, hover-to-switch, arrow-key navigation and Alt+key
-//! activation. Variant 0 is a flat dropdown; variant 1 nests a pull-right
-//! submenu (`View → Export → {PNG, SVG}`) — `MenuSystem` resolves cascading
-//! submenus on its own, with no extra app-side state.
+//! [`AppMenu`] is the widget that owns dropdown open/close,
+//! hover-to-switch, arrow-key navigation and Alt+key activation; the demo
+//! drives it with raw events through [`AppMenu::handle_ui_event`].
+//! Variant 0 is a flat dropdown; variant 1 nests a pull-right submenu
+//! (`View → Export → {PNG, SVG}`) — `AppMenu` resolves cascading submenus
+//! on its own, with no extra app-side state.
 
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    resolve_bar_height, Backend, BackendCaps, Color, ContextMenuItem, MenuDef, MenuEvent,
-    MenuSystem, Reaction, Rect, StatusBar, StatusBarSegment, Style, StyledText, UiEvent, WidgetId,
+    resolve_bar_height, AppMenu, AppMenuEvent, AppMenuState, Backend, BackendCaps, Color,
+    ContextMenuItem, Handled, MenuDef, Reaction, Rect, StatusBar, StatusBarSegment, Style,
+    StyledText, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, CaptureAction, Demo};
@@ -90,7 +92,8 @@ fn submenu_menus() -> Vec<MenuDef> {
 }
 
 pub struct MenuBarDemo {
-    menus: [MenuSystem; 2],
+    menus: [AppMenu; 2],
+    menu_states: [AppMenuState; 2],
     last_action: [String; 2],
 }
 
@@ -98,9 +101,10 @@ impl MenuBarDemo {
     pub fn new() -> Self {
         Self {
             menus: [
-                MenuSystem::new(flat_menus()),
-                MenuSystem::new(submenu_menus()),
+                AppMenu::new(WidgetId::new("gallery:menu-bar:0"), flat_menus()),
+                AppMenu::new(WidgetId::new("gallery:menu-bar:1"), submenu_menus()),
             ],
+            menu_states: Default::default(),
             last_action: [
                 "click a menu or press Alt+F/E".into(),
                 // Deliberately never says "View" or "Export" — headless
@@ -158,7 +162,7 @@ impl Demo for MenuBarDemo {
     fn render(&self, variant: usize, backend: &mut dyn Backend, area: Rect) {
         let bar_rect = Self::bar_rect(area, backend);
 
-        // Paint the hint bar *before* the dropdown: `MenuSystem::render`
+        // Paint the hint bar *before* the dropdown: `AppMenu::render`
         // paints the bar strip and then any open dropdown/submenu stack
         // in one call, and that stack can extend below `bar_rect` far
         // enough to overlap this hint strip. Painting the hint bar first
@@ -180,14 +184,18 @@ impl Demo for MenuBarDemo {
         area: Rect,
     ) -> Reaction {
         let bar_rect = Self::bar_rect(area, backend);
-        match self.menus[variant].handle(event, backend, bar_rect) {
-            MenuEvent::Activated(id) => {
+        match self.menus[variant].handle_ui_event(
+            &mut self.menu_states[variant],
+            event,
+            backend,
+            bar_rect,
+        ) {
+            Handled::Event(AppMenuEvent::Activated(id)) => {
                 self.last_action[variant] = format!("activated: {}", id.as_str());
                 Reaction::Redraw
             }
-            MenuEvent::StateChanged | MenuEvent::Consumed => Reaction::Redraw,
-            MenuEvent::Ignored => Reaction::Continue,
-            _ => Reaction::Continue,
+            Handled::Ignored => Reaction::Continue,
+            _ => Reaction::Redraw,
         }
     }
 
@@ -224,7 +232,7 @@ impl Demo for MenuBarDemo {
             // File" shows the hover-only tint a real `MouseMoved` feeds.
             Some(CaptureAction::HoverText("Open File"))
         } else {
-            // "Export" has its own submenu — `MenuSystem` opens a
+            // "Export" has its own submenu — `AppMenu` opens a
             // hovered item's submenu the same way a click does, so this
             // capture shows the full View → Export → {PNG, SVG} cascade.
             Some(CaptureAction::HoverText("Export"))

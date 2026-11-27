@@ -3701,10 +3701,10 @@ mod win32 {
         /// proves the same real `WM_NCHITTEST` round trip when the band
         /// comes from the actual consumer-shaped composition instead:
         /// `ShellView`'s title-bar band (`ShellConfig::with_title_bar`)
-        /// hosting a `MenuSystem` menu bar, run through the real
+        /// hosting an `AppMenu` menu bar, run through the real
         /// `win::shell_runner::run_with_shell` — the same path
         /// `examples/win_shell_menu.rs` exercises. A gap in how
-        /// `ShellView::render`/`MenuSystem::render` register their own
+        /// `ShellView::render`/`AppMenu::render` register their own
         /// band-content zones (as opposed to a gap in `nc_hit_test`
         /// itself, which the test above already covers) would show up
         /// here even if that one still passed.
@@ -3714,7 +3714,8 @@ mod win32 {
         }
 
         struct LiveShellMenuApp {
-            menu_system: crate::MenuSystem,
+            menu: crate::AppMenu,
+            menu_state: crate::AppMenuState,
             targets: Arc<Mutex<ShellProbeTargets>>,
         }
 
@@ -3723,9 +3724,9 @@ mod win32 {
                 let Some(bar_rect) = layout.title_bar_bounds else {
                     return;
                 };
-                self.menu_system.render(backend, bar_rect);
+                self.menu.render(backend, bar_rect);
 
-                let bar = self.menu_system.menu_bar();
+                let bar = self.menu.build_menu_bar();
                 let menu_layout =
                     crate::DrawsPrimitives::layout_primitive(&*backend, bar_rect, &bar).layout;
                 let file_item = menu_layout
@@ -3756,8 +3757,11 @@ mod win32 {
                 let Some(bar_rect) = ctx.title_bar_bounds() else {
                     return Reaction::Continue;
                 };
-                match self.menu_system.handle(&event, backend, bar_rect) {
-                    crate::MenuEvent::Ignored => Reaction::Continue,
+                match self
+                    .menu
+                    .handle_ui_event(&mut self.menu_state, &event, backend, bar_rect)
+                {
+                    crate::Handled::Ignored => Reaction::Continue,
                     _ => Reaction::Redraw,
                 }
             }
@@ -3774,16 +3778,20 @@ mod win32 {
                 scale: 1.0,
             }));
             let app = LiveShellMenuApp {
-                menu_system: crate::MenuSystem::new(vec![crate::MenuDef {
-                    id: crate::types::WidgetId::new("probe:file"),
-                    label: "&File".into(),
-                    disabled: false,
-                    items: vec![crate::ContextMenuItem {
-                        id: Some(crate::types::WidgetId::new("probe:new")),
-                        label: crate::StyledText::plain("New File"),
-                        ..Default::default()
+                menu: crate::AppMenu::new(
+                    crate::types::WidgetId::new("probe:menu"),
+                    vec![crate::MenuDef {
+                        id: crate::types::WidgetId::new("probe:file"),
+                        label: "&File".into(),
+                        disabled: false,
+                        items: vec![crate::ContextMenuItem {
+                            id: Some(crate::types::WidgetId::new("probe:new")),
+                            label: crate::StyledText::plain("New File"),
+                            ..Default::default()
+                        }],
                     }],
-                }]),
+                ),
+                menu_state: crate::AppMenuState::default(),
                 targets: targets.clone(),
             };
             let title = format!(
@@ -3874,7 +3882,7 @@ mod win32 {
 
             assert!(
                 !is_caption,
-                "File menu item (through ShellView + MenuSystem): expected \
+                "File menu item (through ShellView + AppMenu): expected \
                  not HTCAPTION (HTCLIENT) but WM_NCHITTEST returned {:#x} — \
                  a real click here would be swallowed as a title-bar drag \
                  instead of opening the dropdown (quadraui#1307)",

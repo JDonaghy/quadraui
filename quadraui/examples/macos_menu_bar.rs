@@ -4,11 +4,11 @@
 //!
 //! On TUI/GTK this paints the in-window `MenuBar` primitive at the top
 //! with a `StatusBar` at the bottom, same as ever. On macOS,
-//! `MenuSystem::render` installs the real system `NSMenu` through
+//! `AppMenu::render` installs the real system `NSMenu` through
 //! `Backend::install_menu_bar` instead — macOS has no Alt-mnemonic convention and a
 //! painted `File Edit View` strip is the one that needs opting into
-//! there, not the other way round. `MenuSystem::handle` routes the
-//! resulting `UiEvent::MenuActivated` to the same `MenuEvent::Activated`
+//! there, not the other way round. `AppMenu::handle_ui_event` routes the
+//! resulting `UiEvent::MenuActivated` to the same `AppMenuEvent::Activated`
 //! the painted dropdown path produces, so this `AppLogic` needed no
 //! change to pick up the native menu bar — see `macos_native_menu.rs`
 //! for an app that drives `Backend::install_menu_bar` directly instead

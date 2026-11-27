@@ -395,9 +395,10 @@ the `Palette` widget.
 **Widget:** `FilePicker` (`State` = `FilePickerState`, `Action` =
 `PathPickerAction`, delivered as `UiEvent::PathPicker(id, action)`).
 
-**Controller:** `FilePickerController::new(mode, root, filters)` with
-`FilePickerMode::Open` / `Save`; `render(rect, backend)`;
-`handle_event(&event, visible_rows)` → `Handled<PathPickerAction>`.
+**Construct:** `FilePicker::new(mode, root, filters)` with
+`FilePickerMode::Open` / `Save`; paint it with `draw_dyn`; a raw-event host
+calls `handle_event(&event, visible_rows)` → `Handled<PathPickerAction>` and
+stores each change with `apply(&action, visible_rows)`.
 
 **Actions (`PathPickerAction`, shared with `FolderPicker`):**
 `Confirmed { path }`, `Cancelled`, `QueryChanged { .. }`,
@@ -421,19 +422,20 @@ fuzzy filtering, scroll, selection. Paints through the `Palette` widget.
 **Widget:** `FolderPicker` (`State` = `FolderPickerState`, `Action` =
 `PathPickerAction`, delivered as `UiEvent::PathPicker(id, action)`).
 
-**Controller:** `FolderPickerController::rooted_at(root, extra_file_names)`,
-optionally `.with_show_hidden(true)`; `render(rect, backend)`;
-`handle_event(&event, visible_rows)` → `Handled<PathPickerAction>`.
+**Construct:** `FolderPicker::rooted_at(root, extra_file_names)`, optionally
+`.with_show_hidden(true)`; paint it with `draw_dyn`; a raw-event host calls
+`handle_event(&event, visible_rows)` → `Handled<PathPickerAction>` and stores
+each change with `apply(&action, visible_rows)`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-let mut picker = FolderPickerController::rooted_at(start_dir, Vec::new());
-picker.render(popup_rect, backend);
-if let Handled::Event(PathPickerAction::Confirmed { path }) =
-    picker.handle_event(&event, visible_rows)
-{
-    open_workspace(path);
+let mut picker = FolderPicker::rooted_at(start_dir, Vec::new());
+backend.draw_dyn(popup_rect, &picker, &());
+match picker.handle_event(&event, visible_rows) {
+    Handled::Event(PathPickerAction::Confirmed { path }) => open_workspace(path),
+    Handled::Event(change) => picker.apply(&change, visible_rows),
+    _ => {}
 }
 ```
 
@@ -527,21 +529,24 @@ they're searchable by label and description.
 **Widget:** `HelpOverlay` (`id`, `open`, `help`; `Action` =
 `HelpOverlayAction`, delivered as `UiEvent::HelpOverlay(id, action)`).
 
-**Controller:** `HelpOverlayController::new()`; `open_action()` /
-`close_action()` / `toggle_action()`;
-`render(container, backend, registry.get(view_id))`;
-`handle_event(&event)` → `Handled<HelpOverlayAction>` (`Opened`, `Closed`).
+**Raw-event host:** `handle_event(&event)` → `Handled<HelpOverlayAction>`
+(`Opened`, `Closed`; `Consumed` while open); write each action back with
+`apply(action)`. `toggle_action()` flips it from a host binding. Paint it with
+`draw_dyn` over the window, with `help` set to the active view's `ViewHelp`.
 
 **Smallest wiring:**
 
 ```rust,ignore
 let mut registry = HelpRegistry::new();
 registry.register("editor", ViewHelp::new("Editor").with_notes(notes).with_actions(actions));
-let mut overlay = HelpOverlayController::new();
-// on `?`:
-overlay.toggle_action();
+let mut overlay = HelpOverlay::new(WidgetId::new("help"));
+// in handle():
+if let Handled::Event(action) = overlay.handle_event(&event) {
+    overlay.apply(action);
+}
 // every frame:
-overlay.render(area, backend, registry.get("editor"));
+let shown = HelpOverlay { help: registry.get("editor").cloned(), ..overlay.clone() };
+backend.draw_dyn(area, &shown, &());
 ```
 
 **Example:** `examples/tui_help_layer.rs` / `examples/gtk_help_layer.rs`
@@ -633,7 +638,7 @@ backend.draw_dyn(layout.bounds, &popup, &());
 
 ---
 
-## `AppMenu` / `MenuSystem` — `src/compose/menu_system.rs`
+## `AppMenu` — `src/compose/app_menu.rs`
 
 **Owns:** a menu bar and its dropdowns — open/close, Alt-key activation,
 arrow-key navigation, hover-to-switch between open menus, submenus. Define
@@ -650,17 +655,19 @@ view (`AppMenu::apply` does it); `AppMenuEvent::Activated(id)` is a chosen
 item. `Primitive::native_presentation` installs the bar natively where the
 backend presents menus natively.
 
-**Controller:** `MenuSystem::new(menus)`; `render(backend, bar_rect)`;
-`handle(&event, backend, bar_rect)` → `MenuEvent` (`Activated(id)`,
-`StateChanged`, `Consumed`, `Ignored`).
+**Raw-event host:** a host that reads raw `UiEvent`s keeps the `AppMenu` and
+its `AppMenuState` and calls `render(backend, bar_rect)` and
+`handle_ui_event(&mut state, &event, backend, bar_rect)`, which applies every
+view change itself, keeps the open dropdown on the modal stack and answers a
+`Handled<AppMenuEvent>`.
 
 **Smallest wiring:**
 
 ```rust,ignore
-match self.menu_system.handle(&event, backend, bar_rect) {
-    MenuEvent::Activated(id) if id.as_str() == "save" => save(),
-    MenuEvent::StateChanged | MenuEvent::Consumed => return Reaction::Redraw,
-    _ => {}
+match self.menu.handle_ui_event(&mut self.menu_state, &event, backend, bar_rect) {
+    Handled::Event(AppMenuEvent::Activated(id)) if id.as_str() == "save" => save(),
+    Handled::Ignored => {}
+    _ => return Reaction::Redraw,
 }
 ```
 
@@ -953,53 +960,12 @@ section while the file exists. -->
 
 ---
 
-## `TreeController` — `src/compose/tree_controller.rs`
-
-**Owns:** one keyboard-navigable `TreeView` with scrollbar, for a host that
-routes raw events itself — selection with scroll-to-follow, click
-hit-testing, scrollbar thumb drag, wheel scrolling, inline rename.
-`SidebarSystem` builds one per tree-bodied section.
-
-**For a standalone tree, the `TreeView` widget routes itself.** `TreeView`
-implements the contract (`State` = `TreeViewState`, `Action` = `TreeEvent`):
-list it in `AppLogic::frame_tree` and the runtime handles selection,
-navigation and typeahead.
-
-**Controller:** `TreeController::new(id)`; `set_rows(rows)`;
-`render(backend, rect)`; `handle(&event, backend, rect)` →
-`TreeControllerEvent` (`RowSelected { path }`, `RowActivated { path }`,
-`RowToggleExpand { path }`, `ScrollChanged`, `EditConfirmed { .. }`,
-`EditCancelled { .. }`, `EditChanged { .. }`,
-`ContextMenuRequested { .. }`, `Consumed`, `Ignored`).
-
-**Smallest wiring:**
-
-```rust,ignore
-let mut tree = TreeController::new("files");
-tree.set_rows(rows);
-tree.render(backend, area);
-if let TreeControllerEvent::RowActivated { path } = tree.handle(&event, backend, area) {
-    open(path);
-}
-```
-
-<!-- TODO(0.12 final pass): after the collapse (#2977/#2978) removes
-`classify_tree_nav_key` and the `*_via` delegates, check whether
-`TreeController` survives and update or delete this section. -->
-
-**Example:** no standalone demo — the tree examples drive it through
-`SidebarSystem` (`examples/msv_multi_tree.rs`,
-`examples/common/sidebar_panel_body_demo.rs`). Its `#[cfg(test)]` module is
-the direct-use reference.
-
----
-
 ## `TreeNavCore` — `src/behaviour/nav.rs`
 
 Not a compose module: it lives in `quadraui::behaviour` beside the other
 shared interaction rules (`ensure_visible`, `FlatNav`, `Typeahead`), and is
-listed here because `TreeController` and `TreeTableController` are built on
-it.
+listed here because `TreeView`'s `Interactive` and `TreeTableController` are
+built on it.
 
 **Owns:** the row-type-agnostic half of tree navigation — selection by
 `TreePath`, Up/Down/PageUp/PageDown/Home/End, the Left/Right

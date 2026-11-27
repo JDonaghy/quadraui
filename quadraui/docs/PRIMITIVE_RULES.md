@@ -561,7 +561,7 @@ Apps pick a menu's display path by trigger, not by backend:
 | Trigger | Path | Why |
 |---|---|---|
 | `MouseDown { button: Right }` on a canvas / row / cell | `compose::ContextMenuController::open` | Resolves the menu style: on macOS it shows a native `NSMenu` (`Backend::show_context_menu`), getting the platform's fonts, accent colour, Dark Mode, VoiceOver and ⌘-shortcuts; elsewhere it paints a `ContextMenu` and routes it. Activation arrives as `UiEvent::ContextMenuItemActivated(WidgetId)`, dismissal as `UiEvent::ContextMenuDismissed`. |
-| Left-click on an affordance that opens a dropdown (a combo box, a menu bar entry, a palette sub-menu) | The owning widget's `popups()` | App-controlled, pixel-consistent across backends, positioned relative to the widget rather than the cursor. The application menu bar is `AppMenu` (owned by `compose::MenuSystem`), which the macOS backend presents natively through `Primitive::native_presentation`. |
+| Left-click on an affordance that opens a dropdown (a combo box, a menu bar entry, a palette sub-menu) | The owning widget's `popups()` | App-controlled, pixel-consistent across backends, positioned relative to the widget rather than the cursor. The application menu bar is `compose::AppMenu`, which the macOS backend presents natively through `Primitive::native_presentation`. |
 
 ## When a widget is shipped
 

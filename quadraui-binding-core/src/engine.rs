@@ -15,9 +15,9 @@ use std::rc::Rc;
 
 use quadraui::backend::MessageDialogOptions;
 use quadraui::compose::{
-    ContextMenuController, ContextMenuOutcome, FormController, FormControllerAction, FormDialog,
-    FormDialogAction, FormDialogState, Handled, MenuDef, MenuEvent, MenuSystem, MessageDialog,
-    MessageDialogState, TreeTableController, TreeTableControllerEvent,
+    AppMenu, AppMenuEvent, AppMenuState, ContextMenuController, ContextMenuOutcome, FormController,
+    FormControllerAction, FormDialog, FormDialogAction, FormDialogState, Handled, MenuDef,
+    MessageDialog, MessageDialogState, TreeTableController, TreeTableControllerEvent,
 };
 use quadraui::primitive::DynWidget;
 use quadraui::primitives::form::focus_order;
@@ -1063,6 +1063,22 @@ fn dispatch_layout_dialog(
 /// divider/scrollbar drag, per-widget text-input cursor cache, and the
 /// menu-bar/context-menu controllers. A binding's own `AppLogic` impl holds
 /// exactly one of these and never needs its own copy of any of this state.
+/// The in-window menu behind a `"menu_bar"` extra, with its
+/// [`AppMenuState`].
+struct MenuBarHost {
+    menu: AppMenu,
+    state: AppMenuState,
+}
+
+impl Default for MenuBarHost {
+    fn default() -> Self {
+        Self {
+            menu: AppMenu::new(WidgetId::new("menu-system-bar"), Vec::new()),
+            state: AppMenuState::default(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct InteractionEngine {
     /// Every primitive the binding's most recent [`quadraui::AppLogic::render`]
@@ -1181,10 +1197,11 @@ pub struct InteractionEngine {
     /// open/close/keyboard-nav/submenu state machine that turns a click on
     /// a top-level item into an open dropdown and a selection into
     /// `UiEvent::MenuActivated`.
-    menu_system: RefCell<MenuSystem>,
+    menu_system: RefCell<MenuBarHost>,
     /// The absolute bounds of the `"menu_bar"` extra [`InteractionEngine::sync_menu_bar`]
     /// most recently painted, read by [`InteractionEngine::handle`] to call
-    /// [`MenuSystem::handle`] with the same `bar_rect` the paint pass used.
+    /// [`quadraui::AppMenu::handle_ui_event`] with the same `bar_rect` the
+    /// paint pass used.
     /// `None` whenever no `"menu_bar"` extra was present that frame.
     menu_bar_rect: RefCell<Option<Rect>>,
     /// The one z-ordered overlay stack backing every `show_*`/`dismiss_*`
@@ -1678,8 +1695,8 @@ impl InteractionEngine {
         self.close_message_dialog(backend);
         self.close_form_dialog(backend);
         self.close_layout_dialog(backend);
-        if self.menu_system.borrow().is_open() {
-            self.menu_system.borrow_mut().close(backend);
+        if self.menu_system.borrow().menu.is_open() {
+            self.menu_system.borrow_mut().menu.dismiss(backend);
         }
         if self.context_menu_open() {
             self.close_context_menu(backend);
@@ -1739,8 +1756,8 @@ impl InteractionEngine {
         self.close_form_dialog(backend);
         self.close_message_dialog(backend);
         self.close_layout_dialog(backend);
-        if self.menu_system.borrow().is_open() {
-            self.menu_system.borrow_mut().close(backend);
+        if self.menu_system.borrow().menu.is_open() {
+            self.menu_system.borrow_mut().menu.dismiss(backend);
         }
         if self.context_menu_open() {
             self.close_context_menu(backend);
@@ -2130,8 +2147,8 @@ impl InteractionEngine {
         self.close_layout_dialog(backend);
         self.close_form_dialog(backend);
         self.close_message_dialog(backend);
-        if self.menu_system.borrow().is_open() {
-            self.menu_system.borrow_mut().close(backend);
+        if self.menu_system.borrow().menu.is_open() {
+            self.menu_system.borrow_mut().menu.dismiss(backend);
         }
         if self.context_menu_open() {
             self.close_context_menu(backend);
@@ -2442,8 +2459,8 @@ impl InteractionEngine {
     /// way — a second one in the same frame still paints (via `paint_leaf`'s
     /// normal `Extra` path) but is not interactive.
     ///
-    /// `menu_system.render` draws from `MenuSystem`'s own open/focused/id
-    /// state (see `MenuSystem::build_menu_bar`), not the descriptor's
+    /// `menu_system.menu.render` draws from that `AppMenu`'s own
+    /// open/focused/id state (see `AppMenu::build_menu_bar`), not the descriptor's
     /// `open_item`/`focused_item`/`id` fields — those are overridden, so a
     /// binding that sets them declaratively (e.g. to render a pressed
     /// visual) has no effect once the bar is interactive.
@@ -2457,13 +2474,13 @@ impl InteractionEngine {
         let Some((area, menu_bar)) = found else {
             // The `"menu_bar"` extra is gone from this frame (the app
             // stopped rendering one, or swapped it for something else).
-            // Close any dropdown first so the `"menu-system-dropdown"`
-            // entry `MenuSystem::open_menu` pushed onto the modal stack
+            // Close any dropdown first so the dropdown's entry
+            // `AppMenu::handle_ui_event` pushed onto the modal stack
             // gets popped — otherwise it leaks, and the dropdown would
             // silently reappear (with nothing to hit-test it) if the
             // extra ever comes back.
-            if self.menu_system.borrow().is_open() {
-                self.menu_system.borrow_mut().close(backend);
+            if self.menu_system.borrow().menu.is_open() {
+                self.menu_system.borrow_mut().menu.dismiss(backend);
             }
             *self.menu_bar_rect.borrow_mut() = None;
             return;
@@ -2479,8 +2496,8 @@ impl InteractionEngine {
             })
             .collect();
         let mut menu_system = self.menu_system.borrow_mut();
-        menu_system.set_menus(menus);
-        menu_system.render(backend, area);
+        menu_system.menu.set_menus(menus);
+        menu_system.menu.render(backend, area);
         *self.menu_bar_rect.borrow_mut() = Some(area);
     }
 
@@ -3944,20 +3961,21 @@ impl InteractionEngine {
         // A `"menu_bar"` extra's dropdown and a context-menu popup both own
         // a full modal-input state machine that must see every event before
         // the rest of this function's own routing — matching
-        // `MenuSystem::handle`/`ContextMenuController::handle`'s own doc
+        // `AppMenu::handle_ui_event`/`ContextMenuController::handle`'s own doc
         // ("call this before other UI routing"). Each reports `Ignored`
         // immediately when nothing of theirs is open/relevant, so this is
         // safe to run unconditionally even for an app with neither a menu
         // bar nor an open context menu.
         let mut menu_reaction = Reaction::Continue;
         if let Some(bar_rect) = *self.menu_bar_rect.borrow() {
-            let was_open = self.menu_system.borrow().is_open();
-            let menu_event = self
-                .menu_system
-                .borrow_mut()
-                .handle(&event, backend, bar_rect);
+            let was_open = self.menu_system.borrow().menu.is_open();
+            let menu_event = {
+                let mut host = self.menu_system.borrow_mut();
+                let MenuBarHost { menu, state } = &mut *host;
+                menu.handle_ui_event(state, &event, backend, bar_rect)
+            };
             match menu_event {
-                MenuEvent::Activated(id) => {
+                Handled::Event(AppMenuEvent::Activated(id)) => {
                     // Activation already closed the dropdown in
                     // `menu_system`'s own state; force the repaint that
                     // takes it off screen regardless of what `sink`
@@ -3976,9 +3994,9 @@ impl InteractionEngine {
                 // flowing through the rest of this function instead of
                 // swallowing it here; this call's own repaint need folds
                 // into whatever `Reaction` that routing ends up producing.
-                MenuEvent::StateChanged | MenuEvent::Consumed => {
+                Handled::Event(_) | Handled::Consumed => {
                     let hover_only_on_closed_bar = !was_open
-                        && !self.menu_system.borrow().is_open()
+                        && !self.menu_system.borrow().menu.is_open()
                         && matches!(event, UiEvent::MouseMoved { .. });
                     if hover_only_on_closed_bar {
                         menu_reaction = Reaction::Redraw;
@@ -3986,13 +4004,12 @@ impl InteractionEngine {
                         return Reaction::Redraw;
                     }
                 }
-                MenuEvent::Ignored => {}
-                _ => {}
+                Handled::Ignored => {}
             }
         }
         match self.dispatch_context_menu(&event, backend) {
             ContextMenuOutcome::Event(ev) => {
-                // Same reasoning as the `MenuEvent::Activated` arm above:
+                // Same reasoning as the `AppMenuEvent::Activated` arm above:
                 // activation/dismissal already closed the popup in
                 // `ctx_menu`'s own state, so force the repaint regardless
                 // of what `sink` returns.

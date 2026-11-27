@@ -1637,7 +1637,7 @@ pub trait Backend: sealed::Sealed {
     /// a native menu bar would conflict with their custom window chrome.
     ///
     /// Apps typically call this once during `AppLogic::setup`;
-    /// [`crate::compose::MenuSystem::render`] calls it every frame under
+    /// [`crate::compose::AppMenu::render`] calls it every frame under
     /// the native menu style. Re-calling with a changed bar replaces the
     /// previously-installed menu wholesale.
     fn install_menu_bar(&mut self, _bar: &crate::primitives::menu_bar::MenuBar) {}

@@ -3958,7 +3958,7 @@ fn full_chrome_bottom_panel_and_command_line_clicks_update_status_line() {
 
 // ─── ShellMenuDemo: modal-over-chrome MouseDown routing ─────────────────────
 //
-// `ShellMenuDemo` opens a `MenuSystem` dropdown whose bar spans the full
+// `ShellMenuDemo` opens an `AppMenu` dropdown whose bar spans the full
 // viewport width, so the dropdown sits directly over the activity bar strip.
 // Before the fix, `ShellAdapter::handle` ran `ShellView::handle_event` first, which
 // hit-tested `MouseDown` purely by screen position and swallowed any click
@@ -8518,7 +8518,7 @@ fn hscroll_dollar_key_scrolls_visible_window_to_line_end() {
     );
 }
 
-// ─── MenuBarApp: open / navigate / select via MenuSystem ───────────────────
+// ─── MenuBarApp: open / navigate / select via AppMenu ───────────────────
 
 #[test]
 fn menu_bar_alt_f_opens_file_dropdown() {
@@ -11249,7 +11249,7 @@ fn context_menu_style_demo_submenu_opens_on_hover_and_activates_leaf() {
 
 /// Near the viewport's right edge the child popup has no room to pull
 /// right, so it flips to the parent's left edge instead — the same
-/// `ContextMenuLayout::submenu_anchor` rule `MenuSystem`'s menu-bar
+/// `ContextMenuLayout::submenu_anchor` rule `AppMenu`'s menu-bar
 /// submenus use.
 #[test]
 fn context_menu_style_demo_submenu_flips_left_near_right_edge() {

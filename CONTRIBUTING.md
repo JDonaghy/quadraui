@@ -55,7 +55,7 @@ Press any key, then `q` to quit. If that runs, you're set up correctly.
 - **`quadraui/src/{tui,gtk,macos,win}/`** — per-backend rasterisers
   (`draw_*` functions) and each backend's `impl Backend`.
 - **`quadraui/src/compose/`** — higher-level controllers built from
-  primitives (`TreeController`, `ChatController`, `AppShell`) that
+  primitives (`AppMenu`, `Chat`, `ShellView`) that
   apps use directly instead of hand-rolling event routing.
 - **`quadraui/examples/`** — runnable demos. `hello.rs` is the minimal
   one; `examples/common/<shape>.rs` holds the `AppLogic` bodies shared

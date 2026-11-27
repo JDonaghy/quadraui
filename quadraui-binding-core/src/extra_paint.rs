@@ -2015,7 +2015,7 @@ mod tests {
     }
 
     /// A `MenuBar` placed directly as a `LayoutNode::Leaf` is synced into
-    /// [`crate::engine::InteractionEngine`]'s own `MenuSystem` by
+    /// [`crate::engine::InteractionEngine`]'s own `AppMenu` by
     /// [`crate::host::render_overlays`]'s `sync_menu_bar` call — the same
     /// helper every binding's render path (flat-slot or render-callback)
     /// runs after painting, so a leaf-painted bar gets the identical

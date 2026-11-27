@@ -210,7 +210,7 @@ pub struct MacBackend {
     menu_target: Option<objc2::rc::Retained<super::menu_bar_install::QuadraMenuTarget>>,
     /// Last [`MenuBar`] installed through [`Backend::install_menu_bar`].
     /// Compared against the incoming `bar` on every call so a per-frame
-    /// caller (`MenuSystem::render`) does not reinstall an unchanged
+    /// caller (`AppMenu::render`) does not reinstall an unchanged
     /// `NSMenu` tree each tick — see [`Self::install_menu_bar_if_changed`].
     /// `None` until the first install.
     last_native_menu_bar: Option<MenuBar>,
@@ -1371,7 +1371,7 @@ impl MacBackend {
 
     /// Install `bar` as the real system `NSMenu` unless it's unchanged
     /// from the last install, so a caller that installs every frame
-    /// ([`crate::compose::MenuSystem::render`] under the native style)
+    /// ([`crate::compose::AppMenu::render`] under the native style)
     /// rebuilds the `NSMenu` tree only on an actual menu-state change (a
     /// new accelerator, a toggled checkmark, …).
     ///

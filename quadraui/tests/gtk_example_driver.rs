@@ -1193,7 +1193,7 @@ fn context_menu_style_demo_gtk_escape_dismisses() {
 // ─── SubmenuApp: pull-right cascading submenus ──────────────────────────────
 //
 // Same `SubmenuApp` as `tui_submenu`/`gtk_submenu` — driven entirely through
-// the `ContextMenu` widget / `MenuSystem`, proving that GTK's shared
+// the `ContextMenu` widget / `AppMenu`, proving that GTK's shared
 // `native_surface_paint::paint` renders the `▶` affordance and that the
 // cascading open/close/click state machine behaves the same as it does on TUI.
 

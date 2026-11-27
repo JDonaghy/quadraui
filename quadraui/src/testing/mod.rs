@@ -725,7 +725,7 @@ pub struct RecordingBackend {
     /// to fake a GUI backend's self-registered icon font for a `compose/`
     /// helper that probes `has_font_family("codicon")` to choose a codicon
     /// glyph over a plain-text fallback — the pattern
-    /// `compose::menu_system`'s `dropdown_width` and
+    /// `compose::app_menu`'s `dropdown_width` and
     /// `compose::sidebar`'s paint both use.
     pub font_families: std::collections::HashSet<&'static str>,
 }
@@ -886,7 +886,7 @@ impl crate::backend::PlatformServices for RecordingBackend {
 // hand `Backend::services()`, nothing real behind it" shape:
 // `FakePlatformServices` in `backend.rs`'s own test module,
 // `MockServices` backing `tui::backend`'s test-only `MockBackend`, and
-// `compose::menu_system`'s test-only `MockBackend::services`, which
+// `compose::app_menu`'s test-only `MockBackend::services`, which
 // didn't even have a double and `unimplemented!()`ed instead. This is
 // that double, promoted once — the same "named, not duplicated" move
 // [`RecordingBackend`]'s own module comment above describes for

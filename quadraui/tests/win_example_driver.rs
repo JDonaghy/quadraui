@@ -230,7 +230,7 @@ fn appshell_demo_unintercepted_key_still_reaches_the_app() {
     assert!(driver.exited());
 }
 
-// ─── MenuBarApp: open / navigate / select via MenuSystem ──────────────────
+// ─── MenuBarApp: open / navigate / select via AppMenu ──────────────────
 //
 // Win-GUI twin of `tests/tui_example_driver.rs`'s
 // `menu_bar_alt_f_opens_file_dropdown` /
@@ -319,7 +319,7 @@ fn menu_bar_clicking_view_item_opens_its_dropdown() {
     let (x, y) = driver
         .find("View")
         .unwrap_or_else(|| panic!("View menu label not painted: {:?}", driver.painted_texts()));
-    // `mouse_down`, not `click`: `MenuSystem` opens the dropdown on
+    // `mouse_down`, not `click`: `AppMenu` opens the dropdown on
     // press; `WinDriver::click`'s extra release (unlike GTK/TUI's bare
     // press-down `click`) then lands back on the same label and closes
     // it again, so asserting on the full down+up round trip would see
@@ -336,7 +336,7 @@ fn menu_bar_clicking_view_item_opens_its_dropdown() {
 
 // ─── ShellMenuDemo: menu bar inside ShellView's title-bar band ──────────────
 //
-// `ShellMenuDemo::config()` puts the `MenuSystem` inside `ShellView`'s
+// `ShellMenuDemo::config()` puts the `AppMenu` inside `ShellView`'s
 // title-bar band (`ShellConfig::with_title_bar`) — on a live Win32 window
 // that band is exactly `WinBackend::nc_hit_test`'s `TITLE_BAR_DRAG_ZONE`.
 // A click at the File menu's position in that band must reach the app as
@@ -344,10 +344,10 @@ fn menu_bar_clicking_view_item_opens_its_dropdown() {
 // `driver_with_shell`/`WinDriver` dispatch straight to `UiEvent`s and
 // never send a real `WM_NCHITTEST`, so this test can't reproduce an
 // OS-level swallow itself — it proves the composed `ShellView` +
-// `MenuSystem` *logic* opens the dropdown on a title-band click (the half
+// `AppMenu` *logic* opens the dropdown on a title-band click (the half
 // `win::run`'s `live_window_nchittest_tests` module doesn't cover, since
 // that module's probe app registers the band and widgets by hand rather
-// than composing them through `ShellView`/`MenuSystem`).
+// than composing them through `ShellView`/`AppMenu`).
 // `real_wm_nchittest_reaches_the_file_menu_through_a_composed_shell` in
 // that same module is the live-window half that *does* send a real
 // `WM_NCHITTEST` at this exact composition.
@@ -356,7 +356,7 @@ const SHELL_MENU_H: u32 = 480;
 
 /// Clicking "File" in the shell's title-bar band must open its dropdown —
 /// `ShellView::handle_event` doesn't intercept title-bar clicks, so this reaches
-/// `MenuSystem` as an ordinary `MouseDown`.
+/// `AppMenu` as an ordinary `MouseDown`.
 #[test]
 fn shell_menu_file_click_in_title_bar_band_opens_dropdown() {
     let config = ShellMenuDemo::config();
@@ -411,7 +411,7 @@ fn shell_menu_file_click_in_title_bar_band_opens_dropdown() {
         driver.painted_texts()
     );
 
-    // `MenuSystem::handle_mouse_down` activates on press (same comment
+    // `AppMenu::handle_ui_event` activates on press (same comment
     // above), so a single further `mouse_down` on the item is enough.
     let (item_x, item_y) = driver
         .find("New File")

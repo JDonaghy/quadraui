@@ -374,7 +374,7 @@ impl<A: ShellApp> AppLogic for ShellAdapter<A> {
             }
         }
 
-        // An app-level modal (MenuSystem dropdown, Palette, Dialog, ...) can
+        // An app-level modal (AppMenu dropdown, Palette, Dialog, ...) can
         // visually overlap shell chrome (activity bar, sidebar, dividers,
         // bottom-panel grip). `ShellView::handle_event` below — and the
         // bottom-panel tab-strip click check further down — both hit-test

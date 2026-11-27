@@ -5182,7 +5182,7 @@ mod tests {
         }
     }
 
-    /// The menu bar's layout is resolved from `MenuSystem::handle` outside
+    /// The menu bar's layout is resolved from `AppMenu::handle_ui_event` outside
     /// any `enter_frame_scope`, so `current_frame_refs()` is always `None`
     /// at click time. The invariant is: whatever the paint laid the strip
     /// out with, the click-time layout must measure identically at click

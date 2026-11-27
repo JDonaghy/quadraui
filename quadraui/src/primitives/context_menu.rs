@@ -6,7 +6,7 @@
 //!
 //! Items carry `submenu: Option<Vec<ContextMenuItem>>` for nested menus.
 //! Both painters render the `▶` affordance on a submenu parent; a host
-//! (`compose::ContextMenuController`, `compose::MenuSystem`) places and
+//! (`compose::ContextMenuController`, `compose::AppMenu`) places and
 //! paints each open child popup beside its parent through
 //! [`ContextMenuLayout::submenu_anchor`]. The macOS backend wires this
 //! into native `NSMenu` nesting.
@@ -361,7 +361,7 @@ impl ContextMenuLayout {
     /// that item isn't in [`Self::visible_items`] — e.g. clipped past
     /// the bottom edge).
     ///
-    /// The one shared implementation both [`crate::compose::MenuSystem`]'s
+    /// The one shared implementation both [`crate::compose::AppMenu`]'s
     /// menu-bar submenus and [`crate::compose::ContextMenuController`]'s
     /// right-click submenus position through — a consumer that paints a
     /// nested popup beside a parent item anchors it here instead of
