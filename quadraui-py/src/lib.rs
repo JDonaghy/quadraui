@@ -9468,13 +9468,24 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                1,
-                "a toolbar button click carries no leading FocusChanged -- only the bar's own \
-                 id (not the clicked button's) is a tab stop"
+                2,
+                "a click on the toolbar focuses the bar, then reports the toolbar event"
             );
-            let event_dict = received_list
+            let focus_dict = received_list
                 .get_item(0)
                 .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                focus_dict
+                    .get_item("FocusChanged")
+                    .expect("dict lookup")
+                    .is_some(),
+                "the click's first event is the bar taking focus"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let toolbar_payload = event_dict
@@ -9618,12 +9629,24 @@ def handle(event):
             let received_list = received.cast::<PyList>().expect("received must be a list");
             assert_eq!(
                 received_list.len(),
-                1,
-                "a group segment click carries no leading FocusChanged"
+                2,
+                "a click on the toolbar focuses the bar, then reports the toolbar event"
             );
-            let event_dict = received_list
+            let focus_dict = received_list
                 .get_item(0)
                 .expect("first item")
+                .cast_into::<PyDict>()
+                .expect("event payload must be a dict");
+            assert!(
+                focus_dict
+                    .get_item("FocusChanged")
+                    .expect("dict lookup")
+                    .is_some(),
+                "the click's first event is the bar taking focus"
+            );
+            let event_dict = received_list
+                .get_item(1)
+                .expect("second item")
                 .cast_into::<PyDict>()
                 .expect("event payload must be a dict");
             let toolbar_payload = event_dict
