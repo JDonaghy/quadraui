@@ -4200,7 +4200,13 @@ mod interactive_tests {
             let layout = layout_for(&t, area.height);
             let handled = {
                 let mut cx = EventCx::new(id, &mut host);
-                Interactive::handle(&t, &mut state, &RoutedEvent::Action(action), &layout, &mut cx)
+                Interactive::handle(
+                    &t,
+                    &mut state,
+                    &RoutedEvent::Action(action),
+                    &layout,
+                    &mut cx,
+                )
             };
             match handled {
                 Handled::Event(ev) => vec![crate::interactive::WidgetAction::into_ui_event(ev, id)],
@@ -4226,10 +4232,13 @@ mod interactive_tests {
             })
             .snapshot();
         let node = snapshot.find("dir").expect("branch row node").id;
-        let captured =
-            |action| crate::a11y::route_action(snapshot.tree(), node, action, None);
+        let captured = |action| crate::a11y::route_action(snapshot.tree(), node, action, None);
 
-        for route in [&direct as &dyn Fn(A11yAction) -> Vec<crate::UiEvent>, &live, &captured] {
+        for route in [
+            &direct as &dyn Fn(A11yAction) -> Vec<crate::UiEvent>,
+            &live,
+            &captured,
+        ] {
             assert_eq!(route(A11yAction::Expand), toggle);
             assert_eq!(route(A11yAction::Collapse), Vec::new());
         }

@@ -5899,7 +5899,8 @@ mod tests {
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         backend.enter_frame_scope(surface.context_ptr(), |b| {
             Backend::push_clip(b, Rect::new(0.0, 0.0, 10.0, 10.0));
-            b.draw_dyn(
+            crate::backend::DrawsPrimitives::draw_dyn(
+                b,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &crate::testing::solid_canvas(Rect::new(0.0, 0.0, W as f32, H as f32), red),
                 &(),
@@ -5948,7 +5949,8 @@ mod tests {
             // this reaches (0,0)..(20,20) but not past it; if it dropped
             // clipping entirely, it would reach the whole 40x40 surface,
             // including (30,30) checked below.
-            b.draw_dyn(
+            crate::backend::DrawsPrimitives::draw_dyn(
+                b,
                 Rect::new(0.0, 0.0, W as f32, H as f32),
                 &crate::testing::solid_canvas(Rect::new(0.0, 0.0, W as f32, H as f32), green),
                 &(),
@@ -5958,7 +5960,8 @@ mod tests {
             // (20,20)..(40,40) — entirely outside the now-popped outer clip,
             // so this fill can only land there if the outer pop actually
             // cleared clipping rather than leaving the outer rect active.
-            b.draw_dyn(
+            crate::backend::DrawsPrimitives::draw_dyn(
+                b,
                 Rect::new(20.0, 20.0, 20.0, 20.0),
                 &crate::testing::solid_canvas(Rect::new(20.0, 20.0, 20.0, 20.0), white),
                 &(),

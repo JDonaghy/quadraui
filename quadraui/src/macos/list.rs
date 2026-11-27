@@ -24,6 +24,7 @@ use core_graphics::geometry::CGRect;
 use core_graphics::sys::CGContextRef;
 use core_text::font::CTFont;
 
+use super::cg::{CGContextClipToRect, CGContextRestoreGState, CGContextSaveGState};
 use super::text::measure_text;
 use crate::primitives::list::{ListPaintState, ListView, ListViewLayout};
 use crate::style::Style;
@@ -252,12 +253,6 @@ impl CGRectExt for CGRect {
         use core_graphics::geometry::{CGPoint, CGSize};
         CGRect::new(&CGPoint::new(x, y), &CGSize::new(w, h))
     }
-}
-
-extern "C" {
-    fn CGContextSaveGState(c: CGContextRef);
-    fn CGContextRestoreGState(c: CGContextRef);
-    fn CGContextClipToRect(c: CGContextRef, rect: CGRect);
 }
 
 #[cfg(test)]
