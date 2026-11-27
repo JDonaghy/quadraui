@@ -3726,12 +3726,8 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `canvas` | `CanvasDescriptor` | no |  |
 | `scroll_view` | `ScrollViewDescriptor` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor` | no |  |
-| `checkbox` | `CheckboxDescriptor` | no |  |
-| `slider` | `SliderDescriptor` | no |  |
-| `select` | `SelectDescriptor` | no |  |
 | `password` | `PasswordDescriptor` | no |  |
 | `textarea` | `TextAreaDescriptor` | no |  |
-| `markdown` | `MarkdownDescriptor` | no |  |
 | `icon_grid` | `IconGridDescriptor` | no |  |
 | `cell_grid` | `CellGridDescriptor` | no |  |
 | `switch` | `SwitchDescriptor` | no |  |
@@ -3746,6 +3742,10 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `editor` | `EditorDescriptor` | no |  |
 | `minimap` | `MinimapDescriptor` | no |  |
 | `image` | `ImageDescriptor` | no |  |
+| `checkbox` | `CheckboxDescriptor` | no |  |
+| `slider` | `SliderDescriptor` | no |  |
+| `select` | `SelectDescriptor` | no |  |
+| `markdown` | `MarkdownDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3795,12 +3795,8 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `canvas` | `CanvasDescriptor \| null` | no |  |
 | `scroll_view` | `ScrollViewDescriptor \| null` | no |  |
 | `find_replace` | `FindReplacePanelDescriptor \| null` | no |  |
-| `checkbox` | `CheckboxDescriptor \| null` | no |  |
-| `slider` | `SliderDescriptor \| null` | no |  |
-| `select` | `SelectDescriptor \| null` | no |  |
 | `password` | `PasswordDescriptor \| null` | no |  |
 | `textarea` | `TextAreaDescriptor \| null` | no |  |
-| `markdown` | `MarkdownDescriptor \| null` | no |  |
 | `icon_grid` | `IconGridDescriptor \| null` | no |  |
 | `cell_grid` | `CellGridDescriptor \| null` | no |  |
 | `switch` | `SwitchDescriptor \| null` | no |  |
@@ -3815,6 +3811,10 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `editor` | `EditorDescriptor \| null` | no |  |
 | `minimap` | `MinimapDescriptor \| null` | no |  |
 | `image` | `ImageDescriptor \| null` | no |  |
+| `checkbox` | `CheckboxDescriptor \| null` | no |  |
+| `slider` | `SliderDescriptor \| null` | no |  |
+| `select` | `SelectDescriptor \| null` | no |  |
+| `markdown` | `MarkdownDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`

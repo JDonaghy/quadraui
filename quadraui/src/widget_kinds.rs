@@ -253,6 +253,10 @@ widget_kinds! {
     "editor" => crate::Editor,
     "minimap" => crate::Minimap,
     "image" => crate::Image,
+    "checkbox" => crate::Checkbox,
+    "slider" => crate::Slider,
+    "select" => crate::Select,
+    "markdown" => crate::Markdown,
 }
 
 #[cfg(test)]

@@ -1951,12 +1951,8 @@ export interface LayoutLeafNode {
   canvas?: CanvasDescriptor;
   scroll_view?: ScrollViewDescriptor;
   find_replace?: FindReplacePanelDescriptor;
-  checkbox?: CheckboxDescriptor;
-  slider?: SliderDescriptor;
-  select?: SelectDescriptor;
   password?: PasswordDescriptor;
   textarea?: TextAreaDescriptor;
-  markdown?: MarkdownDescriptor;
   icon_grid?: IconGridDescriptor;
   cell_grid?: CellGridDescriptor;
   switch?: SwitchDescriptor;
@@ -1971,6 +1967,10 @@ export interface LayoutLeafNode {
   editor?: EditorDescriptor;
   minimap?: MinimapDescriptor;
   image?: ImageDescriptor;
+  checkbox?: CheckboxDescriptor;
+  slider?: SliderDescriptor;
+  select?: SelectDescriptor;
+  markdown?: MarkdownDescriptor;
   style?: StyleValue;
   class?: ClassValue;
   size?: SectionSize;
@@ -2012,12 +2012,8 @@ export interface RenderFrameDict {
   canvas?: CanvasDescriptor | null;
   scroll_view?: ScrollViewDescriptor | null;
   find_replace?: FindReplacePanelDescriptor | null;
-  checkbox?: CheckboxDescriptor | null;
-  slider?: SliderDescriptor | null;
-  select?: SelectDescriptor | null;
   password?: PasswordDescriptor | null;
   textarea?: TextAreaDescriptor | null;
-  markdown?: MarkdownDescriptor | null;
   icon_grid?: IconGridDescriptor | null;
   cell_grid?: CellGridDescriptor | null;
   switch?: SwitchDescriptor | null;
@@ -2032,6 +2028,10 @@ export interface RenderFrameDict {
   editor?: EditorDescriptor | null;
   minimap?: MinimapDescriptor | null;
   image?: ImageDescriptor | null;
+  checkbox?: CheckboxDescriptor | null;
+  slider?: SliderDescriptor | null;
+  select?: SelectDescriptor | null;
+  markdown?: MarkdownDescriptor | null;
 }
 
 /** A render callback's return value: a layout tree or the flat shape. */

@@ -12,13 +12,11 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    render_markdown_to_styled, Backend, BoardModel, Canvas, Chart, Column, ComboBox, CommandLine,
-    DatePicker, Decoration, DiffView, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon,
-    LabelPosition, MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput,
-    NumberInputHit, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
-    ScrollView, Scrollbar, Spinner, StyledText, TextDisplay, TextDisplayLine, TextField, TextInput,
-    TextRegion, Theme, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData,
-    WidgetId,
+    Backend, BoardModel, Canvas, Chart, Column, ComboBox, CommandLine, DatePicker, DiffView,
+    FindReplacePanel, FontRole, Form, Icon, MenuBar, MessageList, MultiSectionView, NaturalSize,
+    NumberInput, NumberInputHit, PipelineView, Point, ProgressBar, Rect, ScrollAxis, ScrollView,
+    Scrollbar, Spinner, StyledText, TextField, TextInput, TextRegion, Toolbar, ToolbarButton,
+    TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -140,7 +138,7 @@ pub fn extra_as<T: 'static>(extra: &Rc<dyn ExtraPaint>) -> Option<&T> {
 /// `TextInput` or one of [`PasswordInput`]/[`TextArea`]'s `inner` — all
 /// three reuse [`quadraui::TextEditor`] against an ordinary `TextInput`
 /// buffer verbatim (masked or multi-line only at paint time, via each's
-/// own `as_form`), so [`crate::text_input::text_input_click_event`]/
+/// own `as_widget`), so [`crate::text_input::text_input_click_event`]/
 /// [`crate::text_input::text_input_insert_event`] can place a caret or
 /// insert typed/pasted text on any of the three through one call site.
 pub fn extra_as_text_input(extra: &Rc<dyn ExtraPaint>) -> Option<&TextInput> {
@@ -171,25 +169,6 @@ pub fn extra_as_toolbar(extra: &Rc<dyn ExtraPaint>) -> Option<&Toolbar> {
     extra_as::<ToolbarWithOverflow>(extra).map(|w| &w.toolbar)
 }
 
-/// A compact boolean toggle's own box, with no label of its own
-/// ([`Checkbox`] hides its `Form`-field label — see [`single_field_form`]):
-/// `cell_width` cells on a cell-grid backend, or two text rows' worth on a
-/// pixel backend (a nominal pill/box width — a cheap chrome estimate with
-/// no real `Style::padding` read at this layer). [`Checkbox`], its one
-/// caller below, paints through `Form`'s `FieldKind::Toggle` control,
-/// which is `3` cells wide (the `Form` cell layout's
-/// `natural_content_width`).
-fn toggle_control_size(backend: &mut dyn Backend, cell_width: f32) -> (f32, f32) {
-    let line_height = backend.line_height();
-    let char_width = backend.char_width();
-    let width = if char_width <= 1.0 {
-        cell_width * char_width
-    } else {
-        2.0 * line_height
-    };
-    (width, line_height)
-}
-
 impl ExtraPaint for ProgressBar {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_progress(area, self);
@@ -218,8 +197,8 @@ impl ExtraPaint for Spinner {
     }
 
     /// The animated glyph's own box (one cell on TUI, a nominal
-    /// icon-sized square on a pixel backend — the same cell-grid test
-    /// [`toggle_control_size`] uses) plus, when `label` is non-empty, a
+    /// icon-sized square on a pixel backend, told apart by whether the
+    /// backend's `char_width` is one cell) plus, when `label` is non-empty, a
     /// one-`char_width` gap and the label's own measured width in
     /// `FontRole::Chrome` (the role every chrome label on this trait
     /// measures in — see `crate::render::natural_size`'s `TabBar` arm).
@@ -452,252 +431,6 @@ impl ExtraPaint for DatePicker {
     }
 }
 
-/// Wraps `kind` as the sole field of a throwaway single-field [`Form`]
-/// sharing `id` with both the form and its one field — the bridge every
-/// standalone `"checkbox"`/`"slider"`/`"select"`/`"password"`/`"textarea"`
-/// leaf below uses to paint through the form's own widget contract
-/// rather than a second, leaf-specific rasteriser: a `Form`-embedded field
-/// of the same [`FieldKind`] paints through the exact same painter,
-/// so there is nothing for any of these leaves to duplicate. The label
-/// column is hidden form-wide (there is only ever one field, with no
-/// label of its own) so the leaf's whole area goes to the control, the
-/// same "just the control, no label gutter" footprint
-/// [`quadraui::NumberInput`]/[`quadraui::ComboBox`] already have as bare
-/// standalone extras, and [`quadraui::Switch`] has as a bare standalone
-/// generic `widget_kinds!` widget.
-fn single_field_form(id: WidgetId, kind: FieldKind, disabled: bool, focused: bool) -> Form {
-    Form {
-        id,
-        fields: vec![FormField {
-            id,
-            label: StyledText::plain(""),
-            kind,
-            hint: StyledText::plain(""),
-            disabled,
-            validation: None,
-            label_position: Some(LabelPosition::Hidden),
-            label_align: None,
-            label_width: None,
-            tab_index: None,
-            control_width: None,
-            min_control_width: None,
-            row_align: None,
-        }],
-        focused_field: if focused { Some(id) } else { None },
-        scroll_offset: 0,
-        has_focus: focused,
-        label_position: LabelPosition::Hidden,
-        label_align: Default::default(),
-        label_width: None,
-        control_width: Default::default(),
-        min_control_width: None,
-        spacing: Default::default(),
-    }
-}
-
-/// Mirrors [`quadraui::primitives::form`]'s own private
-/// `slider_default_step` — the standalone leaf's wire default needs the
-/// identical `1.0`, since it decodes straight into a [`FieldKind::Slider`]
-/// via [`single_field_form`].
-fn slider_default_step() -> f32 {
-    1.0
-}
-
-/// A standalone boolean toggle — the layout-leaf lift of
-/// [`FieldKind::Toggle`], reached via the `"checkbox"` extra kind. Paints
-/// and whole-area hit-tests through [`single_field_form`] (see its doc);
-/// [`crate::semantic::checkbox_click_event`]/
-/// [`crate::semantic::checkbox_key_event`] supply the Space/Enter/click
-/// semantics `Form` itself has no generic keyboard handling for on a bare
-/// `Toggle` field (only `FormController`'s mouse `click_inner` flips one
-/// today), so this leaf is keyboard-operable in a way a `Form`-embedded
-/// `Toggle` field, used directly, is not yet.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct Checkbox {
-    pub id: WidgetId,
-    #[serde(default)]
-    pub value: bool,
-    #[serde(default)]
-    pub disabled: bool,
-    #[serde(default)]
-    pub focused: bool,
-}
-
-impl Checkbox {
-    pub(crate) fn as_form(&self) -> Form {
-        single_field_form(
-            self.id,
-            FieldKind::Toggle { value: self.value },
-            self.disabled,
-            self.focused,
-        )
-    }
-}
-
-impl ExtraPaint for Checkbox {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// Toggle box only — [`single_field_form`] hides this leaf's own
-    /// `Form` label, and this leaf paints through the form's widget
-    /// contract, whose `FieldKind::Toggle` control is `3` cells wide on a
-    /// cell-grid backend (the `Form` cell layout's
-    /// `natural_content_width`) — unlike
-    /// [`Switch`], which paints a `4`-cell track directly.
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        let (width, height) = toggle_control_size(backend, 3.0);
-        NaturalSize::new(Some(width), Some(height))
-    }
-}
-
-/// A standalone numeric slider — the layout-leaf lift of
-/// [`FieldKind::Slider`], reached via the `"slider"` extra kind. Paints
-/// through [`single_field_form`] (see its doc);
-/// [`crate::semantic::slider_click_event`]/[`crate::semantic::slider_key_event`]
-/// supply Left/Right/Up/Down/Home/End stepping and a click-to-track-position
-/// mapping, since (like [`Checkbox`] above) `Form` itself has no keyboard
-/// handling for a bare `Slider` field.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct Slider {
-    pub id: WidgetId,
-    pub value: f32,
-    pub min: f32,
-    pub max: f32,
-    #[serde(default = "slider_default_step")]
-    pub step: f32,
-    #[serde(default)]
-    pub disabled: bool,
-    #[serde(default)]
-    pub focused: bool,
-}
-
-impl Slider {
-    pub(crate) fn as_form(&self) -> Form {
-        single_field_form(
-            self.id,
-            FieldKind::Slider {
-                value: self.value,
-                min: self.min,
-                max: self.max,
-                step: self.step,
-            },
-            self.disabled,
-            self.focused,
-        )
-    }
-
-    /// Clamps `raw` to `[self.min, self.max]` without
-    /// [`f32::clamp`]'s panic on an inverted `min > max` — a wire payload
-    /// controls both bounds, so a host typo inverting them degrades to a
-    /// well-defined (if useless) clamp instead of a panic that would take
-    /// the whole render down.
-    pub(crate) fn clamp(&self, raw: f32) -> f32 {
-        raw.max(self.min).min(self.max)
-    }
-}
-
-impl ExtraPaint for Slider {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// One row tall; no natural width — a slider's track fills whatever
-    /// width its container gives it, same reasoning as
-    /// [`ProgressBar::natural_size`].
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        NaturalSize::new(None, Some(backend.line_height()))
-    }
-}
-
-/// A standalone single-choice option list — the layout-leaf lift of
-/// [`FieldKind::Dropdown`], reached via the `"select"` extra kind. Paints
-/// through [`single_field_form`] (see its doc);
-/// [`crate::semantic::select_click_event`]/[`crate::semantic::select_key_event`]
-/// move/commit `selected_idx` on Up/Down/Enter/Space and on click, mirroring
-/// `FieldKind::Dropdown`'s own "no separate open step; a move commits
-/// immediately" contract.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct Select {
-    pub id: WidgetId,
-    pub options: Vec<String>,
-    #[serde(default)]
-    pub selected_idx: usize,
-    #[serde(default)]
-    pub disabled: bool,
-    #[serde(default)]
-    pub focused: bool,
-}
-
-impl Select {
-    pub(crate) fn as_form(&self) -> Form {
-        single_field_form(
-            self.id,
-            FieldKind::Dropdown {
-                options: self
-                    .options
-                    .iter()
-                    .map(|o| StyledText::plain(o.clone()))
-                    .collect(),
-                selected_idx: self.selected_idx,
-            },
-            self.disabled,
-            self.focused,
-        )
-    }
-}
-
-impl ExtraPaint for Select {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    fn tab_stop(&self) -> bool {
-        true
-    }
-
-    /// One row tall, same reasoning as [`ComboBox::natural_size`]'s
-    /// closed-field shape — `Select` has no separate open/closed state
-    /// of its own ([`FieldKind::Dropdown`] renders its options inline,
-    /// never as a popup), but is still always exactly one row. No
-    /// natural width: the field fills `area.width`.
-    fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
-        NaturalSize::new(None, Some(backend.line_height()))
-    }
-}
-
 /// Mirrors [`quadraui::primitives::form`]'s own private
 /// `password_default_mask`.
 fn password_input_default_mask() -> char {
@@ -713,11 +446,9 @@ fn password_input_default_mask() -> char {
 /// [`crate::text_input::text_input_insert_event`] strips any `'\n'` out of
 /// an IME commit or clipboard paste before it ever reaches `inner`), so
 /// typing/cursor/selection otherwise reuse [`quadraui::TextEditor`]
-/// verbatim rather than a second text-editing implementation; only
-/// [`PasswordInput::as_form`]'s paint-time bridge differs from a bare
-/// standalone `TextInput`, masking every character so the screen never
-/// shows the plaintext — matching `FieldKind::PasswordInput`'s own "value
-/// is stored in plaintext; only rendering is masked" contract.
+/// verbatim rather than a second text-editing implementation; it paints
+/// as the core [`quadraui::PasswordInput`] ([`PasswordInput::as_widget`]),
+/// masking every character so the screen never shows the plaintext.
 #[derive(Debug, Clone)]
 pub struct PasswordInput {
     pub inner: TextInput,
@@ -725,24 +456,19 @@ pub struct PasswordInput {
 }
 
 impl PasswordInput {
-    pub(crate) fn as_form(&self) -> Form {
-        let line = self.inner.lines.first().map(String::as_str).unwrap_or("");
-        let cursor = line
-            .char_indices()
-            .nth(self.inner.cursor_col)
-            .map(|(b, _)| b)
-            .unwrap_or(line.len());
-        single_field_form(
-            self.inner.id,
-            FieldKind::PasswordInput {
-                value: line.to_string(),
-                placeholder: String::new(),
-                cursor: Some(cursor),
-                mask_char: self.mask_char,
-            },
-            false,
-            self.inner.has_focus,
-        )
+    /// The core [`quadraui::PasswordInput`] this leaf paints as: `inner`'s
+    /// one line and caret, masked with `mask_char`.
+    pub(crate) fn as_widget(&self) -> quadraui::PasswordInput {
+        let line = self.inner.lines.first().cloned().unwrap_or_default();
+        let mut widget = quadraui::PasswordInput::new(self.inner.id);
+        widget.cursor = Some(quadraui::behaviour::text_edit::col_to_byte(
+            &line,
+            self.inner.cursor_col,
+        ));
+        widget.value = line;
+        widget.has_focus = self.inner.has_focus;
+        widget.mask_char = self.mask_char;
+        widget
     }
 }
 
@@ -778,7 +504,7 @@ impl<'de> serde::Deserialize<'de> for PasswordInput {
 
 impl ExtraPaint for PasswordInput {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
+        let _ = backend.draw_dyn(area, &self.as_widget(), &());
     }
 
     fn id(&self) -> WidgetId {
@@ -793,9 +519,7 @@ impl ExtraPaint for PasswordInput {
         true
     }
 
-    /// Always exactly one line, by the same "`Enter` commits, never
-    /// inserts `'\n'`" invariant [`PasswordInput::as_form`]'s own doc
-    /// describes. No natural width, same reasoning as
+    /// Always exactly one line: `Enter` commits, never inserts `'\n'`. No natural width, same reasoning as
     /// [`TextInput::natural_size`].
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
         NaturalSize::new(None, Some(backend.line_height()))
@@ -814,11 +538,9 @@ fn text_area_default_rows() -> usize {
 /// multi-line), so [`crate::semantic::text_area_key_event`] reuses
 /// [`quadraui::EditOp::from_key`] and
 /// [`crate::text_input::apply_text_input_edit`] unchanged — `inner.lines`
-/// *is* the value, with no bridging needed on the way in. Only the
-/// paint-time bridge differs from a bare standalone `TextInput`: it
-/// round-trips through a [`FieldKind::TextArea`] so the leaf paints
-/// pixel-for-pixel as a `Form`-embedded `TextArea` field would, down to
-/// `visible_rows`' height hint.
+/// *is* the value, with no bridging needed on the way in. It paints as the
+/// core [`quadraui::TextArea`] ([`TextArea::as_widget`]), `visible_rows`
+/// rows tall.
 #[derive(Debug, Clone)]
 pub struct TextArea {
     pub inner: TextInput,
@@ -845,30 +567,11 @@ impl<'de> serde::Deserialize<'de> for TextArea {
             visible_rows: usize,
         }
         let wire = Wire::deserialize(deserializer)?;
+        let (cursor_line, cursor_col) = quadraui::behaviour::text_edit::byte_offset_to_line_col(
+            &wire.value,
+            wire.cursor.unwrap_or(0),
+        );
         let lines: Vec<String> = wire.value.split('\n').map(str::to_string).collect();
-        // `cursor` is a byte offset into the flat multi-line `value`
-        // (`FieldKind::TextArea`'s own convention) — resolve it to a
-        // `(line, col)` pair by walking line boundaries, the inverse of
-        // `TextArea::as_form`'s own byte-offset computation.
-        let (cursor_line, cursor_col) = {
-            let mut remaining = wire.cursor.unwrap_or(0);
-            let mut line_idx = 0;
-            for (i, line) in lines.iter().enumerate() {
-                let line_len = line.len();
-                if remaining <= line_len {
-                    let col = line
-                        .char_indices()
-                        .take_while(|(b, _)| *b < remaining)
-                        .count();
-                    line_idx = i;
-                    remaining = col;
-                    break;
-                }
-                remaining -= line_len + 1;
-                line_idx = i;
-            }
-            (line_idx, remaining)
-        };
         let mut inner = TextInput::new(wire.id)
             .with_lines(lines)
             .with_cursor_line(cursor_line)
@@ -885,36 +588,27 @@ impl<'de> serde::Deserialize<'de> for TextArea {
 }
 
 impl TextArea {
-    pub(crate) fn as_form(&self) -> Form {
+    /// The core [`quadraui::TextArea`] this leaf paints as: `inner`'s
+    /// lines joined, its caret as a byte offset.
+    pub(crate) fn as_widget(&self) -> quadraui::TextArea {
         let value = self.inner.lines.join("\n");
-        let mut cursor = 0usize;
-        for line in &self.inner.lines[..self.inner.cursor_line.min(self.inner.lines.len())] {
-            cursor += line.len() + 1;
-        }
-        if let Some(line) = self.inner.lines.get(self.inner.cursor_line) {
-            cursor += line
-                .char_indices()
-                .nth(self.inner.cursor_col)
-                .map(|(b, _)| b)
-                .unwrap_or(line.len());
-        }
-        single_field_form(
-            self.inner.id,
-            FieldKind::TextArea {
-                value,
-                placeholder: self.inner.placeholder.clone().unwrap_or_default(),
-                cursor: Some(cursor),
-                visible_rows: self.visible_rows,
-            },
-            false,
-            self.inner.has_focus,
-        )
+        let mut widget = quadraui::TextArea::new(self.inner.id);
+        widget.cursor = Some(quadraui::behaviour::text_edit::line_col_to_byte_offset(
+            &value,
+            self.inner.cursor_line,
+            self.inner.cursor_col,
+        ));
+        widget.value = value;
+        widget.placeholder = self.inner.placeholder.clone().unwrap_or_default();
+        widget.has_focus = self.inner.has_focus;
+        widget.visible_rows = self.visible_rows;
+        widget
     }
 }
 
 impl ExtraPaint for TextArea {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        quadraui::DrawsPrimitives::draw_primitive(backend, area, &self.as_form());
+        let _ = backend.draw_dyn(area, &self.as_widget(), &());
     }
 
     fn id(&self) -> WidgetId {
@@ -936,176 +630,6 @@ impl ExtraPaint for TextArea {
     fn natural_size(&self, backend: &mut dyn Backend) -> NaturalSize {
         let rows = self.visible_rows.max(1) as f32;
         NaturalSize::new(None, Some(rows * backend.line_height()))
-    }
-}
-
-/// A scrollable, read-only markdown viewer — the layout-leaf binding
-/// surface for the shared `quadraui::compose::markdown` adapter
-/// ([`render_markdown_to_styled`]), reached via the `"markdown"` extra
-/// kind. `source` is raw markdown text; [`Markdown::render`] (called fresh
-/// every paint, same "cheap enough to redo" posture [`Select`]/[`Slider`]
-/// already take with their own `as_form` bridge) turns it into the
-/// [`TextDisplay`] this type paints through, so headings/bold/italic/code
-/// spans/lists/links all reuse the one markdown→styled-lines renderer
-/// instead of a second parser. `scroll_offset` mirrors
-/// [`TextDisplay::scroll_offset`]'s own controlled-component contract (same
-/// wire key, too) — the host owns it and feeds the updated value back in
-/// on the next render after a scroll gesture. A wheel notch over the leaf
-/// (its body or a link) is translated the same way one over a plain
-/// `"text_display"` leaf is — see [`crate::drag::markdown_at`] and its call
-/// site in [`crate::engine::InteractionEngine::handle`] — into
-/// `UiEvent::TextDisplay(id, TextDisplayEvent::Scrolled { new_offset })`,
-/// which the host applies back onto this field.
-///
-/// Links resolve to an exact clicked line through
-/// [`ExtraPaint::paint_chrome`]'s per-link `chrome_hits` (the same
-/// mechanism [`Toolbar`]'s buttons use), each keyed by
-/// [`link_child_id`] and reported through
-/// [`crate::semantic::semantic_event_for_hit`]'s `ExtraChrome` arm as
-/// `UiEvent::RichTextLinkClicked` — the event `RichTextPopup`'s own link
-/// click already uses, so a host handles both the same way. Hit
-/// resolution stays line-grained (one link per line wins), matching
-/// `TextDisplayHit::Line`'s own granularity — this type adds no
-/// character-column hit-testing `TextDisplay` doesn't already have.
-#[derive(Debug, Clone, serde::Deserialize)]
-pub struct Markdown {
-    pub id: WidgetId,
-    pub source: String,
-    #[serde(default)]
-    pub scroll_offset: usize,
-}
-
-/// Builds the `WidgetId` of the `idx`-th link inside `id`'s markdown
-/// leaf — the chrome-hit id [`Markdown::paint_chrome`] pushes and
-/// [`Markdown::link_url_for_child`] parses back.
-fn link_child_id(id: WidgetId, idx: usize) -> WidgetId {
-    WidgetId::new(format!("{}:md-link:{idx}", id.as_str()))
-}
-
-impl Markdown {
-    /// Renders `source` through the shared markdown adapter and wraps the
-    /// result in a [`TextDisplay`] sized to paint identically to a plain
-    /// `"text_display"` leaf — [`ExtraPaint::paint`]/[`ExtraPaint::paint_chrome`]
-    /// both call this rather than duplicating the conversion.
-    fn render(&self, theme: &Theme) -> (TextDisplay, RenderedMarkdown) {
-        let rendered = render_markdown_to_styled(&self.source, theme);
-        let lines = rendered
-            .lines
-            .iter()
-            .cloned()
-            .map(|text| TextDisplayLine {
-                spans: text.spans,
-                decoration: Decoration::default(),
-                timestamp: None,
-            })
-            .collect();
-        let td = TextDisplay {
-            id: self.id,
-            lines,
-            scroll_offset: self.scroll_offset,
-            auto_scroll: false,
-            max_lines: 0,
-            has_focus: false,
-            title: None,
-            show_scrollbar: false,
-        };
-        (td, rendered)
-    }
-
-    /// Resolves a `paint_chrome`-reported child id back to the
-    /// [`quadraui::RichTextLink`]-style URL it names, by re-deriving the
-    /// same `source` → links mapping [`Markdown::render`] computed when
-    /// the chrome hit was painted. Which theme the re-derive call passes is
-    /// irrelevant here — [`render_markdown_to_styled`]'s `links`
-    /// side-channel (which `(line, byte_range, url)` triples exist) never
-    /// depends on colour, only `self.source`'s own text — so this needs
-    /// no backend/theme in scope, unlike [`Markdown::render`] itself.
-    pub(crate) fn link_url_for_child(&self, child: WidgetId) -> Option<String> {
-        let prefix = format!("{}:md-link:", self.id.as_str());
-        let idx: usize = child.as_str().strip_prefix(&prefix)?.parse().ok()?;
-        let rendered = render_markdown_to_styled(&self.source, &Theme::default());
-        rendered.links.get(idx).map(|(_, _, url)| url.clone())
-    }
-
-    /// `(total_lines, viewport_lines)` for this leaf's rendered
-    /// `TextDisplay` at `area`, via [`Backend::text_display_layout`] — the
-    /// same per-frame layout [`ExtraPaint::paint_chrome`] paints from, so a
-    /// wheel notch's `max_offset` clamp agrees with what's actually on
-    /// screen. `viewport_lines` is measured at a zero scroll offset (a
-    /// shadow clone, painting nothing) the same way
-    /// `crate::render::text_display_viewport_lines` measures a plain
-    /// `"text_display"` leaf's own capacity, since a layout at the real
-    /// offset can read short near the end of a long document.
-    pub(crate) fn viewport_lines(&self, backend: &mut dyn Backend, area: Rect) -> (usize, usize) {
-        let theme = backend.theme();
-        let (td, _) = self.render(&theme);
-        let total_lines = td.lines.len();
-        let mut shadow = td;
-        shadow.scroll_offset = 0;
-        let viewport_lines = backend
-            .layout_primitive(area, &shadow)
-            .layout
-            .visible_lines
-            .len();
-        (total_lines, viewport_lines)
-    }
-}
-
-impl ExtraPaint for Markdown {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        let theme = backend.theme();
-        let (td, _) = self.render(&theme);
-        backend.draw_dyn(area, &td, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-
-    /// Paints through [`TextDisplay`] (same as [`ExtraPaint::paint`]),
-    /// then reports one clickable chrome region per visible line that
-    /// carries a link — `crate::render::paint_leaf`/`draw_bands` call
-    /// this instead of [`ExtraPaint::paint`] for every `Extra` leaf, so
-    /// this is the one real paint path; [`ExtraPaint::paint`] above stays
-    /// for trait completeness and direct (non-leaf) use.
-    ///
-    /// Link rects come from [`Backend::text_display_layout`], never a
-    /// hand-rolled measure — it's the same per-row layout
-    /// `draw_text_display` itself paints from (word-wrap on TUI, Pango
-    /// wrap on GTK), so a chrome rect never drifts from where the backend
-    /// actually drew that row the way a flat one-row-per-line guess would
-    /// on any line long enough to wrap.
-    fn paint_chrome(&self, backend: &mut dyn Backend, area: Rect) -> Vec<(Rect, WidgetId)> {
-        let theme = backend.theme();
-        let (td, rendered) = self.render(&theme);
-        backend.draw_dyn(area, &td, &());
-        if rendered.links.is_empty() {
-            return Vec::new();
-        }
-        let layout = backend.layout_primitive(area, &td);
-        let body = layout.body;
-        layout
-            .layout
-            .visible_lines
-            .iter()
-            .filter_map(|visible| {
-                let link_idx = rendered
-                    .links
-                    .iter()
-                    .position(|(line_idx, _, _)| *line_idx == visible.line_idx)?;
-                let bounds = Rect::new(
-                    body.x + visible.bounds.x,
-                    body.y + visible.bounds.y,
-                    visible.bounds.width,
-                    visible.bounds.height,
-                );
-                Some((bounds, link_child_id(self.id, link_idx)))
-            })
-            .collect()
     }
 }
 
@@ -1809,12 +1333,8 @@ extra_primitives! {
     "canvas" => Canvas,
     "scroll_view" => ScrollView,
     "find_replace" => FindReplacePanel,
-    "checkbox" => Checkbox,
-    "slider" => Slider,
-    "select" => Select,
     "password" => PasswordInput,
     "textarea" => TextArea,
-    "markdown" => Markdown,
 }
 
 /// The `widget_kinds!`-registered kind strings this crate decodes into
@@ -1873,12 +1393,17 @@ extra_primitives! {
 /// [`crate::interactive::Interactive`] impls hold only gesture state (a
 /// drag anchor, a seek drag), and [`quadraui::Image`] is non-interactive
 /// with its natural size from its own `Primitive::measure`, so `"editor"`,
-/// `"minimap"` and `"image"` need nothing more. A further kind joins this table only when it
+/// `"minimap"` and `"image"` need nothing more. [`quadraui::Checkbox`],
+/// [`quadraui::Slider`] and [`quadraui::Select`] paint through `Form`'s own
+/// per-kind control painter and report the same `FormEvent` a form row of
+/// that kind does; [`quadraui::Markdown`] composes a `TextDisplay` and
+/// reports a link press as `UiEvent::RichTextLinkClicked` and a wheel
+/// notch as the display's own scroll event. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 14] = [
+pub const WIDGET_KINDS: [&str; 18] = [
     "icon_grid",
     "cell_grid",
     "switch",
@@ -1893,6 +1418,10 @@ pub const WIDGET_KINDS: [&str; 14] = [
     "editor",
     "minimap",
     "image",
+    "checkbox",
+    "slider",
+    "select",
+    "markdown",
 ];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
@@ -2378,10 +1907,10 @@ mod tests {
     /// contains every one of those substrings — fails this test. This
     /// proves the same renderer `push_turn_markdown` uses is reused rather
     /// than a second parser. A `MouseDown` on the link's painted row
-    /// round-trips through
-    /// [`crate::engine::InteractionEngine::handle`]'s `HitDetail::ExtraChrome`
-    /// arm into `UiEvent::RichTextLinkClicked` — the same event
-    /// `RichTextPopup`'s own link click already dispatches.
+    /// round-trips through the generic widget seam into
+    /// [`quadraui::Markdown`]'s own `Interactive::handle` and out as
+    /// `UiEvent::RichTextLinkClicked` — the same event `RichTextPopup`'s own
+    /// link click already dispatches.
     #[test]
     fn markdown_leaf_renders_formatting_and_link_click_emits_rich_text_link_clicked() {
         use crate::engine::InteractionEngine;
@@ -2398,15 +1927,17 @@ mod tests {
             type AreaId = ();
 
             fn render(&self, backend: &mut dyn Backend, _area: ()) {
-                let markdown = Markdown {
-                    id: WidgetId::new("md:1"),
-                    source: "# Title\n**bold** *italic* `code`\n- item\n[docs](https://example.com/docs)".to_string(),
-                    scroll_offset: 0,
-                };
+                let markdown = quadraui::Markdown::new(
+                    WidgetId::new("md:1"),
+                    "# Title\n**bold** *italic* `code`\n- item\n[docs](https://example.com/docs)",
+                );
                 let tree = LayoutNode::Row(LayoutContainer::new(
                     vec![LayoutNode::Leaf(LayoutLeaf {
                         id: "md:1".into(),
-                        descriptor: LeafDescriptor::Extra(Rc::new(markdown)),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "markdown",
+                            widget: Rc::new(markdown),
+                        },
                         scroll_px: None,
                     })],
                     Spacing::default(),
@@ -2496,17 +2027,8 @@ mod tests {
         );
 
         let link_point = {
-            let hits = driver.app().engine.hit_map();
-            hits.iter()
-                .find_map(|hit| match hit {
-                    PaintedHit::Extra {
-                        id, chrome_hits, ..
-                    } if *id == WidgetId::new("md:1") => chrome_hits
-                        .first()
-                        .map(|(rect, _)| Point::new(rect.x, rect.y)),
-                    _ => None,
-                })
-                .expect("markdown leaf should have painted a chrome hit for its link")
+            let (x, y) = driver.find("docs").expect("the link line is painted");
+            Point::new(x, y)
         };
 
         driver.dispatch(UiEvent::MouseDown {
@@ -2529,8 +2051,8 @@ mod tests {
 
     /// A wheel notch over a `Markdown` leaf's body must emit
     /// `UiEvent::TextDisplay(id, TextDisplayEvent::Scrolled { .. })` — the
-    /// same translation a plain `"text_display"` leaf's own wheel gets
-    /// (`InteractionEngine::handle`'s `over_markdown` arm), since the host
+    /// same scroll a plain `"text_display"` leaf's own wheel reports, since
+    /// the composed display handles it — since the host
     /// owns `Markdown::scroll_offset` as a controlled component and has no
     /// other way to learn a scroll gesture happened. The document has more
     /// lines than the 10-row viewport fits, so there is something to
@@ -2555,15 +2077,14 @@ mod tests {
                     .map(|i| format!("line {i}"))
                     .collect::<Vec<_>>()
                     .join("\n");
-                let markdown = Markdown {
-                    id: WidgetId::new("md:scroll"),
-                    source,
-                    scroll_offset: 0,
-                };
+                let markdown = quadraui::Markdown::new(WidgetId::new("md:scroll"), source);
                 let tree = LayoutNode::Row(LayoutContainer::new(
                     vec![LayoutNode::Leaf(LayoutLeaf {
                         id: "md:scroll".into(),
-                        descriptor: LeafDescriptor::Extra(Rc::new(markdown)),
+                        descriptor: LeafDescriptor::Widget {
+                            kind: "markdown",
+                            widget: Rc::new(markdown),
+                        },
                         scroll_px: None,
                     })],
                     Spacing::default(),
@@ -2714,7 +2235,7 @@ mod tests {
     /// only needs to build the descriptor and assert on the result.
     struct SingleLeafApp {
         id: WidgetId,
-        extra: Rc<dyn ExtraPaint>,
+        leaf: Box<dyn Fn() -> LeafDescriptor>,
         engine: crate::engine::InteractionEngine,
         sink: RefCell<RecordingSink>,
     }
@@ -2729,7 +2250,7 @@ mod tests {
             let tree = LayoutNode::Row(LayoutContainer::new(
                 vec![LayoutNode::Leaf(LayoutLeaf {
                     id: self.id.as_str().to_string(),
-                    descriptor: LeafDescriptor::Extra(self.extra.clone()),
+                    descriptor: (self.leaf)(),
                     scroll_px: None,
                 })],
                 Spacing::default(),
@@ -2757,9 +2278,31 @@ mod tests {
     /// (`crate::engine`'s own tests) uses) — every leaf below is its
     /// layout tree's only tab stop, so one `Tab` always lands focus on it.
     fn single_leaf_driver(id: WidgetId, extra: Rc<dyn ExtraPaint>) -> TuiDriver<SingleLeafApp> {
+        leaf_driver(id, Box::new(move || LeafDescriptor::Extra(extra.clone())))
+    }
+
+    /// [`single_leaf_driver`] for a [`WIDGET_KINDS`] leaf of `kind`.
+    fn single_widget_driver(
+        id: WidgetId,
+        kind: &'static str,
+        widget: Rc<dyn DynWidget>,
+    ) -> TuiDriver<SingleLeafApp> {
+        leaf_driver(
+            id,
+            Box::new(move || LeafDescriptor::Widget {
+                kind,
+                widget: widget.clone(),
+            }),
+        )
+    }
+
+    fn leaf_driver(
+        id: WidgetId,
+        leaf: Box<dyn Fn() -> LeafDescriptor>,
+    ) -> TuiDriver<SingleLeafApp> {
         let app = SingleLeafApp {
             id,
-            extra,
+            leaf,
             engine: crate::engine::InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
@@ -2781,29 +2324,30 @@ mod tests {
             .find_map(|hit| match hit {
                 PaintedHit::Extra {
                     id: hit_id, area, ..
+                }
+                | PaintedHit::Widget {
+                    id: hit_id, area, ..
                 } if *hit_id == id => Some(*area),
                 _ => None,
             })
-            .expect("leaf should have painted an Extra hit")
+            .expect("leaf should have painted an Extra or Widget hit")
     }
 
     /// Render shows the unchecked glyph; a click toggles it (mouse); Space
-    /// toggles it again (keyboard) — both routed through
-    /// [`checkbox_click_event`]/[`checkbox_key_event`], both reaching the
-    /// handler as [`FormEvent::ToggleChanged`]. `Checkbox::as_form` is what
-    /// paints the `[ ]`/`[x]` glyph — the exact [`FieldKind::Toggle`]
-    /// painter a `Form`-embedded field uses, never a second rasteriser.
+    /// toggles it again (keyboard) — both routed through the generic
+    /// widget seam into [`quadraui::Checkbox`]'s own `Interactive::handle`,
+    /// both reaching the handler as [`FormEvent::ToggleChanged`]. The
+    /// `[ ]`/`[x]` glyph is the form's own `FieldKind::Toggle` painter.
     #[test]
     fn checkbox_leaf_renders_clicks_and_keys_toggle_through_the_interaction_engine() {
         let id = WidgetId::new("cb:1");
-        let checkbox = || Checkbox {
-            id,
-            value: false,
-            disabled: false,
-            focused: true,
+        let checkbox = || -> Rc<dyn DynWidget> {
+            let mut checkbox = quadraui::Checkbox::new(id);
+            checkbox.focused = true;
+            Rc::new(checkbox)
         };
 
-        let mut driver = single_leaf_driver(id, Rc::new(checkbox()));
+        let mut driver = single_widget_driver(id, "checkbox", checkbox());
         assert!(driver.screen_contains("[ ]"), "{}", driver.screen());
 
         let area = leaf_area(&driver, id);
@@ -2823,7 +2367,7 @@ mod tests {
         // value back on its next render, which this single-frame test
         // never does), so Space is exercised against the same starting
         // state the click above was, not the click's own outcome.
-        let mut driver = single_leaf_driver(id, Rc::new(checkbox()));
+        let mut driver = single_widget_driver(id, "checkbox", checkbox());
         driver.type_char(' ');
         let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
@@ -2837,31 +2381,20 @@ mod tests {
     }
 
     /// Right/Up (keyboard) steps the value up by `step`; a click (mouse)
-    /// maps the click's x-position within the track to a value — reaching
-    /// the handler as [`FormEvent::SliderChanged`] either way, matching
-    /// `FieldKind::Slider`'s own "click-and-drag on the track updates
-    /// value" contract rather than a fixed one-`step` nudge.
+    /// maps the click's x-position along the painted track to a value —
+    /// reaching the handler as [`FormEvent::SliderChanged`] either way.
     #[test]
     fn slider_leaf_renders_clicks_and_keys_step_through_the_interaction_engine() {
         let id = WidgetId::new("sl:1");
-        let mut driver = single_leaf_driver(
-            id,
-            Rc::new(Slider {
-                id,
-                value: 0.0,
-                min: 0.0,
-                max: 10.0,
-                step: 1.0,
-                disabled: false,
-                focused: true,
-            }),
-        );
+        let mut slider = quadraui::Slider::new(id, 0.0, 0.0, 10.0);
+        slider.focused = true;
+        let mut driver = single_widget_driver(id, "slider", Rc::new(slider));
 
-        let area = leaf_area(&driver, id);
-        // One cell short of the track's right edge, so the mapped fraction
-        // is close to (but short of) `1.0` — proving the click landed where
-        // the pointer was, not just "somewhere on the body".
-        driver.click(area.x + area.width - 1.0, area.y);
+        // The last track cell, so the mapped fraction is close to (but
+        // short of) `1.0` — proving the click landed where the pointer
+        // was, not just "somewhere on the body".
+        let (close_x, close_y) = driver.find("]").expect("the track's closing bracket");
+        driver.click(close_x - 1.0, close_y);
         {
             let dispatched = &driver.app().sink.borrow().dispatched;
             assert!(
@@ -2887,10 +2420,9 @@ mod tests {
         );
     }
 
-    /// An unrecognised key inside a `"slider"` descriptor body -- an
-    /// additive-primitive leaf, reached through
-    /// [`decode_extra_primitive_checked`] rather than the six fixed leaf
-    /// kinds -- is a hard [`crate::DecodeError::UnknownKey`] under
+    /// An unrecognised key inside a `"slider"` descriptor body -- a
+    /// generic-widget leaf, reached through [`decode_widget_leaf`] rather
+    /// than the six fixed leaf kinds -- is a hard [`crate::DecodeError::UnknownKey`] under
     /// `strict`, naming the key, the dict it was found on, and the keys
     /// `Slider` actually accepts, the same policy a layout-tree node's own
     /// sibling keys already get.
@@ -2904,7 +2436,7 @@ mod tests {
             "stpe": 1.0,
         });
         let diagnostics = crate::wire::DecodeDiagnostics::strict();
-        let error = match decode_extra_primitive_checked(&diagnostics, "test", "slider", &value) {
+        let error = match decode_widget_leaf(&diagnostics, "test", "slider", &value) {
             Ok(_) => panic!("a typo'd \"stpe\" key must be rejected under strict"),
             Err(err) => err,
         };
@@ -2930,7 +2462,7 @@ mod tests {
             "stpe": 1.0,
         });
         let diagnostics = crate::wire::DecodeDiagnostics::warn();
-        if let Err(err) = decode_extra_primitive_checked(&diagnostics, "test", "slider", &value) {
+        if let Err(err) = decode_widget_leaf(&diagnostics, "test", "slider", &value) {
             panic!("warn mode still decodes despite the unrecognised key: {err}");
         }
         assert_eq!(
@@ -2946,15 +2478,16 @@ mod tests {
     #[test]
     fn select_leaf_renders_clicks_and_keys_move_through_the_interaction_engine() {
         let id = WidgetId::new("se:1");
-        let select = || Select {
-            id,
-            options: vec!["One".to_string(), "Two".to_string(), "Three".to_string()],
-            selected_idx: 0,
-            disabled: false,
-            focused: true,
+        let select = || -> Rc<dyn DynWidget> {
+            let mut select = quadraui::Select::new(
+                id,
+                vec!["One".to_string(), "Two".to_string(), "Three".to_string()],
+            );
+            select.focused = true;
+            Rc::new(select)
         };
 
-        let mut driver = single_leaf_driver(id, Rc::new(select()));
+        let mut driver = single_widget_driver(id, "select", select());
         assert!(driver.screen_contains("One"), "{}", driver.screen());
 
         let area = leaf_area(&driver, id);
@@ -2972,7 +2505,7 @@ mod tests {
         // A fresh driver at the same starting `selected_idx: 0` — see the
         // identical comment in the checkbox test above for why this
         // doesn't chain off the click's own outcome.
-        let mut driver = single_leaf_driver(id, Rc::new(select()));
+        let mut driver = single_widget_driver(id, "select", select());
         driver.press_named(quadraui::NamedKey::Down);
         let dispatched = &driver.app().sink.borrow().dispatched;
         assert!(
@@ -2991,7 +2524,7 @@ mod tests {
     /// reaching the handler as [`FormEvent::TextInputChanged`] via
     /// [`password_key_event`]'s forward to [`text_input_key_event`]. The
     /// render assertion checks the masked glyph appears and the plaintext
-    /// never does, proving [`PasswordInput::as_form`] actually masks
+    /// never does, proving [`PasswordInput::as_widget`] actually masks
     /// rather than echoing `inner` verbatim.
     #[test]
     fn password_leaf_renders_masked_and_typing_reaches_the_interaction_engine() {
@@ -3028,7 +2561,7 @@ mod tests {
     /// matches a [`PasswordInput`]'s `inner`, not only a bare `TextInput`.
     /// A newline embedded in the pasted text is stripped rather than
     /// splitting `inner` into a second line, keeping
-    /// [`PasswordInput::as_form`]'s "always exactly one line" invariant
+    /// [`PasswordInput::as_widget`]'s "always exactly one line" invariant
     /// even though this path (unlike `Enter`) has no commit special-case
     /// to fall back on.
     #[test]

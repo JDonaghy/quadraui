@@ -1515,6 +1515,96 @@ fn item_x_positions(origin_x: f32, _row_height: f32, gap: f32, widths: &[f32]) -
 // reaches none of those call sites, so nothing here is "dead" in the lint
 // sense; it's the same shape `paint_surface.rs`'s own `#[allow(dead_code)]`
 // documents, one level up the call chain.
+/// Pixels a bare (standalone, label-less) control starts in from its
+/// rect's left edge — the inset a label-less form row gives its control
+/// column.
+pub(crate) const BARE_CONTROL_INSET: f32 = 6.0;
+
+/// A standalone slider's track rect within its pixel `rect`: from the
+/// bare control column, as wide as a form slider's track (clamped to the
+/// room left before the value text's margin). The painter fills exactly
+/// this rect and a standalone slider maps a press across it.
+pub(crate) fn bare_pixel_slider_track(rect: Rect) -> Rect {
+    let x = rect.x + BARE_CONTROL_INSET;
+    let room = (rect.x + rect.width - 8.0 - x).max(0.0);
+    Rect::new(
+        x,
+        rect.y,
+        crate::primitives::layout_metrics::pixel::FORM_SLIDER_TRACK_WIDTH.min(room),
+        rect.height,
+    )
+}
+
+/// A standalone control's layout: the one rect it paints and hit-tests
+/// in, plus, for a slider, the track a press maps across (in the same
+/// units as `area`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BareFieldLayout {
+    /// The control's whole rect.
+    pub area: Rect,
+    /// A slider's track; `None` for every other control.
+    pub track: Option<Rect>,
+}
+
+/// Paint `kind` as a standalone control at `layout` on a pixel surface,
+/// through the same per-kind painter a label-less form row uses — what
+/// `Checkbox`, `Slider`, `Select`, `PasswordInput` and `TextArea` paint
+/// through.
+pub(crate) fn paint_bare_field_pixels(
+    surface: &mut dyn crate::paint_surface::PaintSurface,
+    layout: &BareFieldLayout,
+    kind: &FieldKind,
+    disabled: bool,
+    focused: bool,
+    theme: &crate::Theme,
+) {
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    native_surface_paint::paint_bare_field(
+        surface,
+        layout.area,
+        kind,
+        disabled,
+        focused,
+        layout.track,
+        theme,
+    );
+    #[cfg(not(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    )))]
+    let _ = (surface, layout, kind, disabled, focused, theme);
+}
+
+/// [`paint_bare_field_pixels`] on a cell grid, through
+/// [`cell_paint::paint_bare_field`].
+#[cfg(feature = "tui")]
+pub(crate) fn paint_bare_field_cells(
+    cells: &mut dyn crate::CellSurface,
+    layout: &BareFieldLayout,
+    kind: &FieldKind,
+    disabled: bool,
+    focused: bool,
+    theme: &crate::Theme,
+) {
+    // CSR: ratatui_buffer escape hatch
+    let buf = cells
+        .ratatui_buffer()
+        .expect(crate::primitive::CELL_BUFFER_REQUIRED);
+    let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
+    let track = layout.track.map(|t| {
+        (
+            (t.x - layout.area.x).max(0.0).round() as usize,
+            t.width.max(0.0).round() as usize,
+        )
+    });
+    cell_paint::paint_bare_field(buf, area, kind, disabled, focused, track, theme);
+}
+
 #[cfg(any(
     feature = "gtk",
     feature = "win",
@@ -1784,20 +1874,7 @@ mod native_surface_paint {
                     .is_some_and(|id| id == &field.id);
             let is_header = matches!(field.kind, FieldKind::Label);
 
-            let (default_fg, row_bg) = if is_focused {
-                // `theme.foreground` (the editor-body text
-                // colour) has no guaranteed contrast against
-                // `selected_bg` — on `vscode-light` both are near-black
-                // on mid-blue and the focused row goes unreadable.
-                // `header_fg` is `Theme`'s documented on-selection
-                // foreground (see its doc comment); `Tree` already pairs
-                // it with `selected_bg` the same way for its focused row.
-                (theme.header_fg, theme.selected_bg)
-            } else if is_header {
-                (theme.header_fg, theme.header_bg)
-            } else {
-                (theme.foreground, theme.tab_bar_bg)
-            };
+            let (default_fg, row_bg) = row_colors(theme, is_header, is_focused);
             surface.surface_fill_rect(row_rect, row_bg);
 
             let field_fg = if field.disabled {
@@ -1983,152 +2060,47 @@ mod native_surface_paint {
                 let available = (input_right - control_start).max(0.0);
                 let min_control_width = form.resolved_min_control_width(field);
                 let resolved_control_width = form.resolved_control_width(field);
+                let cc = ControlCtx {
+                    row_rect,
+                    control_start,
+                    available,
+                    field_fg,
+                    disabled: field.disabled,
+                    control_width: resolved_control_width,
+                    min_control_width,
+                    theme,
+                };
 
                 match &field.kind {
                     FieldKind::Label => {}
-                    FieldKind::Toggle { value } => {
-                        // Drawn checkbox rather than a `[x]` / `[ ]` text
-                        // glyph — the TUI painter keeps the glyph.
-                        let fg = if *value && !field.disabled {
-                            theme.accent_fg
-                        } else {
-                            field_fg
-                        };
-                        let box_size = (row_h - 8.0).clamp(10.0, 16.0);
-                        let ix = control_start;
-                        if available > 0.0 {
-                            let iy = row_rect.y + (row_h - box_size) / 2.0;
-                            let box_rect = Rect::new(ix, iy, box_size, box_size);
-                            if *value {
-                                surface.surface_fill_rounded_rect(box_rect, 2.0, fg);
-                                let check_fg = theme.background;
-                                surface.surface_draw_line(
-                                    crate::Point::new(
-                                        box_rect.x + box_size * 0.22,
-                                        box_rect.y + box_size * 0.52,
-                                    ),
-                                    crate::Point::new(
-                                        box_rect.x + box_size * 0.42,
-                                        box_rect.y + box_size * 0.75,
-                                    ),
-                                    check_fg,
-                                    1.5,
-                                );
-                                surface.surface_draw_line(
-                                    crate::Point::new(
-                                        box_rect.x + box_size * 0.42,
-                                        box_rect.y + box_size * 0.75,
-                                    ),
-                                    crate::Point::new(
-                                        box_rect.x + box_size * 0.8,
-                                        box_rect.y + box_size * 0.25,
-                                    ),
-                                    check_fg,
-                                    1.5,
-                                );
-                            } else {
-                                surface.surface_stroke_rect(box_rect, fg, 1.0);
-                            }
-                        }
-                    }
+                    FieldKind::Toggle { value } => paint_toggle(surface, &cc, *value),
                     FieldKind::TextInput {
                         value,
                         placeholder,
                         cursor,
                         selection_anchor,
-                    } => {
-                        if available > 0.0 {
-                            let shown = if value.is_empty() { placeholder } else { value };
-                            let control_w = resolved_control_width.resolve(
-                                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
-                                available,
-                                min_control_width,
-                            );
-                            paint_text_input_box(
-                                surface,
-                                row_rect,
-                                control_start,
-                                control_w,
-                                value,
-                                placeholder,
-                                *cursor,
-                                *selection_anchor,
-                                field_fg,
-                                theme.muted_fg,
-                                theme.selection_bg,
-                                theme.accent_fg,
-                                false,
-                                '\0',
-                            );
-                        }
-                    }
+                    } => paint_text_input(
+                        surface,
+                        &cc,
+                        value,
+                        placeholder,
+                        *cursor,
+                        *selection_anchor,
+                    ),
                     FieldKind::PasswordInput {
                         value,
                         placeholder,
                         cursor,
                         mask_char,
                     } => {
-                        if available > 0.0 {
-                            let shown = if value.is_empty() { placeholder } else { value };
-                            let control_w = resolved_control_width.resolve(
-                                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
-                                available,
-                                min_control_width,
-                            );
-                            paint_text_input_box(
-                                surface,
-                                row_rect,
-                                control_start,
-                                control_w,
-                                value,
-                                placeholder,
-                                *cursor,
-                                None,
-                                field_fg,
-                                theme.muted_fg,
-                                theme.selection_bg,
-                                theme.accent_fg,
-                                true,
-                                *mask_char,
-                            );
-                        }
+                        paint_password_input(surface, &cc, value, placeholder, *cursor, *mask_char)
                     }
                     FieldKind::TextArea {
                         value,
                         placeholder,
                         cursor,
                         ..
-                    } => {
-                        let first_line = value.lines().next().unwrap_or("");
-                        let shown = if first_line.is_empty() {
-                            placeholder.as_str()
-                        } else {
-                            first_line
-                        };
-                        if available > 0.0 {
-                            let control_w = resolved_control_width.resolve(
-                                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
-                                available,
-                                min_control_width,
-                            );
-                            paint_text_input_box(
-                                surface,
-                                row_rect,
-                                control_start,
-                                control_w,
-                                first_line,
-                                placeholder,
-                                *cursor,
-                                None,
-                                field_fg,
-                                theme.muted_fg,
-                                theme.selection_bg,
-                                theme.accent_fg,
-                                false,
-                                '\0',
-                            );
-                        }
-                    }
+                    } => paint_text_area(surface, &cc, value, placeholder, *cursor),
                     FieldKind::Button => {
                         // A real button, painted through the shared
                         // `button` chrome (fill/border/focus-ring at
@@ -2189,65 +2161,10 @@ mod native_surface_paint {
                     FieldKind::Slider {
                         value, min, max, ..
                     } => {
-                        let range = (max - min).max(f32::EPSILON);
-                        let frac = ((value - min) / range).clamp(0.0, 1.0);
-                        let value_str = format!("{value:.2}");
-                        let (value_w, value_h) = surface.surface_measure_text(&value_str);
-                        // `vf.item_bounds`'s single entry (populated by
-                        // `layout_metrics::form_field_measure`'s
-                        // `FieldKind::Slider` arm) *is* the track rect —
-                        // fill it rather than re-deriving the track's x
-                        // and width here, so paint and click
-                        // (`FormController`'s click routing maps a
-                        // pointer x across the same `item_bounds` entry)
-                        // always agree on where the track is. The
-                        // fallback keeps a measure closure that reports
-                        // no items painting a track at the shared
-                        // control column, sized by the field's resolved
-                        // `ControlWidth` against the same
-                        // `track + gap + value_w` budget.
-                        let (ix, track_w) = match vf.item_bounds.first() {
-                            Some((_, item_rect)) => {
-                                let r = translate(item_rect, origin);
-                                (r.x, r.width)
-                            }
-                            None => {
-                                let control_w = resolved_control_width.resolve(
-                                    layout_metrics::pixel::FORM_SLIDER_TRACK_WIDTH
-                                        + layout_metrics::pixel::FORM_SLIDER_VALUE_GAP
-                                        + value_w,
-                                    available,
-                                    min_control_width,
-                                );
-                                let track_w = (control_w
-                                    - layout_metrics::pixel::FORM_SLIDER_VALUE_GAP
-                                    - value_w)
-                                    .max(16.0);
-                                (control_start, track_w)
-                            }
-                        };
-                        if available > 0.0 && track_w > 0.0 {
-                            let track_y = row_rect.y + row_h / 2.0 - 2.0;
-                            surface.surface_fill_rect(
-                                Rect::new(ix, track_y, track_w, 4.0),
-                                theme.muted_fg,
-                            );
-                            surface.surface_fill_rect(
-                                Rect::new(ix, track_y, track_w * frac, 4.0),
-                                theme.accent_fg,
-                            );
-                            let vy = row_rect.y + (row_h - value_h) / 2.0;
-                            surface.surface_draw_text_run(
-                                Rect::new(
-                                    ix + track_w + layout_metrics::pixel::FORM_SLIDER_VALUE_GAP,
-                                    vy,
-                                    value_w,
-                                    value_h,
-                                ),
-                                &value_str,
-                                field_fg,
-                            );
-                        }
+                        // `vf.item_bounds`' single entry is the track rect
+                        // `FormController`'s click routing maps across.
+                        let track = vf.item_bounds.first().map(|(_, r)| translate(r, origin));
+                        paint_slider(surface, &cc, track, *value, *min, *max)
                     }
                     FieldKind::ColorPicker { value } => {
                         let hex = format!("#{:02x}{:02x}{:02x}", value.r, value.g, value.b);
@@ -2268,58 +2185,7 @@ mod native_surface_paint {
                     FieldKind::Dropdown {
                         options,
                         selected_idx,
-                    } => {
-                        // A boxed field with a trailing chevron, like a
-                        // native `<select>` — not bare text next to a
-                        // floating glyph, so the control reads as
-                        // clickable even before its option list opens.
-                        let chosen = options
-                            .get(*selected_idx)
-                            .map(plain_text)
-                            .unwrap_or_default();
-                        if available > 0.0 {
-                            // Codicon `chevron-down`, not the plain `▾`
-                            // TUI's own `tui::form` paints — see
-                            // `crate::codicon`'s module doc for why every
-                            // GUI backend substitutes this unconditionally.
-                            let chevron = crate::codicon::CHEVRON_DOWN.to_string();
-                            let (chev_w, _) = surface.surface_measure_text(&chevron);
-                            let natural_w = surface.surface_measure_text(&chosen).0
-                                + TEXT_BOX_PADDING * 2.0
-                                + chev_w
-                                + 4.0;
-                            let control_w = resolved_control_width.resolve(
-                                natural_w,
-                                available,
-                                min_control_width,
-                            );
-                            let box_w = control_w.max(TEXT_BOX_PADDING * 2.0 + chev_w);
-                            let box_rect = Rect::new(
-                                control_start,
-                                row_rect.y + 2.0,
-                                box_w,
-                                (row_h - 4.0).max(1.0),
-                            );
-                            surface.surface_stroke_rect(box_rect, theme.muted_fg, 1.0);
-                            let text_budget =
-                                (box_w - TEXT_BOX_PADDING * 2.0 - chev_w - 4.0).max(0.0);
-                            let (drawn_len, cw, ch) =
-                                clip_run_to_width(surface, &chosen, text_budget);
-                            let shown = &chosen[..drawn_len];
-                            let ty = box_rect.y + (box_rect.height - ch) / 2.0;
-                            surface.surface_draw_text_run(
-                                Rect::new(control_start + TEXT_BOX_PADDING, ty, cw, ch),
-                                shown,
-                                field_fg,
-                            );
-                            let chev_x = box_rect.x + box_rect.width - TEXT_BOX_PADDING - chev_w;
-                            surface.surface_draw_text_run(
-                                Rect::new(chev_x, ty, chev_w, ch),
-                                &chevron,
-                                theme.muted_fg,
-                            );
-                        }
-                    }
+                    } => paint_dropdown(surface, &cc, options, *selected_idx),
                     FieldKind::ToggleGroup { toggles } => {
                         for (item_id, item_rect) in &vf.item_bounds {
                             if let Some(t) = toggles.iter().find(|t| &t.id == item_id) {
@@ -2572,6 +2438,423 @@ mod native_surface_paint {
     /// can land a rounding step below `measured`; without this slack
     /// that alone would drop the value's last character.
     const TEXT_FIT_EPSILON: f32 = 0.5;
+
+    /// A row's `(foreground, background)`: the selection wash when
+    /// focused, the header pair for a bare `Label` row, else the body
+    /// pair.
+    fn row_colors(theme: &Theme, is_header: bool, is_focused: bool) -> (Color, Color) {
+        if is_focused {
+            // `theme.foreground` (the editor-body text colour) has no
+            // guaranteed contrast against `selected_bg` — on
+            // `vscode-light` both are near-black on mid-blue and the
+            // focused row goes unreadable. `header_fg` is `Theme`'s
+            // documented on-selection foreground (see its doc comment);
+            // `Tree` already pairs it with `selected_bg` the same way for
+            // its focused row.
+            (theme.header_fg, theme.selected_bg)
+        } else if is_header {
+            (theme.header_fg, theme.header_bg)
+        } else {
+            (theme.foreground, theme.tab_bar_bg)
+        }
+    }
+
+    /// Paint `kind` as one bare control — no form chrome, no label —
+    /// across `rect`: the same row wash and the same per-kind painter a
+    /// label-less [`Form`] row of that kind uses, so a standalone control
+    /// and a form field of the same kind cannot drift apart. Covers the
+    /// kinds that stand alone as their own widget (`Toggle`, `Slider`,
+    /// `Dropdown`, `TextInput`, `PasswordInput`, `TextArea`); any other
+    /// kind paints only the row wash. `slider_track` is as
+    /// [`paint_slider`] takes it.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_bare_field(
+        surface: &mut dyn PaintSurface,
+        rect: Rect,
+        kind: &FieldKind,
+        disabled: bool,
+        focused: bool,
+        slider_track: Option<Rect>,
+        theme: &Theme,
+    ) {
+        let (default_fg, row_bg) = row_colors(theme, false, focused);
+        surface.surface_fill_rect(rect, row_bg);
+        let control_start = rect.x + super::BARE_CONTROL_INSET;
+        let cc = ControlCtx {
+            row_rect: rect,
+            control_start,
+            available: (rect.x + rect.width - 8.0 - control_start).max(0.0),
+            field_fg: if disabled { theme.muted_fg } else { default_fg },
+            disabled,
+            control_width: super::ControlWidth::Fill,
+            min_control_width: None,
+            theme,
+        };
+        match kind {
+            FieldKind::Toggle { value } => paint_toggle(surface, &cc, *value),
+            FieldKind::Slider {
+                value, min, max, ..
+            } => paint_slider(surface, &cc, slider_track, *value, *min, *max),
+            FieldKind::Dropdown {
+                options,
+                selected_idx,
+            } => paint_dropdown(surface, &cc, options, *selected_idx),
+            FieldKind::TextInput {
+                value,
+                placeholder,
+                cursor,
+                selection_anchor,
+            } => paint_text_input(surface, &cc, value, placeholder, *cursor, *selection_anchor),
+            FieldKind::PasswordInput {
+                value,
+                placeholder,
+                cursor,
+                mask_char,
+            } => paint_password_input(surface, &cc, value, placeholder, *cursor, *mask_char),
+            FieldKind::TextArea {
+                value,
+                placeholder,
+                cursor,
+                ..
+            } => paint_text_area(surface, &cc, value, placeholder, *cursor),
+            _ => {}
+        }
+    }
+
+    /// What every per-kind control painter below needs from the row it
+    /// paints in: the (label-excluded) content rect, where the shared
+    /// control column starts, how much width `ControlWidth::Fill`
+    /// stretches to, and the row's resolved foreground. A `Form` row and
+    /// a standalone control ([`paint_bare_field`]) build one and call the
+    /// same painter, so the two cannot drift apart.
+    #[derive(Clone, Copy)]
+    pub(crate) struct ControlCtx<'a> {
+        pub(crate) row_rect: Rect,
+        pub(crate) control_start: f32,
+        pub(crate) available: f32,
+        pub(crate) field_fg: Color,
+        pub(crate) disabled: bool,
+        pub(crate) control_width: super::ControlWidth,
+        pub(crate) min_control_width: Option<f32>,
+        pub(crate) theme: &'a Theme,
+    }
+
+    /// A drawn checkbox box (filled with a check mark when `value`).
+    pub(crate) fn paint_toggle(surface: &mut dyn PaintSurface, cc: &ControlCtx, value: bool) {
+        let ControlCtx {
+            row_rect,
+            control_start,
+            available,
+            field_fg,
+            theme,
+            ..
+        } = *cc;
+        let row_h = row_rect.height;
+        // Drawn checkbox rather than a `[x]` / `[ ]` text
+        // glyph — the TUI painter keeps the glyph.
+        let fg = if value && !cc.disabled {
+            theme.accent_fg
+        } else {
+            field_fg
+        };
+        let box_size = (row_h - 8.0).clamp(10.0, 16.0);
+        let ix = control_start;
+        if available > 0.0 {
+            let iy = row_rect.y + (row_h - box_size) / 2.0;
+            let box_rect = Rect::new(ix, iy, box_size, box_size);
+            if value {
+                surface.surface_fill_rounded_rect(box_rect, 2.0, fg);
+                let check_fg = theme.background;
+                surface.surface_draw_line(
+                    crate::Point::new(box_rect.x + box_size * 0.22, box_rect.y + box_size * 0.52),
+                    crate::Point::new(box_rect.x + box_size * 0.42, box_rect.y + box_size * 0.75),
+                    check_fg,
+                    1.5,
+                );
+                surface.surface_draw_line(
+                    crate::Point::new(box_rect.x + box_size * 0.42, box_rect.y + box_size * 0.75),
+                    crate::Point::new(box_rect.x + box_size * 0.8, box_rect.y + box_size * 0.25),
+                    check_fg,
+                    1.5,
+                );
+            } else {
+                surface.surface_stroke_rect(box_rect, fg, 1.0);
+            }
+        }
+    }
+
+    /// A boxed single-line text input.
+    pub(crate) fn paint_text_input(
+        surface: &mut dyn PaintSurface,
+        cc: &ControlCtx,
+        value: &str,
+        placeholder: &str,
+        cursor: Option<usize>,
+        selection_anchor: Option<usize>,
+    ) {
+        let ControlCtx {
+            row_rect,
+            control_start,
+            available,
+            field_fg,
+            control_width: resolved_control_width,
+            min_control_width,
+            theme,
+            ..
+        } = *cc;
+        if available > 0.0 {
+            let shown = if value.is_empty() { placeholder } else { value };
+            let control_w = resolved_control_width.resolve(
+                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
+                available,
+                min_control_width,
+            );
+            paint_text_input_box(
+                surface,
+                row_rect,
+                control_start,
+                control_w,
+                value,
+                placeholder,
+                cursor,
+                selection_anchor,
+                field_fg,
+                theme.muted_fg,
+                theme.selection_bg,
+                theme.accent_fg,
+                false,
+                '\0',
+            );
+        }
+    }
+
+    /// A boxed single-line input showing `mask_char` per character.
+    pub(crate) fn paint_password_input(
+        surface: &mut dyn PaintSurface,
+        cc: &ControlCtx,
+        value: &str,
+        placeholder: &str,
+        cursor: Option<usize>,
+        mask_char: char,
+    ) {
+        let ControlCtx {
+            row_rect,
+            control_start,
+            available,
+            field_fg,
+            control_width: resolved_control_width,
+            min_control_width,
+            theme,
+            ..
+        } = *cc;
+        if available > 0.0 {
+            let shown = if value.is_empty() { placeholder } else { value };
+            let control_w = resolved_control_width.resolve(
+                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
+                available,
+                min_control_width,
+            );
+            paint_text_input_box(
+                surface,
+                row_rect,
+                control_start,
+                control_w,
+                value,
+                placeholder,
+                cursor,
+                None,
+                field_fg,
+                theme.muted_fg,
+                theme.selection_bg,
+                theme.accent_fg,
+                true,
+                mask_char,
+            );
+        }
+    }
+
+    /// A text area's box, showing its first line.
+    pub(crate) fn paint_text_area(
+        surface: &mut dyn PaintSurface,
+        cc: &ControlCtx,
+        value: &str,
+        placeholder: &str,
+        cursor: Option<usize>,
+    ) {
+        let ControlCtx {
+            row_rect,
+            control_start,
+            available,
+            field_fg,
+            control_width: resolved_control_width,
+            min_control_width,
+            theme,
+            ..
+        } = *cc;
+        let first_line = value.lines().next().unwrap_or("");
+        let shown = if first_line.is_empty() {
+            placeholder
+        } else {
+            first_line
+        };
+        if available > 0.0 {
+            let control_w = resolved_control_width.resolve(
+                surface.surface_measure_text(shown).0 + TEXT_BOX_PADDING * 2.0,
+                available,
+                min_control_width,
+            );
+            paint_text_input_box(
+                surface,
+                row_rect,
+                control_start,
+                control_w,
+                first_line,
+                placeholder,
+                cursor,
+                None,
+                field_fg,
+                theme.muted_fg,
+                theme.selection_bg,
+                theme.accent_fg,
+                false,
+                '\0',
+            );
+        }
+    }
+
+    /// A filled track plus the value text. `track` is the track rect
+    /// click routing maps across, when the caller resolved one; else it
+    /// starts at the control column, sized by the control width.
+    pub(crate) fn paint_slider(
+        surface: &mut dyn PaintSurface,
+        cc: &ControlCtx,
+        track: Option<Rect>,
+        value: f32,
+        min: f32,
+        max: f32,
+    ) {
+        let ControlCtx {
+            row_rect,
+            control_start,
+            available,
+            field_fg,
+            control_width: resolved_control_width,
+            min_control_width,
+            theme,
+            ..
+        } = *cc;
+        let row_h = row_rect.height;
+        let range = (max - min).max(f32::EPSILON);
+        let frac = ((value - min) / range).clamp(0.0, 1.0);
+        let value_str = format!("{value:.2}");
+        let (value_w, value_h) = surface.surface_measure_text(&value_str);
+        // `vf.item_bounds`'s single entry (populated by
+        // `layout_metrics::form_field_measure`'s
+        // `FieldKind::Slider` arm) *is* the track rect —
+        // fill it rather than re-deriving the track's x
+        // and width here, so paint and click
+        // (`FormController`'s click routing maps a
+        // pointer x across the same `item_bounds` entry)
+        // always agree on where the track is. The
+        // fallback keeps a measure closure that reports
+        // no items painting a track at the shared
+        // control column, sized by the field's resolved
+        // `ControlWidth` against the same
+        // `track + gap + value_w` budget.
+        let (ix, track_w) = match track {
+            Some(r) => (r.x, r.width),
+            None => {
+                let control_w = resolved_control_width.resolve(
+                    layout_metrics::pixel::FORM_SLIDER_TRACK_WIDTH
+                        + layout_metrics::pixel::FORM_SLIDER_VALUE_GAP
+                        + value_w,
+                    available,
+                    min_control_width,
+                );
+                let track_w =
+                    (control_w - layout_metrics::pixel::FORM_SLIDER_VALUE_GAP - value_w).max(16.0);
+                (control_start, track_w)
+            }
+        };
+        if available > 0.0 && track_w > 0.0 {
+            let track_y = row_rect.y + row_h / 2.0 - 2.0;
+            surface.surface_fill_rect(Rect::new(ix, track_y, track_w, 4.0), theme.muted_fg);
+            surface.surface_fill_rect(Rect::new(ix, track_y, track_w * frac, 4.0), theme.accent_fg);
+            let vy = row_rect.y + (row_h - value_h) / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(
+                    ix + track_w + layout_metrics::pixel::FORM_SLIDER_VALUE_GAP,
+                    vy,
+                    value_w,
+                    value_h,
+                ),
+                &value_str,
+                field_fg,
+            );
+        }
+    }
+
+    /// A boxed field with the chosen option and a trailing chevron.
+    pub(crate) fn paint_dropdown(
+        surface: &mut dyn PaintSurface,
+        cc: &ControlCtx,
+        options: &[StyledText],
+        selected_idx: usize,
+    ) {
+        let ControlCtx {
+            row_rect,
+            control_start,
+            available,
+            field_fg,
+            control_width: resolved_control_width,
+            min_control_width,
+            theme,
+            ..
+        } = *cc;
+        let row_h = row_rect.height;
+        // A boxed field with a trailing chevron, like a
+        // native `<select>` — not bare text next to a
+        // floating glyph, so the control reads as
+        // clickable even before its option list opens.
+        let chosen = options
+            .get(selected_idx)
+            .map(plain_text)
+            .unwrap_or_default();
+        if available > 0.0 {
+            // Codicon `chevron-down`, not the plain `▾`
+            // TUI's own `tui::form` paints — see
+            // `crate::codicon`'s module doc for why every
+            // GUI backend substitutes this unconditionally.
+            let chevron = crate::codicon::CHEVRON_DOWN.to_string();
+            let (chev_w, _) = surface.surface_measure_text(&chevron);
+            let natural_w =
+                surface.surface_measure_text(&chosen).0 + TEXT_BOX_PADDING * 2.0 + chev_w + 4.0;
+            let control_w = resolved_control_width.resolve(natural_w, available, min_control_width);
+            let box_w = control_w.max(TEXT_BOX_PADDING * 2.0 + chev_w);
+            let box_rect = Rect::new(
+                control_start,
+                row_rect.y + 2.0,
+                box_w,
+                (row_h - 4.0).max(1.0),
+            );
+            surface.surface_stroke_rect(box_rect, theme.muted_fg, 1.0);
+            let text_budget = (box_w - TEXT_BOX_PADDING * 2.0 - chev_w - 4.0).max(0.0);
+            let (drawn_len, cw, ch) = clip_run_to_width(surface, &chosen, text_budget);
+            let shown = &chosen[..drawn_len];
+            let ty = box_rect.y + (box_rect.height - ch) / 2.0;
+            surface.surface_draw_text_run(
+                Rect::new(control_start + TEXT_BOX_PADDING, ty, cw, ch),
+                shown,
+                field_fg,
+            );
+            let chev_x = box_rect.x + box_rect.width - TEXT_BOX_PADDING - chev_w;
+            surface.surface_draw_text_run(
+                Rect::new(chev_x, ty, chev_w, ch),
+                &chevron,
+                theme.muted_fg,
+            );
+        }
+    }
 
     /// Longest leading run of `text` that measures no wider than
     /// `budget`, as a byte length plus that prefix's `(width, height)`.

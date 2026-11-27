@@ -2949,12 +2949,8 @@ pub fn schema() -> Vec<DefJson> {
             "canvas" => canvas_descriptor.clone(),
             "scroll_view" => scroll_view_descriptor.clone(),
             "find_replace" => find_replace_panel_descriptor.clone(),
-            "checkbox" => checkbox_descriptor.clone(),
-            "slider" => slider_descriptor.clone(),
-            "select" => select_descriptor.clone(),
             "password" => password_descriptor.clone(),
             "textarea" => textarea_descriptor.clone(),
-            "markdown" => markdown_descriptor.clone(),
             "tree_table" => tree_table_descriptor.clone(),
             "tree_table_controller" => tree_table_controller_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
@@ -2986,6 +2982,10 @@ pub fn schema() -> Vec<DefJson> {
             "editor" => editor_descriptor.clone(),
             "minimap" => minimap_descriptor.clone(),
             "image" => image_descriptor.clone(),
+            "checkbox" => checkbox_descriptor.clone(),
+            "slider" => slider_descriptor.clone(),
+            "select" => select_descriptor.clone(),
+            "markdown" => markdown_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));

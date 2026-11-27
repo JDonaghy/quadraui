@@ -28,6 +28,7 @@ use super::tree::{in_set, non_empty, plain_text, A11yChild, A11yPrimitive};
 use crate::a11y::{A11yChecked, A11yInfo, A11yLive, A11yRole, A11yValueRange};
 use crate::primitives::activity_bar::{ActivityBar, ActivityItem};
 use crate::primitives::button::Button;
+use crate::primitives::checkbox::Checkbox;
 use crate::primitives::combo_box::ComboBox;
 use crate::primitives::command_center::CommandCenter;
 use crate::primitives::command_line::CommandLine;
@@ -37,17 +38,21 @@ use crate::primitives::dialog::{Dialog, DialogInput, DialogTable};
 use crate::primitives::form::{FieldKind, Form, FormField, ValidationState};
 use crate::primitives::menu_bar::MenuBar;
 use crate::primitives::number_input::NumberInput;
+use crate::primitives::password_input::PasswordInput;
 use crate::primitives::progress::ProgressBar;
 use crate::primitives::radio_group::RadioGroup;
 use crate::primitives::rich_text_popup::RichTextPopup;
 use crate::primitives::scrollbar::{ScrollAxis, Scrollbar};
+use crate::primitives::select::Select;
 use crate::primitives::sidebar_panel::SidebarPanel;
+use crate::primitives::slider::Slider;
 use crate::primitives::spinner::Spinner;
 use crate::primitives::split::{Split, SplitDirection};
 use crate::primitives::split_tree::SplitTree;
 use crate::primitives::status_bar::{StatusBar, StatusBarSegment};
 use crate::primitives::switch::Switch;
 use crate::primitives::tab_bar::TabBar;
+use crate::primitives::text_area::TextArea;
 use crate::primitives::toast::{Toast, ToastOverlay, ToastSeverity};
 use crate::primitives::tooltip::Tooltip;
 
@@ -885,6 +890,48 @@ impl A11yPrimitive for Switch {
                 A11yChecked::False
             })
             .with_disabled(self.disabled)
+    }
+}
+
+// ------------------------------------------------- standalone field controls
+//
+// `Checkbox`, `Slider`, `Select`, `PasswordInput` and `TextArea` are the
+// standalone forms of a form field kind, so each answers with the role and state that field kind's
+// own form row reports (`field_kind`), plus its disabled flag.
+
+/// A standalone control's info: `kind`'s role and state, disabled as given.
+pub(crate) fn bare_field_info(kind: &FieldKind, disabled: bool) -> A11yInfo {
+    let (role, info, _) = field_kind(kind);
+    info.with_role(role).with_disabled(disabled)
+}
+
+impl A11yPrimitive for Checkbox {
+    fn a11y_info(&self) -> A11yInfo {
+        bare_field_info(&self.field_kind(), self.disabled)
+    }
+}
+
+impl A11yPrimitive for Slider {
+    fn a11y_info(&self) -> A11yInfo {
+        bare_field_info(&self.field_kind(), self.disabled)
+    }
+}
+
+impl A11yPrimitive for Select {
+    fn a11y_info(&self) -> A11yInfo {
+        bare_field_info(&self.field_kind(), self.disabled)
+    }
+}
+
+impl A11yPrimitive for PasswordInput {
+    fn a11y_info(&self) -> A11yInfo {
+        bare_field_info(&self.field_kind(None), false)
+    }
+}
+
+impl A11yPrimitive for TextArea {
+    fn a11y_info(&self) -> A11yInfo {
+        bare_field_info(&self.field_kind(None), false)
     }
 }
 

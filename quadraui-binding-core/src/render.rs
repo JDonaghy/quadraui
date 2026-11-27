@@ -4310,7 +4310,7 @@ mod tests {
     /// (checked once up front) still fills the whole extent.
     #[test]
     fn align_sizes_every_extra_leaf_kind_to_its_own_natural_height() {
-        use crate::extra_paint::{Checkbox, PasswordInput, Select, Slider, TextArea};
+        use crate::extra_paint::{PasswordInput, TextArea};
         use quadraui::{ComboBox, ProgressBar, Spinner, TextField, TextInput};
 
         let kinds: Vec<(&str, Rc<dyn ExtraPaint>)> = vec![
@@ -4332,37 +4332,6 @@ mod tests {
                     label: String::new(),
                     frame_idx: 0,
                     accent: None,
-                }),
-            ),
-            (
-                "checkbox",
-                Rc::new(Checkbox {
-                    id: WidgetId::new("checkbox"),
-                    value: false,
-                    disabled: false,
-                    focused: false,
-                }),
-            ),
-            (
-                "slider",
-                Rc::new(Slider {
-                    id: WidgetId::new("slider"),
-                    value: 0.0,
-                    min: 0.0,
-                    max: 1.0,
-                    step: 1.0,
-                    disabled: false,
-                    focused: false,
-                }),
-            ),
-            (
-                "select",
-                Rc::new(Select {
-                    id: WidgetId::new("select"),
-                    options: vec!["a".to_string(), "b".to_string()],
-                    selected_idx: 0,
-                    disabled: false,
-                    focused: false,
                 }),
             ),
             (
@@ -4396,8 +4365,8 @@ mod tests {
             ),
         ];
         assert!(
-            kinds.len() >= 10,
-            "this test's own point is coverage across at least 10 leaf kinds"
+            kinds.len() >= 7,
+            "this test's own point is coverage across every self-sizing extra leaf kind"
         );
 
         let height = 24.0_f32;

@@ -1158,18 +1158,12 @@ fn focused_field_is_enabled_slider(form: &Form) -> bool {
         .is_some_and(|f| !f.disabled && matches!(f.kind, FieldKind::Slider { .. }))
 }
 
-/// Left/Down steps the focused `Slider` field's value down by
-/// `step`, Right/Up steps it up, Home/End jump straight to
-/// `min`/`max` — the same keyboard contract `slider_key_event`
-/// (`quadraui-binding-core`'s `semantic` module) gives the
-/// standalone leaf, and `FieldKind::Slider`'s own doc promises
-/// ("arrow keys step by `step`; Home/End jump to bounds").
-/// `FieldKind::Slider`'s fields are already the live state (no
-/// shadow-state struct needed, the same as `NumberInput`/`RadioGroup`
-/// above), so there's no clone-and-force-focused step here. `None`
-/// for every other key or a step/jump that doesn't move the clamped
-/// value, which falls through to `handle_key`'s generic dispatch
-/// exactly like an unclaimed number-input/radio-group key does.
+/// The focused `Slider` field's value moved by one key, through the
+/// stepping a standalone [`crate::Slider`] uses
+/// ([`crate::primitives::slider::step_for_key`]): arrows step by `step`,
+/// PageUp/PageDown by ten steps, Home/End jump to the bounds. `None` for
+/// every other key or a move that leaves the clamped value where it is,
+/// which falls through to `handle_key`'s generic dispatch.
 fn handle_slider_key(form: &Form, key: &Key) -> Option<Handled<FormEvent>> {
     let focused_id = form.focused_field?;
     let field = form.fields.iter().find(|f| f.id == focused_id)?;
@@ -1185,21 +1179,7 @@ fn handle_slider_key(form: &Form, key: &Key) -> Option<Handled<FormEvent>> {
     else {
         return None;
     };
-    let (value, min, max, step) = (*value, *min, *max, *step);
-    let new_value = match key {
-        Key::Named(NamedKey::Left) | Key::Named(NamedKey::Down) => {
-            slider_clamp(value - step, min, max)
-        }
-        Key::Named(NamedKey::Right) | Key::Named(NamedKey::Up) => {
-            slider_clamp(value + step, min, max)
-        }
-        Key::Named(NamedKey::Home) => min,
-        Key::Named(NamedKey::End) => max,
-        _ => return None,
-    };
-    if new_value == value {
-        return None;
-    }
+    let new_value = crate::primitives::slider::step_for_key(*value, *min, *max, *step, key)?;
     Some(Handled::Event(FormEvent::SliderChanged {
         id: focused_id,
         value: new_value,
@@ -1246,16 +1226,7 @@ fn handle_dropdown_key(form: &Form, key: &Key) -> Option<Handled<FormEvent>> {
     else {
         return None;
     };
-    let delta: i32 = match key {
-        Key::Named(NamedKey::Up) => -1,
-        Key::Named(NamedKey::Down) => 1,
-        _ => return None,
-    };
-    let max_idx = options.len().saturating_sub(1) as i32;
-    let new_idx = (*selected_idx as i32 + delta).clamp(0, max_idx) as usize;
-    if new_idx == *selected_idx {
-        return None;
-    }
+    let new_idx = crate::primitives::select::step_for_key(*selected_idx, options.len(), key)?;
     Some(Handled::Event(FormEvent::DropdownChanged {
         id: focused_id,
         selected_idx: new_idx,
@@ -1373,7 +1344,7 @@ fn focused_field_is_enabled_toggle(form: &Form) -> bool {
 /// Any other key returns `None`, which `handle_key` falls through to
 /// its generic dispatch, same as [`handle_item_row_key`].
 fn handle_toggle_key(form: &Form, key: &Key) -> Option<Handled<FormEvent>> {
-    if !matches!(key, Key::Named(NamedKey::Enter) | Key::Char(' ')) {
+    if !crate::primitives::checkbox::activates(key) {
         return None;
     }
     let focused_id = form.focused_field?;
@@ -1705,16 +1676,6 @@ fn number_input_click_event(
     })
 }
 
-/// Clamps `raw` to `[min, max]` without [`f32::clamp`]'s panic on an
-/// inverted `min > max` — `FieldKind::Slider`'s `min`/`max` come from a
-/// wire payload, so a host typo inverting them degrades to a
-/// well-defined (if useless) clamp instead of a panic that would take
-/// the whole render down. Mirrors `quadraui-binding-core`'s
-/// `Slider::clamp`, which the standalone leaf already uses this same way.
-fn slider_clamp(raw: f32, min: f32, max: f32) -> f32 {
-    raw.max(min).min(max)
-}
-
 /// Cells of track [`crate::primitives::layout_metrics::form_field_measure`]'s backend-free fallback gives a
 /// [`FieldKind::Slider`] field — `tui::form`'s own natural track width,
 /// which is what `ControlWidth::Content` resolves to there. This
@@ -1814,8 +1775,7 @@ fn slider_value_at(
     if overrun == TrackOverrun::Reject && !(0.0..1.0).contains(&raw) {
         return None;
     }
-    let fraction = raw.clamp(0.0, 1.0);
-    let new_value = slider_clamp(min + fraction * (max - min), *min, *max);
+    let new_value = crate::primitives::slider::value_at_fraction(raw, *min, *max);
     if new_value == *value {
         return None;
     }

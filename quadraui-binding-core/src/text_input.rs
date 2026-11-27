@@ -219,7 +219,7 @@ pub fn apply_text_input_edit(
 /// insert produced. Returns `None` when nothing is focused, the focused
 /// widget is none of those three, or it has scrolled out of this frame's
 /// hit map. A [`PasswordInput`] strips any `'\n'` out of the inserted text
-/// first — [`PasswordInput::as_form`]'s doc keeps `inner` to exactly one
+/// first — [`PasswordInput::as_widget`]'s doc keeps `inner` to exactly one
 /// line, and unlike `Enter` (caught earlier by
 /// [`text_input_key_event`]'s own commit arm before `EditOp::from_key` is
 /// even reached), nothing upstream of this call stops an IME commit or a

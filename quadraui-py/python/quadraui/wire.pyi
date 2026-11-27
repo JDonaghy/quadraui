@@ -1814,12 +1814,8 @@ LayoutLeafNode = TypedDict(
         "canvas": NotRequired[CanvasDescriptor],
         "scroll_view": NotRequired[ScrollViewDescriptor],
         "find_replace": NotRequired[FindReplacePanelDescriptor],
-        "checkbox": NotRequired[CheckboxDescriptor],
-        "slider": NotRequired[SliderDescriptor],
-        "select": NotRequired[SelectDescriptor],
         "password": NotRequired[PasswordDescriptor],
         "textarea": NotRequired[TextAreaDescriptor],
-        "markdown": NotRequired[MarkdownDescriptor],
         "icon_grid": NotRequired[IconGridDescriptor],
         "cell_grid": NotRequired[CellGridDescriptor],
         "switch": NotRequired[SwitchDescriptor],
@@ -1834,6 +1830,10 @@ LayoutLeafNode = TypedDict(
         "editor": NotRequired[EditorDescriptor],
         "minimap": NotRequired[MinimapDescriptor],
         "image": NotRequired[ImageDescriptor],
+        "checkbox": NotRequired[CheckboxDescriptor],
+        "slider": NotRequired[SliderDescriptor],
+        "select": NotRequired[SelectDescriptor],
+        "markdown": NotRequired[MarkdownDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1877,12 +1877,8 @@ class RenderFrameDict(TypedDict):
     canvas: NotRequired[Optional[CanvasDescriptor]]
     scroll_view: NotRequired[Optional[ScrollViewDescriptor]]
     find_replace: NotRequired[Optional[FindReplacePanelDescriptor]]
-    checkbox: NotRequired[Optional[CheckboxDescriptor]]
-    slider: NotRequired[Optional[SliderDescriptor]]
-    select: NotRequired[Optional[SelectDescriptor]]
     password: NotRequired[Optional[PasswordDescriptor]]
     textarea: NotRequired[Optional[TextAreaDescriptor]]
-    markdown: NotRequired[Optional[MarkdownDescriptor]]
     icon_grid: NotRequired[Optional[IconGridDescriptor]]
     cell_grid: NotRequired[Optional[CellGridDescriptor]]
     switch: NotRequired[Optional[SwitchDescriptor]]
@@ -1897,6 +1893,10 @@ class RenderFrameDict(TypedDict):
     editor: NotRequired[Optional[EditorDescriptor]]
     minimap: NotRequired[Optional[MinimapDescriptor]]
     image: NotRequired[Optional[ImageDescriptor]]
+    checkbox: NotRequired[Optional[CheckboxDescriptor]]
+    slider: NotRequired[Optional[SliderDescriptor]]
+    select: NotRequired[Optional[SelectDescriptor]]
+    markdown: NotRequired[Optional[MarkdownDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]

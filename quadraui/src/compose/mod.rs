@@ -96,7 +96,7 @@ pub mod toast_stack;
 pub mod toolbar_hover_tracker;
 pub mod tree_controller;
 pub mod tree_table_controller;
-mod widget_host;
+pub(crate) mod widget_host;
 pub mod workspace;
 
 pub use app_shell::{

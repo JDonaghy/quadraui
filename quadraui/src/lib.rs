@@ -672,9 +672,9 @@ pub use primitives::find_replace::{
 };
 pub use primitives::float::{Float, FloatHit, FloatLayout, FloatMeasure};
 pub use primitives::form::{
-    ButtonRowItem, ControlWidth, FieldKind, Form, FormEvent, FormField, FormFieldMeasure, FormHit,
-    FormItemMeasure, FormLayout, FormSpacing, LabelAlign, LabelPosition, RowAlign, ToggleGroupItem,
-    ValidationState, VisibleFormField,
+    BareFieldLayout, ButtonRowItem, ControlWidth, FieldKind, Form, FormEvent, FormField,
+    FormFieldMeasure, FormHit, FormItemMeasure, FormLayout, FormSpacing, LabelAlign, LabelPosition,
+    RowAlign, ToggleGroupItem, ValidationState, VisibleFormField,
 };
 pub use primitives::icon_grid::{
     icon_grid_move_selection, IconGrid, IconGridEvent, IconGridHit, IconGridItem, IconGridLayout,
@@ -700,6 +700,7 @@ pub use primitives::list::{
 // pilot `impl Primitive for ListView` itself is (see that impl's own
 // `cfg`): the three pixel backends via `native_surface_paint`, plus
 // `tui` via `Primitive::paint_cells`/`crate::tui::draw_list`.
+pub use primitives::checkbox::{Checkbox, CheckboxAction};
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
@@ -707,6 +708,7 @@ pub use primitives::list::{
     all(feature = "macos", target_os = "macos")
 ))]
 pub use primitives::list::ListViewPrimitiveLayout;
+pub use primitives::markdown::{Markdown, MarkdownAction, MarkdownLayout, MarkdownLink};
 pub use primitives::menu_bar::{
     resolve_bar_height, MenuBar, MenuBarHit, MenuBarItem, MenuBarItemMeasure, MenuBarLayout,
     VisibleMenuBarItem, BAR_HEIGHT,
@@ -733,6 +735,7 @@ pub use primitives::palette::{
     Palette, PaletteEvent, PaletteHit, PaletteItem, PaletteItemMeasure, PaletteLayout, PaletteMode,
     PalettePreview, PaletteScrollbar, VisiblePaletteItem,
 };
+pub use primitives::password_input::{PasswordInput, PasswordInputAction};
 pub use primitives::pipeline_view::{
     PipelineEvent, PipelineHit, PipelineStage, PipelineView, PipelineViewLayout,
     PipelineViewMeasure, StageBounds, StageStatus,
@@ -753,9 +756,11 @@ pub use primitives::scrollbar::{
     wheel_row_delta, PressZone, ScrollAxis, Scrollbar, ScrollbarEvent, ScrollbarLayout,
     ScrollbarState, SCROLLBAR_WHEEL_VIEWPORTS_PER_NOTCH,
 };
+pub use primitives::select::{Select, SelectAction};
 pub use primitives::sidebar_panel::{
     SidebarPanel, SidebarPanelAction, SidebarPanelHit, SidebarPanelLayout, SidebarPanelState,
 };
+pub use primitives::slider::{Slider, SliderAction, SliderState};
 pub use primitives::spinner::{Spinner, SpinnerHit, SpinnerLayout, SpinnerMeasure};
 pub use primitives::split::{Split, SplitDirection, SplitHit, SplitLayout, SplitMeasure};
 pub use primitives::split_tree::{
@@ -767,6 +772,7 @@ pub use primitives::status_bar::{
     StatusSegmentMeasure, StatusSegmentSide, VisibleStatusSegment,
 };
 pub use primitives::switch::{Switch, SwitchEvent, SwitchHit, SwitchLayout};
+pub use primitives::text_area::{TextArea, TextAreaAction};
 // `TabBarHits` is deprecated (D-6 pre-refactor hit struct; `TabBarLayout` with
 // `Rect` is the replacement). Allow it here since `pub use` of a deprecated
 // item is itself a use site. Removal is blocked on the six-method/four-backend
