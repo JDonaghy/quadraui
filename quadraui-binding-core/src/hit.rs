@@ -19,11 +19,6 @@ use quadraui::primitive::DynWidget;
 use crate::extra_paint::ExtraPaint;
 use crate::wire::DragRole;
 
-/// `(layout, scroll_offset, total_rows)` — the state [`PaintedHit::Extra::
-/// tree_table_hit`] stashes at paint time so a later click can resolve a
-/// chevron hit without a live `Backend`; see that field's own doc for why.
-pub(crate) type TreeTableHitState = (quadraui::TreeTableLayout, usize, usize);
-
 /// Which absolute slice of a windowed `List`/`Tree`/`DataTable`/
 /// `TextDisplay`'s collection the frame that produced this hit actually
 /// had rows for: the half-open range `[start, start + len)` of its
@@ -265,20 +260,6 @@ pub enum PaintedHit {
         id: WidgetId,
         area: Rect,
         extra: Rc<dyn ExtraPaint>,
-        /// `Some((layout, scroll_offset, total_rows))` when `extra`
-        /// downcasts to a [`quadraui::TreeTable`] — the real
-        /// [`quadraui::TreeTableLayout`] resolved via
-        /// `TreeTable`'s paint at paint time, plus the two extra
-        /// pieces of state [`quadraui::TreeTableLayout::hit_test`] needs
-        /// (`TreeTable::table.scroll_offset`, `TreeTable::table.rows.len()`).
-        /// Stashed here — the same reason [`PaintedHit::DataTable`] carries
-        /// its own `layout` rather than recomputing one — because
-        /// [`hit_test_painted`] has no live `Backend` to call
-        /// `TreeTable` layout with at click time, and
-        /// [`ExtraPaint::hit_test`]'s `bool`-only signature has no way to
-        /// distinguish a chevron click from the rest of the row. `None`
-        /// for every other extra.
-        tree_table_hit: Option<TreeTableHitState>,
     },
     /// One [`crate::layout::LeafDescriptor::Widget`], painted by
     /// [`crate::render::paint_leaf`]'s `Widget` arm. `area` is the
@@ -506,19 +487,6 @@ pub enum HitDetail {
         row: usize,
     },
     DataTableFooter,
-    /// Landed on a [`quadraui::TreeTable`]'s row expand/collapse chevron —
-    /// `idx` is the absolute row index into [`quadraui::TreeTable::tree`],
-    /// matching [`quadraui::TreeTableHit::Chevron`]'s own field. Resolved
-    /// from [`PaintedHit::Extra::tree_table_hit`], the real
-    /// [`quadraui::TreeTableLayout`] a `TreeTable` extra was painted with
-    /// this frame — the `Extra` counterpart of [`Self::TreeChevron`]'s own
-    /// fixed-slot `Tree` resolution. Every other `TreeTable` region (row,
-    /// header, header divider, footer) still resolves to the generic
-    /// [`Self::ExtraBody`]; only the chevron needed its own detail to
-    /// synthesize [`quadraui::TreeTableEvent::ToggleExpanded`].
-    TreeTableChevron {
-        idx: usize,
-    },
     TabBarTab {
         tab: usize,
     },
@@ -773,27 +741,8 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                     return Some((*id, HitDetail::SplitTreeDivider { split_index }));
                 }
             }
-            PaintedHit::Extra {
-                id,
-                area,
-                extra,
-                tree_table_hit,
-            } => {
-                if let Some((layout, scroll_offset, total_rows)) = tree_table_hit {
-                    if area.contains(point) {
-                        match layout.hit_test(
-                            point.x - area.x,
-                            point.y - area.y,
-                            *scroll_offset,
-                            *total_rows,
-                        ) {
-                            quadraui::TreeTableHit::Chevron(idx) => {
-                                return Some((*id, HitDetail::TreeTableChevron { idx }));
-                            }
-                            _ => return Some((*id, HitDetail::ExtraBody)),
-                        }
-                    }
-                } else if let Some(scripted) = extra.as_scripted() {
+            PaintedHit::Extra { id, area, extra } => {
+                if let Some(scripted) = extra.as_scripted() {
                     // A script-defined widget's own declared regions
                     // (`ScriptWidget::paint`'s returned `ScriptedPaint::regions`)
                     // resolve through the identical `CanvasHit` vocabulary,
@@ -1466,7 +1415,6 @@ mod tests {
             id: WidgetId::new("widget"),
             area,
             extra: Rc::new(primitive) as Rc<dyn ExtraPaint>,
-            tree_table_hit: None,
         }];
 
         assert_eq!(

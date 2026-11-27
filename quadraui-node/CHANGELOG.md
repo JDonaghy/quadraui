@@ -132,6 +132,12 @@ fragment step for this package (that mechanism, and
   and Enter/Space activate the button under it; the descriptor's
   `focused_index` no longer chooses what Enter activates. The
   `"extra_chrome"` hit kind is removed.
+- `tree_table` decodes through the generic widget leaf, so
+  `quadraui::TreeTable`'s own `Interactive::handle` resolves every click:
+  a click on a row body focuses the table and reports
+  `{ TreeTable: [id, { RowSelected: { idx, path } }] }` instead of reaching the
+  handler as a raw `MouseDown`. The `"tree_table_chevron"` hit kind is
+  removed; a chevron click still reports `ToggleExpanded`.
 
 ### Removed
 

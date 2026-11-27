@@ -15,15 +15,15 @@ use quadraui::{
     ListViewLayout, Rect, ScrollAxis, ScrollView, Scrollbar, SectionSize, Split, SplitDirection,
     SplitHit, SplitLayout, Style, StyledText, TabBar, TabBarLayout, TabChrome, TextDisplay,
     TextDisplayHit, TextDisplayLayout, TextDisplayLine, TextRegion, Theme, TreePath, TreeRow,
-    TreeTable, TreeView, TreeViewHit, TreeViewLayout, WidgetId,
+    TreeView, TreeViewHit, TreeViewLayout, WidgetId,
 };
 
 use quadraui::primitive::{DynWidget, LayoutCtx as DynLayoutCtx, Size as DynSize};
 use quadraui::primitives::tab_bar::TabBarPrimitiveLayout;
 use quadraui::DrawsPrimitives;
 
-use crate::extra_paint::{extra_as, ExtraPaint};
-use crate::hit::{LoadedRows, PaintedHit, ScrollChildHit, TreeTableHitState};
+use crate::extra_paint::ExtraPaint;
+use crate::hit::{LoadedRows, PaintedHit, ScrollChildHit};
 use crate::layout::{
     align_cross, apply_min_max, grid_cell_rects, justify_starts, quantise_horizontal,
     quantise_vertical, resolve_main_axis_sizes, Align, LayoutChild, LayoutContainer, LayoutLeaf,
@@ -379,12 +379,11 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     for kind in crate::extra_paint::EXTRA_PRIMITIVE_KINDS {
         if let Some(extra) = refs.extra.get(kind) {
             if let Some(rect) = band(3.0) {
-                let tree_table_hit = paint_extra(backend, extra, rect);
+                extra.paint(backend, rect);
                 hits.push(PaintedHit::Extra {
                     id: extra.id(),
                     area: rect,
                     extra: Rc::clone(extra),
-                    tree_table_hit,
                 });
             }
         }
@@ -407,28 +406,6 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
                 });
             }
         }
-    }
-}
-
-/// Paints one additive primitive and returns the `tree_table_hit` its
-/// [`PaintedHit::Extra`] entry carries. A [`TreeTable`] paints through its
-/// own `Primitive` directly so its chevron can be hit-tested precisely
-/// later without a live `Backend` — see
-/// [`PaintedHit::Extra::tree_table_hit`]'s own doc.
-#[allow(deprecated)]
-fn paint_extra(
-    backend: &mut dyn Backend,
-    extra: &Rc<dyn ExtraPaint>,
-    area: Rect,
-) -> Option<TreeTableHitState> {
-    if let Some(tree_table) = extra_as::<TreeTable>(extra) {
-        let layout = backend.draw_primitive(area, tree_table).layout;
-        let scroll_offset = tree_table.table.scroll_offset;
-        let total_rows = tree_table.table.rows.len();
-        Some((layout, scroll_offset, total_rows))
-    } else {
-        extra.paint(backend, area);
-        None
     }
 }
 
@@ -2929,12 +2906,11 @@ pub fn paint_leaf_windowed(
             });
         }
         LeafDescriptor::Extra(extra) => {
-            let tree_table_hit = paint_extra(backend, extra, area);
+            extra.paint(backend, area);
             hits.push(PaintedHit::Extra {
                 id,
                 area,
                 extra: Rc::clone(extra),
-                tree_table_hit,
             });
         }
         LeafDescriptor::Widget { widget, .. } => {

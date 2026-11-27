@@ -13,7 +13,7 @@ use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
     Backend, Column, Form, Icon, MenuBar, NaturalSize, Point, Rect, StyledText, TextField,
-    TextInput, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
+    TextInput, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
@@ -428,30 +428,6 @@ impl ExtraPaint for TextArea {
     }
 }
 
-impl ExtraPaint for TreeTable {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_dyn(area, self, &());
-    }
-
-    fn id(&self) -> WidgetId {
-        self.table.id
-    }
-
-    /// Whole-area bounds check only, same limitation [`ComboBox::hit_test`]'s
-    /// doc describes: this trait's `hit_test` has no `backend` parameter
-    /// to resolve the table's real laid-out column
-    /// widths with. The precise chevron/row/header resolution a click
-    /// actually gets goes through [`crate::hit::PaintedHit::Extra::tree_table_hit`]
-    /// instead — the real [`quadraui::TreeTableLayout`] stashed there at
-    /// paint time, when a `Backend` *is* available — so
-    /// [`crate::hit::hit_test_painted`] only ever falls back to this
-    /// whole-area check for a `TreeTable` extra with no such entry (there
-    /// is currently no such path; see that field's own doc).
-    fn hit_test(&self, area: Rect, point: Point) -> bool {
-        area.contains(point)
-    }
-}
-
 /// One node in a `"tree_table_controller"` extra's hierarchical model —
 /// the wire mirror of [`TreeTableNodeData`], which has no `Deserialize` of
 /// its own (its fields are private; only its
@@ -689,7 +665,6 @@ extra_primitives! {
     "form" => Form,
     "text_input" => TextInput,
     "text_field" => TextField,
-    "tree_table" => TreeTable,
     "tree_table_controller" => TreeTableControllerDescriptor,
     "menu_bar" => MenuBar,
     "password" => PasswordInput,
@@ -779,7 +754,8 @@ extra_primitives! {
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 35] = [
+pub const WIDGET_KINDS: [&str; 36] = [
+    "tree_table",
     "toolbar",
     "number_input",
     "combo_box",
@@ -838,7 +814,7 @@ mod tests {
     use crate::hit::PaintedHit;
     use crate::layout::{LayoutLeaf, LeafDescriptor};
     use quadraui::tui::testing::TuiDriver;
-    use quadraui::{AppLogic, FormEvent, Reaction, Toolbar, ToolbarButton, UiEvent};
+    use quadraui::{AppLogic, FormEvent, Reaction, Toolbar, ToolbarButton, TreeTable, UiEvent};
     use std::cell::RefCell;
 
     /// Records every event an [`EventSink`] receives, in order, for a
@@ -2058,19 +2034,10 @@ mod tests {
         );
     }
 
-    /// `"tree_table" => TreeTable` renders through the same additive-leaf
-    /// path as every other registered extra: a branch row's label and
-    /// chevron glyph both reach the screen (the chevron via the shared
-    /// [`quadraui::primitives::tree_table::native_surface_paint`] this
-    /// paints through on GTK/macOS/Win — TUI keeps its own
-    /// `TreeTable`'s own cell paint). A click elsewhere in
-    /// the body still reaches the handler as a raw `MouseDown`, same as
-    /// every other `ExtraBody` hit; a click on the chevron itself resolves
-    /// through [`crate::hit::PaintedHit::Extra::tree_table_hit`] to a real
+    /// A `"tree_table"` widget leaf paints a branch row's label and chevron
+    /// glyph, and a click on the chevron resolves through the table's own
+    /// `Interactive::handle` to
     /// [`quadraui::UiEvent::TreeTable`]`(`[`quadraui::TreeTableEvent::ToggleExpanded`]`)`.
-    /// A `message_list` extra paints through the widget contract, on a
-    /// pixel backend
-    /// whose editor line height differs from its chrome row height.
     #[test]
     fn tree_table_extra_renders_label_and_chevron_and_passes_through_a_click() {
         let id = WidgetId::new("tt:files");
@@ -2112,7 +2079,7 @@ mod tests {
             ],
         );
 
-        let mut driver = single_leaf_driver(id, Rc::new(tree_table));
+        let mut driver = single_widget_driver(id, "tree_table", Rc::new(tree_table));
         assert!(driver.screen_contains("src"), "{}", driver.screen());
         assert!(driver.screen_contains("main.rs"), "{}", driver.screen());
         assert!(
@@ -2126,36 +2093,17 @@ mod tests {
         // paints its chevron at column 0 of row 1 — see
         // `tree_table::paint_cells::tests::branch_row_paints_a_chevron_and_the_label_still_appears`.
         driver.click(area.x, area.y + 1.0);
-        {
-            let dispatched = &driver.app().sink.borrow().dispatched;
-            assert!(
-                dispatched.iter().any(|event| matches!(
-                    event,
-                    UiEvent::TreeTable(
-                        ev_id,
-                        quadraui::TreeTableEvent::ToggleExpanded { path, expand: false }
-                    ) if *ev_id == id && path.as_slice() == [0u16]
-                )),
-                "a click on the chevron should resolve to TreeTableEvent::ToggleExpanded: \
+        let dispatched = &driver.app().sink.borrow().dispatched;
+        assert!(
+            dispatched.iter().any(|event| matches!(
+                event,
+                UiEvent::TreeTable(
+                    ev_id,
+                    quadraui::TreeTableEvent::ToggleExpanded { path, expand: false }
+                ) if *ev_id == id && path.as_slice() == [0u16]
+            )),
+            "a click on the chevron should resolve to TreeTableEvent::ToggleExpanded: \
                  {dispatched:?}"
-            );
-        }
-
-        // A click elsewhere in the body (past the chevron/label, still on
-        // the row) has no more specific resolution, so it still reaches
-        // the handler as a raw `MouseDown` — the same `ExtraBody` fallback
-        // every other additive primitive's body click gets.
-        driver.app().sink.borrow_mut().dispatched.clear();
-        driver.click(area.x + 10.0, area.y + 1.0);
-        {
-            let dispatched = &driver.app().sink.borrow().dispatched;
-            assert!(
-                dispatched
-                    .iter()
-                    .any(|event| matches!(event, UiEvent::MouseDown { .. })),
-                "a click on the row body (not the chevron) should still reach the \
-                 handler as a raw MouseDown: {dispatched:?}"
-            );
-        }
+        );
     }
 }

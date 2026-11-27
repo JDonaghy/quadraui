@@ -2947,7 +2947,6 @@ pub fn schema() -> Vec<DefJson> {
             "menu_bar" => menu_bar_descriptor.clone(),
             "password" => password_descriptor.clone(),
             "textarea" => textarea_descriptor.clone(),
-            "tree_table" => tree_table_descriptor.clone(),
             "tree_table_controller" => tree_table_controller_descriptor.clone(),
             other => unreachable!("EXTRA_PRIMITIVE_KINDS grew an unhandled kind {other:?}"),
         };
@@ -2999,6 +2998,7 @@ pub fn schema() -> Vec<DefJson> {
             "combo_box" => combo_box_descriptor.clone(),
             "date_picker" => date_picker_descriptor.clone(),
             "toolbar" => toolbar_descriptor.clone(),
+            "tree_table" => tree_table_descriptor.clone(),
             other => unreachable!("WIDGET_KINDS grew an unhandled kind {other:?}"),
         };
         leaf_fields.push(field_opt(kind, ty.clone()));
@@ -3810,11 +3810,6 @@ pub fn schema() -> Vec<DefJson> {
         ),
         ("_HitDetailDataTableRow", "data_table_row", &[("row", int_)]),
         ("_HitDetailDataTableFooter", "data_table_footer", &[]),
-        (
-            "_HitDetailTreeTableChevron",
-            "tree_table_chevron",
-            &[("idx", int_)],
-        ),
         ("_HitDetailTabBarTab", "tab_bar_tab", &[("tab", int_)]),
         (
             "_HitDetailTabBarTabClose",
@@ -4671,7 +4666,6 @@ mod coverage {
             HitDetail::DataTableHeaderDivider { col: _ } => {}
             HitDetail::DataTableRow { row: _ } => {}
             HitDetail::DataTableFooter => {}
-            HitDetail::TreeTableChevron { idx: _ } => {}
             HitDetail::TabBarTab { tab: _ } => {}
             HitDetail::TabBarTabClose { tab: _ } => {}
             HitDetail::TabBarScrollLeft => {}

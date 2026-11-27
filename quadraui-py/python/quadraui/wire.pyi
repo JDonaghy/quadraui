@@ -1807,11 +1807,11 @@ LayoutLeafNode = TypedDict(
         "form": NotRequired[FormDescriptor],
         "text_input": NotRequired[TextInputDescriptor],
         "text_field": NotRequired[TextFieldDescriptor],
-        "tree_table": NotRequired[TreeTableDescriptor],
         "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
         "menu_bar": NotRequired[MenuBarDescriptor],
         "password": NotRequired[PasswordDescriptor],
         "textarea": NotRequired[TextAreaDescriptor],
+        "tree_table": NotRequired[TreeTableDescriptor],
         "toolbar": NotRequired[ToolbarDescriptor],
         "number_input": NotRequired[NumberInputDescriptor],
         "combo_box": NotRequired[ComboBoxDescriptor],
@@ -1870,11 +1870,11 @@ class RenderFrameDict(TypedDict):
     form: NotRequired[Optional[FormDescriptor]]
     text_input: NotRequired[Optional[TextInputDescriptor]]
     text_field: NotRequired[Optional[TextFieldDescriptor]]
-    tree_table: NotRequired[Optional[TreeTableDescriptor]]
     tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
     menu_bar: NotRequired[Optional[MenuBarDescriptor]]
     password: NotRequired[Optional[PasswordDescriptor]]
     textarea: NotRequired[Optional[TextAreaDescriptor]]
+    tree_table: NotRequired[Optional[TreeTableDescriptor]]
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
     number_input: NotRequired[Optional[NumberInputDescriptor]]
     combo_box: NotRequired[Optional[ComboBoxDescriptor]]
@@ -2478,10 +2478,6 @@ class _HitDetailDataTableRow(TypedDict):
 class _HitDetailDataTableFooter(TypedDict):
     kind: Literal['data_table_footer']
 
-class _HitDetailTreeTableChevron(TypedDict):
-    kind: Literal['tree_table_chevron']
-    idx: int
-
 class _HitDetailTabBarTab(TypedDict):
     kind: Literal['tab_bar_tab']
     tab: int
@@ -2557,7 +2553,7 @@ class _HitDetailScrollScrollbarTrackAfter(TypedDict):
     kind: Literal['scroll_scrollbar_track_after']
 
 # The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`.
-HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTreeTableChevron, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
+HitDetail = Union[_HitDetailTreeRow, _HitDetailTreeChevron, _HitDetailListTitle, _HitDetailListItem, _HitDetailDataTableHeader, _HitDetailDataTableHeaderDivider, _HitDetailDataTableRow, _HitDetailDataTableFooter, _HitDetailTabBarTab, _HitDetailTabBarTabClose, _HitDetailTabBarScrollLeft, _HitDetailTabBarScrollRight, _HitDetailTabBarRightSegment, _HitDetailTextDisplayLine, _HitDetailTextDisplayScrollbarThumb, _HitDetailTextDisplayScrollbarTrackBefore, _HitDetailTextDisplayScrollbarTrackAfter, _HitDetailSplitFirstPane, _HitDetailSplitSecondPane, _HitDetailSplitDivider, _HitDetailSplitTreeDivider, _HitDetailTreeScrollbarTrackBefore, _HitDetailTreeScrollbarThumb, _HitDetailTreeScrollbarTrackAfter, _HitDetailExtraBody, _HitDetailWidgetBody, _HitDetailCanvasRegion, _HitDetailScrollBody, _HitDetailScrollScrollbarTrackBefore, _HitDetailScrollScrollbarThumb, _HitDetailScrollScrollbarTrackAfter]
 
 class _UiKeyPressedPayload(TypedDict):
     key: Key

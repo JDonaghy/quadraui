@@ -1943,11 +1943,11 @@ export interface LayoutLeafNode {
   form?: FormDescriptor;
   text_input?: TextInputDescriptor;
   text_field?: TextFieldDescriptor;
-  tree_table?: TreeTableDescriptor;
   tree_table_controller?: TreeTableControllerDescriptor;
   menu_bar?: MenuBarDescriptor;
   password?: PasswordDescriptor;
   textarea?: TextAreaDescriptor;
+  tree_table?: TreeTableDescriptor;
   toolbar?: ToolbarDescriptor;
   number_input?: NumberInputDescriptor;
   combo_box?: ComboBoxDescriptor;
@@ -2004,11 +2004,11 @@ export interface RenderFrameDict {
   form?: FormDescriptor | null;
   text_input?: TextInputDescriptor | null;
   text_field?: TextFieldDescriptor | null;
-  tree_table?: TreeTableDescriptor | null;
   tree_table_controller?: TreeTableControllerDescriptor | null;
   menu_bar?: MenuBarDescriptor | null;
   password?: PasswordDescriptor | null;
   textarea?: TextAreaDescriptor | null;
+  tree_table?: TreeTableDescriptor | null;
   toolbar?: ToolbarDescriptor | null;
   number_input?: NumberInputDescriptor | null;
   combo_box?: ComboBoxDescriptor | null;
@@ -2589,11 +2589,6 @@ export interface _HitDetailDataTableFooter {
   kind: "data_table_footer";
 }
 
-export interface _HitDetailTreeTableChevron {
-  kind: "tree_table_chevron";
-  idx: number;
-}
-
 export interface _HitDetailTabBarTab {
   kind: "tab_bar_tab";
   tab: number;
@@ -2692,7 +2687,7 @@ export interface _HitDetailScrollScrollbarTrackAfter {
 }
 
 /** The sub-region of a primitive a pointer event landed on -- see `HitDetail` in `quadraui-binding-core/src/hit.rs`. Narrow on `.kind`. */
-export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTreeTableChevron | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
+export type HitDetail = _HitDetailTreeRow | _HitDetailTreeChevron | _HitDetailListTitle | _HitDetailListItem | _HitDetailDataTableHeader | _HitDetailDataTableHeaderDivider | _HitDetailDataTableRow | _HitDetailDataTableFooter | _HitDetailTabBarTab | _HitDetailTabBarTabClose | _HitDetailTabBarScrollLeft | _HitDetailTabBarScrollRight | _HitDetailTabBarRightSegment | _HitDetailTextDisplayLine | _HitDetailTextDisplayScrollbarThumb | _HitDetailTextDisplayScrollbarTrackBefore | _HitDetailTextDisplayScrollbarTrackAfter | _HitDetailSplitFirstPane | _HitDetailSplitSecondPane | _HitDetailSplitDivider | _HitDetailSplitTreeDivider | _HitDetailTreeScrollbarTrackBefore | _HitDetailTreeScrollbarThumb | _HitDetailTreeScrollbarTrackAfter | _HitDetailExtraBody | _HitDetailWidgetBody | _HitDetailCanvasRegion | _HitDetailScrollBody | _HitDetailScrollScrollbarTrackBefore | _HitDetailScrollScrollbarThumb | _HitDetailScrollScrollbarTrackAfter;
 
 export interface _UiKeyPressedPayload {
   key: Key;
