@@ -192,6 +192,7 @@ use crate::primitives::palette::Palette;
 use crate::primitives::pipeline_view::{PipelineStage, PipelineView, StageStatus};
 use crate::primitives::toolbar::{Toolbar, ToolbarButton, ToolbarItemRole};
 use crate::primitives::tree::{TreeRow, TreeView};
+use crate::primitives::tree_table::TreeTable;
 use crate::types::{StyledText, WidgetId};
 
 /// How many rows around the scroll offset get a real [`A11yChild`] node.
@@ -1788,6 +1789,47 @@ impl A11yPrimitive for DataTable {
     }
 }
 
+/// A tree table reads as its wrapped table (the header row, the footer),
+/// with each body row carrying its tree level, place among its siblings
+/// and expand state, and its cells as children.
+impl A11yPrimitive for TreeTable {
+    fn a11y_info(&self) -> A11yInfo {
+        self.table.a11y_info()
+    }
+
+    fn a11y_children(&self) -> Vec<A11yChild> {
+        let table = &self.table;
+        let total = table.rows.len();
+        let positions = tree_path_positions(self.tree.iter().map(|n| n.path.as_slice()));
+        let mut children: Vec<A11yChild> = vec![data_table_header(table)];
+        children.extend(a11y_window(table.scroll_offset, total).map(|idx| {
+            let selected = table.selected_idx == Some(idx);
+            let info = match (self.tree.get(idx), positions.get(idx)) {
+                (Some(node), Some(&pos)) => {
+                    tree_row_info(A11yRole::Row, node.indent, node.is_expanded, pos, selected)
+                }
+                _ => in_set(
+                    A11yInfo::new()
+                        .with_role(A11yRole::Row)
+                        .with_selected(selected),
+                    idx,
+                    total,
+                ),
+            };
+            A11yChild::new(format!("row.{idx}"), info)
+                .with_children(row_cells(&table.rows[idx].cells))
+        }));
+        if let Some(footer) = &table.footer {
+            children.push(data_table_footer(footer));
+        }
+        children
+    }
+
+    fn a11y_focus_key(&self) -> Option<String> {
+        self.table.a11y_focus_key()
+    }
+}
+
 /// The column-header row: one `Cell` per [`Column`], carrying its title
 /// and, when that column is the current sort column, a value describing
 /// the direction — the same pair of signals `chrome.rs`'s `dialog_table`
@@ -1875,14 +1917,19 @@ fn parent_path(path: &[u16]) -> &[u16] {
 /// enough for this to matter in practice can revisit this with an
 /// incrementally maintained index instead of a full rescan per frame.
 fn tree_row_positions(rows: &[TreeRow]) -> Vec<(u32, u32)> {
+    tree_path_positions(rows.iter().map(|row| row.path.as_slice()))
+}
+
+/// [`tree_row_positions`] over any flattened row list's paths, in order.
+fn tree_path_positions<'a>(paths: impl Iterator<Item = &'a [u16]> + Clone) -> Vec<(u32, u32)> {
     let mut sizes: HashMap<&[u16], u32> = HashMap::new();
-    for row in rows {
-        *sizes.entry(parent_path(&row.path)).or_insert(0) += 1;
+    for path in paths.clone() {
+        *sizes.entry(parent_path(path)).or_insert(0) += 1;
     }
     let mut seen: HashMap<&[u16], u32> = HashMap::new();
-    rows.iter()
-        .map(|row| {
-            let parent = parent_path(&row.path);
+    paths
+        .map(|path| {
+            let parent = parent_path(path);
             let size = sizes[parent];
             let pos = {
                 let entry = seen.entry(parent).or_insert(0);
@@ -1922,17 +1969,37 @@ impl A11yPrimitive for TreeView {
     }
 }
 
-fn tree_row_child(tree: &TreeView, idx: usize, pos: u32, size: u32) -> A11yChild {
-    let row = &tree.rows[idx];
-    let mut info = A11yInfo::new()
-        .with_role(A11yRole::TreeItem)
-        .with_level(row.indent as u32 + 1)
+/// A tree row's own semantics, shared by a [`TreeView`] row and a
+/// [`TreeTable`] row: its level, its place among its siblings, whether it
+/// is selected and, for a branch, whether it is expanded.
+fn tree_row_info(
+    role: A11yRole,
+    indent: u16,
+    is_expanded: Option<bool>,
+    (pos, size): (u32, u32),
+    selected: bool,
+) -> A11yInfo {
+    let info = A11yInfo::new()
+        .with_role(role)
+        .with_level(indent as u32 + 1)
         .with_position_in_set(pos)
         .with_set_size(size)
-        .with_selected(tree.selected_path.as_deref() == Some(row.path.as_slice()));
-    if let Some(expanded) = row.is_expanded {
-        info = info.with_expanded(expanded);
+        .with_selected(selected);
+    match is_expanded {
+        Some(expanded) => info.with_expanded(expanded),
+        None => info,
     }
+}
+
+fn tree_row_child(tree: &TreeView, idx: usize, pos: u32, size: u32) -> A11yChild {
+    let row = &tree.rows[idx];
+    let mut info = tree_row_info(
+        A11yRole::TreeItem,
+        row.indent,
+        row.is_expanded,
+        (pos, size),
+        tree.selected_path.as_deref() == Some(row.path.as_slice()),
+    );
     if let Some(label) = non_empty(plain_text(&row.text)) {
         info = info.with_label(label);
     }

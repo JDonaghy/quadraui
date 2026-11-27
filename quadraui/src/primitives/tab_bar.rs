@@ -5420,7 +5420,10 @@ mod primitive_parity_tests {
             &crate::PaintEnv::new(&theme, &style),
         );
 
-        let measure = crate::primitives::layout_metrics::CharWidthMeasure(ctx.char_width);
+        let measure = crate::primitives::layout_metrics::LayoutCtxMeasure {
+            ctx: &ctx,
+            role: crate::FontRole::Chrome,
+        };
         let tab_name_widths: Vec<f32> = bar
             .tabs
             .iter()

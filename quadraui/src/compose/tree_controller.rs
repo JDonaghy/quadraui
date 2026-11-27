@@ -23,9 +23,8 @@
 //! sign convention: positive `delta.y` = scroll content up (decrease
 //! offset). Backends normalise their native direction before emitting.
 
-use crate::behaviour::nav::{NavKey, NavOutcome, NavRow, TreeNavCore};
+use crate::behaviour::nav::{NavKey, NavOutcome, NavRow, ScrollbarPress, TreeNavCore};
 use crate::interactive::KeyEvent;
-use crate::primitives::scrollbar::PressZone;
 use crate::primitives::tree::{tree_rename_insert, tree_rename_key, TreeRenameKey};
 use crate::{
     Backend, ButtonMask, Key, Modifiers, MouseButton, NamedKey, Point, Rect, Scrollbar,
@@ -759,23 +758,15 @@ impl TreeController {
         y: f32,
     ) -> TreeControllerEvent {
         let viewport_rows = self.viewport_rows(backend, tree_rect);
-        let max_offset = self.rows.len().saturating_sub(viewport_rows);
-        if max_offset == 0 {
-            return TreeControllerEvent::Ignored;
-        }
-
-        match sb.press_zone(y) {
-            PressZone::Thumb => {
-                self.nav
-                    .begin_scrollbar_drag(y, sb.travel(), max_offset as f32);
-                TreeControllerEvent::ScrollChanged
-            }
-            PressZone::Before => {
-                self.page_scroll(-(viewport_rows as isize), viewport_rows);
-                TreeControllerEvent::ScrollChanged
-            }
-            PressZone::After => {
-                self.page_scroll(viewport_rows as isize, viewport_rows);
+        match self.nav.press_scrollbar(
+            sb.press_zone(y),
+            y,
+            sb.travel(),
+            self.rows.len(),
+            viewport_rows,
+        ) {
+            ScrollbarPress::Ignored => TreeControllerEvent::Ignored,
+            ScrollbarPress::DragStarted | ScrollbarPress::Paged => {
                 TreeControllerEvent::ScrollChanged
             }
         }

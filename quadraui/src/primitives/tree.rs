@@ -572,30 +572,129 @@ impl TreeView {
 /// rationale and the `scroll_px` resolution rule.
 pub type TreePaintState = RowPaintState;
 
-// Shared `PaintSurface` implementation for rendering rows, chevrons,
-// icons, badges, and scrollbars across GTK, macOS, and Windows backends.
-// Every backend gets the full inline-rename treatment for `TreeRow::edit`
-// (caret, selection highlight, placeholder), and `Decoration::Error` /
-// `Warning` map to `theme.error_fg` / `warning_fg`, matching `ListView`.
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
-#[allow(dead_code)]
-pub(crate) mod native_surface_paint {
-    use super::{TreeRowEditState, TreeView, TreeViewLayout};
-    use crate::paint_surface::PaintSurface;
-    use crate::style::Style;
-    use crate::text_util::{safe_prefix, snap_to_char_boundary};
-    use crate::theme::Theme;
-    use crate::types::Decoration;
-    use crate::Rect;
+/// Tree cell: indent + chevron + icon, the column-0 content of a
+/// [`TreeView`] row and of a [`crate::TreeTable`] row. The geometry here
+/// is the one source both widgets, both unit systems and both layout and
+/// paint read; the pixel painter sits beside it.
+pub(crate) mod tree_cell {
+    use crate::primitives::layout_metrics::TextMeasure;
+    use crate::types::TreeStyle;
 
-    // Tree cell: indent + chevron + icon, the column-0 content of a row
-    // — shared so a future `tree_table` column 0 reuses it instead of
-    // re-deriving the same arithmetic.
-    pub(crate) mod tree_cell {
+    /// The unit a tree cell's geometry resolves in.
+    #[derive(Clone, Copy)]
+    pub(crate) enum TreeCellUnits<'a> {
+        /// A cell grid: one indent level is [`TreeStyle::indent`] columns
+        /// and a chevron is as wide as its glyph's character count.
+        Cells,
+        /// Pixels: one indent level is [`tree_indent_px`] (the style's
+        /// cell indent does not apply) and a chevron is measured through
+        /// `measure`.
+        Pixels {
+            line_height: f32,
+            measure: &'a dyn TextMeasure,
+        },
+    }
+
+    /// Pixel width of one indent level at `line_height`.
+    pub(crate) fn tree_indent_px(line_height: f32) -> f32 {
+        (line_height * 0.9).round()
+    }
+
+    /// Offset of an `indent`-deep row's chevron from the cell's left edge.
+    pub(crate) fn indent_offset(style: &TreeStyle, indent: u16, units: TreeCellUnits) -> f32 {
+        match units {
+            TreeCellUnits::Cells => indent as f32 * style.indent as f32,
+            TreeCellUnits::Pixels { line_height, .. } => {
+                indent as f32 * tree_indent_px(line_height)
+            }
+        }
+    }
+
+    /// Width of the expanded or collapsed chevron glyph. On pixels the
+    /// real glyph is measured where a codicon substitution exists (the
+    /// GUI backends); otherwise it is estimated as `line_height * 0.65`.
+    pub(crate) fn chevron_width(style: &TreeStyle, expanded: bool, units: TreeCellUnits) -> f32 {
+        let glyph = if expanded {
+            &style.chevron_expanded
+        } else {
+            &style.chevron_collapsed
+        };
+        match units {
+            TreeCellUnits::Cells => glyph.chars().count() as f32,
+            TreeCellUnits::Pixels {
+                line_height,
+                measure,
+            } => {
+                let _ = (measure, glyph);
+                #[cfg(any(
+                    feature = "gtk",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                ))]
+                {
+                    let _ = line_height;
+                    measure.width_of(&super::tree_chevron_glyph(style, expanded))
+                }
+                #[cfg(not(any(
+                    feature = "gtk",
+                    feature = "win",
+                    all(feature = "macos", target_os = "macos")
+                )))]
+                {
+                    line_height * 0.65
+                }
+            }
+        }
+    }
+
+    /// `(start, width)` of the chevron an `indent`-deep row paints,
+    /// relative to the cell's left edge; `None` for a leaf or when the
+    /// style hides chevrons.
+    pub(crate) fn chevron_extent(
+        style: &TreeStyle,
+        indent: u16,
+        is_expanded: Option<bool>,
+        units: TreeCellUnits,
+    ) -> Option<(f32, f32)> {
+        if !style.show_chevrons {
+            return None;
+        }
+        let expanded = is_expanded?;
+        Some((
+            indent_offset(style, indent, units),
+            chevron_width(style, expanded, units),
+        ))
+    }
+
+    /// The narrowest a tree cell may get with rows `max_indent` deep:
+    /// that indent, the wider of the two chevrons (when shown) and one
+    /// label character.
+    pub(crate) fn floor_width(style: &TreeStyle, max_indent: u16, units: TreeCellUnits) -> f32 {
+        let chevron = if style.show_chevrons {
+            chevron_width(style, true, units).max(chevron_width(style, false, units))
+        } else {
+            0.0
+        };
+        let one_char = match units {
+            TreeCellUnits::Cells => 1.0,
+            TreeCellUnits::Pixels { measure, .. } => measure.width_of("0"),
+        };
+        indent_offset(style, max_indent, units) + chevron + one_char
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    pub(crate) use paint::*;
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod paint {
         use crate::paint_surface::PaintSurface;
         use crate::types::{Color, Icon};
         use crate::Rect;
@@ -608,7 +707,7 @@ pub(crate) mod native_surface_paint {
         }
 
         /// Paint indent + chevron (already resolved by the caller, e.g.
-        /// via [`super::super::tree_chevron_glyph`]) + icon from
+        /// via [`crate::primitives::tree::tree_chevron_glyph`]) + icon from
         /// `row_rect.x + row_padding_x`; `leaf_gap` substitutes for a
         /// `None` chevron on a leaf (`is_expanded.is_none()`). Never
         /// paints the label — callers keep their own `StyledText`/badge
@@ -636,8 +735,8 @@ pub(crate) mod native_surface_paint {
                 chevron_bounds = Some(bounds);
                 // Same formula `layout_metrics::tree_layout_inner` uses to
                 // size the `Chevron` hit region for this row.
-                cursor_x =
-                    row_rect.x + super::super::chevron_end_x(row_padding_x, indent, indent_px, cw);
+                cursor_x = row_rect.x
+                    + crate::primitives::tree::chevron_end_x(row_padding_x, indent, indent_px, cw);
             } else if is_expanded.is_none() {
                 cursor_x += leaf_gap;
             }
@@ -788,6 +887,29 @@ pub(crate) mod native_surface_paint {
             }
         }
     }
+}
+
+// Shared `PaintSurface` implementation for rendering rows, chevrons,
+// icons, badges, and scrollbars across GTK, macOS, and Windows backends.
+// Every backend gets the full inline-rename treatment for `TreeRow::edit`
+// (caret, selection highlight, placeholder), and `Decoration::Error` /
+// `Warning` map to `theme.error_fg` / `warning_fg`, matching `ListView`.
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[allow(dead_code)]
+pub(crate) mod native_surface_paint {
+    use super::{TreeRowEditState, TreeView, TreeViewLayout};
+    use crate::paint_surface::PaintSurface;
+    use crate::style::Style;
+    use crate::text_util::{safe_prefix, snap_to_char_boundary};
+    use crate::theme::Theme;
+    use crate::types::Decoration;
+    use crate::Rect;
+
+    use super::tree_cell;
 
     /// Paint a [`TreeView`]'s content — background, rows
     /// (selection/decoration/chevron/icon/badge/text or inline-edit),
@@ -884,7 +1006,7 @@ pub(crate) mod native_surface_paint {
         surface.surface_push_clip(area);
         surface.surface_fill_rect(area, theme.tab_bar_bg);
 
-        let indent_px = (line_height * 0.9).round();
+        let indent_px = tree_cell::tree_indent_px(line_height);
         let header_height = (line_height * 1.2).round();
         let item_height =
             crate::primitives::layout_metrics::tree_row_pitch(tree, line_height as f64) as f32;
@@ -2573,40 +2695,18 @@ impl TreeView {
         layout: &TreeViewPrimitiveLayout,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<TreeEvent> {
-        use crate::behaviour::nav::{Edge, HorizontalDir, HorizontalNav, NavKey};
-        use crate::event::{Key, NamedKey};
+        use crate::behaviour::nav::{HorizontalNav, TreeKey};
+        use crate::event::Key;
         use crate::interactive::WidgetAction;
 
-        let vr = layout.viewport_rows.max(1);
-        let page = (vr - 1).max(1) as isize;
         let no_accel = !(event.modifiers.ctrl || event.modifiers.alt || event.modifiers.cmd);
-        let vim = no_accel && self.style.vim_keys;
-        let nav_key = NavKey::from_key(event).or(match event.key {
-            Key::Char('j') if vim => Some(NavKey::Down),
-            Key::Char('k') if vim => Some(NavKey::Up),
-            _ => None,
-        });
-        if let Some(nav_key) = nav_key {
-            let outcome = match nav_key {
-                NavKey::Up => state.nav.move_selection_by(&self.rows, -1, vr),
-                NavKey::Down => state.nav.move_selection_by(&self.rows, 1, vr),
-                NavKey::PageUp(_) => state.nav.move_selection_by(&self.rows, -page, vr),
-                NavKey::PageDown(_) => state.nav.move_selection_by(&self.rows, page, vr),
-                NavKey::Home => state
-                    .nav
-                    .move_selection_to_edge(&self.rows, Edge::Start, vr),
-                NavKey::End => state.nav.move_selection_to_edge(&self.rows, Edge::End, vr),
-            };
-            return self.nav_outcome(state, outcome);
-        }
-        match &event.key {
-            Key::Named(NamedKey::Left) | Key::Named(NamedKey::Right) => {
-                let dir = if event.key == Key::Named(NamedKey::Left) {
-                    HorizontalDir::Left
-                } else {
-                    HorizontalDir::Right
-                };
-                match state.nav.horizontal_nav(&self.rows, dir) {
+        match state
+            .nav
+            .handle_key(&self.rows, event, layout.viewport_rows, self.style.vim_keys)
+        {
+            TreeKey::Moved(outcome) => return self.nav_outcome(state, outcome),
+            TreeKey::Horizontal(nav) => {
+                return match nav {
                     HorizontalNav::Collapse(path) | HorizontalNav::Expand(path) => {
                         Handled::Event(TreeEvent::RowToggleExpand { path })
                     }
@@ -2616,14 +2716,17 @@ impl TreeView {
                     HorizontalNav::None => Handled::Consumed,
                 }
             }
-            Key::Named(NamedKey::Enter) => match state.nav.activate() {
-                Some(path) => Handled::Event(TreeEvent::RowActivated { path }),
-                None => Handled::Ignored,
-            },
-            Key::Char(' ') => match state.nav.toggle_expand(&self.rows) {
-                Some(path) => Handled::Event(TreeEvent::RowToggleExpand { path }),
-                None => Handled::Consumed,
-            },
+            TreeKey::Activate(Some(path)) => {
+                return Handled::Event(TreeEvent::RowActivated { path })
+            }
+            TreeKey::Activate(None) => return Handled::Ignored,
+            TreeKey::ToggleExpand(Some(path)) => {
+                return Handled::Event(TreeEvent::RowToggleExpand { path })
+            }
+            TreeKey::ToggleExpand(None) => return Handled::Consumed,
+            TreeKey::Unhandled => {}
+        }
+        match &event.key {
             Key::Char(c) if no_accel && !c.is_control() => {
                 let from = state.nav.selected_row_index(&self.rows).unwrap_or(0);
                 let labels: Vec<String> = self
@@ -2703,25 +2806,22 @@ impl TreeView {
         layout: &TreeViewPrimitiveLayout,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<TreeEvent> {
-        use crate::primitives::scrollbar::PressZone;
-        let vr = layout.viewport_rows;
-        let max_offset = self.rows.len().saturating_sub(vr);
-        if max_offset == 0 {
-            return Handled::Consumed;
-        }
+        use crate::behaviour::nav::ScrollbarPress;
         let before = state.nav.scroll_offset();
-        match sb.press_zone(y) {
-            PressZone::Thumb => {
-                state
-                    .nav
-                    .begin_scrollbar_drag(y, sb.travel(), max_offset as f32);
+        match state.nav.press_scrollbar(
+            sb.press_zone(y),
+            y,
+            sb.travel(),
+            self.rows.len(),
+            layout.viewport_rows,
+        ) {
+            ScrollbarPress::DragStarted => {
                 cx.capture_pointer();
-                return Handled::Consumed;
+                Handled::Consumed
             }
-            PressZone::Before => state.nav.page_scroll(-(vr as isize), self.rows.len(), vr),
-            PressZone::After => state.nav.page_scroll(vr as isize, self.rows.len(), vr),
+            ScrollbarPress::Paged => self.scroll_outcome(before, state),
+            ScrollbarPress::Ignored => Handled::Consumed,
         }
-        self.scroll_outcome(before, state)
     }
 }
 

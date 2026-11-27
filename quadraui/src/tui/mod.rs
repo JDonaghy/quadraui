@@ -93,6 +93,8 @@ pub mod vt_testing;
 // zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
+#[doc(hidden)]
+pub use crate::primitives::tree_table::paint_cells::{draw_tree_table, tree_table_layout};
 pub use backend::TuiBackend;
 #[doc(hidden)]
 pub use board::{draw_board, tui_board_layout};
@@ -107,8 +109,9 @@ pub use data_table::draw_data_table;
 pub(crate) use data_table::draw_data_table_inner;
 #[doc(hidden)]
 pub use data_table::{data_table_layout, draw_data_table_with_glyphs, draw_data_table_with_state};
-#[doc(hidden)]
-pub use data_table::{draw_tree_table, tree_table_layout};
+pub(crate) use data_table::{
+    draw_cell, draw_data_table_body, draw_row, resolve_row_colors, RowPaintCtx,
+};
 #[doc(hidden)]
 pub use diff_view::draw_diff_view;
 #[doc(hidden)]
@@ -153,6 +156,7 @@ pub use crate::primitives::tab_bar::{
 #[doc(hidden)]
 pub use text::truncate_to_width_ellipsis;
 pub use text::{char_cell_width, display_width, truncate_to_width};
+pub(crate) use tree::paint_tree_cell;
 pub use tree::{draw_tree, tui_tree_layout};
 #[doc(hidden)]
 pub use tree::{draw_tree_with_scroll_px, tui_tree_layout_with_scroll_px};

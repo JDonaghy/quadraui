@@ -4456,7 +4456,10 @@ mod coverage {
 
     fn assert_tree_table_event(e: TreeTableEvent) {
         match e {
-            TreeTableEvent::HeaderClicked { col: _ } => {}
+            TreeTableEvent::SortChanged {
+                col: _,
+                ascending: _,
+            } => {}
             TreeTableEvent::RowActivated { idx: _, path: _ } => {}
             TreeTableEvent::RowSelected { idx: _, path: _ } => {}
             TreeTableEvent::RowDoubleClicked { idx: _, path: _ } => {}
@@ -4470,6 +4473,13 @@ mod coverage {
                 paths: _,
             } => {}
             TreeTableEvent::ToggleExpanded { path: _, expand: _ } => {}
+            TreeTableEvent::ScrollChanged { scroll_offset: _ } => {}
+            TreeTableEvent::ChildrenRequested { idx: _, path: _ } => {}
+            TreeTableEvent::ContextMenuRequested {
+                idx: _,
+                path: _,
+                position: _,
+            } => {}
         }
     }
 

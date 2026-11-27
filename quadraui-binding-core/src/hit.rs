@@ -841,7 +841,7 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
                             *scroll_offset,
                             *total_rows,
                         ) {
-                            quadraui::TreeTableHit::Chevron { idx } => {
+                            quadraui::TreeTableHit::Chevron(idx) => {
                                 return Some((*id, HitDetail::TreeTableChevron { idx }));
                             }
                             _ => return Some((*id, HitDetail::ExtraBody)),

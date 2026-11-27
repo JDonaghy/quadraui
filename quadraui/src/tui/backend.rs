@@ -4247,7 +4247,7 @@ mod tests {
             TreeTableNode::new(vec![1], 0),
             TreeTableNode::new(vec![2], 0),
         ];
-        crate::TreeTable { table, tree }
+        crate::TreeTable::new(table, tree)
     }
 
     #[test]
