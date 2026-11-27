@@ -375,7 +375,7 @@ jobs:
           echo "::warning title=Public-API break accumulating for the next release::$MSG"
 
   doc:
-    # #797: docs.rs renders `tui`/`gtk`/`win`/`terminal`/`layout` only if they
+    # #797: docs.rs renders `tui`/`tui-images`/`gtk`/`win`/`terminal`/`layout` only if they
     # build clean under `cargo doc` — this is the local proxy for that, run with
     # the same `-D warnings` bar as every other CI step (via `RUSTDOCFLAGS`,
     # since `RUSTFLAGS` doesn't reach rustdoc). `macos` is excluded here:
@@ -398,7 +398,7 @@ jobs:
     # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
     if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
     # #1292: apt-get install + `cargo doc` across
-    # tui,gtk,win,terminal,layout,a11y,control, normally under 10 minutes
+    # tui,tui-images,gtk,win,terminal,layout,a11y,control, normally under 10 minutes
     # with a warm cache.
     timeout-minutes: 25
     steps:
@@ -409,10 +409,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: cargo doc --no-deps -D warnings (tui, gtk, win, terminal, layout, a11y, control)
+      - name: cargo doc --no-deps -D warnings (tui, tui-images, gtk, win, terminal, layout, a11y, control)
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps -p quadraui --features tui,gtk,win,terminal,layout,a11y,control
+        run: cargo doc --no-deps -p quadraui --features tui,tui-images,gtk,win,terminal,layout,a11y,control
 
   example-coverage:
     # #311: block a PR that adds a new `examples/tui_*.rs` without the

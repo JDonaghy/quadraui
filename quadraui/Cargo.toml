@@ -195,10 +195,11 @@ exclude = [
     "docs/decisions/BINDING_VERSION_POLICY.md",
 ]
 
-# docs.rs builds every optional feature (`tui`/`gtk`/`macos`/`win`/`terminal`/
-# `layout`) so a published crate actually renders all backends' public API
-# instead of just the always-on core (none of them are default features —
-# see the `[features]` table below). `rustdoc-args` sets `--cfg docsrs`, which
+# docs.rs builds every optional feature (`tui`/`tui-images`/`gtk`/`macos`/
+# `win`/`terminal`/`layout`/`a11y`/`control`) so a published crate actually
+# renders all backends' public API instead of just the always-on core (none
+# of them are default features — see the `[features]` table below).
+# `rustdoc-args` sets `--cfg docsrs`, which
 # is what `src/lib.rs`'s `#![cfg_attr(docsrs, feature(doc_cfg))]` and each
 # feature-gated `pub mod`'s `#[cfg_attr(docsrs, doc(cfg(feature = "...")))]`
 # key off of, so the rendered docs show each backend module's feature
@@ -267,7 +268,7 @@ union_now_doc_hidden = "allow"
 union_pub_field_now_doc_hidden = "allow"
 
 [package.metadata.docs.rs]
-features = ["tui", "gtk", "win", "terminal", "macos", "layout", "a11y", "control"]
+features = ["tui", "tui-images", "gtk", "win", "terminal", "macos", "layout", "a11y", "control"]
 rustdoc-args = ["--cfg", "docsrs"]
 
 [lib]
