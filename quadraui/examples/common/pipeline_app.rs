@@ -212,6 +212,9 @@ impl PipelineApp {
             PipelineEvent::KeyPressed { key, .. } => {
                 self.last_message = format!("Key: {}", key);
             }
+            PipelineEvent::StageFocused { index } => {
+                self.focused_stage = Some(index);
+            }
         }
     }
 }

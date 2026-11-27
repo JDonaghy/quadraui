@@ -117,6 +117,10 @@ impl AppLogic for FormApp {
     }
 
     fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        if let UiEvent::TextCopied(text) = &event {
+            self.applied.push(format!("copied({text})"));
+            return Reaction::Continue;
+        }
         let UiEvent::Form(id, form_event) = event else {
             return Reaction::Continue;
         };
@@ -294,4 +298,42 @@ fn a_space_on_a_focused_toggle_flips_it_instead_of_typing_into_it() {
         &FieldKind::Toggle { value: true }
     );
     assert!(driver.screen_contains("[x]"), "{}", driver.screen());
+}
+
+fn chord(driver: &mut TuiDriver<FormApp>, ch: char) {
+    driver.dispatch(UiEvent::KeyPressed {
+        key: Key::Char(ch),
+        modifiers: Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        },
+        repeat: false,
+    });
+}
+
+#[test]
+fn ctrl_a_then_ctrl_c_copies_a_focused_text_fields_value() {
+    let mut driver = driver();
+    click_row(&mut driver, "Font");
+    driver.app_mut().applied.clear();
+
+    chord(&mut driver, 'a');
+    chord(&mut driver, 'c');
+    assert_eq!(driver.app().applied, vec!["copied(Mono)".to_string()]);
+}
+
+#[test]
+fn ctrl_z_on_a_focused_text_field_does_not_type_a_z() {
+    let mut driver = driver();
+    click_row(&mut driver, "Font");
+    driver.app_mut().applied.clear();
+
+    chord(&mut driver, 'z');
+    assert!(
+        driver.app().applied.is_empty(),
+        "{:?}",
+        driver.app().applied
+    );
+    assert!(driver.screen_contains("Mono"), "{}", driver.screen());
+    assert!(!driver.screen_contains("Monoz"), "{}", driver.screen());
 }

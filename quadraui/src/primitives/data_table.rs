@@ -115,21 +115,13 @@ pub struct Column {
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum ColumnWidth {
-    /// Fixed width in surface-native units: cells on TUI, pixels on
-    /// GTK/macOS/Win. Not affected by flex distribution.
-    ///
-    /// Ambiguous across backends: a column tuned at `Fixed(10.0)` reads as
-    /// 10 cells on TUI but 10 *pixels* on a pixel backend — about one
-    /// average glyph wide instead of ten. Use [`ColumnWidth::FixedCells`]
-    /// (always reads as the same cell count) or [`ColumnWidth::FixedPx`]
-    /// (always reads as the same pixel count) instead, each of which
-    /// converts to the other backend family's native unit rather than
-    /// reinterpreting the number outright.
-    #[deprecated(
-        since = "0.9.0",
-        note = "ambiguous unit (cells on TUI, pixels on GTK/macOS/Win); use FixedCells or FixedPx instead"
-    )]
-    Fixed(f32),
+    /// Fixed width in the backend's **native unit**: exactly `n` cells on
+    /// TUI and exactly `n` pixels/DIPs on GTK/macOS/Win. Deliberately
+    /// unit-ambiguous across backend families, for a layout tuned per
+    /// backend; [`ColumnWidth::FixedCells`] and [`ColumnWidth::FixedPx`]
+    /// instead keep one meaning everywhere by converting to the other
+    /// family's unit. Not affected by flex distribution.
+    Native(f32),
     /// Fixed width in **cells**: exactly `n` cells on TUI, and `n` times
     /// the pixel backend's own average glyph width on GTK/macOS/Win — so
     /// the same declared width reads as roughly the same number of
@@ -185,13 +177,10 @@ pub enum SortDirection {
 /// Optional app-supplied override for the sort-direction glyphs
 /// `native_surface_paint` appends to a sorted column's header title.
 ///
-/// A separate, `#[non_exhaustive]` type rather than fields on
-/// [`DataTable`] — that descriptor stays exhaustive for downstream
-/// struct literals, so a glyph slot can only ever be added here.
-/// Passed as an extra argument to the GUI paint module's
-/// `paint_with_state`, which every backend call site hands `None` until
-/// an app opts in, so today's codicon sort arrows render byte-for-byte
-/// unchanged by default.
+/// A separate, `#[non_exhaustive]` type carried by
+/// [`DataTable::glyphs`], so a glyph slot can be added here without
+/// touching the descriptor. `None` (the default) renders the codicon sort
+/// arrows on pixel backends and `▲`/`▼` on TUI.
 ///
 /// Each slot is an [`Icon`] — `glyph` for when
 /// [`crate::Backend::nerd_fonts_enabled`] is set, `fallback` otherwise
@@ -206,10 +195,12 @@ pub enum SortDirection {
 /// not truncated here. `Icon::color` is resolved but not painted on
 /// TUI either way: the header always uses the theme's header
 /// foreground colour.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub struct DataTableGlyphs {
+    #[serde(default)]
     sort_ascending: Option<Icon>,
+    #[serde(default)]
     sort_descending: Option<Icon>,
 }
 
@@ -278,6 +269,8 @@ impl DataTableGlyphs {
 ///     column_overrides: vec![],
 ///     footer: None,
 ///     bordered: false,
+///     striped: false,
+///     glyphs: None,
 /// };
 ///
 /// let layout = table.layout(80.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(20.0));
@@ -350,6 +343,17 @@ pub struct DataTable {
     /// backend's rasteriser grows a border to match.
     #[serde(default)]
     pub bordered: bool,
+    /// Tint every other body row with
+    /// [`crate::theme::Theme::row_alt_bg`] ("zebra striping"), keyed on
+    /// the absolute row index so a row keeps its shade while scrolling.
+    /// A caller's [`crate::primitive::PaintState::striped`] also turns it
+    /// on; `false` (the default) paints no stripe.
+    #[serde(default)]
+    pub striped: bool,
+    /// Sort-direction glyph overrides for the header — see
+    /// [`DataTableGlyphs`]. `None` keeps each backend's default arrows.
+    #[serde(default)]
+    pub glyphs: Option<DataTableGlyphs>,
 }
 
 /// Events a `DataTable` emits back to the app.
@@ -382,6 +386,19 @@ pub enum DataTableEvent {
     /// sorted, de-duplicated selection, not just the row that changed —
     /// see [`crate::types::apply_selection_gesture`].
     SelectionSet { indices: Vec<usize> },
+    /// The widget scrolled — a wheel, a scrollbar gesture, or a cursor
+    /// move brought its row into view. The app stores `scroll_offset` as
+    /// [`DataTable::scroll_offset`].
+    ScrollChanged { scroll_offset: usize },
+    /// Left/Right moved the keyboard's column cursor to `col`.
+    ColumnFocused { col: usize },
+    /// The user asked for row `idx`'s context menu (right-click);
+    /// `position` is where, in the same coordinates the table was laid
+    /// out in.
+    ContextMenuRequested {
+        idx: usize,
+        position: crate::event::Point,
+    },
 }
 
 // ── Layout ──────────────────────────────────────────────────────────────
@@ -422,6 +439,9 @@ pub enum DataTableHit {
     Row { idx: usize },
     /// Click on the pinned footer/summary row.
     Footer,
+    /// Click on the vertical scrollbar's track
+    /// ([`DataTableLayout::v_scrollbar_track`]).
+    Scrollbar,
     /// Click on empty space below the last row.
     Empty,
 }
@@ -495,6 +515,20 @@ pub struct DataTableLayout {
     /// shift an incoming `y` down by this amount before comparing
     /// against them.
     pub inset_y: f32,
+    /// The vertical scrollbar's track, relative to the table's own
+    /// origin: the rightmost [`Self::scrollbar_width`] of the interior,
+    /// from below the header to above the footer. `Some` only when
+    /// [`DataTable::show_scrollbar`] is set and the rows overflow. Every
+    /// painter draws the track here and [`Self::hit_test`] resolves it to
+    /// [`DataTableHit::Scrollbar`], so the two never disagree.
+    pub v_scrollbar_track: Option<crate::event::Rect>,
+    /// How far the first visible row is shifted up past the header, in
+    /// the same units as [`Self::row_height`] — the sub-row remainder of a
+    /// pixel-precise scroll ([`DataTable::scroll_sub_row_px`]). `0.0` from
+    /// [`DataTable::layout`]; a painter that scrolls by a fraction of a
+    /// row sets it on the layout it returns, so [`Self::hit_test`]
+    /// resolves rows at the offset they were painted at.
+    pub scroll_sub_px: f32,
 }
 
 /// Grab zone half-width for column divider detection (surface units).
@@ -520,12 +554,12 @@ impl DataTableLayout {
     /// when the table isn't [`DataTable::bordered`], so this is an
     /// identity add-on to the pre-existing behaviour.
     ///
-    /// `pub(crate)`, not private: [`crate::primitives::tree_table::TreeTableLayout::hit_test`]
-    /// reuses it to convert a chevron hit-test's incoming pointer `x`
-    /// into the same content space [`TreeTableLayout::chevrons`] stores
-    /// its bounds in, rather than re-deriving this formula.
+    /// Public so every caller converting a pointer into column space —
+    /// [`crate::primitives::tree_table::TreeTableLayout::hit_test`]'s
+    /// chevron test, a host's own divider drag — reuses this formula
+    /// rather than re-deriving it.
     #[inline]
-    pub(crate) fn content_x(&self, x: f32) -> f32 {
+    pub fn content_x(&self, x: f32) -> f32 {
         (x - self.inset_x) + self.h_scroll
     }
 
@@ -574,6 +608,15 @@ impl DataTableLayout {
         {
             return DataTableHit::Empty;
         }
+        if let Some(track) = self.v_scrollbar_track {
+            if x >= track.x
+                && x < track.x + track.width
+                && y >= track.y
+                && y < track.y + track.height
+            {
+                return DataTableHit::Scrollbar;
+            }
+        }
         let y = y - self.inset_y;
         if y < self.header_height {
             // The vertical scrollbar owns its strip outright — never let
@@ -601,20 +644,19 @@ impl DataTableLayout {
                 None => DataTableHit::Empty,
             };
         }
-        // Row resolution is intentionally purely `y`-based and does NOT
-        // consult `in_v_scrollbar_strip` — a v-scrollbar-track click here
-        // falls through to `Row { .. }` as row resolution never looked at
-        // `x` at all. This is pre-existing behaviour. Callers that own a
-        // vertical scrollbar (e.g. coord-tui's `audit_scrollbar_hit`) are
-        // expected to intercept the strip themselves before calling `hit_test`.
+        // Rows resolve through the inverse of the painters' own row walk,
+        // so a sub-row scroll hit-tests the row painted under `y`.
         let body_bottom = self.header_height + self.visible_rows as f32 * self.row_height;
         if y < body_bottom {
-            let row_in_viewport = ((y - self.header_height) / self.row_height).floor() as usize;
-            let abs_idx = scroll_offset + row_in_viewport;
-            return if abs_idx < total_rows {
-                DataTableHit::Row { idx: abs_idx }
-            } else {
-                DataTableHit::Empty
+            return match crate::primitives::row_stack::row_index_at(
+                y,
+                self.header_height,
+                self.row_height,
+                scroll_offset,
+                self.scroll_sub_px,
+            ) {
+                Some(idx) if idx < total_rows => DataTableHit::Row { idx },
+                _ => DataTableHit::Empty,
             };
         }
         if self.footer_height > 0.0 && y < body_bottom + self.footer_height {
@@ -686,7 +728,7 @@ impl DataTableLayout {
     /// position and every column — including the last one — returns to
     /// exactly its starting value.
     ///
-    /// A `Fixed`-declared last column still absorbs: `drag_divider` already
+    /// A fixed-width last column still absorbs: `drag_divider` already
     /// pins every column as a numeric override regardless of its declared
     /// [`ColumnWidth`], so this falls out of the existing model rather than
     /// being a new special case.
@@ -823,6 +865,14 @@ impl DataTable {
         } else {
             0
         };
+        let v_scrollbar_track = (sb_w > 0.0 && self.rows.len() > visible_rows).then(|| {
+            crate::event::Rect::new(
+                viewport_width - inset_x - sb_w,
+                inset_y + header_height,
+                sb_w,
+                (inner_height - header_height - footer_height).max(0.0),
+            )
+        });
         DataTableLayout {
             header_height,
             row_height,
@@ -837,6 +887,8 @@ impl DataTable {
             h_scroll: self.h_scroll,
             inset_x,
             inset_y,
+            v_scrollbar_track,
+            scroll_sub_px: 0.0,
         }
     }
 
@@ -947,12 +999,12 @@ where
     let mut remaining = viewport_width;
     let mut total_flex = 0.0_f32;
 
-    // Pass 1: resolve Fixed/FixedCells/FixedPx and Content columns,
+    // Pass 1: resolve Native/FixedCells/FixedPx and Content columns,
     // accumulate flex weight. Column overrides replace the original
     // strategy with a literal native-unit width.
     //
     // Overrides are honored at face value — NOT clamped to `remaining`.
-    // Fixed/FixedCells/FixedPx/Content columns are still clamped: they
+    // Native/FixedCells/FixedPx/Content columns are still clamped: they
     // come from the table's own declared shape, which is expected to fit
     // the budget it was resolved against. An override, by contrast, is a deliberate
     // divider-drag request that may legitimately ask for more than
@@ -973,8 +1025,7 @@ where
             continue;
         }
         match col.width {
-            #[allow(deprecated)] // `ColumnWidth::Fixed` is `#[deprecated]`.
-            ColumnWidth::Fixed(w) => {
+            ColumnWidth::Native(w) => {
                 let w = w.min(remaining).max(0.0);
                 widths.push(w);
                 remaining -= w;
@@ -1526,6 +1577,37 @@ pub(crate) mod native_surface_paint {
         )
     }
 
+    /// Paint `table` at an already-resolved `layout` with the default
+    /// body row — [`paint_with_state`] minus its own layout pass, for a
+    /// caller (the widget's `Primitive::paint`) that hit-tests against the
+    /// same `layout` it paints.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn paint_laid_out(
+        table: &DataTable,
+        surface: &mut dyn PaintSurface,
+        theme: &Theme,
+        rect: Rect,
+        line_height: f32,
+        state: &DataTablePaintState,
+        nerd_fonts_enabled: bool,
+        layout: DataTableLayout,
+    ) -> DataTableLayout {
+        paint_with_layout(
+            table,
+            surface,
+            theme,
+            rect,
+            line_height,
+            state,
+            None,
+            nerd_fonts_enabled,
+            layout,
+            |surface, ctx, row_y, idx, hovered, striped| {
+                paint_row(surface, ctx, row_y, idx, hovered, striped, None)
+            },
+        )
+    }
+
     /// [`paint_with_state`]'s header/body/scrollbar/footer skeleton,
     /// generalised over how a body row paints (`body_row(surface, ctx,
     /// row_y, abs_idx, hovered_idx, striped)` stands in for [`paint_row`]'s
@@ -1546,7 +1628,7 @@ pub(crate) mod native_surface_paint {
         state: &DataTablePaintState,
         glyphs: Option<&DataTableGlyphs>,
         nerd_fonts_enabled: bool,
-        layout: DataTableLayout,
+        mut layout: DataTableLayout,
         mut body_row: impl FnMut(
             &mut dyn PaintSurface,
             &TablePaintCtx<'_>,
@@ -1556,6 +1638,7 @@ pub(crate) mod native_surface_paint {
             bool,
         ),
     ) -> DataTableLayout {
+        layout.scroll_sub_px = table.scroll_sub_row_px(line_height, state.scroll_px);
         if rect.width <= 0.0 || rect.height <= 0.0 {
             return layout;
         }
@@ -1569,6 +1652,8 @@ pub(crate) mod native_surface_paint {
             line_height,
         };
         surface.surface_push_clip(rect);
+        let glyphs = glyphs.or(table.glyphs.as_ref());
+        let striped = state.striped || table.striped;
 
         // ── Header ───────────────────────────────────────────────────────
         paint_header(surface, &ctx, glyphs, nerd_fonts_enabled);
@@ -1581,7 +1666,7 @@ pub(crate) mod native_surface_paint {
         // `layout_row_stack` — that function's doc carries why DataTable
         // needs the count-bounded, unclamped, unclipped walk.
         let scroll_offset = table.effective_scroll_offset(line_height, state.scroll_px);
-        let sub_px = table.scroll_sub_row_px(line_height, state.scroll_px);
+        let sub_px = layout.scroll_sub_px;
         let body_h = (rect.height - header_height - footer_h - layout.h_scrollbar_height).max(0.0);
         let visible = (layout.visible_rows + usize::from(sub_px > 0.0))
             .min(table.rows.len().saturating_sub(scroll_offset));
@@ -1610,14 +1695,7 @@ pub(crate) mod native_surface_paint {
             |_| (line_height, ()),
         );
         for r in rows {
-            body_row(
-                surface,
-                &ctx,
-                r.bounds.y,
-                r.idx,
-                state.hovered_idx,
-                state.striped,
-            );
+            body_row(surface, &ctx, r.bounds.y, r.idx, state.hovered_idx, striped);
         }
 
         if body_clip {
@@ -1625,16 +1703,12 @@ pub(crate) mod native_surface_paint {
         }
 
         // ── Scrollbars ───────────────────────────────────────────────────
-        if table.show_scrollbar
-            && table.rows.len() > layout.visible_rows
-            && layout.scrollbar_width > 0.0
-        {
-            let sb_x = rect.x + rect.width - layout.scrollbar_width;
+        if let Some(local) = layout.v_scrollbar_track {
             let track = Rect::new(
-                sb_x,
-                rect.y + header_height,
-                layout.scrollbar_width,
-                (rect.height - header_height - footer_h).max(0.0),
+                rect.x + local.x,
+                rect.y + local.y,
+                local.width,
+                local.height,
             );
             // `vscrollbar_thumb` re-resolves `scroll_offset`/`scroll_px`
             // itself, matching `TreeView`/`ListView`. `Scrollbar`'s own
@@ -1809,6 +1883,8 @@ pub(crate) mod native_surface_paint {
                 column_overrides: Vec::new(),
                 footer: None,
                 bordered: false,
+                striped: false,
+                glyphs: None,
             }
         }
 
@@ -2366,6 +2442,93 @@ impl DataTablePrimitiveLayout {
     }
 }
 
+/// One addressable part of a laid-out [`DataTable`], packed into a
+/// [`crate::interactive::SubTarget`] for hover/press routing and the
+/// frame's sub-region zones.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataTableSubPart {
+    /// Column `col`'s header cell.
+    Header(usize),
+    /// The divider to the right of column `col`'s header.
+    HeaderDivider(usize),
+    /// Body row `idx` (absolute, into [`DataTable::rows`]).
+    Row(usize),
+    /// The vertical scrollbar track.
+    Scrollbar,
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl DataTableSubPart {
+    /// This part as a [`crate::interactive::SubTarget`].
+    pub fn sub_target(self) -> crate::interactive::SubTarget {
+        let (kind, idx) = match self {
+            Self::Header(i) => (1u64, i as u64),
+            Self::HeaderDivider(i) => (2, i as u64),
+            Self::Row(i) => (3, i as u64),
+            Self::Scrollbar => (4, 0),
+        };
+        crate::interactive::SubTarget((kind << 32) | (idx & 0xffff_ffff))
+    }
+
+    /// The part `sub` names, or `None` for a target this widget never
+    /// produces.
+    pub fn from_sub_target(sub: crate::interactive::SubTarget) -> Option<Self> {
+        let idx = (sub.0 & 0xffff_ffff) as usize;
+        match sub.0 >> 32 {
+            1 => Some(Self::Header(idx)),
+            2 => Some(Self::HeaderDivider(idx)),
+            3 => Some(Self::Row(idx)),
+            4 => Some(Self::Scrollbar),
+            _ => None,
+        }
+    }
+
+    /// The body row this part is, if it is one.
+    pub fn row(self) -> Option<usize> {
+        match self {
+            Self::Row(i) => Some(i),
+            _ => None,
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl DataTable {
+    /// The row paint state for one paint: hover from the runtime's
+    /// pointer state for this table (falling back to the caller's own
+    /// [`crate::primitive::PaintState`]), and the caller's pixel-precise
+    /// scroll, press and stripe.
+    fn row_paint_state(&self, env: &crate::PaintEnv) -> DataTablePaintState {
+        let in_range = |i: usize| (i < self.rows.len()).then_some(i);
+        let row_of = |sub: Option<crate::interactive::SubTarget>| {
+            sub.and_then(DataTableSubPart::from_sub_target)
+                .and_then(DataTableSubPart::row)
+                .and_then(in_range)
+        };
+        DataTablePaintState::default()
+            .with_hovered_idx(row_of(env.hovered_sub(&self.id)).or(env.state.hovered_idx()))
+            .with_pressed_idx(row_of(env.pressed_sub(&self.id)).or(env.state.pressed_idx()))
+            .with_scroll_px(env.state.scroll_px())
+            .with_striped(self.striped || env.state.striped())
+    }
+}
+
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
@@ -2376,12 +2539,14 @@ impl crate::primitive::Primitive for DataTable {
     type Layout = DataTablePrimitiveLayout;
     type Event = DataTableEvent;
 
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
-        // Same TUI-vs-pixel-backend discriminator `ListView`'s own
-        // `Primitive::layout` uses — see that impl's doc for why
-        // `ctx.units()` (TUI's whole-cell `line_height` convention vs. a
-        // real pixel font metric) is reliable even when both features
-        // are compiled into the same binary.
+        // `ctx.units()` separates TUI's whole-cell `line_height`
+        // convention from a real pixel font metric, even when both
+        // features are compiled into the same binary.
         #[cfg(feature = "tui")]
         if ctx.units() == crate::primitive::Units::Cells {
             let area = crate::tui::backend::q_rect_to_ratatui(rect);
@@ -2395,7 +2560,13 @@ impl crate::primitive::Primitive for DataTable {
                 layout,
             };
         }
-        let measure = layout_metrics::CharWidthMeasure(ctx.char_width);
+        // Content columns measure through the backend's own text
+        // measurer, the same metric the painter positions text with, so
+        // the column a click resolves to is the column painted there.
+        let measure = layout_metrics::LayoutCtxMeasure {
+            ctx,
+            role: crate::FontRole::Chrome,
+        };
         let layout = layout_metrics::pixel_data_table_layout(
             self,
             rect.width,
@@ -2419,58 +2590,39 @@ impl crate::primitive::Primitive for DataTable {
         surface: &mut dyn crate::paint_surface::PaintSurface,
         env: &crate::PaintEnv,
     ) {
-        let theme = env.theme();
         #[cfg(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         ))]
         {
-            // No live hover/press/scroll tracking reaches `Primitive::paint`
-            // (its signature carries only `Self::Layout`, `PaintSurface`,
-            // `Theme` and `Style` — see `crate::primitive::PaintState`'s
-            // own doc for why that's a future widget-contract step, not
-            // this one), so this paints the same "nothing hovered/pressed,
-            // whole-row scroll" state a bare `DataTablePaintState::default()`
-            // always reports. Unlike `ListView`/`TreeView`'s own
-            // `native_surface_paint::paint`, `DataTable`'s pixel painter
-            // (`native_surface_paint::paint_with_state`) takes the whole
-            // `DataTablePaintState` rather than unpacked
-            // hovered_idx/pressed_idx arguments, so it is what a future
-            // `Primitive::paint` revision would thread a real,
-            // backend-tracked `DataTablePaintState` through unchanged.
-            let state = DataTablePaintState::default();
-            native_surface_paint::paint_with_state(
+            let state = self.row_paint_state(env);
+            native_surface_paint::paint_laid_out(
                 self,
                 surface,
-                theme,
+                env.theme(),
                 layout.area,
                 layout.line_height,
                 &state,
-                /* glyphs */ None,
                 layout.nerd_fonts_enabled,
+                layout.layout.clone(),
             );
         }
-        // A `tui`-only build has no `PaintSurface` to paint into at all —
-        // `self` reaching the screen on TUI goes through `Self::paint_cells`
-        // instead, which `DrawsPrimitives::draw_primitive`'s default body
-        // calls in place of this method whenever `Backend::cell_surface`
-        // answers `Some`.
+        // A `tui`-only build has no `PaintSurface` to paint into at all;
+        // TUI paints through `Self::paint_cells`.
         #[cfg(not(any(
             feature = "gtk",
             feature = "win",
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme);
+            let _ = (layout, surface, env);
         }
     }
 
-    /// Delegates straight to [`crate::tui::draw_data_table`] — the exact
-    /// function [`crate::tui::backend::TuiBackend::draw_data_table`]
-    /// itself calls — so painting `DataTable` through
-    /// [`crate::primitive::Primitive`] on TUI is byte-for-byte identical
-    /// to painting it through `Backend::draw_data_table` by construction.
+    /// Paints through the TUI rasteriser
+    /// [`crate::tui::draw_data_table`] shares, with this paint's row
+    /// state and the descriptor's glyphs.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -2478,26 +2630,506 @@ impl crate::primitive::Primitive for DataTable {
         cells: &mut dyn crate::CellSurface,
         env: &crate::PaintEnv,
     ) {
-        let theme = env.theme();
+        let state = self.row_paint_state(env);
         // CSR: ratatui_buffer escape hatch
         let buf = cells
             .ratatui_buffer()
             .expect(crate::primitive::CELL_BUFFER_REQUIRED);
         let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-        crate::tui::draw_data_table(buf, area, self, theme, /* hovered_idx */ None);
+        crate::tui::draw_data_table_inner(
+            buf,
+            area,
+            self,
+            env.theme(),
+            &state,
+            None,
+            layout.nerd_fonts_enabled,
+        );
     }
 }
 
-// No real `Interactive` impl yet — see the widget-contract epic's pilot
-// and port issues. Gated the same as the `Primitive` impl above: this
-// macro expands to an `Interactive` impl, which requires `Primitive`.
+// ── Interactive: keyboard nav, typeahead, selection, resize, wheel ────
+//
+// Controlled mode: `selected_idx`, `scroll_offset` and `column_overrides`
+// stay descriptor fields the app owns. `handle` computes the next value
+// from the descriptor and reports it as a `DataTableEvent`; the app
+// applies it before the next frame. `DataTableState` holds only gesture
+// data.
+
 #[cfg(any(
     feature = "gtk",
     feature = "tui",
     feature = "win",
     all(feature = "macos", target_os = "macos")
 ))]
-crate::non_interactive!(DataTable);
+impl crate::interactive::WidgetAction for DataTableEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::DataTable(id, self)
+    }
+}
+
+/// An in-progress header divider drag: the column left of the divider and
+/// the layout the drag started from, so every move resolves against the
+/// widths the user grabbed rather than the ones it has since produced.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[derive(Debug, Clone)]
+pub struct ColumnResizeDrag {
+    /// The column to the left of the dragged divider.
+    pub col: usize,
+    /// The table-local layout at the press.
+    pub base: DataTableLayout,
+}
+
+/// [`crate::interactive::Interactive::State`] for [`DataTable`]: gesture
+/// data only — the multi-selection a Ctrl/Cmd or Shift gesture grew, the
+/// typeahead buffer, the keyboard's column cursor and an in-progress
+/// column resize or scrollbar thumb drag.
+///
+/// `#[non_exhaustive]`: a future gesture field is additive.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+#[non_exhaustive]
+#[derive(Debug, Default)]
+pub struct DataTableState {
+    /// The multi-selection set and its range anchor.
+    pub selection: crate::types::SelectionCore,
+    /// The debounced "type to jump" buffer, matched on column 0's text.
+    pub typeahead: crate::behaviour::typeahead::Typeahead,
+    /// The column Left/Right last moved to.
+    pub cursor_col: Option<usize>,
+    /// The row the last keyboard move or click landed on — the moving end
+    /// of a Shift extension, which `DataTable::selected_idx` alone cannot
+    /// carry. It counts only while the descriptor's `selected_idx` lies
+    /// inside [`Self::selection`]'s set; once the app selects elsewhere,
+    /// the descriptor wins.
+    pub cursor: Option<usize>,
+    /// A header divider drag in progress.
+    pub resize: Option<ColumnResizeDrag>,
+    /// A scrollbar thumb drag in progress.
+    pub thumb: Option<crate::primitives::scrollbar::ThumbDrag>,
+}
+
+/// Narrowest width a divider drag shrinks a column to, in the table's
+/// native unit.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+const MIN_RESIZE_WIDTH: f32 = 4.0;
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl DataTable {
+    /// Rows that fit the body, at least one.
+    fn page_rows(layout: &DataTablePrimitiveLayout) -> usize {
+        layout.layout.visible_rows.max(1)
+    }
+
+    /// The largest whole-row scroll offset.
+    fn max_scroll(&self, layout: &DataTablePrimitiveLayout) -> usize {
+        self.rows.len().saturating_sub(layout.layout.visible_rows)
+    }
+
+    /// The keyboard cursor row: [`DataTableState::cursor`] while the
+    /// descriptor's `selected_idx` still lies in the widget's own
+    /// selection set, otherwise `selected_idx`.
+    fn current_idx(&self, state: &DataTableState) -> Option<usize> {
+        let in_set = self
+            .selected_idx
+            .is_some_and(|idx| state.selection.selected.contains(&idx));
+        match state.cursor {
+            Some(cursor) if in_set && cursor < self.rows.len() => Some(cursor),
+            _ => self.selected_idx,
+        }
+    }
+
+    /// Report a scroll offset change, or just consume when it did not move.
+    fn scroll_to(&self, scroll_offset: usize) -> crate::Handled<DataTableEvent> {
+        if scroll_offset == self.scroll_offset {
+            crate::Handled::Consumed
+        } else {
+            crate::Handled::Event(DataTableEvent::ScrollChanged { scroll_offset })
+        }
+    }
+
+    /// Move the cursor row to `target`, scroll it into view, and report
+    /// the move — a Shift-extended move grows the multi-selection instead
+    /// of collapsing it.
+    fn move_cursor(
+        &self,
+        state: &mut DataTableState,
+        target: usize,
+        extend: bool,
+        layout: &DataTablePrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<DataTableEvent> {
+        use crate::interactive::WidgetAction;
+        use crate::types::SelectionGesture;
+        use crate::Handled;
+        let scroll_offset = crate::behaviour::scroll::ensure_visible(
+            self.scroll_offset,
+            layout.layout.visible_rows,
+            target,
+        );
+        if scroll_offset != self.scroll_offset {
+            cx.emit(DataTableEvent::ScrollChanged { scroll_offset }.into_ui_event(self.id));
+        }
+        let current = self.current_idx(state);
+        state.cursor = Some(target);
+        if extend {
+            let indices = state
+                .selection
+                .on_gesture(current, target, SelectionGesture::Range);
+            return Handled::Event(DataTableEvent::SelectionSet { indices });
+        }
+        let was_single = state.selection.selected.len() <= 1;
+        state
+            .selection
+            .on_gesture(Some(target), target, SelectionGesture::Replace);
+        if self.selected_idx == Some(target) && was_single {
+            return Handled::Consumed;
+        }
+        Handled::Event(DataTableEvent::RowSelected { idx: target })
+    }
+
+    /// One keystroke while the table has focus.
+    fn handle_key(
+        &self,
+        state: &mut DataTableState,
+        event: &crate::interactive::KeyEvent,
+        layout: &DataTablePrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<DataTableEvent> {
+        use crate::behaviour::nav::{FlatNav, NavKey};
+        use crate::event::{Key, NamedKey};
+        use crate::Handled;
+
+        let mods = event.modifiers;
+        let no_accel = !(mods.ctrl || mods.alt || mods.cmd);
+        if let Some(nav) = NavKey::from_key(event) {
+            let page = Self::page_rows(layout);
+            let nav = match nav {
+                NavKey::PageUp(_) => NavKey::PageUp(page),
+                NavKey::PageDown(_) => NavKey::PageDown(page),
+                other => other,
+            };
+            let current = self.current_idx(state);
+            return match FlatNav::mv(self.rows.len(), current, nav, false, |_| true) {
+                Some(target) => self.move_cursor(state, target, mods.shift, layout, cx),
+                None => Handled::Ignored,
+            };
+        }
+        match &event.key {
+            Key::Named(dir @ (NamedKey::Left | NamedKey::Right)) => {
+                if self.columns.is_empty() {
+                    return Handled::Ignored;
+                }
+                let last = self.columns.len() - 1;
+                let col = match (state.cursor_col, dir) {
+                    (None, _) => 0,
+                    (Some(c), NamedKey::Left) => c.saturating_sub(1),
+                    (Some(c), _) => (c + 1).min(last),
+                };
+                if state.cursor_col == Some(col) {
+                    return Handled::Consumed;
+                }
+                state.cursor_col = Some(col);
+                Handled::Event(DataTableEvent::ColumnFocused { col })
+            }
+            Key::Named(NamedKey::Enter) => match self.selected_idx {
+                Some(idx) if idx < self.rows.len() => {
+                    Handled::Event(DataTableEvent::RowActivated { idx })
+                }
+                _ => Handled::Ignored,
+            },
+            Key::Char('a') if mods.ctrl || mods.cmd => {
+                if self.rows.is_empty() {
+                    return Handled::Ignored;
+                }
+                let indices: Vec<usize> = (0..self.rows.len()).collect();
+                state.selection.selected = indices.clone();
+                state.selection.anchor = Some(self.rows.len() - 1);
+                Handled::Event(DataTableEvent::SelectionSet { indices })
+            }
+            Key::Char(c) if no_accel && !c.is_control() => {
+                let labels: Vec<String> = self
+                    .rows
+                    .iter()
+                    .map(|r| {
+                        r.cells
+                            .first()
+                            .map(|cell| cell.spans.iter().map(|s| s.text.as_str()).collect())
+                            .unwrap_or_default()
+                    })
+                    .collect();
+                let from = self.current_idx(state).unwrap_or(0);
+                match state
+                    .typeahead
+                    .push_now(*c, |i| labels[i].as_str(), labels.len(), from)
+                {
+                    Some(idx) => self.move_cursor(state, idx, false, layout, cx),
+                    None => Handled::Consumed,
+                }
+            }
+            _ => Handled::Ignored,
+        }
+    }
+
+    /// Left press on a body row: plain click selects, Ctrl/Cmd and Shift
+    /// grow the multi-selection.
+    fn handle_row_press(
+        &self,
+        state: &mut DataTableState,
+        idx: usize,
+        mods: Modifiers,
+    ) -> crate::Handled<DataTableEvent> {
+        use crate::types::SelectionGesture;
+        use crate::Handled;
+        let gesture = SelectionGesture::from_modifiers(mods);
+        let current = self.current_idx(state);
+        state.cursor = Some(idx);
+        let indices = state.selection.on_gesture(current, idx, gesture);
+        match gesture {
+            SelectionGesture::Replace => Handled::Event(DataTableEvent::RowSelected { idx }),
+            _ => Handled::Event(DataTableEvent::SelectionSet { indices }),
+        }
+    }
+
+    /// Left press on the scrollbar track: the thumb starts a captured
+    /// drag, either side of it pages.
+    fn handle_scrollbar_press(
+        &self,
+        state: &mut DataTableState,
+        local: crate::event::Point,
+        layout: &DataTablePrimitiveLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<DataTableEvent> {
+        use crate::primitives::scrollbar::{PressZone, ThumbDrag};
+        let Some(track) = layout.layout.v_scrollbar_track else {
+            return crate::Handled::Consumed;
+        };
+        let visible = layout.layout.visible_rows;
+        let max = self.max_scroll(layout);
+        let sb = crate::primitives::row_stack::vscrollbar_thumb(
+            self.id,
+            track,
+            self.scroll_offset,
+            None,
+            self.rows.len(),
+            layout.layout.row_height,
+            visible as f32,
+        );
+        match sb.press_zone(local.y) {
+            PressZone::Thumb => {
+                state.thumb = Some(ThumbDrag::begin(
+                    local.y,
+                    self.scroll_offset as f32,
+                    sb.travel(),
+                    max as f32,
+                ));
+                cx.capture_pointer();
+                crate::Handled::Consumed
+            }
+            PressZone::Before => self.scroll_to(self.scroll_offset.saturating_sub(visible)),
+            PressZone::After => self.scroll_to((self.scroll_offset + visible).min(max)),
+        }
+    }
+}
+
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+impl crate::interactive::Interactive for DataTable {
+    type State = DataTableState;
+    type Action = DataTableEvent;
+
+    /// One focus stop as a whole — rows and columns are navigated inside
+    /// [`Self::handle`].
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// Every visible header cell, header divider and body row, then the
+    /// scrollbar track — in widget-local coordinates, resolved the same
+    /// way [`DataTableLayout::hit_test`] resolves a point.
+    fn sub_regions(&self, layout: &Self::Layout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        let l = &layout.layout;
+        let x0 = l.inset_x;
+        let x1 = (l.viewport_width - l.inset_x - l.scrollbar_width).max(x0);
+        let clip = |x: f32, w: f32| {
+            let a = x.max(x0);
+            let b = (x + w).min(x1);
+            (b > a).then_some((a, b - a))
+        };
+        let mut out = Vec::new();
+        for (i, col) in l.columns.iter().enumerate() {
+            let vx = x0 + col.x - l.h_scroll;
+            if let Some((x, w)) = clip(vx, col.width) {
+                out.push((
+                    Rect::new(x, l.inset_y, w, l.header_height),
+                    DataTableSubPart::Header(i).sub_target(),
+                ));
+            }
+        }
+        let body_y = l.inset_y + l.header_height;
+        let visible = l
+            .visible_rows
+            .min(self.rows.len().saturating_sub(self.scroll_offset));
+        for r in crate::primitives::row_stack::stack_rows_from(
+            self.scroll_offset,
+            l.scroll_sub_px,
+            visible,
+            x0,
+            body_y,
+            x1 - x0,
+            |_| (l.row_height, ()),
+        ) {
+            let top = r.bounds.y.max(body_y);
+            let h = r.bounds.y + r.bounds.height - top;
+            if h > 0.0 {
+                out.push((
+                    Rect::new(r.bounds.x, top, r.bounds.width, h),
+                    DataTableSubPart::Row(r.idx).sub_target(),
+                ));
+            }
+        }
+        if let Some(track) = l.v_scrollbar_track {
+            out.push((track, DataTableSubPart::Scrollbar.sub_target()));
+        }
+        out
+    }
+
+    fn handle(
+        &self,
+        state: &mut DataTableState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &Self::Layout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<DataTableEvent> {
+        use crate::a11y::A11yAction;
+        use crate::event::MouseButton;
+        use crate::interactive::{PointerKind, RoutedEvent};
+        use crate::Handled;
+
+        let total = self.rows.len();
+        let hit = |local: &crate::event::Point| {
+            layout
+                .layout
+                .hit_test(local.x, local.y, self.scroll_offset, total)
+        };
+        match event {
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Left),
+                local,
+                mods,
+                ..
+            } => {
+                cx.request_focus(None);
+                match hit(local) {
+                    DataTableHit::Scrollbar => {
+                        self.handle_scrollbar_press(state, *local, layout, cx)
+                    }
+                    DataTableHit::HeaderDivider { col } => {
+                        state.resize = Some(ColumnResizeDrag {
+                            col,
+                            base: layout.layout.clone(),
+                        });
+                        cx.capture_pointer();
+                        Handled::Consumed
+                    }
+                    DataTableHit::Header { col } => {
+                        Handled::Event(DataTableEvent::HeaderClicked { col })
+                    }
+                    DataTableHit::Row { idx } => self.handle_row_press(state, idx, *mods),
+                    DataTableHit::Footer | DataTableHit::Empty => Handled::Consumed,
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::DoubleClick(MouseButton::Left),
+                local,
+                ..
+            } => match hit(local) {
+                DataTableHit::Row { idx } => {
+                    Handled::Event(DataTableEvent::RowDoubleClicked { idx })
+                }
+                _ => Handled::Ignored,
+            },
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(MouseButton::Right),
+                local,
+                ..
+            } => match hit(local) {
+                DataTableHit::Row { idx } => Handled::Event(DataTableEvent::ContextMenuRequested {
+                    idx,
+                    position: crate::event::Point::new(
+                        local.x + layout.area.x,
+                        local.y + layout.area.y,
+                    ),
+                }),
+                _ => Handled::Ignored,
+            },
+            RoutedEvent::Pointer {
+                kind: PointerKind::Move,
+                local,
+                ..
+            } if state.resize.is_some() || state.thumb.is_some() => {
+                if let Some(drag) = &state.resize {
+                    let col_x = drag.base.columns[drag.col].x;
+                    let width = (drag.base.content_x(local.x) - col_x).max(MIN_RESIZE_WIDTH);
+                    return Handled::Event(DataTableEvent::ColumnResized {
+                        col: drag.col,
+                        width,
+                    });
+                }
+                match state.thumb.as_ref().and_then(|t| t.offset_at(local.y)) {
+                    Some(offset) => self.scroll_to(offset.round() as usize),
+                    None => Handled::Consumed,
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Up(MouseButton::Left),
+                ..
+            } if state.resize.is_some() || state.thumb.is_some() => {
+                state.resize = None;
+                state.thumb = None;
+                cx.release_pointer();
+                Handled::Consumed
+            }
+            RoutedEvent::Wheel { dy, .. } => {
+                let rows = crate::primitives::scrollbar::wheel_row_delta(*dy, 1.0);
+                self.scroll_to(crate::primitives::scrollbar::scroll_by_clamped(
+                    self.scroll_offset.min(self.max_scroll(layout)),
+                    rows,
+                    self.max_scroll(layout),
+                ))
+            }
+            RoutedEvent::Key(key_event) => self.handle_key(state, key_event, layout, cx),
+            RoutedEvent::Action(A11yAction::Click) => match self.selected_idx {
+                Some(idx) if idx < total => Handled::Event(DataTableEvent::RowActivated { idx }),
+                _ => Handled::Ignored,
+            },
+            _ => Handled::Ignored,
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -2534,6 +3166,8 @@ mod tests {
             column_overrides: Vec::new(),
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -2589,6 +3223,16 @@ mod tests {
         // Remaining 70 split between 2 flex columns
         assert!((layout.columns[1].width - 35.0).abs() < 0.01);
         assert!((layout.columns[2].width - 35.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn native_width_is_the_number_in_each_backends_own_unit() {
+        let mut table = make_table(3, 0);
+        table.columns[0].width = ColumnWidth::Native(12.0);
+        let cells = table.layout(80.0, 20.0, 1.0, 1.0, 0.0, |_| ColumnMeasure::new(80.0));
+        assert_eq!(cells.columns[0].width, 12.0);
+        let px = table.layout(800.0, 400.0, 16.0, 19.0, 0.0, |_| ColumnMeasure::new(80.0));
+        assert_eq!(px.columns[0].width, 12.0);
     }
 
     /// `FixedCells(10.0)` on a cell-grid backend (`row_height <= 1.5`) is
@@ -3608,25 +4252,49 @@ mod tests {
     }
 
     #[test]
-    fn v_scrollbar_strip_row_click_is_a_caller_concern() {
-        // A click over the vertical scrollbar track on a body row falls
-        // through to `Row { .. }` as row resolution is purely `y`-based.
-        // This is pre-existing behaviour. Callers that own a vertical
-        // scrollbar are expected to intercept the strip themselves before
-        // calling `hit_test`.
+    fn v_scrollbar_track_click_resolves_to_the_scrollbar_not_a_row() {
         let mut table = make_wide_table(200);
         table.show_scrollbar = true;
         table.h_scroll = 45.0;
         let layout = table.layout(60.0, 20.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
-        assert!(layout.scrollbar_width > 0.0);
-
-        let sb_x = layout.viewport_width - layout.scrollbar_width;
+        let track = layout
+            .v_scrollbar_track
+            .expect("an overflowing table with show_scrollbar has a track");
+        assert_eq!(track.x, layout.viewport_width - layout.scrollbar_width);
+        assert_eq!(track.y, layout.header_height);
         let y_in_body = layout.header_height + 0.5;
         assert_eq!(
-            layout.hit_test(sb_x + 0.5, y_in_body, 0, 200),
-            DataTableHit::Row { idx: 0 },
-            "row branch does not filter the v-scrollbar strip — intentional, see comment on \
-             the row branch in `hit_test`"
+            layout.hit_test(track.x + 0.5, y_in_body, 0, 200),
+            DataTableHit::Scrollbar
+        );
+        assert_eq!(
+            layout.hit_test(track.x - 0.5, y_in_body, 0, 200),
+            DataTableHit::Row { idx: 0 }
+        );
+    }
+
+    #[test]
+    fn v_scrollbar_track_is_absent_when_the_rows_fit() {
+        let mut table = make_table(3, 2);
+        table.show_scrollbar = true;
+        let layout = table.layout(60.0, 20.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
+        assert_eq!(layout.v_scrollbar_track, None);
+    }
+
+    #[test]
+    fn hit_test_resolves_the_row_painted_under_a_sub_row_scroll() {
+        // Rows 16 tall under a 19-tall header, scrolled 6px into row 3:
+        // row 3 is painted from y = 13 to 29, row 4 from 29 to 45.
+        let table = make_table(2, 40);
+        let mut layout = table.layout(200.0, 200.0, 16.0, 19.0, 0.0, |_| ColumnMeasure::new(0.0));
+        layout.scroll_sub_px = 6.0;
+        assert_eq!(
+            layout.hit_test(5.0, 28.0, 3, 40),
+            DataTableHit::Row { idx: 3 }
+        );
+        assert_eq!(
+            layout.hit_test(5.0, 30.0, 3, 40),
+            DataTableHit::Row { idx: 4 }
         );
     }
 
@@ -3685,10 +4353,18 @@ mod tests {
                 for cell_y in 0..22u32 {
                     let x = cell_x as f32 + 0.5;
                     let y = cell_y as f32 + 0.5;
+                    let on_track = layout.v_scrollbar_track.is_some_and(|t| {
+                        x >= t.x && x < t.x + t.width && y >= t.y && y < t.y + t.height
+                    });
                     for scroll_offset in [0usize, 7] {
+                        let expected = if on_track {
+                            DataTableHit::Scrollbar
+                        } else {
+                            legacy_hit_test(&layout, x, y, scroll_offset, 40)
+                        };
                         assert_eq!(
                             layout.hit_test(x, y, scroll_offset, 40),
-                            legacy_hit_test(&layout, x, y, scroll_offset, 40),
+                            expected,
                             "shape {i}: hit_test({x}, {y}, {scroll_offset}, 40) must match the \
                              pre-#550 algorithm exactly"
                         );
@@ -3744,6 +4420,8 @@ mod tests {
         // outer size.
         let flat = DataTable {
             bordered: false,
+            striped: false,
+            glyphs: None,
             ..table.clone()
         };
         let flat_layout = flat.layout(40.0, 10.0, 1.0, 1.0, 1.0, |_| ColumnMeasure::new(0.0));
@@ -3907,6 +4585,8 @@ mod primitive_parity_tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -3963,6 +4643,51 @@ mod primitive_parity_tests {
             &native_surface_paint::SurfaceTextMeasure(&LogSurface::default()),
         );
         assert_eq!(via_primitive_layout.layout, resolver_layout);
+    }
+
+    /// `Content` columns size through the backend's own text measurer
+    /// (the metric the painter positions text with), not a nominal
+    /// `char_width` per glyph.
+    #[test]
+    fn primitive_layout_sizes_content_columns_with_the_backends_measurer() {
+        let mut table = sample_table();
+        table.columns[0].width = ColumnWidth::Content {
+            min: 0.0,
+            max: 500.0,
+        };
+        let rect = Rect::new(0.0, 0.0, 400.0, 80.0);
+        let measure = |text: &str, _role: crate::FontRole| text.chars().count() as f32 * 3.0;
+        let ctx = LayoutCtx::new(16.0, 8.0, true).with_measurer(&measure);
+        let layout = Primitive::layout(&table, &ctx, rect);
+        let title_len = table.columns[0].title.chars().count() as f32;
+        assert_eq!(layout.layout.columns[0].width, title_len * 3.0);
+    }
+
+    /// The pixel paint reads its row state from the env: a caller's
+    /// `striped` paints the alternate-row tint, and the descriptor's own
+    /// `striped` does the same with no caller state at all.
+    #[test]
+    fn primitive_paint_stripes_from_the_env_state_or_the_descriptor() {
+        let mut table = sample_table();
+        let rect = Rect::new(0.0, 0.0, 200.0, 80.0);
+        let ctx = LayoutCtx::new(16.0, 8.0, true);
+        let theme = Theme::default();
+        let style = Style::default();
+        let alt = format!("{:?}", theme.row_alt_bg(theme.background));
+        let paint = |table: &DataTable, state: &DataTablePaintState| {
+            let layout = Primitive::layout(table, &ctx, rect);
+            let mut surface = LogSurface::default();
+            let env = crate::PaintEnv::new(&theme, &style).with_state(state);
+            Primitive::paint(table, &layout, &mut surface, &env);
+            surface.calls.iter().any(|c| c.contains(&alt))
+        };
+        assert!(!paint(&table, &DataTablePaintState::default()));
+        assert!(paint(
+            &table,
+            &DataTablePaintState::default().with_striped(true)
+        ));
+        table.striped = true;
+        assert!(paint(&table, &DataTablePaintState::default()));
     }
 
     /// [`DataTablePrimitiveLayout::hit_test`] subtracts the area's

@@ -173,6 +173,9 @@ impl PipelineDemo {
             PipelineEvent::KeyPressed { key, .. } => {
                 self.last_message = format!("Key: {key}");
             }
+            PipelineEvent::StageFocused { index } => {
+                self.focused_stage[variant] = Some(index);
+            }
         }
     }
 }

@@ -1803,11 +1803,11 @@ impl crate::interactive::Interactive for TextDisplay {
                     modifiers: key.modifiers,
                 }),
             },
-            RoutedEvent::Wheel { dy, .. } if *dy != 0.0 => {
-                // A positive `dy` scrolls the content down, i.e. toward
-                // later lines — the same sign convention every other
-                // wheel-scrolling widget uses.
-                self.scroll_by(layout, if *dy > 0.0 { 1 } else { -1 })
+            RoutedEvent::Wheel { dy, .. } => {
+                match crate::primitives::scrollbar::wheel_row_delta(*dy, 1.0) {
+                    0 => Handled::Ignored,
+                    rows => self.scroll_by(layout, rows),
+                }
             }
             RoutedEvent::Pointer {
                 kind: PointerKind::Down(crate::event::MouseButton::Left),
@@ -2052,12 +2052,14 @@ mod interactive_tests {
         let layout = layout_of(&td);
         let mut host = MockHost::default();
         let mut state = TextDisplayState::default();
+        // A negative `dy` is a notch toward later lines — the sign every
+        // wheel-scrolling widget reads through `wheel_row_delta`.
         let handled = handle(
             &td,
             &mut state,
             &RoutedEvent::Wheel {
                 dx: 0.0,
-                dy: 1.0,
+                dy: -1.0,
                 local: Point::new(1.0, 1.0),
                 mods: Modifiers::default(),
             },

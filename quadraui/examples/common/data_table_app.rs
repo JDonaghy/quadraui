@@ -245,6 +245,8 @@ impl DataTableApp {
                 None
             },
             bordered: self.bordered,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -537,7 +539,9 @@ impl AppLogic for DataTableApp {
                         Reaction::Redraw
                     }
                     // Pinned footer isn't selectable — same as empty space.
-                    DataTableHit::Footer | DataTableHit::Empty => Reaction::Continue,
+                    DataTableHit::Footer | DataTableHit::Scrollbar | DataTableHit::Empty => {
+                        Reaction::Continue
+                    }
                 }
             }
             UiEvent::MouseMoved { position, .. } => {

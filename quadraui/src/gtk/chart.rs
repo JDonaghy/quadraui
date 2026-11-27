@@ -1,16 +1,9 @@
-//! GTK layout helper for [`crate::Chart`].
-//!
-//! Painting is implemented in the shared [`crate::primitives::chart::paint`].
-//! This module provides [`gtk_chart_layout`], the pixel-unit layout query
-//! used for both hit-testing (`GtkBackend::chart_layout`) and painting
-//! (`GtkBackend::draw_chart`, via `Backend::chart_layout`).
+//! GTK entry point for [`crate::Chart`]'s pixel layout; layout and
+//! painting both live with the widget (`primitives::chart`).
 
 use crate::primitives::chart::{Chart, ChartLayout};
-use crate::primitives::layout_metrics::pixel_chart_layout;
 
 /// Compute the GTK pixel-unit layout for a [`Chart`] without painting.
-/// Shares its geometry with `mac_chart_layout` / `win_chart_layout` via
-/// [`pixel_chart_layout`].
 pub fn gtk_chart_layout(
     chart: &Chart,
     x: f64,
@@ -20,78 +13,6 @@ pub fn gtk_chart_layout(
     line_height: f64,
     char_width: f64,
 ) -> ChartLayout {
-    pixel_chart_layout(
-        chart,
-        x as f32,
-        y as f32,
-        w as f32,
-        h as f32,
-        line_height as f32,
-        char_width as f32,
-    )
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::primitives::chart::{ChartKind, Series};
-    use crate::types::WidgetId;
-
-    fn series(label: &str, data: Vec<f64>) -> Series {
-        Series {
-            label: label.into(),
-            data,
-            color: None,
-            fill: false,
-        }
-    }
-
-    fn bar_chart(kind: ChartKind, series: Vec<Series>, y_range: (f64, f64)) -> Chart {
-        Chart {
-            id: WidgetId::new("chart"),
-            kind,
-            series,
-            x_label: None,
-            y_label: None,
-            y_range: Some(y_range),
-            x_range: None,
-            show_legend: false,
-            y_ticks: Some(0),
-            x_ticks: Some(0),
-            show_grid: false,
-        }
-    }
-
-    /// `chart_layout` is documented **ABSOLUTE**:
-    /// `plot_area` / `data_point_positions` must be shifted by the
-    /// chart's own origin, not left at (0, 0) — the case that hides a
-    /// LOCAL/ABSOLUTE mixup.
-    fn layout_round_trip_at(x: f64, y: f64) {
-        let chart = bar_chart(
-            ChartKind::Bar,
-            vec![series("a", vec![1.0, 2.0])],
-            (0.0, 2.0),
-        );
-        let layout = gtk_chart_layout(&chart, x, y, 100.0, 40.0, 12.0, 6.0);
-
-        assert_eq!(layout.plot_area.x as f64, x);
-        assert!(!layout.data_point_positions.is_empty());
-        for &(_, _, px, py) in &layout.data_point_positions {
-            assert!(
-                px as f64 >= x && py as f64 >= y,
-                "data point ({px}, {py}) must not fall left of/above the chart's own origin ({x}, {y})"
-            );
-        }
-    }
-
-    #[test]
-    fn layout_round_trip() {
-        layout_round_trip_at(0.0, 0.0);
-    }
-
-    /// Non-zero-origin regression guard.
-    #[test]
-    fn layout_round_trip_at_nonzero_origin() {
-        layout_round_trip_at(7.0, 13.0);
-    }
+    let rect = crate::Rect::new(x as f32, y as f32, w as f32, h as f32);
+    chart.layout_in(rect, char_width as f32, line_height as f32)
 }

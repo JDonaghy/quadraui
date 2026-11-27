@@ -1,8 +1,10 @@
 //! `ScrollView`: a generic scrollable region for arbitrary child content.
-//! Shared logic only — scroll-offset state, wheel/keyboard handling, and
-//! scrollbar geometry; no backend painter lives here (see
-//! `docs/PRIMITIVE_RULES.md`'s cross-backend commitment — a rasteriser
-//! for the actual clipped paint is a later, backend-scoped issue).
+//! Scroll-offset state, wheel/keyboard handling and scrollbar geometry,
+//! plus the widget contract: [`crate::Primitive`] lays out the content
+//! clip and the scrollbar gutter and paints the scrollbar through
+//! [`Scrollbar`]'s own painter, and [`crate::Interactive`] turns wheel,
+//! keys and scrollbar gestures into [`ScrollViewEvent`]s. The host paints
+//! the child content itself, clipped with [`paint_clipped`].
 //!
 //! Every other scrollable primitive in this crate (`List`, `TreeView`,
 //! `DataTable`, `MessageList`) owns its own row-indexed scroll state
@@ -19,8 +21,8 @@
 //! content units currently inside [`ScrollView::viewport`], and
 //! [`ScrollView::is_visible`] answers "does this child's extent overlap
 //! that window" for one child at a time. A host skips painting (TUI) or
-//! pushes a clip rect before painting (GTK/win) based on those answers;
-//! `ScrollView` itself never touches a [`crate::backend::Backend`].
+//! pushes a clip rect before painting ([`paint_clipped`]) based on those
+//! answers.
 //!
 //! # Units and the v0.2 `f32` offset migration
 //!
@@ -246,6 +248,14 @@ impl ScrollView {
         if !self.focused {
             return None;
         }
+        self.key_scroll(key, step)
+    }
+
+    /// The scroll a navigation `key` resolves to, regardless of focus:
+    /// [`Self::handle_key`] gates it on [`Self::focused`], and
+    /// [`crate::Interactive::handle`] reaches it only for a key routed to
+    /// the focused view.
+    fn key_scroll(&self, key: &Key, step: f32) -> Option<ScrollViewEvent> {
         let (forward, backward) = match self.axis {
             ScrollAxis::Vertical => (NamedKey::Down, NamedKey::Up),
             ScrollAxis::Horizontal => (NamedKey::Right, NamedKey::Left),
@@ -311,6 +321,304 @@ impl Default for ScrollView {
     /// [`ScrollView::new`] for a view with a real viewport/extent.
     fn default() -> Self {
         Self::new(WidgetId::new(""), Rect::default(), 0.0)
+    }
+}
+
+/// Paint `view`'s scrollable child content clipped to its viewport.
+///
+/// Pushes a clip region matching `view.viewport` before running
+/// `paint_content`, and pops it afterward. On a backend with no
+/// [`crate::PaintSurface`] (TUI has no sub-cell clip concept — see that
+/// trait's module doc), `paint_content` still runs, just unclipped, since
+/// there is nothing to push.
+pub fn paint_clipped<B: crate::Backend + ?Sized>(
+    backend: &mut B,
+    view: &ScrollView,
+    paint_content: impl FnOnce(&mut B),
+) {
+    let pushed = if let Some(surface) = backend.paint_surface() {
+        surface.surface_push_clip(view.viewport);
+        true
+    } else {
+        false
+    };
+    paint_content(backend);
+    if pushed {
+        if let Some(surface) = backend.paint_surface() {
+            surface.surface_pop_clip();
+        }
+    }
+}
+
+/// Paint `view`'s scrollbar along `track` through [`Scrollbar`]'s own
+/// [`crate::Primitive`], if its content is longer than its viewport. A
+/// no-op when [`ScrollView::scrollbar`] returns `None` (nothing to
+/// scroll — e.g. the viewport already fits all the content).
+pub fn draw_scrollbar_for<B: crate::Backend + ?Sized>(
+    backend: &mut B,
+    view: &ScrollView,
+    track: Rect,
+    min_thumb_len: f32,
+) {
+    use crate::DrawsPrimitives;
+    if let Some(scrollbar) = view.scrollbar(track, min_thumb_len) {
+        backend.draw_primitive(track, &scrollbar);
+    }
+}
+
+// ── Widget contract ────────────────────────────────────────────────────
+
+/// [`crate::Primitive::Layout`] for [`ScrollView`]: the rect it was laid
+/// out into, the content clip beside the scrollbar gutter, and the
+/// scrollbar (with its track) when there is anything to scroll.
+#[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
+pub struct ScrollViewLayout {
+    /// The whole rect the view was laid out into.
+    pub bounds: Rect,
+    /// Where the host paints the child content: [`Self::bounds`] minus
+    /// the scrollbar gutter along the trailing edge of the scroll axis.
+    pub content: Rect,
+    /// The scrollbar for the current offset, its [`Scrollbar::track`]
+    /// the gutter; `None` when the content fits.
+    pub scrollbar: Option<Scrollbar>,
+    /// Content units one wheel notch or one arrow key moves: a row on
+    /// a vertical view, a character advance on a horizontal one.
+    pub step: f32,
+}
+
+impl ScrollViewLayout {
+    /// The scrollbar's own layout, against its track.
+    fn scrollbar_layout(
+        &self,
+    ) -> Option<(Scrollbar, crate::primitives::scrollbar::ScrollbarLayout)> {
+        let sb = self.scrollbar.clone()?;
+        let layout = crate::primitives::scrollbar::ScrollbarLayout::resolve(&sb, sb.track);
+        Some((sb, layout))
+    }
+}
+
+/// A [`ScrollView`]'s per-widget gesture state: its scrollbar's own
+/// state (hover and a live thumb drag). The scroll offset itself stays
+/// on the descriptor, owned by the app.
+#[derive(Debug, Clone, Default, PartialEq)]
+#[non_exhaustive]
+pub struct ScrollViewState {
+    /// The scrollbar child's [`crate::Interactive::State`].
+    pub scrollbar: crate::primitives::scrollbar::ScrollbarState,
+}
+
+impl crate::interactive::WidgetAction for ScrollViewEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::ScrollView(id, self)
+    }
+}
+
+impl crate::a11y::A11yPrimitive for ScrollView {
+    /// A scrollable group whose value is the current offset.
+    fn a11y_info(&self) -> crate::a11y::A11yInfo {
+        crate::a11y::A11yInfo::new()
+            .with_role(crate::a11y::A11yRole::Group)
+            .with_value(format!("{}", self.clamped_offset()))
+    }
+}
+
+impl crate::primitive::Primitive for ScrollView {
+    type Layout = ScrollViewLayout;
+    type Event = ScrollViewEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// A scroll view fills the region it is given; its content length
+    /// is the host's, not a size it asks for.
+    fn measure(
+        &self,
+        _ctx: &crate::primitive::LayoutCtx,
+        _avail: crate::primitive::Size,
+    ) -> crate::NaturalSize {
+        crate::NaturalSize::NONE
+    }
+
+    /// Reserves a gutter along the trailing edge of [`Self::axis`] — one
+    /// cell on a cell grid, [`crate::Style::scrollbar_width`] on pixels —
+    /// whenever there is something to scroll, and resolves the thumb on
+    /// it with a minimum length of one row.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> ScrollViewLayout {
+        let thickness = match ctx.units() {
+            crate::primitive::Units::Cells => 1.0,
+            _ => ctx.style().scrollbar_width,
+        };
+        let step = match self.axis {
+            ScrollAxis::Vertical => ctx.line_height,
+            ScrollAxis::Horizontal => ctx.char_width,
+        };
+        let (track, content) = match self.axis {
+            ScrollAxis::Vertical => {
+                let t = thickness.min(rect.width);
+                (
+                    Rect::new(rect.x + rect.width - t, rect.y, t, rect.height),
+                    Rect::new(rect.x, rect.y, rect.width - t, rect.height),
+                )
+            }
+            ScrollAxis::Horizontal => {
+                let t = thickness.min(rect.height);
+                (
+                    Rect::new(rect.x, rect.y + rect.height - t, rect.width, t),
+                    Rect::new(rect.x, rect.y, rect.width, rect.height - t),
+                )
+            }
+        };
+        match self.scrollbar(track, ctx.line_height) {
+            Some(scrollbar) => ScrollViewLayout {
+                bounds: rect,
+                content,
+                scrollbar: Some(scrollbar),
+                step,
+            },
+            None => ScrollViewLayout {
+                bounds: rect,
+                content: rect,
+                scrollbar: None,
+                step,
+            },
+        }
+    }
+
+    /// The scrollbar, through [`Scrollbar`]'s own pixel painter. The
+    /// child content is the host's to paint inside
+    /// [`ScrollViewLayout::content`] (see [`paint_clipped`]).
+    fn paint(
+        &self,
+        layout: &ScrollViewLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        if let Some((sb, sb_layout)) = layout.scrollbar_layout() {
+            crate::primitive::Primitive::paint(&sb, &sb_layout, surface, env);
+        }
+    }
+
+    /// The scrollbar, through [`Scrollbar`]'s own cell painter.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &ScrollViewLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        if let Some((sb, sb_layout)) = layout.scrollbar_layout() {
+            crate::primitive::Primitive::paint_cells(&sb, &sb_layout, cells, env);
+        }
+    }
+
+    /// The whole region, so a structural observer finds the view even
+    /// when it paints no scrollbar.
+    fn paint_zone(
+        &self,
+        layout: &ScrollViewLayout,
+        _units: crate::primitive::Units,
+    ) -> Option<Rect> {
+        Some(layout.bounds)
+    }
+}
+
+impl crate::interactive::Interactive for ScrollView {
+    type State = ScrollViewState;
+    type Action = ScrollViewEvent;
+
+    /// One tab stop: the arrow, page and Home/End keys scroll it.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// - **Wheel** anywhere on the view scrolls by
+    ///   [`ScrollViewLayout::step`] per notch, in the routed wheel's
+    ///   convention: a positive delta moves toward the start, as
+    ///   [`crate::primitives::scrollbar::wheel_delta`] resolves it for
+    ///   every contract widget.
+    /// - **Keys** (routed while focused): the arrows along the axis step,
+    ///   PageUp/PageDown move a viewport, Home/End jump to the ends.
+    /// - **Pointer** gestures on the scrollbar (and every move and
+    ///   release of a thumb drag it started, wherever the pointer goes)
+    ///   are forwarded to [`Scrollbar`]'s own handler; the fraction it
+    ///   resolves maps onto `[0, max_offset]`.
+    ///
+    /// Every resolved scroll is a [`ScrollViewEvent::Scrolled`]; the app
+    /// writes it back onto [`ScrollView::scroll_offset`].
+    fn handle(
+        &self,
+        state: &mut ScrollViewState,
+        event: &crate::interactive::RoutedEvent,
+        layout: &ScrollViewLayout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<ScrollViewEvent> {
+        use crate::interactive::RoutedEvent;
+        use crate::Handled;
+
+        let resolved = |e: Option<ScrollViewEvent>| match e {
+            Some(e) => Handled::Event(e),
+            None => Handled::Ignored,
+        };
+        match event {
+            RoutedEvent::Wheel { dx, dy, .. } => {
+                let notches = match self.axis {
+                    ScrollAxis::Vertical => *dy,
+                    ScrollAxis::Horizontal => *dx,
+                };
+                let delta = crate::primitives::scrollbar::wheel_delta(notches, layout.step);
+                resolved(self.scroll_by(delta))
+            }
+            RoutedEvent::Key(key) => resolved(self.key_scroll(&key.key, layout.step)),
+            RoutedEvent::Pointer {
+                kind,
+                local,
+                mods,
+                sub,
+            } => {
+                let Some((sb, sb_layout)) = layout.scrollbar_layout() else {
+                    return Handled::Ignored;
+                };
+                let abs =
+                    crate::event::Point::new(layout.bounds.x + local.x, layout.bounds.y + local.y);
+                let on_track = sb.track.contains(abs);
+                if !on_track && state.scrollbar.drag.is_none() {
+                    return Handled::Ignored;
+                }
+                let forwarded = RoutedEvent::Pointer {
+                    kind: *kind,
+                    sub: *sub,
+                    local: crate::event::Point::new(abs.x - sb.track.x, abs.y - sb.track.y),
+                    mods: *mods,
+                };
+                match crate::interactive::Interactive::handle(
+                    &sb,
+                    &mut state.scrollbar,
+                    &forwarded,
+                    &sb_layout,
+                    cx,
+                ) {
+                    Handled::Event(crate::primitives::scrollbar::ScrollbarEvent::Moved {
+                        fraction,
+                    }) => {
+                        let offset = (fraction * self.max_offset()).clamp(0.0, self.max_offset());
+                        if offset == self.scroll_offset {
+                            Handled::Consumed
+                        } else {
+                            Handled::Event(ScrollViewEvent::Scrolled { offset })
+                        }
+                    }
+                    Handled::Consumed => Handled::Consumed,
+                    _ => Handled::Ignored,
+                }
+            }
+            RoutedEvent::FocusOut if state.scrollbar.drag.take().is_some() => {
+                cx.release_pointer();
+                Handled::Ignored
+            }
+            _ => Handled::Ignored,
+        }
     }
 }
 

@@ -46,6 +46,9 @@ use crate::theme::Theme;
 use crate::types::{Color, WidgetId};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
 /// The kind of change a [`DiffRow`] represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiffRowKind {
@@ -607,6 +610,194 @@ impl DiffView {
             visible_rows,
             total_rows: total_display,
             lines,
+        }
+    }
+}
+
+// ── Widget contract ───────────────────────────────────────────────────────────
+
+/// Rows one wheel notch scrolls a [`DiffView`] by.
+const DIFF_WHEEL_ROWS_PER_NOTCH: f32 = 3.0;
+
+/// What a [`DiffView`] reports. `scroll_offset` and `focused_pane` are the
+/// app's: it writes each back onto the descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffViewEvent {
+    /// A wheel notch or PageUp/PageDown scrolled the view to
+    /// `scroll_offset`, already clamped so the last line stays reachable.
+    Scrolled { scroll_offset: usize },
+    /// Tab or a click moved keyboard focus to `pane` (side-by-side mode).
+    PaneFocused { pane: DiffPane },
+}
+
+impl crate::interactive::WidgetAction for DiffViewEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::DiffView(id, self)
+    }
+}
+
+/// [`DiffView`]'s layout on the widget contract: the geometry plus the
+/// row pitch it was laid out at, which the pixel painter needs again.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DiffViewPrimitiveLayout {
+    /// Rows, panes, header and the visible window.
+    pub geometry: DiffViewGeometry,
+    /// The row pitch the geometry was laid out at: one cell on a cell
+    /// grid, the editor font's line height on pixels.
+    pub line_height: f32,
+}
+
+impl DiffView {
+    /// The offset `delta` rows from the current one, clamped so the last
+    /// display line stays reachable — the event, or `None` when the view
+    /// is already at that edge.
+    fn scrolled_by(&self, layout: &DiffViewPrimitiveLayout, delta: isize) -> Option<DiffViewEvent> {
+        let g = &layout.geometry;
+        let max = g.total_rows.saturating_sub(g.visible_rows);
+        let scroll_offset = crate::primitives::scrollbar::scroll_by_clamped(
+            self.scroll_offset.min(max),
+            delta,
+            max,
+        );
+        (scroll_offset != self.scroll_offset).then_some(DiffViewEvent::Scrolled { scroll_offset })
+    }
+}
+
+impl crate::primitive::Primitive for DiffView {
+    type Layout = DiffViewPrimitiveLayout;
+    type Event = DiffViewEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// A diff is editor-class content, painted in the editor font.
+    fn font_role(&self) -> crate::FontRole {
+        crate::FontRole::Editor
+    }
+
+    /// [`DiffView::layout`] at one cell per row on a cell grid, at the
+    /// editor font's line height on pixels.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        let line_height = match ctx.units() {
+            crate::primitive::Units::Cells => 1.0,
+            _ => ctx.editor_line_height(),
+        };
+        DiffViewPrimitiveLayout {
+            geometry: self.layout(rect, line_height),
+            line_height,
+        }
+    }
+
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        native_surface_paint::paint(
+            self,
+            surface,
+            env.theme(),
+            layout.geometry.bounds,
+            layout.line_height,
+        );
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        paint_cells::paint(cells, self, &layout.geometry, env.theme());
+    }
+}
+
+impl crate::interactive::Interactive for DiffView {
+    type State = ();
+    type Action = DiffViewEvent;
+
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// - A wheel notch scrolls three rows; PageUp/PageDown scroll one
+    ///   visible window. Each reports [`DiffViewEvent::Scrolled`].
+    /// - Tab, side by side, moves focus to the other pane
+    ///   ([`DiffViewEvent::PaneFocused`]).
+    /// - A left press takes focus, and on a pane other than the focused
+    ///   one reports [`DiffViewEvent::PaneFocused`].
+    ///
+    /// Any other key bubbles.
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &crate::interactive::RoutedEvent,
+        layout: &Self::Layout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<DiffViewEvent> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+        use crate::{Handled, Key, NamedKey};
+
+        let scroll = |delta: isize| match self.scrolled_by(layout, delta) {
+            Some(event) => Handled::Event(event),
+            None => Handled::Consumed,
+        };
+        match event {
+            RoutedEvent::Wheel { dy, .. } => {
+                let delta =
+                    crate::primitives::scrollbar::wheel_row_delta(*dy, DIFF_WHEEL_ROWS_PER_NOTCH);
+                if delta == 0 {
+                    return Handled::Ignored;
+                }
+                scroll(delta)
+            }
+            RoutedEvent::Key(key) => {
+                let page = layout.geometry.visible_rows.max(1) as isize;
+                match key.key {
+                    Key::Named(NamedKey::PageDown) => scroll(page),
+                    Key::Named(NamedKey::PageUp) => scroll(-page),
+                    Key::Named(NamedKey::Tab) if self.mode == DiffMode::SideBySide => {
+                        Handled::Event(DiffViewEvent::PaneFocused {
+                            pane: match self.focused_pane {
+                                DiffPane::Left => DiffPane::Right,
+                                DiffPane::Right => DiffPane::Left,
+                            },
+                        })
+                    }
+                    _ => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                local,
+                ..
+            } => {
+                cx.request_focus(None);
+                let b = layout.geometry.bounds;
+                match layout.geometry.hit_test(local.x + b.x, local.y + b.y) {
+                    DiffViewHit::Row {
+                        pane: Some(pane), ..
+                    } if pane != self.focused_pane => {
+                        Handled::Event(DiffViewEvent::PaneFocused { pane })
+                    }
+                    _ => Handled::Consumed,
+                }
+            }
+            _ => Handled::Ignored,
         }
     }
 }

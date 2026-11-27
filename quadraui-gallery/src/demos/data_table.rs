@@ -196,6 +196,8 @@ impl DataTableDemo {
                     None
                 },
                 bordered: false,
+                striped: false,
+                glyphs: None,
             }
         } else {
             DataTable {
@@ -223,6 +225,8 @@ impl DataTableDemo {
                 column_overrides: Vec::new(),
                 footer: None,
                 bordered: false,
+                striped: false,
+                glyphs: None,
             }
         }
     }

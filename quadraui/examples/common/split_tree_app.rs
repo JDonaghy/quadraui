@@ -169,10 +169,7 @@ impl AppLogic for SplitTreeApp {
                     {
                         self.drag.begin(DragTarget::SplitDivider {
                             tree: WidgetId::new(TREE_ID),
-                            split_index,
-                            direction: div.direction,
-                            axis_start: div.axis_start,
-                            axis_size: div.axis_size,
+                            divider: *div,
                         });
                     }
                 }
@@ -183,9 +180,9 @@ impl AppLogic for SplitTreeApp {
                     return Reaction::Continue;
                 }
                 // The exact machinery a backend's mouse-move handler
-                // calls — DragTarget::SplitDivider carries enough state
-                // (axis_start/axis_size) to resume the ratio math
-                // without re-walking the tree.
+                // calls — DragTarget::SplitDivider carries the grabbed
+                // divider, enough to resume the ratio math without
+                // re-walking the tree.
                 let events = quadraui::dispatch_mouse_drag(&self.drag, position, buttons);
                 let mut redraw = false;
                 for ev in events {

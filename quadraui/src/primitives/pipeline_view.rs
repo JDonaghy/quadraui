@@ -32,6 +32,9 @@ use crate::theme::Theme;
 use crate::types::{Color, Modifiers, WidgetId};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
 // ── Data model ───────────────────────────────────────────────────────────────
 
 /// Status of a single pipeline stage.
@@ -144,6 +147,9 @@ pub enum PipelineEvent {
     StageSelected { index: usize },
     /// Key pressed while the widget has focus but not consumed by nav.
     KeyPressed { key: String, modifiers: Modifiers },
+    /// Left/Right moved keyboard focus to stage `index`; the host writes
+    /// it back onto [`PipelineView::focused_stage`].
+    StageFocused { index: usize },
 }
 
 // ── Layout + hit-testing ─────────────────────────────────────────────────────
@@ -347,37 +353,231 @@ impl PipelineView {
     /// Returns `Some(event)` if the key was consumed, `None` if the caller
     /// should handle it.
     pub fn handle_key(&mut self, key: &str, modifiers: Modifiers) -> Option<PipelineEvent> {
-        let n = self.stages.len();
-        if n == 0 {
-            return None;
-        }
-        match key {
-            "ArrowLeft" | "Left" => {
-                let cur = self.focused_stage.unwrap_or(0);
-                self.focused_stage = Some(cur.saturating_sub(1));
+        match self.key_event(key) {
+            Some(Some(PipelineEvent::StageFocused { index })) => {
+                self.focused_stage = Some(index);
                 None
             }
-            "ArrowRight" | "Right" => {
-                let cur = self.focused_stage.unwrap_or(0);
-                self.focused_stage = Some((cur + 1).min(n - 1));
-                None
-            }
-            "Enter" => {
-                if let Some(idx) = self.focused_stage {
-                    if idx < n {
-                        if self.stages[idx].action.is_some() {
-                            return Some(PipelineEvent::StageAction { index: idx });
-                        } else {
-                            return Some(PipelineEvent::StageSelected { index: idx });
-                        }
-                    }
-                }
-                None
-            }
-            _ => Some(PipelineEvent::KeyPressed {
+            Some(event) => event,
+            None => Some(PipelineEvent::KeyPressed {
                 key: key.to_string(),
                 modifiers,
             }),
+        }
+    }
+
+    /// The navigation map both [`Self::handle_key`] and the widget's
+    /// `handle` share: `Some(Some(event))` for a key that resolves to an
+    /// event, `Some(None)` for a navigation key with nothing to report (an
+    /// empty pipeline, `Enter` with no focused stage), `None` for any other
+    /// key.
+    fn key_event(&self, key: &str) -> Option<Option<PipelineEvent>> {
+        let n = self.stages.len();
+        if n == 0 {
+            return Some(None);
+        }
+        let cur = self.focused_stage.unwrap_or(0);
+        match key {
+            "ArrowLeft" | "Left" => Some(Some(PipelineEvent::StageFocused {
+                index: cur.saturating_sub(1),
+            })),
+            "ArrowRight" | "Right" => Some(Some(PipelineEvent::StageFocused {
+                index: (cur + 1).min(n - 1),
+            })),
+            "Enter" => Some(
+                self.focused_stage
+                    .filter(|&idx| idx < n)
+                    .map(|idx| self.activation(idx)),
+            ),
+            _ => None,
+        }
+    }
+
+    /// What activating stage `index` reports: its action if it has one,
+    /// its selection otherwise.
+    fn activation(&self, index: usize) -> PipelineEvent {
+        if self.stages[index].action.is_some() {
+            PipelineEvent::StageAction { index }
+        } else {
+            PipelineEvent::StageSelected { index }
+        }
+    }
+
+    /// The layout on a cell grid: one row above the stage boxes is
+    /// reserved for the focus caret, so the returned `bounds` starts one
+    /// row below `rect` (a host clipping to `bounds` would clip the caret
+    /// — clip to `rect` instead); arrows are four cells wide and an
+    /// action button takes one row.
+    pub fn cell_layout(&self, rect: Rect) -> PipelineViewLayout {
+        let action_h = if self.stages.iter().any(|s| s.action.is_some()) {
+            PIPELINE_ACTION_HEIGHT_CELLS
+        } else {
+            0.0
+        };
+        let caret = PIPELINE_FOCUS_INDICATOR_CELLS.min(rect.height.max(0.0));
+        self.layout(
+            rect.x,
+            rect.y + PIPELINE_FOCUS_INDICATOR_CELLS,
+            PipelineViewMeasure::new(
+                rect.width,
+                rect.height - caret,
+                PIPELINE_ARROW_WIDTH_CELLS,
+                action_h,
+            ),
+        )
+    }
+}
+
+/// Width of the arrow connector on a cell grid.
+const PIPELINE_ARROW_WIDTH_CELLS: f32 = 4.0;
+/// Height of the action-button row on a cell grid.
+const PIPELINE_ACTION_HEIGHT_CELLS: f32 = 1.0;
+/// Rows reserved above the stage boxes for the focus caret on a cell grid.
+pub(crate) const PIPELINE_FOCUS_INDICATOR_CELLS: f32 = 1.0;
+
+/// [`PipelineView`]'s layout on the widget contract: the stage layout
+/// plus the rect it was laid out in, which on a cell grid is one row
+/// taller than the stages' `bounds` (the focus-caret row).
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipelineViewPrimitiveLayout {
+    /// The rect the widget was laid out in.
+    pub area: Rect,
+    /// The stage boxes, arrows and action buttons.
+    pub layout: PipelineViewLayout,
+}
+
+impl crate::interactive::WidgetAction for PipelineEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::PipelineView(id, self)
+    }
+}
+
+impl crate::primitive::Primitive for PipelineView {
+    type Layout = PipelineViewPrimitiveLayout;
+    type Event = PipelineEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// [`PipelineView::cell_layout`] on a cell grid; the shared pixel
+    /// measure everywhere else. Paint and hit-test both read this one
+    /// layout, built from this one descriptor.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
+        let layout = match ctx.units() {
+            crate::primitive::Units::Cells => self.cell_layout(rect),
+            _ => crate::primitives::layout_metrics::pixel_pipeline_view_layout(
+                self,
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
+            ),
+        };
+        PipelineViewPrimitiveLayout { area: rect, layout }
+    }
+
+    fn paint(
+        &self,
+        layout: &Self::Layout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        native_surface_paint::paint(self, surface, env.theme(), layout.area);
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface, env);
+    }
+
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &Self::Layout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        paint_cells::paint(cells, self, &layout.layout, env.theme());
+    }
+}
+
+impl crate::interactive::Interactive for PipelineView {
+    type State = ();
+    type Action = PipelineEvent;
+
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::Stop
+    }
+
+    /// Every stage box, named by its stage index.
+    fn sub_regions(&self, layout: &Self::Layout) -> Vec<(Rect, crate::interactive::SubTarget)> {
+        layout
+            .layout
+            .stages
+            .iter()
+            .map(|sb| {
+                let b = sb.box_bounds;
+                (
+                    Rect::new(b.x - layout.area.x, b.y - layout.area.y, b.width, b.height),
+                    crate::interactive::SubTarget(sb.index as u64),
+                )
+            })
+            .collect()
+    }
+
+    /// - Left/Right report [`PipelineEvent::StageFocused`] (the host owns
+    ///   `focused_stage`); Enter activates the focused stage. Any other
+    ///   key bubbles.
+    /// - A left press on a stage's action button reports
+    ///   [`PipelineEvent::StageAction`]; anywhere else on the stage,
+    ///   [`PipelineEvent::StageSelected`]. A press takes focus.
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &crate::interactive::RoutedEvent,
+        layout: &Self::Layout,
+        cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<PipelineEvent> {
+        use crate::interactive::{PointerKind, RoutedEvent};
+        use crate::Handled;
+
+        match event {
+            RoutedEvent::Key(key) => {
+                let name = match &key.key {
+                    crate::Key::Char(c) => c.to_string(),
+                    crate::Key::Named(named) => named.name().into_owned(),
+                };
+                match self.key_event(&name) {
+                    Some(Some(event)) => Handled::Event(event),
+                    Some(None) => Handled::Consumed,
+                    None => Handled::Ignored,
+                }
+            }
+            RoutedEvent::Pointer {
+                kind: PointerKind::Down(crate::MouseButton::Left),
+                local,
+                ..
+            } => {
+                cx.request_focus(None);
+                let (x, y) = (local.x + layout.area.x, local.y + layout.area.y);
+                match layout.layout.hit_test(x, y) {
+                    PipelineHit::Action(index) => {
+                        Handled::Event(PipelineEvent::StageAction { index })
+                    }
+                    PipelineHit::Body(index) => {
+                        Handled::Event(PipelineEvent::StageSelected { index })
+                    }
+                    PipelineHit::Empty => Handled::Consumed,
+                }
+            }
+            _ => Handled::Ignored,
         }
     }
 }

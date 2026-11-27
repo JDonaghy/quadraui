@@ -31,7 +31,7 @@ use super::value::{
 /// layout tree ([`LayoutNode`]).
 pub enum RenderOutput {
     Flat(Box<RenderFrame>),
-    Tree(LayoutNode),
+    Tree(Box<LayoutNode>),
 }
 
 /// A `dict` carrying any of [`LAYOUT_NODE_KEYS`], a top-level `"id"` key
@@ -352,7 +352,10 @@ mod tests {
             &diagnostics,
         )
         .expect("a bare top-level leaf is a valid, documented render output");
-        let RenderOutput::Tree(LayoutNode::Leaf(leaf)) = output else {
+        let RenderOutput::Tree(node) = output else {
+            panic!("expected a one-node leaf tree");
+        };
+        let LayoutNode::Leaf(leaf) = *node else {
             panic!("expected a one-node leaf tree");
         };
         assert_eq!(leaf.id, "q:out");

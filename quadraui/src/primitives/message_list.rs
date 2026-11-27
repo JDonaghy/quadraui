@@ -29,6 +29,9 @@ use crate::primitives::row_stack;
 use crate::types::{Color, StyledSpan, StyledText, WidgetId};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
 /// A single row in a [`MessageList`].
 ///
 /// `indent` is in surface units — TUI cells or GTK pixels — so the
@@ -197,6 +200,10 @@ pub struct MessageListLayout {
     /// overscroll case itself instead of inheriting it, so it keeps
     /// agreeing with what is actually painted.
     pub resolved_scroll_offset: usize,
+    /// The rect the rows were laid out in.
+    pub bounds: Rect,
+    /// The uniform row height the rows were laid out at.
+    pub line_height: f32,
 }
 
 impl MessageList {
@@ -231,6 +238,8 @@ impl MessageList {
                 })
                 .collect(),
             resolved_scroll_offset: stacked.resolved_scroll_offset,
+            bounds: rect,
+            line_height: measure.line_height,
         }
     }
 
@@ -273,11 +282,141 @@ impl MessageList {
     }
 }
 
+// ── Widget contract ─────────────────────────────────────────────────
+
+/// Rows one wheel notch scrolls a [`MessageList`] by.
+const MESSAGE_LIST_WHEEL_ROWS_PER_NOTCH: f32 = 3.0;
+
+/// What a [`MessageList`] reports. `scroll_top` is the app's: it writes
+/// it back onto the descriptor.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MessageListEvent {
+    /// A wheel notch scrolled the list to `scroll_top`, clamped so the
+    /// last row stays on screen. `at_bottom` says whether that is the
+    /// furthest the list scrolls — a host that follows the tail keeps
+    /// following while it is set and stops once the user scrolls up.
+    Scrolled { scroll_top: usize, at_bottom: bool },
+}
+
+impl crate::interactive::WidgetAction for MessageListEvent {
+    fn into_ui_event(self, id: WidgetId) -> crate::UiEvent {
+        crate::UiEvent::MessageList(id, self)
+    }
+}
+
+impl MessageListLayout {
+    /// How many whole rows fit in [`Self::bounds`].
+    fn viewport_rows(&self) -> usize {
+        if self.line_height > 0.0 {
+            (self.bounds.height / self.line_height).floor() as usize
+        } else {
+            0
+        }
+    }
+}
+
+impl crate::primitive::Primitive for MessageList {
+    type Layout = MessageListLayout;
+    type Event = MessageListEvent;
+
+    fn id(&self) -> Option<&WidgetId> {
+        Some(&self.id)
+    }
+
+    /// [`MessageList::layout`] at one cell per row on a cell grid, and at
+    /// the backend's line height on pixels.
+    fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> MessageListLayout {
+        let line_height = match ctx.units() {
+            crate::primitive::Units::Cells => 1.0,
+            _ => ctx.editor_line_height(),
+        };
+        self.layout(rect, MessageListMeasure::new(line_height))
+    }
+
+    fn paint(
+        &self,
+        layout: &MessageListLayout,
+        surface: &mut dyn crate::paint_surface::PaintSurface,
+        env: &crate::PaintEnv,
+    ) {
+        #[cfg(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        ))]
+        native_surface_paint::paint(self, surface, layout.bounds, layout.line_height);
+        #[cfg(not(any(
+            feature = "gtk",
+            feature = "win",
+            all(feature = "macos", target_os = "macos")
+        )))]
+        let _ = (layout, surface);
+        let _ = env;
+    }
+
+    /// The cell painter, on the theme background.
+    #[cfg(feature = "tui")]
+    fn paint_cells(
+        &self,
+        layout: &MessageListLayout,
+        cells: &mut dyn crate::CellSurface,
+        env: &crate::PaintEnv,
+    ) {
+        paint_cells::paint(cells, layout.bounds, self, env.theme().background);
+    }
+}
+
+impl crate::interactive::Interactive for MessageList {
+    type State = ();
+    type Action = MessageListEvent;
+
+    /// Not a keyboard stop: its text is selected and copied with the
+    /// pointer through the host's text-region selection, and it scrolls
+    /// with the wheel.
+    fn focus(&self) -> crate::interactive::FocusSpec {
+        crate::interactive::FocusSpec::None
+    }
+
+    /// A wheel notch scrolls three rows and reports
+    /// [`MessageListEvent::Scrolled`]; everything else bubbles, so a
+    /// press-and-drag reaches the host's text selection.
+    fn handle(
+        &self,
+        _state: &mut (),
+        event: &crate::interactive::RoutedEvent,
+        layout: &MessageListLayout,
+        _cx: &mut crate::interactive::EventCx,
+    ) -> crate::Handled<MessageListEvent> {
+        use crate::Handled;
+
+        let crate::interactive::RoutedEvent::Wheel { dy, .. } = event else {
+            return Handled::Ignored;
+        };
+        let delta =
+            crate::primitives::scrollbar::wheel_row_delta(*dy, MESSAGE_LIST_WHEEL_ROWS_PER_NOTCH);
+        if delta == 0 {
+            return Handled::Ignored;
+        }
+        let max = self.rows.len().saturating_sub(layout.viewport_rows());
+        let scroll_top =
+            crate::primitives::scrollbar::scroll_by_clamped(self.scroll_top.min(max), delta, max);
+        if scroll_top == self.scroll_top {
+            return Handled::Consumed;
+        }
+        Handled::Event(MessageListEvent::Scrolled {
+            scroll_top,
+            at_bottom: scroll_top == max,
+        })
+    }
+}
+
 // ── PaintSurface paint ──────────────────────────────────────────────
 //
-// `paint` below is shared by the **macOS and Windows** rasterisers only —
-// `gtk::message_list::draw_message_list` is **not** migrated and stays a
-// full, bespoke Cairo + Pango implementation. This mirrors the exception
+// `paint` below is the macOS and Windows rasterisers' painter and every
+// pixel backend's `Primitive::paint` for a `MessageList` painted as a
+// widget. `gtk::message_list::draw_message_list`, behind GTK's
+// `Backend::draw_message_list`, stays a full, bespoke Cairo + Pango
+// implementation. This mirrors the exception
 // `crate::primitives::rich_text_popup::native_surface_paint` already
 // documents and for the same underlying reason:
 //
@@ -329,7 +468,11 @@ impl MessageList {
 // each backend's thin wrapper keeps its own pre-paint check instead
 // (see `macos::message_list::draw_message_list`'s `if w <= 0.0` guard);
 // `paint` itself only needs `line_height > 0.0`.
-#[cfg(any(feature = "win", all(feature = "macos", target_os = "macos")))]
+#[cfg(any(
+    feature = "gtk",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
 #[allow(dead_code)]
 pub(crate) mod native_surface_paint {
     use super::MessageList;

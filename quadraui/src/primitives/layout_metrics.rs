@@ -25,12 +25,11 @@
 
 use crate::event::Rect as QRect;
 use crate::primitives::board::{BoardLayout, BoardMeasure, BoardModel};
-use crate::primitives::chart::{Chart, ChartLayout, ChartMeasure};
 use crate::primitives::data_table::{ColumnMeasure, DataTable, DataTableLayout};
 use crate::primitives::form::{
     FieldKind, FormField, FormFieldMeasure, FormItemMeasure, ValidationState,
 };
-use crate::primitives::list::{ListItemMeasure, ListView, ListViewLayout};
+use crate::primitives::list::{ListView, ListViewLayout};
 use crate::primitives::multi_section_view::{
     MsvLayoutMetrics, MultiSectionView, MultiSectionViewLayout, SectionAux, SectionBody,
     SectionMeasure,
@@ -459,21 +458,14 @@ pub fn list_layout(
     char_width: f64,
     border_inset: f64,
 ) -> ListViewLayout {
-    let visible_px = (w - border_inset * 2.0).max(0.0);
-    let needs_hscrollbar = list
-        .max_content_width
-        .is_some_and(|n| n as f64 * char_width > visible_px);
-    let hscrollbar_h = if needs_hscrollbar { line_height } else { 0.0 };
-    let title_h = if list.title.is_some() {
-        line_height as f32
-    } else {
-        0.0
-    };
-    let layout_w = (w - border_inset * 2.0) as f32;
-    let layout_h = (h - border_inset * 2.0 - hscrollbar_h).max(0.0) as f32;
-    list.layout(layout_w, layout_h, title_h, |_| {
-        ListItemMeasure::new(line_height as f32)
-    })
+    list.resolve_layout(
+        crate::primitive::Units::Pixels,
+        (w as f32, h as f32),
+        line_height as f32,
+        char_width as f32,
+        border_inset as f32,
+        None,
+    )
 }
 
 // ── MultiSectionView ────────────────────────────────────────────────
@@ -990,34 +982,6 @@ pub fn pixel_board_layout(model: &BoardModel, x: f32, y: f32, w: f32, h: f32) ->
             BOARD_CARD_H_PX,
             BOARD_CARD_GAP_PX,
         ),
-    )
-}
-
-// ── Chart ────────────────────────────────────────────────────────────
-
-/// Compute a [`Chart`]'s layout — the twin of every backend's
-/// `*_chart_layout`. Pure passthrough to
-/// [`Chart::layout`]; kept here (rather than inlined at each call site)
-/// so a future backend gets it for free, matching every other fn in
-/// this module.
-pub fn pixel_chart_layout(
-    chart: &Chart,
-    x: f32,
-    y: f32,
-    w: f32,
-    h: f32,
-    line_height: f32,
-    char_width: f32,
-) -> ChartLayout {
-    chart.layout(
-        x,
-        y,
-        ChartMeasure {
-            width: w,
-            height: h,
-            char_width,
-            line_height,
-        },
     )
 }
 

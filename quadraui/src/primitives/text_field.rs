@@ -831,6 +831,7 @@ impl crate::primitive::Primitive for TextField {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
+        let painted = self.with_painted_caret(env.widget_state_as::<TextFieldState>());
         #[cfg(any(
             feature = "gtk",
             feature = "win",
@@ -841,7 +842,7 @@ impl crate::primitive::Primitive for TextField {
                 surface,
                 layout.area,
                 &layout.layout,
-                self,
+                &painted,
                 theme,
                 layout.nerd_fonts,
             );
@@ -852,7 +853,7 @@ impl crate::primitive::Primitive for TextField {
             all(feature = "macos", target_os = "macos")
         )))]
         {
-            let _ = (layout, surface, theme);
+            let _ = (&painted, layout, surface, theme);
         }
     }
 
@@ -870,29 +871,23 @@ impl crate::primitive::Primitive for TextField {
         env: &crate::PaintEnv,
     ) {
         let theme = env.theme();
-        cell_paint::paint(self, &layout.layout, cells, theme, layout.nerd_fonts);
+        let painted = self.with_painted_caret(env.widget_state_as::<TextFieldState>());
+        cell_paint::paint(&painted, &layout.layout, cells, theme, layout.nerd_fonts);
     }
 }
 
 /// [`crate::interactive::Interactive::State`] for [`TextField`]: the
-/// caret and selection anchor this widget's own key handling moves, as
-/// byte offsets into [`TextField::value`].
+/// shared flat-value editing state (caret, selection anchor and
+/// drag-select flag, as byte offsets into [`TextField::value`]).
 ///
 /// Same division of labour as [`crate::primitives::text_input::TextInputState`]
 /// — see that type's doc for why the caret is interaction state rather
 /// than something read back off the descriptor.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct TextFieldState {
-    /// The caret byte offset this widget's own editing has moved to, or
-    /// `None` while it still follows [`TextField::cursor`].
-    pub cursor: Option<usize>,
-    /// The selection's fixed end, as a byte offset.
-    pub anchor: Option<usize>,
-}
+pub type TextFieldState = crate::behaviour::text_edit::FlatEditState;
 
 /// What a [`TextField`]'s own [`crate::interactive::Interactive::handle`]
-/// resolves one gesture to.
+/// resolves one gesture to. A copy reaches the host as
+/// [`crate::UiEvent::TextCopied`] directly.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TextFieldAction {
     /// The value changed — a keystroke, a cut, or a click on the clear
@@ -902,9 +897,6 @@ pub enum TextFieldAction {
     Changed(String),
     /// Enter committed the field's current value.
     Committed(String),
-    /// Ctrl-C (or the copy half of Ctrl-X) put the selection on the
-    /// clipboard.
-    Copied(String),
 }
 
 impl crate::interactive::WidgetAction for TextFieldAction {
@@ -918,100 +910,27 @@ impl crate::interactive::WidgetAction for TextFieldAction {
                 id,
                 crate::primitives::form::FormEvent::TextInputCommitted { id, value },
             ),
-            TextFieldAction::Copied(text) => crate::UiEvent::TextCopied(text),
         }
     }
 }
 
 impl TextField {
-    /// The caret one `handle` call starts from: whatever this widget's
-    /// own state has walked to, else [`Self::cursor`], else the end of
-    /// the value — snapped to a char boundary either way.
-    fn effective_cursor(&self, state: &TextFieldState) -> usize {
-        crate::behaviour::text_edit::effective_flat_cursor(&self.value, state.cursor, self.cursor)
-    }
-
-    /// Apply one [`EditOp`] against this field's value and the
-    /// caret/anchor in `state`, writing the resulting caret back.
-    ///
-    /// Returns the new value when it changed, `None` when the op only
-    /// moved the caret or the selection.
-    fn apply_op(&self, state: &mut TextFieldState, op: EditOp) -> Option<String> {
-        let (value, cursor, anchor) =
-            apply_flat_edit_op(&self.value, self.effective_cursor(state), state.anchor, op);
-        state.cursor = Some(cursor);
-        state.anchor = anchor;
-        (value != self.value).then_some(value)
-    }
-
-    /// The selected text, as the shared flat-value selection span
-    /// resolves it against this field's value and `state`'s
-    /// caret/anchor.
-    fn selection_text(&self, state: &TextFieldState) -> Option<String> {
-        crate::behaviour::text_edit::flat_selected_text(
-            &self.value,
-            self.effective_cursor(state),
-            state.anchor,
-        )
-    }
-
-    /// Apply `op` and report it: a value change as
-    /// [`TextFieldAction::Changed`], a caret-only move as
-    /// [`Handled::Consumed`] plus a redraw request.
-    fn commit(
-        &self,
-        state: &mut TextFieldState,
-        op: EditOp,
-        cx: &mut crate::interactive::EventCx,
-    ) -> Handled<TextFieldAction> {
-        match self.apply_op(state, op) {
-            Some(value) => Handled::Event(TextFieldAction::Changed(value)),
-            None => {
-                cx.request_redraw();
-                Handled::Consumed
-            }
-        }
-    }
-
-    /// One keystroke, with Enter claimed ahead of the shared chord
-    /// vocabulary (which maps it to a newline) and the Ctrl-chorded
-    /// clipboard / select-all keys resolved by
-    /// [`EditIntent::from_key`](crate::behaviour::text_edit::EditIntent::from_key).
-    fn handle_key(
-        &self,
-        state: &mut TextFieldState,
-        key: &crate::event::Key,
-        modifiers: crate::types::Modifiers,
-        cx: &mut crate::interactive::EventCx,
-    ) -> Handled<TextFieldAction> {
-        use crate::behaviour::text_edit::EditIntent;
-        use crate::event::{Key, NamedKey};
-
-        // Single-line field: Enter commits instead of splitting the
-        // value, so the newline `EditOp::from_key` would resolve never
-        // reaches the buffer.
-        if matches!(key, Key::Named(NamedKey::Enter)) {
-            return Handled::Event(TextFieldAction::Committed(self.value.clone()));
-        }
-        match EditIntent::from_key(key, modifiers) {
-            Some(EditIntent::SelectAll) => self.commit(state, EditOp::SelectAll, cx),
-            Some(EditIntent::Copy) => match self.selection_text(state) {
-                Some(text) => Handled::Event(TextFieldAction::Copied(text)),
-                None => Handled::Consumed,
-            },
-            Some(EditIntent::Cut) => match self.selection_text(state) {
-                Some(text) => {
-                    cx.emit(crate::UiEvent::TextCopied(text));
-                    self.commit(state, EditOp::DeleteSelection, cx)
-                }
-                None => Handled::Consumed,
-            },
-            // Paste is the host's: the clipboard text arrives as
-            // `UiEvent::ClipboardPaste`, which a host feeds back in as
-            // `RoutedEvent::Text`.
-            Some(EditIntent::Paste) => Handled::Ignored,
-            Some(EditIntent::Op(op)) => self.commit(state, op, cx),
-            None => Handled::Ignored,
+    /// This field with the caret and selection its own editing has
+    /// walked to, for a painter — the descriptor's own when `state` has
+    /// not moved the caret.
+    fn with_painted_caret(&self, state: Option<&TextFieldState>) -> std::borrow::Cow<'_, Self> {
+        let (cursor, anchor) = crate::behaviour::text_edit::painted_flat_caret(
+            state,
+            self.cursor,
+            self.selection_anchor,
+        );
+        if cursor == self.cursor && anchor == self.selection_anchor {
+            std::borrow::Cow::Borrowed(self)
+        } else {
+            let mut painted = self.clone();
+            painted.cursor = cursor;
+            painted.selection_anchor = anchor;
+            std::borrow::Cow::Owned(painted)
         }
     }
 }
@@ -1054,12 +973,11 @@ impl crate::interactive::Interactive for TextField {
         ]
     }
 
-    /// Keystrokes go through [`EditOp::from_key`] and the shared
-    /// flat-value bridge, so this field, `Form`'s own text row and
-    /// [`crate::TextEditor`] can never disagree about what a key means.
-    /// Enter commits, Ctrl-A/C/X select-all/copy/cut, a click on the
-    /// text parks the caret at the clicked character, and a click on the
-    /// clear button empties the field.
+    /// Enter commits and a press on the clear button empties the field;
+    /// every other event goes through the shared flat-value editing
+    /// handler, so this field, [`crate::CommandLine`], the palette query
+    /// and `Form`'s own text row can never disagree about what a key, a
+    /// click or a drag means.
     fn handle(
         &self,
         state: &mut TextFieldState,
@@ -1067,64 +985,57 @@ impl crate::interactive::Interactive for TextField {
         layout: &TextFieldPrimitiveLayout,
         cx: &mut crate::interactive::EventCx,
     ) -> Handled<TextFieldAction> {
+        use crate::behaviour::text_edit::{col_to_byte, handle_flat_edit_event, FlatEditOutcome};
         use crate::interactive::{PointerKind, RoutedEvent};
 
         match event {
-            RoutedEvent::Key(key) => self.handle_key(state, &key.key, key.modifiers, cx),
-            RoutedEvent::Text(text) => self.commit(state, EditOp::InsertText(text.clone()), cx),
+            // Single-line field: Enter commits instead of splitting the
+            // value.
+            RoutedEvent::Key(key)
+                if matches!(
+                    key.key,
+                    crate::event::Key::Named(crate::event::NamedKey::Enter)
+                ) =>
+            {
+                return Handled::Event(TextFieldAction::Committed(self.value.clone()));
+            }
             RoutedEvent::Pointer {
                 kind: PointerKind::Down(crate::event::MouseButton::Left),
                 local,
-                mods,
                 ..
-            } => {
-                let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+            } if layout.hit_test(layout.area.x + local.x, layout.area.y + local.y)
+                == TextFieldHit::Clear =>
+            {
                 cx.request_focus(None);
-                match layout.hit_test(x, y) {
-                    TextFieldHit::Clear => {
-                        state.cursor = Some(0);
-                        state.anchor = None;
-                        if self.value.is_empty() {
-                            Handled::Consumed
-                        } else {
-                            Handled::Event(TextFieldAction::Changed(String::new()))
-                        }
-                    }
-                    TextFieldHit::Text => {
-                        // A single-line field is always line 0; `col` is
-                        // the char column the shared bridge converts back
-                        // into a byte offset.
-                        let col = layout.char_offset_at(x);
-                        self.commit(
-                            state,
-                            EditOp::SetCursor {
-                                line: 0,
-                                col,
-                                extend: mods.shift,
-                            },
-                            cx,
-                        )
-                    }
-                    TextFieldHit::Miss => Handled::Consumed,
-                }
+                *state = TextFieldState {
+                    cursor: Some(0),
+                    ..TextFieldState::default()
+                };
+                return if self.value.is_empty() {
+                    Handled::Consumed
+                } else {
+                    Handled::Event(TextFieldAction::Changed(String::new()))
+                };
             }
-            RoutedEvent::Action(crate::a11y::A11yAction::Focus) => {
-                cx.request_focus(None);
-                Handled::Consumed
-            }
-            RoutedEvent::FocusIn(_) => {
-                // Re-seed from the descriptor: the app may have moved the
-                // caret while this field was unfocused.
-                state.cursor = Some(self.cursor.unwrap_or(self.value.len()));
-                state.anchor = self.selection_anchor;
-                Handled::Consumed
-            }
-            RoutedEvent::FocusOut => {
-                state.cursor = None;
-                state.anchor = None;
-                Handled::Consumed
-            }
-            _ => Handled::Ignored,
+            _ => {}
+        }
+        let offset_at = |local: crate::event::Point| {
+            let (x, y) = (layout.area.x + local.x, layout.area.y + local.y);
+            (layout.hit_test(x, y) == TextFieldHit::Text)
+                .then(|| col_to_byte(&self.value, layout.char_offset_at(x)))
+        };
+        match handle_flat_edit_event(
+            &self.value,
+            self.cursor,
+            self.selection_anchor,
+            state,
+            event,
+            &offset_at,
+            cx,
+        ) {
+            FlatEditOutcome::Changed(value) => Handled::Event(TextFieldAction::Changed(value)),
+            FlatEditOutcome::Consumed => Handled::Consumed,
+            FlatEditOutcome::Ignored => Handled::Ignored,
         }
     }
 }
@@ -1399,6 +1310,7 @@ mod interactive_tests {
         let mut state = TextFieldState {
             cursor: Some(5),
             anchor: Some(4),
+            ..TextFieldState::default()
         };
         let mut cx = EventCx::new(tf.id, &mut host);
         assert_eq!(
@@ -1419,6 +1331,72 @@ mod interactive_tests {
             Handled::Consumed
         );
         assert_eq!(state.cursor, None);
+    }
+
+    #[test]
+    fn ctrl_z_is_left_to_the_app_instead_of_typing_a_z() {
+        let tf = field("alpha");
+        let layout = layout_of(&tf);
+        let mut host = MockHost::default();
+        let mut state = TextFieldState::default();
+        let mut cx = EventCx::new(tf.id, &mut host);
+        assert_eq!(
+            Interactive::handle(
+                &tf,
+                &mut state,
+                &key(Key::Char('z'), ctrl()),
+                &layout,
+                &mut cx,
+            ),
+            Handled::Ignored
+        );
+    }
+
+    #[test]
+    fn a_press_then_a_drag_selects_the_dragged_over_text() {
+        let tf = field("alpha");
+        let layout = layout_of(&tf);
+        let text_x = layout.layout.text_rect.x;
+        let mut host = MockHost::default();
+        let mut state = TextFieldState::default();
+        let mut cx = EventCx::new(tf.id, &mut host);
+        let _ = Interactive::handle(
+            &tf,
+            &mut state,
+            &click(text_x + 1.0, Modifiers::default()),
+            &layout,
+            &mut cx,
+        );
+        let drag = RoutedEvent::Pointer {
+            kind: PointerKind::Move,
+            sub: None,
+            local: Point::new(text_x + 4.0, 0.0),
+            mods: Modifiers::default(),
+        };
+        assert_eq!(
+            Interactive::handle(&tf, &mut state, &drag, &layout, &mut cx),
+            Handled::Consumed
+        );
+        assert_eq!((state.cursor, state.anchor), (Some(4), Some(1)));
+
+        let release = RoutedEvent::Pointer {
+            kind: PointerKind::Up(MouseButton::Left),
+            sub: None,
+            local: Point::new(text_x + 4.0, 0.0),
+            mods: Modifiers::default(),
+        };
+        let _ = Interactive::handle(&tf, &mut state, &release, &layout, &mut cx);
+        let after = RoutedEvent::Pointer {
+            kind: PointerKind::Move,
+            sub: None,
+            local: Point::new(text_x + 2.0, 0.0),
+            mods: Modifiers::default(),
+        };
+        assert_eq!(
+            Interactive::handle(&tf, &mut state, &after, &layout, &mut cx),
+            Handled::Ignored
+        );
+        assert_eq!(state.cursor, Some(4));
     }
 
     #[test]
@@ -1506,6 +1484,41 @@ mod cell_paint_tests {
         // Brackets at the row's own edges.
         assert_eq!(buf[(area.x, area.y)].symbol(), "[");
         assert_eq!(buf[(area.x + area.width - 1, area.y)].symbol(), "]");
+    }
+
+    #[test]
+    fn paint_shows_the_selection_the_fields_own_editing_made() {
+        use crate::primitive::{LayoutCtx, PaintEnv, Primitive};
+        let tf = TextField::new(WidgetId::new("tf"))
+            .with_value("alpha")
+            .with_has_focus(true);
+        let area = crate::event::Rect::new(0.0, 0.0, 12.0, 1.0);
+        let layout = Primitive::layout(&tf, &LayoutCtx::new(1.0, 1.0, false), area);
+        let text_x = layout.layout.text_rect.x as u16;
+        let theme = theme();
+        let style = crate::Style::default();
+        let paint = |state: Option<&super::TextFieldState>| {
+            let mut buf = Buffer::empty(Rect::new(0, 0, 12, 1));
+            {
+                let mut cells = crate::tui::BufferCellSurface::new(&mut buf);
+                let env = PaintEnv::new(&theme, &style)
+                    .with_widget_state(state.map(|s| s as &dyn std::any::Any));
+                Primitive::paint_cells(&tf, &layout, &mut cells, &env);
+            }
+            buf
+        };
+        let plain = paint(None);
+        assert_eq!(plain[(text_x + 1, 0)].bg, qc(theme.input_bg));
+
+        let selected = super::TextFieldState {
+            cursor: Some(3),
+            anchor: Some(1),
+            ..Default::default()
+        };
+        let buf = paint(Some(&selected));
+        assert_ne!(buf[(text_x + 1, 0)].bg, qc(theme.input_bg));
+        assert_ne!(buf[(text_x + 2, 0)].bg, qc(theme.input_bg));
+        assert_eq!(buf[(text_x + 4, 0)].bg, qc(theme.input_bg));
     }
 
     #[test]

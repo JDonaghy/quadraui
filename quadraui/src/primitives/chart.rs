@@ -54,6 +54,8 @@ use serde::{Deserialize, Serialize};
 ///     y_ticks: None,
 ///     x_ticks: None,
 ///     show_grid: false,
+///     hovered_point: None,
+///     crosshair_x: None,
 /// };
 ///
 /// let measure = ChartMeasure {
@@ -96,6 +98,15 @@ pub struct Chart {
     /// Show horizontal grid lines at y-tick positions.
     #[serde(default)]
     pub show_grid: bool,
+    /// The data point painted with a hover marker, as `(series_idx,
+    /// data_idx)`. Owned by the app: it writes back the point each
+    /// [`ChartEvent::DataPointHovered`] reports.
+    #[serde(default)]
+    pub hovered_point: Option<(usize, usize)>,
+    /// The data index (fractional) a vertical crosshair is painted at,
+    /// with each series' value labelled beside it. Owned by the app.
+    #[serde(default)]
+    pub crosshair_x: Option<f64>,
 }
 
 /// Chart visualisation kind.
@@ -163,8 +174,10 @@ pub struct Series {
     /// Override colour. `None` = backend picks from a default palette.
     #[serde(default)]
     pub color: Option<Color>,
-    /// Fill the area under the line (Line kind only). Ignored for
-    /// Sparkline and Bar.
+    /// Fill the area under the line with a translucent wash of the
+    /// series colour on pixel backends, and with braille dots down to
+    /// the plot floor on TUI ([`ChartKind::Line`] only; ignored for
+    /// Sparkline and the bar kinds).
     #[serde(default)]
     pub fill: bool,
 }
@@ -172,6 +185,14 @@ pub struct Series {
 /// Events a `Chart` emits.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChartEvent {
+    /// The data point under the pointer changed, including to no point
+    /// at all (`point: None`) — the pointer left every point's snap
+    /// radius or left the chart. `point` is `(series_idx, data_idx)`;
+    /// the app writes it to [`Chart::hovered_point`].
+    DataPointHovered {
+        id: WidgetId,
+        point: Option<(usize, usize)>,
+    },
     /// User clicked the chart body.
     Clicked { id: WidgetId },
     /// User clicked a specific data point.
@@ -274,6 +295,17 @@ impl ChartLayout {
 }
 
 impl Chart {
+    /// The colour series `idx` paints with: its own [`Series::color`]
+    /// when set, otherwise the theme's series palette
+    /// ([`crate::Theme::chart_series`]), cycling by index.
+    pub fn series_color(&self, idx: usize, theme: &crate::Theme) -> Color {
+        let palette = theme.chart_series();
+        self.series
+            .get(idx)
+            .and_then(|s| s.color)
+            .unwrap_or(palette[idx % palette.len()])
+    }
+
     /// Resolve the effective y-range from explicit range or data min/max.
     ///
     /// For a stacked bar chart ([`ChartKind::Bar`]) with more than one
@@ -451,6 +483,22 @@ impl Chart {
             }
         }
         spans
+    }
+
+    /// [`Self::layout`] over `rect`, measuring axis labels with
+    /// `char_width` and label rows with `line_height` — `1.0`/`1.0` on a
+    /// cell grid.
+    pub fn layout_in(&self, rect: Rect, char_width: f32, line_height: f32) -> ChartLayout {
+        self.layout(
+            rect.x,
+            rect.y,
+            ChartMeasure {
+                width: rect.width,
+                height: rect.height,
+                char_width,
+                line_height,
+            },
+        )
     }
 
     /// Compute layout and hit regions.
@@ -687,890 +735,23 @@ pub fn format_tick_value(v: f64) -> String {
     }
 }
 
-// ── PaintSurface paint ────
-//
-// `paint` below is the shared implementation for painting all chart kinds,
-// written against [`crate::paint_surface::PaintSurface`] instead of any
-// one backend's drawing API.
-//
-// Behavioural changes from the three separate backend implementations:
-//
-//   - **The clip.** `paint` always brackets its body in
-//     `surface_push_clip(layout.bounds)` / `surface_pop_clip()`, ensuring
-//     overlays (legend/crosshair/hover-marker) can't bleed past the chart's
-//     bounds on any backend.
-//   - **Area fill (`Series::fill`) is dropped.** `PaintSurface` has no
-//     polygon-fill verb (only axis-aligned `surface_fill_rect`), so there
-//     is no way to reproduce an arbitrary under-the-line fill. `Series::fill`
-//     no longer paints an area on any pixel backend. TUI's own `tui::chart`
-//     keeps its own fill rendering.
-//   - **The sparkline's data cadence.** Data points stretch evenly across
-//     the plot's full width, not windowed to the most recent `plot_area.width`
-//     points. A hovered sparkline point's marker still reads its position from
-//     `layout.data_point_positions` (matching the windowed cadence), so a data
-//     point outside the window can show a hover marker slightly off the
-//     re-stretched line.
-//   - **The crosshair.** A solid line with per-series value labels,
-//     approximating the 50%-alpha tint with `blend` against `theme.background`.
-//   - **Axis lines.** The plot's left/bottom axis lines always stroke
-//     for `ChartKind::Line` and `Bar`/`BarGrouped`.
-//   - **The grid line color.** Uses `theme.separator` at full opacity
-//     (the theme's own semantic "chrome line" color).
-//   - **The hover marker.** A filled square approximation (since `PaintSurface`
-//     has no circle verb), sized to match the GTK/Windows circle footprint
-//     (radius 5 / radius 8 rings → 10×10 / 16×16 squares). The outer ring's
-//     halo is CPU-blended against the live `theme.background`, not a
-//     hardcoded default.
-//
-// `SERIES_COLORS` is an alias for the crate's one definition,
-// `theme::CHART_SERIES`, and `series_color` resolves through
-// [`Theme::chart_series`] — so this module and `tui::chart` can't drift
-// apart on the values or the length.
-//
-// `#[allow(dead_code)]`: only *called* once a real pixel backend is
-// compiled in, exercised by each backend's own `Backend::draw_chart` call
-// site plus this module's own `RecordingSurface` tests.
+mod contract;
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+pub(crate) mod paint_pixels;
+
+pub use contract::{ChartPrimitiveLayout, ChartState};
 #[cfg(any(
     feature = "gtk",
-    feature = "win",
+    all(feature = "win", target_os = "windows"),
     all(feature = "macos", target_os = "macos")
 ))]
-#[allow(dead_code)]
-mod native_surface_paint {
-    use super::{Chart, ChartKind, ChartLayout};
-    use crate::paint_surface::PaintSurface;
-    use crate::theme::Theme;
-    use crate::types::Color;
-    use crate::Rect;
-
-    /// The crate's one series palette, accessible here under this module's
-    /// historical name for the backend rasteriser tests that import it as
-    /// a `const` — a `const` can't call [`Theme::chart_series`], which is
-    /// what all *painting* goes through.
-    pub(crate) const SERIES_COLORS: [Color; 6] = crate::theme::CHART_SERIES;
-
-    fn series_color(chart: &Chart, idx: usize, theme: &Theme) -> Color {
-        let palette = theme.chart_series();
-        chart
-            .series
-            .get(idx)
-            .and_then(|s| s.color)
-            .unwrap_or(palette[idx % palette.len()])
-    }
-
-    /// Stroke a polyline through `points` as `points.len() - 1` separate
-    /// segments, since `PaintSurface::surface_draw_line` only draws one
-    /// segment at a time.
-    fn stroke_polyline(
-        surface: &mut dyn PaintSurface,
-        points: &[(f32, f32)],
-        color: Color,
-        stroke_width: f32,
-    ) {
-        for pair in points.windows(2) {
-            let (from, to) = (pair[0], pair[1]);
-            surface.surface_draw_line(
-                crate::Point::new(from.0, from.1),
-                crate::Point::new(to.0, to.1),
-                color,
-                stroke_width,
-            );
-        }
-    }
-
-    /// Paint a [`Chart`] (already resolved into `layout`) onto `surface`.
-    /// See this module's doc for the divergences resolved while
-    /// unifying three per-backend copies into this one.
-    ///
-    /// `layout` must be the same [`ChartLayout`] the caller uses for
-    /// hit-testing/hover resolution — mirrors `primitives::form::paint`'s
-    /// contract of reading geometry only from the caller-supplied
-    /// layout, never recomputing it.
-    pub(crate) fn paint(
-        chart: &Chart,
-        layout: &ChartLayout,
-        surface: &mut dyn PaintSurface,
-        theme: &Theme,
-        hovered_point: Option<(usize, usize)>,
-        crosshair_x: Option<f64>,
-    ) {
-        let b = layout.bounds;
-        if b.width <= 0.0 || b.height <= 0.0 {
-            return;
-        }
-
-        // Clip to the chart's own rect — see this
-        // module's doc for why Windows didn't have this before.
-        surface.surface_push_clip(b);
-
-        match chart.kind {
-            ChartKind::Sparkline => paint_sparkline(surface, layout, chart, theme),
-            ChartKind::Line => paint_line(surface, layout, chart, theme),
-            ChartKind::Bar | ChartKind::BarGrouped => paint_bar(surface, layout, chart, theme),
-        }
-
-        if let Some(data_x) = crosshair_x {
-            paint_crosshair(surface, layout, chart, theme, data_x);
-        }
-        if let Some((si, di)) = hovered_point {
-            paint_hover_marker(surface, layout, si, di, chart, theme);
-        }
-
-        surface.surface_pop_clip();
-    }
-
-    fn paint_sparkline(
-        surface: &mut dyn PaintSurface,
-        layout: &ChartLayout,
-        chart: &Chart,
-        theme: &Theme,
-    ) {
-        let pa = layout.plot_area;
-        surface.surface_fill_rect(pa, theme.background);
-
-        let Some(s) = chart.series.first() else {
-            return;
-        };
-        if s.data.is_empty() || pa.width <= 0.0 || pa.height <= 0.0 {
-            return;
-        }
-        let (y_min, y_max) = chart.effective_y_range();
-        let range = y_max - y_min;
-        let color = series_color(chart, 0, theme);
-        let n = s.data.len();
-        let points: Vec<(f32, f32)> = s
-            .data
-            .iter()
-            .enumerate()
-            .map(|(i, &val)| {
-                let norm = if range > 0.0 {
-                    ((val - y_min) / range).clamp(0.0, 1.0)
-                } else {
-                    0.5
-                };
-                let sx = pa.x
-                    + if n <= 1 {
-                        0.0
-                    } else {
-                        (i as f32 / (n - 1) as f32) * pa.width
-                    };
-                let sy = pa.y + pa.height - norm as f32 * pa.height;
-                (sx, sy)
-            })
-            .collect();
-        stroke_polyline(surface, &points, color, 1.5);
-    }
-
-    fn paint_line(
-        surface: &mut dyn PaintSurface,
-        layout: &ChartLayout,
-        chart: &Chart,
-        theme: &Theme,
-    ) {
-        let pa = layout.plot_area;
-        surface.surface_fill_rect(pa, theme.background);
-        if pa.width <= 0.0 || pa.height <= 0.0 {
-            return;
-        }
-
-        // Axes.
-        surface.surface_draw_line(
-            crate::Point::new(pa.x, pa.y),
-            crate::Point::new(pa.x, pa.y + pa.height),
-            theme.muted_fg,
-            1.0,
-        );
-        surface.surface_draw_line(
-            crate::Point::new(pa.x, pa.y + pa.height),
-            crate::Point::new(pa.x + pa.width, pa.y + pa.height),
-            theme.muted_fg,
-            1.0,
-        );
-
-        for (si, s) in chart.series.iter().enumerate() {
-            if s.data.is_empty() {
-                continue;
-            }
-            let color = series_color(chart, si, theme);
-            let points: Vec<(f32, f32)> = layout
-                .data_point_positions
-                .iter()
-                .filter_map(|&(pt_si, _, x, y)| if pt_si == si { Some((x, y)) } else { None })
-                .collect();
-            stroke_polyline(surface, &points, color, 2.0);
-        }
-
-        paint_legend(surface, layout, chart, theme);
-        paint_axis_labels(surface, layout, chart, theme);
-    }
-
-    fn paint_bar(
-        surface: &mut dyn PaintSurface,
-        layout: &ChartLayout,
-        chart: &Chart,
-        theme: &Theme,
-    ) {
-        let pa = layout.plot_area;
-        surface.surface_fill_rect(pa, theme.background);
-        if pa.width <= 0.0 || pa.height <= 0.0 {
-            return;
-        }
-
-        let n = chart.max_data_len();
-        if n > 0 {
-            let slot_w = pa.width / n as f32;
-            let gap = (slot_w * 0.15).max(1.0);
-            let bar_w = (slot_w - gap).max(1.0);
-            let stacked = chart.kind.is_stacked_bar();
-            let series_count = chart.series.len().max(1) as f32;
-            let baseline = pa.y + pa.height;
-
-            for (i, column) in chart.bar_column_spans_all().into_iter().enumerate() {
-                let slot_x = pa.x + i as f32 * slot_w + gap / 2.0;
-                for (si, bottom, top) in column {
-                    let (bx, seg_w) = if stacked {
-                        (slot_x, bar_w)
-                    } else {
-                        let sub_w = (bar_w / series_count).max(1.0);
-                        (slot_x + si as f32 * sub_w, sub_w)
-                    };
-                    let seg_h = (top - bottom) as f32 * pa.height;
-                    if seg_h <= 0.0 {
-                        continue;
-                    }
-                    let by = baseline - top as f32 * pa.height;
-                    surface.surface_fill_rect(
-                        Rect::new(bx, by, seg_w, seg_h),
-                        series_color(chart, si, theme),
-                    );
-                }
-            }
-
-            surface.surface_draw_line(
-                crate::Point::new(pa.x, baseline),
-                crate::Point::new(pa.x + pa.width, baseline),
-                theme.muted_fg,
-                1.0,
-            );
-        }
-
-        paint_legend(surface, layout, chart, theme);
-        paint_axis_labels(surface, layout, chart, theme);
-    }
-
-    fn paint_legend(
-        surface: &mut dyn PaintSurface,
-        layout: &ChartLayout,
-        chart: &Chart,
-        theme: &Theme,
-    ) {
-        let Some(lb) = layout.legend_bounds else {
-            return;
-        };
-        surface.surface_fill_rect(lb, theme.background);
-
-        let mut cx = lb.x + 2.0;
-        for (i, s) in chart.series.iter().enumerate() {
-            let color = series_color(chart, i, theme);
-            let swatch = lb.height * 0.6;
-            let sy = lb.y + (lb.height - swatch) / 2.0;
-            surface.surface_fill_rect(Rect::new(cx, sy, swatch, swatch), color);
-            cx += swatch + 4.0;
-
-            let (tw, th) = surface.surface_measure_text(&s.label);
-            surface.surface_draw_text_run(
-                Rect::new(cx, lb.y, tw, th.max(lb.height)),
-                &s.label,
-                theme.foreground,
-            );
-            cx += tw + 12.0;
-        }
-    }
-
-    fn paint_axis_labels(
-        surface: &mut dyn PaintSurface,
-        layout: &ChartLayout,
-        chart: &Chart,
-        theme: &Theme,
-    ) {
-        let pa = layout.plot_area;
-
-        for &(sy, val) in &layout.y_tick_positions {
-            let label = super::format_tick_value(val);
-            let (tw, th) = surface.surface_measure_text(&label);
-            surface.surface_draw_text_run(
-                Rect::new(pa.x - tw - 4.0, sy - th / 2.0, tw, th),
-                &label,
-                theme.muted_fg,
-            );
-
-            if chart.show_grid && sy > pa.y && sy < pa.y + pa.height {
-                surface.surface_draw_line(
-                    crate::Point::new(pa.x, sy),
-                    crate::Point::new(pa.x + pa.width, sy),
-                    theme.separator,
-                    0.5,
-                );
-            }
-        }
-
-        // X-axis ticks: centred under each tick's screen x but
-        // clamped to stay inside the chart's own bounds — a tick at
-        // `frac == 1.0` sits exactly on the bounds' right edge, and a
-        // naive centred label there would always spill past it. A
-        // label that still collides with the previous (already-clamped)
-        // one is dropped rather than painted overlapping. `layout` only
-        // ever populates `x_tick_positions` when `chart.x_ticks` is
-        // `Some(n > 0)` (see `Chart::layout`), which is exactly the
-        // condition that reserved this row's height, so the two stay in
-        // sync without re-deriving it here.
-        let bounds = layout.bounds;
-        let x_ticks_height = if !layout.x_tick_positions.is_empty() {
-            surface.surface_line_height()
-        } else {
-            0.0
-        };
-        let mut prev_label_end: Option<f32> = None;
-        for &(sx, val) in &layout.x_tick_positions {
-            let label = super::format_tick_value(val);
-            let (tw, th) = surface.surface_measure_text(&label);
-            if tw > bounds.width {
-                continue;
-            }
-            let max_x = bounds.x + bounds.width - tw;
-            let lx = (sx - tw / 2.0).clamp(bounds.x, max_x);
-            if let Some(prev_end) = prev_label_end {
-                if lx < prev_end + 4.0 {
-                    continue;
-                }
-            }
-            surface.surface_draw_text_run(
-                Rect::new(lx, pa.y + pa.height, tw, th),
-                &label,
-                theme.muted_fg,
-            );
-            prev_label_end = Some(lx + tw);
-        }
-
-        if let Some(label) = &chart.x_label {
-            let (tw, th) = surface.surface_measure_text(label);
-            let cx = pa.x + (pa.width - tw) / 2.0;
-            let cy = pa.y + pa.height + x_ticks_height;
-            surface.surface_draw_text_run(Rect::new(cx, cy, tw, th), label, theme.foreground);
-        }
-
-        if let Some(label) = &chart.y_label {
-            let (tw, th) = surface.surface_measure_text(label);
-            surface.surface_draw_text_run(
-                Rect::new(layout.bounds.x, pa.y, tw, th),
-                label,
-                theme.foreground,
-            );
-        }
-    }
-
-    fn paint_crosshair(
-        surface: &mut dyn PaintSurface,
-        layout: &ChartLayout,
-        chart: &Chart,
-        theme: &Theme,
-        data_x: f64,
-    ) {
-        let data_len = chart.max_data_len();
-        let screen_x = layout.data_to_screen_x(data_x, data_len);
-        let pa = layout.plot_area;
-        if screen_x <= pa.x || screen_x >= pa.x + pa.width {
-            return;
-        }
-
-        let line_color = theme.background.blend(theme.muted_fg, 0.5);
-        surface.surface_draw_line(
-            crate::Point::new(screen_x, pa.y),
-            crate::Point::new(screen_x, pa.y + pa.height),
-            line_color,
-            1.0,
-        );
-
-        let (y_min, y_max) = chart.effective_y_range();
-        let range = y_max - y_min;
-        for (si, s) in chart.series.iter().enumerate() {
-            if s.data.is_empty() {
-                continue;
-            }
-            let idx = data_x.round() as usize;
-            let Some(&val) = s.data.get(idx) else {
-                continue;
-            };
-            let label = super::format_tick_value(val);
-            let color = series_color(chart, si, theme);
-            let norm = if range > 0.0 {
-                ((val - y_min) / range).clamp(0.0, 1.0)
-            } else {
-                0.5
-            };
-            let sy = pa.y + pa.height - norm as f32 * pa.height;
-            let (tw, th) = surface.surface_measure_text(&label);
-            surface.surface_draw_text_run(
-                Rect::new(screen_x + 4.0, sy - 8.0, tw, th),
-                &label,
-                color,
-            );
-        }
-    }
-
-    fn paint_hover_marker(
-        surface: &mut dyn PaintSurface,
-        layout: &ChartLayout,
-        series_idx: usize,
-        data_idx: usize,
-        chart: &Chart,
-        theme: &Theme,
-    ) {
-        let Some(&(_, _, sx, sy)) = layout
-            .data_point_positions
-            .iter()
-            .find(|&&(si, di, _, _)| si == series_idx && di == data_idx)
-        else {
-            return;
-        };
-        let color = series_color(chart, series_idx, theme);
-        let inner = 5.0_f32;
-        surface.surface_fill_rect(
-            Rect::new(sx - inner, sy - inner, inner * 2.0, inner * 2.0),
-            color,
-        );
-        let outer_color = theme.background.blend(color, 0.3);
-        let outer = 8.0_f32;
-        surface.surface_fill_rect(
-            Rect::new(sx - outer, sy - outer, outer * 2.0, outer * 2.0),
-            outer_color,
-        );
-    }
-
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use crate::backend::ImagePaintResult;
-        use crate::event::Viewport;
-        use crate::primitives::chart::Series;
-        use crate::types::WidgetId;
-        use crate::Image;
-
-        /// Records every drawing verb `paint` issues, so a paint
-        /// assertion can run on any host — no Cairo, Core Graphics or
-        /// Direct2D needed. Mirrors `primitives::find_replace`'s own
-        /// `RecordingSurface`: the pixel backends' real
-        /// `ImageSurface`/`BitmapSurface`/`HeadlessSurface` driver tests
-        /// still cover "the verb reached real pixels"; this covers "the
-        /// shared painter emits the right verb at all", on every leg of
-        /// the quality gate that enables gtk, win, or macos.
-        #[derive(Default)]
-        struct RecordingSurface {
-            fills: Vec<(Rect, Color)>,
-            lines: Vec<(crate::Point, crate::Point, Color, f32)>,
-            texts: Vec<(Rect, String, Color)>,
-            clip_pushes: Vec<Rect>,
-            clip_pops: usize,
-        }
-
-        impl PaintSurface for RecordingSurface {
-            fn surface_begin_frame(&mut self, _viewport: Viewport) {}
-            fn surface_end_frame(&mut self) {}
-            fn surface_viewport(&self) -> Viewport {
-                Viewport::new(200.0, 100.0, 1.0)
-            }
-            fn surface_line_height(&self) -> f32 {
-                16.0
-            }
-            fn surface_char_width(&self) -> f32 {
-                8.0
-            }
-            fn surface_measure_text(&self, text: &str) -> (f32, f32) {
-                (text.chars().count() as f32 * 8.0, 14.0)
-            }
-            fn surface_fill_rect(&mut self, rect: Rect, color: Color) {
-                self.fills.push((rect, color));
-            }
-            /// Test-only recorder — `paint` never calls this verb
-            /// (see this module's own doc for why no primitive here has been
-            /// migrated onto it yet); this exists only so `RecordingSurface`
-            /// satisfies the trait. Records into the same `fills` list as
-            /// `surface_fill_rect` (radius dropped) — no test asserts on it
-            /// today.
-            fn surface_fill_rounded_rect(&mut self, rect: Rect, _radius: f32, color: Color) {
-                self.fills.push((rect, color));
-            }
-            fn surface_stroke_rect(&mut self, _rect: Rect, _color: Color, _stroke_width: f32) {}
-            fn surface_stroke_rounded_rect(
-                &mut self,
-                _rect: Rect,
-                _radius: f32,
-                _color: Color,
-                _stroke_width: f32,
-            ) {
-            }
-            fn surface_draw_text_run(&mut self, rect: Rect, text: &str, color: Color) {
-                self.texts.push((rect, text.to_string(), color));
-            }
-            fn surface_draw_line(
-                &mut self,
-                from: crate::Point,
-                to: crate::Point,
-                color: Color,
-                stroke_width: f32,
-            ) {
-                self.lines.push((from, to, color, stroke_width));
-            }
-            fn surface_push_clip(&mut self, rect: Rect) {
-                self.clip_pushes.push(rect);
-            }
-            fn surface_pop_clip(&mut self) {
-                self.clip_pops += 1;
-            }
-            fn surface_draw_image(&mut self, _rect: Rect, _image: &Image) -> ImagePaintResult {
-                ImagePaintResult::Unsupported
-            }
-        }
-
-        fn line_chart(data: Vec<f64>) -> Chart {
-            Chart {
-                id: WidgetId::new("chart"),
-                kind: ChartKind::Line,
-                series: vec![Series {
-                    label: "a".into(),
-                    data,
-                    color: None,
-                    fill: false,
-                }],
-                x_label: None,
-                y_label: None,
-                y_range: None,
-                x_range: None,
-                show_legend: false,
-                y_ticks: Some(0),
-                x_ticks: Some(0),
-                show_grid: false,
-            }
-        }
-
-        fn layout_for(chart: &Chart) -> ChartLayout {
-            chart.layout(
-                0.0,
-                0.0,
-                crate::primitives::chart::ChartMeasure {
-                    width: 100.0,
-                    height: 50.0,
-                    char_width: 8.0,
-                    line_height: 16.0,
-                },
-            )
-        }
-
-        /// Regression: every pixel backend must clip a chart's paint to its
-        /// own bounds.
-        #[test]
-        fn paint_clips_to_the_charts_own_bounds() {
-            let chart = line_chart(vec![1.0, 2.0, 3.0]);
-            let layout = layout_for(&chart);
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-
-            paint(&chart, &layout, &mut surface, &theme, None, None);
-
-            assert_eq!(
-                surface.clip_pushes,
-                vec![layout.bounds],
-                "paint must push exactly one clip, at the chart's own bounds"
-            );
-            assert_eq!(
-                surface.clip_pops, 1,
-                "every surface_push_clip must be balanced by surface_pop_clip"
-            );
-        }
-
-        #[test]
-        fn zero_size_chart_paints_nothing_and_never_clips() {
-            let chart = line_chart(vec![1.0, 2.0]);
-            let layout = ChartLayout {
-                bounds: Rect::new(0.0, 0.0, 0.0, 0.0),
-                plot_area: Rect::new(0.0, 0.0, 0.0, 0.0),
-                legend_bounds: None,
-                hit_regions: Vec::new(),
-                data_point_positions: Vec::new(),
-                y_tick_positions: Vec::new(),
-                x_tick_positions: Vec::new(),
-            };
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-
-            paint(&chart, &layout, &mut surface, &theme, None, None);
-
-            assert!(surface.clip_pushes.is_empty());
-            assert_eq!(surface.clip_pops, 0);
-            assert!(surface.fills.is_empty());
-        }
-
-        fn line_chart_with_x_ticks(
-            data: Vec<f64>,
-            x_range: Option<(f64, f64)>,
-            x_ticks: usize,
-        ) -> Chart {
-            Chart {
-                id: WidgetId::new("chart"),
-                kind: ChartKind::Line,
-                series: vec![Series {
-                    label: "a".into(),
-                    data,
-                    color: None,
-                    fill: false,
-                }],
-                x_label: None,
-                y_label: None,
-                y_range: None,
-                x_range,
-                show_legend: false,
-                y_ticks: Some(0),
-                x_ticks: Some(x_ticks),
-                show_grid: false,
-            }
-        }
-
-        /// Pixel backends (GTK/win/macOS) share this `paint_axis_labels`, so
-        /// a fix here covers all three at once.
-        #[test]
-        fn x_axis_ticks_paint_text_runs_with_their_values() {
-            let chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], None, 1);
-            let layout = layout_for(&chart);
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-
-            paint(&chart, &layout, &mut surface, &theme, None, None);
-
-            let labels: Vec<&str> = surface.texts.iter().map(|(_, t, _)| t.as_str()).collect();
-            assert!(
-                labels.contains(&"0") && labels.contains(&"2"),
-                "expected x-tick labels for data indices 0 and 2, got {labels:?}"
-            );
-        }
-
-        /// An explicit `x_range` drives tick *values*, not the data index.
-        #[test]
-        fn x_axis_tick_values_honour_x_range() {
-            let chart = line_chart_with_x_ticks(vec![1.0, 2.0, 3.0], Some((100.0, 300.0)), 1);
-            let layout = layout_for(&chart);
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-
-            paint(&chart, &layout, &mut surface, &theme, None, None);
-
-            let labels: Vec<&str> = surface.texts.iter().map(|(_, t, _)| t.as_str()).collect();
-            assert!(
-                labels.contains(&"100") && labels.contains(&"300"),
-                "expected x_range-derived labels, got {labels:?}"
-            );
-            assert!(
-                !labels.contains(&"0") && !labels.contains(&"2"),
-                "index-based labels should not appear once x_range is set: {labels:?}"
-            );
-        }
-
-        #[test]
-        fn line_series_paints_with_its_resolved_color() {
-            let chart = line_chart(vec![1.0, 4.0, 2.0]);
-            let layout = layout_for(&chart);
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-
-            paint(&chart, &layout, &mut surface, &theme, None, None);
-
-            assert!(
-                surface
-                    .lines
-                    .iter()
-                    .any(|&(_, _, c, _)| c == SERIES_COLORS[0]),
-                "expected at least one line segment in the series' resolved colour, got {:?}",
-                surface.lines,
-            );
-        }
-
-        /// Builds an n-series line chart where no series sets its own
-        /// `color`, so every one of them falls through to the theme
-        /// palette.
-        fn uncoloured_multi_series_chart(n: usize) -> Chart {
-            Chart {
-                id: WidgetId::new("chart"),
-                kind: ChartKind::Line,
-                series: (0..n)
-                    .map(|i| Series {
-                        label: format!("s{i}"),
-                        data: vec![1.0, 4.0, 2.0],
-                        color: None,
-                        fill: false,
-                    })
-                    .collect(),
-                x_label: None,
-                y_label: None,
-                y_range: None,
-                x_range: None,
-                show_legend: false,
-                y_ticks: Some(0),
-                x_ticks: Some(0),
-                show_grid: false,
-            }
-        }
-
-        /// A series with no explicit `color` resolves through
-        /// [`Theme::chart_series`], and more series than the palette has
-        /// entries cycles back through it (`idx % 6`) rather than
-        /// panicking or inventing an off-palette colour.
-        #[test]
-        fn uncoloured_series_cycle_through_the_themes_chart_series_palette() {
-            let chart = uncoloured_multi_series_chart(8);
-            let layout = layout_for(&chart);
-            let theme = Theme::default();
-            let palette = theme.chart_series();
-            let mut surface = RecordingSurface::default();
-
-            paint(&chart, &layout, &mut surface, &theme, None, None);
-
-            // `surface.lines` also carries chrome (axes, grid) painted
-            // in theme colours that aren't series colours, so assert on
-            // palette coverage rather than on every recorded line.
-            let painted: Vec<Color> = surface.lines.iter().map(|&(_, _, c, _)| c).collect();
-            assert!(
-                !painted.is_empty(),
-                "fixture painted no line segments at all"
-            );
-            for expected in &palette {
-                assert!(
-                    painted.contains(expected),
-                    "8 uncoloured series should cover all 6 palette entries; {expected:?} never appeared in {painted:?}",
-                );
-            }
-        }
-
-        /// A `Series` that *does* set its own `color` keeps it — the
-        /// theme palette is only the fallback for series that don't
-        #[test]
-        fn explicit_series_color_wins_over_the_theme_palette() {
-            let mut chart = uncoloured_multi_series_chart(1);
-            let custom = Color::rgb(1, 2, 3);
-            assert!(
-                !Theme::default().chart_series().contains(&custom),
-                "test fixture invalid: custom colour must not be in the palette"
-            );
-            chart.series[0].color = Some(custom);
-            let layout = layout_for(&chart);
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-
-            paint(&chart, &layout, &mut surface, &theme, None, None);
-
-            assert!(
-                surface.lines.iter().any(|&(_, _, c, _)| c == custom),
-                "expected the line to paint with the series' own colour, got {:?}",
-                surface.lines,
-            );
-            assert!(
-                surface
-                    .lines
-                    .iter()
-                    .all(|&(_, _, c, _)| c != theme.chart_series()[0]),
-                "palette entry 0 must not be used once the series sets its own colour, got {:?}",
-                surface.lines,
-            );
-        }
-
-        #[test]
-        fn hover_marker_paints_two_nested_fills_at_the_data_point() {
-            let chart = line_chart(vec![1.0, 4.0, 2.0]);
-            let layout = layout_for(&chart);
-            let theme = Theme::default();
-            let mut surface = RecordingSurface::default();
-
-            paint(&chart, &layout, &mut surface, &theme, Some((0, 1)), None);
-
-            let (_, _, sx, sy) = layout.data_point_positions[1];
-            // Filter to small, marker-sized fills (<= the 16x16 outer
-            // ring) centred on the data point — excludes the much
-            // larger plot-area background fill, which also covers this
-            // point.
-            let fills_at_point = surface
-                .fills
-                .iter()
-                .filter(|(r, _)| {
-                    r.width <= 16.0
-                        && r.height <= 16.0
-                        && r.x <= sx
-                        && sx <= r.x + r.width
-                        && r.y <= sy
-                        && sy <= r.y + r.height
-                })
-                .count();
-            assert_eq!(
-                fills_at_point, 2,
-                "hover marker should paint two nested fills (inner + outer ring) centred on the data point"
-            );
-        }
-
-        /// Regression: the hover marker's outer-ring halo must blend against
-        /// the *live* `theme.background` passed into `paint`, not a hardcoded
-        /// default. Uses a theme whose background differs sharply from
-        /// `Theme::default()`'s dark palette to verify the blend tracks the
-        /// live theme.
-        #[test]
-        fn hover_marker_outer_ring_blends_against_the_live_theme_background() {
-            let chart = line_chart(vec![1.0, 4.0, 2.0]);
-            let layout = layout_for(&chart);
-            let light_background = Color::rgb(240, 240, 240);
-            let theme = Theme {
-                background: light_background,
-                ..Theme::default()
-            };
-            let mut surface = RecordingSurface::default();
-
-            paint(&chart, &layout, &mut surface, &theme, Some((0, 1)), None);
-
-            let (_, _, sx, sy) = layout.data_point_positions[1];
-            let series_color = SERIES_COLORS[0];
-            let expected_outer = light_background.blend(series_color, 0.3);
-            let wrong_outer_from_default_theme =
-                Theme::default().background.blend(series_color, 0.3);
-            assert_ne!(
-                expected_outer, wrong_outer_from_default_theme,
-                "test fixture invalid: light and default-theme backgrounds must blend to different colours"
-            );
-
-            let outer_ring_fill = surface
-                .fills
-                .iter()
-                .filter(|(r, _)| {
-                    r.width <= 16.0
-                        && r.height <= 16.0
-                        && r.width > 10.0
-                        && r.x <= sx
-                        && sx <= r.x + r.width
-                        && r.y <= sy
-                        && sy <= r.y + r.height
-                })
-                .map(|(_, c)| *c)
-                .next();
-            assert_eq!(
-                outer_ring_fill,
-                Some(expected_outer),
-                "outer ring should blend the series colour against the live theme's background, not Theme::default()'s"
-            );
-        }
-    }
-}
-
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
+pub(crate) use paint_pixels::paint;
+#[cfg(all(
+    test,
+    any(feature = "gtk", all(feature = "macos", target_os = "macos"))
 ))]
-#[allow(unused_imports)]
-pub(crate) use native_surface_paint::{paint, SERIES_COLORS};
+pub(crate) use paint_pixels::SERIES_COLORS;
 
 #[cfg(test)]
 mod tests {
@@ -1595,6 +776,8 @@ mod tests {
             y_ticks: None,
             x_ticks: None,
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -1616,6 +799,8 @@ mod tests {
             y_ticks: None,
             x_ticks: None,
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -1690,6 +875,8 @@ mod tests {
             y_ticks: Some(y_ticks),
             x_ticks: None,
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -1766,6 +953,8 @@ mod tests {
             y_ticks: Some(0),
             x_ticks: Some(x_ticks),
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -1917,6 +1106,8 @@ mod tests {
             y_ticks: None,
             x_ticks: None,
             show_grid: false,
+            hovered_point: None,
+            crosshair_x: None,
         }
     }
 
@@ -2170,5 +1361,62 @@ mod tests {
         assert_eq!(back, ChartKind::BarGrouped);
         let old: ChartKind = serde_json::from_str("\"Bar\"").unwrap();
         assert_eq!(old, ChartKind::Bar);
+    }
+
+    /// The pixel layout is **ABSOLUTE**: `plot_area` and every
+    /// `data_point_positions` entry are shifted by the chart's own
+    /// origin, not left at `(0, 0)` — the case that hides a LOCAL/ABSOLUTE
+    /// mixup.
+    fn pixel_layout_round_trip_at(x: f32, y: f32) {
+        let chart = bar_chart(ChartKind::Bar, vec![vec![1.0, 2.0]]);
+        let layout = chart.layout_in(Rect::new(x, y, 100.0, 40.0), 6.0, 12.0);
+
+        assert!(!layout.data_point_positions.is_empty());
+        for &(_, _, px, py) in &layout.data_point_positions {
+            assert!(
+                px >= x && py >= y,
+                "data point ({px}, {py}) must not fall left of/above the chart's own origin ({x}, {y})"
+            );
+        }
+        let cx = layout.plot_area.x + layout.plot_area.width * 0.5;
+        let cy = layout.plot_area.y + layout.plot_area.height * 0.5;
+        assert_eq!(
+            layout.hit_test(cx, cy),
+            ChartHit::Body(WidgetId::new("chart"))
+        );
+    }
+
+    #[test]
+    fn pixel_layout_round_trip() {
+        pixel_layout_round_trip_at(0.0, 0.0);
+    }
+
+    #[test]
+    fn pixel_layout_round_trip_at_nonzero_origin() {
+        pixel_layout_round_trip_at(7.0, 13.0);
+    }
+
+    #[test]
+    fn series_color_prefers_the_series_own_colour_then_cycles_the_palette() {
+        let theme = crate::Theme::default();
+        let palette = theme.chart_series();
+        let mut chart = bar_chart(ChartKind::Bar, vec![vec![1.0]; 8]);
+        let custom = Color::rgb(1, 2, 3);
+        chart.series[1].color = Some(custom);
+        assert_eq!(chart.series_color(0, &theme), palette[0]);
+        assert_eq!(chart.series_color(1, &theme), custom);
+        assert_eq!(chart.series_color(7, &theme), palette[7 % palette.len()]);
+    }
+
+    #[test]
+    fn hover_and_crosshair_default_when_absent_from_json() {
+        let chart = line_chart(vec![1.0, 2.0]);
+        let mut json = serde_json::to_value(&chart).expect("serialize");
+        let obj = json.as_object_mut().expect("object");
+        obj.remove("hovered_point");
+        obj.remove("crosshair_x");
+        let back: Chart = serde_json::from_value(json).expect("deserialize");
+        assert_eq!(back.hovered_point, None);
+        assert_eq!(back.crosshair_x, None);
     }
 }

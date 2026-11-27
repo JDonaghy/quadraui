@@ -20,11 +20,10 @@ use std::collections::HashMap;
 
 use quadraui::primitives::scrollbar::ThumbDrag;
 use quadraui::{
-    DataTableLayout, Point, Rect, ScrollAxis, ScrollView, Scrollbar, SplitDirection, SplitHit,
-    SplitLayout, SplitTreeLayout, TabBarHit, TreePath, WidgetId,
+    DataTableLayout, Point, Rect, ScrollAxis, ScrollView, Scrollbar, SplitHit, SplitLayout,
+    SplitTreeLayout, TabBarHit, TreePath, WidgetId,
 };
 
-use crate::extra_paint::{extra_as, Markdown};
 use crate::hit::{hit_test_painted, loaded_row_path, HitDetail, PaintedHit};
 use crate::wire::DragRole;
 
@@ -68,60 +67,26 @@ impl ActiveDrag {
         }
     }
 
-    /// The ratio `point` (in the same absolute frame as the snapshotted
-    /// layout) implies along this divider's axis, clamped to `[0.0, 1.0]`.
-    /// For a two-pane [`ActiveDrag::Split`], falls back to the divider's
-    /// own already-resolved ratio when it has no room to drag in (e.g. a
-    /// pane collapsed to zero by its own `first_min`/`second_min`), rather
-    /// than dividing by zero. For an [`ActiveDrag::SplitTree`], returns
-    /// `None` instead — a `SplitTreeDivider` carries no equivalent
-    /// already-resolved ratio to fall back to, so the caller leaves the
-    /// drag a no-op for that move rather than dividing by zero or
-    /// snapping to a magic ratio. Also returns `None` when `split_index`
-    /// names a divider the snapshotted layout no longer has — unreachable
-    /// today, since the index came from a hit test on this same snapshot.
+    /// The ratio that puts the dragged divider's leading edge at `point`
+    /// (same absolute frame as the snapshotted layout), clamped to
+    /// `[0.0, 1.0]` — [`SplitLayout::ratio_at`] /
+    /// [`quadraui::SplitTreeDivider::ratio_at`], the exact inverse of the
+    /// layout the divider was painted from. A two-pane split with no room
+    /// to drag in keeps its resolved ratio; a tree divider with none (or
+    /// one the snapshot no longer has) answers `None`, and the caller
+    /// leaves that move a no-op.
     pub fn ratio_at(&self, point: Point) -> Option<f32> {
         match self {
-            ActiveDrag::Split { layout, .. } => {
-                let divider = layout.divider_bounds;
-                let bounds = layout.bounds;
-                let vertical_divider = divider.width < divider.height;
-                let (total, offset, divider_thickness) = if vertical_divider {
-                    (bounds.width, point.x - bounds.x, divider.width)
-                } else {
-                    (bounds.height, point.y - bounds.y, divider.height)
-                };
-                let available = (total - divider_thickness).max(0.0);
-                if available <= 0.0 {
-                    return Some(layout.resolved_ratio);
-                }
-                Some((offset / available).clamp(0.0, 1.0))
-            }
+            ActiveDrag::Split { layout, .. } => Some(layout.ratio_at(point)),
             ActiveDrag::SplitTree {
                 layout,
                 split_index,
                 ..
-            } => {
-                let divider = layout
-                    .dividers
-                    .iter()
-                    .find(|d| d.split_index == *split_index)?;
-                if divider.axis_size <= 0.0 {
-                    return None;
-                }
-                let axis_point = match divider.direction {
-                    SplitDirection::Horizontal => point.x,
-                    SplitDirection::Vertical => point.y,
-                };
-                // Matches `dispatch_mouse_moved`'s own `DragTarget::SplitDivider`
-                // conversion (`quadraui/src/dispatch.rs`): divide the cursor's
-                // offset from the divider's axis start by the FULL parent
-                // span, not the span minus the divider's own thickness — so
-                // the same physical drag yields the same ratio through this
-                // binding as through a Rust app driving the primitive
-                // directly.
-                Some(((axis_point - divider.axis_start) / divider.axis_size).clamp(0.0, 1.0))
-            }
+            } => layout
+                .dividers
+                .iter()
+                .find(|d| d.split_index == *split_index)?
+                .ratio_at(point),
         }
     }
 }
@@ -291,26 +256,6 @@ pub fn text_display_scroll_state(
             viewport_lines,
             ..
         } if *hit_id == id => Some((*total_lines, *viewport_lines, layout.resolved_scroll_offset)),
-        _ => None,
-    })
-}
-
-/// The `(area, Markdown)` painted under `id` this frame, when `id` names a
-/// `"markdown"` extra leaf's own [`PaintedHit::Extra`] entry — the
-/// `Markdown`-shaped counterpart of [`text_display_scroll_state`]. Unlike
-/// that lookup, this can't hand back a ready `(total_lines, viewport_lines,
-/// scroll_offset)` triple: a `PaintedHit::Extra` carries no precomputed
-/// layout of its own (unlike `PaintedHit::TextDisplay`), so the caller
-/// re-derives the line counts via [`Markdown::viewport_lines`] against a
-/// live `Backend`, which this lookup alone has no access to.
-pub fn markdown_at(hit_map: &[PaintedHit], id: WidgetId) -> Option<(Rect, Markdown)> {
-    hit_map.iter().find_map(|hit| match hit {
-        PaintedHit::Extra {
-            id: hit_id,
-            area,
-            extra,
-            ..
-        } if *hit_id == id => extra_as::<Markdown>(extra).map(|md| (*area, md.clone())),
         _ => None,
     })
 }

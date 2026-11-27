@@ -81,13 +81,13 @@ use crate::primitives::form::contract as form_contract;
 // Re-exported under this module's own name: `compose::sidebar_system`
 // resolves a form-field click through the same function a `Form`
 // widget's own `Interactive` does.
+use crate::interactive::RoutedEvent;
 pub(crate) use crate::primitives::form::contract::form_click_event;
 use crate::primitives::form::contract::SLIDER_TRACK_CELLS;
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure, FormState,
 };
 use crate::primitives::scrollbar::{scroll_by_clamped, wheel_row_delta, PressZone, ThumbDrag};
-use crate::primitives::text_input::EditOp;
 use crate::types::StyledSpan;
 use crate::validation::{validate, FormRules, Validator};
 use crate::visibility::{apply_visibility, FormVisibility};
@@ -442,13 +442,18 @@ impl FormController {
     #[allow(deprecated)] // `FormControllerEvent` is `#[deprecated]`; this returns it internally.
     fn delegate<F>(&mut self, f: F) -> FormControllerEvent
     where
-        F: FnOnce(&Form, &mut FormState) -> Handled<FormEvent>,
+        F: FnOnce(&Form, &mut FormState, &mut crate::interactive::EventCx) -> Handled<FormEvent>,
     {
         let Some(form) = self.form.as_ref() else {
             return FormControllerEvent::Ignored;
         };
         self.state.scroll_offset = Some(self.scroll_offset);
-        let result = f(form, &mut self.state);
+        // This controller's result type has no slot for an emitted event
+        // (a Ctrl+C copy), so only the form's own answer is kept.
+        let (result, _emitted) =
+            crate::compose::widget_host::with_cx(form.id, crate::primitive::Units::Cells, |cx| {
+                f(form, &mut self.state, cx)
+            });
         self.scroll_offset = self.state.scroll_offset.unwrap_or(self.scroll_offset);
         handled_to_form_controller_event(result)
     }
@@ -516,8 +521,8 @@ impl FormController {
             // exactly this (mirrors `compose/sidebar_system.rs`).
             UiEvent::KeyPressed { key, modifiers, .. } if self.has_focus => {
                 let vr = viewport_rows_lh(lh, rect);
-                self.delegate(|form, state| {
-                    form_contract::handle_key(form, state, key, modifiers, vr)
+                self.delegate(|form, state, cx| {
+                    form_contract::handle_key(form, state, key, modifiers, vr, cx)
                 })
             }
 
@@ -534,18 +539,28 @@ impl FormController {
             // `activate_focused_on_space` returns `None` for every other
             // field kind, so a text field's own space character still
             // inserts normally.
-            UiEvent::CharTyped(' ') if self.has_focus => self.delegate(|form, state| {
+            UiEvent::CharTyped(' ') if self.has_focus => self.delegate(|form, state, cx| {
                 form_contract::activate_focused_on_space(form, state).unwrap_or_else(|| {
-                    form_contract::handle_text_op(form, state, EditOp::InsertChar(' '))
+                    form_contract::handle_text_event(
+                        form,
+                        state,
+                        &RoutedEvent::Text(" ".into()),
+                        cx,
+                    )
                 })
             }),
 
-            UiEvent::CharTyped(ch) if self.has_focus => self.delegate(|form, state| {
-                form_contract::handle_text_op(form, state, EditOp::InsertChar(*ch))
+            UiEvent::CharTyped(ch) if self.has_focus => self.delegate(|form, state, cx| {
+                form_contract::handle_text_event(
+                    form,
+                    state,
+                    &RoutedEvent::Text(ch.to_string()),
+                    cx,
+                )
             }),
 
-            UiEvent::ClipboardPaste(text) if self.has_focus => self.delegate(|form, state| {
-                form_contract::handle_text_op(form, state, EditOp::InsertText(text.clone()))
+            UiEvent::ClipboardPaste(text) if self.has_focus => self.delegate(|form, state, cx| {
+                form_contract::handle_text_event(form, state, &RoutedEvent::Text(text.clone()), cx)
             }),
 
             _ => FormControllerEvent::Ignored,
@@ -2704,15 +2719,13 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_c_on_a_focused_text_field_is_ignored_not_typed() {
-        // Every backend delivers Ctrl+C as `Key::Char('c')` with
-        // `modifiers.ctrl == true` (see `primitives::form::contract`'s
-        // "Keyboard editing" doc section) — without the guard in `handle_key`, this would
-        // insert a literal 'c' into the field *and* report
-        // `TextInputChanged`, i.e. the keystroke was "consumed" as text
-        // instead of falling through to an app-level Copy accelerator.
+    fn ctrl_z_on_a_focused_text_field_is_ignored_not_typed() {
+        // Every backend delivers Ctrl+Z as `Key::Char('z')` with
+        // `modifiers.ctrl == true`; typing it would insert a literal 'z'
+        // into the field and report `TextInputChanged` instead of falling
+        // through to an app-level Undo accelerator.
         let mut fc = controller_with(vec![text_field("name", "ab", Some(2))], Some("name"));
-        let ev = fc.handle_cached(&key_event(Key::Char('c'), ctrl()), RECT);
+        let ev = fc.handle_cached(&key_event(Key::Char('z'), ctrl()), RECT);
         assert_eq!(ev, FormControllerEvent::Ignored);
         // The value is genuinely untouched, not just the return value.
         match &fc.form().unwrap().fields[0].kind {

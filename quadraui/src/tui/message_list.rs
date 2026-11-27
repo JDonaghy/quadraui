@@ -1,90 +1,97 @@
-//! TUI rasteriser for [`crate::MessageList`].
-//!
-//! Walks `rows[scroll_top..]` row by row, painting each row at
-//! `panel_bg` with the row's `fg` colour. Indents are in cell units —
-//! the caller pre-builds the indent via [`crate::MessageRow::indent`].
-//!
-//! # Styled rows
-//!
-//! When a row's `spans` vector is **non-empty**, each span is rendered
-//! in its own `fg` colour, with ratatui `Modifier::BOLD` / `ITALIC` /
-//! `UNDERLINED` applied as appropriate.  Spans whose `fg` is `None`
-//! fall back to `row.fg`.  The `scale` field is ignored by TUI (terminal
-//! cells have no variable character size).
-//!
-//! When `spans` is **empty**, the rasteriser uses the flat `row.text` +
-//! `row.fg` path — output is byte-for-byte identical to the pre-styled-row
-//! behaviour.
+//! TUI entry point for [`crate::MessageList`]: paints it through the
+//! widget's own cell painter over a [`ratatui::buffer::Buffer`].
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use ratatui::style::Modifier;
 
-use super::{ratatui_color, set_cell, set_cell_styled};
+use super::BufferCellSurface;
 use crate::primitives::message_list::MessageList;
 use crate::types::Color;
 
-/// Draw a [`MessageList`] into `area`, filling each row with `panel_bg`
-/// then writing the row's text at `area.x + indent` in the row's `fg`.
-/// Stops once `area.height` rows have been painted (any unpainted rows
-/// are left untouched — the caller fills the remainder if it wants a
-/// uniform panel bg).
-///
-/// When a row carries a non-empty `spans` vector the rasteriser applies
-/// per-span fg/bold/italic via ratatui cell modifiers.  When `spans` is
-/// empty the flat `text` + `fg` path is used unchanged.
+/// Paints `list` into `area` over `panel_bg`; see
+/// [`crate::primitives::message_list`] for the row rules.
 pub fn draw_message_list(buf: &mut Buffer, area: Rect, list: &MessageList, panel_bg: Color) {
-    if area.width == 0 || area.height == 0 {
-        return;
-    }
-    let bg = ratatui_color(panel_bg);
-    let max_row = area.height as usize;
-    for (i, row) in list.rows.iter().skip(list.scroll_top).enumerate() {
-        if i >= max_row {
-            break;
-        }
-        let y = area.y + i as u16;
-        let fg = ratatui_color(row.fg);
-        // Fill the row background first.
-        for x in area.x..area.x + area.width {
-            set_cell(buf, x, y, ' ', fg, bg);
-        }
-        let start_col = row.indent.round() as u16;
+    crate::primitives::message_list::paint_cells::paint(
+        &mut BufferCellSurface::new(buf),
+        crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        ),
+        list,
+        panel_bg,
+    );
+}
 
-        if !row.spans.is_empty() {
-            // ── Styled path ─────────────────────────────────────────────
-            // Iterate spans in order, computing fg + modifier per span.
-            let mut col = start_col;
-            'span_loop: for span in &row.spans {
-                let span_fg = span.fg.map(ratatui_color).unwrap_or(fg);
-                let mut modifier = Modifier::empty();
-                if span.bold {
-                    modifier |= Modifier::BOLD;
-                }
-                if span.italic {
-                    modifier |= Modifier::ITALIC;
-                }
-                if span.underline {
-                    modifier |= Modifier::UNDERLINED;
-                }
-                for ch in span.text.chars() {
-                    let cx = area.x + col;
-                    if cx >= area.x + area.width {
-                        break 'span_loop;
-                    }
-                    set_cell_styled(buf, cx, y, ch, span_fg, bg, modifier, None);
-                    col += 1;
-                }
-            }
-        } else {
-            // ── Flat path (unchanged from before spans were added) ───────
-            for (j, ch) in row.text.chars().enumerate() {
-                let cx = area.x + start_col + j as u16;
-                if cx >= area.x + area.width {
-                    break;
-                }
-                set_cell(buf, cx, y, ch, fg, bg);
-            }
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::primitives::message_list::MessageRow;
+    use crate::theme::Theme;
+    use crate::types::{StyledSpan, WidgetId};
+
+    fn row(text: &str, indent: f32) -> MessageRow {
+        MessageRow::new(text, Color::rgb(200, 200, 200), indent)
+    }
+
+    fn make_list() -> MessageList {
+        let mut styled = row("", 0.0);
+        styled.spans = vec![
+            StyledSpan {
+                bold: true,
+                ..StyledSpan::with_fg("bold ", Color::rgb(255, 0, 0))
+            },
+            StyledSpan::plain("plain"),
+        ];
+        MessageList {
+            id: WidgetId::new("ml"),
+            rows: vec![row("skipped", 0.0), row("first", 2.0), styled],
+            scroll_top: 1,
         }
+    }
+
+    /// The widget's contract cell paint reaches the buffer through the
+    /// `CellSurface` verbs alone and paints what the TUI entry point does.
+    #[test]
+    fn contract_cell_paint_needs_only_the_verbs() {
+        use crate::primitive::{LayoutCtx, Primitive};
+        let w = make_list();
+        let theme = Theme::default();
+        let style = crate::Style::default();
+        let area = Rect::new(0, 0, 20, 4);
+        let mut legacy = Buffer::empty(area);
+        draw_message_list(&mut legacy, area, &w, theme.background);
+        let mut buf = Buffer::empty(area);
+        let rect = crate::event::Rect::new(
+            area.x as f32,
+            area.y as f32,
+            area.width as f32,
+            area.height as f32,
+        );
+        let layout = Primitive::layout(&w, &LayoutCtx::new(1.0, 1.0, false), rect);
+        w.paint_cells(
+            &layout,
+            &mut crate::tui::cell_surface::VerbsOnly(super::BufferCellSurface::new(&mut buf)),
+            &crate::PaintEnv::new(&theme, &style),
+        );
+        assert_eq!(buf, legacy);
+    }
+
+    #[test]
+    fn rows_paint_from_scroll_top_with_their_indent_and_span_weight() {
+        let area = Rect::new(0, 0, 20, 4);
+        let mut buf = Buffer::empty(area);
+        draw_message_list(&mut buf, area, &make_list(), Color::rgb(0, 0, 0));
+        let line =
+            |y: u16| -> String { (0..20).map(|x| buf[(x, y)].symbol().to_string()).collect() };
+        assert_eq!(line(0).trim_end(), "  first");
+        assert_eq!(line(1).trim_end(), "bold plain");
+        assert!(buf[(0, 1)]
+            .modifier
+            .contains(ratatui::style::Modifier::BOLD));
+        assert!(!buf[(5, 1)]
+            .modifier
+            .contains(ratatui::style::Modifier::BOLD));
     }
 }

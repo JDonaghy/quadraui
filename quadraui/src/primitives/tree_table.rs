@@ -139,6 +139,8 @@ impl NavRow for TreeTableNode {
 ///     column_overrides: vec![],
 ///     footer: None,
 ///     bordered: false,
+///     striped: false,
+///     glyphs: None,
 /// };
 /// let tree = vec![
 ///     TreeTableNode::new(vec![0], 0).with_expanded(true),
@@ -281,6 +283,8 @@ pub enum TreeTableHit {
     Row { idx: usize },
     /// Click on the pinned footer/summary row.
     Footer,
+    /// Click on the vertical scrollbar's track.
+    Scrollbar,
     /// Click on empty space below the last row.
     Empty,
 }
@@ -343,6 +347,7 @@ impl TreeTableLayout {
             DataTableHit::HeaderDivider { col } => TreeTableHit::HeaderDivider { col },
             DataTableHit::Row { idx } => TreeTableHit::Row { idx },
             DataTableHit::Footer => TreeTableHit::Footer,
+            DataTableHit::Scrollbar => TreeTableHit::Scrollbar,
             DataTableHit::Empty => TreeTableHit::Empty,
         }
     }
@@ -718,6 +723,8 @@ pub(crate) mod native_surface_paint {
                 column_overrides: vec![],
                 footer: None,
                 bordered: false,
+                striped: false,
+                glyphs: None,
             }
         }
 
@@ -1254,6 +1261,8 @@ mod tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         }
     }
 
@@ -1441,6 +1450,8 @@ mod tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let tree: Vec<TreeTableNode> = (0..3).map(|i| node(&[i as u16], 0, None)).collect();
         TreeTable { table: dt, tree }
@@ -1586,6 +1597,8 @@ mod primitive_parity_tests {
             column_overrides: vec![],
             footer: None,
             bordered: false,
+            striped: false,
+            glyphs: None,
         };
         let tree = vec![
             node(&[0], 0, Some(true)),
