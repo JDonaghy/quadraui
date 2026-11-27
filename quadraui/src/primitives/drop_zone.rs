@@ -197,9 +197,11 @@ fn tab_reorder_index(cursor_x: f32, slots: &[(f32, f32)]) -> usize {
     slots.len()
 }
 
-/// Edge zone size: 20% of dimension, clamped to [3, dimension/2].
+/// Edge zone size: 20% of dimension, at least 3 but never more than
+/// half the dimension (so a dimension under 6 splits evenly into its two
+/// edges).
 fn edge_zone_size(dimension: f32) -> f32 {
-    (dimension * 0.2).clamp(3.0, dimension / 2.0)
+    (dimension * 0.2).max(3.0).min(dimension / 2.0)
 }
 
 // ── Drop overlay ────────────────────────────────────────────────────────────
@@ -823,6 +825,15 @@ mod tests {
             bounds: Rect::new(x, y, w, h),
             tab_slots: slots.to_vec(),
         }
+    }
+
+    #[test]
+    fn a_pane_under_six_units_tall_resolves_to_its_edges() {
+        let groups = vec![group(0.0, 0.0, 40.0, 5.0, &[])];
+        let top = compute_drop_zone(20.0, 2.0, &groups, 1.0).unwrap();
+        assert_eq!(top.kind, DropZoneKind::Split(DropEdge::Top));
+        let bottom = compute_drop_zone(20.0, 4.0, &groups, 1.0).unwrap();
+        assert_eq!(bottom.kind, DropZoneKind::Split(DropEdge::Bottom));
     }
 
     #[test]
