@@ -583,7 +583,7 @@ mod cell_paint_tests {
 
     /// The cell layout for `area`, painted onto `buf` through the
     /// widget's own cell painter.
-    fn draw_spinner(
+    fn paint_spinner_cells(
         buf: &mut Buffer,
         area: Rect,
         spinner: &Spinner,
@@ -627,7 +627,7 @@ mod cell_paint_tests {
         let area = Rect::new(origin_x, origin_y, 30, 1);
         let mut buf = Buffer::empty(area);
         let spinner = mk_spinner("Loading", 0);
-        let layout = draw_spinner(&mut buf, area, &spinner, &Theme::default());
+        let layout = paint_spinner_cells(&mut buf, area, &spinner, &Theme::default());
 
         assert_eq!(cell_char(&buf, origin_x, origin_y), '⠋');
         assert_eq!(cell_char(&buf, origin_x + 2, origin_y), 'L');
@@ -653,7 +653,7 @@ mod cell_paint_tests {
         let area = Rect::new(0, 0, 30, 1);
         let mut buf = Buffer::empty(area);
         let spinner = mk_spinner("", 3);
-        draw_spinner(&mut buf, area, &spinner, &Theme::default());
+        paint_spinner_cells(&mut buf, area, &spinner, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), '⠸');
     }
 
@@ -662,7 +662,7 @@ mod cell_paint_tests {
         let area = Rect::new(0, 0, 30, 1);
         let mut buf = Buffer::empty(area);
         let spinner = mk_spinner("Test", 0);
-        let layout = draw_spinner(&mut buf, area, &spinner, &Theme::default());
+        let layout = paint_spinner_cells(&mut buf, area, &spinner, &Theme::default());
         assert_eq!(layout.hit_test(50.0, 0.5, &spinner.id), SpinnerHit::Empty);
     }
 
@@ -671,7 +671,7 @@ mod cell_paint_tests {
         let buf_area = Rect::new(0, 0, 10, 1);
         let mut buf = Buffer::empty(buf_area);
         let spinner = mk_spinner("Test", 0);
-        let _layout = draw_spinner(&mut buf, Rect::new(0, 0, 0, 0), &spinner, &Theme::default());
+        let _layout = paint_spinner_cells(&mut buf, Rect::new(0, 0, 0, 0), &spinner, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -683,7 +683,7 @@ mod cell_paint_tests {
         let buf_area = Rect::new(0, 0, 10, 1);
         let mut buf = Buffer::empty(buf_area);
         let spinner = mk_spinner("Test", 0);
-        let layout = draw_spinner(
+        let layout = paint_spinner_cells(
             &mut buf,
             Rect::new(0, 0, 10, 0),
             &spinner,

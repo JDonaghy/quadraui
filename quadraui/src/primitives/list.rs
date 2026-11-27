@@ -1066,7 +1066,7 @@ pub(crate) mod native_surface_paint {
     /// visible rows (selection/decoration/icon/detail), and h/v
     /// scrollbars — onto `surface` at `area`.
     ///
-    /// - `list_layout` must be the same [`ListViewLayout`] the caller
+    /// - `rows_layout` must be the same [`ListViewLayout`] the caller
     ///   uses for hit-testing (the list's own `Primitive::layout`) so
     ///   paint and hit-test can never disagree.
     /// - `line_height` is one row's height in `surface`'s native units
@@ -1102,7 +1102,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint(
         list: &ListView,
         area: Rect,
-        list_layout: &ListViewLayout,
+        rows_layout: &ListViewLayout,
         line_height: f32,
         nerd_fonts_enabled: bool,
         supports_border: bool,
@@ -1117,7 +1117,7 @@ pub(crate) mod native_surface_paint {
         paint_with_scroll_px(
             list,
             area,
-            list_layout,
+            rows_layout,
             line_height,
             nerd_fonts_enabled,
             supports_border,
@@ -1134,7 +1134,7 @@ pub(crate) mod native_surface_paint {
 
     /// Like [`paint`], plus an explicit pixel-precise scroll position
     /// (`scroll_px`) that wins over [`ListView::scroll_offset`] for both
-    /// the rows (via `list_layout.visible_items`, already resolved
+    /// the rows (via `rows_layout.visible_items`, already resolved
     /// against `scroll_px` by [`ListView::layout_with_scroll_px`]) and the vertical scrollbar thumb (resolved
     /// here, via [`ListView::vscrollbar_with_scroll_px`]).
     ///
@@ -1146,7 +1146,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint_with_scroll_px(
         list: &ListView,
         area: Rect,
-        list_layout: &ListViewLayout,
+        rows_layout: &ListViewLayout,
         line_height: f32,
         nerd_fonts_enabled: bool,
         supports_border: bool,
@@ -1162,7 +1162,7 @@ pub(crate) mod native_surface_paint {
         paint_inner(
             list,
             area,
-            list_layout,
+            rows_layout,
             line_height,
             nerd_fonts_enabled,
             supports_border,
@@ -1186,7 +1186,7 @@ pub(crate) mod native_surface_paint {
     pub(crate) fn paint_with_state(
         list: &ListView,
         area: Rect,
-        list_layout: &ListViewLayout,
+        rows_layout: &ListViewLayout,
         line_height: f32,
         nerd_fonts_enabled: bool,
         supports_border: bool,
@@ -1203,7 +1203,7 @@ pub(crate) mod native_surface_paint {
         paint_inner(
             list,
             area,
-            list_layout,
+            rows_layout,
             line_height,
             nerd_fonts_enabled,
             supports_border,
@@ -1223,7 +1223,7 @@ pub(crate) mod native_surface_paint {
     fn paint_inner(
         list: &ListView,
         area: Rect,
-        list_layout: &ListViewLayout,
+        rows_layout: &ListViewLayout,
         line_height: f32,
         nerd_fonts_enabled: bool,
         supports_border: bool,
@@ -1282,7 +1282,7 @@ pub(crate) mod native_surface_paint {
                 );
             }
         } else if let (Some(title_bounds), Some(title)) =
-            (list_layout.title_bounds, list.title.as_ref())
+            (rows_layout.title_bounds, list.title.as_ref())
         {
             let tb = Rect::new(
                 area.x + title_bounds.x,
@@ -1324,7 +1324,7 @@ pub(crate) mod native_surface_paint {
         // before this fn existed.
         let items_clip_active = scroll_px.is_some();
         if items_clip_active {
-            let title_h = list_layout
+            let title_h = rows_layout
                 .title_bounds
                 .map(|b| b.y + b.height)
                 .unwrap_or(0.0);
@@ -1338,7 +1338,7 @@ pub(crate) mod native_surface_paint {
             ));
         }
 
-        for vis_item in &list_layout.visible_items {
+        for vis_item in &rows_layout.visible_items {
             let item = &list.items[vis_item.item_idx];
             let row_x = item_x_offset + vis_item.bounds.x;
             let row_y = item_y_offset + vis_item.bounds.y;

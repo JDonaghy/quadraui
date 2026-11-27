@@ -428,12 +428,9 @@ impl<'a> LayoutCtx<'a> {
         }
     }
 
-    /// Floor `line_height` at `style.row_height`, the same row-pitch
-    /// resolution every pixel backend's own private `resolved_row_height`
-    /// helper already applies on its bespoke `draw_list` path (e.g. `GtkBackend::resolved_row_height`,
-    /// `MacBackend::resolved_row_height`) before laying out rows — a
-    /// chrome font taller than the theme's `row_height` token must never
-    /// be clipped.
+    /// Floor `line_height` at `style.row_height` before laying out rows —
+    /// a chrome font taller than the theme's `row_height` token must
+    /// never be clipped.
     ///
     /// [`crate::backend::DrawsPrimitives::draw_primitive`] applies this to
     /// the raw [`crate::Backend::chrome_line_height`] it measures before
@@ -1143,7 +1140,7 @@ pub trait Primitive: A11yPrimitive {
     ///
     /// A real prototype (`crate::primitives::list::ListView`'s pilot
     /// impl) ruled out a `TuiBackend: PaintSurface` impl that reproduces
-    /// `crate::tui::draw_list`'s output byte-for-byte: `ListView::bordered`'s
+    /// the list's terminal rendering byte-for-byte: `ListView::bordered`'s
     /// frame is painted as literal box-drawing glyphs (`╭─╮│╰─╯`) chosen
     /// per-corner — a choice [`PaintSurface`]'s verbs have no way to
     /// express, since none of them picks a glyph, only a rect or a path
@@ -1158,10 +1155,7 @@ pub trait Primitive: A11yPrimitive {
     /// run has no "how many terminal columns wide" concept to quantise
     /// to. Both gaps are structural, not missing verbs that a future
     /// `PaintSurface` addition could close, so TUI gets this second,
-    /// cell-buffer-flavored method instead — mirroring how
-    /// [`crate::tui::draw_list`] itself already exists as a parallel
-    /// rasteriser to the shared `native_surface_paint` helper, not a
-    /// `PaintSurface` implementor.
+    /// cell-grid method instead.
     ///
     /// Takes the backend-neutral [`CellSurface`], so a widget reaches the
     /// cursor ([`CellSurface::set_cursor`]) and inline graphics

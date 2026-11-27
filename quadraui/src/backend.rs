@@ -2444,16 +2444,12 @@ pub trait DrawsPrimitives: Backend {
     /// [`Backend::chrome_line_height`], [`Backend::char_width`] and
     /// [`Backend::nerd_fonts_enabled`], and
     /// [`crate::primitive::LayoutCtx::text_width`] measures through this
-    /// backend's own [`Backend::measure_text`] — the same chrome-oriented
-    /// metrics [`Backend::draw_list`]'s own backend wrappers resolve
-    /// before calling into
-    /// [`crate::primitives::list::native_surface_paint::paint`] — with
-    /// `line_height` additionally floored at the active
+    /// backend's own [`Backend::measure_text`] — chrome-oriented metrics,
+    /// with `line_height` additionally floored at the active
     /// [`crate::Style::row_height`] token via
-    /// [`crate::primitive::LayoutCtx::resolve_row_height`], the same
-    /// resolution the bespoke `draw_list` path applies through its own
-    /// private `resolved_row_height` helper, so a `Primitive`'s `layout()` never under-sizes a row
-    /// against a chrome font taller than that token.
+    /// [`crate::primitive::LayoutCtx::resolve_row_height`], so a
+    /// `Primitive`'s `layout()` never under-sizes a row against a chrome
+    /// font taller than that token.
     ///
     /// On the [`Backend::paint_surface`] path, paints inside a
     /// [`PaintSurface::surface_push_clip`]/[`PaintSurface::surface_pop_clip`]

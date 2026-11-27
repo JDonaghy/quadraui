@@ -711,10 +711,7 @@ pub use primitives::list::{
     ListItem, ListItemMeasure, ListPaintState, ListView, ListViewEvent, ListViewHit,
     ListViewLayout, ListViewSubPart, VisibleListItem,
 };
-// `ListView`'s `Primitive::Layout` — defined on every feature set the
-// pilot `impl Primitive for ListView` itself is (see that impl's own
-// `cfg`): the three pixel backends via `native_surface_paint`, plus
-// `tui` via `Primitive::paint_cells`/`crate::tui::draw_list`.
+// `ListView`'s `Primitive::Layout`.
 pub use primitives::checkbox::{Checkbox, CheckboxAction};
 #[cfg(any(
     feature = "gtk",

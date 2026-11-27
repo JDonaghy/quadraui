@@ -1435,8 +1435,8 @@ impl FfiRtApp {
 
     /// Hit-tests a `MouseDown` at `position` (viewport coordinates) against
     /// the active list, painted into the full viewport by `render`.
-    /// Resolves the layout through [`Backend::list_layout`] — the same
-    /// no-paint resolver `render`'s `draw_list` call uses internally — so
+    /// Resolves the layout through the list's own `Primitive::layout` —
+    /// the same layout `render`'s `draw_dyn` call paints — so
     /// title-row height and scrollbar reservations can never drift between
     /// paint and hit-test. Returns `None` (meaning: fall back to forwarding
     /// the raw event) when there is no active list or the click landed on
@@ -2791,9 +2791,9 @@ mod tests {
         0
     }
 
-    /// A click inside the item area is hit-tested through
-    /// [`Backend::list_layout`] — the same layout [`Backend::draw_list`]
-    /// paints from — and emitted as a `list_item_activated` semantic event
+    /// A click inside the item area is hit-tested through the list's own
+    /// `Primitive::layout` — the same layout `draw_dyn` paints from — and
+    /// emitted as a `list_item_activated` semantic event
     /// naming the row index, not forwarded as a raw `UiEvent`.
     #[test]
     fn ffi_rt_app_hit_tests_a_mouse_click_to_the_item_row() {

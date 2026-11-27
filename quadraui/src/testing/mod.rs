@@ -644,8 +644,8 @@ pub trait ConformanceDriver: Sized {
 ///
 /// Every `draw_*` call appends its method name to [`Self::calls`] — the
 /// "recording" in the name — so a test can assert *what* got painted
-/// (`backend.calls.contains(&"draw_list")`) without a real
-/// rasteriser. Layout getters (`list_layout`, …) are not recorded: they're queries, not paint events, and controllers
+/// (`backend.calls.contains(&"draw_focus_ring")`) without a real
+/// rasteriser. Layout queries are not recorded: they're queries, not paint events, and controllers
 /// call them freely (sometimes more than once a frame) as part of
 /// ordinary hit-testing.
 ///
@@ -1080,8 +1080,7 @@ impl crate::Backend for RecordingBackend {
         self.current_style = style;
     }
     fn measure_text(&self, text: &str, _role: crate::FontRole) -> (f32, f32) {
-        // Same rationale as `list_char_width` above: no real font to
-        // measure against, just the same char-cell arithmetic every
+        // No real font to measure against, just the same char-cell arithmetic every
         // caller used before `Backend::measure_text` existed.
         (
             text.chars().count() as f32 * self.char_width,
@@ -1097,8 +1096,7 @@ impl crate::Backend for RecordingBackend {
     }
     fn default_fonts(&self) -> crate::backend::PlatformFontDefaults {
         // `RecordingBackend` only records call shape, not real font
-        // metrics — same rationale as `list_char_width` above. No
-        // platform to default fonts against, so this is the same
+        // metrics. No platform to default fonts against, so this is the same
         // all-sentinel value TUI's real backend returns.
         crate::backend::PlatformFontDefaults {
             editor_family: String::new(),

@@ -28,7 +28,7 @@ use serde_json::{json, Value};
 
 /// Same minimal list app as `tests/mcp_tui_roundtrip.rs`: the selected
 /// row paints a `▶ ` prefix no other row has
-/// (`quadraui::tui::list::draw_list`'s own tests document this), so a
+/// (the list cell painter's own tests document this), so a
 /// screenshot's text grid visibly differs before/after a selection
 /// change, not just its style.
 struct ListApp {

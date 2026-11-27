@@ -516,7 +516,7 @@ pub(crate) mod native_surface_paint {
     /// `grid_layout` must be the same [`IconGridLayout`] the caller uses
     /// for hit-testing, so paint and hit-test can never disagree —
     /// mirrors [`crate::primitives::list::native_surface_paint::paint`]'s
-    /// own `list_layout` contract.
+    /// own layout contract.
     ///
     /// `hovered_idx` — index into `grid.items` to tint via
     /// [`Theme::list_hover_bg`], mirroring

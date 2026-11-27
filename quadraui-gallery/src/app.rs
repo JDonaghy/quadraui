@@ -307,7 +307,7 @@ impl GalleryApp {
     /// Build the sidebar's [`ListView`] for `rows` (the demo indices in
     /// the active group, in display order) — shared by `render_content`
     /// (paint) and `handle_inner` (click hit-test via
-    /// [`Backend::list_layout`]) so the two can never disagree about
+    /// [`DrawsPrimitives::layout_primitive`]) so the two can never disagree about
     /// which row a click landed on.
     fn sidebar_list(&self, rows: &[usize]) -> ListView {
         // `self.selected` is only `None` when the active group is empty,

@@ -441,7 +441,7 @@ mod tests {
         )
     }
 
-    fn draw_list_with_scroll_px(
+    fn paint_list_with_scroll_px(
         buf: &mut Buffer,
         area: Rect,
         list: &ListView,
@@ -461,17 +461,17 @@ mod tests {
         );
     }
 
-    fn draw_list(
+    fn paint_list(
         buf: &mut Buffer,
         area: Rect,
         list: &ListView,
         theme: &Theme,
         nerd_fonts_enabled: bool,
     ) {
-        draw_list_with_scroll_px(buf, area, list, theme, nerd_fonts_enabled, None);
+        paint_list_with_scroll_px(buf, area, list, theme, nerd_fonts_enabled, None);
     }
 
-    fn draw_list_with_state(
+    fn paint_list_with_state(
         buf: &mut Buffer,
         area: Rect,
         list: &ListView,
@@ -530,7 +530,7 @@ mod tests {
     fn paints_three_items_with_selection_marker() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
         let list = make_list(1);
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 20, 5),
             &list,
@@ -557,11 +557,11 @@ mod tests {
         let theme = Theme::default();
 
         let mut unstriped = Buffer::empty(area);
-        draw_list(&mut unstriped, area, &list, &theme, false);
+        paint_list(&mut unstriped, area, &list, &theme, false);
 
         let mut striped_buf = Buffer::empty(area);
         let state = crate::primitives::list::ListPaintState::default().with_striped(true);
-        draw_list_with_state(&mut striped_buf, area, &list, &theme, false, &state);
+        paint_list_with_state(&mut striped_buf, area, &list, &theme, false, &state);
 
         let plain_bg = ratatui_color(theme.background);
         let alt_bg = ratatui_color(theme.row_alt_bg(theme.background));
@@ -599,7 +599,7 @@ mod tests {
         let theme = Theme::default();
 
         let mut buf = Buffer::empty(area);
-        draw_list(&mut buf, area, &list, &theme, false);
+        paint_list(&mut buf, area, &list, &theme, false);
 
         assert_eq!(buf[(0, 2)].bg, ratatui_color(theme.background));
         assert_eq!(
@@ -613,7 +613,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
         let mut list = make_list(1);
         list.has_focus = false;
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 20, 5),
             &list,
@@ -634,7 +634,7 @@ mod tests {
         list.title = Some(StyledText {
             spans: vec![StyledSpan::plain("Picker")],
         });
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 10, 5),
             &list,
@@ -668,7 +668,7 @@ mod tests {
             error_fg: Color::rgb(255, 0, 0),
             ..Theme::default()
         };
-        draw_list(&mut buf, Rect::new(0, 0, 20, 3), &list, &theme, false);
+        paint_list(&mut buf, Rect::new(0, 0, 20, 3), &list, &theme, false);
         // The 'o' of "oops" should be drawn in error_fg.
         // Selection marker is ' ' (no focus); icon prefix runs cols 0..2;
         // text starts at col 2.
@@ -681,7 +681,7 @@ mod tests {
     fn zero_size_is_a_no_op() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let list = make_list(0);
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 0, 5),
             &list,
@@ -717,7 +717,7 @@ mod tests {
         let area = Rect::new(0, 0, 20, 5);
 
         let mut buf = Buffer::empty(area);
-        draw_list_with_scroll_px(&mut buf, area, &list, &Theme::default(), false, Some(10.7));
+        paint_list_with_scroll_px(&mut buf, area, &list, &Theme::default(), false, Some(10.7));
         let first_row: String = (0..9).map(|x| cell_char(&buf, x, 0)).collect();
         assert!(
             first_row.contains("row-10"),
@@ -730,7 +730,7 @@ mod tests {
         let mut via_offset = list.clone();
         via_offset.scroll_offset = 10;
         let mut buf2 = Buffer::empty(area);
-        draw_list(&mut buf2, area, &via_offset, &Theme::default(), false);
+        paint_list(&mut buf2, area, &via_offset, &Theme::default(), false);
         let first_row_via_offset: String = (0..9).map(|x| cell_char(&buf2, x, 0)).collect();
         assert_eq!(first_row, first_row_via_offset);
     }
@@ -751,14 +751,14 @@ mod tests {
             ..make_list(0)
         };
 
-        draw_list(
+        paint_list(
             &mut buf_ref,
             Rect::new(0, 0, 20, 3),
             &list_ref,
             &Theme::default(),
             false,
         );
-        draw_list(
+        paint_list(
             &mut buf_new,
             Rect::new(0, 0, 20, 3),
             &list_new,
@@ -780,7 +780,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
         let mut list = make_list(1); // item 0 is NOT selected, no focus marker
         list.h_scroll = 2;
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 20, 3),
             &list,
@@ -809,7 +809,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 3));
         let mut list = make_list(1); // row 0 not selected
         list.h_scroll = 1;
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 20, 3),
             &list,
@@ -829,7 +829,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let mut list = make_list(0);
         list.max_content_width = Some(20);
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 10, 5),
             &list,
@@ -853,7 +853,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 5));
         let mut list = make_list(0);
         list.max_content_width = Some(5);
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 20, 5),
             &list,
@@ -875,7 +875,7 @@ mod tests {
         let mut list = make_list(0);
         list.bordered = true;
         list.max_content_width = Some(30);
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 10, 6),
             &list,
@@ -931,7 +931,7 @@ mod tests {
             show_v_scrollbar: false,
             striped: false,
         };
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 20, 1),
             &list,
@@ -967,7 +967,7 @@ mod tests {
         list.max_content_width = None;
         // Item "alpha" (5 chars + 2 prefix = 7) would overflow the 5-wide area,
         // but without max_content_width set the rasteriser can't know that.
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 5, 3),
             &list,
@@ -997,7 +997,7 @@ mod tests {
         // 20 items in a 5-row area → scrollbar in rightmost column.
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let list = make_vlist(20, 0);
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 10, 5),
             &list,
@@ -1024,7 +1024,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let mut list = make_vlist(20, 0);
         list.show_v_scrollbar = false;
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 10, 5),
             &list,
@@ -1048,7 +1048,7 @@ mod tests {
             show_v_scrollbar: true,
             ..make_list(0)
         };
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 10, 5),
             &list,
@@ -1071,7 +1071,7 @@ mod tests {
         // 3 items in a 5-row viewport → all fit, no scrollbar shown.
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let list = make_vlist(3, 0);
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 10, 5),
             &list,
@@ -1092,14 +1092,14 @@ mod tests {
         let area = Rect::new(0, 0, 10, 10);
         let mut buf_top = Buffer::empty(area);
         let mut buf_bot = Buffer::empty(area);
-        draw_list(
+        paint_list(
             &mut buf_top,
             area,
             &make_vlist(30, 0),
             &Theme::default(),
             false,
         );
-        draw_list(
+        paint_list(
             &mut buf_bot,
             area,
             &make_vlist(30, 20),
@@ -1126,7 +1126,7 @@ mod tests {
         let mut buf = Buffer::empty(Rect::new(0, 0, 20, 1));
         let mut list = make_list(0);
         list.items = vec![item(&"x".repeat(50), Decoration::Normal)];
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 20, 1),
             &list,
@@ -1151,7 +1151,7 @@ mod tests {
     #[test]
     fn wide_glyph_item_paints_whole_glyphs_and_ellipsizes_within_item_band() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 1));
-        // Sentinel just past the item band — draw_list must never touch it.
+        // Sentinel just past the item band — paint_list must never touch it.
         buf[(6u16, 0u16)].set_char('Z');
         let list = ListView {
             id: WidgetId::new("list"),
@@ -1166,7 +1166,7 @@ mod tests {
             show_v_scrollbar: false,
             striped: false,
         };
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 6, 1),
             &list,
@@ -1213,7 +1213,7 @@ mod tests {
             show_v_scrollbar: false,
             striped: false,
         };
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 7, 1),
             &list,
@@ -1265,7 +1265,7 @@ mod tests {
             show_v_scrollbar: false,
             striped: false,
         };
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 20, 1),
             &list,
@@ -1302,7 +1302,7 @@ mod tests {
             show_v_scrollbar: false,
             striped: false,
         };
-        draw_list(
+        paint_list(
             &mut buf,
             Rect::new(0, 0, 20, 1),
             &list,

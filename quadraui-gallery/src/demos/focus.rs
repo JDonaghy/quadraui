@@ -3,8 +3,8 @@
 //! Tab / Shift+Tab cycle keyboard focus through two lists and a status
 //! row via [`quadraui::FocusTree`] — no raw modulo arithmetic, no
 //! tab-cycling reimplementation per app. The focused list gets
-//! `has_focus: true` (its selected row's highlight) **and**
-//! `draw_list_with_state`'s `focus_ring_visible: true` (a
+//! `has_focus: true` (its selected row's highlight) **and** a paint
+//! state with `focus_ring_visible: true` (a
 //! `Theme::focus_ring_color` ring around that same row); the other list
 //! gets neither. Two variants swap the tree's declared order, showing
 //! that Tab visits whatever order the app registered.

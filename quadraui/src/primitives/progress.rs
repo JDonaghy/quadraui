@@ -779,7 +779,7 @@ mod cell_paint_tests {
 
     /// The cell layout for `area`, painted onto `buf` through the
     /// widget's own cell painter.
-    fn draw_progress(
+    fn paint_progress_cells(
         buf: &mut Buffer,
         area: Rect,
         bar: &ProgressBar,
@@ -826,7 +826,7 @@ mod cell_paint_tests {
         let area = Rect::new(origin_x, origin_y, 20, 1);
         let mut buf = Buffer::empty(area);
         let bar = det_bar(0.5);
-        let layout = draw_progress(&mut buf, area, &bar, &Theme::default());
+        let layout = paint_progress_cells(&mut buf, area, &bar, &Theme::default());
 
         // Fill should cover ~10 cells (50% of 20) starting at the area's origin.
         let fb = layout.fill_bounds.expect("fill bounds present");
@@ -857,7 +857,7 @@ mod cell_paint_tests {
         let mut buf = Buffer::empty(area);
         let mut bar = det_bar(0.5);
         bar.cancellable = true;
-        let layout = draw_progress(&mut buf, area, &bar, &Theme::default());
+        let layout = paint_progress_cells(&mut buf, area, &bar, &Theme::default());
 
         let cb = layout.cancel_bounds.expect("cancel bounds present");
         let cx = cb.x.round() as u16 + 1;
@@ -890,7 +890,7 @@ mod cell_paint_tests {
             cancellable: false,
             accent: None,
         };
-        let layout = draw_progress(&mut buf, area, &bar, &Theme::default());
+        let layout = paint_progress_cells(&mut buf, area, &bar, &Theme::default());
 
         assert!(layout.fill_bounds.is_none());
         // Pulse block should be at frame_idx % width.
@@ -903,7 +903,7 @@ mod cell_paint_tests {
         let mut buf = Buffer::empty(buf_area);
         let area = Rect::new(0, 0, 0, 0);
         let bar = det_bar(0.5);
-        let _layout = draw_progress(&mut buf, area, &bar, &Theme::default());
+        let _layout = paint_progress_cells(&mut buf, area, &bar, &Theme::default());
         assert_eq!(cell_char(&buf, 0, 0), ' ');
     }
 
@@ -912,7 +912,7 @@ mod cell_paint_tests {
         let area = Rect::new(0, 0, 20, 1);
         let mut buf = Buffer::empty(area);
         let bar = det_bar(0.5);
-        let layout = draw_progress(&mut buf, area, &bar, &Theme::default());
+        let layout = paint_progress_cells(&mut buf, area, &bar, &Theme::default());
         assert_eq!(layout.hit_test(25.0, 0.5), ProgressBarHit::Empty);
     }
 }

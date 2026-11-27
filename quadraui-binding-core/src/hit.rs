@@ -53,10 +53,7 @@ pub fn loaded_row_path(
 }
 
 /// One primitive this app painted during the current frame: its id and the
-/// hit-testable layout its backend `draw_*` call returned (or, for
-/// `TreeView`'s paint/`draw_list`, which paint without returning one, the
-/// layout its no-paint twin `tree_layout`/`list_layout` produced for the
-/// same `area`). Recorded into the binding's own hit-map cache by `draw_bands` /
+/// hit-testable layout its paint resolved for `area`. Recorded into the binding's own hit-map cache by `draw_bands` /
 /// `paint_layout` / `paint_leaf`, in paint order, and consulted by
 /// [`hit_test_painted`] to translate an incoming pointer event's screen
 /// position into the primitive (and sub-region) under it.

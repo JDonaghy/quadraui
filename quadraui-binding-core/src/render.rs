@@ -824,8 +824,8 @@ fn pop_styled_scope(backend: &mut dyn Backend, pushes: Vec<StyledPush>) {
 /// chrome overflowing by a sub-unit rounding — [`scroll_content_slots`]'s
 /// own per-slot culling already keeps a fully-invisible slot from being
 /// painted, hence from getting a [`PaintedHit`], at all), and paints the
-/// shared scrollbar ([`quadraui::ScrollView::scrollbar`] +
-/// `Backend::draw_scrollbar`, the same geometry
+/// shared scrollbar ([`quadraui::ScrollView::scrollbar`] painted through
+/// `draw_dyn`, the same geometry
 /// `crate::extra_paint`'s standalone `ScrollView` leaf paints into its own
 /// fixed `line_height`-wide track). `scroll_node.offset` is read as-is —
 /// already resolved against [`crate::widget_state::WidgetState`] by
@@ -2110,7 +2110,7 @@ fn band_relative(idx: Option<usize>, band: WindowedBand) -> Option<usize> {
     idx?.checked_sub(band.start).filter(|rel| *rel < band.len)
 }
 
-/// Shifts every row index [`Backend::list_layout`] resolved against a
+/// Shifts every row index a list's `Primitive::layout` resolved against a
 /// windowed list's band back into the collection's own absolute indexing,
 /// so a hit test or a selection read downstream of paint never sees a
 /// band-relative index — see [`WindowedLeaf`]'s own doc.
