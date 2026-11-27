@@ -528,7 +528,7 @@ impl ContextMenuController {
         };
         let first_sel = sub_items
             .iter()
-            .position(|i| !i.is_separator() && !i.disabled)
+            .position(ContextMenuItem::is_selectable)
             .unwrap_or(0);
         let Some(open) = &mut self.open else { return };
         open.submenu_path.push(item_idx);

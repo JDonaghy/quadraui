@@ -291,6 +291,12 @@ impl ContextMenuItem {
     pub fn is_separator(&self) -> bool {
         self.id.is_none()
     }
+
+    /// Whether keyboard navigation and the pointer can land on this item:
+    /// it is neither a separator nor disabled.
+    pub fn is_selectable(&self) -> bool {
+        !self.is_separator() && !self.disabled
+    }
 }
 
 // ── D6 Layout API ───────────────────────────────────────────────────────────
@@ -520,7 +526,7 @@ impl ContextMenu {
             }
             let item_bounds = Rect::new(x, cursor_y, menu_width, draw_h);
             let is_sep = item.is_separator();
-            let clickable = !is_sep && !item.disabled;
+            let clickable = item.is_selectable();
             visible_items.push(VisibleContextMenuItem {
                 item_idx: i,
                 bounds: item_bounds,
@@ -550,7 +556,7 @@ impl ContextMenu {
     pub fn first_selectable(&self) -> usize {
         self.items
             .iter()
-            .position(|item| !item.is_separator() && !item.disabled)
+            .position(ContextMenuItem::is_selectable)
             .unwrap_or(0)
     }
 
@@ -567,7 +573,7 @@ impl ContextMenu {
         for _ in 0..self.items.len() {
             idx = (idx + delta).rem_euclid(n);
             let item = &self.items[idx as usize];
-            if !item.is_separator() && !item.disabled {
+            if item.is_selectable() {
                 return idx as usize;
             }
         }
@@ -860,7 +866,7 @@ impl ContextMenu {
     fn is_selectable(&self, i: usize) -> bool {
         self.items
             .get(i)
-            .is_some_and(|item| !item.is_separator() && !item.disabled)
+            .is_some_and(ContextMenuItem::is_selectable)
     }
 
     /// Item `i`'s leading label text — the string typeahead matches a
@@ -3118,6 +3124,13 @@ mod tests {
             disabled: true,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn only_an_enabled_action_is_selectable() {
+        assert!(action("a").is_selectable());
+        assert!(!separator().is_selectable());
+        assert!(!disabled("d").is_selectable());
     }
 
     fn menu(items: Vec<ContextMenuItem>) -> ContextMenu {

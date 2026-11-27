@@ -384,7 +384,7 @@ impl AppMenu {
         };
         let first_sel = sub_items
             .iter()
-            .position(|i| !i.is_separator() && !i.disabled)
+            .position(ContextMenuItem::is_selectable)
             .unwrap_or(0);
         self.view.submenu_path.push(item_idx);
         self.view.submenu_selected.push(first_sel);
@@ -473,7 +473,7 @@ impl AppMenu {
         };
         let key = if delta >= 0 { NavKey::Down } else { NavKey::Up };
         let new_sel = FlatNav::mv(items.len(), Some(current), key, true, |i| {
-            i == current || (!items[i].is_separator() && !items[i].disabled)
+            i == current || items[i].is_selectable()
         })
         .unwrap_or(current);
         self.select_at(depth, new_sel);
@@ -677,7 +677,7 @@ impl AppMenu {
         match (kind, item) {
             // Hover moves the highlight and opens a submenu parent's child
             // at once; hovering a leaf closes anything opened deeper.
-            (PointerKind::Move, Some((idx, item))) if !item.is_separator() && !item.disabled => {
+            (PointerKind::Move, Some((idx, item))) if item.is_selectable() => {
                 next.select_at(depth, idx);
                 if item.submenu.is_some() {
                     if self.view.submenu_path.get(depth) != Some(&idx) {
@@ -694,7 +694,7 @@ impl AppMenu {
                 }
             }
             (PointerKind::Down(MouseButton::Left), Some((idx, item))) => {
-                if item.disabled || item.is_separator() {
+                if !item.is_selectable() {
                     Handled::Consumed
                 } else if item.submenu.is_some() {
                     next.truncate_to(depth);
