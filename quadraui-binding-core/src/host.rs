@@ -1647,7 +1647,7 @@ pub fn apply_tree_toggle_expand(widget_state: &WidgetState, id: WidgetId, path: 
 /// whole widget; a leaf row (`is_expanded: None`) is never touched. Also
 /// drops every row underneath a resolved-collapsed ancestor outright —
 /// `TreeRow::is_expanded` only drives a branch row's own chevron glyph
-/// (see `quadraui::tui::tree::draw_tree`'s own doc), so without this an
+/// (see `TreeView`'s cell paint doc), so without this an
 /// uncontrolled tree's resolved collapse would flip the chevron and leave
 /// every descendant row painting anyway, the row set being whatever flat
 /// list the caller's descriptor already sent. Prunes any stored path no
@@ -5757,7 +5757,7 @@ mod tests {
     /// Collapsing a branch row with no app state at all hides its
     /// descendant row outright, not just its own chevron -- `is_expanded`
     /// only drives the glyph upstream of this module (see
-    /// `quadraui::tui::tree::draw_tree`'s own doc), so this module is the
+    /// `TreeView`'s cell paint doc), so this module is the
     /// one place an uncontrolled tree's resolved collapse actually
     /// controls which rows paint.
     #[test]

@@ -2593,7 +2593,7 @@ mod tests {
     /// chevron glyph both reach the screen (the chevron via the shared
     /// [`quadraui::primitives::tree_table::native_surface_paint`] this
     /// paints through on GTK/macOS/Win — TUI keeps its own
-    /// [`quadraui::tui::draw_tree_table`] rasteriser). A click elsewhere in
+    /// `TreeTable`'s own cell paint). A click elsewhere in
     /// the body still reaches the handler as a raw `MouseDown`, same as
     /// every other `ExtraBody` hit; a click on the chevron itself resolves
     /// through [`crate::hit::PaintedHit::Extra::tree_table_hit`] to a real

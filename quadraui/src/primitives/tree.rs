@@ -267,7 +267,7 @@ pub struct TreeViewLayout {
 /// for the sharper codicon glyph (`crate::codicon::CHEVRON_DOWN` /
 /// `CHEVRON_RIGHT`) — a codicon-patched font can't be assumed on a
 /// terminal cell grid, so TUI's own paint path
-/// (`tui::tree::draw_tree`) always reads the two fields directly and
+/// (`TreeView`'s cell paint) always reads the two fields directly and
 /// never calls this.
 ///
 /// [`crate::primitives::layout_metrics::pixel_tree_layout_measured`] calls
@@ -950,7 +950,7 @@ pub(crate) mod native_surface_paint {
     /// selects `Icon::glyph` vs. `Icon::fallback`. `style` supplies
     /// [`Style::row_padding_x`], the horizontal inset a row's leading
     /// chevron/icon/text starts at — GTK/macOS callers pass
-    /// `&self.current_style`; `win::tree::draw_tree` passes
+    /// `&self.current_style`; the shared tree paint passes
     /// `&self.current_style` the same way (see that fn's own doc).
     ///
     /// `hovered_idx` / `pressed_idx` — index into `tree.rows` to tint via
@@ -1046,7 +1046,7 @@ pub(crate) mod native_surface_paint {
             // Skip rows the layout clipped to a partial height — painting
             // them produces a compressed background band at the section
             // boundary (matches GTK/macOS's whole-row behaviour; Win's
-            // `draw_tree` paints these unconditionally, a difference this
+            // `TreeView`'s paint paints these unconditionally, a difference this
             // unification resolves in GTK/macOS's favor).
             //
             // When a sub-row `scroll_px` is in effect, `layout_with_scroll_px`
@@ -1430,8 +1430,8 @@ pub(crate) mod native_surface_paint {
         const AREA: Rect = Rect::new(0.0, 0.0, 100.0, 80.0);
 
         /// Before this migration, none of the three
-        /// backends' `draw_tree` painted a vertical scrollbar even
-        /// though `Backend::tree_vscrollbar` already exposed
+        /// backends' `TreeView`'s paint painted a vertical scrollbar even
+        /// though `TreeView::vscrollbar` already exposed
         /// real geometry for hit-testing. Paints through the shared fn
         /// and asserts a fill lands at the exact track rect
         /// `TreeView::vscrollbar` resolves.
@@ -1755,7 +1755,7 @@ pub(crate) mod native_surface_paint {
             );
         }
 
-        /// `win::tree::draw_tree` never painted
+        /// the shared tree paint never painted
         /// `TreeRow::edit` at all (see this module's doc). This test
         /// paints a row mid-rename through the shared fn and asserts a
         /// caret bar (a thin, distinctly-sized fill) shows up — it would

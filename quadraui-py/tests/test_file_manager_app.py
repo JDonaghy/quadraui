@@ -379,14 +379,14 @@ def test_status_bar_reflects_cursor_and_open_tabs(ui, tree_root):
 
 def test_short_tree_paints_no_scrollbar(ui):
     """When every folder row fits the pane, no scrollbar track/thumb paints --
-    `Backend::tree_vscrollbar` returns None and nothing is drawn over it."""
+    `TreeView::vscrollbar` returns None and nothing is drawn over it."""
     ui.assert_not_text("░", "█")  # track glyph, thumb glyph
 
 
 def test_overflowing_tree_paints_a_scrollbar_on_tui(fmmod, tmp_path):
     """More folder rows than fit makes the headless (TUI) backend paint the
     vertical scrollbar the tree rasteriser itself doesn't draw -- the binding
-    composes it from `tree_vscrollbar` geometry, so a declarative tree gets a
+    composes it from `TreeView::vscrollbar` geometry, so a declarative tree gets a
     scrollbar with no per-app code."""
     ui = harness(fmmod.FileManager(_deep_root(tmp_path, 20), width=60, height=12).app)
 

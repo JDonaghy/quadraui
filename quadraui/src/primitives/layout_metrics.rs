@@ -153,11 +153,7 @@ pub mod pixel {
     /// constant (which equals its default, `10.0`). Each backend's own
     /// `Backend::list_vscrollbar` hit-testing implementation passes that
     /// same live `self.current_style.scrollbar_width`, so paint and
-    /// hit-test can't drift apart at a non-default style. `Backend::
-    /// tree_vscrollbar` still passes this constant literally — a
-    /// per-backend follow-up threads a live `Style` through it too, which
-    /// is a no-op today since the constant equals the style field's
-    /// default.
+    /// hit-test can't drift apart at a non-default style.
     pub const TREE_VSCROLLBAR_WIDTH: f32 = 10.0;
 
     /// [`crate::Form`] horizontal padding (both sides combined) reserved
@@ -386,7 +382,7 @@ fn tree_layout_inner(
 /// [`TreeView::vscrollbar`] takes a single, uniform `row_height` — it
 /// has no way to reproduce `tree_layout`'s header-vs-leaf/branch split
 /// (headers pitch at `line_height * 1.2`) — so this is the pitch every
-/// pixel backend's `tree_vscrollbar` should pass it. Passing the leaf/branch
+/// caller of `TreeView::vscrollbar` should pass it. Passing the leaf/branch
 /// pitch instead of raw `line_height` matches what `tree_layout` paints for
 /// non-header rows (the overwhelming majority of rows in any real tree),
 /// and respects `TreeStyle::row_height` when set.

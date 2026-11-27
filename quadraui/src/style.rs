@@ -357,14 +357,8 @@ pub struct Style {
     /// shared painter, not one per backend. Each backend's own
     /// `Backend::list_vscrollbar` hit-testing impl passes this same live
     /// field (`self.current_style.scrollbar_width`), so `List`'s paint and
-    /// hit-test can't drift apart at a non-default style. Win's
-    /// `Backend::tree_vscrollbar` passes this same live field too. GTK's
-    /// and macOS's `Backend::tree_vscrollbar` still pass the fixed
-    /// [`crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH`]
-    /// constant (`10.0`, matching this field's default) literally — a
-    /// per-backend follow-up threads a live `Style` through those too,
-    /// which is a no-op today since the constant equals this field's
-    /// default.
+    /// hit-test can't drift apart at a non-default style. `TreeView`'s
+    /// own pixel layout sizes its scrollbar from this field's default.
     ///
     /// **`DataTable` keeps its own fixed
     /// [`crate::primitives::layout_metrics::pixel::DATA_TABLE_SCROLLBAR_WIDTH`]

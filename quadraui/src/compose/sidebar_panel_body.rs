@@ -1314,7 +1314,6 @@ mod tests {
         };
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
-        assert!(!backend.calls.contains(&"draw_settings_chrome"));
     }
 
     #[test]
@@ -1429,7 +1428,6 @@ mod tests {
         };
         let mut backend = RecordingBackend::new();
         panel.render(&mut backend, rect(), &RecordingWidget);
-        assert!(!backend.calls.contains(&"draw_settings_chrome"));
     }
 
     // StatusBars chrome: title bar + action bars

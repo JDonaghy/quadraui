@@ -10774,7 +10774,7 @@ def handle(event):
                 "the first (branch) row must be painted"
             );
             // The row's own label starts two cells past the chevron glyph +
-            // gap (`draw_tree` leaves `col == 2` once the chevron block is
+            // gap (`TreeView`'s paint leaves `col == 2` once the chevron block is
             // painted), so a click 1.5 cells to the left of the label lands
             // inside the chevron's own hit region without assuming the
             // tree's `area.x` is any particular value.
@@ -11818,7 +11818,7 @@ def handle(event):
     /// Dragging a tree's scrollbar thumb must move the painted window by
     /// translating the drag's absolute motion through
     /// [`ThumbDrag::offset_at`] into a semantic `ScrollOffsetChanged`,
-    /// mirroring `compose::TreeController`'s own thumb-drag handling. The
+    /// mirroring `TreeNavCore`'s own thumb-drag handling. The
     /// initial press only arms the drag — the raw `MouseDown` still
     /// reaches Python (the thumb-press arm never replaces `event`, it only
     /// strips the `"hit"` payload) — and the window only actually moves

@@ -9,7 +9,7 @@
 //!
 //! Every built-in primitive (`ListView`, `TreeView`, `DataTable`, …)
 //! gets its own pair of [`crate::Backend`] methods — `draw_list` /
-//! `list_layout`, `draw_tree` / `tree_layout`, and so on — because
+//! `list_layout`, `draw_data_table` / `data_table_layout`, and so on — because
 //! `Backend` is sealed and each pair is a deliberate, versioned
 //! addition reviewed per primitive (see `docs/decisions/
 //! BACKEND_TRAIT_PROPOSAL.md` §4). A consumer that wants to paint its

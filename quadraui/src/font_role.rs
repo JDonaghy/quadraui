@@ -7,7 +7,7 @@
 //!
 //! [`ChromePrimitive`] is an explicit allow-list of 13 primitives a
 //! backend's `draw_*`/`*_layout` method consults directly
-//! (`&self.chrome_font` et al. — see `macos::backend::MacBackend::draw_tree`'s
+//! (`&self.chrome_font` et al. — see the tree paint's
 //! own comment for the call-site convention).
 //!
 //! The shared paint seam, [`crate::PaintSurface::surface_draw_text_run`]

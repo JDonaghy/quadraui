@@ -1165,7 +1165,7 @@ pub enum UiEvent {
     /// click [`DataTableEvent`] has no counterpart for. Built by
     /// [`crate::TreeTableLayout::hit_test`] +
     /// [`crate::TreeTableLayout::chevron_toggle`], the same pure
-    /// layout/hit-test API every pixel backend's `tree_table_layout`
+    /// layout/hit-test API every pixel backend's `TreeTable` layout
     /// already returns — so a binding resolves this without duplicating
     /// chevron-bounds math.
     TreeTable(WidgetId, TreeTableEvent),

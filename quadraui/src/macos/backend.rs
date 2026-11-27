@@ -325,7 +325,7 @@ pub struct MacBackend {
     requested_cursor: PointerShape,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     // /. Picks `Icon::glyph` vs `Icon::fallback` in
-    /// the activity bar and `draw_tree`. Set via
+    /// the activity bar and `TreeView`'s paint. Set via
     /// [`Backend::set_nerd_fonts`]; defaults to `true` on this backend —
     /// see `GtkBackend`'s matching field doc for why a
     /// GUI backend with the bundled codicon font always available
@@ -342,7 +342,7 @@ pub struct MacBackend {
     focus_tree: crate::focus::FocusTree,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`.
     /// Picks `Icon::glyph` vs `Icon::fallback` in the activity bar and
-    /// `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
+    /// `TreeView`'s paint. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
     /// on this backend — see `GtkBackend`'s matching field doc for why a
     /// GUI backend with the bundled codicon font always available carries
     /// none of the "terminal with no Nerd Font installed" risk
@@ -993,7 +993,7 @@ impl MacBackend {
     /// Unlike previous versions, `chrome_font` now *does* consult
     /// [`Self::nerd_font_fallback_family`] — the same `font_with_fallback`
     /// cascade [`Self::set_current_font`] applies. Icon glyphs in
-    /// `draw_tree` and the activity-bar and toolbar widgets now
+    /// `TreeView`'s paint and the activity-bar and toolbar widgets now
     /// paint through `chrome_font`, not `current_font` — without this,
     /// a host that calls `set_nerd_font_fallback` would see icon glyphs
     /// render correctly in the editor but as tofu in every chrome
@@ -2401,7 +2401,7 @@ impl Backend for MacBackend {
             "MacBackend::draw_data_table called outside enter_frame_scope",
         );
         // `DataTable` is chrome, not editor content — paint through
-        // `chrome_font`, matching `draw_tree`'s comment above.
+        // `chrome_font`, matching `TreeView`'s paint's comment above.
         let font = &self.chrome_font;
         let theme = self.current_theme;
         let line_height = self.resolved_row_height(self.current_line_height);
@@ -4571,7 +4571,7 @@ mod tests {
         assert_eq!(b.char_width(), overridden_char_width);
 
         // The override doesn't clear `current_font` — draw_* methods that
-        // require a font (see e.g. `draw_tree`'s `.expect(...)`) must
+        // require a font (see e.g. `TreeView`'s paint's `.expect(...)`) must
         // keep working after a metrics override.
         assert!(b.current_font.is_some());
     }
@@ -7942,7 +7942,7 @@ mod tests {
     }
 
     /// Acceptance test: paint a `TreeView` through the real
-    /// `Backend::draw_tree` path and verify its painted row-label extent
+    /// `TreeView`'s paint path and verify its painted row-label extent
     /// tracks `set_ui_font`, not `set_editor_font`. Same structure as
     /// `GtkBackend`'s `gtk_backend_draw_tree_uses_ui_font_not_editor_font`
     /// (`gtk/backend.rs`): paint the same single-row tree under two
@@ -7956,11 +7956,11 @@ mod tests {
     /// Pango layout's font description there changes only the glyphs.
     /// `MacBackend` **derives** them, inside `set_editor_font` — and row
     /// pitch (`line_height * 1.4`) plus the leaf row's own horizontal
-    /// chevron reservation (`macos::tree::draw_tree`'s
+    /// chevron reservation (the tree paint's
     /// `cursor_x += line_height * 0.8`) both read that derived value, by
     /// design: row pitch tracking the editor line height is the
     /// deliberately-deferred half of #624/#1003 (see
-    /// `MacBackend::draw_tree`'s comment), not part of the font swap under
+    /// the tree paint's comment), not part of the font swap under
     /// test. So the two cached metrics are pinned to fixed values after
     /// each `set_editor_font`, leaving the *glyph font* as the only thing
     /// that varies between calls. Without that pin, a `Menlo 60` editor
@@ -7994,7 +7994,7 @@ mod tests {
             if let Some(f) = ui_font {
                 Backend::set_ui_font(&mut b, f);
             }
-            // White `tab_bar_bg`/`background` so `draw_tree`'s own
+            // White `tab_bar_bg`/`background` so `TreeView`'s paint's own
             // row-background fill doesn't itself read as "non-white" and
             // saturate the rightmost-painted-pixel scan below — mirrors
             // `GtkBackend`'s `gtk_backend_draw_tree_uses_ui_font_not_editor_font`.

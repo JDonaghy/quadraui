@@ -1,7 +1,7 @@
 //! Parity between `ListView`/`TreeView`/`DataTable`/`TreeTable`'s
 //! [`Primitive::paint_cells`] path and their TUI free-function
-//! rasterisers (`quadraui::tui::draw_list`/`draw_tree`/`draw_data_table`/
-//! `draw_tree_table`), driven entirely through public API from a
+//! rasterisers (`quadraui::tui::draw_list`/`TreeView`'s paint/`draw_data_table`/
+//! `TreeTable`'s paint), driven entirely through public API from a
 //! separate compilation unit (`tests/`, outside the crate).
 //!
 //! Each test below does two things:

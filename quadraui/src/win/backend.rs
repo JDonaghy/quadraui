@@ -634,7 +634,7 @@ pub struct WinBackend {
     text_runs: Vec<crate::testing::TextRun>,
     /// Mirrors `TuiBackend::nerd_fonts_enabled` / `GtkBackend::nerd_fonts_enabled`
     /// / `MacBackend::nerd_fonts_enabled`. Picks `Icon::glyph` vs `Icon::fallback`
-    /// in `draw_tree`. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
+    /// in `TreeView`'s paint. Set via [`Backend::set_nerd_fonts`]; defaults to `true`
     /// on this backend. Not `target_os`-gated: the flag itself has no WinAPI
     /// dependency, same rationale as `current_pointer_shape` — only the
     /// DirectWrite paint call that reads it needs a real host.
@@ -1976,7 +1976,7 @@ impl Backend for WinBackend {
         self.current_style
     }
 
-    /// Store the nerd-fonts flag so `draw_tree` paints `Icon::glyph`
+    /// Store the nerd-fonts flag so `TreeView`'s paint paints `Icon::glyph`
     /// instead of always falling back to `Icon::fallback`.
     /// Mirrors `TuiBackend::set_nerd_fonts`/`GtkBackend::set_nerd_fonts`/
     /// `MacBackend::set_nerd_fonts` — see [`Backend::set_nerd_fonts`]'s
@@ -2821,7 +2821,7 @@ impl Backend for WinBackend {
     // ─── Drawing ──────────────────────────────────────────────────────
 
     /// see the [`WinBackend`] "Before a surface is attached" doc. `List` is
-    /// `ChromePrimitive::List` — see `draw_tree`'s note for the
+    /// `ChromePrimitive::List` — see `TreeView`'s paint's note for the
     /// font-swap shape.
     fn draw_list(&mut self, rect: Rect, list: &ListView) {
         #[cfg(target_os = "windows")]
@@ -4778,7 +4778,7 @@ mod tests {
     #![allow(deprecated)]
     use super::*;
 
-    /// Build a flat tree of `n_rows` leaf rows for `tree_vscrollbar`
+    /// Build a flat tree of `n_rows` leaf rows for `TreeView::vscrollbar`
     /// integration tests.
     fn flat_tree(n_rows: usize) -> crate::TreeView {
         crate::TreeView {
@@ -6842,7 +6842,7 @@ mod tests {
         assert_eq!((vsb.x, vsb.width), (186.0, 14.0));
     }
 
-    /// `draw_tree` (the Explorer sidebar's own content rasteriser) must read
+    /// `TreeView`'s paint (the Explorer sidebar's own content rasteriser) must read
     /// the live theme from `WinBackend::current_theme` rather than building
     /// its own `Theme::default()`.
     #[cfg(target_os = "windows")]
@@ -7784,7 +7784,7 @@ mod tests {
         assert!(
             diff > 0,
             "#1266: varying only the chrome font size must repaint different pixels — \
-             draw_tree must paint row text through chrome_dwrite, not the (unchanged) \
+             the tree must paint row text through chrome_dwrite, not the (unchanged) \
              editor dwrite handle"
         );
     }

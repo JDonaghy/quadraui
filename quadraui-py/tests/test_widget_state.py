@@ -115,7 +115,7 @@ def test_uncontrolled_tree_cursor_moves_and_scrolls_via_the_layout_tree_path():
 
     state = app.widget_state("widget-state-test:tree")
     assert state["selected_path"] == [9]
-    # The engine's own `TreeController::scroll_to_visible` keeps the
+    # The engine's own `TreeNavCore::scroll_to_visible` keeps the
     # selected row within one viewport of the scroll offset; a border this
     # tiny app's own focus ring overlays on top of the painted band (see
     # `quadraui::Backend::draw_focus_ring`) shrinks what's cosmetically

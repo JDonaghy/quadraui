@@ -59,7 +59,7 @@ pub fn loaded_row_path(
 
 /// One primitive this app painted during the current frame: its id and the
 /// hit-testable layout its backend `draw_*` call returned (or, for
-/// `Backend::draw_tree`/`draw_list`, which paint without returning one, the
+/// `TreeView`'s paint/`draw_list`, which paint without returning one, the
 /// layout its no-paint twin `tree_layout`/`list_layout` produced for the
 /// same `area`). Recorded into the binding's own hit-map cache by `draw_bands` /
 /// `paint_layout` / `paint_leaf`, in paint order, and consulted by
@@ -276,13 +276,13 @@ pub enum PaintedHit {
         /// `Some((layout, scroll_offset, total_rows))` when `extra`
         /// downcasts to a [`quadraui::TreeTable`] — the real
         /// [`quadraui::TreeTableLayout`] resolved via
-        /// `Backend::draw_tree_table` at paint time, plus the two extra
+        /// `TreeTable`'s paint at paint time, plus the two extra
         /// pieces of state [`quadraui::TreeTableLayout::hit_test`] needs
         /// (`TreeTable::table.scroll_offset`, `TreeTable::table.rows.len()`).
         /// Stashed here — the same reason [`PaintedHit::DataTable`] carries
         /// its own `layout` rather than recomputing one — because
         /// [`hit_test_painted`] has no live `Backend` to call
-        /// `tree_table_layout` with at click time, and
+        /// `TreeTable` layout with at click time, and
         /// [`ExtraPaint::hit_test`]'s `bool`-only signature has no way to
         /// distinguish a chevron click from the rest of the row. `None`
         /// for every other extra.

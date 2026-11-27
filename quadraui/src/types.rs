@@ -809,7 +809,7 @@ pub struct TreeStyle {
     /// to whole native units before painting.
     ///
     /// Both `gtk_tree_layout` / `mac_tree_layout` (hit-test) and
-    /// `draw_tree` (paint) read this same field, so paint and hit-test
+    /// `TreeView`'s paint (paint) read this same field, so paint and hit-test
     /// stay in sync by construction.
     #[serde(default = "TreeStyle::default_row_height")]
     pub row_height: Option<u16>,

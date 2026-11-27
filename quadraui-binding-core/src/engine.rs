@@ -5035,7 +5035,7 @@ impl InteractionEngine {
                     // A press on the thumb itself arms a drag (consumed by
                     // the `MouseMoved` branch above on later moves) rather
                     // than scrolling immediately — matching
-                    // `compose::TreeController::click_scrollbar`'s
+                    // `TreeNavCore::press_scrollbar`'s
                     // `PressZone::Thumb` arm. The raw `MouseDown` (and its
                     // `"hit"` dict) stops here either way, so this never
                     // falls through to row selection.

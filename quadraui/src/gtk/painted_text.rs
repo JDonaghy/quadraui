@@ -8,7 +8,7 @@
 //! grid to scan the way `TuiDriver::screen` does. Recording per-primitive
 //! geometry does not scale to all 37 rasterisers:
 //!
-//! * The rasterisers are free functions (`quadraui::gtk::draw_tree` etc.)
+//! * The rasterisers are free functions (the list painter etc.)
 //!   with no `&mut GtkBackend` to record into, and they are **`pub`** — a
 //!   sink parameter or a changed return type would be a breaking change
 //!   for every path-dep consumer.

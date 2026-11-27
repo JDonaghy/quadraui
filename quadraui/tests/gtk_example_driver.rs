@@ -628,7 +628,7 @@ fn toolbar_clicking_filter_toggles_it_without_keyboard_focus() {
     );
 }
 
-/// `ShellApp`'s sidebar rows are painted by `draw_tree`. Clicking one by
+/// `ShellApp`'s sidebar rows are painted by `TreeView`'s paint. Clicking one by
 /// text (not by coordinate) must select it, which the main-content label
 /// echoes — the shell round trip the GTK suite could not assert before
 #[test]

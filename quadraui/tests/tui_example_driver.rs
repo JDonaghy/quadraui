@@ -7897,12 +7897,12 @@ fn multi_tree_tab_then_down_selects_a_row_in_the_newly_active_section() {
 //
 // `DebugSidebar` above uses `ScrollMode::WholePanel`, where the rendered
 // viewport is driven by a single panel-level scroll offset, not each
-// section's own `TreeController::scroll_offset` — under that mode, even
+// section's own scroll offset — under that mode, even
 // *interactive* arrow-key nav never moves the screen, so it can't prove
 // anything about `reveal`. `SidebarRevealDemo` (`examples/common/
 // sidebar_reveal_demo.rs`) stays on `SidebarSystem`'s default
 // `PerSection` scroll mode instead, so `reveal`'s call to
-// `TreeController::scroll_to_visible` has a real, on-screen effect these
+// `TreeNavCore::scroll_to_visible` has a real, on-screen effect these
 // tests can read back off the rendered grid — not by inspecting
 // `scroll_offset` (see the `compose::sidebar_system::tests` module note
 // by the same name for the unit-level state-transition coverage).
@@ -7934,7 +7934,7 @@ fn sidebar_reveal_scrolls_offscreen_row_into_view() {
 }
 
 /// `reveal` selects the target row, not just scrolls to it. Proven
-/// behaviorally: `TreeController::move_selection_by` treats "no selection yet"
+/// behaviorally: `TreeNavCore::move_selection_by` treats "no selection yet"
 /// specially — pressing Up with nothing selected jumps to the last row, not up
 /// by one. If `reveal` had only scrolled, Up afterward would land back there.
 /// It instead lands on the previous row, which is only possible if `reveal`
@@ -7995,7 +7995,7 @@ fn sidebar_reveal_expands_a_collapsed_section_then_scrolls() {
 
 /// Default chrome mode is `HeaderAndSearch`: the header text and the
 /// (empty-query) search placeholder are both visible, painted by one
-/// `draw_settings_chrome` call — exactly the "header + search" combination
+/// settings chrome paint — exactly the "header + search" combination
 /// this rung needs without hand-rolling per backend.
 #[test]
 fn sidebar_panel_body_starts_with_header_and_search_chrome() {
@@ -8052,7 +8052,7 @@ fn sidebar_panel_body_cycle_removes_chrome_and_shifts_body_up() {
 /// `c` twice lands on `Header`-only chrome: the title row stays, but the
 /// search row (and its placeholder) must not — proving the composer
 /// treats the two variants independently rather than always painting
-/// both rows [`crate::Backend::draw_settings_chrome`] can produce.
+/// both rows the settings chrome can produce.
 #[test]
 fn sidebar_panel_body_header_only_mode_has_no_search_row() {
     let mut driver = TuiDriver::new(SidebarPanelBodyDemo::new(), 60, 12);
