@@ -2595,7 +2595,9 @@ mod native_surface_paint {
             field_fg
         };
         let box_size = (row_h - 8.0).clamp(10.0, 16.0);
-        let ix = cc.control_width.place(control_start, cc.control_end, box_size);
+        let ix = cc
+            .control_width
+            .place(control_start, cc.control_end, box_size);
         if available > 0.0 {
             let iy = row_rect.y + (row_h - box_size) / 2.0;
             let box_rect = Rect::new(ix, iy, box_size, box_size);

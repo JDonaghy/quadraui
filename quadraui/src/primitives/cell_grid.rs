@@ -2064,8 +2064,7 @@ impl CellGrid {
         cx: &mut EventCx,
     ) -> Handled<CellGridEvent> {
         use crate::behaviour::text_edit::{
-            flat_selected_text, handle_flat_edit_event, EditIntent, FlatEditOutcome,
-            FlatEditState,
+            flat_selected_text, handle_flat_edit_event, EditIntent, FlatEditOutcome, FlatEditState,
         };
         let cursor = edit.cursor.min(edit.text.len());
         if let RoutedEvent::Key(key) = event {
