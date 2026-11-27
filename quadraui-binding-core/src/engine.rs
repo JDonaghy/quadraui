@@ -3528,8 +3528,10 @@ impl InteractionEngine {
     /// Routes an uncaptured pointer move's hover change to the generic
     /// leaves involved, through their own [`DynWidget::handle`]: a `Leave`
     /// to the leaf the pointer has just left, and an `Enter` to the leaf
-    /// it arrives on — the same hover tracking the
-    /// native runtime does, so both report the same events. Each event a
+    /// it arrives on, and a `Move` to the leaf it stays on when that leaf
+    /// sets [`quadraui::interactive::Interactive::RECEIVES_HOVER_MOVES`] —
+    /// the same hover tracking the native runtime does, so both report the
+    /// same events. Each event a
     /// leaf reports (a `Canvas` region's `RegionHovered`, say) reaches
     /// `sink` alongside the generic `MouseEntered`/`MouseLeft` pair.
     fn route_dyn_widget_hover(
@@ -3542,6 +3544,20 @@ impl InteractionEngine {
         let prev = self.dyn_widget_hover.replace(now);
         let mut reaction = quadraui::Reaction::Continue;
         if prev == now {
+            let Some(id) = now else {
+                return reaction;
+            };
+            let receives_moves = dyn_widget_hit(&self.hit_map.borrow(), id)
+                .is_some_and(|(_, widget)| widget.receives_hover_moves());
+            if receives_moves {
+                reaction = self.dispatch_dyn_widget_pointer(
+                    id,
+                    PointerKind::Move,
+                    position,
+                    backend,
+                    sink,
+                );
+            }
             return reaction;
         }
         if let Some(id) = prev {
@@ -7688,6 +7704,97 @@ mod tests {
                 })
                 .collect();
             assert_eq!(points, vec![Some((0, 3))]);
+        }
+
+        #[test]
+        fn moving_across_a_chart_leaf_reports_each_point_it_reaches() {
+            let chart = quadraui::Chart {
+                id: WidgetId::new("chart"),
+                kind: quadraui::ChartKind::Bar,
+                series: vec![quadraui::Series {
+                    label: "load".into(),
+                    data: vec![1.0, 3.0, 2.0, 4.0],
+                    color: None,
+                    fill: false,
+                }],
+                x_label: None,
+                y_label: None,
+                y_range: Some((0.0, 4.0)),
+                x_range: None,
+                show_legend: true,
+                y_ticks: Some(0),
+                x_ticks: None,
+                show_grid: false,
+                hovered_point: None,
+                crosshair_x: None,
+            };
+            let layout = chart.layout_in(Rect::new(0.0, 0.0, 24.0, 8.0), 1.0, 1.0);
+            let point = |di: usize| {
+                let &(_, _, x, y) = layout
+                    .data_point_positions
+                    .iter()
+                    .find(|&&(si, d, _, _)| si == 0 && d == di)
+                    .expect("point laid out");
+                (x, y)
+            };
+            let mut driver = leaf("chart", "chart", Rc::new(chart), 24, 8);
+            // The descriptor's `hovered_point` stays `None`, so the chart
+            // reports the point under the pointer on every move it gets.
+            for di in [3, 1, 2] {
+                let (x, y) = point(di);
+                driver.mouse_move(x, y);
+            }
+            let points: Vec<Option<(usize, usize)>> = driver
+                .app()
+                .events(|e| matches!(e, UiEvent::Chart(..)))
+                .into_iter()
+                .filter_map(|e| match e {
+                    UiEvent::Chart(_, quadraui::ChartEvent::DataPointHovered { point, .. }) => {
+                        Some(point)
+                    }
+                    _ => None,
+                })
+                .collect();
+            assert_eq!(points, vec![Some((0, 3)), Some((0, 1)), Some((0, 2))]);
+        }
+
+        #[test]
+        fn moving_between_canvas_leaf_regions_reports_each_change_once() {
+            let id = WidgetId::new("canvas");
+            let region = |name: &str, x: f32| quadraui::CanvasRegion {
+                id: WidgetId::new(name),
+                rect: Rect::new(x, 0.0, 4.0, 1.0),
+                cursor: None,
+            };
+            let canvas = quadraui::Canvas {
+                id,
+                ops: vec![],
+                regions: vec![region("region:a", 0.0), region("region:b", 4.0)],
+                focusable: false,
+            };
+            let mut driver = leaf("canvas", "canvas", Rc::new(canvas), 20, 4);
+            driver.mouse_move(1.0, 0.0);
+            driver.mouse_move(5.0, 0.0);
+            driver.mouse_move(12.0, 2.0);
+            driver.mouse_move(14.0, 3.0);
+            driver.mouse_move(2.0, 0.0);
+            let hovered = |name: Option<&str>| {
+                UiEvent::Canvas(
+                    id,
+                    CanvasEvent::RegionHovered {
+                        region: name.map(str::to_string),
+                    },
+                )
+            };
+            assert_eq!(
+                driver.app().events(|e| matches!(e, UiEvent::Canvas(..))),
+                vec![
+                    hovered(Some("region:a")),
+                    hovered(Some("region:b")),
+                    hovered(None),
+                    hovered(Some("region:a")),
+                ]
+            );
         }
 
         fn card(id: &str, title: &str) -> quadraui::BoardCard {

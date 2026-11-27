@@ -150,3 +150,26 @@ fn double_clicking_a_region_reports_it() {
         events(&driver)
     );
 }
+
+#[test]
+fn moving_inside_the_canvas_reports_each_region_change() {
+    let mut driver = driver();
+    // Onto the region, across to bare canvas, and back: the pointer never
+    // leaves the canvas after the first move.
+    driver.mouse_move(AREA.x + 1.0, AREA.y + 1.0);
+    driver.mouse_move(AREA.x + 2.0, AREA.y + 1.0);
+    driver.mouse_move(AREA.x + 10.0, AREA.y + 3.0);
+    driver.mouse_move(AREA.x + 1.0, AREA.y);
+    assert_eq!(
+        events(&driver),
+        vec![
+            CanvasEvent::RegionHovered {
+                region: Some("box".into())
+            },
+            CanvasEvent::RegionHovered { region: None },
+            CanvasEvent::RegionHovered {
+                region: Some("box".into())
+            },
+        ]
+    );
+}
