@@ -3208,9 +3208,10 @@ impl InteractionEngine {
                     }
                     Some(event) => {
                         if let UiEvent::List(_, ListViewEvent::SelectionChanged { idx }) = &event {
-                            self.update_overlay(|o| match o {
-                                Overlay::Completions(c, _) => c.selected_idx = *idx,
-                                _ => {}
+                            self.update_overlay(|o| {
+                                if let Overlay::Completions(c, _) = o {
+                                    c.selected_idx = *idx;
+                                }
                             });
                             reaction = reaction.merge(Reaction::Redraw);
                         }
@@ -3249,9 +3250,10 @@ impl InteractionEngine {
                 match outcome.event {
                     Some(event) => {
                         if let UiEvent::ScrollOffsetChanged { new_offset, .. } = &event {
-                            self.update_overlay(|o| match o {
-                                Overlay::RichTextPopup(p, _) => p.scroll_top = *new_offset,
-                                _ => {}
+                            self.update_overlay(|o| {
+                                if let Overlay::RichTextPopup(p, _) = o {
+                                    p.scroll_top = *new_offset;
+                                }
                             });
                             reaction = reaction.merge(Reaction::Redraw);
                         }
