@@ -505,30 +505,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
          Win-GUI window keeps its native non-client titlebar, so no Win-drawn control overlaps \
          the app's title band; override this and delete this line when CSD lands",
     ),
-    // `scrollbar_reserve` is the width of *toolkit* scrollbar chrome that a backend paints
-    // over the content edge. GTK is the only backend that hosts its content inside
-    // something with such chrome (a `ScrolledWindow`). The other three draw into a surface
-    // they own end to end, and any scrollbar visible in them is quadraui's own `Scrollbar`
-    // primitive, laid out *inside* the rect, not floated on top. `0.0` is the answer.
-    (
-        "tui",
-        "scrollbar_reserve",
-        "no toolkit overlay chrome — a terminal has no scrollbar of its own, and the `Scrollbar` \
-         primitive TUI paints occupies a real cell column inside the caller's rect (#776)",
-    ),
-    (
-        "macos",
-        "scrollbar_reserve",
-        "no toolkit overlay chrome — `MacBackend` draws into a `CGContext` it owns, not an \
-         `NSScrollView`, and paints the `Scrollbar` primitive inside the caller's rect (#776)",
-    ),
-    (
-        "win",
-        "scrollbar_reserve",
-        "no toolkit overlay chrome — Direct2D paints into the HWND's render target directly, with \
-         no native scrollbar floated over the content edge; unrelated to the #19 stub gaps above \
-         (#776)",
-    ),
     // `measure` bundles `char_width()`/`line_height()` into one `Metrics` value. Its trait
     // default is a pure function of those two *required* methods, so every backend's default
     // answer is that backend's own real metrics. There is nothing backend-specific left to add.

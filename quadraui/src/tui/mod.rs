@@ -23,7 +23,6 @@ use crate::cell_surface::{solid_style, CellSurface};
 use crate::types::{Color, Decoration, StyledText};
 
 pub mod backend;
-pub(crate) mod braille;
 // `pub(crate)` rather than private: widget code outside `crate::tui` builds
 // a `TuiCellSurface` over a bare `Buffer` for its own painters and tests.
 // The public adapter is `BufferCellSurface`, re-exported below.

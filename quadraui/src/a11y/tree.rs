@@ -1200,7 +1200,6 @@ pub(crate) enum A11yOwnerKind {
 /// side-table population in [`build_tree`].
 fn content_route_kind(content: &OwnedContent) -> A11yOwnerKind {
     match content {
-        OwnedContent::List(_) => A11yOwnerKind::List,
         OwnedContent::ListWidget(_) => A11yOwnerKind::List,
         OwnedContent::Tree(_) => A11yOwnerKind::Tree,
         OwnedContent::Form(_) => A11yOwnerKind::Form,
@@ -1266,21 +1265,10 @@ impl Described {
             focus_key: None,
         }
     }
-
-    /// A surface whose content is not captured in the frame: it still gets
-    /// a real role and name, just no children.
-    fn labelled(role: A11yRole, label: &str) -> Self {
-        Self {
-            info: A11yInfo::new().with_role(role).with_label(label),
-            children: Vec::new(),
-            focus_key: None,
-        }
-    }
 }
 
 fn describe(content: &OwnedContent) -> Described {
     match content {
-        OwnedContent::List(list) => Described::from_primitive(list),
         OwnedContent::ListWidget(list) => Described::from_primitive(list),
         OwnedContent::Toolbar(bar) => Described::from_primitive(bar),
         OwnedContent::TabBar(bar) => Described::from_primitive(bar),
@@ -1320,9 +1308,6 @@ fn describe(content: &OwnedContent) -> Described {
         OwnedContent::MessageList(list) => Described::from_primitive(list),
         OwnedContent::PipelineView(view) => Described::from_primitive(view),
         OwnedContent::CellGrid(grid) => Described::from_primitive(grid),
-        // Unit variants: the source surface carries no serializable
-        // content, so only the role and name survive the frame capture.
-        OwnedContent::FindReplace => Described::labelled(A11yRole::Form, "Find and replace"),
         other => Described::fallback(other),
     }
 }
@@ -1364,7 +1349,6 @@ fn content_kind(content: &OwnedContent) -> &'static str {
         OwnedContent::TextDisplay(_) => "Text",
         OwnedContent::MultiSectionView(_) => "Multi-section view",
         OwnedContent::Tree(_) => "Tree",
-        OwnedContent::List(_) => "List",
         OwnedContent::ListWidget(_) => "List",
         OwnedContent::Form(_) => "Form",
         OwnedContent::MenuBar(_) => "Menu bar",
@@ -1399,7 +1383,6 @@ fn content_kind(content: &OwnedContent) -> &'static str {
         OwnedContent::Switch(_) => "Switch",
         OwnedContent::RadioGroup(_) => "Radio group",
         OwnedContent::Button(_) => "Button",
-        OwnedContent::FindReplace => "Find and replace",
         OwnedContent::Opaque => "Content",
     }
 }

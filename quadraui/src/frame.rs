@@ -46,8 +46,8 @@
 //! data readable and round-trippable instead of only probeable via
 //! [`FrameHitMap::hit_test`].
 //!
-//! A `FrameZone` alone is a bare tag (e.g. `FrameZone::TabBar { idx: 3
-//! }`) plus a frame-local surface index: it carries no primitive
+//! A `FrameZone` alone is a bare tag (e.g. `FrameZone::Widget { idx: 3,
+//! id: None }`) plus a frame-local surface index: it carries no primitive
 //! content, no accessibility role, no label, no value, and cannot by
 //! itself feed an AccessKit `TreeUpdate` node, be re-painted by a web
 //! backend, or replay a frame. [`OwnedFrame`] is the `serde`-capable
@@ -68,8 +68,7 @@
 //! [`Surface`] is owned-but-not-serde and takes any primitive quadraui
 //! can paint, while [`OwnedFrame`] is the serializable snapshot and is
 //! therefore limited to primitives that are themselves `serde`-capable;
-//! [`OwnedContent::FindReplace`] and [`OwnedContent::Opaque`] are its
-//! contentless fallbacks. Reach
+//! [`OwnedContent::Opaque`] is its contentless fallback. Reach
 //! for `Surface`/`ScreenLayout` to describe and paint a frame; reach
 //! for `OwnedFrame` when that description has to be serialized.
 //!
@@ -231,12 +230,10 @@ use crate::Backend;
 /// sequentially and the resulting [`FrameHitMap`] checks the
 /// highest-z surface first.
 ///
-/// `#[non_exhaustive]`: a new primitive adds a new variant here, and
-/// per CLAUDE.md's *Downstream consumers* rule 2, a variant addition
-/// should be additive rather than a potential downstream `E0004`.
-/// Verified safe to add today: neither `coord-tui` nor `vimcode`
-/// exhaustively matches `Surface` without a wildcard arm (grep in the
-/// PR body).
+/// Exactly two variants: every widget is a [`Surface::Widget`], painted
+/// through its `Primitive` impl, and [`Surface::Opaque`] holds a slot that
+/// paints nothing. A new widget implements `Primitive`; it never adds a
+/// variant here.
 #[allow(clippy::large_enum_variant)]
 #[non_exhaustive]
 pub enum Surface {
@@ -253,6 +250,9 @@ pub enum Surface {
         rect: Rect,
         widget: Box<dyn DynWidget>,
     },
+    /// A rect with a z-order slot and a hit zone but no paint: what a captured
+    /// frame replays for content that captured as `OwnedContent::Opaque`.
+    Opaque { rect: Rect },
 }
 
 /// Identifies which surface zone a point landed in.
@@ -273,12 +273,6 @@ pub enum Surface {
 /// `idx` it is handed actually corresponds to anything on the
 /// receiving end.
 ///
-/// `#[non_exhaustive]` for the same reason as [`Surface`]: a new
-/// `Surface` variant implies a new `FrameZone` twin, and that pairing
-/// should stay additive downstream. Verified safe today: neither
-/// `coord-tui` nor `vimcode` exhaustively matches `FrameZone` without
-/// a wildcard arm (vimcode's one match, `click.rs:331-355`, ends in
-/// `_ => {}`; grep in the PR body).
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[non_exhaustive]
 #[deprecated(
@@ -286,9 +280,6 @@ pub enum Surface {
     note = "use `crate::frame_tree::FrameTree` (via `ScreenLayout::into_frame_tree`/`AppLogic::frame_tree`) for click/hit-test routing instead"
 )]
 pub enum FrameZone {
-    TabBar {
-        idx: usize,
-    },
     /// The zone for a [`Surface::Widget`] — carries the widget's own id
     /// (from [`DynWidget::id`]), since there is no per-variant field name
     /// (`grid.id`, `bar.id`, ...) for a caller to read it off `Surface`
@@ -446,6 +437,7 @@ impl ScreenLayout {
                         backend.draw_dyn(*rect, widget.as_ref(), &());
                     }
                 }
+                Surface::Opaque { .. } => {}
             }
 
             let (rect, zone) = Self::zone_for(idx, surface);
@@ -495,6 +487,7 @@ impl ScreenLayout {
             .iter()
             .flat_map(|s| match s {
                 Surface::Widget { rect, widget } => Self::widget_tab_stops(*rect, widget.as_ref()),
+                Surface::Opaque { .. } => Vec::new(),
             })
             .collect();
         stops.sort_by(|(_, a), (_, b)| {
@@ -540,6 +533,7 @@ impl ScreenLayout {
                     id: widget.id().copied(),
                 },
             ),
+            Surface::Opaque { rect } => (*rect, FrameZone::Empty),
         }
     }
 
@@ -563,9 +557,11 @@ impl ScreenLayout {
     /// ever set on it) is skipped — there is no [`WidgetId`] to route by.
     pub fn into_frame_tree(self) -> crate::frame_tree::FrameTree {
         let mut tree = crate::frame_tree::FrameTree::new();
-        for Surface::Widget { rect, widget } in self.surfaces {
-            if let Some(&id) = widget.id() {
-                tree.push(id, rect, widget);
+        for surface in self.surfaces {
+            if let Surface::Widget { rect, widget } = surface {
+                if let Some(&id) = widget.id() {
+                    tree.push(id, rect, widget);
+                }
             }
         }
         tree
@@ -579,17 +575,16 @@ impl Default for ScreenLayout {
 }
 
 /// A single primitive's content, owned rather than borrowed — the
-/// payload half of an [`OwnedNode`]. One variant per [`Surface`]
-/// variant that carries a `serde`-serializable primitive.
+/// payload half of an [`OwnedNode`]. One variant per
+/// `serde`-serializable widget, produced by that widget's
+/// `Primitive::capture`.
 ///
-/// `#[non_exhaustive]` for the same reason as [`Surface`] and
-/// [`FrameZone`]: a new primitive adds a new variant here additively.
+/// `#[non_exhaustive]`: a new serializable widget adds its variant here
+/// additively.
 ///
-/// [`Self::FindReplace`] names a [`crate::FindReplacePanel`] node without
-/// its content — the node still gets a rect and a [`FrameZone`] via
+/// [`Self::Opaque`] is the fallback for any primitive that can't be
+/// captured: the node still gets a rect and a [`FrameZone`] via
 /// [`OwnedFrame::hit_map`], but carries nothing to redraw or inspect.
-/// [`Self::Opaque`] is the generic fallback for any primitive that can't
-/// be captured.
 #[non_exhaustive]
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub enum OwnedContent {
@@ -612,10 +607,6 @@ pub enum OwnedContent {
     TextDisplay(TextDisplay),
     MultiSectionView(MultiSectionView),
     Tree(TreeView),
-    /// A [`ListView`] in the wire shape frames recorded before
-    /// [`Self::ListWidget`] existed — replays and hit-tests exactly as
-    /// that variant does.
-    List(ListView),
     /// Captured from a [`ListView`] reached through
     /// [`Surface::Widget`] via [`DynWidget::capture`] — maps to
     /// [`FrameZone::Widget`], the same [`FrameZone`] the live
@@ -678,10 +669,6 @@ pub enum OwnedContent {
     /// [`DynWidget::capture`] — maps to [`FrameZone::Widget`], the only
     /// way a standalone `Button` ever reaches a frame.
     Button(Button),
-    /// No content captured — captured from a [`crate::FindReplacePanel`]
-    /// reached through [`Surface::Widget`] via [`DynWidget::capture`];
-    /// maps to [`FrameZone::Widget`].
-    FindReplace,
     /// No content captured — a generic fallback for any future
     /// non-serializable primitive. See this enum's doc for which
     /// [`Surface`] variants use the more specific fallbacks instead.
@@ -698,7 +685,7 @@ impl OwnedContent {
     ///
     /// [`Self::ContextMenu`] — the one overlay variant that still needs
     /// a non-serializable `*Layout` companion to redraw — plus
-    /// [`Self::FindReplace`] and [`Self::Opaque`] are no-ops: their
+    /// [`Self::Opaque`] are no-ops: their
     /// hit-test zone still round-trips, but repainting them needs either
     /// a layout or primitive content this owned snapshot does not keep.
     fn draw(&self, rect: Rect, backend: &mut dyn Backend) {
@@ -707,10 +694,6 @@ impl OwnedContent {
                 backend.draw_primitive(rect, editor);
             }
             OwnedContent::TabBar(bar) => {
-                // `impl Primitive for TabBar` is unconditional, like
-                // `CellGrid`'s, so this arm needs no backend-feature
-                // guard of the kind `OwnedContent::ListWidget` below
-                // still carries.
                 backend.draw_primitive(rect, bar);
             }
             OwnedContent::StatusBar(bar) => {
@@ -768,38 +751,8 @@ impl OwnedContent {
                     let _ = (rect, tree);
                 }
             }
-            OwnedContent::List(list) | OwnedContent::ListWidget(list) => {
-                // `ListView: Primitive` is gated the same way
-                // `impl Primitive for ListView` itself is (see that
-                // impl's own `cfg`) — unlike `CellGrid`, whose
-                // unconditional `Primitive` impl needs no such guard.
-                // On a build with none of those backend features this
-                // content never gets produced in the first place
-                // (`ListView::capture`, gated identically, is the only
-                // producer), so this is dead code rather than a real
-                // no-op fallback; it exists purely so the match stays
-                // exhaustive and `OwnedContent` need not cfg-gate the
-                // variant itself (every other variant here is
-                // unconditional too, including across the plugin/JSON
-                // wire boundary this module's doc describes).
-                #[cfg(any(
-                    feature = "gtk",
-                    feature = "tui",
-                    feature = "win",
-                    all(feature = "macos", target_os = "macos")
-                ))]
-                {
-                    backend.draw_primitive(rect, list);
-                }
-                #[cfg(not(any(
-                    feature = "gtk",
-                    feature = "tui",
-                    feature = "win",
-                    all(feature = "macos", target_os = "macos")
-                )))]
-                {
-                    let _ = (rect, list, backend);
-                }
+            OwnedContent::ListWidget(list) => {
+                backend.draw_primitive(rect, list);
             }
             OwnedContent::Form(form) => {
                 backend.draw_primitive(rect, form);
@@ -896,24 +849,12 @@ impl OwnedContent {
                 backend.draw_primitive(rect, bar);
             }
             OwnedContent::Switch(switch) => {
-                // `impl Primitive for Switch` is unconditional, like
-                // `TabBar`'s above, so this arm needs no backend-feature
-                // guard of the kind `OwnedContent::ListWidget` below
-                // still carries.
                 backend.draw_primitive(rect, switch);
             }
             OwnedContent::RadioGroup(group) => {
-                // `impl Primitive for RadioGroup` is unconditional, like
-                // `Switch`'s above, so this arm needs no backend-feature
-                // guard of the kind `OwnedContent::ListWidget` below
-                // still carries.
                 backend.draw_primitive(rect, group);
             }
             OwnedContent::Button(button) => {
-                // `impl Primitive for Button` is unconditional, like
-                // `Switch`'s above, so this arm needs no backend-feature
-                // guard of the kind `OwnedContent::ListWidget` below
-                // still carries.
                 backend.draw_primitive(rect, button);
             }
             OwnedContent::Tooltip(tooltip) => {
@@ -931,7 +872,7 @@ impl OwnedContent {
             OwnedContent::RichTextPopup(popup) => {
                 backend.draw_primitive(rect, popup);
             }
-            OwnedContent::ContextMenu(_) | OwnedContent::FindReplace | OwnedContent::Opaque => {}
+            OwnedContent::ContextMenu(_) | OwnedContent::Opaque => {}
         }
     }
 
@@ -978,7 +919,7 @@ impl OwnedContent {
                 idx,
                 id: Some(tree.id),
             },
-            OwnedContent::List(list) | OwnedContent::ListWidget(list) => FrameZone::Widget {
+            OwnedContent::ListWidget(list) => FrameZone::Widget {
                 idx,
                 id: Some(list.id),
             },
@@ -1111,7 +1052,6 @@ impl OwnedContent {
                 idx,
                 id: Some(button.id),
             },
-            OwnedContent::FindReplace => FrameZone::Widget { idx, id: None },
             OwnedContent::Opaque => FrameZone::Empty,
         }
     }
@@ -1329,6 +1269,7 @@ impl OwnedFrame {
 fn capture_surface(surface: &Surface) -> (Rect, Option<WidgetId>, OwnedContent) {
     match surface {
         Surface::Widget { rect, widget } => (*rect, widget.id().copied(), widget.capture()),
+        Surface::Opaque { rect } => (*rect, None, OwnedContent::Opaque),
     }
 }
 
@@ -1463,11 +1404,14 @@ mod tests {
         // Overlay covers top-left quadrant.
         map.push(
             Rect::new(0.0, 0.0, 50.0, 50.0),
-            FrameZone::TabBar { idx: 1 },
+            FrameZone::Widget { idx: 1, id: None },
         );
 
         // Point in the overlay → highest-z wins.
-        assert_eq!(map.hit_test(25.0, 25.0), FrameZone::TabBar { idx: 1 });
+        assert_eq!(
+            map.hit_test(25.0, 25.0),
+            FrameZone::Widget { idx: 1, id: None }
+        );
         // Point outside the overlay but inside the tree.
         assert_eq!(
             map.hit_test(75.0, 75.0),
@@ -1491,18 +1435,27 @@ mod tests {
             Rect::new(0.0, 0.0, 80.0, 24.0),
             FrameZone::Widget { idx: 0, id: None },
         );
-        map.push(Rect::new(0.0, 0.0, 80.0, 1.0), FrameZone::TabBar { idx: 1 });
+        map.push(
+            Rect::new(0.0, 0.0, 80.0, 1.0),
+            FrameZone::Widget { idx: 1, id: None },
+        );
         map.push(
             Rect::new(0.0, 23.0, 80.0, 1.0),
-            FrameZone::TabBar { idx: 2 },
+            FrameZone::Widget { idx: 2, id: None },
         );
 
-        assert_eq!(map.hit_test(40.0, 0.5), FrameZone::TabBar { idx: 1 });
+        assert_eq!(
+            map.hit_test(40.0, 0.5),
+            FrameZone::Widget { idx: 1, id: None }
+        );
         assert_eq!(
             map.hit_test(40.0, 12.0),
             FrameZone::Widget { idx: 0, id: None }
         );
-        assert_eq!(map.hit_test(40.0, 23.5), FrameZone::TabBar { idx: 2 });
+        assert_eq!(
+            map.hit_test(40.0, 23.5),
+            FrameZone::Widget { idx: 2, id: None }
+        );
     }
 
     #[test]
@@ -2687,12 +2640,18 @@ mod tests {
                 id: Some(WidgetId::new("board")),
             },
         );
-        map.push(Rect::new(0.0, 0.0, 5.0, 5.0), FrameZone::TabBar { idx: 1 });
+        map.push(
+            Rect::new(0.0, 0.0, 5.0, 5.0),
+            FrameZone::Widget { idx: 1, id: None },
+        );
 
         let json = serde_json::to_string(&map).expect("FrameHitMap serializes");
         let restored: FrameHitMap = serde_json::from_str(&json).expect("FrameHitMap deserializes");
         assert_eq!(restored, map);
-        assert_eq!(restored.hit_test(1.0, 1.0), FrameZone::TabBar { idx: 1 });
+        assert_eq!(
+            restored.hit_test(1.0, 1.0),
+            FrameZone::Widget { idx: 1, id: None }
+        );
 
         // `from_zones` is the inverse of `zones()` — a map rebuilt from
         // its own owned data behaves identically.

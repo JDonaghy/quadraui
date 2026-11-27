@@ -2329,13 +2329,6 @@ impl Backend for GtkBackend {
         (w as f32, h as f32)
     }
 
-    /// GTK's `ScrolledWindow` overlay scrollbar draws on top of the
-    /// content edge. CSS requests 4px but GTK may allocate slightly
-    /// more; 8px is a safe reserve so text never renders behind it.
-    fn scrollbar_reserve(&self) -> f32 {
-        8.0
-    }
-
     /// GTK applies per-line font scale via a Pango scale attr, so scaled
     /// rows (e.g. markdown headings) draw taller and layouts must
     /// reserve the extra height.
@@ -3735,17 +3728,6 @@ mod tests {
             "the thread-local's clone must be released with the backend"
         );
         assert!(super::wake_callback_for(wake_id).is_none());
-    }
-
-    /// GTK reserves room for its `ScrolledWindow` overlay
-    /// scrollbar so a caller's content viewport width
-    /// (`rect.width - backend.scrollbar_reserve()`) never renders text
-    /// behind the overlay — see the trait default (0.0) that TUI relies
-    /// on instead.
-    #[test]
-    fn gtk_backend_scrollbar_reserve_is_nonzero() {
-        let backend = GtkBackend::new();
-        assert_eq!(Backend::scrollbar_reserve(&backend), 8.0);
     }
 
     /// With no window set (the state of every unit test and every
