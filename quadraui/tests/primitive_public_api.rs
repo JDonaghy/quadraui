@@ -550,6 +550,7 @@ impl quadraui::Interactive for Counter {
 }
 
 /// Every [`CounterBumped`] payload in `events`, in order.
+#[cfg(feature = "tui")]
 fn counter_bumps(events: &[quadraui::UiEvent]) -> Vec<CounterBumped> {
     events
         .iter()

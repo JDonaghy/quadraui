@@ -253,6 +253,14 @@ impl Demo for FocusDemo {
 }
 // gallery:end
 
+/// A list paint state that strokes the focus-visible ring when `visible`.
+fn focus_ring(visible: bool) -> quadraui::primitive::PaintStateSnapshot {
+    quadraui::primitive::PaintStateSnapshot {
+        focus_ring_visible: visible,
+        ..Default::default()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -305,13 +313,5 @@ mod tests {
             .focus
             .borrow()
             .is_focused(&WidgetId::new(STATUS_ID), None));
-    }
-}
-
-/// A list paint state that strokes the focus-visible ring when `visible`.
-fn focus_ring(visible: bool) -> quadraui::primitive::PaintStateSnapshot {
-    quadraui::primitive::PaintStateSnapshot {
-        focus_ring_visible: visible,
-        ..Default::default()
     }
 }
