@@ -741,11 +741,7 @@ pub(crate) mod paint_cells;
 pub(crate) mod paint_pixels;
 
 pub use contract::{ChartPrimitiveLayout, ChartState};
-#[cfg(any(
-    feature = "gtk",
-    feature = "win",
-    all(feature = "macos", target_os = "macos")
-))]
+#[cfg(any(feature = "gtk", all(feature = "macos", target_os = "macos")))]
 pub(crate) use paint_pixels::paint;
 #[cfg(all(
     test,
