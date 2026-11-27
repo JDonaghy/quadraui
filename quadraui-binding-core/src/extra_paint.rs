@@ -12,7 +12,10 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    Backend, Canvas, Column, ComboBox, CommandLine, DatePicker, FindReplacePanel, FontRole, Form, Icon, MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, Point, ProgressBar, Rect, Scrollbar, Spinner, StyledText, TextField, TextInput, TextRegion, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
+    Backend, Canvas, Column, ComboBox, CommandLine, DatePicker, FindReplacePanel, FontRole, Form,
+    Icon, MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput, NumberInputHit, Point,
+    ProgressBar, Rect, Scrollbar, Spinner, StyledText, TextField, TextInput, TextRegion, Toolbar,
+    ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData, WidgetId,
 };
 
 /// Paints one additive primitive descriptor painted outside the five fixed
