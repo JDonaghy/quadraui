@@ -1,69 +1,177 @@
 # quadraui
 
-**One Rust UI codebase that runs in a terminal and as a native desktop window.**
+**A cross-platform UI framework for Rust, Python and Node.js that also runs in a terminal.**
 
-📖 **Docs, guides & getting started → [jdonaghy.github.io/quadraui](https://jdonaghy.github.io/quadraui)**
+Write an app once. It runs in a terminal (over SSH too) and as a native
+window on macOS, Linux (GTK4) and Windows, drawn by quadraui's own renderers
+for each.
 
-quadraui is a widget toolkit with four rendering backends: **TUI** (via
-ratatui), **GTK4** (Cairo + Pango), **macOS** (Core Graphics + Core Text)
-and **Windows** (Direct2D + DirectWrite). You write your app once, and the
-same code runs over SSH in a terminal or as a native window, with only
-the one-line runner call in `main` changing.
+| Terminal | GTK4 (Linux) | Windows | macOS |
+|:---:|:---:|:---:|:---:|
+| ![The counter app in a terminal](site/src/images/hero-tui.png) | ![The counter app on GTK4](site/src/images/hero-gtk.png) | ![The counter app on Windows](site/src/images/hero-win.png) | ![The counter app on macOS](site/src/images/hero-macos.png) |
 
+*The counter below, as each backend paints it. These are real renders, made
+by `scripts/capture_hero.sh` through each backend's headless test driver.*
+
+If you know **Elm, iced, Textual or React**, you know the shape already:
+**state**, a **view** that turns state into a widget tree each frame, and
+**update** code that changes state when an event arrives. There is no data
+binding and no manual redraw. Here is the same counter in each language:
+
+**Python**
+
+<!-- sample: examples/hero/python/counter.py -->
+```python
+from quadraui.app import App, Button, Column, Row, TextDisplay, key_name
+
+
+def text(s):
+    return [{"spans": [{"text": s, "fg": None, "bg": None}]}]
+
+
+class Counter:
+    def __init__(self):
+        self.count = 0
+
+    def view(self):
+        return Column(
+            TextDisplay(text(f"Count: {self.count}"), id="count"),
+            Row(Button("-", id="dec", on_click=self.dec), Button("+", id="inc", on_click=self.inc)),
+        )
+
+    def inc(self):
+        self.count += 1
+
+    def dec(self):
+        self.count -= 1
+
+    def on_key(self, event):
+        if key_name(event) == "q":
+            raise SystemExit
+
+
+if __name__ == "__main__":
+    counter = Counter()
+    App(30, 5, view=counter.view, on_event=counter.on_key).run_tui()  # or .run_native(title="Counter"): same Counter
+```
+
+**TypeScript (JSX)**
+
+<!-- sample: examples/hero/node/counter.tsx -->
+```tsx
+const { App, keyName } = require("@quadraui/node/app");
+
+class Counter {
+  count = 0;
+
+  view() {
+    return (
+      <column>
+        <textDisplay id="count" lines={[{ spans: [{ text: `Count: ${this.count}`, fg: null, bg: null }] }]} />
+        <row>
+          <button id="dec" label="-" onClick={() => this.count--} />
+          <button id="inc" label="+" onClick={() => this.count++} />
+        </row>
+      </column>
+    );
+  }
+
+  onKey(event: unknown, quit: () => void) {
+    if (keyName(event) === "q") quit();
+  }
+}
+
+if (require.main === module) {
+  const counter = new Counter();
+  const app = new App(30, 5, { view: () => counter.view(), onEvent: (e: unknown) => counter.onKey(e, quit) });
+  const live = app.runTui(); // or app.runNative("Counter"): same Counter
+  // Ending a live session needs both calls, deferred out of the handler (examples/hero/README.md, "Gaps").
+  const quit = () => setImmediate(() => (live.stop(), app.stopLive()));
+}
+module.exports = { Counter };
+```
+
+**Rust**: the same three parts on the lower-level `AppLogic` trait. Rust has
+no declarative `Column`/`Row` yet, so this view places widgets by hand.
+
+<!-- sample: examples/hero/rust/src/main.rs -->
 ```rust
 use quadraui::prelude::*;
+use quadraui::{primitive::DynWidget, Button, FrameTree, StyledSpan};
+use std::cell::Cell;
 
-struct Hello { keys_pressed: u32 }
+#[derive(Default)]
+pub struct Counter {
+    pub count: i32,
+    cell: Cell<(f32, f32)>,
+}
 
-impl Hello {
-    fn config() -> ShellConfig {
-        ShellConfig::new("Hello", Vec::new())
-            .with_status_bar()
-            // No panels, so no activity-bar column to pick one with.
-            .with_activity_bar_width(0.0)
+impl Counter {
+    fn view(&self) -> ScreenLayout {
+        let (w, h) = self.cell.get(); // one character cell, in this backend's units
+        let text = StyledSpan::plain(format!("Count: {}", self.count));
+        let mut label = TextDisplay::new(WidgetId::new("count"));
+        label.lines = vec![TextDisplayLine {
+            spans: vec![text],
+            decoration: Default::default(),
+            timestamp: None,
+        }];
+        let mut ui = ScreenLayout::new();
+        let mut put = |col: f32, row: f32, cols: f32, widget: Box<dyn DynWidget>| {
+            let rect = Rect::new(col * w, row * h, cols * w, h);
+            ui.push(Surface::Widget { rect, widget })
+        };
+        put(0.0, 0.0, 20.0, Box::new(label));
+        put(0.0, 2.0, 5.0, Box::new(Button::new("dec".into(), "-")));
+        put(6.0, 2.0, 5.0, Box::new(Button::new("inc".into(), "+")));
+        ui
     }
 }
 
-impl ShellApp for Hello {
-    fn render_content(&self, backend: &mut dyn Backend, layout: &ShellLayout) {
-        // The shell already computed where the status bar goes —
-        // no viewport arithmetic here. Describe the UI as plain data;
-        // the widget paints itself on whichever backend is running.
-        let Some(rect) = layout.status_bar_bounds else { return };
-        let bar = StatusBar {
-            id: WidgetId::new("status:bar"),
-            left_segments: vec![StatusBarSegment {
-                text: format!(" Hello, quadraui! (keys: {}) ", self.keys_pressed),
-                fg: Color::rgb(255, 255, 255),
-                bg: Color::rgb(40, 80, 120),
-                bold: true,
-                action_id: None,
-            }],
-            right_segments: vec![],
-        };
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget { rect, widget: Box::new(bar) });
-        frame.draw(backend);
+impl AppLogic for Counter {
+    type AreaId = ();
+    fn render(&self, backend: &mut dyn Backend, _: ()) {
+        self.cell.set((backend.char_width(), backend.line_height()));
+        self.view().draw(backend);
     }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend, _ctx: &ShellContext) -> Reaction {
+    fn frame_tree(&self, _: ()) -> FrameTree {
+        self.view().into_frame_tree()
+    }
+    fn handle(&mut self, event: UiEvent, _: &mut dyn Backend) -> Reaction {
         match event {
-            UiEvent::KeyPressed { key: Key::Char('q'), .. } => Reaction::Exit,
-            UiEvent::KeyPressed { .. } => { self.keys_pressed += 1; Reaction::Redraw }
-            _ => Reaction::Continue,
+            UiEvent::ButtonActivated { widget } if widget.as_str() == "inc" => self.count += 1,
+            UiEvent::ButtonActivated { widget } if widget.as_str() == "dec" => self.count -= 1,
+            UiEvent::KeyPressed {
+                key: Key::Char('q'),
+                ..
+            } => return Reaction::Exit,
+            _ => return Reaction::Continue,
         }
+        Reaction::Redraw
     }
 }
 
 fn main() -> Result<(), quadraui::RunError> {
-    quadraui::tui::shell_runner::run_with_shell(Hello { keys_pressed: 0 }, Hello::config())
-    // quadraui::gtk::shell_runner::run_with_shell(...), quadraui::macos::... or
-    // quadraui::win::... for a native window: same `Hello`.
+    quadraui::tui::run(Counter::default()) // or gtk::run, macos::run, win::run: same Counter
 }
 ```
 
-The full version is `quadraui/examples/hello.rs`:
-`cargo run --example hello --features tui`.
+All three are run headless in CI with the same clicks (`examples/hero/`).
+
+```sh
+cargo add quadraui --features tui   # add gtk, macos or win for a native window
+pip install quadraui
+npm install @quadraui/node
+```
+
+📖 **[Docs and quick starts](https://jdonaghy.github.io/quadraui)**
+([Rust](https://jdonaghy.github.io/quadraui/quick-start/rust.html) ·
+[Python](https://jdonaghy.github.io/quadraui/quick-start/python.html) ·
+[Node](https://jdonaghy.github.io/quadraui/quick-start/node.html)) ·
+[Widget gallery](https://jdonaghy.github.io/quadraui/gallery/index.html) ·
+[API reference](https://docs.rs/quadraui) ·
+[Examples](examples/hero/) ·
+[Changelog](CHANGELOG.md)
 
 ## Why it is different
 
@@ -88,9 +196,10 @@ The full version is `quadraui/examples/hello.rs`:
   nothing to do renders nothing.
 - **Declarative, serialisable widgets.** Widgets are plain data
   (`Serialize`), events are plain data routed by `WidgetId`, and no
-  closures cross the API. That is what makes scripting practical (vimcode
-  lets Lua extensions declare quadraui views) and what the Python and
-  Node.js bindings are built on.
+  closures cross the Rust API. That is what makes scripting practical
+  (vimcode lets Lua extensions declare quadraui views) and what the Python
+  and Node.js bindings are built on; their app layers add per-widget
+  callbacks on top.
 - **Honest about capabilities.** `BackendCaps` tells an app what the
   current backend can do. Where a terminal cannot do something (a tray
   icon, a native dialog) the backend degrades and says so, rather than
@@ -170,11 +279,12 @@ tracker.
 quadraui = { version = "0.11", features = ["tui", "gtk"] }
 ```
 
-**Python and Node.js** — `quadraui-py` (PyO3) and `quadraui-node` (napi-rs)
-build widget descriptors from Python or JavaScript/TypeScript and have quadraui
-render them, headlessly or in a real terminal. The Python getting-started lives
-on the [docs site](https://jdonaghy.github.io/quadraui); see also `quadraui-py/`
-and `quadraui-node/` in this repo.
+**Python and Node.js** — `pip install quadraui` and
+`npm install @quadraui/node`. Both bindings are the same Rust renderer
+under a thin app layer (`quadraui.app`, `@quadraui/node/app`, with JSX for
+Node). Each has a five-minute quick start on the docs site:
+[Python](https://jdonaghy.github.io/quadraui/quick-start/python.html),
+[Node](https://jdonaghy.github.io/quadraui/quick-start/node.html).
 <!-- TODO(0.12 final pass): after W8 (binding-core collapse, #2976-#2979), check
 this paragraph against the final py/node wire surface and say which widget
 kinds the bindings can build. -->
@@ -191,8 +301,10 @@ For sibling-checkout development, use
 
 Then:
 
-- Run `hello` (the `ShellApp` path above), then `tui_demo` / `gtk_demo`,
-  which use the same `AppLogic` body under two runners.
+- Run the hero counter above:
+  `cargo run -p quadraui-hero --features tui --bin counter`. Then try
+  `hello` (`quadraui/examples/hello.rs`, the same idea on `ShellApp`) and
+  `tui_demo` / `gtk_demo`, which use one `AppLogic` body under two runners.
 - Or start a new app from the `templates/app` starter —
   `cargo generate --git https://github.com/JDonaghy/quadraui templates/app`
   — which already has the `hello`/`main.rs` shape above wired to all four
@@ -214,6 +326,7 @@ A widget is a type that implements `Primitive` and `Interactive`. This
 one paints a block of colour and has no behaviour, so `non_interactive!`
 supplies its `Interactive` impl:
 
+<!-- sample: quadraui/tests/readme_own_widget.rs -->
 ```rust
 use quadraui::prelude::*;
 use quadraui::{
@@ -252,7 +365,10 @@ impl Primitive for Swatch {
 
     // The terminal (needs the `tui` feature).
     fn paint_cells(&self, layout: &Rect, cells: &mut dyn CellSurface, _env: &PaintEnv) {
-        let style = CellSurfaceStyle { bg: Some(self.color), ..Default::default() };
+        let style = CellSurfaceStyle {
+            bg: Some(self.color),
+            ..Default::default()
+        };
         cells.fill(*layout, style);
     }
 }
@@ -260,8 +376,14 @@ impl Primitive for Swatch {
 quadraui::non_interactive!(Swatch);
 
 fn paint_swatch(frame: &mut ScreenLayout, rect: Rect) {
-    let swatch = Swatch { id: WidgetId::new("swatch"), color: Color::rgb(200, 60, 60) };
-    frame.push(Surface::Widget { rect, widget: Box::new(swatch) });
+    let swatch = Swatch {
+        id: WidgetId::new("swatch"),
+        color: Color::rgb(200, 60, 60),
+    };
+    frame.push(Surface::Widget {
+        rect,
+        widget: Box::new(swatch),
+    });
 }
 ```
 

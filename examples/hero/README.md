@@ -60,6 +60,15 @@ Verified on 2026-11-27 against develop `6f501cdd`:
 - A live native window was not checked by eye: the Mac's display was off,
   so the screenshot came back black.
 
+## Screenshots
+
+The README and site images (`site/src/images/hero-*.png`) are this Rust
+`Counter` painted off screen by each backend's headless test driver:
+`scripts/capture_hero.sh tui,gtk` on Linux, `tui,macos` on a Mac and
+`tui,win` on Windows (`src/bin/capture.rs`). No window opens, so it works
+over ssh. `build.rs` embeds the Common-Controls v6 manifest that any
+`win`-feature binary needs to start on Windows.
+
 ## Gaps this exposed
 
 Rust gaps first, then the ones shared by all three languages, then the
