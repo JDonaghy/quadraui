@@ -3280,42 +3280,12 @@ pub struct TabBarPrimitiveLayout {
     pub corrected_scroll_offset: usize,
 }
 
-/// Paint `tab_bar` into `strip` through
-/// [`crate::backend::DrawsPrimitives::draw_dyn`] and return the
-/// strip-relative [`TabBarLayout`] it resolved, paired with
-/// [`TabBarPrimitiveLayout::corrected_scroll_offset`] — the offset that
-/// keeps the active tab visible under this frame's real measurements,
-/// *not* `layout.resolved_scroll_offset` (merely clamped, see that
-/// field's own doc).
-///
-/// `None` when `draw_dyn` hands back a layout of some other concrete
-/// type, which means nothing measured a tab bar at all. Each caller
-/// picks its own fallback for that: an empty layout classifies every
-/// strip click as [`TabBarHit::Empty`], the only coherent answer when
-/// the strip was never measured.
-///
-/// This is the one call shape every compose-layer tab strip shares, so
-/// no controller reaches for a tab-bar paint method of its
-/// own.
-pub(crate) fn draw_tab_strip(
-    backend: &mut dyn crate::Backend,
-    strip: Rect,
-    tab_bar: &TabBar,
-) -> Option<(TabBarLayout, usize)> {
-    use crate::backend::DrawsPrimitives;
-    backend
-        .draw_dyn(strip, tab_bar, &())
-        .downcast_ref::<TabBarPrimitiveLayout>()
-        .map(|l| (l.layout.clone(), l.corrected_scroll_offset))
-}
-
 /// A strip layout carrying only tab-body hit regions, synthesised from
 /// absolute `(start_x, end_x)` tab slots relative to a `strip` of
 /// `strip.width` x `strip.height`.
 ///
 /// Callers that hold slot x-pairs and no close/segment geometry at all
-/// need it — a drag-geometry primer that never rendered — as does any
-/// [`draw_tab_strip`] caller filling in its `None` fallback.
+/// need it — a drag-geometry primer that never rendered.
 ///
 /// `slots` uses the `(0.0, 0.0)` sentinel convention for a tab scrolled
 /// off the left edge: a sentinel entry contributes no visible tab, but

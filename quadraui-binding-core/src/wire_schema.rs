@@ -4121,6 +4121,9 @@ pub fn schema() -> Vec<DefJson> {
             // serde shape.
             ("Chat", tup(vec![re("WidgetId"), any_()])),
             ("Sidebar", tup(vec![re("WidgetId"), any_()])),
+            // A tab group event rides as its own externally-tagged serde
+            // shape.
+            ("TabGroup", tup(vec![re("WidgetId"), any_()])),
             ("ScrollView", tup(vec![re("WidgetId"), re("ScrollViewEvent")])),
             ("HelpOverlay", tup(vec![re("WidgetId"), any_()])),
             ("PathPicker", tup(vec![re("WidgetId"), any_()])),
@@ -4332,6 +4335,7 @@ mod coverage {
             UiEvent::MultiSectionView(_, _) => {}
             UiEvent::Chat(_, _) => {}
             UiEvent::Sidebar(_, _) => {}
+            UiEvent::TabGroup(_, _) => {}
             UiEvent::ScrollView(_, _) => {}
             UiEvent::Toolbar(_, _) => {}
             UiEvent::Canvas(_, _) => {}
@@ -7138,6 +7142,7 @@ mod coverage {
                 "MultiSectionView",
                 "Chat",
                 "Sidebar",
+                "TabGroup",
                 "ScrollView",
                 "HelpOverlay",
                 "PathPicker",

@@ -1192,6 +1192,9 @@ pub enum UiEvent {
     /// A [`crate::Sidebar`] section, row or form field was used, or one of
     /// its controlled fields changed — see [`crate::SidebarAction`].
     Sidebar(WidgetId, crate::compose::sidebar_system::SidebarAction),
+    /// A [`crate::TabGroup`] tab, divider or pane was used — see
+    /// [`crate::TabGroupEvent`].
+    TabGroup(WidgetId, crate::compose::tab_group::TabGroupEvent),
     /// A [`crate::ScrollView`] resolved a wheel, key or scrollbar gesture
     /// to a new offset — see [`crate::ScrollViewEvent`].
     ScrollView(WidgetId, crate::primitives::scroll_view::ScrollViewEvent),

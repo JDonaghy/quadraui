@@ -551,9 +551,10 @@ fn format_event(ev: &TabGroupEvent) -> String {
         }
         TabGroupEvent::PaneFocused { pane_idx } => format!("pane {pane_idx} focused"),
         TabGroupEvent::PaneAdded { pane_idx } => format!("pane {pane_idx} added"),
-        TabGroupEvent::DividerResized { divider_idx } => {
+        TabGroupEvent::DividerResized { divider_idx, .. } => {
             format!("divider {divider_idx} resized")
         }
+        TabGroupEvent::TabDropped { tab_id, .. } => format!("tab {tab_id} dropped"),
         TabGroupEvent::NewTabRequested { pane_idx } => {
             format!("new tab requested in pane {pane_idx}")
         }

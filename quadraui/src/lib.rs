@@ -979,7 +979,7 @@ pub use compose::{
     PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellPosition, ShellRegion,
     ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody,
     SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
-    SidebarSectionDef, StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout,
+    SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupController, TabGroupEvent, TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState, TabGroupSubPart, TabGroupTab,
     ToastStackAction, ToastStackController, ToolbarHoverTracker, TreeController,
     TreeControllerEvent, TreeHoverTracker, ViewHelp, Workspace, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
     WorkspaceLayout, WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
