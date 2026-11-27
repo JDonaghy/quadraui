@@ -13,12 +13,16 @@ members = [
     "tools/lint",
 ]
 # `templates/app` is a `cargo generate` starter template, not a crate
-# this repo itself builds. Its `Cargo.toml` uses `{{project-name}}` /
+# this repo itself builds. Its manifest uses `{{project-name}}` /
 # `{{crate_name}}` placeholders that aren't valid Rust/TOML identifiers
-# until `cargo generate` substitutes them, so it must never be resolved as
-# a member of this workspace. `.github/workflows/ci.yml`'s `template` job
-# is what actually exercises it: generating a real copy into a temp dir
-# and testing that.
+# until `cargo generate` substitutes them, so it is checked in as
+# `Cargo.toml.liquid` (cargo-generate strips the `.liquid` suffix when it
+# renders the template): cargo scans every `Cargo.toml` in a git source,
+# so a consumer depending on this repo by `git` + `rev` would otherwise
+# trip over the placeholder package name. The `exclude` entry keeps the
+# directory out of this workspace regardless. `.github/workflows/ci.yml`'s
+# `template` job is what actually exercises it: generating a real copy
+# into a temp dir and testing that.
 exclude = ["templates/app"]
 resolver = "2"
 

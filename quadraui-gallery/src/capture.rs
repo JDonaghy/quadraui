@@ -101,7 +101,7 @@ use crate::registry::registry;
     all(feature = "win", target_os = "windows")
 ))]
 use crate::{
-    app::{demo_zone_id, group_panel_id, GROUPS},
+    app::{demo_zone_id, group_panel_id, variant_zone_id, GROUPS},
     GalleryApp,
 };
 
@@ -374,8 +374,8 @@ fn group_index_of(demo: &dyn crate::Demo) -> usize {
 
 /// Which registry row `capture_*_actions` (one per backend) should
 /// select before replaying its `actions`: the activity-bar group,
-/// sidebar demo, and (if there's more than one) variant-picker row —
-/// everything [`click_group_zone`]/[`click_demo_zone`]/`click_text_at`
+/// sidebar demo, and (if there's more than one) variant-picker column —
+/// everything [`click_group_zone`]/[`click_demo_zone`]/[`click_variant_zone`]
 /// need, bundled into one value so those functions stay under
 /// clippy's argument-count limit.
 #[cfg(any(
@@ -384,10 +384,10 @@ fn group_index_of(demo: &dyn crate::Demo) -> usize {
     feature = "gtk",
     all(feature = "win", target_os = "windows")
 ))]
-struct DemoSelection<'a> {
+struct DemoSelection {
     group_idx: usize,
     demo_idx: usize,
-    variant: &'a str,
+    variant_idx: usize,
     variants_len: usize,
 }
 
@@ -435,7 +435,7 @@ fn capture_tui_over(
             let selection = DemoSelection {
                 group_idx,
                 demo_idx,
-                variant,
+                variant_idx,
                 variants_len: variants.len(),
             };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -500,7 +500,6 @@ fn capture_tui_actions(
     actions: &[crate::CaptureAction],
     dest: &Path,
 ) -> io::Result<()> {
-    use quadraui::testing::{Anchor, ConformanceDriver};
     use quadraui::tui::testing::driver_with_shell;
 
     let mut driver = driver_with_shell(
@@ -521,7 +520,7 @@ fn capture_tui_actions(
     // other (see `click_demo_zone`'s doc).
     click_demo_zone(&mut driver, selection.demo_idx);
     if selection.variants_len > 1 {
-        driver.click_text_at(selection.variant, Anchor::Center);
+        click_variant_zone(&mut driver, selection.variant_idx);
     }
     for &action in actions {
         apply_capture_action_tui(&mut driver, action);
@@ -730,6 +729,34 @@ where
     driver.click(zone.x + zone.width / 2.0, zone.y + zone.height / 2.0);
 }
 
+/// Click the variant-picker column for `index` at its real painted
+/// bounds, resolved from [`quadraui::testing::ConformanceDriver::inventory`]'s
+/// registered zone for [`variant_zone_id`] — a sibling of
+/// [`click_demo_zone`]. The picker splits its row into equal-width
+/// columns, so a long variant name is ellipsised at narrow capture
+/// widths and under fallback fonts; selecting by the column's zone keeps
+/// every variant reachable regardless of how much of its name is painted.
+#[cfg(any(
+    feature = "tui",
+    all(feature = "macos", target_os = "macos"),
+    feature = "gtk",
+    all(feature = "win", target_os = "windows")
+))]
+fn click_variant_zone<D>(driver: &mut D, index: usize)
+where
+    D: quadraui::testing::ConformanceDriver + quadraui::testing::DriverInput,
+{
+    let id = variant_zone_id(index);
+    let zone = driver
+        .inventory()
+        .zones()
+        .iter()
+        .find(|z| z.id == id)
+        .unwrap_or_else(|| panic!("no registered zone for variant {index}"))
+        .bounds;
+    driver.click(zone.x + zone.width / 2.0, zone.y + zone.height / 2.0);
+}
+
 /// Render `driver`'s current `width`×`height` screen to an SVG file at
 /// `path`: one `<rect>` per run of same-background cells, one `<text>`
 /// per run of same-foreground/same-style cells — the smallest
@@ -934,7 +961,7 @@ fn capture_macos(
             let selection = DemoSelection {
                 group_idx,
                 demo_idx,
-                variant,
+                variant_idx,
                 variants_len: variants.len(),
             };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -995,7 +1022,6 @@ fn capture_macos_actions(
     dest: &Path,
 ) -> io::Result<()> {
     use quadraui::macos::testing::driver_with_shell;
-    use quadraui::testing::{Anchor, ConformanceDriver};
 
     let mut driver = driver_with_shell(
         GalleryApp::new().with_theme(theme.theme()),
@@ -1014,7 +1040,7 @@ fn capture_macos_actions(
     // other (see `click_demo_zone`'s doc).
     click_demo_zone(&mut driver, selection.demo_idx);
     if selection.variants_len > 1 {
-        driver.click_text_at(selection.variant, Anchor::Center);
+        click_variant_zone(&mut driver, selection.variant_idx);
     }
     for &action in actions {
         apply_capture_action_macos(&mut driver, action);
@@ -1153,7 +1179,7 @@ fn capture_gtk_over(
             let selection = DemoSelection {
                 group_idx,
                 demo_idx,
-                variant,
+                variant_idx,
                 variants_len: variants.len(),
             };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1216,7 +1242,6 @@ fn capture_gtk_actions(
     dest: &Path,
 ) -> io::Result<()> {
     use quadraui::gtk::testing::driver_with_shell;
-    use quadraui::testing::{Anchor, ConformanceDriver};
 
     let mut driver = driver_with_shell(
         GalleryApp::from_demos(demos_fn()).with_theme(theme.theme()),
@@ -1236,7 +1261,7 @@ fn capture_gtk_actions(
     // other (see `click_demo_zone`'s doc).
     click_demo_zone(&mut driver, selection.demo_idx);
     if selection.variants_len > 1 {
-        driver.click_text_at(selection.variant, Anchor::Center);
+        click_variant_zone(&mut driver, selection.variant_idx);
     }
     for &action in actions {
         apply_capture_action_gtk(&mut driver, action);
@@ -1418,7 +1443,7 @@ fn capture_win_over(
             let selection = DemoSelection {
                 group_idx,
                 demo_idx,
-                variant,
+                variant_idx,
                 variants_len: variants.len(),
             };
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -1480,7 +1505,6 @@ fn capture_win_actions(
     actions: &[crate::CaptureAction],
     dest: &Path,
 ) -> io::Result<()> {
-    use quadraui::testing::{Anchor, ConformanceDriver};
     use quadraui::win::testing::driver_with_shell;
 
     let mut driver = driver_with_shell(
@@ -1498,7 +1522,7 @@ fn capture_win_actions(
     }
     click_demo_zone(&mut driver, selection.demo_idx);
     if selection.variants_len > 1 {
-        driver.click_text_at(selection.variant, Anchor::Center);
+        click_variant_zone(&mut driver, selection.variant_idx);
     }
     for &action in actions {
         apply_capture_action_win(&mut driver, action);
@@ -1881,6 +1905,125 @@ mod tests {
             assert!(
                 svg.contains(&format!("variant={variant}")),
                 "SVG for {variant} should show that variant's own rendered content:\n{svg}"
+            );
+        }
+    }
+
+    /// Demo double whose variant names are far wider than the picker's
+    /// equal-width columns at the TUI capture size, so every painted tab
+    /// label is truncated and none can be found by its full text.
+    #[cfg(feature = "tui")]
+    struct LongVariantNamesDemo;
+
+    #[cfg(feature = "tui")]
+    const LONG_VARIANT_NAMES: &[&str] = &[
+        "First variant with a label far wider than its column",
+        "Second variant with a label far wider than its column",
+        "Third variant with a label far wider than its column",
+        "Fourth variant with a label far wider than its column",
+        "Fifth variant with a label far wider than its column",
+        "Sixth variant with a label far wider than its column",
+    ];
+
+    #[cfg(feature = "tui")]
+    impl crate::Demo for LongVariantNamesDemo {
+        fn name(&self) -> &'static str {
+            "LongVariantNames"
+        }
+
+        fn group(&self) -> &'static str {
+            "Overlays"
+        }
+
+        fn variants(&self) -> &'static [&'static str] {
+            LONG_VARIANT_NAMES
+        }
+
+        fn render(
+            &self,
+            variant: usize,
+            backend: &mut dyn quadraui::Backend,
+            area: quadraui::Rect,
+        ) {
+            use quadraui::{Color, DrawsPrimitives, StatusBar, StatusBarSegment, WidgetId};
+            let bar = StatusBar {
+                id: WidgetId::new("test:long-variant-names"),
+                left_segments: vec![StatusBarSegment {
+                    text: format!(" selected={variant} "),
+                    fg: Color::rgb(255, 255, 255),
+                    bg: Color::rgb(0, 0, 0),
+                    bold: false,
+                    action_id: None,
+                }],
+                right_segments: vec![],
+            };
+            let _ = backend.draw_dyn(area, &bar, &());
+        }
+
+        fn handle(
+            &mut self,
+            _variant: usize,
+            _event: &quadraui::UiEvent,
+            _backend: &mut dyn quadraui::Backend,
+            _area: quadraui::Rect,
+        ) -> quadraui::Reaction {
+            quadraui::Reaction::Continue
+        }
+
+        fn source(&self) -> &'static str {
+            "struct LongVariantNamesDemo;"
+        }
+
+        fn data(&self, _variant: usize) -> serde_json::Value {
+            serde_json::Value::Null
+        }
+    }
+
+    #[cfg(feature = "tui")]
+    fn long_variant_names_registry() -> Vec<Box<dyn crate::Demo>> {
+        vec![Box::new(LongVariantNamesDemo)]
+    }
+
+    #[cfg(feature = "tui")]
+    #[test]
+    fn capture_tui_selects_variants_whose_labels_are_truncated() {
+        let dir = tempfile::tempdir().expect("create temp capture dir");
+        let mut manifest = Vec::new();
+
+        capture_tui_over(
+            long_variant_names_registry,
+            dir.path(),
+            CaptureTheme::Dark,
+            &mut manifest,
+        )
+        .expect("capture_tui_over");
+
+        assert_eq!(
+            manifest.len(),
+            LONG_VARIANT_NAMES.len(),
+            "one row per variant: {manifest:#?}"
+        );
+        for (idx, variant) in LONG_VARIANT_NAMES.iter().enumerate() {
+            let entry = manifest
+                .iter()
+                .find(|e| e.variant == *variant)
+                .unwrap_or_else(|| {
+                    panic!("missing manifest row for variant {variant}: {manifest:#?}")
+                });
+            assert!(
+                entry.status.is_none(),
+                "variant {variant} should have captured cleanly: {entry:#?}"
+            );
+            let path = entry.path.as_deref().expect("captured row has a path");
+            let svg = fs::read_to_string(dir.path().join(path)).expect("read captured SVG");
+            assert!(
+                !svg.contains(variant),
+                "the picker should truncate {variant:?} at this width, or this test \
+                 no longer exercises a label that cannot be found by its text"
+            );
+            assert!(
+                svg.contains(&format!("selected={idx}")),
+                "SVG for variant {idx} should show that variant's own content:\n{svg}"
             );
         }
     }

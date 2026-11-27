@@ -625,6 +625,54 @@ class NotesCommandTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("a thing", out.read_text())
 
+    def test_notes_truncates_a_section_over_the_github_release_body_limit(self):
+        bullets = "".join(f"- entry {i} " + "x" * 200 + "\n" for i in range(1000))
+        with tempfile.TemporaryDirectory() as tmp_str:
+            tmp = Path(tmp_str)
+            changelog = self._write_changelog(
+                tmp,
+                f"## [0.2.0] - 2026-10-08\n\n### Added\n{bullets}\n## [0.1.1]\n",
+            )
+            out = tmp / "notes.md"
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(Path(release_decide.__file__)),
+                    "notes",
+                    "--changelog",
+                    str(changelog),
+                    "--version",
+                    "0.2.0",
+                    "--out",
+                    str(out),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            notes = out.read_text(encoding="utf-8")
+            self.assertGreater(len(bullets), 125_000)
+            self.assertLessEqual(len(notes), release_decide.RELEASE_NOTES_MAX_LEN)
+            self.assertLessEqual(len(notes), 125_000)
+            self.assertTrue(notes.lstrip().startswith("### Added\n- entry 0 "))
+            self.assertTrue(
+                notes.endswith("see CHANGELOG.md's full `## [0.2.0]` section for the rest)\n")
+            )
+            # Cut on a line boundary: the last kept bullet is whole.
+            kept = notes.rsplit("\n\n…(truncated", 1)[0].splitlines()[-1]
+            self.assertTrue(kept.endswith("x" * 200), kept)
+
+    def test_release_notes_leaves_a_section_within_the_limit_unchanged(self):
+        section = "### Added\n- a thing\n"
+        self.assertEqual(release_decide.release_notes(section, "0.2.0", max_len=100), section)
+        self.assertEqual(
+            release_decide.release_notes(section, "0.2.0", max_len=len(section)), section
+        )
+
+    def test_release_notes_rejects_a_max_len_smaller_than_its_marker(self):
+        with self.assertRaises(ValueError):
+            release_decide.release_notes("x" * 50, "0.2.0", max_len=10)
+
     def test_notes_fails_on_missing_section(self):
         with tempfile.TemporaryDirectory() as tmp_str:
             tmp = Path(tmp_str)

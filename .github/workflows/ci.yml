@@ -375,7 +375,7 @@ jobs:
           echo "::warning title=Public-API break accumulating for the next release::$MSG"
 
   doc:
-    # #797: docs.rs renders `tui`/`gtk`/`win`/`terminal`/`layout` only if they
+    # #797: docs.rs renders `tui`/`tui-images`/`gtk`/`win`/`terminal`/`layout` only if they
     # build clean under `cargo doc` — this is the local proxy for that, run with
     # the same `-D warnings` bar as every other CI step (via `RUSTDOCFLAGS`,
     # since `RUSTFLAGS` doesn't reach rustdoc). `macos` is excluded here:
@@ -398,7 +398,7 @@ jobs:
     # Skipped on a bump-shaped PR — see `bump-shape`'s own comment.
     if: ${{ !cancelled() && needs.bump-shape.outputs.is_bump != 'true' }}
     # #1292: apt-get install + `cargo doc` across
-    # tui,gtk,win,terminal,layout,a11y,control, normally under 10 minutes
+    # tui,tui-images,gtk,win,terminal,layout,a11y,control, normally under 10 minutes
     # with a warm cache.
     timeout-minutes: 25
     steps:
@@ -409,10 +409,10 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libgtk-4-dev libpango1.0-dev libcairo2-dev
       - uses: Swatinem/rust-cache@v2
-      - name: cargo doc --no-deps -D warnings (tui, gtk, win, terminal, layout, a11y, control)
+      - name: cargo doc --no-deps -D warnings (tui, tui-images, gtk, win, terminal, layout, a11y, control)
         env:
           RUSTDOCFLAGS: "-D warnings"
-        run: cargo doc --no-deps -p quadraui --features tui,gtk,win,terminal,layout,a11y,control
+        run: cargo doc --no-deps -p quadraui --features tui,tui-images,gtk,win,terminal,layout,a11y,control
 
   example-coverage:
     # #311: block a PR that adds a new `examples/tui_*.rs` without the
@@ -2191,8 +2191,10 @@ jobs:
     # `templates/app` is deliberately NOT a workspace member (root
     # `Cargo.toml`'s `exclude` lists it) — it is a standalone crate shape
     # cargo-generate copies out of this repo, not something this repo's own
-    # `cargo build --workspace` should ever compile in place. Its
-    # `Cargo.toml` pins `quadraui` to the published crates.io version (the
+    # `cargo build --workspace` should ever compile in place. Its manifest
+    # is checked in as `Cargo.toml.liquid` so cargo never parses its
+    # placeholder package name (cargo-generate renders it to `Cargo.toml`),
+    # and it pins `quadraui` to the published crates.io version (the
     # same lead dependency shape the root README's "Getting started"
     # section recommends), which this job overrides onto this PR's
     # checkout with the same `.cargo/config.toml` `paths` override the
@@ -2232,6 +2234,27 @@ jobs:
             --destination "$RUNNER_TEMP/generated" \
             --no-workspace \
             --force
+
+      # The generated manifest must be a real `Cargo.toml` (cargo-generate
+      # strips the `.liquid` suffix), and its `quadraui` pin must equal the
+      # crate's own major.minor, so a freshly generated app depends on the
+      # release it was generated from.
+      - name: Assert the generated manifest and its quadraui pin
+        run: |
+          set -euo pipefail
+          D="$RUNNER_TEMP/generated/quadraui-template-smoke"
+          test -f "$D/Cargo.toml"
+          if [ -e "$D/Cargo.toml.liquid" ]; then
+            echo "::error::cargo generate left Cargo.toml.liquid behind instead of rendering it to Cargo.toml."
+            exit 1
+          fi
+          crate="$(sed -n 's/^version = "\([0-9]*\.[0-9]*\)\.[0-9]*"$/\1/p' quadraui/Cargo.toml | head -n1)"
+          pin="$(sed -n 's/^quadraui = { version = "\([0-9.]*\)".*/\1/p' "$D/Cargo.toml")"
+          echo "crate major.minor: $crate, template pin: $pin"
+          if [ -z "$crate" ] || [ "$pin" != "$crate" ]; then
+            echo "::error::The template pins quadraui = \"$pin\" but the crate is $crate.x. Run scripts/release.py prepare (which rewrites the pin) or fix templates/app/Cargo.toml.liquid."
+            exit 1
+          fi
 
       # Same mechanism the `downstream` job above uses for coord-tui's
       # pinned git+rev dependency: a `paths` override matches by package
