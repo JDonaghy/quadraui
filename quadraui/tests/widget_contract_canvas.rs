@@ -4,10 +4,12 @@
 //! the braille cell painter, and turns pointer gestures on its declared
 //! regions into `UiEvent::Canvas` events.
 
+#[path = "common/one_widget.rs"]
+mod one_widget;
+
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, Canvas, CanvasEvent, CanvasRegion, Color, DrawOp, FrameTree, MouseButton,
-    Reaction, Rect, ScreenLayout, Surface, UiEvent, WidgetId,
+    Canvas, CanvasEvent, CanvasRegion, Color, DrawOp, MouseButton, Rect, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 24;
@@ -41,48 +43,26 @@ fn canvas() -> Canvas {
     }
 }
 
-struct CanvasApp {
-    canvas: Canvas,
-    events: Vec<CanvasEvent>,
-}
+type CanvasApp = one_widget::OneWidgetApp<Canvas>;
 
-impl AppLogic for CanvasApp {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget {
-            rect: AREA,
-            widget: Box::new(self.canvas.clone()),
-        });
-        frame.draw(backend);
-    }
-
-    fn frame_tree(&self, _area: ()) -> FrameTree {
-        let mut tree = FrameTree::new();
-        tree.push(self.canvas.id, AREA, Box::new(self.canvas.clone()));
-        tree
-    }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::Canvas(id, ev) = event {
-            if id == canvas_id() {
-                self.events.push(ev);
-            }
-        }
-        Reaction::Continue
-    }
+fn apply(_: &mut Canvas, _: &UiEvent) -> bool {
+    false
 }
 
 fn driver() -> TuiDriver<CanvasApp> {
-    TuiDriver::new(
-        CanvasApp {
-            canvas: canvas(),
-            events: Vec::new(),
-        },
-        COLS,
-        ROWS,
-    )
+    one_widget::driver(canvas(), AREA, COLS, ROWS, apply)
+}
+
+fn events(driver: &TuiDriver<CanvasApp>) -> Vec<CanvasEvent> {
+    driver
+        .app()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Canvas(id, ev) if *id == canvas_id() => Some(ev.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 fn cell(driver: &TuiDriver<CanvasApp>, x: u16, y: u16) -> char {
@@ -108,14 +88,12 @@ fn surface_widget_canvas_paints_shapes_as_braille_and_text_on_top() {
 fn clicking_a_region_reports_it_with_the_canvas_local_point() {
     let mut driver = driver();
     driver.click(AREA.x + 1.0, AREA.y + 1.0);
-    let clicked: Vec<_> = driver
-        .app()
-        .events
+    let clicked: Vec<_> = events(&driver)
         .iter()
         .filter(|e| matches!(e, CanvasEvent::RegionClicked { .. }))
         .cloned()
         .collect();
-    assert_eq!(clicked.len(), 1, "{:?}", driver.app().events);
+    assert_eq!(clicked.len(), 1, "{:?}", events(&driver));
     let CanvasEvent::RegionClicked {
         region,
         button,
@@ -136,13 +114,11 @@ fn a_click_on_bare_canvas_reports_no_region_event() {
     let mut driver = driver();
     driver.click(AREA.x + 10.0, AREA.y + 3.0);
     assert!(
-        !driver
-            .app()
-            .events
+        !events(&driver)
             .iter()
             .any(|e| matches!(e, CanvasEvent::RegionClicked { .. })),
         "{:?}",
-        driver.app().events
+        events(&driver)
     );
 }
 
@@ -153,7 +129,7 @@ fn hover_reports_entering_a_region_and_leaving_it() {
     driver.mouse_move(AREA.x + 1.0, AREA.y + 1.0);
     driver.mouse_move(AREA.x + AREA.width + 2.0, AREA.y + 1.0);
     assert_eq!(
-        driver.app().events,
+        events(&driver),
         vec![
             CanvasEvent::RegionHovered {
                 region: Some("box".into())
@@ -168,11 +144,11 @@ fn double_clicking_a_region_reports_it() {
     let mut driver = driver();
     driver.double_click(AREA.x + 2.0, AREA.y);
     assert!(
-        driver.app().events.iter().any(|e| matches!(
+        events(&driver).iter().any(|e| matches!(
             e,
             CanvasEvent::RegionDoubleClicked { region, .. } if *region == WidgetId::new("box")
         )),
         "{:?}",
-        driver.app().events
+        events(&driver)
     );
 }

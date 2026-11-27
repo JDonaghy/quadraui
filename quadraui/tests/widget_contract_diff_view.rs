@@ -6,11 +6,13 @@
 //! `UiEvent::DiffView` — `scroll_offset` and `focused_pane` staying the
 //! app's (controlled mode).
 
+#[path = "common/one_widget.rs"]
+mod one_widget;
+
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind,
-    DiffView, DiffViewEvent, FrameTree, NamedKey, Point, Reaction, Rect, ScreenLayout, ScrollDelta,
-    Surface, UiEvent, WidgetId,
+    DiffEditability, DiffHunk, DiffMode, DiffPane, DiffRow, DiffRowKind, DiffView, DiffViewEvent,
+    NamedKey, Point, Rect, ScrollDelta, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 64;
@@ -61,55 +63,35 @@ fn view(mode: DiffMode) -> DiffView {
     }
 }
 
-struct DiffApp {
-    view: DiffView,
-    events: Vec<DiffViewEvent>,
-}
+type DiffApp = one_widget::OneWidgetApp<DiffView>;
 
-impl AppLogic for DiffApp {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget {
-            rect: AREA,
-            widget: Box::new(self.view.clone()),
-        });
-        frame.draw(backend);
-    }
-
-    fn frame_tree(&self, _area: ()) -> FrameTree {
-        let mut tree = FrameTree::new();
-        tree.push(self.view.id, AREA, Box::new(self.view.clone()));
-        tree
-    }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::DiffView(id, event) = event {
-            if id == diff_id() {
-                match event {
-                    DiffViewEvent::Scrolled { scroll_offset } => {
-                        self.view.scroll_offset = scroll_offset
-                    }
-                    DiffViewEvent::PaneFocused { pane } => self.view.focused_pane = pane,
-                }
-                self.events.push(event);
-                return Reaction::Redraw;
+fn apply(view: &mut DiffView, event: &UiEvent) -> bool {
+    match event {
+        UiEvent::DiffView(id, ev) if *id == view.id => {
+            match ev {
+                DiffViewEvent::Scrolled { scroll_offset } => view.scroll_offset = *scroll_offset,
+                DiffViewEvent::PaneFocused { pane } => view.focused_pane = *pane,
             }
+            true
         }
-        Reaction::Continue
+        _ => false,
     }
 }
 
 fn driver(mode: DiffMode) -> TuiDriver<DiffApp> {
-    TuiDriver::new(
-        DiffApp {
-            view: view(mode),
-            events: Vec::new(),
-        },
-        COLS,
-        ROWS,
-    )
+    one_widget::driver(view(mode), AREA, COLS, ROWS, apply)
+}
+
+fn events(driver: &TuiDriver<DiffApp>) -> Vec<DiffViewEvent> {
+    driver
+        .app()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::DiffView(id, ev) if *id == diff_id() => Some(*ev),
+            _ => None,
+        })
+        .collect()
 }
 
 fn wheel(driver: &mut TuiDriver<DiffApp>, dy: f32) {
@@ -137,7 +119,7 @@ fn the_wheel_scrolls_three_rows_a_notch_and_stops_at_the_end() {
     let mut driver = driver(DiffMode::SideBySide);
     wheel(&mut driver, -1.0);
     assert_eq!(
-        driver.app().events,
+        events(&driver),
         vec![DiffViewEvent::Scrolled { scroll_offset: 3 }]
     );
     assert!(driver.screen_contains("old line 3"), "{}", driver.screen());
@@ -149,11 +131,11 @@ fn the_wheel_scrolls_three_rows_a_notch_and_stops_at_the_end() {
     for _ in 0..20 {
         wheel(&mut driver, -1.0);
     }
-    let last = driver.app().view.scroll_offset;
+    let last = driver.app().widget.scroll_offset;
     // 30 rows, 9 visible: the furthest offset keeps the last row on screen.
     assert_eq!(last, 21);
     wheel(&mut driver, 1.0);
-    assert_eq!(driver.app().view.scroll_offset, 18);
+    assert_eq!(driver.app().widget.scroll_offset, 18);
 }
 
 #[test]
@@ -163,7 +145,7 @@ fn page_keys_scroll_by_the_visible_window() {
     driver.press_named(NamedKey::PageDown);
     driver.press_named(NamedKey::PageUp);
     assert_eq!(
-        driver.app().events,
+        events(&driver),
         vec![
             DiffViewEvent::Scrolled { scroll_offset: 9 },
             DiffViewEvent::Scrolled { scroll_offset: 0 },
@@ -180,7 +162,7 @@ fn tab_and_clicks_move_focus_between_panes() {
     driver.click(AREA.x + 8.0, AREA.y + 5.0);
     driver.click(AREA.x + 45.0, AREA.y + 3.0);
     assert_eq!(
-        driver.app().events,
+        events(&driver),
         vec![
             DiffViewEvent::PaneFocused {
                 pane: DiffPane::Right
@@ -200,5 +182,5 @@ fn tab_in_unified_mode_bubbles() {
     let mut driver = driver(DiffMode::Unified);
     driver.click(AREA.x + 5.0, AREA.y + 3.0);
     driver.press_named(NamedKey::Tab);
-    assert!(driver.app().events.is_empty(), "{:?}", driver.app().events);
+    assert!(events(&driver).is_empty(), "{:?}", events(&driver));
 }

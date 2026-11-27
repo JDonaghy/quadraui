@@ -5,11 +5,11 @@
 //! routes through `Interactive::handle` back out as the
 //! `UiEvent::SplitDividerDragged` this app writes onto `ratio`.
 
+#[path = "common/one_widget.rs"]
+mod one_widget;
+
 use quadraui::tui::testing::TuiDriver;
-use quadraui::{
-    AppLogic, Backend, FrameTree, Reaction, Rect, ScreenLayout, Split, SplitDirection, Surface,
-    UiEvent, WidgetId,
-};
+use quadraui::{Rect, Split, SplitDirection, UiEvent, WidgetId};
 
 const COLS: u16 = 50;
 const ROWS: u16 = 12;
@@ -20,61 +20,50 @@ fn split_id() -> WidgetId {
     WidgetId::new("split:main")
 }
 
-struct SplitApp {
-    split: Split,
-    drags: Vec<(usize, f32)>,
-}
+type SplitApp = one_widget::OneWidgetApp<Split>;
 
-impl AppLogic for SplitApp {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget {
-            rect: AREA,
-            widget: Box::new(self.split.clone()),
-        });
-        frame.draw(backend);
-    }
-
-    fn frame_tree(&self, _area: ()) -> FrameTree {
-        let mut tree = FrameTree::new();
-        tree.push(self.split.id, AREA, Box::new(self.split.clone()));
-        tree
-    }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::SplitDividerDragged {
-            tree,
-            split_index,
-            new_ratio,
-        } = event
-        {
-            if tree == split_id() {
-                self.drags.push((split_index, new_ratio));
-                self.split.ratio = new_ratio;
-                return Reaction::Redraw;
-            }
+fn apply(split: &mut Split, event: &UiEvent) -> bool {
+    match event {
+        UiEvent::SplitDividerDragged {
+            tree, new_ratio, ..
+        } if *tree == split.id => {
+            split.ratio = *new_ratio;
+            true
         }
-        Reaction::Continue
+        _ => false,
     }
 }
 
 fn driver(direction: SplitDirection) -> TuiDriver<SplitApp> {
-    TuiDriver::new(
-        SplitApp {
-            split: Split {
-                id: split_id(),
-                direction,
-                ratio: 0.5,
-                first_min: 0.0,
-                second_min: 0.0,
-            },
-            drags: Vec::new(),
+    one_widget::driver(
+        Split {
+            id: split_id(),
+            direction,
+            ratio: 0.5,
+            first_min: 0.0,
+            second_min: 0.0,
         },
+        AREA,
         COLS,
         ROWS,
+        apply,
     )
+}
+
+fn drags(driver: &TuiDriver<SplitApp>) -> Vec<(usize, f32)> {
+    driver
+        .app()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::SplitDividerDragged {
+                tree,
+                split_index,
+                new_ratio,
+            } if *tree == split_id() => Some((*split_index, *new_ratio)),
+            _ => None,
+        })
+        .collect()
 }
 
 fn cell(driver: &TuiDriver<SplitApp>, x: u16, y: u16) -> char {
@@ -102,8 +91,8 @@ fn dragging_the_divider_lands_it_under_the_pointer() {
     driver.mouse_move(AREA.x + 30.0, y);
     driver.mouse_up(AREA.x + 30.0, y);
 
-    assert_eq!(driver.app().drags.len(), 1, "{:?}", driver.app().drags);
-    let (split_index, ratio) = driver.app().drags[0];
+    assert_eq!(drags(&driver).len(), 1, "{:?}", drags(&driver));
+    let (split_index, ratio) = drags(&driver)[0];
     assert_eq!(split_index, 0);
     assert!((ratio - 0.75).abs() < 1e-4, "ratio {ratio}");
     driver.render();
@@ -139,7 +128,7 @@ fn a_press_inside_a_pane_does_not_drag() {
     driver.mouse_down(AREA.x + 5.0, AREA.y + 2.0);
     driver.mouse_move(AREA.x + 30.0, AREA.y + 2.0);
     driver.mouse_up(AREA.x + 30.0, AREA.y + 2.0);
-    assert!(driver.app().drags.is_empty());
+    assert!(drags(&driver).is_empty());
 }
 
 #[test]
@@ -149,5 +138,5 @@ fn a_move_after_release_drags_nothing() {
     driver.mouse_down(AREA.x + 20.0, y);
     driver.mouse_up(AREA.x + 20.0, y);
     driver.mouse_move(AREA.x + 10.0, y);
-    assert!(driver.app().drags.is_empty());
+    assert!(drags(&driver).is_empty());
 }

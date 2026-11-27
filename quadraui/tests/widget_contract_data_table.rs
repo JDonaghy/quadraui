@@ -5,13 +5,15 @@
 //! registered in the app's `FrameTree`, so every click, key and wheel
 //! notch below goes through the shared routing engine into
 //! `Interactive::handle`, and comes back out as the `DataTableEvent` this
-//! test's own `AppLogic::handle` applies onto the owned descriptor.
+//! test's own `apply` writes back onto the owned descriptor.
+
+#[path = "common/one_widget.rs"]
+mod one_widget;
 
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableEvent,
-    FrameTree, Modifiers, MouseButton, NamedKey, Point, Reaction, Rect, ScreenLayout, ScrollDelta,
-    StyledText, Surface, UiEvent, WidgetId,
+    Column, ColumnAlign, ColumnWidth, DataRow, DataTable, DataTableEvent, Modifiers, MouseButton,
+    NamedKey, Point, Rect, ScrollDelta, StyledText, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 44;
@@ -19,11 +21,6 @@ const ROWS: u16 = 12;
 /// Header on row 1, body rows 2..=10 (nine rows), scrollbar in column 40.
 const TABLE: Rect = Rect::new(1.0, 1.0, 40.0, 10.0);
 const N_ROWS: usize = 30;
-
-struct TableApp {
-    table: DataTable,
-    applied: Vec<DataTableEvent>,
-}
 
 fn column(title: &str) -> Column {
     Column {
@@ -33,97 +30,79 @@ fn column(title: &str) -> Column {
     }
 }
 
-impl TableApp {
-    fn new() -> Self {
-        let rows = (0..N_ROWS)
-            .map(|i| DataRow {
-                cells: vec![
-                    StyledText::plain(format!("row-{i:02}")),
-                    StyledText::plain(if i % 2 == 0 { "even" } else { "odd" }),
-                    StyledText::plain(format!("{}", i * 10)),
-                ],
-                decoration: Default::default(),
-            })
-            .collect();
-        Self {
-            table: DataTable {
-                id: WidgetId::new("table:contract"),
-                columns: vec![column("Name"), column("Kind"), column("Size")],
-                rows,
-                selected_idx: None,
-                scroll_offset: 0,
-                sort: None,
-                has_focus: true,
-                show_scrollbar: true,
-                min_total_width: None,
-                h_scroll: 0.0,
-                column_overrides: vec![],
-                footer: None,
-                bordered: false,
-                striped: false,
-                glyphs: None,
-            },
-            applied: Vec::new(),
-        }
+fn table() -> DataTable {
+    let rows = (0..N_ROWS)
+        .map(|i| DataRow {
+            cells: vec![
+                StyledText::plain(format!("row-{i:02}")),
+                StyledText::plain(if i % 2 == 0 { "even" } else { "odd" }),
+                StyledText::plain(format!("{}", i * 10)),
+            ],
+            decoration: Default::default(),
+        })
+        .collect();
+    DataTable {
+        id: WidgetId::new("table:contract"),
+        columns: vec![column("Name"), column("Kind"), column("Size")],
+        rows,
+        selected_idx: None,
+        scroll_offset: 0,
+        sort: None,
+        has_focus: true,
+        show_scrollbar: true,
+        min_total_width: None,
+        h_scroll: 0.0,
+        column_overrides: vec![],
+        footer: None,
+        bordered: false,
+        striped: false,
+        glyphs: None,
     }
 }
 
-impl AppLogic for TableApp {
-    type AreaId = ();
+type TableApp = one_widget::OneWidgetApp<DataTable>;
 
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget {
-            rect: TABLE,
-            widget: Box::new(self.table.clone()),
-        });
-        frame.draw(backend);
+fn apply(table: &mut DataTable, event: &UiEvent) -> bool {
+    let UiEvent::DataTable(id, ev) = event else {
+        return false;
+    };
+    if *id != table.id {
+        return false;
     }
-
-    fn frame_tree(&self, _area: ()) -> FrameTree {
-        let mut tree = FrameTree::new();
-        tree.push(self.table.id, TABLE, Box::new(self.table.clone()));
-        tree
-    }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        let UiEvent::DataTable(id, ev) = event else {
-            return Reaction::Continue;
-        };
-        if id != self.table.id {
-            return Reaction::Continue;
-        }
-        match &ev {
-            DataTableEvent::RowSelected { idx } => self.table.selected_idx = Some(*idx),
-            DataTableEvent::ScrollChanged { scroll_offset } => {
-                self.table.scroll_offset = *scroll_offset
+    match ev {
+        DataTableEvent::RowSelected { idx } => table.selected_idx = Some(*idx),
+        DataTableEvent::ScrollChanged { scroll_offset } => table.scroll_offset = *scroll_offset,
+        DataTableEvent::ColumnResized { col, width } => {
+            if table.column_overrides.len() != table.columns.len() {
+                table.column_overrides = vec![None; table.columns.len()];
             }
-            DataTableEvent::ColumnResized { col, width } => {
-                if self.table.column_overrides.len() != self.table.columns.len() {
-                    self.table.column_overrides = vec![None; self.table.columns.len()];
-                }
-                self.table.column_overrides[*col] = Some(*width);
-            }
-            _ => {}
+            table.column_overrides[*col] = Some(*width);
         }
-        self.applied.push(ev);
-        Reaction::Redraw
+        _ => {}
     }
+    true
 }
 
 fn driver() -> TuiDriver<TableApp> {
-    let mut driver = TuiDriver::new(TableApp::new(), COLS, ROWS);
-    driver.set_double_click_folding(false);
-    driver
+    one_widget::driver(table(), TABLE, COLS, ROWS, apply)
 }
 
 /// Screen row of body row `idx` at the app's current scroll offset.
 fn row_y(driver: &TuiDriver<TableApp>, idx: usize) -> f32 {
-    TABLE.y + 1.0 + (idx - driver.app().table.scroll_offset) as f32
+    TABLE.y + 1.0 + (idx - driver.app().widget.scroll_offset) as f32
 }
 
-fn applied(driver: &TuiDriver<TableApp>) -> &[DataTableEvent] {
-    &driver.app().applied
+fn applied(driver: &TuiDriver<TableApp>) -> Vec<DataTableEvent> {
+    let id = driver.app().widget.id;
+    driver
+        .app()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::DataTable(from, ev) if *from == id => Some(ev.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -140,7 +119,7 @@ fn clicking_a_row_selects_it_and_paints_the_selection() {
     let mut driver = driver();
     let y = row_y(&driver, 3);
     driver.click(TABLE.x + 2.0, y);
-    assert_eq!(driver.app().table.selected_idx, Some(3));
+    assert_eq!(driver.app().widget.selected_idx, Some(3));
     let theme = quadraui::Theme::default();
     let style = driver.style_at(TABLE.x as u16 + 2, y as u16).unwrap();
     assert_eq!(
@@ -158,19 +137,19 @@ fn arrow_keys_move_the_cursor_and_scroll_it_into_view() {
     for _ in 0..9 {
         driver.press_named(NamedKey::Down);
     }
-    assert_eq!(driver.app().table.selected_idx, Some(9));
+    assert_eq!(driver.app().widget.selected_idx, Some(9));
     assert_eq!(
-        driver.app().table.scroll_offset,
+        driver.app().widget.scroll_offset,
         1,
         "row 9 is one past the nine-row viewport"
     );
     assert!(driver.screen_contains("row-09"), "{}", driver.screen());
     driver.press_named(NamedKey::End);
-    assert_eq!(driver.app().table.selected_idx, Some(N_ROWS - 1));
-    assert_eq!(driver.app().table.scroll_offset, N_ROWS - 9);
+    assert_eq!(driver.app().widget.selected_idx, Some(N_ROWS - 1));
+    assert_eq!(driver.app().widget.scroll_offset, N_ROWS - 9);
     driver.press_named(NamedKey::Home);
-    assert_eq!(driver.app().table.selected_idx, Some(0));
-    assert_eq!(driver.app().table.scroll_offset, 0);
+    assert_eq!(driver.app().widget.selected_idx, Some(0));
+    assert_eq!(driver.app().widget.scroll_offset, 0);
 }
 
 #[test]
@@ -179,7 +158,7 @@ fn up_with_nothing_selected_selects_the_last_row() {
     // Focus the table without selecting a row: a header click.
     driver.click(TABLE.x + 20.0, TABLE.y);
     driver.press_named(NamedKey::Up);
-    assert_eq!(driver.app().table.selected_idx, Some(N_ROWS - 1));
+    assert_eq!(driver.app().widget.selected_idx, Some(N_ROWS - 1));
 }
 
 #[test]
@@ -288,10 +267,10 @@ fn repeated_shift_down_keeps_extending_the_selection_and_scrolls_with_it() {
             indices: (2..=9).collect()
         })
     );
-    assert_eq!(driver.app().table.scroll_offset, 1);
+    assert_eq!(driver.app().widget.scroll_offset, 1);
     // A plain arrow collapses the extension one row past its moving end.
     driver.press_named(NamedKey::Down);
-    assert_eq!(driver.app().table.selected_idx, Some(10));
+    assert_eq!(driver.app().widget.selected_idx, Some(10));
 }
 
 #[test]
@@ -323,7 +302,7 @@ fn typing_jumps_to_the_first_matching_row() {
     for c in "row-2".chars() {
         driver.type_char(c);
     }
-    assert_eq!(driver.app().table.selected_idx, Some(20));
+    assert_eq!(driver.app().widget.selected_idx, Some(20));
 }
 
 #[test]
@@ -334,13 +313,13 @@ fn wheel_scrolls_and_the_scrollbar_track_pages() {
         delta: ScrollDelta::new(0.0, -3.0),
         position: Point::new(TABLE.x + 2.0, TABLE.y + 3.0),
     });
-    assert_eq!(driver.app().table.scroll_offset, 3);
+    assert_eq!(driver.app().widget.scroll_offset, 3);
     // Below the thumb on the track: one page down.
     let track_x = TABLE.x + TABLE.width - 1.0;
     driver.click(track_x, TABLE.y + TABLE.height - 1.0);
-    assert_eq!(driver.app().table.scroll_offset, 12);
+    assert_eq!(driver.app().widget.scroll_offset, 12);
     assert_eq!(
-        driver.app().table.selected_idx,
+        driver.app().widget.selected_idx,
         None,
         "a track click never selects the row painted beside it"
     );
@@ -360,7 +339,7 @@ fn right_click_requests_the_rows_context_menu() {
 #[test]
 fn striped_descriptor_tints_every_other_row() {
     let mut driver = driver();
-    driver.app_mut().table.striped = true;
+    driver.app_mut().widget.striped = true;
     driver.render();
     let theme = quadraui::Theme::default();
     let x = TABLE.x as u16 + 2;

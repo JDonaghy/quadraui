@@ -6,10 +6,13 @@
 //! `UiEvent::Board` actions this app records — the host answering each
 //! by writing `selected_card_id` back (controlled mode).
 
+#[path = "common/one_widget.rs"]
+mod one_widget;
+
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardModel, CardBadge,
-    FrameTree, MoveDir, Reaction, Rect, ScreenLayout, Surface, UiEvent, WidgetId,
+    BadgeStatus, BoardAction, BoardCard, BoardColumn, BoardModel, CardBadge, MoveDir, Rect,
+    UiEvent, WidgetId,
 };
 
 const COLS: u16 = 60;
@@ -55,54 +58,36 @@ fn model() -> BoardModel {
     }
 }
 
-struct BoardApp {
-    board: BoardModel,
-    actions: Vec<BoardAction>,
-}
+type BoardApp = one_widget::OneWidgetApp<BoardModel>;
 
-impl AppLogic for BoardApp {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget {
-            rect: AREA,
-            widget: Box::new(self.board.clone()),
-        });
-        frame.draw(backend);
-    }
-
-    fn frame_tree(&self, _area: ()) -> FrameTree {
-        let mut tree = FrameTree::new();
-        tree.push(self.board.id, AREA, Box::new(self.board.clone()));
-        tree
-    }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::Board(id, action) = event {
-            if id == board_id() {
-                match &action {
-                    BoardAction::SelectCard(card) => self.board.selected_card_id = Some(*card),
-                    BoardAction::MoveSelection(dir) => self.board.move_selection(*dir),
-                    _ => {}
-                }
-                self.actions.push(action);
-                return Reaction::Redraw;
+fn apply(board: &mut BoardModel, event: &UiEvent) -> bool {
+    match event {
+        UiEvent::Board(id, action) if *id == board.id => {
+            match action {
+                BoardAction::SelectCard(card) => board.selected_card_id = Some(*card),
+                BoardAction::MoveSelection(dir) => board.move_selection(*dir),
+                _ => {}
             }
+            true
         }
-        Reaction::Continue
+        _ => false,
     }
 }
 
 fn driver() -> TuiDriver<BoardApp> {
-    TuiDriver::new(
-        BoardApp {
-            board: model(),
-            actions: Vec::new(),
-        },
-        COLS,
-        ROWS,
-    )
+    one_widget::driver(model(), AREA, COLS, ROWS, apply)
+}
+
+fn board_actions(driver: &TuiDriver<BoardApp>) -> Vec<BoardAction> {
+    driver
+        .app()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Board(id, action) if *id == board_id() => Some(action.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -123,7 +108,7 @@ fn clicking_a_card_selects_it() {
     let (x, y) = driver.find("Third card").expect("card painted");
     driver.click(x, y);
     assert_eq!(
-        driver.app().actions,
+        board_actions(&driver),
         vec![BoardAction::SelectCard(WidgetId::new("card:3"))]
     );
 }
@@ -137,7 +122,7 @@ fn keys_route_through_the_focused_board() {
     driver.press_named(quadraui::NamedKey::Enter);
     driver.type_char('G');
     assert_eq!(
-        driver.app().actions,
+        board_actions(&driver),
         vec![
             BoardAction::SelectCard(WidgetId::new("card:1")),
             BoardAction::MoveSelection(MoveDir::Down),
@@ -153,7 +138,7 @@ fn double_click_opens_and_right_click_asks_for_a_context_menu() {
     let (x, y) = driver.find("Second card").expect("card painted");
     driver.double_click(x, y);
     driver.right_click(x, y);
-    let actions = &driver.app().actions;
+    let actions = &board_actions(&driver);
     assert!(
         actions.contains(&BoardAction::OpenIssue(WidgetId::new("card:2"))),
         "{actions:?}"

@@ -6,11 +6,11 @@
 //! `DataPointHovered` back onto `Chart::hovered_point`, and the marker
 //! follows.
 
+#[path = "common/one_widget.rs"]
+mod one_widget;
+
 use quadraui::tui::testing::TuiDriver;
-use quadraui::{
-    AppLogic, Backend, Chart, ChartEvent, ChartKind, FrameTree, NamedKey, Reaction, Rect,
-    ScreenLayout, Series, Surface, UiEvent, WidgetId,
-};
+use quadraui::{Chart, ChartEvent, ChartKind, NamedKey, Rect, Series, UiEvent, WidgetId};
 
 const COLS: u16 = 30;
 const ROWS: u16 = 12;
@@ -43,58 +43,38 @@ fn chart() -> Chart {
     }
 }
 
-struct ChartApp {
-    chart: Chart,
-    events: Vec<ChartEvent>,
-}
+type ChartApp = one_widget::OneWidgetApp<Chart>;
 
-impl AppLogic for ChartApp {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget {
-            rect: AREA,
-            widget: Box::new(self.chart.clone()),
-        });
-        frame.draw(backend);
-    }
-
-    fn frame_tree(&self, _area: ()) -> FrameTree {
-        let mut tree = FrameTree::new();
-        tree.push(self.chart.id, AREA, Box::new(self.chart.clone()));
-        tree
-    }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::Chart(id, ev) = event {
-            if id == chart_id() {
-                if let ChartEvent::DataPointHovered { point, .. } = &ev {
-                    self.chart.hovered_point = *point;
-                }
-                self.events.push(ev);
-                return Reaction::Redraw;
+fn apply(chart: &mut Chart, event: &UiEvent) -> bool {
+    match event {
+        UiEvent::Chart(id, ev) if *id == chart.id => {
+            if let ChartEvent::DataPointHovered { point, .. } = ev {
+                chart.hovered_point = *point;
             }
+            true
         }
-        Reaction::Continue
+        _ => false,
     }
 }
 
 fn driver() -> TuiDriver<ChartApp> {
-    TuiDriver::new(
-        ChartApp {
-            chart: chart(),
-            events: Vec::new(),
-        },
-        COLS,
-        ROWS,
-    )
+    one_widget::driver(chart(), AREA, COLS, ROWS, apply)
 }
 
-fn hovers(driver: &TuiDriver<ChartApp>) -> Vec<Option<(usize, usize)>> {
+fn events(driver: &TuiDriver<ChartApp>) -> Vec<ChartEvent> {
     driver
         .app()
         .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::Chart(id, ev) if *id == chart_id() => Some(ev.clone()),
+            _ => None,
+        })
+        .collect()
+}
+
+fn hovers(driver: &TuiDriver<ChartApp>) -> Vec<Option<(usize, usize)>> {
+    events(driver)
         .iter()
         .filter_map(|e| match e {
             ChartEvent::DataPointHovered { point, .. } => Some(*point),
@@ -105,7 +85,7 @@ fn hovers(driver: &TuiDriver<ChartApp>) -> Vec<Option<(usize, usize)>> {
 
 /// The screen position of data point `di`: the centre of its bar slot.
 fn point_at(driver: &TuiDriver<ChartApp>, di: usize) -> (f32, f32) {
-    let layout = driver.app().chart.layout_in(AREA, 1.0, 1.0);
+    let layout = driver.app().widget.layout_in(AREA, 1.0, 1.0);
     let &(_, _, x, y) = layout
         .data_point_positions
         .iter()
@@ -127,7 +107,7 @@ fn hovering_a_point_reports_it_and_the_marker_follows() {
     let (x, y) = point_at(&driver, 3);
     driver.mouse_move(x, y);
     assert_eq!(hovers(&driver), vec![Some((0, 3))]);
-    assert_eq!(driver.app().chart.hovered_point, Some((0, 3)));
+    assert_eq!(driver.app().widget.hovered_point, Some((0, 3)));
     assert!(driver.screen().contains('●'), "{}", driver.screen());
 
     // The same point again reports nothing new; leaving every point
@@ -144,13 +124,13 @@ fn clicking_a_point_reports_it() {
     let (x, y) = point_at(&driver, 1);
     driver.click(x, y);
     assert!(
-        driver.app().events.contains(&ChartEvent::DataPointClicked {
+        events(&driver).contains(&ChartEvent::DataPointClicked {
             id: chart_id(),
             series_idx: 0,
             data_idx: 1,
         }),
         "{:?}",
-        driver.app().events
+        events(&driver)
     );
 }
 
@@ -160,12 +140,12 @@ fn clicking_the_legend_reports_its_series() {
     let (x, y) = driver.find("load").expect("legend painted");
     driver.click(x, y);
     assert!(
-        driver.app().events.contains(&ChartEvent::LegendClicked {
+        events(&driver).contains(&ChartEvent::LegendClicked {
             id: chart_id(),
             series_idx: 0,
         }),
         "{:?}",
-        driver.app().events
+        events(&driver)
     );
 }
 
@@ -184,7 +164,7 @@ fn arrow_keys_step_the_hover_through_the_points() {
         vec![Some((0, 0)), Some((0, 1)), Some((0, 0)), Some((0, 3))]
     );
     assert_eq!(
-        driver.app().events.last(),
+        events(&driver).last(),
         Some(&ChartEvent::DataPointClicked {
             id: chart_id(),
             series_idx: 0,

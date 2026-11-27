@@ -5,10 +5,12 @@
 //! drags into the `UiEvent::ScrollView(_, Scrolled { .. })` this app
 //! writes back onto the descriptor's offset.
 
+#[path = "common/one_widget.rs"]
+mod one_widget;
+
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, FrameTree, NamedKey, Point, Reaction, Rect, ScreenLayout, ScrollDelta,
-    ScrollView, ScrollViewEvent, Surface, UiEvent, WidgetId,
+    NamedKey, Point, Rect, ScrollDelta, ScrollView, ScrollViewEvent, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 20;
@@ -21,50 +23,40 @@ fn view_id() -> WidgetId {
     WidgetId::new("scroll:help")
 }
 
-struct ScrollApp {
-    view: ScrollView,
-    offsets: Vec<f32>,
-}
+type ScrollApp = one_widget::OneWidgetApp<ScrollView>;
 
-impl AppLogic for ScrollApp {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget {
-            rect: AREA,
-            widget: Box::new(self.view.clone()),
-        });
-        frame.draw(backend);
-    }
-
-    fn frame_tree(&self, _area: ()) -> FrameTree {
-        let mut tree = FrameTree::new();
-        tree.push(self.view.id, AREA, Box::new(self.view.clone()));
-        tree
-    }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::ScrollView(id, ScrollViewEvent::Scrolled { offset }) = event {
-            if id == view_id() {
-                self.view.scroll_offset = offset;
-                self.offsets.push(offset);
-                return Reaction::Redraw;
-            }
+fn apply(view: &mut ScrollView, event: &UiEvent) -> bool {
+    match event {
+        UiEvent::ScrollView(id, ScrollViewEvent::Scrolled { offset }) if *id == view.id => {
+            view.scroll_offset = *offset;
+            true
         }
-        Reaction::Continue
+        _ => false,
     }
 }
 
 fn driver() -> TuiDriver<ScrollApp> {
-    TuiDriver::new(
-        ScrollApp {
-            view: ScrollView::new(view_id(), AREA, CONTENT),
-            offsets: Vec::new(),
-        },
+    one_widget::driver(
+        ScrollView::new(view_id(), AREA, CONTENT),
+        AREA,
         COLS,
         ROWS,
+        apply,
     )
+}
+
+fn offsets(driver: &TuiDriver<ScrollApp>) -> Vec<f32> {
+    driver
+        .app()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::ScrollView(id, ScrollViewEvent::Scrolled { offset }) if *id == view_id() => {
+                Some(*offset)
+            }
+            _ => None,
+        })
+        .collect()
 }
 
 fn cell(driver: &TuiDriver<ScrollApp>, x: u16, y: u16) -> char {
@@ -89,7 +81,7 @@ fn surface_widget_scroll_view_paints_its_scrollbar_in_the_trailing_column() {
 #[test]
 fn content_that_fits_paints_no_scrollbar() {
     let mut driver = driver();
-    driver.app_mut().view.content_len = 4.0;
+    driver.app_mut().widget.content_len = 4.0;
     driver.render();
     assert_eq!(
         cell(&driver, BAR_X, AREA.y as u16),
@@ -111,7 +103,7 @@ fn wheel_down_scrolls_forward_and_wheel_up_back() {
     // A positive delta is the wheel turned up, toward the start.
     driver.dispatch(wheel(-2.0));
     driver.dispatch(wheel(1.0));
-    assert_eq!(driver.app().offsets, vec![2.0, 1.0]);
+    assert_eq!(offsets(&driver), vec![2.0, 1.0]);
 }
 
 #[test]
@@ -122,7 +114,7 @@ fn focused_keys_page_and_jump() {
     driver.press_named(NamedKey::Down);
     driver.press_named(NamedKey::End);
     driver.press_named(NamedKey::Home);
-    assert_eq!(driver.app().offsets, vec![8.0, 9.0, 24.0, 0.0]);
+    assert_eq!(offsets(&driver), vec![8.0, 9.0, 24.0, 0.0]);
 }
 
 #[test]
@@ -135,5 +127,5 @@ fn dragging_the_thumb_scrolls_proportionally() {
     // Past the end of the track, wherever the pointer goes.
     driver.mouse_move(BAR_X as f32 + 5.0, y0 + 40.0);
     driver.mouse_up(BAR_X as f32 + 5.0, y0 + 40.0);
-    assert_eq!(driver.app().offsets, vec![12.0, 24.0]);
+    assert_eq!(offsets(&driver), vec![12.0, 24.0]);
 }

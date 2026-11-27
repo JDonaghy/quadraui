@@ -5,10 +5,12 @@
 //! route through `Interactive::handle` back out as `UiEvent::PipelineView`
 //! — `focused_stage` staying the app's (controlled mode).
 
+#[path = "common/one_widget.rs"]
+mod one_widget;
+
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, FrameTree, NamedKey, PipelineEvent, PipelineStage, PipelineView, Reaction,
-    Rect, ScreenLayout, StageStatus, Surface, UiEvent, WidgetId,
+    NamedKey, PipelineEvent, PipelineStage, PipelineView, Rect, StageStatus, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 64;
@@ -43,52 +45,34 @@ fn view() -> PipelineView {
     }
 }
 
-struct PipelineApp {
-    view: PipelineView,
-    events: Vec<PipelineEvent>,
-}
+type PipelineApp = one_widget::OneWidgetApp<PipelineView>;
 
-impl AppLogic for PipelineApp {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget {
-            rect: AREA,
-            widget: Box::new(self.view.clone()),
-        });
-        frame.draw(backend);
-    }
-
-    fn frame_tree(&self, _area: ()) -> FrameTree {
-        let mut tree = FrameTree::new();
-        tree.push(self.view.id, AREA, Box::new(self.view.clone()));
-        tree
-    }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::PipelineView(id, event) = event {
-            if id == pipeline_id() {
-                if let PipelineEvent::StageFocused { index } = event {
-                    self.view.focused_stage = Some(index);
-                }
-                self.events.push(event);
-                return Reaction::Redraw;
+fn apply(view: &mut PipelineView, event: &UiEvent) -> bool {
+    match event {
+        UiEvent::PipelineView(id, ev) if *id == view.id => {
+            if let PipelineEvent::StageFocused { index } = ev {
+                view.focused_stage = Some(*index);
             }
+            true
         }
-        Reaction::Continue
+        _ => false,
     }
 }
 
 fn driver() -> TuiDriver<PipelineApp> {
-    TuiDriver::new(
-        PipelineApp {
-            view: view(),
-            events: Vec::new(),
-        },
-        COLS,
-        ROWS,
-    )
+    one_widget::driver(view(), AREA, COLS, ROWS, apply)
+}
+
+fn events(driver: &TuiDriver<PipelineApp>) -> Vec<PipelineEvent> {
+    driver
+        .app()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::PipelineView(id, ev) if *id == pipeline_id() => Some(ev.clone()),
+            _ => None,
+        })
+        .collect()
 }
 
 #[test]
@@ -111,7 +95,7 @@ fn clicking_a_stage_selects_it_and_its_button_fires_the_action() {
     let (x, y) = driver.find("Retry").expect("action painted");
     driver.click(x, y);
     assert_eq!(
-        driver.app().events,
+        events(&driver),
         vec![
             PipelineEvent::StageSelected { index: 2 },
             PipelineEvent::StageAction { index: 1 },
@@ -130,7 +114,7 @@ fn arrows_report_the_focus_move_and_enter_activates_the_focused_stage() {
     driver.press_named(NamedKey::Right);
     driver.press_named(NamedKey::Enter);
     assert_eq!(
-        driver.app().events,
+        events(&driver),
         vec![
             PipelineEvent::StageSelected { index: 0 },
             PipelineEvent::StageFocused { index: 1 },
@@ -149,7 +133,7 @@ fn other_keys_bubble_to_the_app() {
     driver.click(x, y);
     driver.type_char('q');
     assert_eq!(
-        driver.app().events,
+        events(&driver),
         vec![PipelineEvent::StageSelected { index: 0 }]
     );
 }

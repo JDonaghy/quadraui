@@ -6,10 +6,12 @@
 //! `at_bottom` for a host that follows the tail. `scroll_top` stays the
 //! app's (controlled mode).
 
+#[path = "common/one_widget.rs"]
+mod one_widget;
+
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, Color, FrameTree, MessageList, MessageListEvent, MessageRow, Point,
-    Reaction, Rect, ScreenLayout, ScrollDelta, Surface, UiEvent, WidgetId,
+    Color, MessageList, MessageListEvent, MessageRow, Point, Rect, ScrollDelta, UiEvent, WidgetId,
 };
 
 const COLS: u16 = 40;
@@ -30,57 +32,41 @@ fn list(rows: usize) -> MessageList {
     }
 }
 
-struct ChatApp {
-    list: MessageList,
-    following: bool,
-    events: Vec<MessageListEvent>,
-}
+type ChatApp = one_widget::OneWidgetApp<MessageList>;
 
-impl AppLogic for ChatApp {
-    type AreaId = ();
-
-    fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        let mut frame = ScreenLayout::new();
-        frame.push(Surface::Widget {
-            rect: AREA,
-            widget: Box::new(self.list.clone()),
-        });
-        frame.draw(backend);
-    }
-
-    fn frame_tree(&self, _area: ()) -> FrameTree {
-        let mut tree = FrameTree::new();
-        tree.push(self.list.id, AREA, Box::new(self.list.clone()));
-        tree
-    }
-
-    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
-        if let UiEvent::MessageList(id, event) = event {
-            if id == list_id() {
-                let MessageListEvent::Scrolled {
-                    scroll_top,
-                    at_bottom,
-                } = event;
-                self.list.scroll_top = scroll_top;
-                self.following = at_bottom;
-                self.events.push(event);
-                return Reaction::Redraw;
-            }
+fn apply(list: &mut MessageList, event: &UiEvent) -> bool {
+    match event {
+        UiEvent::MessageList(id, MessageListEvent::Scrolled { scroll_top, .. })
+            if *id == list.id =>
+        {
+            list.scroll_top = *scroll_top;
+            true
         }
-        Reaction::Continue
+        _ => false,
     }
 }
 
 fn driver(rows: usize) -> TuiDriver<ChatApp> {
-    TuiDriver::new(
-        ChatApp {
-            list: list(rows),
-            following: false,
-            events: Vec::new(),
-        },
-        COLS,
-        ROWS,
-    )
+    one_widget::driver(list(rows), AREA, COLS, ROWS, apply)
+}
+
+fn events(driver: &TuiDriver<ChatApp>) -> Vec<MessageListEvent> {
+    driver
+        .app()
+        .events
+        .iter()
+        .filter_map(|e| match e {
+            UiEvent::MessageList(id, ev) if *id == list_id() => Some(*ev),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Whether the last scroll left the list following its newest row.
+fn following(driver: &TuiDriver<ChatApp>) -> bool {
+    events(driver)
+        .last()
+        .is_some_and(|MessageListEvent::Scrolled { at_bottom, .. }| *at_bottom)
 }
 
 fn wheel(driver: &mut TuiDriver<ChatApp>, dy: f32) {
@@ -105,7 +91,7 @@ fn the_wheel_scrolls_and_reports_reaching_the_bottom() {
     wheel(&mut driver, -1.0);
     wheel(&mut driver, -1.0);
     assert_eq!(
-        driver.app().events,
+        events(&driver),
         vec![
             MessageListEvent::Scrolled {
                 scroll_top: 3,
@@ -117,20 +103,20 @@ fn the_wheel_scrolls_and_reports_reaching_the_bottom() {
             },
         ]
     );
-    assert!(driver.app().following);
+    assert!(following(&driver));
     assert!(driver.screen_contains("message 9"), "{}", driver.screen());
     // At the bottom a further notch down changes nothing.
     wheel(&mut driver, -1.0);
-    assert_eq!(driver.app().events.len(), 2);
+    assert_eq!(events(&driver).len(), 2);
     // Scrolling back up leaves the tail.
     wheel(&mut driver, 1.0);
-    assert!(!driver.app().following);
-    assert_eq!(driver.app().list.scroll_top, 1);
+    assert!(!following(&driver));
+    assert_eq!(driver.app().widget.scroll_top, 1);
 }
 
 #[test]
 fn a_list_that_fits_does_not_scroll() {
     let mut driver = driver(3);
     wheel(&mut driver, -1.0);
-    assert!(driver.app().events.is_empty());
+    assert!(events(&driver).is_empty());
 }
