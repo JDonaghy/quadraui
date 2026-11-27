@@ -14,8 +14,7 @@
 //! its test would have gone, just above `draw_form_paints_in_chrome_font`
 //! below.
 //!
-//! `Spinner`, `Tooltip`, the settings header/search box
-//! (`Backend::draw_settings_chrome`) and `MessageList` paint through a
+//! `Spinner`, `Tooltip` and `MessageList` paint through a
 //! different seam — each has its own `(cr, pango_layout)` call site in
 //! `GtkBackend` rather than going through `PaintSurface` — but the same
 //! chrome-by-default policy applies to all four (none is editor-class),
@@ -472,17 +471,6 @@ fn draw_tooltip_paints_in_chrome_font() {
             4.0,
         );
         b.draw_dyn(layout.bounds, &tooltip, &());
-    });
-}
-
-/// The settings panel header/search box is chrome — unambiguously host
-/// UI, not editor content. Its GTK call site
-/// (`GtkBackend::draw_settings_chrome`) paints through its own
-/// `(cr, layout)` pair rather than `PaintSurface`.
-#[test]
-fn draw_settings_chrome_paints_in_chrome_font() {
-    assert_paints_in_chrome_font("draw_settings_chrome", |b, area| {
-        b.draw_settings_chrome(area, LABEL, "", "placeholder", true);
     });
 }
 

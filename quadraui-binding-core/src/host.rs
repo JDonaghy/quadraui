@@ -31,10 +31,8 @@ use std::time::{Duration, Instant};
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 
-use quadraui::compose::{
-    classify_tree_nav_key, Edge, HoverTooltipTracker, TreeController, TreeControllerEvent,
-    TreeNavKey,
-};
+use quadraui::behaviour::nav::{Edge, NavKey, NavOutcome, TreeNavCore};
+use quadraui::compose::HoverTooltipTracker;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::Rect;
 use quadraui::{
@@ -534,8 +532,9 @@ impl BindingHost {
 // (`None` / `0`) the app gets working keyboard navigation for free: the
 // cursor and its scroll position live in `WidgetState`, keyed by the
 // tree's own id, moved and scrolled into view through
-// `quadraui::compose::TreeController`'s own navigation primitives rather
-// than re-deriving that arithmetic here.
+// `quadraui::behaviour::nav::TreeNavCore`, the navigation core
+// `TreeView`'s own `Interactive` uses, rather than re-deriving that
+// arithmetic here.
 //
 // [`apply_tree_nav_key`] is the event-time half — called from a key
 // handler (e.g. [`crate::engine::InteractionEngine::handle`]) with the
@@ -546,7 +545,7 @@ impl BindingHost {
 // re-clamps the result into view against the current viewport, and
 // returns the `TreeView` a binding should actually paint.
 
-/// The subset of `TreeNavKey` this module's cursor navigation
+/// The subset of navigation keys this module's cursor navigation
 /// (`Tree`/`List`/`DataTable` alike) actually moves a stored cursor for.
 /// Enter and Space stay out of scope: row activation and expand/collapse
 /// keep going through each widget's own existing semantic-event
@@ -563,29 +562,36 @@ enum CursorNav {
     PageDown,
 }
 
-/// Classifies a raw key into [`CursorNav`] by delegating to
-/// `quadraui::compose::classify_tree_nav_key` — the single key map
-/// `TreeController::handle_key` and `SidebarSystem`'s own key dispatch
-/// already share — rather than hand-copying it a second time here, which
-/// would drift the moment that shared map changes. `vim_keys: true`
-/// always, matching `TreeController::new`'s own default: none of `Tree`/
-/// `List`/`DataTable`'s descriptors carry a per-widget toggle for this
-/// crate to read (`ListView`'s own module doc already documents `j`/`k`
-/// as `Down`/`Up` aliases unconditionally, matching this).
+/// Classifies a raw key into [`CursorNav`] through
+/// [`NavKey::from_key`], the one key map every list and tree widget's
+/// own navigation shares, plus the `j`/`k` aliases for `Down`/`Up` when
+/// no Ctrl/Alt/Cmd is held. None of `Tree`/`List`/`DataTable`'s
+/// descriptors carry a per-widget toggle for those aliases, so they are
+/// always on (`ListView`'s own module doc documents `j`/`k` as `Down`/`Up`
+/// aliases unconditionally, matching this).
 fn cursor_nav_for_key(key: &Key) -> Option<CursorNav> {
-    match classify_tree_nav_key(key, true)? {
-        TreeNavKey::Up => Some(CursorNav::Up),
-        TreeNavKey::Down => Some(CursorNav::Down),
-        TreeNavKey::Home => Some(CursorNav::Home),
-        TreeNavKey::End => Some(CursorNav::End),
-        TreeNavKey::PageUp => Some(CursorNav::PageUp),
-        TreeNavKey::PageDown => Some(CursorNav::PageDown),
-        TreeNavKey::Enter | TreeNavKey::ToggleExpand => None,
-    }
+    let event = quadraui::interactive::KeyEvent {
+        key: key.clone(),
+        modifiers: Modifiers::default(),
+        repeat: false,
+    };
+    let nav = NavKey::from_key(&event).or(match key {
+        Key::Char('j') => Some(NavKey::Down),
+        Key::Char('k') => Some(NavKey::Up),
+        _ => None,
+    })?;
+    Some(match nav {
+        NavKey::Up => CursorNav::Up,
+        NavKey::Down => CursorNav::Down,
+        NavKey::Home => CursorNav::Home,
+        NavKey::End => CursorNav::End,
+        NavKey::PageUp(_) => CursorNav::PageUp,
+        NavKey::PageDown(_) => CursorNav::PageDown,
+    })
 }
 
 /// `(viewport_rows.max(1) - 1).max(1)`, as an `isize` delta — the page
-/// size `TreeController::handle_key`'s own `PageUp`/`PageDown` arms use,
+/// size `TreeNavCore::handle_key`'s own `PageUp`/`PageDown` arms use,
 /// shared here so `Tree`/`List`/`DataTable`'s own page navigation agrees
 /// with it instead of re-deriving the formula per call site.
 fn page_delta(viewport_rows: usize) -> isize {
@@ -611,9 +617,7 @@ struct TreeCursorState {
 }
 
 /// A throwaway [`TreeRow`] standing in for `path`, with every other field
-/// at its default — used only to satisfy
-/// [`quadraui::compose::TreeController::set_rows`]'s shape so its own
-/// `move_selection_by`/`move_selection_to_edge` can be reused verbatim for
+/// at its default — the row shape [`TreeNavCore`]'s movement reads, for
 /// pure path/count arithmetic that never reads a row's icon, text, badge,
 /// or expand state.
 fn placeholder_tree_row(path: TreePath) -> TreeRow {
@@ -632,8 +636,8 @@ fn placeholder_tree_row(path: TreePath) -> TreeRow {
 /// Up/Down/vim `j`/`k`/Home/End/PageUp/PageDown navigation on a focused
 /// `Tree`, resolved against [`WidgetState`] rather than the app: moves the
 /// stored cursor for `id` by one row (or to an edge, or by a page) and
-/// scrolls it into view, via `quadraui::compose::TreeController`'s own
-/// navigation primitives (never re-derived here) seeded from whichever
+/// scrolls it into view, via [`TreeNavCore`]'s own navigation
+/// (never re-derived here) seeded from whichever
 /// cursor is currently stored. `row_paths` and `viewport_rows` should come
 /// from `crate::hit::tree_rows_and_viewport` against the most recent
 /// render's hit map — the same geometry [`crate::drag::tree_scroll_state`]
@@ -669,37 +673,35 @@ pub fn apply_tree_nav_key(
         return false;
     }
     let stored = widget_state.get::<TreeCursorState>(id).unwrap_or_default();
-    let mut controller = TreeController::new(id.as_str());
-    controller.set_rows(
-        row_paths
-            .iter()
-            .cloned()
-            .map(placeholder_tree_row)
-            .collect(),
-    );
-    controller.set_selected_path(stored.selected_path);
-    controller.set_scroll_offset(stored.scroll_offset);
-    let event = match nav {
-        CursorNav::Up => controller.move_selection_by(-1, viewport_rows),
-        CursorNav::Down => controller.move_selection_by(1, viewport_rows),
-        CursorNav::Home => controller.move_selection_to_edge(Edge::Start, viewport_rows),
-        CursorNav::End => controller.move_selection_to_edge(Edge::End, viewport_rows),
+    let rows: Vec<TreeRow> = row_paths
+        .iter()
+        .cloned()
+        .map(placeholder_tree_row)
+        .collect();
+    let mut nav_core = TreeNavCore::new();
+    nav_core.set_selected_path(stored.selected_path);
+    nav_core.set_scroll_offset(stored.scroll_offset);
+    let outcome = match nav {
+        CursorNav::Up => nav_core.move_selection_by(&rows, -1, viewport_rows),
+        CursorNav::Down => nav_core.move_selection_by(&rows, 1, viewport_rows),
+        CursorNav::Home => nav_core.move_selection_to_edge(&rows, Edge::Start, viewport_rows),
+        CursorNav::End => nav_core.move_selection_to_edge(&rows, Edge::End, viewport_rows),
         CursorNav::PageUp => {
-            controller.move_selection_by(-page_delta(viewport_rows), viewport_rows)
+            nav_core.move_selection_by(&rows, -page_delta(viewport_rows), viewport_rows)
         }
         CursorNav::PageDown => {
-            controller.move_selection_by(page_delta(viewport_rows), viewport_rows)
+            nav_core.move_selection_by(&rows, page_delta(viewport_rows), viewport_rows)
         }
     };
     widget_state.set(
         id,
         TreeCursorState {
-            selected_path: controller.selected_path().cloned(),
-            scroll_offset: controller.scroll_offset(),
+            selected_path: nav_core.selected_path().cloned(),
+            scroll_offset: nav_core.scroll_offset(),
             scroll_controlled: stored.scroll_controlled,
         },
     );
-    matches!(event, TreeControllerEvent::RowSelected { .. })
+    matches!(outcome, NavOutcome::Selected(_))
 }
 
 /// Resolves `tree`'s cursor + scroll for painting, through the
@@ -729,7 +731,7 @@ pub fn apply_tree_nav_key(
 /// Once controlled, the descriptor's value wins outright and is returned
 /// exactly as given — never nudged to keep the selection visible — while
 /// uncontrolled resolves from the store and IS scrolled into view (via
-/// `TreeController::scroll_to_visible`, never re-derived here) against the
+/// `TreeNavCore::scroll_to_visible`, never re-derived here) against the
 /// current `viewport_rows`, so a resize or a freshly uncontrolled
 /// selection are both caught here even without an intervening
 /// [`apply_tree_nav_key`] call.
@@ -756,10 +758,10 @@ pub fn resolve_tree_cursor(
     if !scroll_controlled {
         if let Some(path) = &selected_path {
             if let Some(row) = tree.rows.iter().position(|r| &r.path == path) {
-                let mut controller = TreeController::new(id.as_str());
-                controller.set_scroll_offset(scroll_offset);
-                controller.scroll_to_visible(row, viewport_rows);
-                scroll_offset = controller.scroll_offset();
+                let mut nav_core = TreeNavCore::new();
+                nav_core.set_scroll_offset(scroll_offset);
+                nav_core.scroll_to_visible(row, viewport_rows);
+                scroll_offset = nav_core.scroll_offset();
             }
         }
     }
@@ -991,7 +993,7 @@ pub fn resolve_tree_cursor_windowed(
 //
 // Same policy as the `Tree` section above, for a flat `ListView`. Unlike
 // `Tree`, there is no composed `ListController` in `quadraui::compose` to
-// reuse for movement/scroll-into-view (only `TreeController` exists today)
+// reuse for movement/scroll-into-view (only `TreeNavCore` exists today)
 // — [`move_flat_index`]/[`edge_flat_index`]/[`scroll_into_view`] below are
 // the pure index arithmetic a future `ListController` would also need,
 // kept as free functions here rather than duplicated per widget since
@@ -1013,9 +1015,9 @@ struct ListCursorState {
 
 /// Moves a flat (non-hierarchical) cursor by `delta` rows within `[0,
 /// count)`, clamped at either edge — the `List`/`DataTable` counterpart of
-/// `TreeController::move_selection_by`'s own clamp. `None` means "nothing
+/// `TreeNavCore::move_selection_by`'s own clamp. `None` means "nothing
 /// selected yet": a forward move (`delta > 0`) starts at row `0`, a
-/// backward one at the last row, matching `TreeController::move_selection_by`'s
+/// backward one at the last row, matching `TreeNavCore::move_selection_by`'s
 /// own "no current selection" branch. Returns `None` only when `count == 0`.
 fn move_flat_index(current: Option<usize>, delta: isize, count: usize) -> Option<usize> {
     if count == 0 {
@@ -1034,7 +1036,7 @@ fn move_flat_index(current: Option<usize>, delta: isize, count: usize) -> Option
 
 /// The first (`Edge::Start`) or last (`Edge::End`) row of a `count`-row
 /// flat list — the `List`/`DataTable` counterpart of
-/// `TreeController::move_selection_to_edge`'s own edge row. Returns `None`
+/// `TreeNavCore::move_selection_to_edge`'s own edge row. Returns `None`
 /// only when `count == 0`.
 fn edge_flat_index(edge: Edge, count: usize) -> Option<usize> {
     if count == 0 {
@@ -1048,7 +1050,7 @@ fn edge_flat_index(edge: Edge, count: usize) -> Option<usize> {
 
 /// Scrolls `scroll_offset` by the minimum amount needed to bring `row`
 /// into a `viewport_rows`-tall window — the `List`/`DataTable` counterpart
-/// of `TreeController::scroll_to_visible`'s own formula.
+/// of `TreeNavCore::scroll_to_visible`'s own formula.
 fn scroll_into_view(scroll_offset: usize, row: usize, viewport_rows: usize) -> usize {
     if viewport_rows == 0 {
         return scroll_offset;
@@ -5171,9 +5173,7 @@ mod tests {
         assert_eq!(resolved.selected_path, Some(vec![0]));
     }
 
-    /// Vim `j`/`k` are recognized aliases for `Down`/`Up`, via the shared
-    /// `quadraui::compose::classify_tree_nav_key` key map rather than a
-    /// second hand-copied one.
+    /// Vim `j`/`k` are recognized aliases for `Down`/`Up`.
     #[test]
     fn apply_tree_nav_key_recognizes_vim_j_and_k_aliases() {
         let widget_state = WidgetState::new();

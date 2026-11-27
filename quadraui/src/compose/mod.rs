@@ -10,13 +10,9 @@
 //! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
 //! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
-//! - [`TreeController`] — single keyboard-navigable TreeView + scrollbar,
-//!   over [`crate::behaviour::nav::TreeNavCore`]'s row-agnostic
-//!   navigation/selection core; reusable by any flattened row source that
-//!   implements [`crate::behaviour::nav::NavRow`].
 //! - [`TreeTableController`] — hierarchical model (lazy children,
-//!   sibling-scoped sort) flattened into a `TreeTable`, over the same
-//!   `behaviour::nav::TreeNavCore` [`TreeController`] uses.
+//!   sibling-scoped sort) flattened into a `TreeTable`, over
+//!   [`crate::behaviour::nav::TreeNavCore`].
 //! - [`AppShell`] — ActivityBar + sidebar panel container composition.
 //! - [`FolderPickerController`] — cross-backend directory-browsing modal.
 //! - [`FilePickerController`] — cross-backend file open/save modal.
@@ -51,7 +47,7 @@
 //!   activates, Escape dismisses.
 //! - [`HoverTooltipTracker`] — delay + auto-dismiss state machine for a
 //!   hover-driven tooltip, sitting on top of [`ToolbarHoverTracker`]/
-//!   [`ListHoverTracker`]/[`TreeHoverTracker`]'s plain "what's hovered"
+//!   [`ListHoverTracker`]'s plain "what's hovered"
 //!   answer.
 //! - [`Handled`] — the shared "did you handle it" return type new
 //!   `handle_*` controller methods converge on: a semantic event to
@@ -59,8 +55,8 @@
 //!
 //! [`crate::ScrollView`] is a `primitives` type, not a controller here —
 //! it is the generic seam for a host that scrolls content it lays out
-//! itself. [`FormController`], [`TreeController`], and [`ChatController`]
-//! keep their own row-indexed scroll state unchanged; a future controller
+//! itself. [`FormController`] and [`ChatController`] keep their own
+//! row-indexed scroll state unchanged; a future controller
 //! for scrolling arbitrary child content (a help panel, a form section)
 //! composes [`crate::ScrollView`] the same way these compose their own
 //! primitive instead of duplicating offset/thumb math.
@@ -98,7 +94,6 @@ mod tab_drag;
 pub mod tab_group;
 pub mod toast_stack;
 pub mod toolbar_hover_tracker;
-pub mod tree_controller;
 // Drives `TreeTable`'s `Interactive` impl, which exists only where a
 // backend does.
 #[cfg(any(
@@ -220,12 +215,10 @@ pub use toast_stack::{ToastStackAction, ToastStackController};
 // `ToastStackEvent` is `#[deprecated]` (use `ToastStackController::handle_event`'s
 // `Handled<ToastStackAction>` instead). Allow it here since `pub use` of a
 // deprecated item is itself a use site.
+pub use crate::behaviour::nav::Edge;
 #[allow(deprecated)]
 pub use toast_stack::ToastStackEvent;
-pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker, TreeHoverTracker};
-pub use tree_controller::{
-    classify_tree_nav_key, Edge, TreeController, TreeControllerEvent, TreeNavKey,
-};
+pub use toolbar_hover_tracker::{ListHoverTracker, ToolbarHoverTracker};
 #[cfg(any(
     feature = "gtk",
     feature = "tui",

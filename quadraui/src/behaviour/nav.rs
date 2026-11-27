@@ -204,7 +204,7 @@ pub enum HorizontalNav {
 /// constructs a throwaway controller just to navigate a borrowed view. A
 /// caller's row type implements [`NavRow`] to plug into it;
 /// `crate::TreeRow` does, in `compose::tree_controller`, and
-/// `TreeController` is a thin layer over this core plus its own
+/// `TreeView`'s `Interactive` is a thin layer over this core plus its own
 /// `TreeView`-specific rendering, hit-testing and inline editing.
 #[derive(Debug, Default)]
 pub struct TreeNavCore {

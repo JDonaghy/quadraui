@@ -361,7 +361,7 @@ pub enum TreeTableHit {
 ///
 /// `#[non_exhaustive]`, mirroring [`DataTableLayout`] — never constructed
 /// by a consumer via struct literal, only ever received from
-/// [`TreeTable::layout`] or a `Backend::tree_table_layout` implementation.
+/// [`TreeTable::layout`].
 #[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub struct TreeTableLayout {
@@ -520,7 +520,7 @@ pub(crate) mod native_surface_paint {
 
     /// Resolve the layout [`paint`] paints `table` at, without touching a
     /// buffer — the pixel resolver every GUI backend's
-    /// `Backend::tree_table_layout` forwards to.
+    /// the table's `Primitive::layout` resolves through.
     pub(crate) fn pixel_tree_table_layout(
         table: &TreeTable,
         w: f32,
@@ -533,7 +533,7 @@ pub(crate) mod native_surface_paint {
 
     /// Paint a [`TreeTable`] into `rect` on `surface` and return the
     /// resolved [`TreeTableLayout`] — the entry point every GUI backend's
-    /// `draw_tree_table` goes through. Resolves the layout through
+    /// the table's `Primitive::paint` goes through. Resolves the layout through
     /// `surface`'s own text measurer, then paints it with
     /// [`paint_laid_out`].
     pub(crate) fn paint(

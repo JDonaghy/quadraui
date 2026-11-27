@@ -825,7 +825,7 @@ pub struct TreeStyle {
     /// first row and outer columns. Set this when the tree can receive
     /// that ring.
     ///
-    /// **Currently only the TUI rasteriser (`crate::tui::draw_tree`)
+    /// **Currently only the TUI rasteriser (`TreeView::paint_cells`)
     /// paints the reserved margin as a border** — same opt-in-per-backend
     /// precedent as `row_height` above. GTK/macOS/Win rasterisers don't
     /// yet draw a frame in the reserved space; setting this on those

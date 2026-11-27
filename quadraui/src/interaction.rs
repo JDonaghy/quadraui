@@ -39,9 +39,8 @@
 //!   (one per *bar*), which can't name which tab is hovered or pressed
 //! - `draw_data_table(.., hovered_idx: Option<usize>)`
 //! - `draw_chart(.., hovered_point: Option<(usize, usize)>)`
-//! - [`crate::Backend::draw_list_with_state`] /
-//!   [`crate::Backend::draw_tree_with_state`] (`&ListPaintState` /
-//!   `&TreePaintState`, each carrying a positional `hovered_idx: Option<usize>`
+//! - [`crate::Backend::draw_list_with_state`] and a tree's paint state
+//!   (`&ListPaintState` / `&TreePaintState`, each carrying a positional `hovered_idx: Option<usize>`
 //!   / `pressed_idx: Option<usize>` plus an optional pixel-precise
 //!   `scroll_px`)
 //!
@@ -52,7 +51,7 @@
 //! minting one per row index on the fly would permanently intern a new
 //! string per distinct (list id, row index) pair ever shown — an
 //! unbounded leak for a growing log pane. [`crate::compose::ListHoverTracker`]
-//! / [`crate::compose::TreeHoverTracker`] track the hovered row index
+//! tracks the hovered row index
 //! instead, the same shape `draw_data_table`'s own host-side tracking
 //! already uses.
 //!

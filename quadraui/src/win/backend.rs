@@ -29,9 +29,8 @@ use crate::primitives::split::{Split, SplitLayout};
 // Only named by the Windows tests below.
 #[cfg(all(test, target_os = "windows"))]
 use crate::primitives::toolbar::ToolbarButton;
-use crate::primitives::tree::TreeViewLayout;
 use crate::types::WidgetId;
-use crate::{Accelerator, AcceleratorId, Key, ListView, Modifiers, TreeView, UserPayload};
+use crate::{Accelerator, AcceleratorId, Key, ListView, Modifiers, UserPayload};
 // `ActivityBar`, `MenuBar`, `StatusBar` and `TabBar` are only named by
 // `#[cfg(test)]` code below — each paints through its widget contract, not a
 // method on this backend. `ContextMenu` is named only by the Windows-host
@@ -361,6 +360,14 @@ pub(crate) const WM_QUADRAUI_TRAY_CALLBACK: u32 = 0x8000 + 2;
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub(crate) const FRAME_TIMER_ID: usize = 3;
 
+/// # Before a surface is attached
+///
+/// `self.surface`/`self.dwrite` are always populated together by
+/// [`Self::attach_surface`]/`attach_headless`, so a standalone
+/// `WinBackend` no window has attached to yet has neither. Every
+/// rasteriser then paints nothing and every layout query falls back to a
+/// [`NominalTextMeasure`] layout instead of panicking; the next real
+/// attach resumes painting.
 pub struct WinBackend {
     viewport: Viewport,
     /// `Rc<RefCell<>>` (not a plain field) so [`Backend::modal_stack_handle`]
@@ -966,7 +973,7 @@ impl WinBackend {
         }
     }
 
-    /// Resolve the row pitch `draw_list`/`draw_tree`/`draw_data_table`
+    /// Resolve the row pitch `draw_list`/`draw_data_table`
     /// lay their rows out at: `Style::row_height` on a pixel backend
     /// (`candidate_line_height > 1.0`), floored at the font's own line
     /// height so a chrome font taller than the token isn't clipped — see
@@ -2741,21 +2748,6 @@ impl Backend for WinBackend {
         self.current_char_width
     }
 
-    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
-    /// run through the same
-    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
-    /// [`Self::draw_tree`]/[`Self::draw_tree_with_state`] paint rows
-    /// at — not [`Self::line_height`] (`current_line_height` raw), which
-    /// disagrees with that painted pitch whenever a host sets
-    /// [`crate::style::Style::row_height`] above the chrome font's own
-    /// line height. Mirrors `MacBackend::tree_scroll_row_height`.
-    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
-        crate::primitives::layout_metrics::tree_row_pitch(
-            tree,
-            self.resolved_row_height(self.current_line_height) as f64,
-        ) as f32
-    }
-
     /// Forwards to [`Self::set_current_line_height`] — the
     /// `Backend`-trait-object-reachable twin of that inherent method, the
     /// Win-GUI counterpart of `GtkBackend`'s / `MacBackend`'s overrides of
@@ -2793,7 +2785,7 @@ impl Backend for WinBackend {
     /// attached (`dwrite`/`chrome_dwrite` both still `None`, e.g. an app
     /// measuring a `Dialog` before the first frame), falls back to a
     /// `current_char_width`-scaled estimate — the same "degrade, don't
-    /// panic" convention [`Self::draw_tree`]'s own doc describes for the
+    /// panic" convention the [`WinBackend`] "Before a surface is attached" doc describes for the
     /// pre-attach window on this backend.
     fn measure_text(&self, text: &str, role: crate::FontRole) -> (f32, f32) {
         #[cfg(target_os = "windows")]
@@ -2853,82 +2845,7 @@ impl Backend for WinBackend {
 
     // ─── Drawing ──────────────────────────────────────────────────────
 
-    /// Real Direct2D/DirectWrite rasteriser via `win::tree` once a
-    /// surface is attached. With no surface attached yet it paints
-    /// nothing and falls back to a [`NominalTextMeasure`] layout:
-    /// `self.surface`/`self.dwrite` are always populated together by
-    /// [`Self::attach_surface`], so that only happens for a standalone
-    /// `WinBackend` no window has ever attached to yet. `draw_tree` returns
-    /// `()` per the trait (unlike the chrome rasterisers) — hosts get
-    /// hit-test data from [`Self::tree_layout`] instead.
-    ///
-    /// `Tree` is `ChromePrimitive::Tree` — row labels/badges/
-    /// chevrons are chrome, not editor content, same "whole-primitive
-    /// font swap, `line_height` stays at the editor's own metrics" shape
-    /// `MacBackend::draw_tree`/`GtkBackend::draw_tree` already ship —
-    /// paints through `chrome_dwrite`, falling back to the
-    /// editor `dwrite` handle if no live chrome one exists yet (same
-    /// "degrade, don't panic" convention as
-    /// `surface_draw_text_run_with_role`).
-    fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            super::tree::draw_tree(
-                &surface.target,
-                dwrite,
-                rect,
-                tree,
-                self.resolved_row_height(self.current_line_height),
-                self.nerd_fonts_enabled,
-                &self.current_theme,
-                &self.current_style,
-            );
-            return;
-        }
-        // No surface/DWrite yet (fresh backend, device lost, or a
-        // non-Windows host, where this module never compiles) — paint
-        // nothing rather than panic; the next real
-        // `attach_surface`/`attach_headless` resumes painting.
-        let _ = (rect, tree);
-    }
-
-    /// [`Self::draw_tree`], plus hover/press row tinting, a
-    /// focus-visible ring, and — when `state.scroll_px` is `Some` — a
-    /// pixel-precise scroll position instead of only
-    /// [`TreeView::scroll_offset`]'s whole-row value, via
-    /// [`super::tree::draw_tree_with_state`]. `state.scroll_px: None`
-    /// paints pixel-identically to [`Self::draw_tree`].
-    fn draw_tree_with_state(
-        &mut self,
-        rect: Rect,
-        tree: &TreeView,
-        state: &crate::primitives::tree::TreePaintState,
-        focus_ring_visible: bool,
-    ) {
-        #[cfg(target_os = "windows")]
-        if let (Some(surface), Some(dwrite)) = (&self.surface, &self.dwrite) {
-            let dwrite = self.chrome_dwrite.as_ref().unwrap_or(dwrite);
-            super::tree::draw_tree_with_state(
-                &surface.target,
-                dwrite,
-                rect,
-                tree,
-                self.resolved_row_height(self.current_line_height),
-                self.nerd_fonts_enabled,
-                &self.current_theme,
-                &self.current_style,
-                state,
-                focus_ring_visible,
-            );
-            return;
-        }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
-        // of panicking.
-        let _ = (rect, tree, state, focus_ring_visible);
-    }
-
-    /// see [`Self::draw_tree`]'s doc. `List` is
+    /// see the [`WinBackend`] "Before a surface is attached" doc. `List` is
     /// `ChromePrimitive::List` — see `draw_tree`'s note for the
     /// font-swap shape.
     fn draw_list(&mut self, rect: Rect, list: &ListView) {
@@ -2945,7 +2862,7 @@ impl Backend for WinBackend {
             );
             return;
         }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
         // of panicking.
         let _ = (rect, list);
     }
@@ -2978,12 +2895,12 @@ impl Backend for WinBackend {
             );
             return;
         }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
         // of panicking.
         let _ = (rect, list, state, focus_ring_visible);
     }
 
-    /// See [`Self::draw_tree`]'s doc for the "surface not
+    /// See the [`WinBackend`] "Before a surface is attached" doc for the "surface not
     /// attached yet" fallback posture.
     /// `DataTable` is not `ChromePrimitive`/`EditorClassPrimitive`-listed
     /// — it's chrome by the `crate::font_role` module's default (see that
@@ -3117,65 +3034,6 @@ impl Backend for WinBackend {
         )
     }
 
-    /// Forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::paint`]
-    /// through [`Self::with_chrome_surface`].
-    fn draw_tree_table(
-        &mut self,
-        rect: Rect,
-        table: &crate::TreeTable,
-        hovered_idx: Option<usize>,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        let theme = self.current_theme;
-        let line_height = self.resolved_row_height(self.current_line_height);
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let state = crate::primitives::data_table::DataTablePaintState::default()
-            .with_hovered_idx(hovered_idx);
-        self.with_chrome_surface(|surf| {
-            crate::primitives::tree_table::native_surface_paint::paint(
-                table,
-                surf,
-                &theme,
-                rect,
-                line_height,
-                &state,
-                nerd_fonts_enabled,
-            )
-        })
-        .unwrap_or_else(|| {
-            #[allow(deprecated)]
-            self.tree_table_layout(rect, table)
-        })
-    }
-    /// One-line forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
-    /// mirroring [`Self::data_table_layout`]'s pure-measurement fallback.
-    fn tree_table_layout(
-        &self,
-        rect: Rect,
-        table: &crate::TreeTable,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout(
-                table,
-                rect.width,
-                rect.height,
-                self.resolved_row_height(self.current_line_height),
-                dwrite,
-            );
-        }
-        crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout(
-            table,
-            rect.width,
-            rect.height,
-            self.resolved_row_height(self.current_line_height),
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-        )
-    }
-
     /// GTK's twin (`GtkBackend::list_hscrollbar`) builds the
     /// `Scrollbar` directly from `self.current_char_width` rather than
     /// delegating to [`ListView::hscrollbar`] — that primitive method
@@ -3234,42 +3092,8 @@ impl Backend for WinBackend {
         )
     }
 
-    /// See [`Self::draw_tree`]'s doc for the "surface not
-    /// attached yet" fallback posture.
-    fn draw_settings_chrome(
-        &mut self,
-        rect: Rect,
-        header_text: &str,
-        query: &str,
-        placeholder: &str,
-        active: bool,
-    ) {
-        let theme = self.current_theme;
-        let line_height = self.current_line_height;
-        crate::compose::sidebar_panel_body::paint_settings_chrome(
-            self,
-            &theme,
-            rect,
-            line_height,
-            header_text,
-            query,
-            placeholder,
-            active,
-        );
-    }
-
-    /// See [`Backend::draw_solid_fill`]'s doc — a pixel backend
-    /// can honor `rect` exactly via `PaintSurface::surface_fill_rect`,
-    /// which already degrades to a no-op when no surface is attached
-    /// (see its own doc), so this can call it unconditionally — same
-    /// shape as [`Self::draw_focus_ring`] above.
-    fn draw_solid_fill(&mut self, rect: Rect, color: crate::Color) {
-        self.surface_fill_rect(rect, color);
-        self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
-    }
-
     /// Real Direct2D/DirectWrite rasteriser via `win::multi_section_view`
-    /// once a surface is attached. See [`Self::draw_tree`]'s doc for
+    /// once a surface is attached. See the [`WinBackend`] "Before a surface is attached" doc for
     /// the "surface not attached yet" fallback posture.
     ///
     /// `MultiSectionView` is `ChromePrimitive::MultiSectionView`
@@ -3297,12 +3121,12 @@ impl Backend for WinBackend {
             );
             return;
         }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
         // of panicking.
         let _ = (rect, view);
     }
 
-    /// Like [`Self::tree_layout`], this is pure measurement — only
+    /// Like [`Self::list_layout`], this is pure measurement — only
     /// needs `line_height`, not a live render target or `self.dwrite`
     /// (`win_msv_layout`'s `body_measure` is row-count-based, not real
     /// text measurement, mirroring `MacBackend::msv_layout`/
@@ -3337,77 +3161,11 @@ impl Backend for WinBackend {
         crate::primitives::multi_section_view::msv_metrics(self.current_line_height as f64, false)
     }
 
-    /// Pure measurement — only needs `self.dwrite`, not a live render
-    /// target. See [`Self::data_table_layout`]'s doc. Prefers
-    /// `chrome_dwrite`, matching [`Self::draw_tree`]'s paint font — both
-    /// must resolve the same handle or the chevron boundary measured
-    /// here would disagree with what the paint actually fits.
-    fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout {
-        let row_height = self.resolved_row_height(self.current_line_height);
-        #[cfg(target_os = "windows")]
-        if let Some(dwrite) = self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()) {
-            return super::tree::win_tree_layout_measured(
-                dwrite,
-                rect,
-                tree,
-                row_height,
-                self.current_style.row_padding_x,
-            );
-        }
-        // No live DWrite handle yet (fresh backend, device lost, or a
-        // non-Windows host, where `win::tree` never compiles) — nominal
-        // char-width estimate for the chevron glyph instead; real
-        // per-glyph measurement resumes once
-        // `attach_surface`/`attach_headless` builds one.
-        crate::primitives::layout_metrics::tree_layout_measured(
-            tree,
-            rect,
-            row_height as f64,
-            &NominalTextMeasure {
-                char_width: self.current_char_width,
-            },
-            self.current_style.row_padding_x,
-        )
-    }
-
-    /// `vscrollbar` deals purely in row counts/row-height, so
-    /// (like [`Self::list_vscrollbar`]) the primitive's own geometry
-    /// method is unit-correct for every backend — see
-    /// [`TreeView::vscrollbar`]. Cross-platform, no Direct2D/DirectWrite
-    /// call needed, so this compiles (and is exercised by
-    /// `cargo check --features win`) on every host, not just
-    /// `target_os = "windows"`.
-    ///
-    /// The `row_height` passed in must match `Self::tree_layout`'s own
-    /// per-row pitch, not the raw `line_height` — `TreeView` rows pitch
-    /// at `line_height * 1.4` (or `TreeStyle::row_height`), unlike
-    /// `ListView` items which really are `line_height` tall; see
-    /// `layout_metrics::tree_row_pitch`'s doc.
-    ///
-    /// `scrollbar_width` sets the track's column width to the live
-    /// `self.current_style.scrollbar_width` — the same field
-    /// `draw_tree`'s shared painter
-    /// ([`crate::primitives::tree::native_surface_paint::paint`]) reads —
-    /// mirroring [`Self::list_vscrollbar`]'s own convention, so this
-    /// hit-test agrees exactly with what gets painted at the default
-    /// width or a host override alike.
-    fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        let row_h = crate::primitives::layout_metrics::tree_row_pitch(
-            tree,
-            self.resolved_row_height(self.current_line_height) as f64,
-        );
-        tree.vscrollbar_with_track_width(rect, row_h as f32, self.current_style.scrollbar_width)
-    }
-
-    fn tree_paints_own_scrollbar(&self) -> bool {
-        true
-    }
-
     /// Real Direct2D/DirectWrite rasteriser via `win::message_list`
     /// once a surface is attached. Mirrors `GtkBackend::draw_message_list`
     /// / `MacBackend::draw_message_list` — no panel-background fill here;
     /// hosts that want one paint it before calling (see
-    /// `win::message_list`'s module doc). See [`Self::draw_tree`]'s
+    /// `win::message_list`'s module doc). See the [`WinBackend`] "Before a surface is attached"
     /// doc for the "surface not attached yet" fallback posture.
     fn draw_message_list(&mut self, rect: Rect, list: &MessageList) {
         #[cfg(target_os = "windows")]
@@ -3426,14 +3184,14 @@ impl Backend for WinBackend {
             );
             return;
         }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
         // of panicking.
         let _ = (rect, list);
     }
 
     /// Real Direct2D/DirectWrite
     /// rendering via [`crate::primitives::find_replace::paint`] once a
-    /// surface is attached. See [`Self::draw_tree`]'s doc for the
+    /// surface is attached. See the [`WinBackend`] "Before a surface is attached" doc for the
     /// "surface not attached yet" fallback posture.
     fn draw_find_replace(&mut self, rect: Rect, panel: &FindReplacePanel) {
         #[cfg(target_os = "windows")]
@@ -3443,13 +3201,13 @@ impl Backend for WinBackend {
             crate::primitives::find_replace::paint(panel, self, &theme);
             return;
         }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
         // of panicking.
         let _ = (rect, panel);
     }
 
     /// Real Direct2D rasteriser via `win::scrollbar` once a surface
-    /// is attached. See [`Self::draw_tree`]'s doc for the "surface
+    /// is attached. See the [`WinBackend`] "Before a surface is attached" doc for the "surface
     /// not attached yet" fallback posture. `rect` is unused on the
     /// painted path — `scrollbar.track` is authoritative, mirroring
     /// `MacBackend::draw_scrollbar`/`GtkBackend::draw_scrollbar`. Paints
@@ -3468,12 +3226,12 @@ impl Backend for WinBackend {
             );
             return;
         }
-        // See `draw_tree`'s doc for why this degrades to a no-op instead
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
         // of panicking.
         let _ = (rect, scrollbar);
     }
 
-    /// See [`Self::draw_tree`]'s doc for the "surface not
+    /// See the [`WinBackend`] "Before a surface is attached" doc for the "surface not
     /// attached yet" fallback posture. `Split` paints no text, so unlike
     /// most of that method's siblings this doesn't need `self.dwrite`.
     fn draw_split(&mut self, rect: Rect, split: &Split) -> SplitLayout {
@@ -3554,7 +3312,7 @@ impl Backend for WinBackend {
     /// per-element font size) found while unifying
     /// `gtk::board::draw_board`, `macos::board::draw_board` and
     /// `win::board::draw_board` into one implementation. See
-    /// [`Self::draw_tree`]'s doc for the "surface not attached yet"
+    /// the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached yet"
     /// fallback posture.
     fn draw_board(&mut self, rect: Rect, model: &crate::BoardModel) -> crate::BoardLayout {
         #[cfg(target_os = "windows")]
@@ -3610,7 +3368,7 @@ impl Backend for WinBackend {
     }
 
     /// Real Direct2D/DirectWrite rasteriser via `win::pipeline_view`
-    /// once a surface is attached. See [`Self::draw_tree`]'s doc for
+    /// once a surface is attached. See the [`WinBackend`] "Before a surface is attached" doc for
     /// the "surface not attached yet" fallback posture.
     /// Paint via the shared
     /// [`crate::primitives::pipeline_view::native_surface_paint::paint`]
@@ -3619,7 +3377,7 @@ impl Backend for WinBackend {
     /// unifying `gtk::pipeline_view::draw_pipeline_view`,
     /// `macos::pipeline_view::draw_pipeline_view` and
     /// `win::pipeline_view::draw_pipeline_view` into one implementation.
-    /// See [`Self::draw_tree`]'s doc for the "surface not attached
+    /// See the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached
     /// yet" fallback posture.
     fn draw_pipeline_view(
         &mut self,
@@ -3669,7 +3427,7 @@ impl Backend for WinBackend {
     /// a surface is attached — mirrors [`Self::draw_diff_view`]. The
     /// Windows backend now passes `self.current_theme` instead of painting
     /// `Theme::default()`, matching the macOS and GTK backends. See
-    /// [`Self::draw_tree`]'s doc for the "surface not attached yet"
+    /// the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached yet"
     /// fallback posture.
     fn draw_progress(&mut self, rect: Rect, bar: &ProgressBar) -> ProgressBarLayout {
         #[cfg(target_os = "windows")]
@@ -3712,7 +3470,7 @@ impl Backend for WinBackend {
     /// [`crate::paint_surface::PaintSurface`] impl (`surface_measure_text`
     /// / `surface_draw_text_run`) already prefers `chrome_dwrite` over
     /// `dwrite` for chrome text, so the handle resolution happens inside that impl.
-    /// See [`Self::draw_tree`]'s doc for the "surface not attached
+    /// See the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached
     /// yet" fallback posture.
     fn draw_spinner(&mut self, rect: Rect, spinner: &Spinner) -> SpinnerLayout {
         #[cfg(target_os = "windows")]
@@ -3766,7 +3524,7 @@ impl Backend for WinBackend {
     /// while unifying `gtk::diff_view::draw_diff_view`,
     /// `macos::diff_view::draw_diff_view` and
     /// `win::diff_view::draw_diff_view` into one implementation. See
-    /// [`Self::draw_tree`]'s doc for the "surface not attached yet"
+    /// the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached yet"
     /// fallback posture.
     fn draw_diff_view(
         &mut self,
@@ -3795,7 +3553,7 @@ impl Backend for WinBackend {
         Backend::diff_view_layout(self, rect, view)
     }
 
-    /// See [`Self::draw_tree`]'s doc for the "surface not attached
+    /// See the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached
     /// yet" fallback posture.
     ///
     /// Paints through the shared [`crate::primitives::chart::paint`] in
@@ -3828,7 +3586,7 @@ impl Backend for WinBackend {
         self.chart_layout(rect, chart)
     }
 
-    /// Like [`Self::tree_layout`], no measurer is needed — chart
+    /// No measurer is needed — chart
     /// tick-label sizing only uses `char_width`/`line_height`, both
     /// already cross-platform fields — so this needs no `self.dwrite`/
     /// surface at all, computed directly rather than
@@ -4586,7 +4344,7 @@ impl PaintSurface for WinBackend {
             let _ = super::text::fill_rect(&surface.target, rect, color);
             return;
         }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a
         // no-op instead of panicking.
         let _ = (rect, color);
     }
@@ -4600,7 +4358,7 @@ impl PaintSurface for WinBackend {
             let _ = super::text::fill_rounded_rect(&surface.target, rect, radius, color);
             return;
         }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a
         // no-op instead of panicking.
         let _ = (rect, radius, color);
     }
@@ -4611,7 +4369,7 @@ impl PaintSurface for WinBackend {
             let _ = super::text::stroke_rect(&surface.target, rect, color, stroke_width);
             return;
         }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a
         // no-op instead of panicking.
         let _ = (rect, color, stroke_width);
     }
@@ -4637,7 +4395,7 @@ impl PaintSurface for WinBackend {
             );
             return;
         }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a
         // no-op instead of panicking.
         let _ = (rect, radius, color, stroke_width);
     }
@@ -4686,7 +4444,7 @@ impl PaintSurface for WinBackend {
             }
             return;
         }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a
         // no-op instead of panicking.
         let _ = (rect, text, color, bold, scale_x);
     }
@@ -4705,7 +4463,7 @@ impl PaintSurface for WinBackend {
         if let Some(surface) = &self.surface {
             // Chrome text falls back to the editor `dwrite` handle if no
             // live chrome one exists yet — same "degrade, don't panic"
-            // convention as `WinBackend::draw_tree`'s doc describes.
+            // convention as `WinBackend`'s "Before a surface is attached" doc describes.
             let dwrite = match role {
                 crate::FontRole::Editor => self.dwrite.as_ref(),
                 _ => self.chrome_dwrite.as_ref().or(self.dwrite.as_ref()),
@@ -4716,7 +4474,7 @@ impl PaintSurface for WinBackend {
                 return;
             }
         }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a
         // no-op instead of panicking.
         let _ = (rect, text, color, role);
     }
@@ -4781,7 +4539,7 @@ impl PaintSurface for WinBackend {
             );
             return;
         }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a
         // no-op instead of panicking.
         let _ = (from, to, color, stroke_width);
     }
@@ -4792,7 +4550,7 @@ impl PaintSurface for WinBackend {
             super::text::push_clip(&surface.target, rect);
             return;
         }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a
         // no-op instead of panicking.
         let _ = rect;
     }
@@ -4802,11 +4560,11 @@ impl PaintSurface for WinBackend {
         if let Some(surface) = &self.surface {
             super::text::pop_clip(&surface.target);
         }
-        // See `WinBackend::draw_tree`'s doc for why this degrades to a
+        // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a
         // no-op instead of panicking.
     }
 
-    /// See [`Self::draw_tree`]'s doc for the "surface not attached yet"
+    /// See the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached yet"
     /// posture: no pixels to rasterise onto reports `Unsupported`. WIC
     /// decoding and `DrawBitmap` are pure Direct2D, no `self.dwrite`.
     fn surface_draw_image(
@@ -5047,8 +4805,8 @@ mod tests {
 
     /// Build a flat tree of `n_rows` leaf rows for `tree_vscrollbar`
     /// integration tests.
-    fn flat_tree(n_rows: usize) -> TreeView {
-        TreeView {
+    fn flat_tree(n_rows: usize) -> crate::TreeView {
+        crate::TreeView {
             id: WidgetId::new("test:tree:vscrollbar"),
             rows: (0..n_rows)
                 .map(|i| crate::primitives::tree::TreeRow {
@@ -5068,109 +4826,6 @@ mod tests {
             style: crate::types::TreeStyle::default(),
             has_focus: false,
         }
-    }
-
-    /// `tree_vscrollbar` must use the `line_height * 1.4` pitch
-    /// `layout_metrics::tree_layout` paints for non-header rows, not the raw
-    /// `line_height`. With 15 rows at the real 22.4px→22px pitch, only 13 fit
-    /// into a 300px-tall viewport (300/22 = 13), so an overflow scrollbar must
-    /// appear — the raw-`line_height` math (300/16 = 18) would have wrongly
-    /// reported "everything fits". The row pitch governs the minimum thumb
-    /// length, not the track's width (see
-    /// `win_backend_tree_vscrollbar_track_width_follows_style_token` for that).
-    /// Cross-platform: no `target_os = "windows"` gate needed — see
-    /// `tree_vscrollbar`'s doc.
-    #[test]
-    fn win_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
-        let backend = WinBackend::new();
-        let tree = flat_tree(15);
-        let rect = Rect::new(0.0, 0.0, 20.0, 300.0);
-
-        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
-
-        let expected_row_h = ((backend.current_line_height as f64 * 1.4).round()) as f32;
-        assert_eq!(
-            sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-            "default track width must match the TREE_VSCROLLBAR_WIDTH literal, \
-             independent of whatever Style::scrollbar_width happens to read"
-        );
-        assert!(
-            sb.thumb_len >= expected_row_h,
-            "minimum thumb length (and row pitch) must match tree_layout's \
-             non-header item_height, not the raw line_height"
-        );
-    }
-
-    /// `tree_scroll_row_height` must report the real painted pitch —
-    /// [`crate::primitives::layout_metrics::tree_row_pitch`] run through
-    /// [`WinBackend::resolved_row_height`] — not the raw editor
-    /// `line_height`, so a `TreeController` accumulating `scroll_px`
-    /// against this basis agrees with what `draw_tree`/
-    /// `draw_tree_with_state` actually paint. Mirrors
-    /// `MacBackend::tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height`.
-    #[test]
-    fn tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height() {
-        let mut backend = WinBackend::new();
-        let tree = flat_tree(1);
-
-        let default_row_height = backend.tree_scroll_row_height(&tree);
-        assert_ne!(
-            default_row_height,
-            backend.line_height(),
-            "the real painted pitch (line_height * 1.4) must not equal the \
-             raw editor line_height"
-        );
-        assert_eq!(
-            default_row_height as f64,
-            crate::primitives::layout_metrics::tree_row_pitch(
-                &tree,
-                backend.resolved_row_height(backend.current_line_height) as f64
-            )
-        );
-
-        // A host-set `Style::row_height` above the font's own line
-        // height must be honoured too — `resolved_row_height` floors at
-        // it, and `tree_scroll_row_height` must track that override.
-        backend.set_style(crate::Style::default().with_row_height(50.0));
-        let overridden_row_height = backend.tree_scroll_row_height(&tree);
-        assert_eq!(
-            overridden_row_height as f64,
-            crate::primitives::layout_metrics::tree_row_pitch(&tree, 50.0)
-        );
-    }
-
-    /// `tree_vscrollbar`'s track width must follow a host-set
-    /// `Style::scrollbar_width`, the same live field
-    /// `native_surface_paint::paint` reads for `TreeView` — so the painted
-    /// track and the hit-tested track can never drift apart, at the
-    /// default width or a host override. Mirrors
-    /// `win_backend_list_vscrollbar_track_width_follows_style_token`.
-    /// Pure geometry, no `target_os = "windows"` gate needed. `rect` is
-    /// 200px wide — wider than the 24px override below — so the track
-    /// (`area.x + area.width - track_width`) stays inside its own rect
-    /// instead of hanging off the left edge the way a narrower fixture
-    /// would.
-    #[test]
-    fn win_backend_tree_vscrollbar_track_width_follows_style_token() {
-        let mut backend = WinBackend::new();
-        let tree = flat_tree(15);
-        let rect = Rect::new(0.0, 0.0, 200.0, 300.0);
-
-        let default_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
-        assert_eq!(
-            default_sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-            "default track width must match the TREE_VSCROLLBAR_WIDTH literal, \
-             independent of whatever Style::scrollbar_width happens to read"
-        );
-
-        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
-        let overridden_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
-        assert_eq!(overridden_sb.track.width, 24.0);
     }
 
     /// Pre-attach fallback: before a surface/DirectWrite
@@ -5396,51 +5051,6 @@ mod tests {
             "the installed chrome font must render at VS Code's 13 DIP Windows chrome \
              size (±0.5), got {rendered_dip} DIP from {advertised}pt"
         );
-    }
-
-    /// Changing the chrome (`ui_font_size_pt`) default must never move the
-    /// 22px list/tree row-height token: row pitch is resolved from
-    /// `Style::row_height`/the *editor* font's line height
-    /// ([`WinBackend::resolved_row_height`]), never from the chrome font
-    /// size this issue adjusts. Asserted against the real resolved row
-    /// height, not just read off `Style::default()`, so a future change
-    /// that *does* wire the chrome font into row pitch would fail this
-    /// test rather than silently drifting.
-    #[test]
-    fn win_backend_default_ui_font_size_change_does_not_move_the_22px_row_token() {
-        let backend = WinBackend::new();
-        let tree = flat_tree(3);
-        // A 200px-tall viewport against 3 rows leaves every row
-        // unclipped, so `bounds.height` is the real resolved row pitch,
-        // not a viewport-truncated remainder.
-        let layout = Backend::tree_layout(&backend, Rect::new(0.0, 0.0, 200.0, 200.0), &tree);
-        assert_eq!(
-            layout.visible_rows[0].bounds.height, 22.0,
-            "tree_layout's resolved row height must stay at the Style::row_height \
-             default (22px) regardless of DEFAULT_UI_FONT_SIZE_PT"
-        );
-    }
-
-    /// A host-set `TreeStyle::row_height` must be honored
-    /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
-    /// it — not silently ignored in favor of `line_height`. It governs the
-    /// minimum thumb length, not the track's width.
-    #[test]
-    fn win_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
-        let backend = WinBackend::new();
-        let mut tree = flat_tree(15);
-        tree.style.row_height = Some(50);
-        let rect = Rect::new(0.0, 0.0, 20.0, 300.0);
-
-        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(
-            sb.track.width,
-            crate::primitives::layout_metrics::pixel::TREE_VSCROLLBAR_WIDTH,
-            "default track width must match the TREE_VSCROLLBAR_WIDTH literal, \
-             independent of whatever Style::scrollbar_width happens to read"
-        );
-        assert!(sb.thumb_len >= 50.0);
     }
 
     /// `list_vscrollbar`'s track width must follow a host-set
@@ -7291,7 +6901,7 @@ mod tests {
         let rect = Rect::new(0.0, 0.0, W as f32, H as f32);
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
-        backend.draw_tree(rect, &tree);
+        let _ = crate::backend::DrawsPrimitives::draw_dyn(&mut backend, rect, &tree, &());
         backend.end_frame();
 
         // Sample past the single row's band — still inside the tree's
@@ -8188,7 +7798,12 @@ mod tests {
             &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
             &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
             |backend| {
-                backend.draw_tree(Rect::new(0.0, 0.0, 200.0, 120.0), &tree);
+                let _ = crate::backend::DrawsPrimitives::draw_dyn(
+                    backend,
+                    Rect::new(0.0, 0.0, 200.0, 120.0),
+                    &tree,
+                    &(),
+                );
             },
         );
         assert!(
@@ -9010,34 +8625,6 @@ mod tests {
         );
     }
 
-    /// Same "builds its own adapter from the passed `dwrite`" shape as
-    /// `draw_data_table` above.
-    #[cfg(target_os = "windows")]
-    #[test]
-    fn win_backend_draw_settings_chrome_paints_header_in_the_chrome_fonts_size() {
-        let diff = chrome_font_diff_pixel_count(
-            200,
-            60,
-            &format!("{DEFAULT_UI_FONT_FAMILY} 6.0"),
-            &format!("{DEFAULT_UI_FONT_FAMILY} 40.0"),
-            |backend| {
-                backend.draw_settings_chrome(
-                    Rect::new(0.0, 0.0, 200.0, 60.0),
-                    "Settings",
-                    "",
-                    "Search",
-                    false,
-                );
-            },
-        );
-        assert!(
-            diff > 0,
-            "varying only the chrome font size must repaint different pixels — \
-             draw_settings_chrome must paint the header text through \
-             chrome_dwrite, not the (unchanged) editor dwrite handle"
-        );
-    }
-
     // ── no-paint `*_layout` twins: pure measurement, proven via a
     // measured value rather than painted pixels ─────────────────────
     //
@@ -9560,7 +9147,11 @@ mod tests {
 
         backend.begin_frame(Viewport::new(W as f32, H as f32, 1.0));
         Backend::push_clip(&mut backend, Rect::new(0.0, 0.0, 10.0, 10.0));
-        backend.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), red);
+        backend.draw_dyn(
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            &crate::testing::solid_canvas(Rect::new(0.0, 0.0, W as f32, H as f32), red),
+            &(),
+        );
         Backend::pop_clip(&mut backend);
         backend.end_frame();
 
@@ -9610,13 +9201,21 @@ mod tests {
         // this reaches (0,0)..(20,20) but not past it; if it dropped
         // clipping entirely, it would reach the whole 40x40 surface,
         // including (30,30) checked below.
-        backend.draw_solid_fill(Rect::new(0.0, 0.0, W as f32, H as f32), green);
+        backend.draw_dyn(
+            Rect::new(0.0, 0.0, W as f32, H as f32),
+            &crate::testing::solid_canvas(Rect::new(0.0, 0.0, W as f32, H as f32), green),
+            &(),
+        );
         Backend::pop_clip(&mut backend);
         // Paint only after the outer pop, confined to pixels
         // (20,20)..(40,40) — entirely outside the now-popped outer clip,
         // so this fill can only land there if the outer pop actually
         // cleared clipping rather than leaving the outer rect active.
-        backend.draw_solid_fill(Rect::new(20.0, 20.0, 20.0, 20.0), white);
+        backend.draw_dyn(
+            Rect::new(20.0, 20.0, 20.0, 20.0),
+            &crate::testing::solid_canvas(Rect::new(20.0, 20.0, 20.0, 20.0), white),
+            &(),
+        );
         backend.end_frame();
 
         let inside_outer = surface.pixel_at(17, 17);

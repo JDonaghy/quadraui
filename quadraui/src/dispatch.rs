@@ -515,8 +515,8 @@ pub struct ScrollSurface {
 /// Positive `delta.y` = scroll content **up** (toward the top of the
 /// document). Backends normalise their native direction before
 /// constructing [`ScrollDelta`] — see [`ScrollDelta`] for the
-/// canonical definition. Compose helpers ([`TreeController`],
-/// [`SidebarSystem`]) consume the delta directly without per-call-site
+/// canonical definition. Widgets and compose helpers
+/// ([`SidebarSystem`]) consume the delta directly without per-call-site
 /// negation.
 ///
 /// # Returns

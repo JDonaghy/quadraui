@@ -107,8 +107,6 @@ pub(crate) mod text_selection;
 pub mod toast;
 #[doc(hidden)]
 pub mod tooltip;
-#[doc(hidden)]
-pub mod tree;
 // Tray / status-bar icon control — `NSStatusBar`/`NSStatusItem`
 // glue for `Backend::tray`. `pub(crate)`, not `pub`: only
 // `impl TrayService for MacBackend` (`backend.rs`) calls into it,
@@ -166,8 +164,6 @@ pub use text_display::mac_text_display_layout;
 pub use toast::mac_toast_stack_layout;
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
-#[doc(hidden)]
-pub use tree::{draw_tree, mac_tree_layout};
 
 /// Serialises every `#[test]` fn in this module tree that drives the
 /// **one real systemwide `NSPasteboard`**.

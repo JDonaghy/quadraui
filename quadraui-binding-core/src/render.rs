@@ -318,9 +318,8 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
     }
     if let Some(tree) = refs.tree {
         if let Some(rect) = band(4.0) {
-            let (content_rect, scrollbar, viewport_rows) =
+            let (content_rect, scrollbar, viewport_rows, layout) =
                 draw_tree_with_scrollbar_and_state(backend, rect, tree, refs.tree_scroll_px);
-            let layout = backend.tree_layout(content_rect, tree);
             hits.push(PaintedHit::Tree {
                 id: tree.id,
                 area: content_rect,
@@ -413,7 +412,7 @@ pub fn draw_bands(backend: &mut dyn Backend, refs: RenderRefs<'_>, hits: &mut Ve
 
 /// Paints one additive primitive and returns the `(chrome_hits,
 /// tree_table_hit)` pair its [`PaintedHit::Extra`] entry carries. A
-/// [`TreeTable`] paints through [`Backend::draw_tree_table`] directly
+/// [`TreeTable`] paints through its own `Primitive` directly
 /// (not the generic [`ExtraPaint::paint_chrome`], whose `Vec<(Rect,
 /// WidgetId)>` return shape has no room for the resolved layout) so its
 /// chevron can be hit-tested precisely later without a live `Backend` —
@@ -425,7 +424,7 @@ fn paint_extra(
     area: Rect,
 ) -> (Vec<(Rect, WidgetId)>, Option<TreeTableHitState>) {
     if let Some(tree_table) = extra_as::<TreeTable>(extra) {
-        let layout = backend.draw_tree_table(area, tree_table, None);
+        let layout = backend.draw_primitive(area, tree_table).layout;
         let scroll_offset = tree_table.table.scroll_offset;
         let total_rows = tree_table.table.rows.len();
         (Vec::new(), Some((layout, scroll_offset, total_rows)))
@@ -2037,11 +2036,14 @@ pub fn split_rects(area: Rect, n: usize, horizontal: bool) -> Vec<Rect> {
 /// `visible_rows.len()` at the tree's ACTUAL offset, which can be shorter
 /// near the end of a long list. Paints into a scratch clone rather than
 /// `tree` itself, so computing this never disturbs the real paint below.
-#[allow(deprecated)]
 pub fn tree_viewport_rows(backend: &mut dyn Backend, rect: Rect, tree: &TreeView) -> usize {
     let mut shadow = tree.clone();
     shadow.scroll_offset = 0;
-    backend.tree_layout(rect, &shadow).visible_rows.len()
+    backend
+        .layout_primitive(rect, &shadow)
+        .layout
+        .visible_rows
+        .len()
 }
 
 /// How many items of `list` fit in `rect` at a zero scroll offset — the
@@ -2505,7 +2507,7 @@ fn shift_list_layout(layout: &mut ListViewLayout, by: usize) {
     layout.resolved_scroll_offset = layout.resolved_scroll_offset.saturating_add(by);
 }
 
-/// [`shift_list_layout`] for a windowed tree's [`Backend::tree_layout`].
+/// [`shift_list_layout`] for a windowed tree's painted [`TreeViewLayout`].
 fn shift_tree_layout(layout: &mut TreeViewLayout, by: usize) {
     for row in &mut layout.visible_rows {
         row.row_idx = row.row_idx.saturating_add(by);
@@ -2535,49 +2537,39 @@ fn shift_text_display_layout(layout: &mut TextDisplayLayout, by: usize) {
     layout.resolved_scroll_offset = layout.resolved_scroll_offset.saturating_add(by);
 }
 
-/// Paints `tree` into `area`, reserving a right-hand gutter for its
-/// vertical scrollbar when one is needed, and returns `(content_rect,
-/// scrollbar, viewport_rows)` so the caller can hit-test against the SAME
-/// geometry that was actually painted (mirrors
-/// `quadraui::compose::TreeController::split_rect`, minus its drag/selection
-/// state) and drive drag/page/wheel scrolling without re-touching the
-/// backend.
+/// Paints `tree` into `area` through its own `Primitive` and returns
+/// `(content_rect, scrollbar, viewport_rows, layout)` so the caller can
+/// hit-test against the SAME geometry that was actually painted and
+/// drive drag/page/wheel scrolling without re-touching the backend.
 ///
-/// On a backend that paints its own scrollbar overlay inside `draw_tree`
-/// ([`Backend::tree_paints_own_scrollbar`] — GTK, macOS, Win), `tree` is
-/// painted into the full `area` and the returned `Scrollbar` exists purely
-/// for hit-testing; painting it again here would double it. On a backend
-/// with no overlay (TUI), a `line_height`-wide column is reserved on the
-/// right, `tree` is painted into the narrowed rect, and the scrollbar is
-/// built and painted explicitly into the reserved column. Either way,
-/// `None` is returned (and the full `area` painted) when the rows fit
-/// without scrolling.
+/// `content_rect` is the rect the rows were laid out into: on a cell
+/// grid the widget gives the rightmost column to its scrollbar when the
+/// rows overflow, on a pixel surface the scrollbar overlays the rows and
+/// `content_rect` is the whole `area`. `layout` is tree-local to
+/// `content_rect`. The scrollbar is `None` when every row fits.
 pub fn draw_tree_with_scrollbar(
     backend: &mut dyn Backend,
     area: Rect,
     tree: &TreeView,
-) -> (Rect, Option<Scrollbar>, usize) {
+) -> (Rect, Option<Scrollbar>, usize, TreeViewLayout) {
     draw_tree_with_scrollbar_and_state(backend, area, tree, None)
 }
 
 /// [`draw_tree_with_scrollbar`], plus an optional pixel-precise
 /// `scroll_px` (lifted out of the leaf's raw descriptor dict by
-/// [`crate::scroll_px_from_value`]) painted via
-/// [`Backend::draw_tree_with_state`] instead of [`Backend::draw_tree`].
-/// `scroll_px: None` paints exactly as [`draw_tree_with_scrollbar`]
-/// already does; `Some(px)` also moves the scrollbar thumb to the same
-/// continuous position [`crate::primitives::TreeController`]'s own
-/// scrollbar does (`px / line_height`, not quantised to a whole row).
+/// [`crate::scroll_px_from_value`]) handed to the widget's paint as its
+/// [`quadraui::TreePaintState`]. `scroll_px: None` paints exactly as
+/// [`draw_tree_with_scrollbar`] does; `Some(px)` paints the first row
+/// partially clipped and moves the scrollbar thumb to the same
+/// continuous position (`px / row pitch`, not quantised to a whole row).
 ///
-/// [`draw_tree_with_scrollbar_and_state_windowed`] with `extent: None` — a
-/// tree with no [`ItemsWindow`] in play sizes its scrollbar off
-/// `tree.rows.len()` exactly as this always has.
+/// [`draw_tree_with_scrollbar_and_state_windowed`] with `extent: None`.
 pub fn draw_tree_with_scrollbar_and_state(
     backend: &mut dyn Backend,
     area: Rect,
     tree: &TreeView,
     scroll_px: Option<f32>,
-) -> (Rect, Option<Scrollbar>, usize) {
+) -> (Rect, Option<Scrollbar>, usize, TreeViewLayout) {
     draw_tree_with_scrollbar_and_state_windowed(backend, area, tree, scroll_px, None)
 }
 
@@ -2598,76 +2590,62 @@ pub struct WindowedTreeExtent {
 /// tree's own real total and absolute offset here, every other caller
 /// passes `None`.
 ///
-/// This is the hook a windowed tree's scrollbar needs: a windowed tree's
-/// painted `rows` is only the band it actually shows (see
-/// [`WindowedBand`]'s own doc), so sizing the thumb off `tree.rows.len()`
-/// and positioning it off `tree.scroll_offset` the way an unwindowed tree
-/// always has would shrink the thumb to a viewport's worth and pin it to
-/// the top — `extent` lets the thumb, its position, and the "does this
-/// even need a scrollbar" check below all use the collection's real
-/// numbers instead.
-///
-/// On a backend that paints its own scrollbar overlay inside `draw_tree`
-/// ([`Backend::tree_paints_own_scrollbar`] — GTK, macOS, Win), `extent`
-/// has no effect: [`Backend::tree_vscrollbar`] still sizes its own thumb
-/// off `tree.rows.len()` internally, so a windowed tree's thumb on those
-/// backends reflects the painted band, not the real total, until `Backend`
-/// grows its own windowed-extent hook — tracked as a per-backend
-/// follow-up, not fixed here (TUI, the backend this module's own tests
-/// exercise, takes the explicit-gutter branch below and is unaffected).
+/// A windowed tree's painted `rows` is only the band it actually shows
+/// (see [`WindowedBand`]'s own doc), so a scrollbar sized off
+/// `tree.rows.len()` would shrink the thumb to a viewport's worth and pin
+/// it to the top. On a cell grid the tree is therefore painted with its
+/// own scrollbar off, into a rect one gutter narrower, and the scrollbar
+/// is built from `extent`'s real numbers and painted into the gutter
+/// through its own widget. On a pixel surface the widget's overlay
+/// scrollbar still reflects the painted band.
 pub fn draw_tree_with_scrollbar_and_state_windowed(
     backend: &mut dyn Backend,
     area: Rect,
     tree: &TreeView,
     scroll_px: Option<f32>,
     extent: Option<WindowedTreeExtent>,
-) -> (Rect, Option<Scrollbar>, usize) {
-    let total_rows = extent.map_or(tree.rows.len(), |extent| extent.total_rows);
+) -> (Rect, Option<Scrollbar>, usize, TreeViewLayout) {
     let state = quadraui::TreePaintState::default().with_scroll_px(scroll_px);
-    if backend.tree_paints_own_scrollbar() {
-        backend.draw_tree_with_state(area, tree, &state, false);
-        let scrollbar = backend.tree_vscrollbar(area, tree);
-        let viewport_rows = tree_viewport_rows(backend, area, tree);
-        return (area, scrollbar, viewport_rows);
-    }
+    let cells = backend.cell_surface().is_some();
+    let Some(extent) = extent.filter(|_| cells) else {
+        let layout = backend.layout_primitive(area, tree);
+        backend.draw_dyn(area, tree, &state);
+        let scrollbar = match (layout.vscrollbar, scroll_px) {
+            (Some(sb), Some(px)) => tree
+                .vscrollbar_with_scroll_px(area, layout.row_pitch, sb.track.width, Some(px))
+                .or(Some(sb)),
+            (sb, _) => sb,
+        };
+        return (layout.area, scrollbar, layout.viewport_rows, layout.layout);
+    };
+    let mut unbarred = tree.clone();
+    unbarred.style.show_scrollbar = false;
     let track_width = backend.line_height();
-    if area.width <= track_width {
-        backend.draw_tree_with_state(area, tree, &state, false);
-        let viewport_rows = tree_viewport_rows(backend, area, tree);
-        return (area, None, viewport_rows);
+    let viewport_rows = tree_viewport_rows(backend, area, &unbarred);
+    if area.width <= track_width || extent.total_rows <= viewport_rows {
+        let layout = backend.layout_primitive(area, &unbarred);
+        backend.draw_dyn(area, &unbarred, &state);
+        return (area, None, viewport_rows, layout.layout);
     }
     let content_rect = Rect::new(area.x, area.y, area.width - track_width, area.height);
-    let viewport_rows = tree_viewport_rows(backend, content_rect, tree);
-    if total_rows <= viewport_rows {
-        backend.draw_tree_with_state(area, tree, &state, false);
-        return (area, None, viewport_rows);
-    }
-    backend.draw_tree_with_state(content_rect, tree, &state, false);
+    let layout = backend.layout_primitive(content_rect, &unbarred);
+    backend.draw_dyn(content_rect, &unbarred, &state);
     let track_rect = Rect::new(
         area.x + content_rect.width,
         area.y,
         track_width,
         area.height,
     );
-    let line_height = backend.line_height();
-    let thumb_offset = match (extent, scroll_px) {
-        // A windowed tree's absolute offset is whole rows (its band starts
-        // at a row boundary and the sub-row remainder is what reaches the
-        // backend), so the pixel-precise branch below has nothing to add.
-        (Some(extent), _) => extent.scroll_offset as f32,
-        (None, Some(px)) if line_height > 0.0 => px / line_height,
-        _ => tree.scroll_offset as f32,
-    };
     let scrollbar = Scrollbar::vertical(
         format!("{}-scrollbar", tree.id),
         track_rect,
-        thumb_offset,
-        total_rows as f32,
+        extent.scroll_offset as f32,
+        extent.total_rows as f32,
         viewport_rows as f32,
         track_width.max(1.0),
     );
-    backend.draw_scrollbar(track_rect, &scrollbar);
-    (content_rect, Some(scrollbar), viewport_rows)
+    backend.draw_dyn(track_rect, &scrollbar, &());
+    (content_rect, Some(scrollbar), viewport_rows, layout.layout)
 }
 
 /// Walks `node`'s layout tree collecting the tree-address `id` ->
@@ -2859,7 +2837,7 @@ pub fn paint_leaf_windowed(
             };
             let painted_tree = painted.as_ref();
             let scroll_px = windowed.map_or(leaf.scroll_px, |windowed| windowed.scroll_px);
-            let (content_rect, scrollbar, viewport_rows) =
+            let (content_rect, scrollbar, viewport_rows, mut layout) =
                 draw_tree_with_scrollbar_and_state_windowed(
                     backend,
                     area,
@@ -2870,8 +2848,6 @@ pub fn paint_leaf_windowed(
                         scroll_offset: windowed.scroll_offset,
                     }),
                 );
-            #[allow(deprecated)]
-            let mut layout = backend.tree_layout(content_rect, painted_tree);
             if let Some(windowed) = windowed {
                 shift_tree_layout(&mut layout, windowed.band.start);
             }

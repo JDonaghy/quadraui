@@ -152,7 +152,6 @@ mod text_input;
 mod toast;
 mod tooltip;
 mod tray;
-mod tree;
 
 // `TabBarHits` is `#[deprecated]` — this re-export stays (a
 // dropped re-export is its own breaking change) until the six-method/
@@ -214,9 +213,6 @@ pub use text_input::{draw_text_input, gtk_text_input_layout};
 pub use toast::gtk_toast_stack_layout;
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
-pub use tree::draw_tree;
-#[doc(hidden)]
-pub use tree::{draw_tree_with_state, gtk_tree_layout, gtk_tree_layout_measured};
 
 /// Convert a `quadraui::Color` (0-255 RGBA) into Cairo's normalised
 /// `(r, g, b)` tuple. Alpha is dropped — Cairo supports

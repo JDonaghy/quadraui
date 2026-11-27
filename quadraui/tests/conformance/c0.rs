@@ -36,9 +36,8 @@ use quadraui::{
     Decoration, DiffEditability, DiffMode, DiffPane, DiffView, DrawOp, FindReplacePanel, ListItem,
     ListView, MessageList, MessageRow, MsvAxis, MultiSectionView, PipelineStage, PipelineView,
     ProgressBar, Reaction, Rect, ScrollAxis, ScrollMode, Scrollbar, Section, SectionBody,
-    SectionHeader, SectionSize, SelectionMode, Series, Spinner, Split, SplitDirection, SplitTree,
-    StageStatus, StyledText, TreeRow, TreeStyle, TreeTable, TreeTableNode, TreeView, UiEvent,
-    WidgetId,
+    SectionHeader, SectionSize, Series, Spinner, Split, SplitDirection, SplitTree, StageStatus,
+    StyledText, UiEvent, WidgetId,
 };
 
 use super::runner::{DriverFactory, DynDriver};
@@ -145,66 +144,6 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_tree",
-        needle: Some("c0tree"),
-        paint: |b, area| {
-            let tree = TreeView {
-                id: id("tree"),
-                rows: vec![TreeRow {
-                    path: vec![0],
-                    indent: 0,
-                    icon: None,
-                    text: StyledText::plain("c0tree"),
-                    badge: None,
-                    is_expanded: None,
-                    decoration: Decoration::Normal,
-                    edit: None,
-                }],
-                selection_mode: SelectionMode::Single,
-                selected_path: None,
-                scroll_offset: 0,
-                style: TreeStyle::default(),
-                has_focus: false,
-            };
-            #[allow(deprecated)]
-            b.draw_tree(area, &tree);
-        },
-    },
-    // `draw_tree_with_state` is an additive trait default that forwards to
-    // `draw_tree`, ignoring both indices, until a backend overrides it to
-    // tint hover/pressed. This row proves the default reaches a rasteriser
-    // and still paints observable content on every backend.
-    Case {
-        method: "draw_tree_with_state",
-        needle: Some("c0treehv"),
-        paint: |b, area| {
-            let tree = TreeView {
-                id: id("tree-hover"),
-                rows: vec![TreeRow {
-                    path: vec![0],
-                    indent: 0,
-                    icon: None,
-                    text: StyledText::plain("c0treehv"),
-                    badge: None,
-                    is_expanded: None,
-                    decoration: Decoration::Normal,
-                    edit: None,
-                }],
-                selection_mode: SelectionMode::Single,
-                selected_path: None,
-                scroll_offset: 0,
-                style: TreeStyle::default(),
-                has_focus: false,
-            };
-            b.draw_tree_with_state(
-                area,
-                &tree,
-                &quadraui::TreePaintState::default().with_hovered_idx(Some(0)),
-                false,
-            );
-        },
-    },
-    Case {
         method: "draw_pipeline_view",
         needle: Some("c0pipe"),
         paint: |b, area| {
@@ -296,19 +235,6 @@ pub const CASES: &[Case] = &[
         },
     },
     Case {
-        method: "draw_solid_fill",
-        needle: None,
-        paint: |b, area| {
-            let cw = b.char_width();
-            let lh = b.line_height();
-            b.draw_solid_fill(
-                Rect::new(cw * 2.0, lh * 2.0, cw * 4.0, lh * 5.0),
-                Color::rgb(100, 100, 110),
-            );
-            let _ = area;
-        },
-    },
-    Case {
         method: "draw_focus_ring",
         needle: None,
         paint: |b, area| {
@@ -355,57 +281,6 @@ pub const CASES: &[Case] = &[
             let _ = b.draw_data_table(area, &table, None);
         },
     },
-    // `draw_tree_table`'s trait default forwards to `draw_data_table`,
-    // painting the rows with no chevron/indent decoration, on any backend
-    // that doesn't override it (currently GTK/macOS/Win-GUI); TUI
-    // overrides it with real tree-cell painting on column 0. This row
-    // proves the method reaches a rasteriser and still paints observable
-    // content on every backend, default or overridden.
-    Case {
-        method: "draw_tree_table",
-        needle: Some("c0ttbl"),
-        paint: |b, area| {
-            let table = TreeTable {
-                table: DataTable {
-                    id: id("tree-table"),
-                    columns: vec![Column {
-                        title: "c0ttbl".to_string(),
-                        width: ColumnWidth::Flex(1.0),
-                        align: ColumnAlign::Left,
-                    }],
-                    rows: vec![
-                        DataRow {
-                            cells: vec![StyledText::plain("branch")],
-                            decoration: Decoration::Normal,
-                        },
-                        DataRow {
-                            cells: vec![StyledText::plain("leaf")],
-                            decoration: Decoration::Normal,
-                        },
-                    ],
-                    selected_idx: None,
-                    scroll_offset: 0,
-                    sort: None,
-                    has_focus: false,
-                    show_scrollbar: false,
-                    min_total_width: None,
-                    h_scroll: 0.0,
-                    column_overrides: vec![],
-                    footer: None,
-                    bordered: false,
-                    striped: false,
-                    glyphs: None,
-                },
-                tree: vec![
-                    TreeTableNode::new(vec![0], 0).with_expanded(true),
-                    TreeTableNode::new(vec![0, 0], 1),
-                ],
-                vim_keys: false,
-            };
-            #[allow(deprecated)]
-            let _ = b.draw_tree_table(area, &table, None);
-        },
-    },
     // `draw_data_table_with_state`'s trait default forwards to
     // `draw_data_table`, ignoring the hovered index, on any backend that
     // doesn't override it (currently Win-GUI); gtk/macos/tui each
@@ -445,13 +320,6 @@ pub const CASES: &[Case] = &[
                 &table,
                 &quadraui::DataTablePaintState::default().with_hovered_idx(Some(0)),
             );
-        },
-    },
-    Case {
-        method: "draw_settings_chrome",
-        needle: Some("c0sett"),
-        paint: |b, area| {
-            b.draw_settings_chrome(area, "c0sett", "", "search…", false);
         },
     },
     Case {

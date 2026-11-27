@@ -3325,9 +3325,9 @@ mod tests {
             style: TreeStyle::default(),
             has_focus: false,
         };
-        let frame = frame_with(vec![Surface::Tree {
+        let frame = frame_with(vec![Surface::Widget {
             rect: Rect::new(0.0, 0.0, 30.0, 10.0),
-            tree: tree_view,
+            widget: Box::new(tree_view),
         }]);
         let tree = frame_to_tree(&frame, &FocusTree::new());
         assert_eq!(

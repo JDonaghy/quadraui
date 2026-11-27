@@ -57,8 +57,8 @@ use crate::testing::ZoneRec;
 use crate::types::{Color, WidgetId};
 use crate::{
     Accelerator, AcceleratorId, Backend, DragState, FontRole, GenericFamily, ListView, ModalStack,
-    PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, SystemTheme, TreeView,
-    UiEvent, UserPayload, Viewport,
+    PlatformServices, PointerShape, Rect as QRect, ResizeEdge, Split, SystemTheme, UiEvent,
+    UserPayload, Viewport,
 };
 // `AcceleratorScope`/`KeyBinding`/`TabBar` are only used by
 // `#[cfg(test)]` code below — they're gated to avoid unused import
@@ -918,7 +918,7 @@ impl GtkBackend {
         &self.current_style
     }
 
-    /// Resolve the row pitch `draw_list`/`draw_tree`/`draw_data_table`
+    /// Resolve the row pitch `draw_list`/`draw_data_table`
     /// lay their rows out at: `Style::row_height` on a pixel backend
     /// (`candidate_line_height > 1.0`), floored at the font's own line
     /// height so a chrome font taller than the token isn't clipped — see
@@ -2551,91 +2551,13 @@ impl Backend for GtkBackend {
         true
     }
 
-    fn draw_tree(&mut self, rect: QRect, tree: &TreeView) {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tree called outside enter_frame_scope");
-        // Row labels, badges and chevrons are chrome, not editor
-        // content — save the editor font on the shared layout, paint the
-        // tree in `ui_font`, then restore so later draws in this frame
-        // aren't left painting chrome-sized text. `gtk::draw_tree` itself
-        // does all its own text measurement inline against `layout`, so
-        // swapping the font here covers paint and measurement alike.
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_tree(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            tree,
-            &self.current_theme,
-            &self.current_style,
-            self.resolved_row_height(self.current_line_height),
-            self.nerd_fonts_enabled,
-        );
-        layout.set_font_description(saved_font.as_ref());
-    }
-
-    fn draw_tree_with_state(
-        &mut self,
-        rect: QRect,
-        tree: &TreeView,
-        state: &crate::primitives::tree::TreePaintState,
-        focus_ring_visible: bool,
-    ) {
-        let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
-        let (cr, layout) = self
-            .current_frame_refs()
-            .expect("GtkBackend::draw_tree_with_state called outside enter_frame_scope");
-        let saved_font = layout.font_description();
-        layout.set_font_description(Some(&ui_font_desc));
-        crate::gtk::draw_tree_with_state(
-            cr,
-            layout,
-            rect.x as f64,
-            rect.y as f64,
-            rect.width as f64,
-            rect.height as f64,
-            tree,
-            &self.current_theme,
-            &self.current_style,
-            self.resolved_row_height(self.current_line_height),
-            self.nerd_fonts_enabled,
-            state.hovered_idx,
-            state.pressed_idx,
-            focus_ring_visible,
-            state.scroll_px,
-        );
-        layout.set_font_description(saved_font.as_ref());
-    }
-
-    /// The tree's real painted row pitch: [`Self::resolved_row_height`]
-    /// of the editor font metric, run through the same
-    /// [`crate::primitives::layout_metrics::tree_row_pitch`] formula
-    /// [`Self::draw_tree`]/[`Self::draw_tree_with_state`] paint rows
-    /// at — not the trait default ([`Backend::line_height`] alone),
-    /// which disagrees with that painted pitch by the leaf/branch
-    /// `1.4×` multiplier `tree_row_pitch` applies (unless
-    /// `tree.style.row_height` overrides it). Matches `MacBackend`'s
-    /// override of the same method.
-    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
-        crate::primitives::layout_metrics::tree_row_pitch(
-            tree,
-            self.resolved_row_height(self.current_line_height),
-        ) as f32
-    }
-
     fn draw_list(&mut self, rect: QRect, list: &ListView) {
         let ui_font_desc = crate::gtk::chrome_font_description(&self.ui_font);
         let (cr, layout) = self
             .current_frame_refs()
             .expect("GtkBackend::draw_list called outside enter_frame_scope");
         // Row labels and icon glyphs (`Icon::glyph`) are chrome, not
-        // editor content — mirrors `Self::draw_tree`'s save/swap/restore
+        // editor content — mirrors `Self::with_chrome_surface`'s save/swap/restore
         // above. Before this, `draw_list` painted with whatever font the
         // shared layout happened to carry into the frame (typically the
         // editor font), which has no Nerd-Font fallback family, so an
@@ -2710,7 +2632,7 @@ impl Backend for GtkBackend {
     /// Forwards to the shared
     /// [`crate::primitives::data_table::native_surface_paint::paint_with_state`]
     /// through [`Self::with_chrome_surface`] — `DataTable` is chrome, not
-    /// editor content, same as [`Self::draw_tree_table`].
+    /// editor content.
     fn draw_data_table_with_glyphs(
         &mut self,
         rect: QRect,
@@ -2792,55 +2714,6 @@ impl Backend for GtkBackend {
             &measure,
         )
     }
-    /// Forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::paint`]
-    /// through [`Self::with_chrome_surface`] — `TreeTable` is chrome,
-    /// not editor content, same as [`Self::draw_data_table_with_glyphs`].
-    fn draw_tree_table(
-        &mut self,
-        rect: QRect,
-        table: &crate::TreeTable,
-        hovered_idx: Option<usize>,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        let lh = self.resolved_row_height(self.current_line_height);
-        let theme = self.current_theme;
-        let nerd_fonts_enabled = self.nerd_fonts_enabled;
-        let state = crate::primitives::data_table::DataTablePaintState::default()
-            .with_hovered_idx(hovered_idx);
-        self.with_chrome_surface("draw_tree_table", |surface| {
-            crate::primitives::tree_table::native_surface_paint::paint(
-                table,
-                surface,
-                &theme,
-                rect,
-                lh as f32,
-                &state,
-                nerd_fonts_enabled,
-            )
-        })
-    }
-    /// One-line forward to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout`],
-    /// mirroring [`Self::data_table_layout`].
-    fn tree_table_layout(
-        &self,
-        rect: QRect,
-        table: &crate::TreeTable,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        let char_w = self.current_char_width as f32;
-        let pango_layout = self.chrome_measure_layout();
-        let measure = PangoTextMeasure {
-            layout: &pango_layout,
-            char_w,
-        };
-        crate::primitives::tree_table::native_surface_paint::pixel_tree_table_layout(
-            table,
-            rect.width,
-            rect.height,
-            self.resolved_row_height(self.current_line_height) as f32,
-            &measure,
-        )
-    }
 
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
         // `ListView::h_scroll` and `max_content_width` are in character columns,
@@ -2892,28 +2765,6 @@ impl Backend for GtkBackend {
         )
     }
 
-    fn draw_settings_chrome(
-        &mut self,
-        rect: QRect,
-        header_text: &str,
-        query: &str,
-        placeholder: &str,
-        active: bool,
-    ) {
-        let theme = self.current_theme;
-        let line_height = self.current_line_height as f32;
-        crate::compose::sidebar_panel_body::paint_settings_chrome(
-            self,
-            &theme,
-            rect,
-            line_height,
-            header_text,
-            query,
-            placeholder,
-            active,
-        );
-    }
-
     // ─── Layout-passthrough primitives ─────────────────────────────────────
     //
     // Phase B.5b Stage 9: trait extended with `&Layout` parameter per
@@ -2922,17 +2773,6 @@ impl Backend for GtkBackend {
     // layout internally, so the `_layout` parameter is currently
     // ignored — kept for forward compatibility when the GTK
     // rasterisers are updated to consume it. Behaviour is unchanged.
-
-    /// A pixel backend can honor `rect` exactly, unlike the old
-    /// per-row `StatusBar` hack this replaces — see
-    /// `Backend::draw_solid_fill`'s doc for why that hack produced a
-    /// dashed divider here specifically.
-    fn draw_solid_fill(&mut self, rect: QRect, color: Color) {
-        self.surface_fill_rect(rect, color);
-        // Chrome-only paint (no text of its own) — see
-        // `TuiBackend::draw_solid_fill`'s identical registration for why.
-        self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
-    }
 
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
 
@@ -2951,7 +2791,7 @@ impl Backend for GtkBackend {
             .expect("GtkBackend::draw_multi_section_view called outside enter_frame_scope");
         // Section headers and `Tree`/`List` body rows (icon glyphs
         // included) are sidebar chrome, not editor content — same
-        // save/swap/restore `Self::draw_tree`/`Self::draw_list` use.
+        // save/swap/restore `Self::draw_list` uses.
         // `SectionBody::Terminal`/`Custom` are host-painted no-ops here
         // (see `gtk::draw_multi_section_view`'s own body dispatch), so
         // they're unaffected by the swap.
@@ -2986,51 +2826,6 @@ impl Backend for GtkBackend {
         crate::gtk::multi_section_view::metrics_for(self.current_line_height, false)
     }
 
-    /// Measures the chevron
-    /// glyph actually configured on `tree.style` through a real Pango
-    /// layout (via [`Self::chrome_measure_layout`]) instead of
-    /// `gtk_tree_layout`'s `line_height * 0.65` estimate, so a caller
-    /// hit-testing outside a paint frame agrees with what
-    /// `Self::draw_tree` paints.
-    fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
-        let char_w = self.current_char_width;
-        let pango_layout = self.chrome_measure_layout();
-        crate::gtk::gtk_tree_layout_measured(
-            tree,
-            rect,
-            self.resolved_row_height(self.current_line_height),
-            pango_layout.as_ref(),
-            char_w,
-            self.current_style.row_padding_x,
-        )
-    }
-
-    fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        // Delegate to the primitive's geometry method, using the same
-        // per-row pitch `Self::tree_layout` (via `layout_metrics::tree_layout`)
-        // actually paints — not the raw `line_height`. Unlike `ListView`
-        // (whose items really are `line_height` tall, see
-        // `GtkBackend::list_vscrollbar`), `TreeView` rows pitch at
-        // `line_height * 1.4` (or `TreeStyle::row_height`); see
-        // `layout_metrics::tree_row_pitch`'s doc.
-        //
-        // Track width is the live `self.current_style.scrollbar_width`
-        // token, not the fixed `TREE_VSCROLLBAR_WIDTH` literal — same
-        // live field `Self::list_vscrollbar` already passes, so a
-        // host-set override can't make this hit-test geometry disagree
-        // with what `crate::primitives::tree::native_surface_paint::paint`
-        // (reached through `Self::draw_tree`) actually painted.
-        let row_h = crate::primitives::layout_metrics::tree_row_pitch(
-            tree,
-            self.resolved_row_height(self.current_line_height),
-        );
-        tree.vscrollbar_with_track_width(rect, row_h as f32, self.current_style.scrollbar_width)
-    }
-
-    fn tree_paints_own_scrollbar(&self) -> bool {
-        true
-    }
-
     fn draw_message_list(
         &mut self,
         rect: QRect,
@@ -3043,7 +2838,7 @@ impl Backend for GtkBackend {
             .expect("GtkBackend::draw_message_list called outside enter_frame_scope");
         // MessageList rows are chrome, not editor content — save the
         // editor font on the shared layout, paint in `ui_font`, then
-        // restore, matching `Self::draw_tree`'s save/swap/restore.
+        // restore, matching [`Self::with_chrome_surface`]'s save/swap/restore.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
         crate::gtk::draw_message_list(
@@ -3138,7 +2933,7 @@ impl Backend for GtkBackend {
         crate::primitives::split_tree::native_surface_paint::paint(&layout, self, &theme);
         // Dividers only, and `SplitTree` (unlike `Split`) carries no
         // id of its own — register a fixed chrome id, same pattern as
-        // `draw_solid_fill` and the `DropOverlay` widget's host.
+        // the `DropOverlay` widget's host.
         self.register_zone(WidgetId::new("chrome:split-tree"), rect);
         layout
     }
@@ -3230,7 +3025,7 @@ impl Backend for GtkBackend {
             .expect("GtkBackend::draw_spinner called outside enter_frame_scope");
         // Spinner's label (e.g. "Indexing…") is chrome, not editor
         // content — save the editor font on the shared layout, paint in
-        // `ui_font`, then restore, matching `Self::draw_tree`'s
+        // `ui_font`, then restore, matching `Self::with_chrome_surface`'s
         // save/swap/restore.
         let saved_font = pango_layout.font_description();
         pango_layout.set_font_description(Some(&ui_font_desc));
@@ -3851,7 +3646,7 @@ impl PaintSurface for GtkBackend {
     /// measuring without forcing chrome here silently measured chrome
     /// text against editor metrics. Saves and restores the layout's font
     /// description around the measurement, the same save/swap/restore
-    /// shape [`Self::draw_tree`] already uses for painting, so a caller
+    /// shape [`Self::with_chrome_surface`] uses for painting, so a caller
     /// mid-frame never finds the shared layout left on `ui_font` after
     /// this returns. See [`EditorSurface`]'s doc for the three
     /// editor-class primitives that opt back into the editor font via a
@@ -4067,7 +3862,7 @@ impl PaintSurface for GtkBackend {
     /// chrome one. Saves and restores the layout's font description
     /// around the call, mirroring the save/restore recipe every
     /// `chrome_font_desc`-swapping `draw_*` method in this file already
-    /// repeats by hand (e.g. `draw_tree`).
+    /// repeats by hand.
     fn surface_draw_text_run_with_role(
         &mut self,
         rect: QRect,
@@ -6699,7 +6494,7 @@ mod tests {
             let mut surface =
                 pangocairo::cairo::ImageSurface::create(pangocairo::cairo::Format::ARgb32, W, H)
                     .expect("create ImageSurface");
-            let tree = TreeView {
+            let tree = crate::TreeView {
                 id: WidgetId::new("test:tree"),
                 rows: vec![crate::primitives::tree::TreeRow {
                     path: vec![0],
@@ -6739,7 +6534,7 @@ mod tests {
                     Backend::set_ui_font(&mut backend, f);
                 }
                 backend.enter_frame_scope(&cr, &layout, |b| {
-                    b.draw_tree(rect, &tree);
+                    b.draw_dyn(rect, &tree, &());
                 });
             }
             surface.flush();
@@ -6967,47 +6762,6 @@ mod tests {
         );
     }
 
-    /// `GtkBackend::tree_scroll_row_height` is the real painted pitch —
-    /// [`crate::primitives::layout_metrics::tree_row_pitch`]'s 1.4x
-    /// leaf/branch formula over [`GtkBackend::resolved_row_height`] —
-    /// not the trait default ([`Backend::line_height`] alone). Mirrors
-    /// `MacBackend`'s identically named test.
-    #[test]
-    fn gtk_backend_tree_scroll_row_height_is_the_real_painted_pitch_not_the_editor_line_height() {
-        let b = GtkBackend::new();
-        assert_eq!(b.line_height(), 16.0);
-        let tree = TreeView {
-            id: WidgetId::new("tree"),
-            rows: vec![crate::primitives::tree::TreeRow {
-                path: vec![0],
-                indent: 0,
-                icon: None,
-                text: crate::types::StyledText::plain("a"),
-                badge: None,
-                is_expanded: None,
-                decoration: crate::Decoration::Normal,
-                edit: None,
-            }],
-            selection_mode: crate::SelectionMode::Single,
-            selected_path: None,
-            scroll_offset: 0,
-            style: crate::TreeStyle::default(),
-            has_focus: true,
-        };
-        let row_height = b.tree_scroll_row_height(&tree);
-        // The real painted pitch is floored at `Style::row_height` and
-        // run through the tree's own 1.4x row-pitch formula, so it must
-        // not equal the raw editor `line_height()`.
-        assert_ne!(row_height, b.line_height());
-        assert_eq!(
-            row_height as f64,
-            crate::primitives::layout_metrics::tree_row_pitch(
-                &tree,
-                b.resolved_row_height(b.line_height() as f64)
-            )
-        );
-    }
-
     /// `draw_data_table_with_glyphs`'s `DataTableGlyphs` override replaces
     /// the header's sort-direction glyph; `None` and an empty override
     /// (no fields set) must paint byte-identical to each other, and a
@@ -7184,109 +6938,6 @@ mod tests {
             ui_font_extent > small_editor_extent + 20,
             "changing ui_font alone must visibly widen the painted cell label: \
              default_ui_font={small_editor_extent}, ui_font_Sans_40={ui_font_extent}"
-        );
-    }
-
-    /// Build a flat tree of `n_rows` leaf rows for `tree_vscrollbar`
-    /// integration tests.
-    fn flat_tree(n_rows: usize) -> TreeView {
-        TreeView {
-            id: WidgetId::new("test:tree:vscrollbar"),
-            rows: (0..n_rows)
-                .map(|i| crate::primitives::tree::TreeRow {
-                    path: vec![i as u16],
-                    indent: 0,
-                    icon: None,
-                    text: crate::types::StyledText::plain(format!("row{i}")),
-                    badge: None,
-                    is_expanded: None,
-                    decoration: crate::types::Decoration::Normal,
-                    edit: None,
-                })
-                .collect(),
-            selection_mode: crate::types::SelectionMode::Single,
-            selected_path: None,
-            scroll_offset: 0,
-            style: crate::types::TreeStyle::default(),
-            has_focus: false,
-        }
-    }
-
-    /// `tree_vscrollbar` passes `line_height * 1.4` pitch (the actual row
-    /// height `tree_layout` paints) as `TreeView::vscrollbar`'s
-    /// `row_height`, not the raw `line_height`. With `current_line_height`
-    /// at 16px default, 15 rows painted at the real 22.4px→22px pitch fit
-    /// 13 into a 300px-tall viewport (300/22 = 13), so an overflow
-    /// scrollbar must appear. The row pitch governs the minimum thumb
-    /// length, not the track's width (the live `Style::scrollbar_width`
-    /// token, `10.0` at the default style used here).
-    #[test]
-    fn gtk_backend_tree_vscrollbar_uses_tree_layout_row_pitch_not_raw_line_height() {
-        let backend = GtkBackend::new();
-        let tree = flat_tree(15);
-        let rect = QRect::new(0.0, 0.0, 20.0, 300.0);
-
-        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at the real 22px row pitch overflow a 300px viewport");
-
-        let expected_row_h = ((backend.current_line_height * 1.4).round()) as f32;
-        assert_eq!(
-            sb.track.width,
-            backend.current_style().scrollbar_width,
-            "track width must follow the live Style::scrollbar_width token"
-        );
-        assert!(
-            sb.thumb_len >= expected_row_h,
-            "minimum thumb length (and row pitch) must match tree_layout's \
-             non-header item_height, not the raw line_height"
-        );
-    }
-
-    /// A host-set `TreeStyle::row_height` must be honored
-    /// by `tree_vscrollbar`, exactly as `tree_layout`/`draw_tree` honor
-    /// it — not silently ignored in favor of `line_height`. It governs the
-    /// minimum thumb length, not the track's width (the live
-    /// `Style::scrollbar_width` token).
-    #[test]
-    fn gtk_backend_tree_vscrollbar_honors_tree_style_row_height_override() {
-        let backend = GtkBackend::new();
-        let mut tree = flat_tree(15);
-        tree.style.row_height = Some(50);
-        let rect = QRect::new(0.0, 0.0, 20.0, 300.0);
-
-        let sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows at a 50px override overflow a 300px viewport (6 visible)");
-        assert_eq!(sb.track.width, backend.current_style().scrollbar_width);
-        assert!(sb.thumb_len >= 50.0);
-    }
-
-    /// `tree_vscrollbar`'s track width must follow a host-set
-    /// `Style::scrollbar_width`, the same live field
-    /// `crate::primitives::tree::native_surface_paint::paint` reads (via
-    /// `Self::draw_tree`) — so the painted track and the hit-tested
-    /// track can never drift apart at a non-default width. Mirrors
-    /// `gtk_backend_list_vscrollbar_track_width_follows_style_token`.
-    #[test]
-    fn gtk_backend_tree_vscrollbar_track_width_follows_style_token() {
-        let mut backend = GtkBackend::new();
-        let tree = flat_tree(15);
-        let rect = QRect::new(0.0, 0.0, 200.0, 300.0);
-
-        let default_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows must overflow a 300px viewport");
-        assert_eq!(
-            default_sb.track.width,
-            backend.current_style().scrollbar_width
-        );
-
-        backend.set_style(crate::Style::default().with_scrollbar_width(24.0));
-        let overridden_sb = Backend::tree_vscrollbar(&backend, rect, &tree)
-            .expect("15 rows must still overflow with a wider track reserved");
-        assert_eq!(overridden_sb.track.width, 24.0);
-        assert_eq!(
-            overridden_sb.track.x,
-            rect.x + rect.width - 24.0,
-            "widened track must still hug the tree's right edge"
         );
     }
 
@@ -8848,7 +8499,11 @@ mod tests {
             let pango_layout = pango::Layout::new(&pango_ctx);
             backend.enter_frame_scope(&cr, &pango_layout, |b| {
                 Backend::push_clip(b, QRect::new(0.0, 0.0, 10.0, 10.0));
-                b.draw_solid_fill(QRect::new(0.0, 0.0, 40.0, 40.0), red);
+                b.draw_dyn(
+                    QRect::new(0.0, 0.0, 40.0, 40.0),
+                    &crate::testing::solid_canvas(QRect::new(0.0, 0.0, 40.0, 40.0), red),
+                    &(),
+                );
                 Backend::pop_clip(b);
             });
         }
@@ -8893,14 +8548,22 @@ mod tests {
                 // clip, this reaches (0,0)..(20,20) but not past it; if it
                 // dropped clipping entirely, it would reach the whole
                 // 40x40 surface, including (30,30) checked below.
-                b.draw_solid_fill(QRect::new(0.0, 0.0, 40.0, 40.0), green);
+                b.draw_dyn(
+                    QRect::new(0.0, 0.0, 40.0, 40.0),
+                    &crate::testing::solid_canvas(QRect::new(0.0, 0.0, 40.0, 40.0), green),
+                    &(),
+                );
                 Backend::pop_clip(b);
                 // Paint only after the outer pop, confined to pixels
                 // (20,20)..(40,40) — entirely outside the now-popped
                 // outer clip, so this fill can only land there if the
                 // outer pop actually cleared clipping rather than
                 // leaving the outer rect active.
-                b.draw_solid_fill(QRect::new(20.0, 20.0, 20.0, 20.0), white);
+                b.draw_dyn(
+                    QRect::new(20.0, 20.0, 20.0, 20.0),
+                    &crate::testing::solid_canvas(QRect::new(20.0, 20.0, 20.0, 20.0), white),
+                    &(),
+                );
             });
         }
 

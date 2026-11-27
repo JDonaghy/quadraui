@@ -3113,11 +3113,6 @@ mod tests {
             layout.divider_bounds.is_some(),
             "this shell shape should have a divider"
         );
-        assert!(
-            !backend.calls.contains(&"draw_solid_fill"),
-            "the divider paints through the shell, got: {:?}",
-            backend.calls
-        );
     }
 
     // ── Resize drag ─────────────────────────────────────────────────

@@ -204,6 +204,32 @@ widget_kinds! {
         all(feature = "macos", target_os = "macos")
     ))]
     "list" => crate::ListView,
+    // Gated the same as `impl Primitive for TreeView`/`TreeTable`, so
+    // these entries exist exactly on the feature sets where each is a
+    // `DynWidget`. `"tree_table_controller"` is the wire name the py/node
+    // hierarchical-model kind publishes; it decodes to the same flattened
+    // `TreeTable` descriptor as `"tree_table"`.
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    "tree" => crate::TreeView,
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    "tree_table" => crate::TreeTable,
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    "tree_table_controller" => crate::TreeTable,
     // Ungated, like `impl Primitive for TabBar`/`impl Interactive for
     // TabBar` — `TabBar` is a `DynWidget` on every feature set.
     "tab_bar" => crate::TabBar,
@@ -696,5 +722,84 @@ mod tests {
         )
         .expect("scroll_view decodes");
         assert_eq!(view.id().map(|id| id.as_str()), Some("scroll"));
+    }
+
+    #[cfg(any(
+        feature = "gtk",
+        feature = "tui",
+        feature = "win",
+        all(feature = "macos", target_os = "macos")
+    ))]
+    mod tree_kinds {
+        use super::*;
+        use crate::primitives::data_table::{Column, ColumnAlign, ColumnWidth, DataRow, DataTable};
+        use crate::types::{Decoration, SelectionMode, StyledText, TreeStyle};
+        use crate::{TreeRow, TreeTable, TreeTableNode, TreeView, WidgetId};
+
+        fn sample_tree() -> TreeView {
+            TreeView {
+                id: WidgetId::new("explorer"),
+                rows: vec![TreeRow {
+                    path: vec![0],
+                    indent: 0,
+                    icon: None,
+                    text: StyledText::plain("src"),
+                    badge: None,
+                    is_expanded: Some(false),
+                    decoration: Decoration::Normal,
+                    edit: None,
+                }],
+                selection_mode: SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: TreeStyle::default(),
+                has_focus: false,
+            }
+        }
+
+        fn sample_tree_table() -> TreeTable {
+            let table = DataTable {
+                id: WidgetId::new("files"),
+                columns: vec![Column {
+                    title: "Name".to_string(),
+                    width: ColumnWidth::Flex(1.0),
+                    align: ColumnAlign::Left,
+                }],
+                rows: vec![DataRow {
+                    cells: vec![StyledText::plain("src")],
+                    decoration: Decoration::Normal,
+                }],
+                selected_idx: None,
+                scroll_offset: 0,
+                sort: None,
+                has_focus: false,
+                show_scrollbar: false,
+                min_total_width: None,
+                h_scroll: 0.0,
+                column_overrides: vec![],
+                footer: None,
+                bordered: false,
+                striped: false,
+                glyphs: None,
+            };
+            TreeTable::new(table, vec![TreeTableNode::new(vec![0], 0)])
+        }
+
+        #[test]
+        fn decodes_a_tree() {
+            let payload = serde_json::to_value(sample_tree()).expect("tree serializes");
+            let widget = decode_widget("tree", payload).expect("tree decodes");
+            assert_eq!(widget.id().map(|id| id.as_str()), Some("explorer"));
+        }
+
+        #[test]
+        fn decodes_a_tree_table_under_both_kind_names() {
+            for kind in ["tree_table", "tree_table_controller"] {
+                let payload = serde_json::to_value(sample_tree_table()).expect("table serializes");
+                let widget = decode_widget(kind, payload)
+                    .unwrap_or_else(|err| panic!("{kind} decodes: {err}"));
+                assert_eq!(widget.id().map(|id| id.as_str()), Some("files"), "{kind}");
+            }
+        }
     }
 }

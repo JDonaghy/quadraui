@@ -679,9 +679,8 @@ impl ExtraPaint for MultiSectionView {
 }
 
 impl ExtraPaint for TreeTable {
-    #[allow(deprecated)]
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_tree_table(area, self, None);
+        backend.draw_dyn(area, self, &());
     }
 
     fn id(&self) -> WidgetId {
@@ -690,7 +689,7 @@ impl ExtraPaint for TreeTable {
 
     /// Whole-area bounds check only, same limitation [`ComboBox::hit_test`]'s
     /// doc describes: this trait's `hit_test` has no `backend` parameter
-    /// to resolve [`quadraui::Backend::tree_table_layout`]'s real column
+    /// to resolve the table's real laid-out column
     /// widths with. The precise chevron/row/header resolution a click
     /// actually gets goes through [`crate::hit::PaintedHit::Extra::tree_table_hit`]
     /// instead — the real [`quadraui::TreeTableLayout`] stashed there at

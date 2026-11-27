@@ -141,7 +141,7 @@ impl AppLogic for CodiconTreeDemo {
             style: TreeStyle::default(),
             has_focus: true,
         };
-        backend.draw_tree(Self::tree_rect(backend), &tree);
+        let _ = backend.draw_dyn(Self::tree_rect(backend), &tree, &());
 
         let _ = backend.draw_dyn(Self::status_rect(backend), &self.status_bar(), &());
     }

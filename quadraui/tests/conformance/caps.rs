@@ -430,18 +430,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "a terminal cell cannot grow; the `false` default is the correct answer, not a missing \
          one — scaled rows render bold at normal cell height",
     ),
-    // TUI: `tree_paints_own_scrollbar` — scrolling a tree in a terminal has
-    // no spare pixels for an overlay scrollbar, so `draw_tree` never paints
-    // one and the default `false` is the honest answer: the host
-    // (`TreeController`) reserves a column and paints the scrollbar itself.
-    // GTK, macOS and Win all override this to `true` because each paints the
-    // overlay inside `draw_tree`.
-    (
-        "tui",
-        "tree_paints_own_scrollbar",
-        "a terminal has no spare pixels for an overlay scrollbar, so `draw_tree` never paints \
-         one — the host reserves a column and paints it instead (quadraui#1476)",
-    ),
     // TUI: `has_font_family` answers "does the platform have
     // this font installed", which a terminal emulator's hosting process
     // cannot answer — the terminal's own font choice is invisible to
@@ -747,24 +735,6 @@ pub const ACCEPTED_DEFAULTS: &[(&str, &str, &str)] = &[
         "wheel_delta_rows",
         "Win32's raw_delta / WHEEL_DELTA is already in row-notch units, so the identity default \
          is correct — see Backend::wheel_delta_rows's own doc",
-    ),
-    // ── tree_scroll_row_height: the row-pitch basis
-    // `TreeController::scroll_by_wheel` converts wheel notches into the
-    // `scroll_px` currency with. A backend only needs to override it
-    // when its painted `TreeView` row pitch differs from
-    // `Self::line_height` — `GtkBackend`, `MacBackend` and `WinBackend`
-    // all do (they run `layout_metrics::tree_row_pitch` over a font
-    // metric of their own), so all three override it. TUI does not
-    // paint a sub-row `scroll_px` for `TreeView` at all, so the
-    // default's exact relationship to its own `tree_layout` row pitch is
-    // TUI's own pixel-smooth-tree-scroll issue's job to verify when it
-    // wires that up. See `Backend::tree_scroll_row_height`'s own doc.
-    (
-        "tui",
-        "tree_scroll_row_height",
-        "TUI's tree painter ignores the sub-row scroll_px, so this basis is unobservable there; \
-         verifying it against TUI's own tree row pitch is a TUI pixel-smooth-tree-scroll \
-         sibling issue's job",
     ),
     // ── push_clip / pop_clip: the backend-neutral clip-rect seam.
     // `TuiBackend` overrides both, reusing `tui::canvas`'s own

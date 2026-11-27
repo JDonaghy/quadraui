@@ -7,7 +7,7 @@
 //! completeness on Linux (see `backend.rs`'s module docs and `Cargo.toml`'s
 //! `win` feature comment). Chrome strips (menu, status and
 //! activity bars) paint through their widget contracts; content-area
-//! rasterisers include `tree`/`list`/`form`/`data_table`/`editor`/`chart`;
+//! rasterisers include `list`/`form`/`data_table`/`editor`/`chart`;
 //! overlay/popup rasterisers include `tooltip`/`dialog`/
 //! `palette`/`completions`/`find_replace`/`rich_text_popup`; container/
 //! indicator rasterisers include `split`/`toast`/`progress`/
@@ -208,10 +208,6 @@ mod tooltip;
 /// Windows" reason as `backend`/`services`/`run` above — see this
 /// module's own doc and `tray`'s module doc.
 pub(crate) mod tray;
-/// Direct2D / DirectWrite rasteriser for [`crate::TreeView`].
-/// Windows-only in full — see its module docs.
-#[cfg(target_os = "windows")]
-mod tree;
 
 // The flat re-exports below split into two groups, verified by grepping
 // `~/src/vimcode/src`, `~/src/coord-tui/src`, and every in-tree consumer
@@ -291,9 +287,6 @@ pub use toast::win_toast_stack_layout;
 #[cfg(target_os = "windows")]
 #[doc(hidden)]
 pub use tooltip::{draw_tooltip, draw_tooltip_with_chrome};
-#[cfg(target_os = "windows")]
-#[doc(hidden)]
-pub use tree::{draw_tree, win_tree_layout, win_tree_layout_measured};
 
 /// Serialises every `#[test]` fn in this module tree that drives the
 /// **one real systemwide Windows clipboard**.

@@ -12,10 +12,10 @@
 
 use quadraui::compose::sidebar_panel_body::{SidebarPanelBody, SidebarPanelChrome};
 use quadraui::{
-    Backend, BackendCaps, BackendWidget, Decoration, DrawsPrimitives, NavigationMode, Reaction,
-    Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit, SidebarPanelLayout,
-    SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, Style, StyledText, Toolbar,
-    ToolbarButton, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
+    Backend, BackendCaps, BackendWidget, Canvas, Decoration, DrawOp, DrawsPrimitives,
+    NavigationMode, Reaction, Rect, Scrollbar, SidebarEvent, SidebarPanel, SidebarPanelHit,
+    SidebarPanelLayout, SidebarSectionDef, SidebarSystem, StatusBar, StatusBarSegment, Style,
+    StyledText, Toolbar, ToolbarButton, TreeRow, TreeStyle, TreeView, UiEvent, WidgetId,
 };
 
 use crate::demo::{extract_region, Demo};
@@ -90,9 +90,8 @@ fn grouped_rows() -> Vec<TreeRow> {
 struct TreeBody(TreeView);
 
 impl BackendWidget for TreeBody {
-    #[allow(deprecated)]
     fn render(&self, backend: &mut dyn Backend, rect: Rect) {
-        backend.draw_tree(rect, &self.0);
+        let _ = backend.draw_dyn(rect, &self.0, &());
     }
 }
 
@@ -317,7 +316,16 @@ impl Demo for SidebarDemo {
                 // first, so the window's base clear colour (a stray
                 // light-grey strip under `Theme::light_default()`) never
                 // shows through below the last task row.
-                backend.draw_solid_fill(content, theme.surface_bg);
+                let backdrop = Canvas {
+                    id: WidgetId::new("sidebar:backdrop"),
+                    ops: vec![DrawOp::Rect {
+                        rect: Rect::new(0.0, 0.0, content.width, content.height),
+                        color: theme.surface_bg,
+                    }],
+                    regions: Vec::new(),
+                    focusable: false,
+                };
+                let _ = backend.draw_dyn(content, &backdrop, &());
                 let header_text = if self.filter_on {
                     "  Tasks (filtered)  "
                 } else {
@@ -409,7 +417,10 @@ impl Demo for SidebarDemo {
                     selection_mode: quadraui::SelectionMode::Single,
                     selected_path: None,
                     scroll_offset: self.body_scroll,
-                    style: TreeStyle::default(),
+                    style: TreeStyle {
+                        show_scrollbar: false,
+                        ..TreeStyle::default()
+                    },
                     has_focus: true,
                 };
                 let layout = panel.render(backend, panel_rect, &TreeBody(tree));

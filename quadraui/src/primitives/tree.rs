@@ -104,10 +104,8 @@ pub struct TreeView {
     /// [`crate::Button::focused`]/[`crate::TextInput::has_focus`]
     /// follow — see [`crate::ListView::has_focus`]'s matching doc for
     /// why a focus-visible ring can't ride on this field. The GUI
-    /// focus-visible ring instead reads
-    /// [`crate::Backend::draw_tree_with_state`]'s own
-    /// `focus_ring_visible` parameter — pass
-    /// `ring.is_focused(&tree.id) && ring.is_focus_visible()` there.
+    /// focus-visible ring instead reads the paint state's
+    /// [`crate::primitive::PaintState::focus_ring_visible`].
     #[serde(default)]
     pub has_focus: bool,
 }
@@ -272,7 +270,7 @@ pub struct TreeViewLayout {
 /// (`tui::tree::draw_tree`) always reads the two fields directly and
 /// never calls this.
 ///
-/// [`crate::primitives::layout_metrics::tree_layout_measured`] calls
+/// [`crate::primitives::layout_metrics::pixel_tree_layout_measured`] calls
 /// this too, so the glyph it measures is the one pixel paint actually
 /// substitutes — keeping layout and paint in lockstep for the default
 /// style, not just for app overrides.
@@ -470,12 +468,12 @@ impl TreeView {
     /// paints a tree scrollbar and consumers that hit-test the resolved
     /// `track`/`thumb_start`/`thumb_len` to implement thumb dragging —
     /// mirrors [`ListView::vscrollbar`](crate::primitives::list::ListView::vscrollbar).
-    /// Reach it backend-agnostically via
-    /// [`crate::Backend::tree_vscrollbar`].
+    /// The laid-out tree carries it as
+    /// [`TreeViewPrimitiveLayout::vscrollbar`].
     ///
     /// Unlike `ListView`, `TreeView` rows can have mixed heights on pixel
     /// backends (`Decoration::Header` rows paint shorter than others —
-    /// see [`crate::primitives::layout_metrics::tree_layout`]). This
+    /// see [`crate::primitives::layout_metrics::pixel_tree_layout`]). This
     /// method still sizes the thumb against a uniform `row_height`: a
     /// pixel-exact extent would require summing every row's real
     /// measured height every frame just to position a thumb, and the
@@ -485,8 +483,8 @@ impl TreeView {
     /// paint at `line_height * 1.4` (or [`crate::types::TreeStyle::row_height`]
     /// when the host set one) — so callers must pass that pitch, not raw
     /// `line_height`, or the computed "does this overflow" answer and the
-    /// thumb geometry won't match what [`crate::primitives::layout_metrics::tree_layout`]
-    /// (and therefore `draw_tree`) actually paints.
+    /// thumb geometry won't match what [`crate::primitives::layout_metrics::pixel_tree_layout`]
+    /// (and therefore the tree's own paint) actually lays out.
     ///
     /// # Arguments
     ///
@@ -576,6 +574,21 @@ pub type TreePaintState = RowPaintState;
 /// [`TreeView`] row and of a [`crate::TreeTable`] row. The geometry here
 /// is the one source both widgets, both unit systems and both layout and
 /// paint read; the pixel painter sits beside it.
+#[cfg(feature = "tui")]
+pub(crate) mod paint_cells;
+
+impl crate::behaviour::nav::NavRow for TreeRow {
+    fn path(&self) -> &TreePath {
+        &self.path
+    }
+    fn indent(&self) -> u16 {
+        self.indent
+    }
+    fn is_expanded(&self) -> Option<bool> {
+        self.is_expanded
+    }
+}
+
 pub(crate) mod tree_cell {
     // The cell-grid geometry and the floor are read only by the backends'
     // own layouts.
@@ -1425,7 +1438,7 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn paints_vertical_scrollbar_track_when_overflowing() {
             let tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -1490,7 +1503,7 @@ pub(crate) mod native_surface_paint {
             tree.selected_path = Some(vec![0]);
 
             let paint_and_count_strokes = |focus_ring_visible: bool| -> usize {
-                let layout = crate::primitives::layout_metrics::tree_layout(
+                let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                     &tree,
                     AREA,
                     LINE_HEIGHT as f64,
@@ -1619,7 +1632,7 @@ pub(crate) mod native_surface_paint {
         #[test]
         fn vertical_scrollbar_track_width_follows_style_token() {
             let tree = make_tree((0..50).map(|i| leaf(i, &format!("row{i}"))).collect());
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -1657,7 +1670,7 @@ pub(crate) mod native_surface_paint {
             let mut rows = vec![leaf(0, "branch")];
             rows[0].is_expanded = Some(true);
             let tree = make_tree(rows);
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -1705,7 +1718,7 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(rows);
             tree.style.chevron_expanded = "+".into();
             tree.style.chevron_collapsed = "-".into();
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -1759,7 +1772,7 @@ pub(crate) mod native_surface_paint {
                 placeholder: None,
             });
             let tree = make_tree(rows);
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -1808,7 +1821,7 @@ pub(crate) mod native_surface_paint {
                 placeholder: None,
             });
             let tree = make_tree(rows);
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -1846,7 +1859,7 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
             tree.selected_path = Some(vec![1]);
             tree.has_focus = true;
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -1892,7 +1905,7 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
             tree.selected_path = Some(vec![1]);
             tree.has_focus = true;
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -1949,7 +1962,7 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
             tree.selected_path = Some(vec![1]);
             tree.has_focus = true;
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -1988,7 +2001,7 @@ pub(crate) mod native_surface_paint {
             let mut tree = make_tree(vec![leaf(0, "alpha"), leaf(1, "beta"), leaf(2, "gamma")]);
             tree.selected_path = Some(vec![1]);
             tree.has_focus = false;
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -2027,7 +2040,7 @@ pub(crate) mod native_surface_paint {
             let mut warn_row = leaf(1, "careful");
             warn_row.decoration = Decoration::Warning;
             let tree = make_tree(vec![err_row, warn_row]);
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -2069,7 +2082,7 @@ pub(crate) mod native_surface_paint {
             let mut row = leaf(0, "BACKEND_SPECULATIVE_EXECUTION_MODULE");
             row.badge = Some(Badge::plain("U"));
             let tree = make_tree(vec![row]);
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -2134,7 +2147,7 @@ pub(crate) mod native_surface_paint {
                 spans: vec![StyledSpan::plain(""), StyledSpan::plain("ok")],
             };
             let tree = make_tree(vec![row]);
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -2180,7 +2193,7 @@ pub(crate) mod native_surface_paint {
             tree.style.show_chevrons = false;
 
             let style = Style::default().with_row_padding_x(15.0);
-            let layout = crate::primitives::layout_metrics::tree_layout(
+            let layout = crate::primitives::layout_metrics::pixel_tree_layout(
                 &tree,
                 AREA,
                 LINE_HEIGHT as f64,
@@ -2221,7 +2234,7 @@ pub(crate) mod native_surface_paint {
 // ── `crate::primitive::Primitive` impl ──────────────────────────────
 //
 // `paint`'s pixel-backend branch needs `native_surface_paint`;
-// `paint_cells` needs `crate::tui::draw_tree`/`ratatui` — gated to
+// `paint_cells` needs the cell-grid rasteriser in `paint_cells`/`ratatui` — gated to
 // whichever of those a build actually has, same as those modules
 // themselves.
 
@@ -2361,6 +2374,10 @@ impl crate::primitive::Primitive for TreeView {
         Some(&self.id)
     }
 
+    fn capture(&self) -> crate::frame::OwnedContent {
+        crate::frame::OwnedContent::Tree(self.clone())
+    }
+
     fn layout(&self, ctx: &crate::primitive::LayoutCtx, rect: Rect) -> Self::Layout {
         let border = if self.style.bordered { 2.0 } else { 0.0 };
         // `ctx.units()` separates TUI's whole-cell `line_height`
@@ -2401,10 +2418,10 @@ impl crate::primitive::Primitive for TreeView {
         // No live `Style` reaches `Primitive::layout` (its signature
         // carries only `LayoutCtx`), so this uses `Style::default`'s
         // `row_padding_x` and `scrollbar_width` — what
-        // `crate::primitives::layout_metrics::tree_layout`'s own doc says
+        // `crate::primitives::layout_metrics::pixel_tree_layout`'s own doc says
         // to pass "when no live `Style` is reachable".
         let default_style = crate::style::Style::default();
-        let layout = crate::primitives::layout_metrics::tree_layout(
+        let layout = crate::primitives::layout_metrics::pixel_tree_layout(
             self,
             rect,
             ctx.line_height as f64,
@@ -2451,10 +2468,23 @@ impl crate::primitive::Primitive for TreeView {
         ))]
         {
             let pointer = TreePointer::from_env(self, env);
-            native_surface_paint::paint(
+            // A pixel-precise scroll position from the paint state wins
+            // over the whole-row `scroll_offset` the layout resolved, so
+            // the rows are laid out again against it.
+            let scroll_px = env.state.scroll_px();
+            let scrolled_layout = scroll_px.map(|px| {
+                crate::primitives::layout_metrics::pixel_tree_layout_with_scroll_px(
+                    self,
+                    layout.area,
+                    layout.line_height as f64,
+                    style.row_padding_x,
+                    Some(px),
+                )
+            });
+            native_surface_paint::paint_with_scroll_px(
                 self,
                 layout.area,
-                &layout.layout,
+                scrolled_layout.as_ref().unwrap_or(&layout.layout),
                 layout.line_height,
                 layout.nerd_fonts_enabled,
                 surface,
@@ -2463,6 +2493,7 @@ impl crate::primitive::Primitive for TreeView {
                 pointer.hovered_row,
                 pointer.pressed_row,
                 env.state.focus_ring_visible(),
+                scroll_px,
             );
         }
         // A `tui`-only build has no `PaintSurface` to paint into at all —
@@ -2480,10 +2511,9 @@ impl crate::primitive::Primitive for TreeView {
         }
     }
 
-    /// Paints the rows through [`crate::tui::draw_tree`] — the same
-    /// rasteriser [`crate::tui::backend::TuiBackend::draw_tree`] calls —
-    /// into the row area, then the reserved scrollbar column through
-    /// [`Scrollbar`]'s own `Primitive`.
+    /// Paints the rows through the cell-grid rasteriser in
+    /// [`paint_cells`] into the row area, then the reserved scrollbar
+    /// column through [`Scrollbar`]'s own `Primitive`.
     #[cfg(feature = "tui")]
     fn paint_cells(
         &self,
@@ -2498,7 +2528,14 @@ impl crate::primitive::Primitive for TreeView {
                 .ratatui_buffer()
                 .expect(crate::primitive::CELL_BUFFER_REQUIRED);
             let area = crate::tui::backend::q_rect_to_ratatui(layout.area);
-            crate::tui::draw_tree(buf, area, self, theme, layout.nerd_fonts_enabled);
+            paint_cells::paint_tree_rows_with_scroll_px(
+                buf,
+                area,
+                self,
+                theme,
+                layout.nerd_fonts_enabled,
+                env.state.scroll_px(),
+            );
         }
         if let (Some(sb), Some(sb_layout)) = (&layout.vscrollbar, &layout.vscrollbar_layout) {
             crate::primitive::Primitive::paint_cells(sb, sb_layout, cells, env);
@@ -3078,8 +3115,8 @@ impl crate::interactive::Interactive for TreeView {
 // ── Shared rename editing ────────────────────────────────────────────
 
 /// What one keystroke does to an open rename session — the answer both
-/// [`TreeView`]'s `Interactive::handle` and
-/// [`crate::compose::tree_controller::TreeController`] act on.
+/// [`TreeView`]'s `Interactive::handle` and a host editing a row in
+/// place act on.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TreeRenameKey {
     /// Enter: apply the edited text.
@@ -3783,7 +3820,7 @@ mod primitive_parity_tests {
             &crate::PaintEnv::new(&theme, &style),
         );
 
-        let direct_layout = crate::primitives::layout_metrics::tree_layout(
+        let direct_layout = crate::primitives::layout_metrics::pixel_tree_layout(
             &tree,
             rect,
             ctx.line_height as f64,
@@ -4134,5 +4171,67 @@ mod interactive_tests {
             panic!("Ctrl-Backspace deletes a word");
         };
         assert_eq!(next.text, "foo ");
+    }
+
+    /// Event parity for the assistive-technology legs: an `Expand` on a
+    /// selected collapsed branch, routed through the live widget
+    /// (`a11y::route_widget_action`), through the captured-frame snapshot
+    /// (`a11y::route_action`) and straight into `Interactive::handle`,
+    /// resolves to the same `RowToggleExpand`; a `Collapse` on that
+    /// collapsed row resolves to no event on all three. The `TuiDriver`
+    /// keyboard leg (Right on the same row) lives in
+    /// `tests/widget_contract_tree.rs`.
+    #[test]
+    fn expand_and_collapse_agree_across_the_a11y_routes_and_direct_handle() {
+        let t = TreeView {
+            selected_path: Some(vec![0]),
+            ..tree(3)
+        };
+        let id = t.id;
+        let area = Rect::new(0.0, 0.0, 20.0, 5.0);
+        let toggle = vec![crate::UiEvent::Tree(
+            id,
+            TreeEvent::RowToggleExpand { path: vec![0] },
+        )];
+
+        let direct = |action| {
+            let mut state = TreeViewState::default();
+            let mut host = MockHost::default();
+            let layout = layout_for(&t, area.height);
+            let handled = {
+                let mut cx = EventCx::new(id, &mut host);
+                Interactive::handle(&t, &mut state, &RoutedEvent::Action(action), &layout, &mut cx)
+            };
+            match handled {
+                Handled::Event(ev) => vec![crate::interactive::WidgetAction::into_ui_event(ev, id)],
+                _ => Vec::new(),
+            }
+        };
+        let live = |action| {
+            let mut frame = crate::frame_tree::FrameTree::new();
+            frame.push(id, area, Box::new(t.clone()));
+            let mut states = crate::widget_state::WidgetStateStore::new();
+            crate::a11y::route_widget_action(
+                &frame,
+                &mut states,
+                &LayoutCtx::new(1.0, 1.0, false),
+                id,
+                action,
+            )
+        };
+        let snapshot = crate::testing::a11y::A11yScenario::new()
+            .with_surface(crate::frame::Surface::Widget {
+                rect: area,
+                widget: Box::new(t.clone()),
+            })
+            .snapshot();
+        let node = snapshot.find("dir").expect("branch row node").id;
+        let captured =
+            |action| crate::a11y::route_action(snapshot.tree(), node, action, None);
+
+        for route in [&direct as &dyn Fn(A11yAction) -> Vec<crate::UiEvent>, &live, &captured] {
+            assert_eq!(route(A11yAction::Expand), toggle);
+            assert_eq!(route(A11yAction::Collapse), Vec::new());
+        }
     }
 }

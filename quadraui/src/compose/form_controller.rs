@@ -1,8 +1,7 @@
 //! `FormController` — a composed controller for a single `Form` with
 //! built-in scrollbar support.
 //!
-//! Mirrors [`TreeController`](super::tree_controller::TreeController):
-//! owns scroll state, renders the form + scrollbar, and handles scroll
+//! Owns scroll state, renders the form + scrollbar, and handles scroll
 //! wheel / scrollbar click / thumb-drag events. Apps push field data
 //! per frame via [`FormController::set_form`], call
 //! [`FormController::render`] + [`FormController::handle`], and match

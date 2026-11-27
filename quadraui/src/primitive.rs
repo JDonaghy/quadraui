@@ -404,7 +404,7 @@ impl<'a> LayoutCtx<'a> {
 
     /// Floor `line_height` at `style.row_height`, the same row-pitch
     /// resolution every pixel backend's own private `resolved_row_height`
-    /// helper already applies on its bespoke `draw_list`/`draw_tree`/
+    /// helper already applies on its bespoke `draw_list`/
     /// `draw_data_table` paths (e.g. `GtkBackend::resolved_row_height`,
     /// `MacBackend::resolved_row_height`) before laying out rows — a
     /// chrome font taller than the theme's `row_height` token must never

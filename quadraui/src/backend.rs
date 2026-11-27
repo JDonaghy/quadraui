@@ -72,11 +72,9 @@ use crate::primitives::spinner::{Spinner, SpinnerLayout};
 use crate::primitives::split::{Split, SplitLayout};
 use crate::primitives::split_tree::{SplitTree, SplitTreeLayout};
 use crate::primitives::tab_bar::{TabBarHits, TabBarLayout};
-use crate::primitives::tree::{TreePaintState, TreeViewLayout};
-use crate::primitives::tree_table::TreeTableLayout;
 use crate::types::{Color, WidgetId};
 use crate::update::UpdateService;
-use crate::{Accelerator, AcceleratorId, GlobalShortcutId, ListView, TabBar, TreeTable, TreeView};
+use crate::{Accelerator, AcceleratorId, GlobalShortcutId, ListView, TabBar};
 use serde::{Deserialize, Serialize};
 
 /// Which edge or corner of a window a resize gesture originates from.
@@ -1234,7 +1232,7 @@ pub trait Backend: sealed::Sealed {
         crate::Style::default()
     }
 
-    /// Sync the nerd-fonts flag so icon-bearing surfaces (`draw_tree`,
+    /// Sync the nerd-fonts flag so icon-bearing surfaces (trees,
     /// `draw_multi_section_view`, the activity bar, etc.) render
     /// `Icon::glyph` when `true` and `Icon::fallback` when `false`.
     ///
@@ -1324,7 +1322,7 @@ pub trait Backend: sealed::Sealed {
     /// daemon. Lets an app that wants icon glyphs to resolve on
     /// macOS/Win-GUI hand the backend its own font bytes (e.g. an
     /// `include_bytes!`-embedded subset) before [`Self::set_nerd_font_fallback`]
-    /// names a family for [`Self::draw_tree`], the activity bar, etc.
+    /// names a family for a tree's icons, the activity bar, etc.
     /// to resolve glyphs against.
     ///
     /// Returns the family name(s) the font registered under (read back
@@ -2181,12 +2179,11 @@ pub trait Backend: sealed::Sealed {
     fn char_width(&self) -> f32;
 
     /// Convert a [`crate::ScrollDelta::y`] component into fractional row
-    /// units for [`crate::compose::TreeController`] (currently the only
-    /// row-based scroll controller reading this) to accumulate into a
-    /// paint-time `scroll_px` ([`TreePaintState`]) without snapping to a
+    /// units for a row-based scroll accumulator to fold into a paint-time
+    /// `scroll_px` ([`crate::TreePaintState`]) without snapping to a
     /// whole row on every event. `row_height` is the caller's px↔row
-    /// basis for the *same* scroll gesture (on `TreeController`,
-    /// [`Self::tree_scroll_row_height`]'s result) — a backend that needs
+    /// basis for the *same* scroll gesture (for a tree, its laid-out
+    /// row pitch) — a backend that needs
     /// to convert a native points-based delta into row notches divides by
     /// it; a backend whose native delta already *is* row notches ignores
     /// it.
@@ -2206,23 +2203,6 @@ pub trait Backend: sealed::Sealed {
     fn wheel_delta_rows(&self, delta_y: f32, row_height: f32) -> f32 {
         let _ = row_height;
         delta_y
-    }
-
-    /// The real row pitch a row-based scroll controller should treat as
-    /// its px↔row basis for `tree`, so wheel-scroll clamping and the
-    /// derived whole-row `scroll_offset` agree with what [`Self::tree_layout`]
-    /// / [`Self::draw_tree_with_state`] actually paint.
-    ///
-    /// Defaults to [`Self::line_height`], which already *is* the real
-    /// per-row pixel pitch [`Self::tree_layout`] paints at on every
-    /// backend except macOS — whose tree rows paint at
-    /// `resolved_row_height(chrome_line_height)` run through the tree's
-    /// own row-pitch formula, a value [`Self::line_height`] (the
-    /// *editor* font metric) does not report. `MacBackend` overrides
-    /// this to return that real painted pitch instead.
-    fn tree_scroll_row_height(&self, tree: &TreeView) -> f32 {
-        let _ = tree;
-        self.line_height()
     }
 
     /// Line height of the chrome / UI font, in surface-native units.
@@ -2467,89 +2447,18 @@ pub trait Backend: sealed::Sealed {
     fn pop_clip(&mut self) {}
 
     // ─── Drawing — one method per primitive ────────────────────────────
-    //
-    // Implementations are thin wrappers around each backend crate's
-    // internal `pub fn draw_*` free functions. Example:
-    //
-    //   impl Backend for WinBackend {
-    //       fn draw_tree(&mut self, rect: Rect, tree: &TreeView) {
-    //           quadraui_win::draw_tree(self.ctx(), tree, self.theme(), rect);
-    //       }
-    //       // ... one per primitive
-    //   }
-    //
-    // Adding a primitive is a breaking change to this trait — intentional
-    // (see `docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4). Backends opt in to the new
-    // primitive in the same PR that adds it to the trait.
-    /// Paint `tree` into `rect`. Non-header row height defaults to a
-    /// backend-native derivation from `line_height` (GTK/macOS:
-    /// `line_height * 1.4`; TUI: fixed 1 cell) but a host can pin it via
-    /// [`TreeStyle::row_height`](crate::types::TreeStyle::row_height)
-    /// instead — e.g. to match a fixed design-system row pitch
-    /// independent of editor font size. TUI ignores the override
-    /// (a terminal cell can't be subdivided).
-    #[deprecated(
-        since = "0.12.0",
-        note = "use DrawsPrimitives::draw_primitive with TreeView; removal tracked in #2609"
-    )]
-    fn draw_tree(&mut self, rect: Rect, tree: &TreeView);
     #[deprecated(
         since = "0.12.0",
         note = "use DrawsPrimitives::draw_primitive with ListView; removal tracked in #2609"
     )]
     fn draw_list(&mut self, rect: Rect, list: &ListView);
 
-    /// [`Self::draw_tree`], tinting the hovered/pressed row's background
-    /// via [`crate::Theme::tree_hover_bg`] / [`crate::Theme::tree_pressed_bg`].
-    ///
-    /// Index-keyed rather than [`crate::InteractionState`]-keyed, unlike
-    /// the hover/pressed resolution a `Button` paints through the widget
-    /// contract — see `interaction.rs`'s module doc for why a tree row
-    /// has no stable id to key off. Feed
-    /// [`crate::compose::TreeHoverTracker`] from `MouseMoved` and pass
-    /// its `hovered_idx()` here; `pressed_idx` follows the same
-    /// left-button-down bookkeeping a host already does for
-    /// `TreeView::rows` clicks.
-    ///
-    /// Additive over [`Self::draw_tree`], not a replacement — the
-    /// default forwards to it (ignoring both indices and
-    /// `focus_ring_visible`), so every existing call site and
-    /// implementor keeps compiling unchanged.
-    ///
-    /// `focus_ring_visible` strokes a `Theme::focus_ring_color` ring
-    /// at `Style::focus_ring_width` around the row
-    /// [`crate::TreeView::selected_path`] points at. Not the same
-    /// signal as [`crate::TreeView::has_focus`] — see that field's doc
-    /// for why some hosts set it as a persistent "currently showing"
-    /// indicator unrelated to real keyboard focus. Pass
-    /// `focus.is_focused(&tree.id, None) && focus.is_focus_visible()`
-    /// from a host's own [`crate::FocusTree`] instead.
-    ///
-    /// `state.scroll_px`, when `Some`, is a pixel-precise scroll position
-    /// a host has accumulated from fractional wheel/trackpad deltas (see
-    /// [`crate::compose::TreeController::scroll_px`]) — it wins over
-    /// [`TreeView::scroll_offset`] and paints a partially clipped first
-    /// row instead of snapping to a whole one, via
-    /// [`TreeView::layout_with_scroll_px`]. `None` (the default a `state`
-    /// built with [`TreePaintState::default`] carries) paints exactly as
-    /// [`Self::draw_tree`] already does.
-    fn draw_tree_with_state(
-        &mut self,
-        rect: Rect,
-        tree: &TreeView,
-        state: &TreePaintState,
-        _focus_ring_visible: bool,
-    ) {
-        let _ = state;
-        #[allow(deprecated)]
-        self.draw_tree(rect, tree)
-    }
-
     /// [`Self::draw_list`], tinting the hovered/pressed row's background
     /// via [`crate::Theme::list_hover_bg`] / [`crate::Theme::list_pressed_bg`].
     ///
-    /// Index-keyed for the same reason [`Self::draw_tree_with_state`]
-    /// is — see that method's doc. Feed
+    /// Index-keyed rather than [`crate::InteractionState`]-keyed —
+    /// see `interaction.rs`'s module doc for why a list row has no
+    /// stable id to key off. Feed
     /// [`crate::compose::ListHoverTracker`] from `MouseMoved` and pass
     /// its `hovered_idx()` here.
     ///
@@ -2654,36 +2563,6 @@ pub trait Backend: sealed::Sealed {
         note = "use DrawsPrimitives::draw_primitive with DataTable; removal tracked in #2609"
     )]
     fn data_table_layout(&self, rect: Rect, table: &DataTable) -> DataTableLayout;
-    /// Draw `table` — a [`DataTable`] plus per-row tree metadata — into
-    /// `rect` and return its layout for hit-testing. Coordinate frame:
-    /// **LOCAL**, matching [`Self::draw_data_table`].
-    ///
-    /// Required, no default: TUI paints real tree-cell content (indent +
-    /// chevron + icon on column 0) via [`crate::tui::draw_tree_table`];
-    /// GTK/macOS/Win-GUI each forward one line to the shared
-    /// [`crate::primitives::tree_table::native_surface_paint::paint`] —
-    /// the same pixel painter, a different [`crate::paint_surface::PaintSurface`]
-    /// adapter per backend.
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.12.0",
-        note = "use DrawsPrimitives::draw_primitive with TreeTable; removal tracked in #2609"
-    )]
-    fn draw_tree_table(
-        &mut self,
-        rect: Rect,
-        table: &TreeTable,
-        hovered_idx: Option<usize>,
-    ) -> TreeTableLayout;
-    /// Compute the tree-table layout without painting, mirroring
-    /// [`Self::data_table_layout`]. Required, no default — see
-    /// [`Self::draw_tree_table`]'s doc for why.
-    #[doc(hidden)]
-    #[deprecated(
-        since = "0.12.0",
-        note = "use DrawsPrimitives::draw_primitive with TreeTable; removal tracked in #2609"
-    )]
-    fn tree_table_layout(&self, rect: Rect, table: &TreeTable) -> TreeTableLayout;
     /// Horizontal scrollbar geometry for `list` rendered into `rect`, or
     /// `None` when its content fits. Each backend supplies its native row
     /// height; the resolved track + thumb are the same values the
@@ -2715,40 +2594,6 @@ pub trait Backend: sealed::Sealed {
     )]
     fn list_layout(&self, rect: Rect, list: &ListView) -> ListViewLayout;
 
-    /// Draw settings-panel chrome: a header row and, when `rect.height`
-    /// leaves room for it, a search input row beneath it, designed to
-    /// sit immediately above a [`crate::Form`] body. Every backend
-    /// forwards to the one shared painter in
-    /// [`crate::compose::sidebar_panel_body`] —
-    /// [`crate::compose::sidebar_panel_body::paint_settings_chrome`] on a
-    /// pixel surface,
-    /// [`crate::compose::sidebar_panel_body::paint_settings_chrome_cells`]
-    /// on a cell grid — which documents the exact row layout, prompt
-    /// construction and placeholder logic.
-    ///
-    /// **Height contract:** the header row always paints at one
-    /// `line_height`. The search row paints only when `rect.height`
-    /// covers a second row (every implementer uses the same
-    /// `line_height * 1.5` threshold, matching TUI's `area.height < 2`
-    /// cell check) — a caller that reserves a single row (e.g.
-    /// [`crate::compose::sidebar_panel_body::SidebarPanelChrome::Header`])
-    /// gets a header-only strip, not a second, unrequested row painted
-    /// past the rect the caller reserved.
-    ///
-    /// No default impl — every backend implementer sees this as a compile
-    /// error and fills in a real rasteriser (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md`
-    /// §4, `PRIMITIVE_RULES.md` rule 7). Do not add a no-op default here;
-    /// see `docs/SMELL_AUDIT_2026-07.md` PORT-01 for why that pattern is a
-    /// portability risk, not a precedent to follow.
-    fn draw_settings_chrome(
-        &mut self,
-        rect: Rect,
-        header_text: &str,
-        query: &str,
-        placeholder: &str,
-        active: bool,
-    );
-
     // Layout-passthrough primitives (per docs/decisions/BACKEND_TRAIT_PROPOSAL.md
     // §6.2). Each backend computes the primitive's layout internally
     // using its native measurer (cells for TUI, Pango / DirectWrite /
@@ -2758,21 +2603,6 @@ pub trait Backend: sealed::Sealed {
     // Methods that produce hit-region data (clickable segments,
     // close-button rects, link rects) return it directly so callers
     // route clicks against the same data the rasteriser paints with.
-    /// Fill `rect` edge-to-edge with a solid `color` — no text, no
-    /// segments, no per-row seams. For chrome elements that are a plain
-    /// color block (e.g. `AppShell`'s sidebar/editor resize divider),
-    /// not a widget.
-    ///
-    /// A single fill over the *whole* rect is exact on every backend
-    /// (unlike faking it as N stacked one-row `StatusBar`s, which paints
-    /// short of a pixel backend's own row pitch and leaves gaps between
-    /// rows) and strictly cheaper than N layouts per frame.
-    ///
-    /// No default impl — every backend implementer sees this as a
-    /// compile error and fills in a real rasteriser
-    /// (`docs/decisions/BACKEND_TRAIT_PROPOSAL.md` §4, `PRIMITIVE_RULES.md` rule 7).
-    fn draw_solid_fill(&mut self, rect: Rect, color: Color);
-
     /// Draw a [`MultiSectionView`]. The backend computes the layout
     /// internally with native metrics (cells for TUI, pixels +
     /// `line_height` for GTK) and dispatches each section's body to
@@ -2796,59 +2626,6 @@ pub trait Backend: sealed::Sealed {
     /// Compose helpers cache these to compute layouts without a Backend
     /// reference at event-handling time.
     fn msv_metrics(&self) -> MsvLayoutMetrics;
-
-    /// Compute the tree layout the rasteriser would produce. Used by
-    /// hosts (especially MSV consumers) to resolve body clicks down
-    /// to row indices without re-deriving the row pitch (1 cell
-    /// uniform on TUI; `1.0×`/`1.4×` line_height by `Decoration` on
-    /// GTK).
-    ///
-    /// Coordinate frame: **LOCAL** — `visible_rows.bounds` / `hit_regions`
-    /// are relative to `rect`'s origin (`(0, 0)` at `rect`'s top-left);
-    /// callers subtract `rect.x` / `rect.y` from absolute click
-    /// coordinates before calling `hit_test` (see
-    /// `primitives::layout_metrics::tree_layout`'s doc for why this frame
-    /// is load-bearing).
-    #[deprecated(
-        since = "0.12.0",
-        note = "use DrawsPrimitives::draw_primitive with TreeView; removal tracked in #2609"
-    )]
-    fn tree_layout(&self, rect: Rect, tree: &TreeView) -> TreeViewLayout;
-
-    /// Vertical scrollbar geometry for `tree` rendered into `rect`, or
-    /// `None` when the tree is empty or all rows fit. Each backend
-    /// supplies its native row height; the resolved track + thumb are the
-    /// same values a rasteriser would paint, so consumers hit-test the
-    /// returned thumb to implement drag without re-deriving geometry.
-    ///
-    /// This mirrors [`Backend::list_hscrollbar`] /
-    /// [`Backend::list_vscrollbar`]'s already-established shape: a
-    /// layout-level scroll extent the host hit-tests against, passed to
-    /// the existing [`Scrollbar`] primitive. Whether the host also needs
-    /// to *paint* a scrollbar from this geometry via
-    /// [`Backend::draw_scrollbar`] depends on
-    /// [`Self::tree_paints_own_scrollbar`]: on backends where
-    /// [`Self::draw_tree`] already paints an overlay scrollbar, this
-    /// geometry exists purely for hit-testing and the host must not
-    /// paint its own on top (that would double-paint it) — see
-    /// [`TreeView::vscrollbar`].
-    fn tree_vscrollbar(&self, rect: Rect, tree: &TreeView) -> Option<Scrollbar>;
-
-    /// Whether [`Self::draw_tree`] already paints a vertical scrollbar
-    /// overlay for an overflowing tree, so hosts (e.g.
-    /// [`crate::compose::TreeController`]) must not also reserve a
-    /// column for one or separately call [`Self::draw_scrollbar`] with
-    /// the geometry from [`Self::tree_vscrollbar`] — doing so paints the
-    /// scrollbar twice.
-    ///
-    /// GTK, macOS and Win paint the overlay inside `draw_tree` itself and
-    /// override this to `true`. TUI has no such overlay — scrolling a
-    /// tree in a terminal has no spare pixels for one — so it keeps the
-    /// default `false` and relies on the host to reserve a column and
-    /// paint the scrollbar explicitly.
-    fn tree_paints_own_scrollbar(&self) -> bool {
-        false
-    }
 
     /// Drive the terminal/OS **hardware** caret to match an
     /// [`crate::Editor`]'s [`EditorCursorShape`] — block for Normal/Visual, bar
@@ -3150,7 +2927,7 @@ pub trait DrawsPrimitives: Backend {
     /// `line_height` additionally floored at the active
     /// [`crate::Style::row_height`] token via
     /// [`crate::primitive::LayoutCtx::resolve_row_height`], the same
-    /// resolution every bespoke `draw_list`/`draw_tree`/`draw_data_table`
+    /// resolution every bespoke `draw_list`/`draw_data_table`
     /// path already applies through its own private `resolved_row_height`
     /// helper, so a `Primitive`'s `layout()` never under-sizes a row
     /// against a chrome font taller than that token.

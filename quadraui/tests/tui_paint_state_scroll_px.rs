@@ -1,7 +1,8 @@
 #![cfg(feature = "tui")]
 //! Headless `TuiDriver` coverage for the A3c pixel-smooth-scrolling seam:
 //! `scroll_px` sourced from a per-frame `*PaintState` (not a descriptor
-//! field) and fed into `Backend::draw_{list,tree,data_table}_with_state`.
+//! field) and fed into `Backend::draw_{list,data_table}_with_state` and
+//! `TreeView`'s own paint through `DrawsPrimitives::draw_dyn`.
 //!
 //! Each test accumulates a fractional wheel delta into a `scroll_px`
 //! carried by the widget's paint state, confirms the accumulator keeps
@@ -13,8 +14,9 @@
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
     scroll_by_clamped_f32, wheel_delta, AppLogic, Backend, Column, ColumnAlign, ColumnWidth,
-    DataRow, DataTable, DataTablePaintState, Decoration, ListItem, ListPaintState, ListView,
-    Reaction, Rect, StyledText, TreeController, TreeRow, UiEvent, WidgetId,
+    DataRow, DataTable, DataTablePaintState, Decoration, DrawsPrimitives, ListItem, ListPaintState,
+    ListView, Reaction, Rect, SelectionMode, StyledText, TreePaintState, TreeRow, TreeStyle,
+    TreeView, UiEvent, WidgetId,
 };
 
 const VIEWPORT: Rect = Rect {
@@ -119,7 +121,7 @@ fn list_scroll_px_accumulates_sub_row_then_quantises_on_tui() {
     );
 }
 
-// ── TreeView (via TreeController) ───────────────────────────────────────
+// ── TreeView ────────────────────────────────────────────────────────────
 
 fn tree_rows(n: usize) -> Vec<TreeRow> {
     (0..n)
@@ -137,15 +139,27 @@ fn tree_rows(n: usize) -> Vec<TreeRow> {
 }
 
 struct TreeApp {
-    controller: TreeController,
+    tree: TreeView,
+    scroll_px: Option<f32>,
 }
 
 impl TreeApp {
     fn new() -> Self {
-        let mut controller = TreeController::new("test:tree");
-        controller.set_rows(tree_rows(ROW_COUNT));
-        controller.set_show_scrollbar(false);
-        Self { controller }
+        Self {
+            tree: TreeView {
+                id: WidgetId::new("test:tree"),
+                rows: tree_rows(ROW_COUNT),
+                selection_mode: SelectionMode::Single,
+                selected_path: None,
+                scroll_offset: 0,
+                style: TreeStyle {
+                    show_scrollbar: false,
+                    ..TreeStyle::default()
+                },
+                has_focus: true,
+            },
+            scroll_px: None,
+        }
     }
 }
 
@@ -153,30 +167,35 @@ impl AppLogic for TreeApp {
     type AreaId = ();
 
     fn render(&self, backend: &mut dyn Backend, _area: ()) {
-        self.controller.render(backend, VIEWPORT);
+        let state = TreePaintState::default().with_scroll_px(self.scroll_px);
+        let _ = backend.draw_dyn(VIEWPORT, &self.tree, &state);
     }
 
-    fn handle(&mut self, event: UiEvent, backend: &mut dyn Backend) -> Reaction {
-        self.controller.handle(&event, backend, VIEWPORT);
-        Reaction::Redraw
+    fn handle(&mut self, event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        match event {
+            UiEvent::Scroll { delta, .. } => {
+                let dy = wheel_delta(delta.y, 0.25);
+                let current = self.scroll_px.unwrap_or(0.0);
+                self.scroll_px = Some(scroll_by_clamped_f32(current, dy, (ROW_COUNT - 1) as f32));
+                Reaction::Redraw
+            }
+            _ => Reaction::Continue,
+        }
     }
 }
 
 #[test]
-fn tree_controller_scroll_px_accumulates_sub_row_then_quantises_on_tui() {
+fn tree_scroll_px_accumulates_sub_row_then_quantises_on_tui() {
     let mut driver = TuiDriver::new(TreeApp::new(), 20, 5);
     driver.render();
     assert!(driver.screen_contains("Node 00"));
 
-    // `TreeController::handle` itself accumulates the fractional wheel
-    // delta into `scroll_px` — see `scroll_by_wheel` — rather than
-    // snapping straight to a whole row.
-    for _ in 0..4 {
-        driver.dispatch(scroll_event(-0.2));
+    for _ in 0..3 {
+        driver.dispatch(scroll_event(-1.0));
     }
     assert!(
-        driver.app().controller.scroll_px().unwrap_or(0.0) > 0.0,
-        "the controller should still be holding a sub-row scroll_px"
+        driver.app().scroll_px.unwrap_or(0.0) > 0.0,
+        "the app should still be holding a sub-row scroll_px"
     );
     driver.render();
     assert!(
@@ -184,24 +203,14 @@ fn tree_controller_scroll_px_accumulates_sub_row_then_quantises_on_tui() {
         "sub-row scroll_px must not have scrolled the painted row yet:\n{}",
         driver.screen()
     );
-    // `scroll_px` is 0.8 here — its fractional part is >= 0.5, exactly
-    // the case where a `.round()`-based `scroll_offset` would disagree
-    // with the `.floor()`-based painted row. `scroll_offset()` must
-    // still floor to the row actually painted above (`Node 00`, row 0),
-    // not round up to row 1.
-    assert_eq!(
-        driver.app().controller.scroll_offset(),
-        0,
-        "scroll_offset must floor-agree with the painted first row, not round up"
-    );
 
-    // A fifth gesture crosses the boundary; TUI paints the quantised
+    // A fourth gesture crosses the boundary; TUI paints the quantised
     // whole row.
-    driver.dispatch(scroll_event(-0.2));
+    driver.dispatch(scroll_event(-1.0));
     driver.render();
     assert!(
         driver.screen_contains("Node 01") && !driver.screen_contains("Node 00"),
-        "five 0.2-row gestures should add up to one whole row:\n{}",
+        "four quarter-row gestures should add up to one whole row:\n{}",
         driver.screen()
     );
 }

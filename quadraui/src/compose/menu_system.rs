@@ -1558,7 +1558,6 @@ mod tests {
                 ui_size_pt: 0.0,
             }
         }
-        fn draw_tree(&mut self, _r: Rect, _t: &crate::TreeView) {}
         fn draw_list(&mut self, _r: Rect, _l: &crate::ListView) {}
         fn draw_data_table(
             &mut self,
@@ -1569,21 +1568,6 @@ mod tests {
             unimplemented!()
         }
         fn data_table_layout(&self, _r: Rect, _t: &crate::DataTable) -> crate::DataTableLayout {
-            unimplemented!()
-        }
-        fn draw_tree_table(
-            &mut self,
-            _r: Rect,
-            _t: &crate::TreeTable,
-            _h: Option<usize>,
-        ) -> crate::primitives::tree_table::TreeTableLayout {
-            unimplemented!()
-        }
-        fn tree_table_layout(
-            &self,
-            _r: Rect,
-            _t: &crate::TreeTable,
-        ) -> crate::primitives::tree_table::TreeTableLayout {
             unimplemented!()
         }
         fn list_hscrollbar(&self, _r: Rect, _l: &crate::ListView) -> Option<crate::Scrollbar> {
@@ -1597,16 +1581,6 @@ mod tests {
                 crate::primitives::list::ListItemMeasure::new(1.0)
             })
         }
-        fn draw_settings_chrome(
-            &mut self,
-            _r: Rect,
-            _header_text: &str,
-            _query: &str,
-            _placeholder: &str,
-            _active: bool,
-        ) {
-        }
-        fn draw_solid_fill(&mut self, _r: Rect, _c: crate::Color) {}
         fn draw_multi_section_view(&mut self, _r: Rect, _v: &crate::MultiSectionView) {}
         fn msv_layout(
             &self,
@@ -1617,34 +1591,6 @@ mod tests {
         }
         fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
             unimplemented!()
-        }
-        fn tree_layout(
-            &self,
-            rect: Rect,
-            tree: &crate::TreeView,
-        ) -> crate::primitives::tree::TreeViewLayout {
-            let lh = self.line_height();
-            let indent_cells = tree.style.indent as f32;
-            let chevron_w = if tree.style.show_chevrons {
-                tree.style.chevron_expanded.chars().count() as f32 + 1.0
-            } else {
-                0.0
-            };
-            tree.layout(rect.width, rect.height, |i| {
-                let row = &tree.rows[i];
-                let chevron_end_x = if row.is_expanded.is_some() && chevron_w > 0.0 {
-                    Some(row.indent as f32 * indent_cells + chevron_w)
-                } else {
-                    None
-                };
-                crate::primitives::tree::TreeRowMeasure {
-                    height: lh,
-                    chevron_end_x,
-                }
-            })
-        }
-        fn tree_vscrollbar(&self, _r: Rect, _t: &crate::TreeView) -> Option<crate::Scrollbar> {
-            None
         }
         fn draw_message_list(
             &mut self,

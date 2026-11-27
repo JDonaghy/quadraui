@@ -950,16 +950,16 @@ fn split_dragging_the_painted_divider_moves_it_and_updates_the_ratio() {
     );
 }
 
-// ─── draw_solid_fill vs status bar mechanism ────────────────────────────────
+// ─── solid fill vs status bar mechanism ─────────────────────────────────────
 //
 // A caller that hands a status bar a row rect taller than
 // the backend's `current_line_height` receives a fill exactly as tall as the
-// rect. `Backend::draw_solid_fill` (the replacement for dividers) also fills
-// the whole rect with no segment/text layout — a cheaper primitive.
+// rect. A solid `Canvas` fill also fills the whole rect with no segment/text
+// layout — a cheaper primitive.
 
 /// Paints one rect, taller than the backend's default line height, with each
 /// of the two candidate primitives — a `StatusBar` through the widget
-/// contract and `draw_solid_fill` — side by side so a single frame can assert on both.
+/// contract and a solid `Canvas` fill — side by side so a single frame can assert on both.
 struct SolidFillVsStatusBarProbe;
 
 /// Height of the probe rects — comfortably taller than any backend's
@@ -990,7 +990,11 @@ impl quadraui::AppLogic for SolidFillVsStatusBarProbe {
         let _ = backend.draw_dyn(status_bar_rect, &bar, &());
 
         let solid_fill_rect = quadraui::Rect::new(60.0, 0.0, 40.0, PROBE_RECT_HEIGHT);
-        backend.draw_solid_fill(solid_fill_rect, PROBE_FILL_COLOR);
+        backend.draw_dyn(
+            solid_fill_rect,
+            &quadraui::testing::solid_canvas(solid_fill_rect, PROBE_FILL_COLOR),
+            &(),
+        );
     }
 
     fn handle(&mut self, _event: UiEvent, _backend: &mut dyn quadraui::Backend) -> Reaction {
@@ -1015,7 +1019,7 @@ fn status_bar_fills_a_rect_taller_than_line_height_completely() {
     );
 }
 
-/// `Backend::draw_solid_fill` (the replacement primitive for dividers) must
+/// A solid `Canvas` fill must
 /// fill the *whole* rect it's given — no `current_line_height` ceiling, no
 /// per-row seams. Sampling top, middle, and near the bottom of the same
 /// `PROBE_RECT_HEIGHT`-tall rect must all land on the fill color.
@@ -1032,7 +1036,7 @@ fn draw_solid_fill_fills_a_rect_taller_than_line_height_completely() {
         assert_eq!(
             driver.pixel(80, y),
             expected,
-            "draw_solid_fill should cover the entire rect height, including y={y}",
+            "the solid fill should cover the entire rect height, including y={y}",
         );
     }
 }

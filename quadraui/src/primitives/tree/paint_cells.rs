@@ -1,4 +1,4 @@
-//! TUI rasteriser for [`crate::TreeView`].
+//! Cell-grid rasteriser for [`crate::TreeView`].
 //!
 //! Per D6: this function asks the primitive for a [`crate::TreeViewLayout`]
 //! using a uniform 1-cell-per-row measurer (TUI rows are always 1 cell
@@ -13,9 +13,9 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color as RatatuiColor;
 
-use super::{draw_styled_text, qc, ratatui_color, set_cell, set_cell_wide};
 use crate::primitives::tree::{TreeRowEditState, TreeRowMeasure, TreeView, TreeViewLayout};
 use crate::theme::Theme;
+use crate::tui::{draw_styled_text, qc, ratatui_color, set_cell, set_cell_wide};
 use crate::types::{Decoration, Icon, TreeStyle};
 
 /// The chevron glyph a row at `indent` paints and the column just past it
@@ -117,17 +117,18 @@ pub(crate) fn paint_tree_cell(
 ///   ever landing on row content.
 ///
 /// Doesn't draw a scrollbar — scrollbars are a later primitive stage.
-pub fn draw_tree(
+#[cfg(test)]
+pub(crate) fn paint_tree_rows(
     buf: &mut Buffer,
     area: Rect,
     tree: &TreeView,
     theme: &Theme,
     nerd_fonts_enabled: bool,
 ) {
-    draw_tree_with_scroll_px(buf, area, tree, theme, nerd_fonts_enabled, None)
+    paint_tree_rows_with_scroll_px(buf, area, tree, theme, nerd_fonts_enabled, None)
 }
 
-/// Like [`draw_tree`], but with an explicit pixel-precise scroll
+/// Like [`paint_tree_rows`], but with an explicit pixel-precise scroll
 /// position (`scroll_px`) from a
 /// [`crate::primitives::tree::TreePaintState`] instead of only
 /// [`TreeView::scroll_offset`]'s whole-row value.
@@ -136,9 +137,9 @@ pub fn draw_tree(
 /// [`crate::primitives::scrollbar::resolve_scroll_px`]) but is quantised
 /// to a whole row — the sub-row remainder is computed and then simply
 /// never read, so TUI never paints a partial row. `None` (what
-/// [`draw_tree`] passes) resolves to exactly the pre-existing whole-row
+/// [`paint_tree_rows`] passes) resolves to exactly the pre-existing whole-row
 /// behaviour.
-pub fn draw_tree_with_scroll_px(
+pub(crate) fn paint_tree_rows_with_scroll_px(
     buf: &mut Buffer,
     area: Rect,
     tree: &TreeView,
@@ -353,7 +354,7 @@ fn draw_tree_border(
     }
 }
 
-/// Thin wrapper over the shared [`super::paint_inline_text_editor`] —
+/// Thin wrapper over the shared [`crate::tui::paint_inline_text_editor`] —
 /// see that function's doc for the actual cursor/selection/placeholder
 /// rendering logic.
 #[allow(clippy::too_many_arguments)]
@@ -368,7 +369,7 @@ fn paint_edit_input(
     sel_bg: ratatui::style::Color,
     dim_fg: ratatui::style::Color,
 ) {
-    super::paint_inline_text_editor(
+    crate::tui::paint_inline_text_editor(
         buf,
         area,
         y,
@@ -386,7 +387,7 @@ fn paint_edit_input(
 
 /// Compute the layout the TUI rasteriser would produce for `tree` in
 /// `area`. Hosts and tests call this to drive hit-testing without
-/// re-deriving metrics that could drift from paint. `draw_tree` uses
+/// re-deriving metrics that could drift from paint. `paint_tree_rows` uses
 /// this same helper internally so paint and hit_test consume one
 /// layout instance produced by one set of metrics — the source-of-
 /// truth contract.
@@ -405,7 +406,7 @@ pub fn tui_tree_layout(tree: &TreeView, area: Rect) -> TreeViewLayout {
 
 /// Like [`tui_tree_layout`], but with an explicit pixel-precise scroll
 /// position (`scroll_px`) instead of only [`TreeView::scroll_offset`]'s
-/// whole-row value — see [`draw_tree_with_scroll_px`].
+/// whole-row value — see [`paint_tree_rows_with_scroll_px`].
 pub fn tui_tree_layout_with_scroll_px(
     tree: &TreeView,
     area: Rect,
@@ -501,7 +502,7 @@ mod tests {
     fn paints_branch_with_chevron_and_leaves_indented() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
         let tree = make_tree();
-        draw_tree(
+        paint_tree_rows(
             &mut buf,
             Rect::new(0, 0, 30, 5),
             &tree,
@@ -537,7 +538,7 @@ mod tests {
             selected_bg: crate::types::Color::rgb(99, 0, 0),
             ..Theme::default()
         };
-        draw_tree(&mut buf, Rect::new(0, 0, 30, 5), &tree, &theme, false);
+        paint_tree_rows(&mut buf, Rect::new(0, 0, 30, 5), &tree, &theme, false);
         // Row 1 ("main.rs") is selected — its bg should be (99, 0, 0).
         let bg = buf[(0u16, 1u16)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(99, 0, 0));
@@ -570,7 +571,7 @@ mod tests {
             header_bg: crate::types::Color::rgb(7, 7, 7),
             ..Theme::default()
         };
-        draw_tree(&mut buf, Rect::new(0, 0, 30, 3), &tree, &theme, false);
+        paint_tree_rows(&mut buf, Rect::new(0, 0, 30, 3), &tree, &theme, false);
         let bg = buf[(0u16, 0u16)].bg;
         assert_eq!(bg, ratatui::style::Color::Rgb(7, 7, 7));
     }
@@ -579,7 +580,7 @@ mod tests {
     fn zero_size_is_a_no_op() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
         let tree = make_tree();
-        draw_tree(
+        paint_tree_rows(
             &mut buf,
             Rect::new(0, 0, 0, 5),
             &tree,
@@ -602,7 +603,7 @@ mod tests {
 
         let theme = Theme::default();
         let mut buf = Buffer::empty(Rect::new(0, 0, 30, 5));
-        draw_tree(&mut buf, Rect::new(0, 0, 30, 5), &tree, &theme, true);
+        paint_tree_rows(&mut buf, Rect::new(0, 0, 30, 5), &tree, &theme, true);
 
         // Leaves: indent=1 → col 2 (indent_cells) + 2-cell leading gap = col 4.
         let icon_col = 2 + 2;
@@ -636,7 +637,7 @@ mod tests {
 
         let width = 20u16;
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
-        draw_tree(
+        paint_tree_rows(
             &mut buf,
             Rect::new(0, 0, width, 5),
             &tree,
@@ -688,7 +689,7 @@ mod tests {
 
         let width = 20u16;
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
-        draw_tree(
+        paint_tree_rows(
             &mut buf,
             Rect::new(0, 0, width, 5),
             &tree,
@@ -717,7 +718,7 @@ mod tests {
         // layout math, or a stale cached rect). Ellipsis painting must
         // clamp the column to the buffer's actual bounds.
         let mut buf = Buffer::empty(Rect::new(0, 0, 10, 5));
-        draw_tree(
+        paint_tree_rows(
             &mut buf,
             Rect::new(0, 0, 40, 5),
             &tree,
@@ -747,7 +748,7 @@ mod tests {
 
         let width = 20u16;
         let mut buf = Buffer::empty(Rect::new(0, 0, width, 5));
-        draw_tree(
+        paint_tree_rows(
             &mut buf,
             Rect::new(0, 0, width, 5),
             &tree,
@@ -794,8 +795,8 @@ mod tests {
     // Mirrors the MultiSectionView harness shape so future
     // primitives can copy this pattern.
 
+    use super::tui_tree_layout;
     use crate::primitives::tree::TreeViewHit;
-    use crate::tui::tree::tui_tree_layout;
     use crate::types::TreePath;
 
     fn row_text(buf: &Buffer, y: u16) -> String {
@@ -846,7 +847,7 @@ mod tests {
         theme: &Theme,
         nerd_fonts_enabled: bool,
     ) -> TreeViewLayout {
-        draw_tree(buf, area, tree, theme, nerd_fonts_enabled);
+        paint_tree_rows(buf, area, tree, theme, nerd_fonts_enabled);
         tui_tree_layout(tree, area)
     }
 
@@ -967,7 +968,7 @@ mod tests {
         let tree = long_tree(50);
 
         let mut buf = Buffer::empty(area);
-        draw_tree_with_scroll_px(&mut buf, area, &tree, &Theme::default(), false, Some(10.7));
+        paint_tree_rows_with_scroll_px(&mut buf, area, &tree, &Theme::default(), false, Some(10.7));
         let painted_y = find_row_with(&buf, "item-10")
             .expect("scroll_px=10.7 should quantise to row 10 at the top");
 
@@ -977,7 +978,7 @@ mod tests {
         let mut via_offset = tree.clone();
         via_offset.scroll_offset = 10;
         let mut buf2 = Buffer::empty(area);
-        draw_tree(&mut buf2, area, &via_offset, &Theme::default(), false);
+        paint_tree_rows(&mut buf2, area, &via_offset, &Theme::default(), false);
         let painted_y_via_offset = find_row_with(&buf2, "item-10")
             .expect("scroll_offset=10 should paint 'item-10' at the top");
         assert_eq!(painted_y, painted_y_via_offset);
@@ -1175,7 +1176,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let mut tree = long_tree(3);
         tree.style.bordered = true;
-        draw_tree(&mut buf, area, &tree, &Theme::default(), false);
+        paint_tree_rows(&mut buf, area, &tree, &Theme::default(), false);
 
         // Top-left corner is the border glyph, not row content.
         assert_eq!(cell_char(&buf, 0, 0), '╭');
@@ -1201,7 +1202,7 @@ mod tests {
         let mut buf = Buffer::empty(area);
         let mut tree = long_tree(3);
         tree.style.bordered = true;
-        draw_tree(&mut buf, area, &tree, &Theme::default(), false);
+        paint_tree_rows(&mut buf, area, &tree, &Theme::default(), false);
 
         let label_before: String = (3..3 + "item-00".len() as u16)
             .map(|x| cell_char(&buf, x, 1))
@@ -1256,7 +1257,7 @@ mod tests {
             selection_anchor: None,
             placeholder: None,
         });
-        draw_tree(&mut buf, area, &tree, &Theme::default(), false);
+        paint_tree_rows(&mut buf, area, &tree, &Theme::default(), false);
 
         // "renamed.rs" should appear.
         assert!(
@@ -1299,7 +1300,7 @@ mod tests {
             style: TreeStyle::default(),
         };
         let theme = Theme::default();
-        draw_tree(&mut buf, area, &tree, &theme, false);
+        paint_tree_rows(&mut buf, area, &tree, &theme, false);
         // The leaf has indent=0, no icon, no chevron → 2-cell gap then edit text.
         // Edit text "ab" at cols 2,3. Cursor at byte 2 → char index 2 → col 4.
         // Cursor cell should have inverted fg/bg.
@@ -1393,11 +1394,12 @@ mod multi_select_driver_tests {
     impl AppLogic for TreeApp {
         type AreaId = ();
 
-        #[allow(deprecated)]
         fn render(&self, backend: &mut dyn Backend, _area: ()) {
-            backend.draw_tree(
+            let _ = crate::DrawsPrimitives::draw_dyn(
+                backend,
                 Rect::new(0.0, 0.0, VIEWPORT_W as f32, VIEWPORT_H as f32),
                 &self.tree,
+                &(),
             );
         }
 

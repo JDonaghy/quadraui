@@ -982,9 +982,8 @@ pub use compose::{
     SidebarSectionDef, StatusBarInteraction, TabGroup, TabGroupController, TabGroupEvent,
     TabGroupLayout, TabGroupPane, TabGroupPaneLayout, TabGroupPrimitiveLayout, TabGroupState,
     TabGroupSubPart, TabGroupTab, ToastStackAction, ToastStackController, ToolbarHoverTracker,
-    TreeController, TreeControllerEvent, TreeHoverTracker, ViewHelp, Workspace,
-    WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, WorkspacePrimitiveLayout,
-    WorkspaceState, PALETTE_CHROME_ROWS,
+    ViewHelp, Workspace, WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout,
+    WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,

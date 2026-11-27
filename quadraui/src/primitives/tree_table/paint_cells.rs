@@ -11,16 +11,18 @@ use crate::theme::Theme;
 use crate::tui::{draw_cell, draw_data_table_body, draw_row, resolve_row_colors, RowPaintCtx};
 use crate::types::TreeStyle;
 
-/// Resolve the layout [`draw_tree_table`] paints `table` at, without
+/// Resolve the layout [`paint_tree_table_cells`] paints `table` at, without
 /// touching a buffer: the cell-grid layout, so a layout-on-demand
 /// hit-test agrees with what was painted.
-pub fn tree_table_layout(area: Rect, table: &TreeTable) -> TreeTableLayout {
+#[cfg(test)]
+pub(crate) fn cell_tree_table_layout(area: Rect, table: &TreeTable) -> TreeTableLayout {
     super::layout::cell_layout(table, area.width as f32, area.height as f32)
 }
 
 /// Draw a `TreeTable` into `area` with `hovered_idx` tinted, returning
 /// the layout it painted at so callers hit-test at the same coordinates.
-pub fn draw_tree_table(
+#[cfg(test)]
+pub(crate) fn paint_tree_table_cells(
     buf: &mut Buffer,
     area: Rect,
     table: &TreeTable,
@@ -36,7 +38,7 @@ pub fn draw_tree_table(
         theme,
         &state,
         nerd_fonts_enabled,
-        tree_table_layout(area, table),
+        cell_tree_table_layout(area, table),
     )
 }
 
@@ -217,7 +219,7 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
         let row0 = line(&buf, 1, 20);
         assert!(
             row0.contains('▾'),
@@ -234,7 +236,7 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
         let row1 = line(&buf, 2, 20);
         assert!(!row1.contains('▾') && !row1.contains('▸'));
         assert!(row1.contains("main.rs"));
@@ -252,9 +254,9 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
         // The indent only pushes column 0's label, never column 1's.
-        let layout = tree_table_layout(area, &table);
+        let layout = cell_tree_table_layout(area, &table);
         let col1_x = layout.table.columns[1].x.round() as usize;
         let row0 = line(&buf, 1, 30);
         let row1 = line(&buf, 2, 30);
@@ -268,7 +270,7 @@ mod tests {
     fn clicking_the_chevron_resolves_to_a_chevron_hit_not_a_row_hit() {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
-        let layout = tree_table_layout(area, &table);
+        let layout = cell_tree_table_layout(area, &table);
         let (idx, bounds) = layout.chevrons[0];
         assert_eq!(idx, 0);
         let hit = layout.hit_test(bounds.x, bounds.y, 0, table.table.rows.len());
@@ -279,7 +281,7 @@ mod tests {
     fn clicking_the_header_still_resolves_to_header_not_chevron() {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
-        let layout = tree_table_layout(area, &table);
+        let layout = cell_tree_table_layout(area, &table);
         let hit = layout.hit_test(0.0, 0.0, 0, table.table.rows.len());
         assert_eq!(hit, TreeTableHit::Table(DataTableHit::Header { col: 0 }));
     }
@@ -288,7 +290,7 @@ mod tests {
     fn a_leaf_row_has_no_chevron_entry_and_clicking_it_is_a_row_hit() {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
-        let layout = tree_table_layout(area, &table);
+        let layout = cell_tree_table_layout(area, &table);
         assert!(!layout.chevrons.iter().any(|(idx, _)| *idx == 1));
         let hit = layout.hit_test(0.0, 2.0, 0, table.table.rows.len());
         assert_eq!(hit, TreeTableHit::Table(DataTableHit::Row { idx: 1 }));
@@ -299,7 +301,7 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
         let row2 = line(&buf, 3, 20);
         assert!(
             row2.contains('▸'),
@@ -317,7 +319,7 @@ mod tests {
         // rest.
         let area = Rect::new(0, 0, 8, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        let layout = paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
         assert_eq!(layout.table.columns.len(), 1);
         assert!(layout.table.columns[0].width >= 4.0);
     }
@@ -327,7 +329,7 @@ mod tests {
         let table = make_tree_table();
         let area = Rect::new(0, 0, 2, 10);
         let mut buf = Buffer::empty(area);
-        let layout = draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        let layout = paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
         assert_eq!(layout.table.columns.len(), 1);
         assert_eq!(layout.table.columns[0].width, 4.0);
     }
@@ -340,12 +342,12 @@ mod tests {
         table.table.striped = true;
         let area = Rect::new(0, 0, 30, 10);
         let mut buf = Buffer::empty(area);
-        draw_tree_table(&mut buf, area, &table, &Theme::default(), None, false);
+        paint_tree_table_cells(&mut buf, area, &table, &Theme::default(), None, false);
         let theme = Theme::default();
         let mut plain = make_tree_table();
         plain.table.striped = false;
         let mut plain_buf = Buffer::empty(area);
-        draw_tree_table(&mut plain_buf, area, &plain, &theme, None, false);
+        paint_tree_table_cells(&mut plain_buf, area, &plain, &theme, None, false);
         // Row 1 (odd) differs from the unstriped paint; row 0 (even)
         // does not. Column 20 is in column 0, past every label.
         assert_ne!(buf[(20, 2)].bg, plain_buf[(20, 2)].bg, "odd row tinted");

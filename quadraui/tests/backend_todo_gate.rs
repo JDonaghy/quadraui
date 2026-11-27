@@ -106,11 +106,6 @@ const BACKENDS: &[(&str, Option<&str>)] = &[
 const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
     (
         "src/win/backend.rs",
-        "fn draw_tree",
-        "\"Direct2D tree rasteriser (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
         "fn draw_list",
         "\"Direct2D list rasteriser (no surface attached yet)\"",
     ),
@@ -123,11 +118,6 @@ const KNOWN_DANGEROUS_TODOS: &[(&str, &str, &str)] = &[
         "src/win/backend.rs",
         "fn data_table_layout",
         "\"DirectWrite data table layout (no surface attached yet)\"",
-    ),
-    (
-        "src/win/backend.rs",
-        "fn draw_settings_chrome",
-        "\"Direct2D settings chrome rasteriser (no surface attached yet)\"",
     ),
     (
         "src/win/backend.rs",

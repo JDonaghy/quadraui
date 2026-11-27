@@ -40,9 +40,9 @@ fn list_surface() -> Surface {
 }
 
 fn tree_surface() -> Surface {
-    Surface::Tree {
+    Surface::Widget {
         rect: Rect::new(0.0, 5.0, 30.0, 5.0),
-        tree: TreeView {
+        widget: Box::new(TreeView {
             id: WidgetId::new("proj"),
             rows: vec![TreeRow {
                 path: vec![0],
@@ -59,7 +59,7 @@ fn tree_surface() -> Surface {
             scroll_offset: 0,
             style: TreeStyle::default(),
             has_focus: false,
-        },
+        }),
     }
 }
 

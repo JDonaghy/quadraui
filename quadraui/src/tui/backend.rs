@@ -51,8 +51,8 @@ use crate::backend::{ColorDepth, Screenshot, ScreenshotRun};
 use crate::dispatch::TextRegion;
 use crate::testing::ZoneRec;
 use crate::{
-    Accelerator, AcceleratorId, Backend, Color, DragState, ListView, ModalStack, PlatformServices,
-    Point, Rect as QRect, Split, TerminalCellSize, TreeView, UiEvent, Viewport, WidgetId,
+    Accelerator, AcceleratorId, Backend, DragState, ListView, ModalStack, PlatformServices, Point,
+    Rect as QRect, Split, TerminalCellSize, UiEvent, Viewport, WidgetId,
 };
 // `KeyBinding`/`DragTarget`/`AcceleratorScope` and the `TabBar` family are
 // only referenced by `#[cfg(test)]` code below: `route_pointer` absorbs
@@ -2613,8 +2613,7 @@ impl Backend for TuiBackend {
         };
         crate::tui::draw_focus_ring(frame.buffer_mut(), area, &theme);
         // A chrome-only paint (no text of its own) is only "observable" via a
-        // registered zone — mirrors `draw_solid_fill`'s identical
-        // registration.
+        // registered zone.
         self.register_zone(WidgetId::new("chrome:focus-ring"), rect);
     }
 
@@ -2874,53 +2873,6 @@ impl Backend for TuiBackend {
     // a method with a paint result reports the same "nothing painted"
     // value its "no rasteriser available" path already does elsewhere.
 
-    fn draw_tree(&mut self, rect: QRect, tree: &TreeView) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_tree called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_tree(frame.buffer_mut(), area, tree, &theme, nerd_fonts);
-    }
-
-    /// Honours `state.scroll_px` via `crate::tui::draw_tree_with_scroll_px`
-    /// (`#[doc(hidden)]`, so not linked here)
-    /// — TUI quantises it to a whole row (never a partial one); see that
-    /// function's doc. Hover/press tinting (`state.hovered_idx`/
-    /// `pressed_idx`) isn't painted on TUI today, the same gap
-    /// [`Self::draw_tree`] already has.
-    fn draw_tree_with_state(
-        &mut self,
-        rect: QRect,
-        tree: &TreeView,
-        state: &crate::primitives::tree::TreePaintState,
-        _focus_ring_visible: bool,
-    ) {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_tree_with_state called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_tree_with_scroll_px(
-            frame.buffer_mut(),
-            area,
-            tree,
-            &theme,
-            nerd_fonts,
-            state.scroll_px,
-        );
-    }
-
     fn draw_list(&mut self, rect: QRect, list: &ListView) {
         let area = q_rect_to_ratatui(rect);
         let theme = self.current_theme;
@@ -3044,45 +2996,6 @@ impl Backend for TuiBackend {
         crate::tui::data_table_layout(area, table)
     }
 
-    fn draw_tree_table(
-        &mut self,
-        rect: QRect,
-        table: &crate::TreeTable,
-        hovered_idx: Option<usize>,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        let area = q_rect_to_ratatui(rect);
-        let theme = self.current_theme;
-        let nerd_fonts = self.nerd_fonts_enabled;
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_tree_table called outside enter_frame_scope"
-            );
-            #[allow(deprecated)]
-            return self.tree_table_layout(rect, table);
-        };
-        crate::tui::draw_tree_table(
-            frame.buffer_mut(),
-            area,
-            table,
-            &theme,
-            hovered_idx,
-            nerd_fonts,
-        )
-    }
-
-    fn tree_table_layout(
-        &self,
-        rect: QRect,
-        table: &crate::TreeTable,
-    ) -> crate::primitives::tree_table::TreeTableLayout {
-        // Same rationale as `data_table_layout`: go through the exact
-        // resolver `draw_tree_table` paints with, so a cache-free
-        // layout-on-demand hit-test agrees with what's on screen.
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tree_table_layout(area, table)
-    }
-
     fn list_hscrollbar(&self, rect: QRect, list: &ListView) -> Option<crate::Scrollbar> {
         // Snap through the same u16 cell truncation `draw_list` uses so
         // the consumer's thumb hit-region matches the painted thumb.
@@ -3117,33 +3030,6 @@ impl Backend for TuiBackend {
         crate::tui::tui_list_layout(q_rect_to_ratatui(rect), list)
     }
 
-    fn draw_settings_chrome(
-        &mut self,
-        rect: QRect,
-        header_text: &str,
-        query: &str,
-        placeholder: &str,
-        active: bool,
-    ) {
-        let theme = self.current_theme;
-        let Some(surface) = self.cell_surface() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_settings_chrome called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::compose::sidebar_panel_body::paint_settings_chrome_cells(
-            surface,
-            &theme,
-            rect,
-            header_text,
-            query,
-            placeholder,
-            active,
-        );
-    }
-
     // ─── Layout-passthrough primitives — Stage 3 / trait migration ──────
     //
     // These take a pre-computed `*Layout` in their existing TUI
@@ -3156,25 +3042,6 @@ impl Backend for TuiBackend {
     // for these primitives take `&Layout` directly — the trait impls
     // are now thin pass-throughs, mirroring the GTK impls in
     // `gtk/backend.rs`.
-
-    fn draw_solid_fill(&mut self, rect: QRect, color: Color) {
-        let area = q_rect_to_ratatui(rect);
-        let Some(frame) = self.current_frame_mut() else {
-            debug_assert!(
-                false,
-                "TuiBackend::draw_solid_fill called outside enter_frame_scope"
-            );
-            return;
-        };
-        crate::tui::draw_solid_fill(frame.buffer_mut(), area, color);
-        // Chrome-only paint (no text of its own) — only "observable"
-        // via a registered zone. Callers that need a *semantic*
-        // id for click routing (e.g. `AppShell`'s divider) register their
-        // own zone on top of this one; this fixed id just proves the
-        // frame isn't the no-op trait default silently dropping the call
-        // (C0 paint smoke, contract §5b).
-        self.register_zone(WidgetId::new("chrome:solid-fill"), rect);
-    }
 
     // ─── #13: trait coverage for the rest of the rasterised primitives ──
 
@@ -3212,26 +3079,6 @@ impl Backend for TuiBackend {
             scrollbar_size: 1.0,
             cell_quantum: 1.0,
         }
-    }
-
-    fn tree_layout(&self, rect: QRect, tree: &TreeView) -> crate::primitives::tree::TreeViewLayout {
-        let area = q_rect_to_ratatui(rect);
-        crate::tui::tui_tree_layout(tree, area)
-    }
-
-    fn tree_vscrollbar(&self, rect: QRect, tree: &TreeView) -> Option<crate::Scrollbar> {
-        // TUI rows are uniform 1-cell tall (see `tui_tree_layout`'s doc).
-        let area = q_rect_to_ratatui(rect);
-        tree.vscrollbar_with_track_width(
-            crate::event::Rect::new(
-                area.x as f32,
-                area.y as f32,
-                area.width as f32,
-                area.height as f32,
-            ),
-            1.0,
-            1.0,
-        )
     }
 
     /// Steers the terminal emulator's hardware caret via DECSCUSR
@@ -3365,7 +3212,7 @@ impl Backend for TuiBackend {
         let layout = crate::tui::draw_split_tree(frame.buffer_mut(), area, tree, &theme);
         // Dividers only, and `SplitTree` (unlike `Split`) carries no
         // id of its own — register a fixed chrome id, same pattern as
-        // `draw_solid_fill` and the `DropOverlay` widget's host.
+        // the `DropOverlay` widget's host.
         self.register_zone(WidgetId::new("chrome:split-tree"), rect);
         layout
     }
@@ -3782,27 +3629,6 @@ mod tests {
                 scroll_sub_px: 0.0,
             }
         }
-        fn draw_tree_table(
-            &mut self,
-            rect: QRect,
-            table: &crate::TreeTable,
-            hovered_idx: Option<usize>,
-        ) -> crate::primitives::tree_table::TreeTableLayout {
-            crate::primitives::tree_table::TreeTableLayout {
-                table: self.draw_data_table(rect, &table.table, hovered_idx),
-                chevrons: Vec::new(),
-            }
-        }
-        fn tree_table_layout(
-            &self,
-            rect: QRect,
-            table: &crate::TreeTable,
-        ) -> crate::primitives::tree_table::TreeTableLayout {
-            crate::primitives::tree_table::TreeTableLayout {
-                table: self.data_table_layout(rect, &table.table),
-                chevrons: Vec::new(),
-            }
-        }
         fn list_hscrollbar(&self, _rect: QRect, _list: &ListView) -> Option<crate::Scrollbar> {
             None
         }
@@ -3812,20 +3638,6 @@ mod tests {
         fn list_layout(&self, rect: QRect, list: &ListView) -> crate::ListViewLayout {
             crate::tui::tui_list_layout(q_rect_to_ratatui(rect), list)
         }
-
-        // The other 7 trait methods are unimplemented — this mock only
-        // records the ones the cross-backend test actually exercises.
-        fn draw_tree(&mut self, _r: QRect, _t: &TreeView) {}
-        fn draw_settings_chrome(
-            &mut self,
-            _r: QRect,
-            _header_text: &str,
-            _query: &str,
-            _placeholder: &str,
-            _active: bool,
-        ) {
-        }
-        fn draw_solid_fill(&mut self, _r: QRect, _c: Color) {}
 
         fn char_width(&self) -> f32 {
             1.0
@@ -3875,16 +3687,6 @@ mod tests {
 
         fn msv_metrics(&self) -> crate::primitives::multi_section_view::MsvLayoutMetrics {
             crate::primitives::multi_section_view::MsvLayoutMetrics::default()
-        }
-
-        fn tree_layout(&self, r: QRect, t: &TreeView) -> crate::primitives::tree::TreeViewLayout {
-            t.layout(r.width, r.height, |_| {
-                crate::primitives::tree::TreeRowMeasure::new(1.0)
-            })
-        }
-
-        fn tree_vscrollbar(&self, r: QRect, t: &TreeView) -> Option<crate::Scrollbar> {
-            t.vscrollbar_with_track_width(r, 1.0, 1.0)
         }
 
         fn draw_message_list(
@@ -4164,7 +3966,7 @@ mod tests {
     /// A small branch-plus-leaf tree — the TUI-side twin of
     /// `crate::primitives::tree::primitive_parity_tests::sample_tree`,
     /// used by the `Primitive` TUI parity tests below.
-    fn sample_tree_view() -> TreeView {
+    fn sample_tree_view() -> crate::TreeView {
         fn row(path: &[u16], indent: u16, label: &str, expanded: Option<bool>) -> crate::TreeRow {
             crate::TreeRow {
                 path: path.to_vec(),
@@ -4177,7 +3979,7 @@ mod tests {
                 edit: None,
             }
         }
-        TreeView {
+        crate::TreeView {
             id: WidgetId::new("test:tree-primitive-pilot"),
             rows: vec![
                 row(&[0], 0, "src", Some(true)),
@@ -6112,61 +5914,10 @@ mod tests {
         );
     }
 
-    /// `TreeView` painted through `crate::primitive::Primitive` (via
-    /// [`DrawsPrimitives::draw_primitive`]'s default body, which calls
-    /// [`Backend::cell_surface`] then `Primitive::paint_cells`) must match
-    /// `TuiBackend::draw_tree`'s own output byte-for-byte — the same TUI
-    /// parity story [`list_primitive_paint_cells_matches_draw_list`]
-    /// proves for `ListView`. Routed through `&mut dyn Backend`, the
-    /// shape every `compose::*` controller's `render` is handed.
-    #[test]
-    fn tree_view_primitive_paint_cells_matches_draw_tree() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let tree = sample_tree_view();
-        let rect = QRect::new(2.0, 1.0, 24.0, 6.0);
-
-        let mut via_primitive_backend = TuiBackend::new();
-        let mut via_primitive_terminal =
-            Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
-        via_primitive_terminal
-            .draw(|frame| {
-                via_primitive_backend.enter_frame_scope(frame, |b| {
-                    let b: &mut dyn Backend = b;
-                    b.draw_primitive(rect, &tree);
-                });
-            })
-            .expect("draw");
-
-        let mut via_draw_tree_backend = TuiBackend::new();
-        let mut via_draw_tree_terminal =
-            Terminal::new(TestBackend::new(40, 12)).expect("test terminal");
-        via_draw_tree_terminal
-            .draw(|frame| {
-                via_draw_tree_backend.enter_frame_scope(frame, |b| {
-                    b.draw_tree(rect, &tree);
-                });
-            })
-            .expect("draw");
-
-        assert_eq!(
-            via_primitive_terminal.backend().buffer(),
-            via_draw_tree_terminal.backend().buffer(),
-            "TreeView painted through Primitive::paint_cells must match \
-             TuiBackend::draw_tree byte-for-byte"
-        );
-        let screen = screen_text(via_primitive_terminal.backend().buffer());
-        assert!(
-            screen.contains("src") && screen.contains("main.rs"),
-            "sanity: the tree actually painted its rows, got: {screen}"
-        );
-    }
-
     /// [`DrawsPrimitives::draw_primitive`]'s returned
     /// [`crate::TreeViewPrimitiveLayout`] must hit-test against the same
     /// absolute area it was just painted into, resolving to the same row
-    /// [`TuiBackend::tree_layout`] does for a click at that row's
+    /// the no-paint `layout_primitive` does for a click at that row's
     /// position — the tree twin of
     /// [`list_primitive_draw_primitive_layout_hit_tests_correctly`].
     #[test]
@@ -6190,12 +5941,12 @@ mod tests {
             .expect("draw");
         let primitive_layout = captured.expect("draw_primitive ran inside the frame scope");
 
-        let no_paint_layout = backend.tree_layout(rect, &tree);
+        let no_paint_layout = backend.layout_primitive(rect, &tree);
         assert_eq!(
             primitive_layout.hit_test(rect.x, rect.y),
-            no_paint_layout.hit_test(0.0, 0.0),
-            "Primitive::layout's absolute hit_test must agree with \
-             TuiBackend::tree_layout's local one at the same point"
+            no_paint_layout.hit_test(rect.x, rect.y),
+            "the painted layout's hit_test must agree with the \
+             no-paint layout_primitive one at the same point"
         );
     }
 
@@ -6279,57 +6030,10 @@ mod tests {
         );
     }
 
-    /// `TreeTable` painted through `crate::primitive::Primitive` must
-    /// match `TuiBackend::draw_tree_table`'s own output byte-for-byte —
-    /// same TUI parity story as the plain `DataTable`/`TreeView` cases
-    /// above.
-    #[test]
-    fn tree_table_primitive_paint_cells_matches_draw_tree_table() {
-        use ratatui::backend::TestBackend;
-        use ratatui::Terminal;
-
-        let tt = sample_tree_table();
-        let rect = QRect::new(2.0, 1.0, 30.0, 6.0);
-
-        let mut via_primitive_backend = TuiBackend::new();
-        let mut via_primitive_terminal =
-            Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
-        via_primitive_terminal
-            .draw(|frame| {
-                via_primitive_backend.enter_frame_scope(frame, |b| {
-                    let b: &mut dyn Backend = b;
-                    b.draw_primitive(rect, &tt);
-                });
-            })
-            .expect("draw");
-
-        let mut via_draw_backend = TuiBackend::new();
-        let mut via_draw_terminal = Terminal::new(TestBackend::new(50, 12)).expect("test terminal");
-        via_draw_terminal
-            .draw(|frame| {
-                via_draw_backend.enter_frame_scope(frame, |b| {
-                    b.draw_tree_table(rect, &tt, None);
-                });
-            })
-            .expect("draw");
-
-        assert_eq!(
-            via_primitive_terminal.backend().buffer(),
-            via_draw_terminal.backend().buffer(),
-            "TreeTable painted through Primitive::paint_cells must match \
-             TuiBackend::draw_tree_table byte-for-byte"
-        );
-        let screen = screen_text(via_primitive_terminal.backend().buffer());
-        assert!(
-            screen.contains("Name") && screen.contains("pod-0"),
-            "sanity: the tree table actually painted its header/rows, got: {screen}"
-        );
-    }
-
     /// [`DrawsPrimitives::draw_primitive`]'s returned
     /// [`crate::primitives::tree_table::TreeTablePrimitiveLayout`] must
     /// hit-test against the same absolute area it was just painted into,
-    /// resolving to the same hit [`TuiBackend::tree_table_layout`] does
+    /// resolving to the same hit the no-paint `layout_primitive` does
     /// for a click at that point — including the chevron, the one hit
     /// region a plain `DataTable` doesn't have.
     #[test]
@@ -6353,12 +6057,12 @@ mod tests {
             .expect("draw");
         let primitive_layout = captured.expect("draw_primitive ran inside the frame scope");
 
-        let no_paint_layout = backend.tree_table_layout(rect, &tt);
+        let no_paint_layout = backend.layout_primitive(rect, &tt);
         assert_eq!(
             primitive_layout.hit_test(rect.x, rect.y),
-            no_paint_layout.hit_test(0.0, 0.0, tt.table.scroll_offset, tt.table.rows.len()),
-            "Primitive::layout's absolute hit_test must agree with \
-             TuiBackend::tree_table_layout's local one at the same point"
+            no_paint_layout.hit_test(rect.x, rect.y),
+            "the painted layout's hit_test must agree with the \
+             no-paint layout_primitive one at the same point"
         );
     }
 
@@ -6942,38 +6646,9 @@ mod tests {
     // normally). They compile to nothing, and therefore never run,
     // under this repo's ordinary `cargo test --features tui` gate.
 
-    fn empty_tree() -> TreeView {
-        TreeView {
-            id: WidgetId::new("tree:empty"),
-            rows: Vec::new(),
-            selection_mode: crate::types::SelectionMode::default(),
-            selected_path: None,
-            scroll_offset: 0,
-            style: crate::TreeStyle::default(),
-            has_focus: false,
-        }
-    }
-
     // Gated on `debug_assertions` to mirror its release-mode sibling below:
     // the loud-panic contract only exists while `debug_assert!` is live, so
     // an ungated `#[should_panic]` here fails any `cargo test --release`.
-    #[test]
-    #[cfg(debug_assertions)]
-    #[should_panic(expected = "TuiBackend::draw_tree called outside enter_frame_scope")]
-    fn draw_tree_outside_frame_scope_panics_loudly_in_dev() {
-        let mut backend = TuiBackend::new();
-        // No `enter_frame_scope` — `debug_assert!` must still catch this
-        // during development, exactly as the old `.expect()` did.
-        backend.draw_tree(QRect::new(0.0, 0.0, 10.0, 5.0), &empty_tree());
-    }
-
-    #[test]
-    #[cfg(not(debug_assertions))]
-    fn draw_tree_outside_frame_scope_does_not_panic_in_release() {
-        let mut backend = TuiBackend::new();
-        // Must not panic in release builds.
-        backend.draw_tree(QRect::new(0.0, 0.0, 10.0, 5.0), &empty_tree());
-    }
 
     #[test]
     #[cfg(not(debug_assertions))]

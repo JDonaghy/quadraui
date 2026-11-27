@@ -739,7 +739,7 @@ mod form_paint_tests {
     /// [`crate::compose::sidebar_panel_body::paint_settings_chrome`] on a
     /// [`D2dSurface`] over `target`.
     #[allow(clippy::too_many_arguments)]
-    fn draw_settings_chrome(
+    fn paint_settings_chrome_d2d(
         target: &windows::Win32::Graphics::Direct2D::ID2D1RenderTarget,
         dwrite: &DWrite,
         rect: Rect,
@@ -936,7 +936,7 @@ mod form_paint_tests {
         let _ = paint(&surface, &dwrite, rect, &form);
     }
 
-    /// [`draw_settings_chrome`]'s two rows must paint at the shared
+    /// [`paint_settings_chrome_d2d`]'s two rows must paint at the shared
     /// painter's geometry: row 0 (`y in [0, line_height)`) is `header_bg`, row 1
     /// (`y in [line_height, 2*line_height)`) is `tab_bar_bg` when
     /// `active` is `false`.
@@ -949,7 +949,7 @@ mod form_paint_tests {
 
         surface
             .paint(|target| {
-                draw_settings_chrome(
+                paint_settings_chrome_d2d(
                     target,
                     &dwrite,
                     rect,
@@ -988,7 +988,7 @@ mod form_paint_tests {
 
         surface
             .paint(|target| {
-                draw_settings_chrome(
+                paint_settings_chrome_d2d(
                     target,
                     &dwrite,
                     rect,
@@ -1034,7 +1034,7 @@ mod form_paint_tests {
         let one_row = Rect::new(0.0, 0.0, 200.0, line_height);
         surface
             .paint(|target| {
-                draw_settings_chrome(
+                paint_settings_chrome_d2d(
                     target,
                     &dwrite,
                     one_row,

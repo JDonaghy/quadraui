@@ -263,7 +263,7 @@ impl IconGrid {
 
         // Keep `selected_idx`'s row inside the viewport before resolving
         // `scroll_px`, via the same `behaviour::scroll::ensure_visible` call
-        // `TreeController` uses for `TreeView`, baked into this layout call
+        // `TreeView`'s `Interactive` uses, baked into this layout call
         // instead of left to a separate controller (see
         // `IconGridLayout::resolved_scroll_offset`'s own doc).
         let selected = self.selected_idx.min(self.items.len() - 1);

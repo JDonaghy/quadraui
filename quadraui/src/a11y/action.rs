@@ -151,7 +151,7 @@ pub fn route_action(
 
     match kind {
         A11yOwnerKind::List => route_list_action(widget, key, action),
-        A11yOwnerKind::Tree => route_tree_action(widget, key, action),
+        A11yOwnerKind::Tree => route_tree_action(tree, target, widget, key, action),
         A11yOwnerKind::Form => route_form_action(tree, target, widget, key, action, value),
         A11yOwnerKind::CellGrid => route_cell_grid_action(widget, key, action),
         A11yOwnerKind::Unsupported => {
@@ -342,18 +342,32 @@ fn route_list_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiE
 /// "select" (`TreeEvent` has no separate `RowActivated` variant the way
 /// `ListViewEvent`/`DataTableEvent` do), so it is the one a screen
 /// reader's default action routes to as well.
-fn route_tree_action(widget: WidgetId, key: &str, action: A11yAction) -> Vec<UiEvent> {
+fn route_tree_action(
+    tree: &A11yTree,
+    target: A11yNodeId,
+    widget: WidgetId,
+    key: &str,
+    action: A11yAction,
+) -> Vec<UiEvent> {
     let Some(path) = key.strip_prefix("row.").and_then(decode_tree_path) else {
         emit_unroutable_key("tree", widget, key, action);
         return Vec::new();
     };
     match action {
         A11yAction::Click => vec![UiEvent::Tree(widget, TreeEvent::RowDoubleClicked { path })],
-        // The toggle event itself carries no direction — the primitive
-        // flips whatever state the row is currently in, same as a mouse
-        // click on its disclosure triangle.
+        // The toggle event carries no direction, so it is emitted only
+        // when it moves the row the requested way: `Expand` on a
+        // collapsed branch, `Collapse` on an expanded one. A leaf, or a
+        // branch already in the requested state, produces nothing —
+        // the same answer `TreeView`'s own `Interactive` gives.
         A11yAction::Expand | A11yAction::Collapse => {
-            vec![UiEvent::Tree(widget, TreeEvent::RowToggleExpand { path })]
+            let want_expanded = action == A11yAction::Expand;
+            let expanded = tree.node(target).and_then(|node| node.info.expanded);
+            if expanded == Some(!want_expanded) {
+                vec![UiEvent::Tree(widget, TreeEvent::RowToggleExpand { path })]
+            } else {
+                Vec::new()
+            }
         }
         _ => {
             crate::diagnostics::emit(format!(
@@ -544,9 +558,9 @@ mod tests {
     }
 
     fn tree_surface(id: &str, rows: Vec<TreeRow>) -> Surface {
-        Surface::Tree {
+        Surface::Widget {
             rect: Rect::new(0.0, 0.0, 20.0, 10.0),
-            tree: TreeView {
+            widget: Box::new(TreeView {
                 id: WidgetId::new(id),
                 rows,
                 selection_mode: SelectionMode::Single,
@@ -554,7 +568,7 @@ mod tests {
                 scroll_offset: 0,
                 style: TreeStyle::default(),
                 has_focus: false,
-            },
+            }),
         }
     }
 
@@ -642,7 +656,13 @@ mod tests {
     #[test]
     fn click_and_expand_on_tree_row_round_trip_the_path() {
         let snapshot = A11yScenario::new()
-            .with_surface(tree_surface("outline", vec![row("root", &[0])]))
+            .with_surface(tree_surface(
+                "outline",
+                vec![TreeRow {
+                    is_expanded: Some(false),
+                    ..row("root", &[0])
+                }],
+            ))
             .snapshot();
         let node = snapshot.find("root").expect("row").id;
 
@@ -662,6 +682,12 @@ mod tests {
                 WidgetId::new("outline"),
                 TreeEvent::RowToggleExpand { path: vec![0] }
             )]
+        );
+
+        let collapsed = route_action(snapshot.tree(), node, A11yAction::Collapse, None);
+        assert!(
+            collapsed.is_empty(),
+            "Collapse on an already collapsed row emits nothing, as TreeView's Interactive does"
         );
     }
 

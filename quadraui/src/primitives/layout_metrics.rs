@@ -268,7 +268,7 @@ pub fn tab_close_hover_bg(
 /// (`line_height * 0.65` for the glyph) since no [`TextMeasure`] is
 /// available here — every backend already made this same tradeoff
 /// independently. Callers with a real measurer should prefer
-/// [`tree_layout_measured`], which measures
+/// [`pixel_tree_layout_measured`], which measures
 /// [`crate::types::TreeStyle::chevron_expanded`] /
 /// [`crate::types::TreeStyle::chevron_collapsed`] exactly instead of
 /// estimating.
@@ -284,30 +284,45 @@ pub fn tab_close_hover_bg(
 /// this fn computes lines up with where the chevron glyph is actually
 /// painted. Pass [`crate::style::Style::default`]'s value when no live
 /// `Style` is reachable.
-pub fn tree_layout(
+pub fn pixel_tree_layout(
     tree: &TreeView,
     area: QRect,
     line_height: f64,
     row_padding_x: f32,
 ) -> TreeViewLayout {
-    tree_layout_inner(tree, area, line_height, None, row_padding_x)
+    tree_layout_inner(tree, area, line_height, None, row_padding_x, None)
 }
 
-/// Like [`tree_layout`], but measures the chevron glyph actually
+/// Like [`pixel_tree_layout`], but measures the chevron glyph actually
 /// configured on `tree.style` (`chevron_expanded` / `chevron_collapsed`)
 /// through `measure` instead of estimating its pixel width as
 /// `line_height * 0.65`. This is the pixel-backend equivalent of
 /// `tui::tree::tui_tree_layout`'s exact character-count measurement —
 /// TUI cells are fixed-width so an exact count is free there; pixel
 /// backends need a real [`TextMeasure`] to get the same precision.
-pub fn tree_layout_measured(
+pub fn pixel_tree_layout_measured(
     tree: &TreeView,
     area: QRect,
     line_height: f64,
     measure: &dyn TextMeasure,
     row_padding_x: f32,
 ) -> TreeViewLayout {
-    tree_layout_inner(tree, area, line_height, Some(measure), row_padding_x)
+    tree_layout_inner(tree, area, line_height, Some(measure), row_padding_x, None)
+}
+
+/// [`pixel_tree_layout`] resolved against a pixel-precise scroll
+/// position: `scroll_px: Some(px)` wins over
+/// [`TreeView::scroll_offset`] and places the first visible row
+/// partially clipped, through [`TreeView::layout_with_scroll_px`];
+/// `None` lays out exactly as [`pixel_tree_layout`] does.
+pub fn pixel_tree_layout_with_scroll_px(
+    tree: &TreeView,
+    area: QRect,
+    line_height: f64,
+    row_padding_x: f32,
+    scroll_px: Option<f32>,
+) -> TreeViewLayout {
+    tree_layout_inner(tree, area, line_height, None, row_padding_x, scroll_px)
 }
 
 fn tree_layout_inner(
@@ -316,13 +331,14 @@ fn tree_layout_inner(
     line_height: f64,
     measure: Option<&dyn TextMeasure>,
     row_padding_x: f32,
+    scroll_px: Option<f32>,
 ) -> TreeViewLayout {
     let header_height = (line_height * 1.2).round();
     let item_height = tree_row_pitch(tree, line_height);
     use crate::primitives::tree::tree_cell;
     let indent_px = tree_cell::tree_indent_px(line_height as f32);
     let show_chevrons = tree.style.show_chevrons;
-    tree.layout(area.width, area.height, |i| {
+    tree.layout_with_scroll_px(area.width, area.height, scroll_px, |i| {
         let row = &tree.rows[i];
         let is_header = matches!(row.decoration, Decoration::Header);
         let row_h = if is_header {
@@ -363,7 +379,7 @@ fn tree_layout_inner(
     })
 }
 
-/// The non-header row pitch [`tree_layout`] uses for the bulk of a
+/// The non-header row pitch [`pixel_tree_layout`] uses for the bulk of a
 /// tree's rows: [`crate::types::TreeStyle::row_height`] when the host
 /// set one, else `(line_height * 1.4).round()`.
 ///
@@ -1724,8 +1740,8 @@ mod tests {
         // measured here, not the configured string's.
         let tree = tree_with_expanded_row();
         let area = QRect::new(0.0, 0.0, 100.0, 80.0);
-        let estimated = tree_layout(&tree, area, 16.0, 8.0);
-        let measured = tree_layout_measured(&tree, area, 16.0, &FakeMeasure, 8.0);
+        let estimated = pixel_tree_layout(&tree, area, 16.0, 8.0);
+        let measured = pixel_tree_layout_measured(&tree, area, 16.0, &FakeMeasure, 8.0);
 
         // The Chevron hit-region's width *is* the row's chevron_end_x
         // (see `TreeView::layout`'s hit-region split).
@@ -1749,8 +1765,8 @@ mod tests {
         // disagree about where the chevron is.
         let tree = tree_with_expanded_row();
         let area = QRect::new(0.0, 0.0, 100.0, 80.0);
-        let narrow = tree_layout(&tree, area, 16.0, 2.0);
-        let wide = tree_layout(&tree, area, 16.0, 12.0);
+        let narrow = pixel_tree_layout(&tree, area, 16.0, 2.0);
+        let wide = pixel_tree_layout(&tree, area, 16.0, 12.0);
 
         let narrow_x = narrow.hit_regions[0].0.width;
         let wide_x = wide.hit_regions[0].0.width;

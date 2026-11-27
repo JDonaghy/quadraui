@@ -123,11 +123,11 @@ fn shell_app_paints_locatable_chrome_and_tree_rows() {
             // StatusBars — the one primitive that already recorded.
             ("draw_status_bar", "EXPLORER"),
             ("draw_status_bar", "Selected: nothing selected"),
-            // `draw_tree`: sidebar rows, including a collapsed-branch
+            // `TreeView`: sidebar rows, including a collapsed-branch
             // chevron row and a nested leaf.
-            ("draw_tree", "OPEN EDITORS"),
-            ("draw_tree", "backend.rs"),
-            ("draw_tree", "PROJECT"),
+            ("TreeView", "OPEN EDITORS"),
+            ("TreeView", "backend.rs"),
+            ("TreeView", "PROJECT"),
             // The activity bar paints icon glyphs (its labels are
             // tooltips, which are never painted), so this also pins the
             // user→device coordinate conversion for its glyphs.
@@ -232,7 +232,7 @@ fn multi_tree_paints_locatable_section_headers_and_rows() {
             ("draw_multi_section_view", "VARIABLES"),
             ("draw_multi_section_view", "WATCH"),
             ("draw_multi_section_view", "CALL STACK"),
-            ("draw_tree", "frame0"),
+            ("TreeView", "frame0"),
             // The fourth section header ("BREAKPOINTS") is deliberately
             // absent: at this surface height the app paints it straddling
             // the bottom edge, so its recorded rect is legitimately

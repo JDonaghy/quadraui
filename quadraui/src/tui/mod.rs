@@ -70,7 +70,6 @@ mod run;
 mod scrollbar;
 pub mod services;
 pub mod shell_runner;
-mod solid_fill;
 mod spinner;
 mod split;
 mod split_tree;
@@ -80,7 +79,6 @@ pub mod text;
 // `vt100` itself, which only `terminal` pulls in (`terminal = ["dep:vt100",
 // ...]` in Cargo.toml), so this is gated on both features, same as
 // `tests/tui_pty_smoke.rs`.
-mod tree;
 #[cfg(feature = "terminal")]
 pub mod vt_testing;
 
@@ -93,8 +91,6 @@ pub mod vt_testing;
 // zero reachers, so it is `#[doc(hidden)]` — unstable, not covered by
 // semver, free to move or disappear without a version bump (see
 // `Cargo.toml`'s `[package.metadata.cargo-semver-checks.lints]`).
-#[doc(hidden)]
-pub use crate::primitives::tree_table::paint_cells::{draw_tree_table, tree_table_layout};
 pub use backend::TuiBackend;
 #[doc(hidden)]
 pub use board::{draw_board, tui_board_layout};
@@ -137,8 +133,6 @@ pub use scrollbar::draw_scrollbar;
 pub(crate) use scrollbar::draw_scrollbar_layout;
 #[doc(hidden)]
 pub use services::TuiPlatformServices;
-#[doc(hidden)]
-pub use solid_fill::draw_solid_fill;
 pub(crate) use spinner::draw_spinner_layout;
 #[doc(hidden)]
 pub use spinner::{draw_spinner, tui_spinner_layout};
@@ -153,13 +147,13 @@ pub use split_tree::{draw_split_tree, tui_split_tree_layout};
 pub use crate::primitives::tab_bar::{
     TAB_CLOSE_CHAR, TAB_CLOSE_COLS, TAB_SEPARATOR_CHAR, TAB_SEPARATOR_COLS,
 };
+pub(crate) use crate::primitives::tree::paint_cells::paint_tree_cell;
+pub use crate::primitives::tree::paint_cells::tui_tree_layout;
+#[doc(hidden)]
+pub use crate::primitives::tree::paint_cells::tui_tree_layout_with_scroll_px;
 #[doc(hidden)]
 pub use text::truncate_to_width_ellipsis;
 pub use text::{char_cell_width, display_width, truncate_to_width};
-pub(crate) use tree::paint_tree_cell;
-pub use tree::{draw_tree, tui_tree_layout};
-#[doc(hidden)]
-pub use tree::{draw_tree_with_scroll_px, tui_tree_layout_with_scroll_px};
 
 /// Convert a `quadraui::Color` to the ratatui palette colour used by
 /// `set_cell`. Public so apps adopting these rasterisers can mirror the
@@ -226,7 +220,7 @@ pub(crate) fn set_cell_wide(
 /// Convert a `quadraui::Color` to a ratatui palette colour, with `qc` as
 /// the short name internal modules use (mirrors vimcode's tui rasteriser
 /// helper of the same name).
-fn qc(c: Color) -> RatatuiColor {
+pub(crate) fn qc(c: Color) -> RatatuiColor {
     ratatui_color(c)
 }
 

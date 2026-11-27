@@ -606,7 +606,6 @@ mod tests {
     /// child below it.
     #[test]
     fn gtk_header_decoration_row_boundary_round_trip() {
-        use crate::gtk::tree::gtk_tree_layout;
         use crate::primitives::tree::TreeViewHit;
 
         let rows = vec![
@@ -678,7 +677,12 @@ mod tests {
             SectionBody::Tree(t) => t,
             _ => panic!("expected tree body"),
         };
-        let tree_layout = gtk_tree_layout(tree_ref, body_b, LINE_HEIGHT, 8.0);
+        let tree_layout = crate::primitives::layout_metrics::pixel_tree_layout(
+            tree_ref,
+            body_b,
+            LINE_HEIGHT,
+            8.0,
+        );
 
         let header_h = (LINE_HEIGHT * 1.2).round();
         let item_h = (LINE_HEIGHT * 1.4).round();

@@ -14,7 +14,9 @@
 //! | `q`/Esc | Quit                                |
 
 use quadraui::DrawsPrimitives;
-use quadraui::{AppLogic, Backend, Color, CommandLine, Reaction, Rect, UiEvent, WidgetId};
+use quadraui::{
+    AppLogic, Backend, Canvas, Color, CommandLine, DrawOp, Reaction, Rect, UiEvent, WidgetId,
+};
 
 pub struct CommandLineSelectionDemo {
     text: String,
@@ -51,9 +53,19 @@ impl AppLogic for CommandLineSelectionDemo {
         let viewport = backend.viewport();
         let line_height = backend.line_height();
 
-        backend.draw_solid_fill(
+        let backdrop = Canvas {
+            id: WidgetId::new("cmdline:backdrop"),
+            ops: vec![DrawOp::Rect {
+                rect: Rect::new(0.0, 0.0, viewport.width, viewport.height),
+                color: Color::rgb(20, 22, 30),
+            }],
+            regions: Vec::new(),
+            focusable: false,
+        };
+        let _ = backend.draw_dyn(
             Rect::new(0.0, 0.0, viewport.width, viewport.height),
-            Color::rgb(20, 22, 30),
+            &backdrop,
+            &(),
         );
 
         let hint_rect = Rect::new(4.0, 4.0, viewport.width - 8.0, line_height);

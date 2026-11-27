@@ -50,11 +50,9 @@ use crate::behaviour::nav::{Edge, HorizontalDir, HorizontalNav, NavOutcome, NavR
 use crate::compose::widget_host;
 use crate::interactive::{Interactive, PointerKind, RoutedEvent};
 use crate::primitives::data_table::{Column, DataRow, DataTable, SortDirection};
-use crate::primitives::tree_table::{
-    TreeTable, TreeTableEvent, TreeTableNode, TreeTablePrimitiveLayout, TreeTableState,
-};
+use crate::primitives::tree_table::{TreeTable, TreeTableEvent, TreeTableNode, TreeTableState};
 use crate::types::{Decoration, Icon, StyledText, TreePath};
-use crate::{Backend, Handled, Rect, UiEvent, WidgetId};
+use crate::{Backend, DrawsPrimitives, Handled, Rect, UiEvent, WidgetId};
 
 /// A node's stable identity in [`TreeTableController`]'s hierarchical
 /// model — an app-chosen key (file path, database id, …) that never
@@ -351,7 +349,7 @@ impl TreeTableController {
     /// not-yet-loaded placeholder) into a [`TreeTable`] — what
     /// [`Self::render`] paints, and what a caller doing its own
     /// hit-testing (rather than going through [`Self::handle`]) should
-    /// resolve clicks against via [`crate::Backend::tree_table_layout`].
+    /// resolve clicks against via the table's own laid-out layout.
     ///
     /// `columns` is taken by value each call rather than stored (a host
     /// typically recomputes it from the current viewport width, e.g. to
@@ -426,8 +424,7 @@ impl TreeTableController {
 
     pub fn render(&self, backend: &mut dyn Backend, rect: Rect, columns: Vec<Column>) {
         let table = self.flatten(columns);
-        #[allow(deprecated)]
-        backend.draw_tree_table(rect, &table, None);
+        backend.draw_dyn(rect, &table, &());
     }
 
     // ── Handle ────────────────────────────────────────────────────────
@@ -448,16 +445,7 @@ impl TreeTableController {
             }
         }
         let table = self.flatten(columns);
-        #[allow(deprecated)]
-        let laid_out = backend.tree_table_layout(rect, &table);
-        let layout = TreeTablePrimitiveLayout {
-            area: rect,
-            line_height: laid_out.table.row_height,
-            nerd_fonts_enabled: backend.nerd_fonts_enabled(),
-            scroll_offset: table.table.scroll_offset,
-            total_rows: table.table.rows.len(),
-            layout: laid_out,
-        };
+        let layout = backend.layout_primitive(rect, &table);
         let routed = match event {
             // The widget scrolls by whole rows; the backend converts its
             // native wheel delta.
@@ -1403,7 +1391,7 @@ mod tests {
             // `handle`'s `Scroll` arm reading `DataTableLayout::row_height`
             // (via `TreeTableController::layout`) rather than
             // `Backend::line_height` directly, matching
-            // `TreeController::handle`'s identical `tree_scroll_row_height`
+            // the backend's own row pitch
             // rule.
             assert_eq!(c.scroll_offset(), 3);
         }

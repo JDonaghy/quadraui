@@ -246,8 +246,7 @@ impl Demo for SearchPanelDemo {
                 MultiSectionViewHit::Body { section, .. } => {
                     if let Some(sl) = layout.sections.get(section) {
                         if let SectionBody::Tree(ref tree) = view.sections[section].body {
-                            #[allow(deprecated)]
-                            let tree_layout = backend.tree_layout(sl.body_bounds, tree);
+                            let tree_layout = backend.layout_primitive(sl.body_bounds, tree).layout;
                             let local_x = position.x - sl.body_bounds.x;
                             let local_y = position.y - sl.body_bounds.y;
                             match tree_layout.hit_test(local_x, local_y) {
