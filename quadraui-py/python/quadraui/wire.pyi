@@ -1801,10 +1801,7 @@ LayoutLeafNode = TypedDict(
         "date_picker": NotRequired[DatePickerDescriptor],
         "chart": NotRequired[ChartDescriptor],
         "message_list": NotRequired[MessageListDescriptor],
-        "board": NotRequired[BoardModelDescriptor],
-        "pipeline_view": NotRequired[PipelineViewDescriptor],
         "multi_section_view": NotRequired[MultiSectionViewDescriptor],
-        "diff_view": NotRequired[DiffViewDescriptor],
         "tree_table": NotRequired[TreeTableDescriptor],
         "tree_table_controller": NotRequired[TreeTableControllerDescriptor],
         "toolbar": NotRequired[ToolbarDescriptor],
@@ -1834,6 +1831,9 @@ LayoutLeafNode = TypedDict(
         "editor": NotRequired[EditorDescriptor],
         "minimap": NotRequired[MinimapDescriptor],
         "image": NotRequired[ImageDescriptor],
+        "board": NotRequired[BoardModelDescriptor],
+        "pipeline_view": NotRequired[PipelineViewDescriptor],
+        "diff_view": NotRequired[DiffViewDescriptor],
         "style": NotRequired[StyleValue],
         "class": NotRequired[ClassValue],
         "size": NotRequired[SectionSize],
@@ -1864,10 +1864,7 @@ class RenderFrameDict(TypedDict):
     date_picker: NotRequired[Optional[DatePickerDescriptor]]
     chart: NotRequired[Optional[ChartDescriptor]]
     message_list: NotRequired[Optional[MessageListDescriptor]]
-    board: NotRequired[Optional[BoardModelDescriptor]]
-    pipeline_view: NotRequired[Optional[PipelineViewDescriptor]]
     multi_section_view: NotRequired[Optional[MultiSectionViewDescriptor]]
-    diff_view: NotRequired[Optional[DiffViewDescriptor]]
     tree_table: NotRequired[Optional[TreeTableDescriptor]]
     tree_table_controller: NotRequired[Optional[TreeTableControllerDescriptor]]
     toolbar: NotRequired[Optional[ToolbarDescriptor]]
@@ -1897,6 +1894,9 @@ class RenderFrameDict(TypedDict):
     editor: NotRequired[Optional[EditorDescriptor]]
     minimap: NotRequired[Optional[MinimapDescriptor]]
     image: NotRequired[Optional[ImageDescriptor]]
+    board: NotRequired[Optional[BoardModelDescriptor]]
+    pipeline_view: NotRequired[Optional[PipelineViewDescriptor]]
+    diff_view: NotRequired[Optional[DiffViewDescriptor]]
 
 # A render callback's return value: a layout tree or the flat shape.
 RenderOutput = Union[LayoutNode, RenderFrameDict]
@@ -2663,6 +2663,10 @@ class _UiEventDict(TypedDict):
     Terminal: NotRequired[Tuple[WidgetId, TerminalEvent]]
     Editor: NotRequired[Tuple[WidgetId, EditorEvent]]
     Minimap: NotRequired[Tuple[WidgetId, MinimapEvent]]
+    Board: NotRequired[Tuple[WidgetId, Any]]
+    PipelineView: NotRequired[Tuple[WidgetId, Any]]
+    DiffView: NotRequired[Tuple[WidgetId, Any]]
+    MessageList: NotRequired[Tuple[WidgetId, Any]]
     TextDisplay: NotRequired[Tuple[WidgetId, TextDisplayEvent]]
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]

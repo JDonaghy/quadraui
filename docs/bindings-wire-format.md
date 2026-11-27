@@ -3713,10 +3713,7 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `date_picker` | `DatePickerDescriptor` | no |  |
 | `chart` | `ChartDescriptor` | no |  |
 | `message_list` | `MessageListDescriptor` | no |  |
-| `board` | `BoardModelDescriptor` | no |  |
-| `pipeline_view` | `PipelineViewDescriptor` | no |  |
 | `multi_section_view` | `MultiSectionViewDescriptor` | no |  |
-| `diff_view` | `DiffViewDescriptor` | no |  |
 | `tree_table` | `TreeTableDescriptor` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor` | no |  |
 | `toolbar` | `ToolbarDescriptor` | no |  |
@@ -3746,6 +3743,9 @@ One `{"id", "<kind>": <descriptor>}` leaf -- exactly one kind key is present. Ev
 | `editor` | `EditorDescriptor` | no |  |
 | `minimap` | `MinimapDescriptor` | no |  |
 | `image` | `ImageDescriptor` | no |  |
+| `board` | `BoardModelDescriptor` | no |  |
+| `pipeline_view` | `PipelineViewDescriptor` | no |  |
+| `diff_view` | `DiffViewDescriptor` | no |  |
 | `style` | `StyleValue` | no |  |
 | `class` | `ClassValue` | no |  |
 | `size` | `SectionSize` | no |  |
@@ -3782,10 +3782,7 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `date_picker` | `DatePickerDescriptor \| null` | no |  |
 | `chart` | `ChartDescriptor \| null` | no |  |
 | `message_list` | `MessageListDescriptor \| null` | no |  |
-| `board` | `BoardModelDescriptor \| null` | no |  |
-| `pipeline_view` | `PipelineViewDescriptor \| null` | no |  |
 | `multi_section_view` | `MultiSectionViewDescriptor \| null` | no |  |
-| `diff_view` | `DiffViewDescriptor \| null` | no |  |
 | `tree_table` | `TreeTableDescriptor \| null` | no |  |
 | `tree_table_controller` | `TreeTableControllerDescriptor \| null` | no |  |
 | `toolbar` | `ToolbarDescriptor \| null` | no |  |
@@ -3815,6 +3812,9 @@ The pre-layout-tree flat per-slot shape a render callback may still return inste
 | `editor` | `EditorDescriptor \| null` | no |  |
 | `minimap` | `MinimapDescriptor \| null` | no |  |
 | `image` | `ImageDescriptor \| null` | no |  |
+| `board` | `BoardModelDescriptor \| null` | no |  |
+| `pipeline_view` | `PipelineViewDescriptor \| null` | no |  |
+| `diff_view` | `DiffViewDescriptor \| null` | no |  |
 
 <a id="wire-renderoutput"></a>
 #### `RenderOutput`
@@ -5261,6 +5261,10 @@ Exactly one of the tags below is present on the wire (a discriminated union):
 | `Terminal` | `[WidgetId, TerminalEvent]` |  |
 | `Editor` | `[WidgetId, EditorEvent]` |  |
 | `Minimap` | `[WidgetId, MinimapEvent]` |  |
+| `Board` | `[WidgetId, unknown]` |  |
+| `PipelineView` | `[WidgetId, unknown]` |  |
+| `DiffView` | `[WidgetId, unknown]` |  |
+| `MessageList` | `[WidgetId, unknown]` |  |
 | `TextDisplay` | `[WidgetId, TextDisplayEvent]` |  |
 | `Chart` | `[WidgetId, ChartEvent]` |  |
 | `DataTable` | `[WidgetId, DataTableEvent]` |  |

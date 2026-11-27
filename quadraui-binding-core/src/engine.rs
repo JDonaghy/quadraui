@@ -11087,10 +11087,9 @@ mod tests {
     fn dragging_a_split_tree_divider_changes_the_ratio() {
         use quadraui::SplitDirection;
 
-        // Ratio 0.6 (not the more obvious 0.5) so the resolved divider
-        // `position` has a fractional part under `0.5`, matching
-        // `cell_position`'s own truncate-toward-zero convention for where
-        // the divider's bar paints.
+        // Ratio 0.6 over the 39 cells a 40-wide viewport shares out puts
+        // the unrounded divider at 23.4, which the cell layout places on
+        // the whole cell 23.
         let tree = quadraui::SplitTree::split(
             SplitDirection::Horizontal,
             0.6,
@@ -11102,12 +11101,6 @@ mod tests {
             engine: InteractionEngine::new(),
             sink: RefCell::new(RecordingSink::default()),
         };
-        // The module's usual 40-cell-wide viewport — deliberately even, so
-        // the divider's resolved `position` is fractional and the click
-        // below exercises the tolerant-band path
-        // `hit_test_painted`'s `PaintedHit::SplitTree` arm needs (an odd
-        // width like 41 lands the divider on an exact integer and would
-        // hide a regression there).
         let mut driver = TuiDriver::new(logic, 40, 10);
         driver.render();
 
@@ -11121,21 +11114,14 @@ mod tests {
                 .expect("split tree should have painted a hit")
         };
         let divider = &layout.dividers[0];
-        assert!(
-            divider.position.fract() > 0.0,
-            "expected a fractional divider position on an even-width viewport, got {}",
-            divider.position
+        assert_eq!(
+            divider.position, 23.0,
+            "the cell layout places the divider on the cell it paints at"
         );
-        // A `"button"`-kind `LeafDescriptor::Widget` leaf's own painted
-        // `PaintedHit::Widget.area` is the UNQUANTIZED pane rect `draw_split_tree`
-        // handed it (every leaf kind this layout-tree paints shares that —
-        // nothing here is specific to `Button`), so it still claims the
-        // whole `[0, 23.4)` span on this geometry, past `cell_position`'s
-        // own truncated `23`. `ceil` instead lands solidly inside the
-        // divider's own `[position, position + thickness)` band without
-        // landing inside either leaf's area — `23.4..24.4` here — and is
-        // still a realistic integer mouse column.
-        let divider_cell = divider.position.ceil();
+        // Both leaves end at the divider cell, so a press on the cell the
+        // divider paints at — a realistic integer mouse column — lands on
+        // the divider, not on a leaf.
+        let divider_cell = divider.position;
 
         driver.dispatch(UiEvent::MouseDown {
             widget: None,
@@ -11164,10 +11150,10 @@ mod tests {
         let (split_index, new_ratio) = dragged
             .unwrap_or_else(|| panic!("expected a SplitDividerDragged event: {:?}", dispatched));
         assert_eq!(split_index, 0);
-        // ratio = (cursor_axis - axis_start) / axis_size, the same
-        // `dispatch_mouse_moved` conversion `drag.rs`'s `ActiveDrag::SplitTree::ratio_at`
-        // now mirrors: (24 + 10 - 0) / 40 == 0.85.
-        let expected_ratio = (divider_cell + 10.0 - divider.axis_start) / divider.axis_size;
+        // The exact inverse of the layout: the cursor's offset over the
+        // span the divider shares out, (23 + 10 - 0) / (40 - 1).
+        let expected_ratio = (divider_cell + 10.0 - divider.axis_start)
+            / (divider.axis_size - divider.thickness);
         assert!(
             (new_ratio - expected_ratio).abs() < 0.001,
             "expected a ratio around {expected_ratio}, got {new_ratio}"

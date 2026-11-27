@@ -253,6 +253,12 @@ widget_kinds! {
     "editor" => crate::Editor,
     "minimap" => crate::Minimap,
     "image" => crate::Image,
+    // Ungated: the `Primitive`/`Interactive` impls of `BoardModel`,
+    // `PipelineView` and `DiffView` carry no feature gate. The kind
+    // strings are the ones the wire schema already publishes for them.
+    "board" => crate::BoardModel,
+    "pipeline_view" => crate::PipelineView,
+    "diff_view" => crate::DiffView,
 }
 
 #[cfg(test)]

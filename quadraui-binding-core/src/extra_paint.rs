@@ -12,10 +12,10 @@ use std::rc::Rc;
 use quadraui::primitive::DynWidget;
 use quadraui::DrawsPrimitives;
 use quadraui::{
-    render_markdown_to_styled, Backend, BoardModel, Canvas, Chart, Column, ComboBox, CommandLine,
-    DatePicker, Decoration, DiffView, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon,
+    render_markdown_to_styled, Backend, Canvas, Chart, Column, ComboBox, CommandLine,
+    DatePicker, Decoration, FieldKind, FindReplacePanel, FontRole, Form, FormField, Icon,
     LabelPosition, MenuBar, MessageList, MultiSectionView, NaturalSize, NumberInput,
-    NumberInputHit, PipelineView, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
+    NumberInputHit, Point, ProgressBar, Rect, RenderedMarkdown, ScrollAxis,
     ScrollView, Scrollbar, Spinner, StyledText, TextDisplay, TextDisplayLine, TextField, TextInput,
     TextRegion, Theme, Toolbar, ToolbarButton, TreeTable, TreeTableController, TreeTableNodeData,
     WidgetId,
@@ -1162,39 +1162,9 @@ impl ExtraPaint for MessageList {
     }
 }
 
-impl ExtraPaint for BoardModel {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_board(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
-impl ExtraPaint for PipelineView {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_pipeline_view(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
 impl ExtraPaint for MultiSectionView {
     fn paint(&self, backend: &mut dyn Backend, area: Rect) {
         backend.draw_multi_section_view(area, self);
-    }
-
-    fn id(&self) -> WidgetId {
-        self.id
-    }
-}
-
-impl ExtraPaint for DiffView {
-    fn paint(&self, backend: &mut dyn Backend, area: Rect) {
-        backend.draw_diff_view(area, self);
     }
 
     fn id(&self) -> WidgetId {
@@ -1796,10 +1766,7 @@ extra_primitives! {
     "date_picker" => DatePicker,
     "chart" => Chart,
     "message_list" => MessageList,
-    "board" => BoardModel,
-    "pipeline_view" => PipelineView,
     "multi_section_view" => MultiSectionView,
-    "diff_view" => DiffView,
     "tree_table" => TreeTable,
     "tree_table_controller" => TreeTableControllerDescriptor,
     "toolbar" => ToolbarWithOverflow,
@@ -1829,13 +1796,15 @@ extra_primitives! {
 ///
 /// `"icon_grid"`, `"cell_grid"`, `"switch"`, `"radio_group"`, `"button"`,
 /// `"command_center"`, `"terminal"`, `"status_bar"`, `"activity_bar"`,
-/// `"palette"`, `"context_menu"`, `"editor"`, `"minimap"` and `"image"` are
-/// this table's members: unlike every [`EXTRA_PRIMITIVE_KINDS`] entry, none
-/// of [`quadraui::IconGrid`], [`quadraui::CellGrid`], [`quadraui::Switch`],
+/// `"palette"`, `"context_menu"`, `"editor"`, `"minimap"`, `"image"`,
+/// `"board"`, `"pipeline_view"` and `"diff_view"` are this table's members:
+/// unlike every [`EXTRA_PRIMITIVE_KINDS`] entry, none of
+/// [`quadraui::IconGrid`], [`quadraui::CellGrid`], [`quadraui::Switch`],
 /// [`quadraui::RadioGroup`], [`quadraui::Button`], [`quadraui::CommandCenter`],
 /// [`quadraui::Terminal`], [`quadraui::StatusBar`], [`quadraui::ActivityBar`],
 /// [`quadraui::Palette`], [`quadraui::ContextMenu`], [`quadraui::Editor`],
-/// [`quadraui::Minimap`] or [`quadraui::Image`] has a bespoke
+/// [`quadraui::Minimap`], [`quadraui::Image`], [`quadraui::BoardModel`],
+/// [`quadraui::PipelineView`] or [`quadraui::DiffView`] has a bespoke
 /// [`ExtraPaint`] impl to write
 /// here — painting, whole-area hit testing and [`DynWidget::handle`]
 /// routing are already fully generic (see
@@ -1873,12 +1842,16 @@ extra_primitives! {
 /// [`crate::interactive::Interactive`] impls hold only gesture state (a
 /// drag anchor, a seek drag), and [`quadraui::Image`] is non-interactive
 /// with its natural size from its own `Primitive::measure`, so `"editor"`,
-/// `"minimap"` and `"image"` need nothing more. A further kind joins this table only when it
+/// `"minimap"` and `"image"` need nothing more. [`quadraui::BoardModel`],
+/// [`quadraui::PipelineView`] and [`quadraui::DiffView`] keep their
+/// selection, focus and scroll on the descriptor and hold no state at all,
+/// so `"board"`, `"pipeline_view"` and `"diff_view"` need nothing more
+/// either. A further kind joins this table only when it
 /// likewise needs nothing beyond that generic contract; a kind with its
 /// own paint-time chrome state (tab-stop children, chrome click regions,
 /// a custom whole-area-vs-sub-region hit test) still belongs in
 /// [`EXTRA_PRIMITIVE_KINDS`] instead, same as every entry already there.
-pub const WIDGET_KINDS: [&str; 14] = [
+pub const WIDGET_KINDS: [&str; 17] = [
     "icon_grid",
     "cell_grid",
     "switch",
@@ -1893,6 +1866,9 @@ pub const WIDGET_KINDS: [&str; 14] = [
     "editor",
     "minimap",
     "image",
+    "board",
+    "pipeline_view",
+    "diff_view",
 ];
 
 /// Decodes one [`WIDGET_KINDS`] leaf dict body into a type-erased
