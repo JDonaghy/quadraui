@@ -716,6 +716,17 @@ mod pixel_driver_tests {
     #[cfg(all(feature = "win", target_os = "windows"))]
     #[test]
     fn win_clicks_and_carets_follow_shaped_glyphs() {
-        run_all(&mut |app| Box::new(crate::win::testing::WinDriver::new(app, 600, 80)));
+        run_all(&mut |app| {
+            let mut d = crate::win::testing::WinDriver::new(app, 600, 80);
+            // The DirectWrite formats are built when a surface attaches,
+            // which precedes `setup`'s font choice in the driver, so
+            // attach again to paint in that font.
+            let target = d.surface().target().clone();
+            d.backend_mut()
+                .attach_headless(target, 600, 80)
+                .expect("re-attach the headless surface");
+            d.render();
+            Box::new(d)
+        });
     }
 }
