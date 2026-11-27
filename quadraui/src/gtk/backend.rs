@@ -2508,7 +2508,8 @@ impl Backend for GtkBackend {
         // unused (forward-compat for a host-resolved layout per
         // BACKEND_TRAIT_PROPOSAL §6.2).
         let _ = rect;
-        crate::primitives::find_replace::paint(panel, self, &theme);
+        let style = Backend::style(self);
+        crate::primitives::find_replace::paint(panel, self, &theme, &style);
     }
 
     fn draw_scrollbar(
@@ -2984,6 +2985,14 @@ impl PaintSurface for EditorSurface<'_> {
         self.backend.surface_pop_clip()
     }
 
+    fn surface_push_rounded_clip(&mut self, rect: QRect, radius: f32) {
+        self.backend.surface_push_rounded_clip(rect, radius)
+    }
+
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.backend.surface_overlay_scrollbar_opacity()
+    }
+
     fn surface_blit_alpha(
         &mut self,
         dest: QRect,
@@ -3428,6 +3437,26 @@ impl PaintSurface for GtkBackend {
             .current_frame_refs()
             .expect("GtkBackend::surface_pop_clip called outside enter_frame_scope");
         cr.restore().ok();
+    }
+
+    fn surface_push_rounded_clip(&mut self, rect: QRect, radius: f32) {
+        let (cr, _layout) = self
+            .current_frame_refs()
+            .expect("GtkBackend::surface_push_rounded_clip called outside enter_frame_scope");
+        cr.save().ok();
+        crate::gtk::rounded_rect_path(
+            cr,
+            rect.x as f64,
+            rect.y as f64,
+            rect.width as f64,
+            rect.height as f64,
+            radius as f64,
+        );
+        cr.clip();
+    }
+
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.scrollbar_fade_opacity()
     }
 
     fn surface_blit_alpha(

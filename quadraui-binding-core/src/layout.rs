@@ -10,8 +10,8 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use quadraui::{
-    Color, DataTable, ListView, Rect, ScrollAxis, SectionSize, SidebarPanel, Split, SplitTree,
-    StatusBarOverflow, Style, TabBar, TextDisplay, Theme, TreeView,
+    CellOverflow, Color, DataTable, ListView, Rect, ScrollAxis, SectionSize, SidebarPanel, Split,
+    SplitTree, Style, TabBar, TextDisplay, Theme, TreeView,
 };
 
 use quadraui::layout::{resolve_grid_tracks, GridTrack};
@@ -307,8 +307,10 @@ macro_rules! style_override_tokens {
                 tooltip_delay_ms: u64 => with_tooltip_delay_ms => opt_u64,
                 tooltip_auto_dismiss_ms: u64 => with_tooltip_auto_dismiss_ms => opt_u64,
                 status_bar_cell_gap: f32 => with_status_bar_cell_gap => opt_f32,
-                status_bar_cell_overflow: StatusBarOverflow
-                    => with_status_bar_cell_overflow => opt_status_bar_overflow,
+                status_bar_cell_overflow: CellOverflow
+                    => with_status_bar_cell_overflow => opt_cell_overflow,
+                list_cell_overflow: CellOverflow
+                    => with_list_cell_overflow => opt_cell_overflow,
             ],
         }
     };

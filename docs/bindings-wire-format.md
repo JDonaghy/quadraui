@@ -1748,6 +1748,7 @@ A per-node "style" override, scoped to that node's own subtree: every quadraui::
 | `tooltip_auto_dismiss_ms` | `number` | no |  |
 | `status_bar_cell_gap` | `number` | no |  |
 | `status_bar_cell_overflow` | `"ellipsis" \| "clip"` | no |  |
+| `list_cell_overflow` | `"ellipsis" \| "clip"` | no |  |
 | `font_family` | `string` | no |  |
 | `font_size` | `number` | no |  |
 | `font_weight` | `"normal" \| "bold"` | no |  |

@@ -634,6 +634,7 @@ export interface StyleValue {
   tooltip_auto_dismiss_ms?: number;
   status_bar_cell_gap?: number;
   status_bar_cell_overflow?: "ellipsis" | "clip";
+  list_cell_overflow?: "ellipsis" | "clip";
   font_family?: string;
   font_size?: number;
   font_weight?: "normal" | "bold";

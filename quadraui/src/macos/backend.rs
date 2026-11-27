@@ -2442,7 +2442,8 @@ impl Backend for MacBackend {
         // `chrome_font` unconditionally (see those methods' docs), so
         // there is nothing for this call to precondition on.
         let theme = self.current_theme;
-        crate::primitives::find_replace::paint(panel, self, &theme);
+        let style = Backend::style(self);
+        crate::primitives::find_replace::paint(panel, self, &theme, &style);
     }
     fn draw_scrollbar(&mut self, _rect: Rect, scrollbar: &Scrollbar) {
         let theme = self.current_theme;
@@ -2951,6 +2952,10 @@ impl PaintSurface for EditorSurface<'_> {
         self.backend.surface_pop_clip()
     }
 
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.backend.surface_overlay_scrollbar_opacity()
+    }
+
     fn surface_blit_alpha(
         &mut self,
         dest: Rect,
@@ -3278,6 +3283,10 @@ impl PaintSurface for MacBackend {
         );
         // SAFETY: ctx is non-null inside the frame scope.
         unsafe { CGContextRestoreGState(ctx) };
+    }
+
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.scrollbar_fade_opacity()
     }
 
     fn surface_blit_alpha(

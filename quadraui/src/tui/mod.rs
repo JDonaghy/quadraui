@@ -86,6 +86,7 @@ pub use cell_surface::BufferCellSurface;
 pub use find_replace::draw_find_replace;
 #[doc(hidden)]
 pub use focus_ring::draw_focus_ring;
+pub(crate) use list::draw_list_with_overflow;
 #[doc(hidden)]
 pub use list::{
     draw_list, draw_list_with_scroll_px, draw_list_with_state, tui_list_layout,

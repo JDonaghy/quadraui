@@ -438,6 +438,10 @@ impl StatusBar {
     ///
     /// `min_gap` still reserves a gap between the left and right groups
     /// on top of both insets — unchanged from `layout`.
+    ///
+    /// [`Self::natural_width`] is the narrowest `bar_width` this lays
+    /// every segment out at in full with the whole `min_gap` between the
+    /// groups.
     pub fn layout_padded<F>(
         &self,
         bar_width: f32,
@@ -609,6 +613,35 @@ impl StatusBar {
     }
 }
 
+impl StatusBar {
+    /// The narrowest bar [`Self::layout_padded`] lays every segment out
+    /// in at its full measured width with the whole `min_gap` kept
+    /// between the groups: both edge insets, every segment's text plus
+    /// `segment_padding` on each side, and `min_gap` when both groups
+    /// have segments. All in `measure`'s unit.
+    pub fn natural_width<F>(
+        &self,
+        min_gap: f32,
+        edge_inset: f32,
+        segment_padding: f32,
+        measure: F,
+    ) -> f32
+    where
+        F: Fn(&StatusBarSegment) -> StatusSegmentMeasure,
+    {
+        let pad = 2.0 * segment_padding;
+        let group = |segs: &[StatusBarSegment]| -> f32 {
+            segs.iter().map(|s| measure(s).width + pad).sum()
+        };
+        let gap = if self.left_segments.is_empty() || self.right_segments.is_empty() {
+            0.0
+        } else {
+            min_gap
+        };
+        2.0 * edge_inset + group(&self.left_segments) + group(&self.right_segments) + gap
+    }
+}
+
 /// Default minimum gap, in character cells, reserved between the left
 /// and right segment groups on a cell grid — the cell-unit counterpart of
 /// `native_surface_paint`'s own pixel `MIN_GAP`. Both exist because
@@ -616,22 +649,6 @@ impl StatusBar {
 /// unit, so each unit system names its own value. A host changes it
 /// through [`crate::Style::status_bar_cell_gap`].
 pub const MIN_GAP_CELLS: f32 = 2.0;
-
-/// How a cell-grid status bar paints a segment whose text is wider than
-/// the cells its layout left it. Set through
-/// [`crate::Style::status_bar_cell_overflow`].
-///
-/// `#[non_exhaustive]`: a future overflow style is additive.
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum StatusBarOverflow {
-    /// End the visible text in `…`, so the cut reads as deliberate.
-    #[default]
-    Ellipsis,
-    /// Cut the text at the segment's last cell with no marker.
-    Clip,
-}
 
 /// The cell-units [`StatusBarLayout`] every cell-grid caller shares: one
 /// cell per character, `style`'s [`crate::Style::status_bar_cell_gap`]
@@ -657,15 +674,16 @@ pub fn cell_layout(bar: &StatusBar, area: Rect, style: &crate::Style) -> StatusB
 /// here; any policy change (priority drop, gap rules, …) belongs in
 /// [`StatusBar::layout_padded`]. The one adjustment made at paint time is
 /// fitting a segment's text to the `bounds.width` cells the layout
-/// already resolved for it, by its [`StatusBarOverflow`] — a rendering
+/// already resolved for it, by its [`crate::CellOverflow`] — a rendering
 /// detail, not a layout decision, since the width itself came from the
 /// layout.
 #[cfg(feature = "tui")]
 pub(crate) mod cell_paint {
-    use super::{StatusBar, StatusBarLayout, StatusBarOverflow, StatusSegmentSide};
+    use super::{StatusBar, StatusBarLayout, StatusSegmentSide};
     use crate::cell_surface::{CellStyle, CellSurface};
     use crate::theme::Theme;
     use crate::types::{Color, WidgetId};
+    use crate::CellOverflow;
     use crate::Rect;
 
     /// A foreground/background pair plus the one modifier bit a segment
@@ -705,7 +723,7 @@ pub(crate) mod cell_paint {
         area: Rect,
         surface: &mut dyn CellSurface,
         theme: &Theme,
-        overflow: StatusBarOverflow,
+        overflow: CellOverflow,
         hovered_id: Option<&WidgetId>,
         pressed_id: Option<&WidgetId>,
     ) -> StatusBarLayout {
@@ -771,7 +789,7 @@ pub(crate) mod cell_paint {
             // with is clipped instead, keeping the character the `…`
             // would have eaten.
             let paint_text = match overflow {
-                StatusBarOverflow::Clip => {
+                CellOverflow::Clip => {
                     let kept = vs.bounds.width.max(0.0).round() as usize;
                     std::borrow::Cow::Owned(seg.text.chars().take(kept).collect())
                 }
@@ -1753,6 +1771,18 @@ impl crate::interactive::WidgetAction for StatusBarSegmentAction {
     }
 }
 
+/// A segment's text width on a pixel surface, in the bold chrome font
+/// for a bold segment so its box is as wide as the text the painter
+/// draws.
+fn pixel_segment_width(ctx: &crate::primitive::LayoutCtx, seg: &StatusBarSegment) -> f32 {
+    let role = if seg.bold {
+        crate::FontRole::ChromeBold
+    } else {
+        crate::FontRole::Chrome
+    };
+    ctx.text_width(&seg.text, role)
+}
+
 impl crate::primitive::Primitive for StatusBar {
     type Layout = StatusBarPrimitiveLayout;
     type Event = StatusBarHit;
@@ -1765,19 +1795,36 @@ impl crate::primitive::Primitive for StatusBar {
         crate::frame::OwnedContent::StatusBar(self.clone())
     }
 
-    /// A status bar stretches to its container's width and is one row
-    /// tall: one cell on a cell grid, [`crate::Style::status_bar_height`]
-    /// on a pixel surface.
+    /// One row tall — one cell on a cell grid,
+    /// [`crate::Style::status_bar_height`] on a pixel surface — and as
+    /// wide as [`Self::layout`] needs to paint every segment in full
+    /// ([`StatusBar::natural_width`], with the same gap, insets, padding
+    /// and text measurement). A container that stretches the bar across
+    /// its width ignores the width; one that sizes it to its content gets
+    /// a strip its text fits in untruncated.
     fn measure(
         &self,
         ctx: &crate::primitive::LayoutCtx,
         _avail: crate::primitive::Size,
     ) -> crate::NaturalSize {
-        let height = match ctx.units() {
-            crate::primitive::Units::Cells => 1.0,
-            _ => ctx.style().status_bar_height,
+        let (width, height) = match ctx.units() {
+            crate::primitive::Units::Cells => (
+                self.natural_width(ctx.style().status_bar_cell_gap.max(0.0), 0.0, 0.0, |seg| {
+                    StatusSegmentMeasure::new(seg.text.chars().count() as f32)
+                }),
+                1.0,
+            ),
+            _ => (
+                self.natural_width(
+                    PIXEL_MIN_GAP,
+                    PIXEL_EDGE_INSET,
+                    PIXEL_SEGMENT_PADDING,
+                    |seg| StatusSegmentMeasure::new(pixel_segment_width(ctx, seg)),
+                ),
+                ctx.style().status_bar_height,
+            ),
         };
-        crate::NaturalSize::new(None, Some(height))
+        crate::NaturalSize::new(Some(width), Some(height))
     }
 
     /// On a cell grid the bar is measured one cell per character by
@@ -1797,14 +1844,7 @@ impl crate::primitive::Primitive for StatusBar {
                 PIXEL_MIN_GAP,
                 PIXEL_EDGE_INSET,
                 PIXEL_SEGMENT_PADDING,
-                |seg| {
-                    let role = if seg.bold {
-                        crate::FontRole::ChromeBold
-                    } else {
-                        crate::FontRole::Chrome
-                    };
-                    StatusSegmentMeasure::new(ctx.text_width(&seg.text, role))
-                },
+                |seg| StatusSegmentMeasure::new(pixel_segment_width(ctx, seg)),
             ),
         };
         StatusBarPrimitiveLayout { area: rect, layout }
@@ -2656,7 +2696,7 @@ mod cell_paint_tests {
             ),
             &mut surface,
             theme,
-            super::StatusBarOverflow::default(),
+            crate::CellOverflow::default(),
             hovered_id,
             pressed_id,
         )
@@ -3288,7 +3328,8 @@ mod cell_paint_tests {
 #[cfg(test)]
 mod widget_contract_tests {
     use super::{
-        StatusBar, StatusBarSegment, StatusBarSegmentAction, StatusBarState, PIXEL_EDGE_INSET,
+        cell_layout, StatusBar, StatusBarSegment, StatusBarSegmentAction, StatusBarState,
+        StatusSegmentMeasure, StatusSegmentSide, PIXEL_EDGE_INSET,
     };
     use crate::compose::Handled;
     use crate::event::{MouseButton, Point};
@@ -3429,8 +3470,48 @@ mod widget_contract_tests {
         let bar = bar();
         let natural =
             Primitive::measure(&bar, &cell_ctx(), crate::primitive::Size::new(40.0, 10.0));
-        assert_eq!(natural.width, None, "a status bar stretches horizontally");
         assert_eq!(natural.height, Some(1.0));
+        let width = natural.width.expect("a natural width");
+        let at = |w: f32| cell_layout(&bar, Rect::new(0.0, 0.0, w, 1.0), &crate::Style::default());
+        assert!(
+            !at(width).visible_segments.is_empty(),
+            "the natural width lays the bar out"
+        );
+        assert_eq!(
+            width,
+            bar.natural_width(
+                crate::primitives::status_bar::MIN_GAP_CELLS,
+                0.0,
+                0.0,
+                |seg| { StatusSegmentMeasure::new(seg.text.chars().count() as f32) }
+            ),
+            "every segment's cells plus the default gap"
+        );
+    }
+
+    /// At its natural width every segment gets its full measured width;
+    /// one unit narrower, some segment is squeezed or dropped.
+    #[test]
+    fn natural_width_is_the_narrowest_width_that_fits_every_segment() {
+        let bar = StatusBar {
+            right_segments: vec![],
+            ..bar()
+        };
+        let measure = |seg: &StatusBarSegment| StatusSegmentMeasure::new(seg.text.len() as f32);
+        let natural = bar.natural_width(3.0, 2.0, 1.0, measure);
+        let full = |w: f32| {
+            let l = bar.layout_padded(w, 1.0, 3.0, 2.0, 1.0, measure);
+            l.visible_segments.len() == bar.left_segments.len() + bar.right_segments.len()
+                && l.visible_segments.iter().all(|v| {
+                    let seg = match v.side {
+                        StatusSegmentSide::Left => &bar.left_segments[v.segment_idx],
+                        StatusSegmentSide::Right => &bar.right_segments[v.segment_idx],
+                    };
+                    v.bounds.width >= seg.text.len() as f32 + 2.0 - 0.01
+                })
+        };
+        assert!(full(natural));
+        assert!(!full(natural - 1.0));
     }
 
     #[test]

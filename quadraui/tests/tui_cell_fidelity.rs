@@ -1,21 +1,24 @@
 #![cfg(feature = "tui")]
 //! Black-box `TuiDriver` tests for the cell-grid look of `TabBar`,
-//! `StatusBar`, `Form` and `TreeView` painted through the widget contract
-//! (`Surface::Widget` → `DynWidget::paint` → `Primitive::paint_cells`).
+//! `StatusBar`, `Form`, `TreeView` and `ListView` painted through the
+//! widget contract (`Surface::Widget` → `DynWidget::paint` →
+//! `Primitive::paint_cells`).
 //!
 //! Each test pins one rendering a terminal host relies on: the active tab
 //! stays on screen without a host-side scroll probe, a tab strip can drop
 //! its `│` rules, a status bar never truncates text that fits, a
-//! content-sized form control can sit against the row's right edge, and a
-//! tree can give its last column to rows instead of a scrollbar.
+//! content-sized form control can sit against the row's right edge, a
+//! tree can give its last column to rows instead of a scrollbar, and a
+//! list row too long for the list can be cut at the edge instead of
+//! ending in `…`.
 
 use quadraui::primitive::DynWidget;
 use quadraui::tui::testing::TuiDriver;
 use quadraui::{
-    AppLogic, Backend, Color, ControlWidth, Decoration, FieldKind, Form, FormField, Reaction, Rect,
-    ScreenLayout, SelectionMode, StatusBar, StatusBarOverflow, StatusBarSegment, Style, StyledText,
-    Surface, TabBar, TabChrome, TabItem, TabSeparator, TreeRow, TreeStyle, TreeView, UiEvent,
-    WidgetId,
+    AppLogic, Backend, CellOverflow, Color, ControlWidth, Decoration, FieldKind, Form, FormField,
+    ListItem, ListView, Reaction, Rect, ScreenLayout, SelectionMode, StatusBar, StatusBarSegment,
+    Style, StyledText, Surface, TabBar, TabChrome, TabItem, TabSeparator, TreeRow, TreeStyle,
+    TreeView, UiEvent, WidgetId,
 };
 
 /// Paints one widget into `rect` every frame.
@@ -229,7 +232,7 @@ fn overflowing_bar_row(style: Style) -> String {
 fn status_bar_clip_with_no_gap_cuts_left_text_flush_against_the_right_group() {
     let style = Style::default()
         .with_status_bar_cell_gap(0.0)
-        .with_status_bar_cell_overflow(StatusBarOverflow::Clip);
+        .with_status_bar_cell_overflow(CellOverflow::Clip);
 
     assert_eq!(overflowing_bar_row(style), "a status message far too  1:1 ");
 }
@@ -440,5 +443,80 @@ fn tree_with_a_scrollbar_keeps_its_last_column_for_the_track() {
     assert!(
         !first.contains("abcdefghij"),
         "the scrollbar column truncates the row: {first:?}"
+    );
+}
+
+// ── ListView ────────────────────────────────────────────────────────────
+
+/// Paints one `ListView` under `style` every frame.
+struct StyledList {
+    list: ListView,
+    style: Style,
+}
+
+impl AppLogic for StyledList {
+    type AreaId = ();
+
+    fn render(&self, backend: &mut dyn Backend, _area: ()) {
+        backend.set_style(self.style);
+        let mut frame = ScreenLayout::new();
+        frame.push(Surface::Widget {
+            rect: Rect::new(0.0, 0.0, 12.0, 2.0),
+            widget: Box::new(self.list.clone()),
+        });
+        frame.draw(backend);
+    }
+
+    fn handle(&mut self, _event: UiEvent, _backend: &mut dyn Backend) -> Reaction {
+        Reaction::Continue
+    }
+}
+
+/// The first row of a 12-cell list whose only row is far wider than it.
+fn overlong_list_row(style: Style) -> String {
+    let list = ListView {
+        id: WidgetId::new("list"),
+        title: None,
+        items: vec![ListItem {
+            text: plain("abcdefghijklmnopqrstuvwxyz"),
+            icon: None,
+            detail: None,
+            decoration: Decoration::default(),
+        }],
+        selected_idx: 0,
+        scroll_offset: 0,
+        has_focus: false,
+        bordered: false,
+        h_scroll: 0,
+        max_content_width: None,
+        show_v_scrollbar: false,
+    };
+    let d = TuiDriver::new(StyledList { list, style }, 12, 2);
+    d.screen().lines().next().unwrap_or_default().to_string()
+}
+
+#[test]
+fn list_row_under_clip_is_cut_at_the_last_cell_with_no_ellipsis() {
+    let clipped = overlong_list_row(Style::default().with_list_cell_overflow(CellOverflow::Clip));
+    let ellipsised = overlong_list_row(Style::default());
+
+    assert_eq!(clipped.chars().count(), 12, "{clipped:?}");
+    assert!(!clipped.contains('…'), "{clipped:?}");
+    assert!(
+        clipped.trim_start().starts_with("abc"),
+        "the row text starts the row: {clipped:?}"
+    );
+    let last = clipped.chars().last().unwrap();
+    assert!(
+        last.is_ascii_lowercase(),
+        "the last cell holds the text that reached it: {clipped:?}"
+    );
+
+    // Ellipsis stays the default: the same row, its last cell an `…`.
+    assert!(ellipsised.ends_with('…'), "{ellipsised:?}");
+    let keep = clipped.chars().count() - 1;
+    assert_eq!(
+        ellipsised.chars().take(keep).collect::<String>(),
+        clipped.chars().take(keep).collect::<String>()
     );
 }

@@ -2565,19 +2565,25 @@ impl crate::primitive::Primitive for DataTable {
                 layout,
             };
         }
-        // Content columns measure through the backend's own text
-        // measurer, the same metric the painter positions text with, so
-        // the column a click resolves to is the column painted there.
+        // Content columns measure their titles through the backend's own
+        // text measurer in the bold chrome font the header paints them
+        // in, so a title that sized its column paints in full and the
+        // column a click resolves to is the column painted there.
         let measure = layout_metrics::LayoutCtxMeasure {
             ctx,
             role: crate::FontRole::Chrome,
         };
-        let mut layout = layout_metrics::pixel_data_table_layout(
+        let header_measure = layout_metrics::LayoutCtxMeasure {
+            ctx,
+            role: crate::FontRole::ChromeBold,
+        };
+        let mut layout = layout_metrics::pixel_data_table_layout_with_header(
             self,
             rect.width,
             rect.height,
             ctx.line_height,
             &measure,
+            &header_measure,
         );
         layout.scroll_sub_px = self.scroll_sub_row_px(ctx.line_height, scroll_px);
         DataTablePrimitiveLayout {

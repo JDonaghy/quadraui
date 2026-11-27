@@ -941,12 +941,8 @@ impl WinBackend {
     /// explicitly cleared to `None`, otherwise
     /// [`idle_fade_opacity`](crate::primitives::scrollbar::idle_fade_opacity)
     /// sampled at [`Self::fade_now`]. Mirrors `MacBackend::scrollbar_fade_opacity`.
-    ///
-    /// Only read from [`Backend::draw_scrollbar`]'s `target_os =
-    /// "windows"` painted path (`self.surface` itself is `cfg`-gated to
-    /// that target) — see [`Self::drain_user_events`]'s doc for why that
-    /// reads as dead code on a non-Windows `cargo check` and isn't.
-    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+    /// The contract [`crate::Scrollbar`] reads it through
+    /// [`PaintSurface::surface_overlay_scrollbar_opacity`].
     fn scrollbar_fade_opacity(&self) -> f32 {
         match self.scroll_fade_last_interaction {
             Some(last) => crate::primitives::scrollbar::idle_fade_opacity(last, self.fade_now()),
@@ -2913,7 +2909,8 @@ impl Backend for WinBackend {
         if self.surface.is_some() && self.dwrite.is_some() {
             let _ = rect;
             let theme = self.current_theme;
-            crate::primitives::find_replace::paint(panel, self, &theme);
+            let style = Backend::style(self);
+            crate::primitives::find_replace::paint(panel, self, &theme, &style);
             return;
         }
         // See `WinBackend`'s "Before a surface is attached" doc for why this degrades to a no-op instead
@@ -4000,6 +3997,10 @@ impl PaintSurface for WinBackend {
         // no-op instead of panicking.
     }
 
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.scrollbar_fade_opacity()
+    }
+
     /// See the [`WinBackend`] "Before a surface is attached" doc for the "surface not attached yet"
     /// posture: no pixels to rasterise onto reports `Unsupported`. WIC
     /// decoding and `DrawBitmap` are pure Direct2D, no `self.dwrite`.
@@ -4219,6 +4220,10 @@ impl PaintSurface for EditorSurface<'_> {
 
     fn surface_pop_clip(&mut self) {
         self.backend.surface_pop_clip()
+    }
+
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        self.backend.surface_overlay_scrollbar_opacity()
     }
 
     fn surface_draw_image(

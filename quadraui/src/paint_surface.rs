@@ -853,8 +853,34 @@ pub trait PaintSurface {
     /// content from bleeding into neighbours).
     fn surface_push_clip(&mut self, rect: Rect);
 
-    /// Pop the clip most recently pushed by [`Self::surface_push_clip`].
+    /// Pop the clip most recently pushed by [`Self::surface_push_clip`]
+    /// or [`Self::surface_push_rounded_clip`].
     fn surface_pop_clip(&mut self);
+
+    /// Push a clip to `rect` with its corners rounded at `radius`, so a
+    /// framed widget's fills stay inside the rounded frame it strokes.
+    /// Balanced by [`Self::surface_pop_clip`] like
+    /// [`Self::surface_push_clip`].
+    ///
+    /// Default: the square [`Self::surface_push_clip`], ignoring
+    /// `radius` — a surface with no rounded clip paints square corners
+    /// under the frame, the same fallback
+    /// [`Self::surface_stroke_rounded_rect`] takes.
+    fn surface_push_rounded_clip(&mut self, rect: Rect, radius: f32) {
+        let _ = radius;
+        self.surface_push_clip(rect);
+    }
+
+    // ─── Overlay scrollbars ────────────────────────────────────────────
+    /// The opacity (`0.0..=1.0`) an overlay scrollbar paints at on this
+    /// surface right now — the platform's idle fade, which hides the bar
+    /// until the user scrolls and fades it out again once they stop
+    /// ([`crate::primitives::scrollbar::idle_fade_opacity`]).
+    ///
+    /// Default: `1.0`, always visible — a surface with no fade clock.
+    fn surface_overlay_scrollbar_opacity(&self) -> f32 {
+        1.0
+    }
 
     // ─── Images ────────────────────────────────────────────────────────
     /// Paint `image` into `rect`, decoding it through this surface's

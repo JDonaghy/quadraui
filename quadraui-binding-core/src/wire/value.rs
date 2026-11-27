@@ -837,14 +837,14 @@ pub(super) fn opt_u64(value: &Value, key: &str, context: &str) -> Result<Option<
     }
 }
 
-/// Reads `value[key]` as an optional [`quadraui::StatusBarOverflow`]
+/// Reads `value[key]` as an optional [`quadraui::CellOverflow`]
 /// (`"ellipsis"`/`"clip"`), raising a [`DecodeError`] at `context` if
 /// present but not one of those. `None` when absent.
-pub(super) fn opt_status_bar_overflow(
+pub(super) fn opt_cell_overflow(
     value: &Value,
     key: &str,
     context: &str,
-) -> Result<Option<quadraui::StatusBarOverflow>, DecodeError> {
+) -> Result<Option<quadraui::CellOverflow>, DecodeError> {
     match obj_get(value, key) {
         Some(v) => serde_json::from_value(v.clone())
             .map(Some)

@@ -1152,7 +1152,7 @@ pub fn schema() -> Vec<DefJson> {
         (u64) => {
             int_()
         };
-        (StatusBarOverflow) => {
+        (CellOverflow) => {
             lit(&["ellipsis", "clip"])
         };
     }

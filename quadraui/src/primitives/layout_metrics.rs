@@ -306,19 +306,27 @@ pub fn pixel_tree_layout_measured(
     tree_layout_inner(tree, area, line_height, Some(measure), row_padding_x, None)
 }
 
-/// [`pixel_tree_layout`] resolved against a pixel-precise scroll
-/// position: `scroll_px: Some(px)` wins over
+/// [`pixel_tree_layout_measured`] resolved against a pixel-precise
+/// scroll position: `scroll_px: Some(px)` wins over
 /// [`TreeView::scroll_offset`] and places the first visible row
 /// partially clipped, through [`TreeView::layout_with_scroll_px`];
-/// `None` lays out exactly as [`pixel_tree_layout`] does.
+/// `None` lays out exactly as [`pixel_tree_layout_measured`] does.
 pub fn pixel_tree_layout_with_scroll_px(
     tree: &TreeView,
     area: QRect,
     line_height: f64,
+    measure: &dyn TextMeasure,
     row_padding_x: f32,
     scroll_px: Option<f32>,
 ) -> TreeViewLayout {
-    tree_layout_inner(tree, area, line_height, None, row_padding_x, scroll_px)
+    tree_layout_inner(
+        tree,
+        area,
+        line_height,
+        Some(measure),
+        row_padding_x,
+        scroll_px,
+    )
 }
 
 fn tree_layout_inner(
@@ -891,6 +899,48 @@ pub fn pixel_data_table_layout(
         header_height,
         pixel::DATA_TABLE_SCROLLBAR_WIDTH,
         |col| ColumnMeasure::new(measure.width_of(&col.title)),
+    )
+}
+
+/// [`pixel_data_table_layout`] with the header titles a `Content` column
+/// sizes to measured by `header_measure` — the font the header paints
+/// them in — while `measure` keeps the plain body font for the average
+/// glyph a `FixedCells` column is sized from.
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub(crate) fn pixel_data_table_layout_with_header(
+    table: &DataTable,
+    w: f32,
+    h: f32,
+    line_height: f32,
+    measure: &dyn TextMeasure,
+    header_measure: &dyn TextMeasure,
+) -> DataTableLayout {
+    let header_height = (line_height * 1.2).round();
+    // `DataTable::layout` hands the measurer either one of the table's
+    // own columns (a header title) or a sample column of its own (the
+    // average-glyph probe); only the first is painted in the header font.
+    let own_columns = table.columns.as_ptr_range();
+    table.layout(
+        w,
+        h,
+        line_height,
+        header_height,
+        pixel::DATA_TABLE_SCROLLBAR_WIDTH,
+        |col| {
+            // A header title rounds up to a whole unit, so the painter's
+            // own measurement of the same text never lands a hair over
+            // the column it sized.
+            if own_columns.contains(&std::ptr::from_ref(col)) {
+                ColumnMeasure::new(header_measure.width_of(&col.title).ceil())
+            } else {
+                ColumnMeasure::new(measure.width_of(&col.title))
+            }
+        },
     )
 }
 
