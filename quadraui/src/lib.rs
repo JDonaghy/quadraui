@@ -958,24 +958,31 @@ pub use shell::{ShellApp, ShellConfig, ShellContext};
 pub use compose::markdown::{
     render_markdown_to_styled, render_markdown_to_styled_wrapped, CodeBlockRange, RenderedMarkdown,
 };
+#[cfg(any(
+    feature = "gtk",
+    feature = "tui",
+    feature = "win",
+    all(feature = "macos", target_os = "macos")
+))]
+pub use compose::SidebarLayout;
 pub use compose::{
     filter_help_actions, help_actions_to_palette_items, notify_or_toast, AppShell, AppShellEvent,
     AppShellLayout, BackendWidget, BottomBand, BottomPanel, BottomPanelConfig,
     BottomPanelController, BottomPanelEvent, BottomPanelItem, BottomPanelLayout,
-    BottomPanelPrimitiveLayout, BottomPanelState, BottomPanelTab, ChatController,
-    ChatControllerAction, ChatRole, ChatTurn, ContextMenuController, ContextMenuOutcome,
-    DualModePaletteAction, DualModePaletteController, Edge, FilePickerController, FilePickerMode,
-    FocusGroup, FolderPickerController, FormController, FormControllerAction, FormDialogAction,
-    FormDialogController, GroupLayout, Handled, HelpAction, HelpNote, HelpOverlayAction,
-    HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef, MenuEvent, MenuSystem,
-    MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab, PanelDefinition,
-    PathPickerAction, SectionKind, ShellDrag, ShellPosition, ShellRegion, ShellView,
-    ShellViewLayout, ShellViewState, SidebarEvent, SidebarPanelBody, SidebarPanelBodyLayout,
-    SidebarPanelChrome, SidebarSectionDef, SidebarSystem, StatusBarInteraction, TabGroupController,
-    TabGroupEvent, TabGroupLayout, ToastStackAction, ToastStackController, ToolbarHoverTracker,
-    TreeController, TreeControllerEvent, TreeHoverTracker, ViewHelp, Workspace,
-    WorkspaceController, WorkspaceDoc, WorkspaceEvent, WorkspaceLayout, WorkspacePrimitiveLayout,
-    WorkspaceState, PALETTE_CHROME_ROWS,
+    BottomPanelPrimitiveLayout, BottomPanelState, BottomPanelTab, Chat, ChatController,
+    ChatControllerAction, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn, ChatZones,
+    ContextMenuController, ContextMenuOutcome, DualModePaletteAction, DualModePaletteController,
+    Edge, FilePickerController, FilePickerMode, FocusGroup, FolderPickerController, FormController,
+    FormControllerAction, FormDialogAction, FormDialogController, GroupLayout, Handled, HelpAction,
+    HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef,
+    MenuEvent, MenuSystem, MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab,
+    PanelDefinition, PathPickerAction, SectionKind, ShellDrag, ShellPosition, ShellRegion,
+    ShellView, ShellViewLayout, ShellViewState, Sidebar, SidebarAction, SidebarBody,
+    SidebarPanelBody, SidebarPanelBodyLayout, SidebarPanelChrome, SidebarSection,
+    SidebarSectionDef, StatusBarInteraction, TabGroupController, TabGroupEvent, TabGroupLayout,
+    ToastStackAction, ToastStackController, ToolbarHoverTracker, TreeController,
+    TreeControllerEvent, TreeHoverTracker, ViewHelp, Workspace, WorkspaceController, WorkspaceDoc, WorkspaceEvent,
+    WorkspaceLayout, WorkspacePrimitiveLayout, WorkspaceState, PALETTE_CHROME_ROWS,
 };
 pub use compose::{
     AppMenu, AppMenuEvent, AppMenuState, AppMenuView, DualModePalette, DualModePaletteState,
@@ -989,6 +996,7 @@ pub use compose::{
     all(feature = "macos", target_os = "macos")
 ))]
 pub use compose::{TreeTableController, TreeTableControllerEvent, TreeTableNodeData};
+pub use compose::{SidebarEvent, SidebarState, SidebarSystem};
 // `NodeId` is `compose::tree_table_controller::NodeId` — a plain `String`
 // alias, not re-exported at the crate root to avoid shadowing any other
 // crate's own `NodeId`; reach it via `quadraui::compose::NodeId`.

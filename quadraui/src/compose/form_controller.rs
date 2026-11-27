@@ -77,12 +77,8 @@
 
 use crate::behaviour::scroll::ensure_visible;
 use crate::compose::Handled;
-use crate::primitives::form::contract as form_contract;
-// Re-exported under this module's own name: `compose::sidebar_system`
-// resolves a form-field click through the same function a `Form`
-// widget's own `Interactive` does.
 use crate::interactive::RoutedEvent;
-pub(crate) use crate::primitives::form::contract::form_click_event;
+use crate::primitives::form::contract as form_contract;
 use crate::primitives::form::contract::SLIDER_TRACK_CELLS;
 use crate::primitives::form::{
     FieldKind, Form, FormEvent, FormFieldMeasure, FormItemMeasure, FormState,
@@ -1111,6 +1107,7 @@ mod tests {
     use crate::event::{Key, NamedKey};
     use crate::primitives::combo_box::ComboBox;
     use crate::primitives::date_picker::CalendarDate;
+    use crate::primitives::form::contract::form_click_event;
     use crate::primitives::form::contract::slider_track_rect;
     use crate::primitives::form::{FieldKind, FormField, ToggleGroupItem};
     use crate::primitives::number_input::NumberInput;

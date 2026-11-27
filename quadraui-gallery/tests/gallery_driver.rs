@@ -1343,8 +1343,9 @@ fn data_table_header_click_sorts_by_that_column() {
     );
 }
 
-/// Clicking the collapsed "tests/" header on the `Tree` demo's "File
-/// tree" variant expands it, revealing its hidden child.
+/// Clicking the chevron of the collapsed "tests/" row on the `Tree`
+/// demo's "File tree" variant expands it, revealing its hidden child; a
+/// click on the title itself only selects the row.
 #[test]
 fn tree_file_variant_header_click_expands_it() {
     let mut driver = driver_with_shell(GalleryApp::new(), GalleryApp::config(), 100, 32);
@@ -1360,10 +1361,12 @@ fn tree_file_variant_header_click_expands_it() {
         .find("tests/")
         .unwrap_or_else(|| panic!("tests/ row should paint:\n{}", driver.screen()));
     driver.click(x, y);
+    assert!(!driver.screen_contains("smoke.rs"));
+    driver.click(x - 2.0, y);
 
     assert!(
         driver.screen_contains("smoke.rs"),
-        "clicking the collapsed tests/ header should expand it:\n{}",
+        "clicking the collapsed tests/ chevron should expand it:\n{}",
         driver.screen()
     );
 }
