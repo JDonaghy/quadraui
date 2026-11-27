@@ -1,6 +1,7 @@
 {
   "gtk": 14006,
   "macos": 13735,
+  "quadraui-binding-core/src": 22706,
   "tui": 11232,
   "win": 18128
 }
