@@ -1153,7 +1153,7 @@ mod native_surface_paint {
 
     /// Paint a toggle button (codicon glyph for match-case / whole-word /
     /// regex / preserve-case — TUI paints the plain-text equivalents `Aa`
-    /// / `ab` / `.*` / `AB` instead, see `tui::find_replace`): filled with
+    /// / `ab` / `.*` / `AB` instead, see `paint_cells`): filled with
     /// `accent_bg` and inverted text when `active`, outlined with
     /// `separator` and normal text otherwise.
     #[allow(clippy::too_many_arguments)]
@@ -1762,7 +1762,7 @@ mod native_surface_paint {
         /// GUI backends (GTK/macOS/Win — anything routing through this
         /// shared `paint`) render the four toggle buttons as codicon
         /// glyphs, not the TUI's literal text pairs. TUI's own
-        /// rasteriser (`tui::find_replace`) has no `PaintSurface` impl
+        /// painter (`paint_cells`) has no `PaintSurface` impl
         /// and keeps painting `"Aa"`/`"ab"`/`".*"`/`"AB"`; this test
         /// covers only the `PaintSurface` path this module owns.
         ///

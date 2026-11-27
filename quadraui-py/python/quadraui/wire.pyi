@@ -1439,6 +1439,7 @@ class FrHitRegion(TypedDict):
     width: int
 
 class FindReplacePanelDescriptor(TypedDict):
+    id: NotRequired[WidgetId]
     query: str
     replacement: NotRequired[str]
     show_replace: NotRequired[bool]
@@ -2712,6 +2713,7 @@ class _UiEventDict(TypedDict):
     PipelineView: NotRequired[Tuple[WidgetId, Any]]
     DiffView: NotRequired[Tuple[WidgetId, Any]]
     MessageList: NotRequired[Tuple[WidgetId, Any]]
+    FindReplace: NotRequired[Tuple[WidgetId, Any]]
     TextDisplay: NotRequired[Tuple[WidgetId, TextDisplayEvent]]
     Chart: NotRequired[Tuple[WidgetId, ChartEvent]]
     DataTable: NotRequired[Tuple[WidgetId, DataTableEvent]]

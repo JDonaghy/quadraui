@@ -4105,12 +4105,13 @@ pub fn schema() -> Vec<DefJson> {
             ("Terminal", tup(vec![re("WidgetId"), re("TerminalEvent")])),
             ("Editor", tup(vec![re("WidgetId"), re("EditorEvent")])),
             ("Minimap", tup(vec![re("WidgetId"), re("MinimapEvent")])),
-            // A board, pipeline, diff or message-list event rides as its
-            // own externally-tagged serde shape.
+            // A board, pipeline, diff, message-list or find/replace event
+            // rides as its own externally-tagged serde shape.
             ("Board", tup(vec![re("WidgetId"), any_()])),
             ("PipelineView", tup(vec![re("WidgetId"), any_()])),
             ("DiffView", tup(vec![re("WidgetId"), any_()])),
             ("MessageList", tup(vec![re("WidgetId"), any_()])),
+            ("FindReplace", tup(vec![re("WidgetId"), any_()])),
             ("TextDisplay", tup(vec![re("WidgetId"), re("TextDisplayEvent")])),
             ("Chart", tup(vec![re("WidgetId"), re("ChartEvent")])),
             ("DataTable", tup(vec![re("WidgetId"), re("DataTableEvent")])),
@@ -7138,6 +7139,7 @@ mod coverage {
                 "PipelineView",
                 "DiffView",
                 "MessageList",
+                "FindReplace",
                 "TextDisplay",
                 "Chart",
                 "DataTable",
