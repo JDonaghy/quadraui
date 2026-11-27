@@ -2128,7 +2128,7 @@ fn render_output_from_callback(
 // `on_event`/`a11y` methods a Python object, not a wire dict, carries).
 // `Widget.build()` instead leaves a placeholder (`{"canvas": {"ops": [],
 // "regions": []}}`, decoded above as an ordinary, empty
-// `quadraui::Canvas` extra) at its own wire id, and separately stashes
+// `"canvas"` widget leaf) at its own wire id, and separately stashes
 // itself (plus props/state/focusable) in `quadraui.app.widget._PENDING`,
 // a plain Python dict `_take_pending` drains right here -- see that
 // module's own doc for why this is a side channel rather than a call
@@ -2292,7 +2292,10 @@ fn apply_pending_script_widgets_leaf(
     // Only swaps a `Canvas`-shaped placeholder -- a user id collision
     // with an unrelated leaf (same id, wrong kind) leaves that leaf
     // untouched rather than clobbering it.
-    if !matches!(leaf.descriptor, LeafDescriptor::Extra(_)) {
+    if !matches!(
+        leaf.descriptor,
+        LeafDescriptor::Widget { kind: "canvas", .. }
+    ) {
         return;
     }
     let script_widget = PyScriptWidget {
