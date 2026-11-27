@@ -20,7 +20,7 @@
 //! option is chosen" — the single-selection-is-the-cursor convention
 //! `<input type="radio">` groups use. [`RadioGroup::handle_key`] moves
 //! the cursor with `Up`/`Left` (previous) and `Down`/`Right` (next),
-//! wrapping at either end exactly like [`crate::compose::focus_group`]'s
+//! wrapping at either end exactly like [`crate::focus::cycle_index`]'s
 //! index-cycling (`None` seeds at the first/last option depending on
 //! direction; `Some(i)` steps by `rem_euclid`), and skips over
 //! `disabled` options — bounded to one full lap so an all-disabled group
@@ -179,7 +179,7 @@ impl RadioGroup {
 
     /// Step the cursor by `delta` (`-1` or `1`), wrapping at either end
     /// and skipping `disabled` options, mirroring
-    /// [`crate::compose::focus_group::FocusGroup::cycle`]'s index
+    /// [`crate::focus::cycle_index`]'s index
     /// semantics exactly: `None` seeds at index `0` for a forward step
     /// or the last index for a backward step, then every step is
     /// `(i + delta).rem_euclid(len)`. The skip loop is bounded to one

@@ -7,7 +7,6 @@
 //! define structure + handle semantic events, without reimplementing
 //! open/close/navigate/hover logic.
 //!
-//! - [`FocusGroup`] — Tab/Shift+Tab cycling through N regions by index.
 //! - [`MenuSystem`] — MenuBar + ContextMenu dropdown composition.
 //! - [`SidebarSystem`] — MSV + TreeView sidebar panel composition.
 //! - [`FormController`] — single Form with built-in scrollbar + event dispatch.
@@ -72,7 +71,6 @@ pub mod chat_controller;
 pub mod context_menu_controller;
 pub mod dual_mode_palette;
 pub mod file_picker;
-pub mod focus_group;
 pub mod folder_picker;
 pub mod form_controller;
 pub mod form_dialog;
@@ -147,7 +145,6 @@ pub use file_picker::{FilePicker, FilePickerController, FilePickerMode, FilePick
 // deprecated item is itself a use site.
 #[allow(deprecated)]
 pub use file_picker::FilePickerEvent;
-pub use focus_group::FocusGroup;
 pub use folder_picker::{
     FolderPicker, FolderPickerController, FolderPickerState, PALETTE_CHROME_ROWS,
 };

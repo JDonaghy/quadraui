@@ -709,10 +709,16 @@ impl MultiSectionView {
         state: &mut MultiSectionViewState,
         event: &RoutedEvent,
         abs: Point,
-        released: bool,
         layout: &MultiSectionViewPrimitiveLayout,
         cx: &mut EventCx,
     ) -> Handled<MultiSectionViewEvent> {
+        let released = matches!(
+            event,
+            RoutedEvent::Pointer {
+                kind: PointerKind::Up(_),
+                ..
+            }
+        );
         match drag {
             Drag::Body(idx) => return self.forward_to_body(idx, state, event, layout, cx),
             Drag::Aux(idx) => return self.edit_aux(idx, state, event, layout, cx),
@@ -1038,10 +1044,10 @@ impl Interactive for MultiSectionView {
                 if let Some(drag) = state.drag {
                     match kind {
                         PointerKind::Move => {
-                            return self.drag_to(drag, state, event, abs, false, layout, cx)
+                            return self.drag_to(drag, state, event, abs, layout, cx)
                         }
                         PointerKind::Up(_) => {
-                            return self.drag_to(drag, state, event, abs, true, layout, cx)
+                            return self.drag_to(drag, state, event, abs, layout, cx)
                         }
                         _ => {}
                     }

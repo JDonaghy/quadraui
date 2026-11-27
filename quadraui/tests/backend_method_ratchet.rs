@@ -170,6 +170,7 @@ const KNOWN_LEGACY_PRIMITIVE_BACKEND_METHODS: &[(&str, &str)] = &[
     ("SplitTree", "split_layout"),
     ("SplitTree", "draw_split_tree"),
     ("SplitTree", "split_tree_layout"),
+    ("MultiSectionView", "draw_multi_section_view"),
 ];
 
 /// Render a `syn::Type` naming a bare local type (e.g. `ListView`) back to

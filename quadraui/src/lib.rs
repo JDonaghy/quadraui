@@ -972,7 +972,7 @@ pub use compose::{
     BottomPanelPrimitiveLayout, BottomPanelState, BottomPanelTab, Chat, ChatController,
     ChatControllerAction, ChatEvent, ChatLayout, ChatRole, ChatState, ChatTurn, ChatZones,
     ContextMenuController, ContextMenuOutcome, DualModePaletteAction, DualModePaletteController,
-    Edge, FilePickerController, FilePickerMode, FocusGroup, FolderPickerController, FormController,
+    Edge, FilePickerController, FilePickerMode, FolderPickerController, FormController,
     FormControllerAction, FormDialogAction, FormDialogController, GroupLayout, Handled, HelpAction,
     HelpNote, HelpOverlayAction, HelpOverlayController, HelpRegistry, ListHoverTracker, MenuDef,
     MenuEvent, MenuSystem, MessageDialogController, NavigationMode, Pane, PaneDragRect, PaneTab,
