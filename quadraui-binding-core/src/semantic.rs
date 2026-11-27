@@ -13,7 +13,6 @@ use crate::drag::{tab_bar_for_right_segment, tree_row_path};
 use crate::extra_paint::{extra_as, PasswordInput, TextArea};
 use crate::hit::{HitDetail, PaintedHit};
 use crate::text_input::{apply_text_input_edit, text_input_key_event, TextEditorCache};
-use crate::tree_edit::tree_row_rename_key_event;
 
 /// Up/Down navigation for a focused `DataTable`: moves the current row
 /// selection by one, clamped to `[0, total_rows - 1]` and starting at row 0
@@ -351,6 +350,36 @@ pub enum DragGestureWireEvent {
     },
 }
 
+/// Resolves a key focused on a `TreeView` row that is mid-rename through
+/// core's single-line rename editor ([`quadraui::primitives::tree::tree_rename_key`]):
+/// Enter commits, Escape cancels, and an edit or caret move reports the
+/// new session as `RowRenameChanged`. `None` for a key the editor leaves
+/// alone, so the caller falls through to the tree's raw `KeyPressed`.
+pub(crate) fn tree_rename_event(
+    id: WidgetId,
+    path: &quadraui::TreePath,
+    edit: &quadraui::TreeRowEditState,
+    key: &Key,
+    modifiers: Modifiers,
+) -> Option<UiEvent> {
+    use quadraui::primitives::tree::{tree_rename_key, TreeRenameKey};
+    let event = match tree_rename_key(edit, key, modifiers) {
+        TreeRenameKey::Commit => TreeEvent::RowRenameCommitted {
+            path: path.clone(),
+            text: edit.text.clone(),
+        },
+        TreeRenameKey::Cancel => TreeEvent::RowRenameCancelled { path: path.clone() },
+        TreeRenameKey::Edited(next) | TreeRenameKey::Moved(next) => TreeEvent::RowRenameChanged {
+            path: path.clone(),
+            text: next.text,
+            cursor: next.cursor,
+            selection_anchor: next.selection_anchor,
+        },
+        TreeRenameKey::Unhandled => return None,
+    };
+    Some(UiEvent::Tree(id, event))
+}
+
 /// Stringifies a raw key the same way every quadraui backend does, so a
 /// `*Event::KeyPressed` variant built here carries the identical `key`
 /// string an app would see from the TUI, GTK or macOS backend directly.
@@ -398,9 +427,7 @@ pub fn focus_scoped_key_event(
         .find_map(|hit| match hit {
             PaintedHit::Tree { id, editing, .. } if *id == focused => {
                 if let Some((path, edit)) = editing {
-                    if let Some(ev) =
-                        tree_row_rename_key_event(*id, path, edit, raw_key, &modifiers)
-                    {
+                    if let Some(ev) = tree_rename_event(*id, path, edit, raw_key, modifiers) {
                         return Some(ev);
                     }
                 }
@@ -546,6 +573,101 @@ mod tests {
     use std::rc::Rc;
 
     use super::*;
+
+    fn rename_session(text: &str, cursor: usize) -> quadraui::TreeRowEditState {
+        quadraui::TreeRowEditState {
+            text: text.to_string(),
+            cursor,
+            selection_anchor: None,
+            placeholder: None,
+        }
+    }
+
+    #[test]
+    fn rename_typing_inserts_at_the_caret() {
+        let path = vec![0u16];
+        let event = tree_rename_event(
+            WidgetId::new("t"),
+            &path,
+            &rename_session("ac", 1),
+            &Key::Char('b'),
+            Modifiers::default(),
+        );
+        assert_eq!(
+            event,
+            Some(UiEvent::Tree(
+                WidgetId::new("t"),
+                TreeEvent::RowRenameChanged {
+                    path,
+                    text: "abc".to_string(),
+                    cursor: 2,
+                    selection_anchor: None,
+                }
+            ))
+        );
+    }
+
+    /// Ctrl+A selects the whole name, the same chord every other text
+    /// field honours.
+    #[test]
+    fn rename_ctrl_a_selects_the_whole_name() {
+        let path = vec![0u16];
+        let event = tree_rename_event(
+            WidgetId::new("t"),
+            &path,
+            &rename_session("abc", 1),
+            &Key::Char('a'),
+            Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        );
+        assert_eq!(
+            event,
+            Some(UiEvent::Tree(
+                WidgetId::new("t"),
+                TreeEvent::RowRenameChanged {
+                    path,
+                    text: "abc".to_string(),
+                    cursor: 3,
+                    selection_anchor: Some(0),
+                }
+            ))
+        );
+    }
+
+    #[test]
+    fn rename_enter_commits_and_escape_cancels() {
+        let path = vec![0u16];
+        let session = rename_session("abc", 1);
+        let id = WidgetId::new("t");
+        assert_eq!(
+            tree_rename_event(
+                id,
+                &path,
+                &session,
+                &Key::Named(NamedKey::Enter),
+                Modifiers::default()
+            ),
+            Some(UiEvent::Tree(
+                id,
+                TreeEvent::RowRenameCommitted {
+                    path: path.clone(),
+                    text: "abc".to_string()
+                }
+            ))
+        );
+        assert_eq!(
+            tree_rename_event(
+                id,
+                &path,
+                &session,
+                &Key::Named(NamedKey::Escape),
+                Modifiers::default()
+            ),
+            Some(UiEvent::Tree(id, TreeEvent::RowRenameCancelled { path }))
+        );
+    }
     use quadraui::{Rect, TabBarLayout};
 
     /// `key_to_focus_string` defers to the shared `NamedKey::name` table,

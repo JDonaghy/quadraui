@@ -138,6 +138,10 @@ fragment step for this package (that mechanism, and
   `{ TreeTable: [id, { RowSelected: { idx, path } }] }` instead of reaching the
   handler as a raw `MouseDown`. The `"tree_table_chevron"` hit kind is
   removed; a chevron click still reports `ToggleExpanded`.
+- A `tree` row mid-rename edits through core's single-line text editor,
+  so the rename honours the same keys every text field does: Ctrl/Cmd+A
+  selects the whole name, Shift+arrows extend the selection and
+  Ctrl/Alt+arrows move by word, each reported as `RowRenameChanged`.
 
 ### Removed
 

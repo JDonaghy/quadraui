@@ -108,7 +108,7 @@ pub enum PaintedHit {
     /// set (`None` when no row is mid-rename), read by
     /// [`crate::semantic::focus_scoped_key_event`] so a key pressed while
     /// that row is being renamed is resolved by
-    /// [`crate::tree_row_rename_key_event`] instead of falling straight
+    /// `crate::semantic::tree_rename_event` instead of falling straight
     /// through to the tree's raw `TreeEvent::KeyPressed`. `loaded_rows` is
     /// `Some` only for a windowed tree — see [`LoadedRows`]'s own doc.
     Tree {
@@ -803,7 +803,7 @@ pub fn hit_test_painted(hit_map: &[PaintedHit], point: Point) -> Option<(WidgetI
 /// feeds (`crate::host::apply_tree_nav_key`): while
 /// [`crate::semantic::focus_scoped_key_event`] is routing an ordinary
 /// text-editing key (`Home`/`End`/arrows included) to
-/// `crate::tree_row_rename_key_event` for the row being renamed, the same
+/// `crate::semantic::tree_rename_event` for the row being renamed, the same
 /// keypress must not also move the stored navigation cursor — without
 /// this guard, `Home`/`End` mid-rename would jump the cursor to the first/
 /// last row underneath the edit in progress. Doesn't require a scrollbar
@@ -1061,7 +1061,7 @@ mod tests {
     /// must return `None` — the guard `crate::host::apply_tree_nav_key`'s
     /// own caller relies on so an ordinary text-editing key
     /// (`Home`/`End` included) routed to
-    /// `crate::tree_row_rename_key_event` never also moves the stored
+    /// `crate::semantic::tree_rename_event` never also moves the stored
     /// navigation cursor out from under the rename in progress.
     #[test]
     fn tree_rows_and_viewport_returns_none_while_a_row_is_mid_rename() {

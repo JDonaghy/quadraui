@@ -105,6 +105,10 @@ predating it (see `git log -- quadraui-py`); none of it is backfilled here.
   `{"TreeTable": (id, {"RowSelected": {"idx": i, "path": [...]}})}` instead of reaching the
   handler as a raw `MouseDown`. The `"tree_table_chevron"` hit kind is
   removed; a chevron click still reports `ToggleExpanded`.
+- A `tree` row mid-rename edits through core's single-line text editor,
+  so the rename honours the same keys every text field does: Ctrl/Cmd+A
+  selects the whole name, Shift+arrows extend the selection and
+  Ctrl/Alt+arrows move by word, each reported as `RowRenameChanged`.
 - `show_overlay("layout_dialog", ...)`'s `"dialog"` chrome no longer
   requires a `"buttons"` key: a content-bearing dialog may rely on its
   own subtree (a form's Cancel/Save row, a close icon) instead of the
